@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import re
 import shlex
+import threading
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Protocol, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,10 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _WHITESPACE_RE = re.compile(r"\s+")
 _SHELL_COMMAND_SEPARATORS = frozenset({"&&", ";", "||"})
+# Quiet period before answering a TUI prompt. Measured against codex-cli
+# 0.156.1: an Enter sent on the frame that drew the prompt was dropped every
+# time; 0.3 s after it, accepted every time.
+_TUI_SETTLE_SECONDS = 0.5
 
 
 def normalize_terminal_text(text: str) -> str:
@@ -43,18 +48,50 @@ class SessionInteractionRule:
     response: str
     # Reserved for future cooldown/edge-trigger semantics; current rules are one-shot only.
     fire_once: bool = True
+    # Other marker sets for the SAME prompt as a program redraws it across
+    # versions. Any one complete set matches; the rule still fires once, so a
+    # startup wait for "every rule fired" is not left waiting on a variant that
+    # this version never draws.
+    alternatives: tuple[tuple[str, ...], ...] = ()
+    # Answer only after the screen has been quiet this long. A TUI can drop a
+    # key that arrives while it is still drawing the prompt (codex 0.156 does);
+    # any further output restarts the wait.
+    settle_seconds: float = 0.0
 
     def __post_init__(self) -> None:
-        if not self.required_substrings:
-            raise ValueError("SessionInteractionRule.required_substrings cannot be empty")
+        if not self.required_substrings or any(not group for group in self.alternatives):
+            raise ValueError("SessionInteractionRule marker sets cannot be empty")
         if not self.fire_once:
             raise ValueError("SessionInteractionRule only supports fire_once=True")
+        if self.settle_seconds < 0:
+            raise ValueError("SessionInteractionRule.settle_seconds cannot be negative")
 
 
 @dataclass(frozen=True)
 class _CompiledRule:
     rule: SessionInteractionRule
-    markers: tuple[str, ...]
+    marker_sets: tuple[tuple[str, ...], ...]
+
+    def matches(self, buffer: str) -> bool:
+        return any(markers and all(m in buffer for m in markers) for markers in self.marker_sets)
+
+
+def _compile_markers(substrings: Sequence[str]) -> tuple[str, ...]:
+    return tuple(m for m in (normalize_terminal_text(item) for item in substrings) if m)
+
+
+class _Timer(Protocol):
+    def start(self) -> None: ...
+    def cancel(self) -> None: ...
+
+
+TimerFactory = Callable[[float, Callable[[], None]], _Timer]
+
+
+def _thread_timer(seconds: float, callback: Callable[[], None]) -> _Timer:
+    timer = threading.Timer(seconds, callback)
+    timer.daemon = True
+    return timer
 
 
 class SessionInteractionHandler:
@@ -66,19 +103,23 @@ class SessionInteractionHandler:
         session_name: str,
         rules: Sequence[SessionInteractionRule],
         max_buffer_chars: int = _MAX_BUFFER_CHARS,
+        timer_factory: TimerFactory = _thread_timer,
     ) -> None:
         self._session_name = session_name
         self._max_buffer_chars = max(256, max_buffer_chars)
         self._buffer = ""
         self._sender: Callable[[str], bool] | None = None
         self._fired_rules: set[str] = set()
+        self._timer_factory = timer_factory
+        # Matched rules waiting for the screen to settle, keyed by rule name.
+        self._settling: dict[str, _Timer] = {}
+        self._lock = threading.RLock()
         self._rules = tuple(
             _CompiledRule(
                 rule=rule,
-                markers=tuple(
-                    marker
-                    for marker in (normalize_terminal_text(item) for item in rule.required_substrings)
-                    if marker
+                marker_sets=tuple(
+                    _compile_markers(group)
+                    for group in (rule.required_substrings, *rule.alternatives)
                 ),
             )
             for rule in rules
@@ -94,39 +135,68 @@ class SessionInteractionHandler:
         return all(compiled.rule.name in self._fired_rules for compiled in self._rules)
 
     def on_output(self, data: bytes | str) -> None:
-        """Observe PTY output and fire matching rules."""
+        """Observe PTY output and fire (or start settling) matching rules."""
+        if not data:
+            return
         text = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else data
         normalized = normalize_terminal_text(text)
-        if not normalized:
-            return
+        with self._lock:
+            # Any output, even a pure redraw, means the screen is not settled.
+            for name in list(self._settling):
+                self._restart_settle(self._compiled(name))
+            if not normalized:
+                return
+            combined = f"{self._buffer} {normalized}".strip() if self._buffer else normalized
+            self._buffer = combined[-self._max_buffer_chars :]
+            for compiled in self._rules:
+                rule = compiled.rule
+                if rule.name in self._fired_rules or rule.name in self._settling:
+                    continue
+                if not compiled.matches(self._buffer):
+                    continue
+                if rule.settle_seconds > 0:
+                    self._restart_settle(compiled)
+                else:
+                    self._respond(rule)
 
-        combined = f"{self._buffer} {normalized}".strip() if self._buffer else normalized
-        self._buffer = combined[-self._max_buffer_chars :]
+    def _compiled(self, name: str) -> _CompiledRule:
+        return next(compiled for compiled in self._rules if compiled.rule.name == name)
 
-        for compiled in self._rules:
-            rule = compiled.rule
-            if rule.fire_once and rule.name in self._fired_rules:
-                continue
-            if not compiled.markers or not all(marker in self._buffer for marker in compiled.markers):
-                continue
-            sender = self._sender
-            if sender is None:
-                logger.warning(
-                    "[session-interactions] matched rule before sender was ready: session=%s rule=%s",
-                    self._session_name,
-                    rule.name,
-                )
-                continue
-            sent = sender(rule.response)
-            logger.info(
-                "[session-interactions] rule fired: session=%s rule=%s sent=%s response=%s",
+    def _restart_settle(self, compiled: _CompiledRule) -> None:
+        rule = compiled.rule
+        previous = self._settling.get(rule.name)
+        if previous is not None:
+            previous.cancel()
+        timer = self._timer_factory(rule.settle_seconds, lambda: self._settled(rule, timer))
+        self._settling[rule.name] = timer
+        timer.start()
+
+    def _settled(self, rule: SessionInteractionRule, timer: _Timer) -> None:
+        with self._lock:
+            if self._settling.get(rule.name) is not timer:
+                return  # superseded by later output
+            del self._settling[rule.name]
+            self._respond(rule)
+
+    def _respond(self, rule: SessionInteractionRule) -> None:
+        sender = self._sender
+        if sender is None:
+            logger.warning(
+                "[session-interactions] matched rule before sender was ready: session=%s rule=%s",
                 self._session_name,
                 rule.name,
-                sent,
-                "<enter>" if rule.response == "" else rule.response,
             )
-            if sent and rule.fire_once:
-                self._fired_rules.add(rule.name)
+            return
+        sent = sender(rule.response)
+        logger.info(
+            "[session-interactions] rule fired: session=%s rule=%s sent=%s response=%s",
+            self._session_name,
+            rule.name,
+            sent,
+            "<enter>" if rule.response == "" else rule.response,
+        )
+        if sent and rule.fire_once:
+            self._fired_rules.add(rule.name)
 
 
 def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionRule, ...]:
@@ -161,7 +231,16 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
                     "Yes, continue",
                     "No, quit",
                 ),
+                # Codex 0.156 draws this instead for a folder io registers as
+                # untrusted on purpose. Its highlighted default, "1. Open
+                # restricted", runs with the folder's config, hooks and exec
+                # policies disabled, which is the posture io asks for. Left
+                # unanswered it blocked every reviewer before its first
+                # prompt (#7287).
+                alternatives=(("Folder access", "Open restricted"),),
                 response="",
+                # 0.156 drops a key that arrives while it is drawing the choice.
+                settle_seconds=_TUI_SETTLE_SECONDS,
             ),
         )
     return tuple(rules)

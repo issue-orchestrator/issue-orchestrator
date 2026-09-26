@@ -75,11 +75,27 @@ class AgentSession:
         self._closed = False
         self._interaction_handler = interaction_handler
         if self._interaction_handler is not None:
-            self._interaction_handler.bind_sender(self.send)
+            self._interaction_handler.bind_sender(self.answer_prompt)
 
     @property
     def pid(self) -> int | None:
         return self._child.pid
+
+    def answer_prompt(self, text: str) -> bool:
+        """Answer a TUI prompt: ``text`` then the Enter key, a carriage return.
+
+        Not ``send``: its ``sendline`` ends in a line feed, which codex 0.156's
+        choice dialogs ignore (measured: ``\\n`` left the Folder-access choice
+        on screen, ``\\r`` selected it). The review-exchange PTY path already
+        answers with ``\\r`` (``persistent_round_interactions``).
+        """
+        if self._closed:
+            return False
+        try:
+            self._child.send(f"{text}\r")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def send(self, text: str) -> bool:
         """Send text to the agent's PTY stdin.
