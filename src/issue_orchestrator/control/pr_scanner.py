@@ -155,10 +155,6 @@ class PRScanner:
         issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
-            # Skip if already queued
-            if pr.number in queued_pr_numbers:
-                continue
-
             # Skip if already being reviewed
             session_name = f"review-{pr.number}"
             if session_name in active_review_sessions:
@@ -204,6 +200,12 @@ class PRScanner:
                     ",".join(validity.pr_labels) or "(none)",
                 )
                 blocked.extend(_review_block(validity, pr, issue_number, issue))
+                continue
+
+            # Skip if already queued. Checked only after validity: a queued PR
+            # whose issue has since been blocked waits in the queue for a slot
+            # it will be dropped at, and must still reach the board (#7294).
+            if pr.number in queued_pr_numbers:
                 continue
 
             review = PendingReview(
@@ -366,14 +368,6 @@ class PRScanner:
                 reason="out_of_scope",
             )
 
-        if issue_number in queued_issue_ids:
-            return _ReworkScanDecision(
-                decision="skip",
-                issue_number=issue_number,
-                rework_cycle=0,
-                blocking_labels=[],
-                reason="already_queued",
-            )
         if issue_number in active_issue_numbers:
             return _ReworkScanDecision(
                 decision="skip",
@@ -409,6 +403,16 @@ class PRScanner:
                 blocked=_rework_blocked(
                     pr, issue_number, issue, BlockedPRSkipReason.ISSUE_BLOCKED, issue_blocking
                 ),
+            )
+        # Queued work is checked after the blocks, so a queued PR whose issue
+        # has since been blocked still reaches the board (#7294).
+        if issue_number in queued_issue_ids:
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=rework_cycle,
+                blocking_labels=[],
+                reason="already_queued",
             )
         if rework_cycle > self.config.max_rework_cycles:
             return _ReworkScanDecision(

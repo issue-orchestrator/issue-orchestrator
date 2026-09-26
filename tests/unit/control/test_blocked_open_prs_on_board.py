@@ -24,7 +24,11 @@ from issue_orchestrator.domain.board_snapshot import (
     BoardSnapshot,
     BoardTechLeadWriteHealth,
 )
-from issue_orchestrator.domain.models import OrchestratorState
+from issue_orchestrator.domain.models import (
+    OrchestratorState,
+    PendingReview,
+    PendingRework,
+)
 from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -289,3 +293,96 @@ def test_a_pr_level_block_stays_on_the_board_after_the_issue_is_cleared(
     (entry,) = _snapshot(state).blocked_open_prs or []
     assert entry.skip_reason == BlockedPRSkipReason.PR_BLOCKED.value
     assert state.discovered_reviews == []
+
+
+def test_a_queued_review_whose_issue_is_then_blocked_reaches_the_board(
+    config: Config, github: CountingGitHub
+) -> None:
+    """Queued work waits for a slot it would be dropped at; it must still show.
+
+    With capacity full the pending review is never launched, so the launch-time
+    drop never runs and the scanner is the only thing that sees it. Checking
+    the queue before the block kept it off the board (review round 4).
+    """
+    _issue(github, 320)
+    _pr(github, 376, 320, "needs-code-review")
+    workflow = _workflow(config, github)
+    state = OrchestratorState()
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+    (found,) = state.discovered_reviews
+    state.pending_reviews.append(
+        PendingReview(
+            issue_key=github.create_issue_key(320),
+            pr_number=found.pr_number,
+            pr_url=found.pr_url,
+            branch_name=found.branch_name,
+            _issue_number=320,
+        )
+    )
+    state.discovered_reviews.clear()
+
+    github.issues[0].labels.append("blocked-failed")
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+
+    assert state.discovered_reviews == []
+    (entry,) = _snapshot(state).blocked_open_prs or []
+    assert (entry.pr_number, entry.skip_reason, entry.skip_count) == (
+        376,
+        "issue_blocked",
+        2,
+    )
+
+
+def test_a_queued_review_that_is_still_valid_is_not_queued_twice(
+    config: Config, github: CountingGitHub
+) -> None:
+    _issue(github, 320)
+    _pr(github, 376, 320, "needs-code-review")
+    workflow = _workflow(config, github)
+    state = OrchestratorState()
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+    (found,) = state.discovered_reviews
+    state.pending_reviews.append(
+        PendingReview(
+            issue_key=github.create_issue_key(320),
+            pr_number=found.pr_number,
+            pr_url=found.pr_url,
+            branch_name=found.branch_name,
+            _issue_number=320,
+        )
+    )
+    state.discovered_reviews.clear()
+
+    workflow.scan_needs_code_review_prs(state, issue_branches={})
+
+    assert state.discovered_reviews == []
+    assert _snapshot(state).blocked_open_prs == []
+
+
+def test_a_queued_rework_whose_issue_is_then_blocked_reaches_the_board(
+    config: Config, github: CountingGitHub
+) -> None:
+    _issue(github, 353, "needs-human")
+    _pr(github, 378, 353, "needs-rework")
+    workflow = _workflow(config, github)
+    state = OrchestratorState()
+    state.pending_reworks.append(
+        PendingRework(
+            issue_key=github.create_issue_key(353),
+            agent_type="agent:developer",
+            rework_cycle=1,
+            issue_number=353,
+            pr_number=378,
+        )
+    )
+
+    workflow.scan_needs_rework_prs(state, issue_branches={})
+
+    assert state.discovered_reworks == [] and state.discovered_escalations == []
+    (entry,) = _snapshot(state).blocked_open_prs or []
+    assert (entry.lane, entry.pr_number, entry.skip_reason) == (
+        "rework",
+        378,
+        "issue_blocked",
+    )
