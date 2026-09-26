@@ -696,6 +696,7 @@ class Planner:
                     source=reconciliation.source,
                     issue_key=issue_key,
                     reason=reconciliation.status_reason,
+                    partial_pr=reconciliation.partial_pr,
                 ))
                 continue
             # Terminal recovery: the issue's work has landed (PR merged/closed
@@ -717,8 +718,11 @@ class Planner:
                 # Close-on-merge fallback (close_on_merge module, porchpin
                 # #81): merged PR + still-open issue; advisory — the applier
                 # revalidates live evidence. Never on closed status (drift's job).
+                # A partial PR's fact never carries issue_open (the fact
+                # refuses the combination), so it never earns this close.
                 close_issue=reconciliation.status == "merged" and reconciliation.issue_open,
                 merged_at=reconciliation.merged_at or "",
+                partial_pr=reconciliation.partial_pr,
                 # Carry the reconciliation pause guard the old terminal-cleanup
                 # RemoveLabelAction used to carry: an issue paused for
                 # reconciliation (io:needs-reconcile) must not have its labels

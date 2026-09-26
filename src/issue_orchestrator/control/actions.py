@@ -390,6 +390,9 @@ class ReconcileHistoryEntryAction(Action):
     status: AwaitingMergeTerminalStatus = "closed"
     source: AwaitingMergeReconciliationSource = "pull_request"
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    # A merged partial PR (#7288): the issue has remaining work, so history
+    # releases it for its next slice and records no shipped fix.
+    partial_pr: bool = False
     action_type: ActionType = field(default=ActionType.RECONCILE_HISTORY_ENTRY, init=False)
 
 
@@ -421,6 +424,8 @@ class RecoverTerminalIssueAction(Action):
     # live state (close_on_merge module) using ``merged_at`` as the evidence.
     close_issue: bool = False
     merged_at: str = ""
+    # A merged partial PR (#7288) — never closes; see ReconcileHistoryEntryAction.
+    partial_pr: bool = False
     action_type: ActionType = field(
         default=ActionType.RECOVER_TERMINAL_ISSUE, init=False
     )

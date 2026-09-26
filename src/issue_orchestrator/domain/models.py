@@ -263,6 +263,17 @@ def _check_validation_record_path(value: Any) -> str | None:
     return value
 
 
+def _check_partial_pr(value: Any, outcome: "CompletionOutcome") -> bool:
+    """A partial-delivery claim is a strict bool, and only a completion makes it."""
+    if type(value) is not bool:
+        raise ValueError("partial_pr must be a boolean")
+    if value and outcome is not CompletionOutcome.COMPLETED:
+        raise ValueError(
+            f"partial_pr is only valid for a completed outcome, not {outcome.value}"
+        )
+    return value
+
+
 def _check_pr_labels(value: Any) -> list[str] | None:
     if value is None:
         return None
@@ -460,6 +471,11 @@ class CompletionRecord:
     validation_record_path: Optional[str] = None  # Path to validation record JSON
     follow_up_issues: Optional[list["ProposedFollowUpIssue"]] = None
 
+    # The PR delivers only part of the issue (``coding-done completed
+    # --partial``): its body says "Refs #N", not "Closes #N", so merging it
+    # leaves the issue open for the next PR (#7288). COMPLETED only.
+    partial_pr: bool = False
+
     @property
     def requests_publication(self) -> bool:
         """Whether this intent requires publication prerequisites, before shaping."""
@@ -497,6 +513,7 @@ class CompletionRecord:
             "follow_up_issues": [
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
+            "partial_pr": self.partial_pr,
         }
 
     @classmethod
@@ -601,6 +618,7 @@ class CompletionRecord:
                 ProposedFollowUpIssue.from_dict(item)
                 for item in follow_up_raw
             ] if follow_up_raw is not None else None,
+            partial_pr=_check_partial_pr(data.get("partial_pr", False), outcome),
         )
 
 
@@ -1323,6 +1341,9 @@ class SessionHistoryEntry:
     worktree_path: Optional[Path] = None
     completed_at: Optional[datetime] = None  # When the session completed (for sequence visibility)
     issue_labels: tuple[str, ...] = ()  # Snapshot retained for area/seam facts
+    # Set when this entry's PR merged as a partial delivery ("Refs #N", #7288).
+    # The issue still has work, so this entry does not hold it out of the run.
+    partial_pr_merged: bool = False
 
 
     @property
@@ -1450,6 +1471,17 @@ class DiscoveredAwaitingMergeReconciliation:
     # destructive precondition against live state, not this discovery-time bit.
     issue_open: bool = False
     merged_at: str | None = None
+    # True when the merged PR declared partial delivery ("Refs #N", #7288):
+    # the issue stays open for its remaining work, so nothing closes it and
+    # the run may launch its next slice.
+    partial_pr: bool = False
+
+    def __post_init__(self) -> None:
+        if self.partial_pr and self.issue_open:
+            raise ValueError(
+                f"issue #{self.issue_number}: a partial PR's merge must never "
+                "request the close-on-merge fallback"
+            )
 
 
 @dataclass(frozen=True)

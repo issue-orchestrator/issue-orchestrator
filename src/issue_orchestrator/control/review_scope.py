@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Protocol
 
 from ..domain.branch_naming import extract_issue_number_from_branch
+from ..domain.pr_issue_reference import body_links_issue, linked_issue_number
 from ..ports.pull_request_tracker import PRInfo
 from .issue_scope import IssueScopeDecision, evaluate_issue_scope
 
@@ -16,7 +17,6 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
 
 logger = logging.getLogger(__name__)
-_CLOSING_ISSUE_RE = re.compile(r"\bCloses\s+#(\d+)\b", re.IGNORECASE)
 
 
 class ReviewIssueReader(Protocol):
@@ -47,9 +47,10 @@ def extract_issue_number_from_pr(pr: PRInfo) -> int:
 
 
 def extract_issue_number(pr_body: str, fallback: int) -> int:
-    """Extract issue number from a PR body using the standard closing reference."""
-    match = _CLOSING_ISSUE_RE.search(pr_body)
-    return int(match.group(1)) if match else fallback
+    """Extract the issue a PR body links, closing (``Closes #N``) or partial
+    (``Refs #N``); ``fallback`` when it links none."""
+    linked = linked_issue_number(pr_body)
+    return fallback if linked is None else linked
 
 
 def pr_fields_reference_issue(
@@ -69,8 +70,7 @@ def pr_fields_reference_issue(
         if issue_from_branch in issue_number_set:
             return True
 
-    body_issue_numbers = {int(match.group(1)) for match in _CLOSING_ISSUE_RE.finditer(body)}
-    if issue_number_set & body_issue_numbers:
+    if body_links_issue(body, issue_number_set):
         return True
 
     return any(re.search(rf"#{issue_number}\b", title) for issue_number in issue_number_set)

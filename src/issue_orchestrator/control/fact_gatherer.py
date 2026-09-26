@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
 from ..infra.config import Config
 from ..events import EventName
+from ..history import issues_held_by_session_history
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .provider_launch_readiness import ProviderLaunchReadiness
@@ -270,7 +271,7 @@ class FactGatherer:
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
-            session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
+            session_history_issue_numbers=issues_held_by_session_history(state.session_history),
             e2e_occupies_slot=e2e_occupies_slot,
             e2e_due=e2e_due,
             budgeted_validation_notices=self.budgeted_validation_reports.pending(),

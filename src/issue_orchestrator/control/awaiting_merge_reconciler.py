@@ -18,11 +18,11 @@ from ..domain.models import (
 )
 from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
-from .awaiting_merge_drift_policy import classify_pr_set_drift
+from .awaiting_merge_drift_policy import label_drift_finding
 from .close_on_merge import (
+    merged_pr_reconciliation,
     pr_terminal_reason,
     reconciliation_fact,
-    should_close_merged_issue,
 )
 from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_COMMENT_MARKER,
@@ -193,12 +193,18 @@ class AwaitingMergeReconciler:
                 enqueue_discovered += 1
                 enqueues.append(discovery.enqueue)
 
-        label_drifts = self._discover_label_drifts(
+        label_findings = self._discover_label_drifts(
             state,
             excluded_issue_numbers=pending_issue_numbers
             | terminal_issue_numbers
             | {drift.issue_number for drift in drifts},
         )
+        label_drifts = [f for f in label_findings if isinstance(f, DiscoveredAwaitingMergeDrift)]
+        label_recoveries = [
+            f for f in label_findings if isinstance(f, DiscoveredAwaitingMergeReconciliation)
+        ]
+        discovered += len(label_recoveries)
+        reconciliations.extend(label_recoveries)
         drift_discovered += len(label_drifts)
         drifts.extend(label_drifts)
 
@@ -275,7 +281,6 @@ class AwaitingMergeReconciler:
                 )
                 state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
                 drift = None
-                issue_open = False
                 if pr.is_closed_unmerged:
                     drift = self._discover_terminal_pr_issue_drift(
                         state=state,
@@ -283,33 +288,29 @@ class AwaitingMergeReconciler:
                         pr=pr,
                         pr_number=pr_number,
                     )
-                else:
-                    # PR merged: did GitHub's auto-close actually fire for
-                    # this merge? See close_on_merge module (porchpin #81).
-                    # None = evidence unreadable; leave the entry reconcilable.
-                    close_check = should_close_merged_issue(
-                        get_issue=self._get_issue,
-                        closed_on_or_after=(
-                            self.repository_host.issue_closed_on_or_after
-                        ),
-                        state=state, entry=entry,
-                        merged_at=pr.merged_at, now=self.clock(),
-                    )
-                    if close_check is None:
-                        return AwaitingMergeEntryDiscovery("skipped")
-                    issue_open = close_check
-                return AwaitingMergeEntryDiscovery(
-                    "terminal",
-                    reconciliation=reconciliation_fact(
+                    reconciliation = reconciliation_fact(
                         entry=entry,
                         pr_number=pr_number,
                         status=pr_state,
                         reason=pr_terminal_reason(pr_state),
                         source="pull_request",
-                        issue_open=issue_open,
                         merged_at=pr.merged_at,
-                    ),
-                    drift=drift,
+                    )
+                else:
+                    # PR merged: a partial PR leaves the issue open; any other
+                    # needs the close-on-merge check (porchpin #81, #7288).
+                    # None = evidence unreadable; leave the entry reconcilable.
+                    reconciliation = merged_pr_reconciliation(
+                        get_issue=self._get_issue,
+                        closed_on_or_after=(
+                            self.repository_host.issue_closed_on_or_after
+                        ),
+                        state=state, entry=entry, pr=pr, now=self.clock(),
+                    )
+                    if reconciliation is None:
+                        return AwaitingMergeEntryDiscovery("skipped")
+                return AwaitingMergeEntryDiscovery(
+                    "terminal", reconciliation=reconciliation, drift=drift,
                 )
         else:
             logger.debug(
@@ -415,13 +416,13 @@ class AwaitingMergeReconciler:
         state: OrchestratorState,
         *,
         excluded_issue_numbers: set[int],
-    ) -> list[DiscoveredAwaitingMergeDrift]:
+    ) -> list[DiscoveredAwaitingMergeDrift | DiscoveredAwaitingMergeReconciliation]:
         if self.label_manager is None:
             return []
 
         active_issue_numbers = {session.issue.number for session in state.active_sessions}
         now = self.clock()
-        drifts: list[DiscoveredAwaitingMergeDrift] = []
+        drifts: list[DiscoveredAwaitingMergeDrift | DiscoveredAwaitingMergeReconciliation] = []
         for issue in _unique_cached_issues(state):
             if not self._should_scan_label_drift_issue(
                 state=state,
@@ -472,30 +473,15 @@ class AwaitingMergeReconciler:
         state: OrchestratorState,
         issue: Issue,
         scanned_at: float,
-    ) -> DiscoveredAwaitingMergeDrift | None:
+    ) -> DiscoveredAwaitingMergeDrift | DiscoveredAwaitingMergeReconciliation | None:
         state.awaiting_merge_drift_scan_timestamps[issue.number] = scanned_at
         try:
             prs = self._get_prs_for_issue(issue.number)
         except RepositoryHostError:
             return None
-
-        # `classify_pr_set_drift` owns the open/merged/closed precedence so the
+        # The drift policy owns the open/merged/closed precedence, so the
         # "latest terminal PR decides" rule lives in exactly one place.
-        decision = classify_pr_set_drift(prs)
-        if not decision.drifting:
-            return None
-        if decision.pr is None:
-            return DiscoveredAwaitingMergeDrift(
-                issue_number=issue.number,
-                pr_number=0,
-                pr_url="",
-                status_reason="PR missing; issue remains open",
-            )
-        return _drift_fact(
-            issue_number=issue.number,
-            pr=decision.pr,
-            status_reason="PR closed; issue remains open",
-        )
+        return label_drift_finding(issue.number, prs)
 
     def _discover_post_publish_followup(
         self,

@@ -23,6 +23,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredFailure,
+    SessionHistoryEntry,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -277,6 +278,25 @@ class TestFactGathererCreateSnapshot:
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
 
         assert snapshot.discovered_awaiting_merge_drifts == (fact,)
+
+    def test_snapshot_releases_an_issue_whose_partial_pr_merged(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        """#7288: the planner skips issues in session history, except one
+        whose latest entry is a merged partial PR; its next slice may launch."""
+        def entry(number: int, *, partial: bool) -> SessionHistoryEntry:
+            return SessionHistoryEntry(
+                issue_number=number, title="t", agent_type="agent:backend",
+                status="merged", runtime_minutes=1,
+                pr_url=f"https://github.com/owner/repo/pull/{900 + number}",
+                partial_pr_merged=partial,
+            )
+
+        sample_state.session_history = [entry(1, partial=True), entry(2, partial=False)]
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.session_history_issue_numbers == frozenset({2})
 
     def test_create_snapshot_with_priority_queue(
         self, fact_gatherer, sample_state, sample_issues

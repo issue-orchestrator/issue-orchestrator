@@ -2498,3 +2498,26 @@ def test_queue_card_embeds_producer_stack_gate_view():
     assert gates["merge"] is False
     assert "merge" in stack["blocked_gates"]
     assert stack["stack_base_branch"] == "feat/base"
+
+
+def test_queue_wait_reason_does_not_blame_history_for_a_partial_merge():
+    """#7288: after a merged partial PR the issue's next slice is launchable,
+    so the queue card must not say it waits on "previous run state"."""
+    from issue_orchestrator.domain.models import SessionHistoryEntry
+    from issue_orchestrator.view_models.dashboard import _queue_wait_reason
+
+    def reason(*, partial: bool) -> str:
+        state = OrchestratorState(startup_status="complete", session_history=[
+            SessionHistoryEntry(
+                issue_number=4, title="t", agent_type="agent:web", status="merged",
+                runtime_minutes=1, pr_url="https://github.com/o/r/pull/904",
+                partial_pr_merged=partial,
+            )
+        ])
+        return _queue_wait_reason(
+            state=state, config=_make_config(), issue_number=4,
+            dep_problem=None, queue_position=1,
+        )
+
+    assert reason(partial=False) == "Waiting: previous run state"
+    assert reason(partial=True) == "Waiting: next scheduler tick"

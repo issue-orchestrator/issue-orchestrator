@@ -1120,14 +1120,14 @@ class _NoSearchHost:
     def __init__(self, prs):
         self._prs = {pr.number: pr for pr in prs}
         self.listings = 0
-        self.closing_lookups: list[tuple[int, ...]] = []
+        self.reference_lookups: list[tuple[int, ...]] = []
 
     def list_open_prs_complete(self):
         self.listings += 1
         return [pr for pr in self._prs.values() if pr.state == "open"]
 
-    def merged_prs_closing_issues(self, issue_numbers):
-        self.closing_lookups.append(tuple(issue_numbers))
+    def merged_prs_referencing_issues(self, issue_numbers):
+        self.reference_lookups.append(tuple(issue_numbers))
         wanted = set(issue_numbers)
         return frozenset(
             pr.number for pr in self._prs.values()
@@ -1175,8 +1175,34 @@ def test_problem_issues_resolve_through_one_listing_not_a_search_each():
     )
 
     assert host.listings == 1
-    assert host.closing_lookups == [tuple(range(1, 61))]
+    assert host.reference_lookups == [tuple(range(1, 61))]
     assert [(t.pr_number, t.issue_number) for t in targets] == [(900, 7), (903, 10)]
+
+
+def test_a_merged_partial_pr_stays_in_the_rework_grant():
+    """#7288: a merged slice of a multi-PR issue says "Refs #N", not
+    "Closes #N". The reference lookup must still return it, and the grant must
+    still link it by its body, or rework on that slice silently loses it."""
+    from issue_orchestrator.control.scoped_rework_observation import (
+        observe_rework_targets,
+    )
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    partial = PRInfo(
+        904, "slice", "https://github.com/owner/repo/pull/904", "split-package-a",
+        "Refs #10\n\nPartial delivery.", "merged", [], head_sha="b" * 40,
+    )
+
+    class _ReferencingHost(_NoSearchHost):
+        def merged_prs_referencing_issues(self, issue_numbers):
+            self.reference_lookups.append(tuple(issue_numbers))
+            return frozenset({904}) if 10 in issue_numbers else frozenset()
+
+    host = _ReferencingHost([partial])
+
+    targets = observe_rework_targets(host, pr_numbers=[], issue_numbers=[10])
+
+    assert [(t.pr_number, t.issue_number) for t in targets] == [(904, 10)]
 
 
 def test_no_problem_issues_means_no_listing():
@@ -1188,7 +1214,7 @@ def test_no_problem_issues_means_no_listing():
 
     assert observe_rework_targets(host, pr_numbers=[], issue_numbers=[]) == ()
     assert host.listings == 0
-    assert host.closing_lookups == []
+    assert host.reference_lookups == []
 
 
 def test_an_incomplete_listing_fails_the_observation_instead_of_shortening_it():

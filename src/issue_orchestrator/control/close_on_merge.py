@@ -15,6 +15,13 @@ Planner can order a close on the terminal-recovery owner command. Only a
 MERGED PR earns the fallback: closed-unmerged PRs keep their drift-path
 behavior, and intentionally reopened issues (porchpin case file #59) are never
 touched — their history entries are already terminal and cannot re-fire.
+
+A merged PR that declares partial delivery (``Refs #N``, from ``coding-done
+completed --partial``) is the one merged PR that must NOT close its issue: the
+issue's acceptance spans several PRs and this was one of them (#7288).
+:func:`merged_pr_reconciliation` owns that rule for every discovery path, and
+the fact it builds carries ``partial_pr`` so the apply side leaves the issue
+open and schedulable.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from ..domain.models import (
     AwaitingMergeTerminalStatus,
     DiscoveredAwaitingMergeReconciliation,
 )
+from ..domain.pr_issue_reference import declares_partial_delivery
 from ..ports.repository_host import RepositoryHostError
 from .actions import ActionResult, CloseIssueAction
 from .awaiting_merge_post_publish_policy import normalized_state
@@ -35,6 +43,7 @@ from .queue_cache import record_issue_refreshes
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, SessionHistoryEntry
     from ..ports.issue import Issue
+    from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
     from .actions import RecoverTerminalIssueAction
 
@@ -134,6 +143,65 @@ def should_close_merged_issue(
     )
 
 
+def merged_pr_reconciliation(
+    *,
+    get_issue: "Callable[[int], Issue | None]",
+    closed_on_or_after: "Callable[[int, str], bool]",
+    state: "OrchestratorState",
+    entry: "SessionHistoryEntry",
+    pr: "PRInfo",
+    now: float,
+) -> DiscoveredAwaitingMergeReconciliation | None:
+    """The terminal fact for a history entry whose PR merged.
+
+    A partial PR leaves its issue open by design, so it gets no close check
+    and no close. Every other merged PR gets the close-on-merge evidence
+    check. Returns None when that evidence cannot be read; the caller leaves
+    the entry reconcilable.
+    """
+    partial = declares_partial_delivery(pr.body, entry.issue_number)
+    issue_open = False
+    if not partial:
+        close_check = should_close_merged_issue(
+            get_issue=get_issue, closed_on_or_after=closed_on_or_after,
+            state=state, entry=entry, merged_at=pr.merged_at, now=now,
+        )
+        if close_check is None:
+            return None
+        issue_open = close_check
+    return reconciliation_fact(
+        entry=entry,
+        pr_number=pr.number,
+        status="merged",
+        reason=pr_terminal_reason("merged", partial_pr=partial),
+        source="pull_request",
+        issue_open=issue_open,
+        merged_at=pr.merged_at,
+        partial_pr=partial,
+    )
+
+
+def partial_merge_label_recovery(
+    issue_number: int, pr: "PRInfo"
+) -> DiscoveredAwaitingMergeReconciliation:
+    """Terminal fact for an untracked pr-pending issue whose latest PR is a
+    merged partial one. The label drift scan finds these (for example after
+    a restart). No PR is open, so ``pr-pending`` is stale. The issue has
+    remaining work, so it is released, not closed and not flagged
+    ``blocked:pr-closed``.
+    """
+    return DiscoveredAwaitingMergeReconciliation(
+        issue_number=issue_number,
+        pr_number=pr.number,
+        pr_url=pr.url,
+        status="merged",
+        status_reason=pr_terminal_reason("merged", partial_pr=True),
+        source="pull_request",
+        merged_at=pr.merged_at,
+        partial_pr=True,
+    )
+
+
 def run_close_on_merge_fallback(
     *,
     repository_host: object,
@@ -210,6 +278,7 @@ def reconciliation_fact(
     source: AwaitingMergeReconciliationSource,
     issue_open: bool = False,
     merged_at: str | None = None,
+    partial_pr: bool = False,
 ) -> DiscoveredAwaitingMergeReconciliation:
     return DiscoveredAwaitingMergeReconciliation(
         issue_number=entry.issue_number,
@@ -220,10 +289,15 @@ def reconciliation_fact(
         source=source,
         issue_open=issue_open,
         merged_at=merged_at,
+        partial_pr=partial_pr,
     )
 
 
-def pr_terminal_reason(status: AwaitingMergeTerminalStatus) -> str:
+def pr_terminal_reason(
+    status: AwaitingMergeTerminalStatus, *, partial_pr: bool = False
+) -> str:
+    if status == "merged" and partial_pr:
+        return "Partial PR merged; issue stays open for its remaining work"
     if status == "merged":
         return "PR merged; awaiting merge reconciled"
     return "PR closed; awaiting merge reconciled"

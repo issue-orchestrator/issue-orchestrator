@@ -11,7 +11,7 @@ from typing import Any, Callable, assert_never
 from ..domain.issue_key import format_issue_label, parse_external_id
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
 from ..domain.session_key import TaskKind
-from ..history import latest_history_entries_by_issue
+from ..history import issues_held_by_session_history, latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra import gh_audit
@@ -333,7 +333,7 @@ def _queue_wait_reason(
     if issue_number in state.failed_this_cycle:
         return "Waiting: previous launch/action failed (manual retry may be needed)"
 
-    if any(entry.issue_number == issue_number for entry in state.session_history):
+    if issue_number in issues_held_by_session_history(state.session_history):
         return "Waiting: previous run state"
 
     if queue_position <= 1:

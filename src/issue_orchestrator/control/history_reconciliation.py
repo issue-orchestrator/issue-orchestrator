@@ -44,7 +44,10 @@ def apply_history_reconciliation(
         pr_url=action.pr_url,
         status=action.status,
         status_reason=action.reason,
-        before_transition=_shipped_fix_recorder(action.status, tech_lead_authority),
+        partial_pr=action.partial_pr,
+        before_transition=_shipped_fix_recorder(
+            action.status, action.partial_pr, tech_lead_authority
+        ),
     )
     if not isinstance(outcome, HistoryReconciliationMutation):
         _log_noop(action, outcome.reason, outcome.current_status)
@@ -99,9 +102,12 @@ def apply_history_reconciliation(
 
 def _shipped_fix_recorder(
     status: AwaitingMergeTerminalStatus,
+    partial_pr: bool,
     authority: TechLeadAuthorityStore | None,
 ) -> Callable[[SessionHistoryEntry], None] | None:
-    if status != "merged":
+    # A partial PR ships a slice, not the fix; the record is create-once per
+    # issue, so recording the first slice would pin the wrong PR (#7288).
+    if status != "merged" or partial_pr:
         return None
     return partial(_record_area_tagged_shipped_fix, authority)
 
