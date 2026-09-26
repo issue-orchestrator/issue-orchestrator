@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.operator_issue_commands import LockedRunner
     from ..ports.queue_cache_store import QueueCacheStore
+    from .retry_policy import OpenPullRequestIndex
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ class OperatorIssueCommandRunner:
     queue_cache_store: "QueueCacheStore"
     state: Callable[[], "OrchestratorState"]
     run_locked: "LockedRunner"
+    #: Which issues have an open PR, listed at most once for this runner - one
+    #: runner serves one operator request, however many issues it retries.
+    open_prs: "OpenPullRequestIndex"
 
     def retry(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear the retry-gating labels, then make the issue eligible again."""
@@ -70,7 +74,7 @@ class OperatorIssueCommandRunner:
         return self._settle(
             issue_number,
             OperatorCommandIntent.RETRY,
-            self.unblocker.retry(issue_number, observed),
+            self.unblocker.retry(issue_number, observed, self.open_prs),
             lambda settled: self._make_retryable(issue_number, observed, settled),
         )
 

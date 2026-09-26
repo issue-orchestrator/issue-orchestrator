@@ -265,14 +265,6 @@ class PullRequestTracker(Protocol):
     platform's API, not internal persistence.
     """
 
-    def has_open_pr_for_issue_complete(self, issue_number: int) -> bool:
-        """Whether ANY open PR is associated with the issue - uncached, complete.
-
-        Same association as :meth:`get_prs_for_issue`; raises rather than answer
-        from a capped or cached read (#7293).
-        """
-        ...
-
     def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
         """Every OPEN pull request whose head is ``branch``: uncached and complete.
 

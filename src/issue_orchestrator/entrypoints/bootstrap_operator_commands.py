@@ -39,6 +39,7 @@ def build_operator_issue_command_factory(
     """Implement ``ports.operator_issue_commands.OperatorIssueCommandFactory``."""
     from ..control.operator_issue_command_runner import OperatorIssueCommandRunner
     from ..control.operator_unblock import OperatorUnblocker
+    from ..control.retry_policy import OpenPullRequestIndex
 
     unblocker = OperatorUnblocker(
         repository_host=repository_host,
@@ -55,6 +56,9 @@ def build_operator_issue_command_factory(
             queue_cache_store=queue_cache_store,
             state=state,
             run_locked=run_locked,
+            # A fresh index per command: one operator request lists open PRs
+            # at most once, however many issues it retries (#7293).
+            open_prs=OpenPullRequestIndex(repository_host),
         )
 
     return factory

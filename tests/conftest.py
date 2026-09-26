@@ -443,15 +443,6 @@ class MockGitHubAdapter:
         return label in self.labels.get(issue_number, set())
 
     # PRRepository methods
-    def has_open_pr_for_issue_complete(self, issue_number: int) -> bool:
-        """Any open PR associated with the issue (the fake's set is complete)."""
-        return any(
-            pr.state == "open"
-            and (pr.branch.startswith(f"{issue_number}-") or f"#{issue_number}" in pr.title)
-            for prs in self.prs.values()
-            for pr in prs
-        )
-
     def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
         """Open PRs for a branch (the fake's set is always complete)."""
         return [pr for pr in self.prs.get(branch, []) if pr.state == "open"]

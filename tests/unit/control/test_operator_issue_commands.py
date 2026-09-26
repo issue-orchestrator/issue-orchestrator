@@ -20,6 +20,7 @@ from issue_orchestrator.control.operator_unblock import OperatorUnblocker
 from issue_orchestrator.control.published_review_custody import (
     NO_PUBLISHED_REVIEW_HOLDS,
 )
+from issue_orchestrator.control.retry_policy import OpenPullRequestIndex
 from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
@@ -118,6 +119,7 @@ def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store
         queue_cache_store=store if store is not None else MagicMock(),
         state=lambda: state,
         run_locked=lambda fn: fn(),
+        open_prs=OpenPullRequestIndex(host),
     )
 
 
@@ -573,9 +575,8 @@ class _HostWithPullRequests(_RepositoryHost):
         super().__init__(live)
         self.prs = list(prs)
 
-    def has_open_pr_for_issue_complete(self, issue_number: int) -> bool:
-        assert issue_number == ISSUE
-        return any(pr.state == "open" for pr in self.prs)
+    def list_open_prs_complete(self):
+        return [pr for pr in self.prs if pr.state == "open"]
 
 
 class TestRetryKeepsAnOpenPrsReviewGate:

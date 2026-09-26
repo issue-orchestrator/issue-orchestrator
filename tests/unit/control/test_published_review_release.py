@@ -201,3 +201,50 @@ def test_an_unroutable_pr_keeps_the_block():
     assert outcome.status is ReviewReleaseStatus.ROUTE_FAILED
     assert LM.blocked_failed in labels.live
     assert ("remove", LM.blocked_failed) not in labels.writes
+
+
+def test_the_sweeps_release_command_runs_through_the_real_applier_dispatch():
+    """#7293 round 10: the planner's command must reach the owner via ActionApplier."""
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.action_results import ActionResultType
+    from issue_orchestrator.control.published_review_release import (
+        build_stuck_sweep_review_release_actions,
+    )
+    from tests.runtime_lifecycle_helpers import make_action_applier, runtime_owners
+
+    live = {ISSUE: {"agent:web", LM.blocked_failed}, PR: set()}
+
+    class _GitHubLabels:
+        def has_label(self, number, label):
+            return label in live[number]
+
+        def add_label(self, number, label):
+            live[number].add(label)
+
+        def remove_label(self, number, label):
+            live[number].discard(label)
+
+        def read_issue_labels(self, number):
+            return sorted(live[number])
+
+        def get_issue_labels_fresh(self, number):
+            return sorted(live[number])
+
+    github = _GitHubLabels()
+    applier = make_action_applier(
+        labels=github, sessions=MagicMock(), events=MagicMock(), repository_host=github,
+        fresh_issue_reader=github, label_manager=LM, reconcile=False,
+    )
+    store = DispositionStore(
+        {ISSUE: (disposition(ISSUE, ValidatedWorkState.RECOVERED, pr_number=PR),)}
+    )
+    applier.runtime_lifecycle = runtime_owners(
+        published_review=custody(store, PullRequests({ISSUE: [pr(ISSUE, PR)]})))
+
+    (action,) = build_stuck_sweep_review_release_actions((ISSUE,), REVIEW_LABEL)
+    result = applier.apply(action)
+
+    assert result.result_type is ActionResultType.SUCCESS, result.error
+    assert live[ISSUE] == {"agent:web", LM.pr_pending}
+    assert live[PR] == {REVIEW_LABEL}

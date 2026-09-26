@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 
 from .needs_human_block import BlockOutcome, SharedNeedsHumanBlock
 from .published_review_custody import PublishedReviewHolds
-from .retry_policy import retry_label_removals
+from .retry_policy import OpenPullRequestIndex, retry_label_removals
 
 if TYPE_CHECKING:
     from ..ports.repository_host import RepositoryHost
@@ -100,7 +100,7 @@ class OperatorUnblocker:
     published_review: PublishedReviewHolds
 
     def retry(
-        self, issue_number: int, current_labels: Sequence[str]
+        self, issue_number: int, current_labels: Sequence[str], open_prs: "OpenPullRequestIndex"
     ) -> OperatorUnblockOutcome:
         """Clear what is gating a retry, so the planner may pick the issue up.
 
@@ -113,9 +113,7 @@ class OperatorUnblocker:
         """
         return self._unblock(
             issue_number,
-            retry_label_removals(
-                issue_number, current_labels, self.labels, self.repository_host
-            ),
+            retry_label_removals(issue_number, current_labels, self.labels, open_prs),
             "retry",
         )
 
