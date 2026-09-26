@@ -131,6 +131,8 @@ def open_persistent_session(
 
     log_writer: MirroredTerminalRecordingWriter | None = None
     interaction_state = persistent_interaction_state(command)
+    if interaction_state is not None:
+        interaction_state.handler.set_geometry(rows=rows, cols=cols)
     if recording_path is not None:
         recording_path.parent.mkdir(parents=True, exist_ok=True)
         log_writer = MirroredTerminalRecordingWriter(

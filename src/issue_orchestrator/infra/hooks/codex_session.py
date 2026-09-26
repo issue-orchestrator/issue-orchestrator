@@ -274,7 +274,13 @@ def _outside_write_roots(path: Path, write_roots: Iterable[Path]) -> Path:
 
 
 def build_codex_session_hook_argv(*, write_roots: Iterable[Path] = ()) -> list[str]:
-    """Return global CLI flags for the immutable orchestrator PreToolUse hook."""
+    """Return the global CLI flags every managed Codex session runs with.
+
+    The immutable orchestrator PreToolUse hook, plus no startup update check:
+    a newer release makes Codex open on an "Update available" choice whose
+    default (Enter) runs ``npm install -g``, which blocks an unattended
+    session before its first prompt and must never be answered for it.
+    """
     roots = tuple(write_roots)
     python = _outside_write_roots(Path(sys.executable), roots)
     policy = _outside_write_roots(Path(block_no_verify.__file__), roots)
@@ -285,6 +291,8 @@ def build_codex_session_hook_argv(*, write_roots: Iterable[Path] = ()) -> list[s
         "]}]"
     )
     return [
+        "-c",
+        "check_for_update_on_startup=false",
         "-c",
         "features.hooks=true",
         "-c",
