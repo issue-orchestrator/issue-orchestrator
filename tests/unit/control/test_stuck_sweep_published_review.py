@@ -215,3 +215,21 @@ def test_unresolved_work_is_not_review_ownership_and_costs_no_pr_read():
 
     assert HELD in {failure.issue_number for failure in snapshot.discovered_failures}
     assert pulls.reads == []
+
+
+def test_a_pr_with_its_own_block_is_held_not_released():
+    """#7293 round 5: the PR's own block (a terminated review) owns it too."""
+    lm = LabelManager(_config())
+    records = {HELD: (disposition(HELD, ValidatedWorkState.RECOVERED, pr_number=500),)}
+    blocked_pr = pr(HELD, 500, labels=(lm.blocked_failed,))
+    gatherer = _gatherer([_failed(HELD)], records=records, prs={HELD: [blocked_pr]})
+    state = OrchestratorState()
+
+    snapshot = gatherer.create_snapshot(state, issues=[])
+
+    assert snapshot.stuck_sweep_review_releases == ()
+    assert HELD not in {f.issue_number for f in snapshot.discovered_failures}
+    validity = evaluate_review_validity(
+        config=_config(), label_manager=lm, issue=_issue(HELD, labels=["agent:web"]),
+        pr=blocked_pr, review_label_confirmed=True)
+    assert validity.reason == "pr_blocked", "lifting the issue block alone would not help"

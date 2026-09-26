@@ -68,6 +68,7 @@ def pr(
     state: str = "open",
     head_sha: str | None = PUBLISHED,
     branch_name: str | None = None,
+    labels: tuple[str, ...] = (),
 ) -> PRInfo:
     return PRInfo(
         number=number,
@@ -76,7 +77,7 @@ def pr(
         branch=branch_name if branch_name is not None else branch(issue_number),
         body="",
         state=state,
-        labels=[],
+        labels=list(labels),
         head_sha=head_sha,
     )
 

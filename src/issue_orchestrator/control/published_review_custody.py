@@ -77,6 +77,9 @@ class PublishedReviewHold:
     branch_name: str
     record_id: str
     published_head_sha: str
+    # The PR's own labels as read: a PR carrying its own block (a terminated
+    # review's blocked-failed) is held by that block, not releasable (#7293).
+    pr_labels: tuple[str, ...] = ()
 
     def describe(self) -> str:
         return (
@@ -135,6 +138,7 @@ def published_review_holds(
                 branch_name=record.key.branch_name,
                 record_id=record.record_id,
                 published_head_sha=record.published_head_sha,
+                pr_labels=tuple(pr.labels),
             )
     return tuple(holds[number] for number in sorted(holds))
 

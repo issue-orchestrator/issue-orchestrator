@@ -72,7 +72,7 @@ from ..ports.repository_host import (
 )
 from .needs_human_block import NeedsHumanCause
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
-from .published_review_release import log_held_for_review, only_failure_blocked
+from .published_review_release import log_held_for_review, review_releasable
 from .tech_lead_dispositions import (
     NO_TECH_LEAD_DISPOSITIONS,
     StuckSweepDispositions,
@@ -453,7 +453,7 @@ def _scan_stuck_issues(
         if blocker is None:
             continue
         holds = published_review.holds(issue.number)
-        releasable = bool(holds) and only_failure_blocked(issue.labels, label_manager)
+        releasable = bool(holds) and review_releasable(issue.labels, holds, label_manager)
         if holds and not releasable:
             owned.add(issue.number)
             held_for_review.add(issue.number)

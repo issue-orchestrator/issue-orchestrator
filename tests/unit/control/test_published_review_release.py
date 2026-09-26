@@ -71,12 +71,12 @@ class _Labels:
         return ActionResult.ok(action)
 
 
-def _owner(labels: _Labels, pr_state: str = "open") -> PublishedReviewRelease:
+def _owner(labels: _Labels, pr_state: str = "open", pr_labels=()) -> PublishedReviewRelease:
     store = DispositionStore(
         {ISSUE: (disposition(ISSUE, ValidatedWorkState.RECOVERED, pr_number=500),)}
     )
     return PublishedReviewRelease(
-        custody=custody(store, PullRequests({ISSUE: [pr(ISSUE, 500, state=pr_state)]})),
+        custody=custody(store, PullRequests({ISSUE: [pr(ISSUE, 500, state=pr_state, labels=pr_labels)]})),
         labels=LM,
         read_labels=labels.read,
         apply=labels.apply,
@@ -152,4 +152,16 @@ def test_a_moved_board_keeps_the_block_and_reports_no_release():
     outcome = _owner(labels).release(ISSUE)
 
     assert outcome.status is ReviewReleaseStatus.BLOCK_REMOVAL_FAILED
+    assert LM.blocked_failed in labels.live
+
+
+def test_a_pr_with_its_own_block_is_not_released():
+    """A terminated review blocks the PR too; lifting only the issue block
+    would report a release while review discovery still rejects the PR."""
+    labels = _Labels(["agent:web", LM.blocked_failed])
+
+    outcome = _owner(labels, pr_labels=(LM.blocked_failed,)).release(ISSUE)
+
+    assert outcome.status is ReviewReleaseStatus.NOT_RELEASABLE
+    assert labels.writes == []
     assert LM.blocked_failed in labels.live

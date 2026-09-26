@@ -54,14 +54,26 @@ _MACHINERY = frozenset(
 )
 
 
-def only_failure_blocked(labels: Sequence[str], label_manager: "LabelManager") -> bool:
-    """Whether ``blocked-failed`` is the ONLY recoverable block on ``labels``."""
+def review_releasable(
+    issue_labels: Sequence[str],
+    holds: Sequence[PublishedReviewHold],
+    label_manager: "LabelManager",
+) -> bool:
+    """The one eligibility rule for releasing a published PR's review.
+
+    Shared by the sweep (choosing the remedy) and the owner (at apply time), so
+    the two cannot disagree. Releasable only when ``blocked-failed`` is the
+    issue's ONLY recoverable block AND a held PR carries no block of its own -
+    review discovery also rejects a blocked PR, so lifting the issue block
+    alone would report a release that never lets the review run.
+    """
     blockers = {
         name.casefold()
-        for name in label_manager.get_blocking(labels)
+        for name in label_manager.get_blocking(issue_labels)
         if name.casefold() not in _MACHINERY
     }
-    return blockers == {label_manager.blocked_failed.casefold()}
+    unblocked_pr = any(not label_manager.get_blocking(hold.pr_labels) for hold in holds)
+    return unblocked_pr and blockers == {label_manager.blocked_failed.casefold()}
 
 
 class ReviewReleaseStatus(StrEnum):
@@ -110,10 +122,11 @@ class PublishedReviewRelease:
             return self._outcome(issue_number, ReviewReleaseStatus.NOT_HELD, holds,
                                  "no open PR carries published validated work")
         current = self.read_labels(issue_number)
-        releasable = only_failure_blocked(current, self.labels)
+        releasable = review_releasable(current, holds, self.labels)
         if not releasable:
             return self._outcome(issue_number, ReviewReleaseStatus.NOT_RELEASABLE, holds,
-                                 f"blocks {self.labels.get_blocking(current)} are not only blocked-failed")
+                                 f"issue blocks {self.labels.get_blocking(current)}; a held PR carries "
+                                 f"its own block, or the issue's block is not only blocked-failed")
         described = "; ".join(hold.describe() for hold in holds)
         gate = self.apply(AddLabelAction(
             issue_number=issue_number, label=self.labels.pr_pending, fresh_presence=True,
