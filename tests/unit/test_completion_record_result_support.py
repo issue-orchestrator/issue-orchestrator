@@ -233,3 +233,20 @@ def test_read_completion_record_accepts_absolute_validation_path(
 
     assert result is not None
     assert result.validation_record_path == absolute_validation
+
+
+def test_every_pr_body_carries_the_closing_reference_rework_resolves_by() -> None:
+    """Tech-lead rework finds a problem issue's MERGED PRs by closing reference.
+
+    ``observe_rework_targets`` resolves merged PRs through the issue's
+    ``closedByPullRequestsReferences`` (no search API), so a merged io PR is
+    only reachable for a forward fix while its body names the issue in a
+    closing reference. If this line changes (e.g. to "Refs #N" for a
+    multi-PR issue, #7288), move that lookup to a link that still finds the
+    PR first, or merged PRs silently drop out of the rework grant (#7298).
+    """
+    from issue_orchestrator.control.review_scope import extract_issue_number
+
+    body = build_pr_body(_record(), issue_number=123)
+
+    assert extract_issue_number(body, fallback=0) == 123
