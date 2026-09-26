@@ -23,6 +23,8 @@ _TUI_SETTLE_SECONDS = 0.5
 # Both Claude Code and Codex show this while the agent is working, and never
 # before startup prompts are done. Past it, a startup rule must stay silent.
 _AGENT_WORKING_MARKERS = ("esc to interrupt",)
+# Senders end every answer with a carriage return (Enter).
+_DOWN_ARROW = "\x1b[B"
 
 
 def normalize_terminal_text(text: str) -> str:
@@ -43,6 +45,18 @@ def normalize_terminal_text(text: str) -> str:
 
 
 @dataclass(frozen=True)
+class InteractionVariant:
+    """One way a prompt is drawn, and the keys that answer THAT drawing."""
+
+    required_substrings: tuple[str, ...]
+    response: str
+
+    def __post_init__(self) -> None:
+        if not self.required_substrings:
+            raise ValueError("InteractionVariant.required_substrings cannot be empty")
+
+
+@dataclass(frozen=True)
 class SessionInteractionRule:
     """One deterministic prompt-response rule."""
 
@@ -51,11 +65,12 @@ class SessionInteractionRule:
     response: str
     # Reserved for future cooldown/edge-trigger semantics; current rules are one-shot only.
     fire_once: bool = True
-    # Other marker sets for the SAME prompt as a program redraws it across
-    # versions. Any one complete set matches; the rule still fires once, so a
-    # startup wait for "every rule fired" is not left waiting on a variant that
-    # this version never draws.
-    alternatives: tuple[tuple[str, ...], ...] = ()
+    # Other ways the SAME prompt is drawn (across versions, or with a
+    # different option highlighted), each with the keys that answer it. Any
+    # one complete set matches; the rule still fires once, so a startup wait
+    # for "every rule fired" is not left waiting on a variant this version
+    # never draws.
+    alternatives: tuple["InteractionVariant", ...] = ()
     # Answer only after the screen has been quiet this long. A TUI can drop a
     # key that arrives while it is still drawing the prompt (codex 0.156 does);
     # any further output restarts the wait.
@@ -66,8 +81,10 @@ class SessionInteractionRule:
     expires_on: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.required_substrings or any(not group for group in self.alternatives):
-            raise ValueError("SessionInteractionRule marker sets cannot be empty")
+        if not self.required_substrings or any(
+            type(v) is not InteractionVariant for v in self.alternatives
+        ):
+            raise ValueError("SessionInteractionRule needs markers and typed variants")
         if not self.fire_once:
             raise ValueError("SessionInteractionRule only supports fire_once=True")
         if self.settle_seconds < 0:
@@ -77,14 +94,19 @@ class SessionInteractionRule:
 @dataclass(frozen=True)
 class _CompiledRule:
     rule: SessionInteractionRule
-    marker_sets: tuple[tuple[str, ...], ...]
+    # (markers, response) in precedence order: the first complete match wins.
+    variants: tuple[tuple[tuple[str, ...], str], ...]
     expiry_markers: tuple[str, ...]
 
     def expired_by(self, buffer: str) -> bool:
         return any(marker in buffer for marker in self.expiry_markers)
 
-    def matches(self, buffer: str) -> bool:
-        return any(markers and all(m in buffer for m in markers) for markers in self.marker_sets)
+    def response_for(self, buffer: str) -> str | None:
+        """The keys that answer the prompt as drawn, or None if it is not drawn."""
+        for markers, response in self.variants:
+            if markers and all(m in buffer for m in markers):
+                return response
+        return None
 
 
 def _compile_markers(substrings: Sequence[str]) -> tuple[str, ...]:
@@ -130,9 +152,12 @@ class SessionInteractionHandler:
         self._rules = tuple(
             _CompiledRule(
                 rule=rule,
-                marker_sets=tuple(
-                    _compile_markers(group)
-                    for group in (rule.required_substrings, *rule.alternatives)
+                variants=(
+                    *(
+                        (_compile_markers(v.required_substrings), v.response)
+                        for v in rule.alternatives
+                    ),
+                    (_compile_markers(rule.required_substrings), rule.response),
                 ),
                 expiry_markers=_compile_markers(rule.expires_on),
             )
@@ -192,12 +217,13 @@ class SessionInteractionHandler:
             rule = compiled.rule
             if rule.name in self._fired_rules | self._expired | self._settling.keys():
                 continue
-            if not compiled.matches(self._buffer):
+            response = compiled.response_for(self._buffer)
+            if response is None:
                 continue
             if rule.settle_seconds > 0:
                 self._restart_settle(compiled)
             else:
-                self._respond(rule)
+                self._respond(rule, response)
 
     def _compiled(self, name: str) -> _CompiledRule:
         return next(compiled for compiled in self._rules if compiled.rule.name == name)
@@ -207,18 +233,29 @@ class SessionInteractionHandler:
         previous = self._settling.get(rule.name)
         if previous is not None:
             previous.cancel()
-        timer = self._timer_factory(rule.settle_seconds, lambda: self._settled(rule, timer))
+        timer = self._timer_factory(rule.settle_seconds, lambda: self._settled(compiled, timer))
         self._settling[rule.name] = timer
         timer.start()
 
-    def _settled(self, rule: SessionInteractionRule, timer: _Timer) -> None:
+    def _settled(self, compiled: _CompiledRule, timer: _Timer) -> None:
+        rule = compiled.rule
         with self._lock:
             if self._settling.get(rule.name) is not timer or rule.name in self._expired:
                 return  # superseded by later output, or startup already ended
             del self._settling[rule.name]
-            self._respond(rule)
+            # Choose the keys from the SETTLED screen: an earlier, half-drawn
+            # frame may not yet show which option is highlighted.
+            response = compiled.response_for(self._buffer)
+            if response is not None:
+                self._respond(rule, response)
 
-    def _respond(self, rule: SessionInteractionRule) -> None:
+    @property
+    def answer_pending(self) -> bool:
+        """Whether a matched prompt is still waiting for the screen to settle."""
+        with self._lock:
+            return bool(self._settling)
+
+    def _respond(self, rule: SessionInteractionRule, response: str) -> None:
         sender = self._sender
         if sender is None:
             logger.warning(
@@ -227,13 +264,13 @@ class SessionInteractionHandler:
                 rule.name,
             )
             return
-        sent = sender(rule.response)
+        sent = sender(response)
         logger.info(
             "[session-interactions] rule fired: session=%s rule=%s sent=%s response=%s",
             self._session_name,
             rule.name,
             sent,
-            "<enter>" if rule.response == "" else rule.response,
+            f"{response!r}+<enter>" if response else "<enter>",
         )
         if sent and rule.fire_once:
             self._fired_rules.add(rule.name)
@@ -254,12 +291,27 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
         rules.append(
             SessionInteractionRule(
                 name="claude-trust-worktree",
+                # Answer only a drawing that shows WHICH option is highlighted:
+                # Claude Code 2.1.283 lists "No, exit" first and highlighted,
+                # so a blind Enter quits the session (measured). An unknown
+                # layout gets no answer: a stalled session is visible, a
+                # silent exit is not.
                 required_substrings=(
-                    "Quick safety check: Is this a project you created or one you trust?",
-                    "Yes, I trust this folder",
-                    "No, exit",
+                    "Quick safety check",
+                    "❯ Yes, I trust this folder",
                 ),
                 response="",
+                alternatives=(
+                    InteractionVariant(
+                        ("Quick safety check", "❯ No, exit Yes, I trust this folder"),
+                        _DOWN_ARROW,
+                    ),
+                    # Earlier versions numbered the list, "Yes" first.
+                    InteractionVariant(
+                        ("Quick safety check", "❯ 1. Yes, I trust this folder"), ""
+                    ),
+                ),
+                settle_seconds=_TUI_SETTLE_SECONDS,
                 expires_on=_AGENT_WORKING_MARKERS,
             ),
         )
@@ -278,7 +330,7 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
                 # policies disabled, which is the posture io asks for. Left
                 # unanswered it blocked every reviewer before its first
                 # prompt (#7287).
-                alternatives=(("Folder access", "Open restricted"),),
+                alternatives=(InteractionVariant(("Folder access", "Open restricted"), ""),),
                 response="",
                 # 0.156 drops a key that arrives while it is drawing the choice.
                 settle_seconds=_TUI_SETTLE_SECONDS,

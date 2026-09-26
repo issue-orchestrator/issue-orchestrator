@@ -15,6 +15,9 @@ from .session_interactions import (
 
 _STARTUP_INTERACTION_TIMEOUT_SECONDS = 3.0
 _STARTUP_INTERACTION_POLL_SECONDS = 0.05
+# Longer than any settle wait (session_interactions._TUI_SETTLE_SECONDS),
+# so a pending answer resolves instead of being cancelled; a backstop only.
+_PENDING_ANSWER_BACKSTOP_SECONDS = 5.0
 
 
 class _WritablePersistentSession(Protocol):
@@ -63,11 +66,16 @@ def prepare_startup_interactions(
         return
 
     deadline = now() + _STARTUP_INTERACTION_TIMEOUT_SECONDS
-    while now() < deadline:
+    # A prompt matched near the deadline may still be settling; disarming then
+    # would cancel its answer and the first prompt would be typed over it.
+    # So the wait runs on while an answer is pending, bounded by a backstop.
+    backstop = deadline + _PENDING_ANSWER_BACKSTOP_SECONDS
+    while now() < deadline or (state.handler.answer_pending and now() < backstop):
         drain_output()
         if state.handler.all_rules_fired:
             break
-        sleep(min(_STARTUP_INTERACTION_POLL_SECONDS, max(deadline - now(), 0.0)))
+        limit = deadline if now() < deadline else backstop
+        sleep(min(_STARTUP_INTERACTION_POLL_SECONDS, max(limit - now(), 0.0)))
     # The caller writes its first prompt next; from here nothing the session
     # prints may be answered as a startup prompt.
     state.handler.disarm()

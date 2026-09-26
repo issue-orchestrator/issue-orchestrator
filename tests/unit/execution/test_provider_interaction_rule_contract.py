@@ -224,7 +224,7 @@ def test_managed_codex_never_checks_for_updates_at_startup(
     flag = command.index("check_for_update_on_startup=false")
     assert command[flag - 1] == "-c"
     for rule in builtin_session_interaction_rules(shlex.join(command)):
-        markers = (rule.required_substrings, *rule.alternatives)
+        markers = (rule.required_substrings, *(v.required_substrings for v in rule.alternatives))
         assert not any("update" in m.casefold() for group in markers for m in group)
 
 
@@ -297,3 +297,110 @@ def test_the_review_exchange_startup_wait_disarms_before_the_first_prompt(
     timers.settle()
 
     assert sent == []
+
+
+def test_a_dialog_drawn_just_before_the_startup_deadline_is_still_answered(
+    working_directory: Path,
+) -> None:
+    """#7299 review round 2: disarming at the deadline cancelled a settling answer.
+
+    The frame arrives at t=2.9 s of a 3 s wait; its answer settles after the
+    deadline. The wait must stay open until that answer is sent, so the
+    caller's first prompt can never be typed over the dialog.
+    """
+    from issue_orchestrator.execution.persistent_round_interactions import (
+        PersistentInteractionState,
+        prepare_startup_interactions,
+    )
+
+    timers = _ManualTimers()
+    handler, sent = _codex_handler(working_directory, timers)
+    state = PersistentInteractionState(handler=handler)
+    clock = [0.0]
+    shown = [False]
+
+    def drain() -> None:
+        if clock[0] >= 2.9 and not shown[0]:
+            shown[0] = True
+            state.observe(_CODEX_0_156_FOLDER_ACCESS_FRAME)
+
+    def sleep(seconds: float) -> None:
+        clock[0] += max(seconds, 0.05)
+        if clock[0] >= 3.5:  # the screen has been quiet for the settle time
+            timers.settle()
+
+    prepare_startup_interactions(
+        state, drain_output=drain, now=lambda: clock[0], sleep=sleep
+    )
+
+    assert shown[0]
+    assert sent == [""], "the late dialog's answer was cancelled by the deadline"
+    assert handler.all_rules_fired
+
+
+def _claude_handler(working_directory: Path, timers: _ManualTimers):
+    from issue_orchestrator.execution.agent_runner_providers.claude import (
+        ClaudeCodeProvider,
+    )
+    from issue_orchestrator.execution.session_interactions import (
+        SessionInteractionHandler,
+    )
+
+    command = ClaudeCodeProvider().build_command(
+        "work on this", working_directory=working_directory, approval_mode="full-auto"
+    )
+    handler = SessionInteractionHandler(
+        session_name="issue-1",
+        rules=builtin_session_interaction_rules(shlex.join(command)),
+        timer_factory=timers,
+    )
+    sent: list[str] = []
+    handler.bind_sender(lambda response: sent.append(response) or True)
+    return handler, sent
+
+
+_CLAUDE_TRUST_PREAMBLE = (
+    b"Accessing workspace: /tmp/w Quick safety check: Is this a project you "
+    b"created or one you trust? "
+)
+
+
+@pytest.mark.parametrize(
+    ("options", "answer"),
+    [
+        # Claude Code 2.1.283: "No, exit" first and highlighted. A bare Enter
+        # quits the session (measured); Down selects "Yes".
+        pytest.param(
+            b"\x1b[2G\xe2\x9d\xaf\x1b[4GNo,\x1b[8Gexit\r\n\x1b[4GYes,\x1b[9GI\x1b[11Gtrust"
+            b"\x1b[17Gthis\x1b[22Gfolder\r\n Enter to confirm",
+            ["\x1b[B"],
+            id="no-exit-highlighted",
+        ),
+        pytest.param(
+            b"\xe2\x9d\xaf Yes, I trust this folder\r\n  No, exit\r\n Enter to confirm",
+            [""],
+            id="yes-highlighted",
+        ),
+        pytest.param(
+            b"\xe2\x9d\xaf 1. Yes, I trust this folder\r\n  2. No, exit\r\n",
+            [""],
+            id="numbered-yes-highlighted",
+        ),
+        pytest.param(
+            b"  Yes, I trust this folder\r\n  No, exit\r\n Enter to confirm",
+            [],
+            id="highlight-unknown",
+        ),
+    ],
+)
+def test_the_claude_trust_screen_is_answered_by_what_is_highlighted(
+    working_directory: Path, options: bytes, answer: list[str]
+) -> None:
+    timers = _ManualTimers()
+    handler, sent = _claude_handler(working_directory, timers)
+
+    handler.on_output(_CLAUDE_TRUST_PREAMBLE + options)
+    assert sent == [], "answered while the screen was still drawing"
+    timers.settle()
+
+    assert sent == answer
