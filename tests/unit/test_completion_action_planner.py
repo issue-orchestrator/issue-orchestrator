@@ -254,6 +254,33 @@ def test_review_exchange_halt_puts_issue_on_hold(tmp_path: Path) -> None:
     assert any("Review Exchange Halted" in comment for comment in comments(actions))
 
 
+def test_review_exchange_halt_leaves_recovery_held_work_unblocked(tmp_path: Path) -> None:
+    """Recovery publishes the halted run's validated work and routes it to review.
+
+    A ``blocked-failed`` here would veto that review on every scan and hand the
+    issue to the stuck sweep, which escalates it to needs-human (porchpin #382).
+    """
+    config = Config()
+    session = make_session(tmp_path)
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+        review_exchange_halted=True,
+        processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+            session.issue.agent_type, config.tech_lead_review_agent
+        ),
+        recovery_holds_validated_work=True,
+    )
+
+    assert added_labels(actions) == set()
+    assert removed_labels(actions) == {"in-progress"}
+    [comment] = comments(actions)
+    assert "Review Exchange Halted" in comment
+    assert "`recovery-pending`" in comment
+    assert "code review" in comment
+    assert "will not be retried" not in comment
+
+
 def make_tech_lead_config(tmp_path: Path) -> Config:
     from unittest.mock import Mock
 

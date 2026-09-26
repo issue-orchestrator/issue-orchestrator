@@ -1,7 +1,7 @@
 """Typed capture, approval and batch results; no lifecycle implementation."""
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, assert_never
 from .issue_run_evidence import IssueRunEvidence
@@ -357,6 +357,10 @@ class ValidatedWorkDispositionBatch:
     issue_number: int
     dispositions: tuple[ValidatedWorkDisposition, ...]  # empty == no work found
     reason: str  # why, especially when empty
+    # The work THIS capture's selected runs validated. Empty for an issue-wide
+    # read, which says nothing about any particular run. Provenance of the
+    # read, not part of the disposition set, so equality ignores it.
+    captured_keys: frozenset[ValidatedWorkKey] = field(default=frozenset(), compare=False)
 
     @classmethod
     def no_work(cls, issue_number: int, reason: str) -> "ValidatedWorkDispositionBatch":
@@ -376,6 +380,26 @@ class ValidatedWorkDispositionBatch:
         for d in self.dispositions:
             if d.key.issue_number != self.issue_number:
                 raise ValueError("every member must belong to the terminated issue")
+        if type(self.captured_keys) is not frozenset or any(
+            type(k) is not ValidatedWorkKey or k.issue_number != self.issue_number
+            for k in self.captured_keys
+        ):
+            raise ValueError("captured keys must be this issue's typed work keys")
+
+    @property
+    def recovery_holds_captured_work(self) -> bool:
+        """Whether recovery owns the work this capture's runs validated.
+
+        Every state but ABANDONED leaves recovery owning what happens next: it
+        blocks the issue (QUEUED/PARKED/PUBLISHING hold ``recovery-pending``,
+        FAILED asserts ``needs-human``) or has routed the published PR to
+        review (RECOVERED). A record for work no captured run validated says
+        nothing about this run, so it does not count.
+        """
+        return any(
+            d.key in self.captured_keys and d.state is not ValidatedWorkState.ABANDONED
+            for d in self.dispositions
+        )
 
     @property
     def found_work(self) -> bool:
