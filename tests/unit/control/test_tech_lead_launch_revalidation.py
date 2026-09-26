@@ -474,3 +474,34 @@ def test_an_unreadable_subject_keeps_its_run_rather_than_cancelling_it():
 
     assert _tech_lead_launches(plan) == [42]
     assert _withdrawals(plan) == []
+
+
+def test_a_closed_subject_is_withdrawn_even_while_github_holds_launches():
+    """Codex r7 (#7297): withdrawal needs no launch, so a rate-limit hold must
+    not keep a finished investigation queued until the reset."""
+    from datetime import UTC, datetime, timedelta
+
+    from issue_orchestrator.domain.host_rate_limit import (
+        HostRateLimit,
+        HostRateLimitWindow,
+    )
+
+    now = datetime.now(UTC)
+    window = HostRateLimitWindow()
+    window.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=30), kind="primary"),
+        now,
+        "review",
+    )
+    plan = _planner().plan(
+        make_snapshot(
+            issues=[_issue(42, ["agent:backend", "blocked-failed"], state="closed")],
+            pending_tech_lead=[_investigation(42)],
+            host_rate_limit_hold=window.open_at(now),
+        )
+    )
+
+    assert plan.actions_of_type(ActionType.LAUNCH_SESSION) == []
+    assert [(w.issue_number, w.reason) for w in _withdrawals(plan)] == [
+        (42, REASON_ISSUE_CLOSED)
+    ]

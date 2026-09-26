@@ -117,11 +117,7 @@ def test_forward_creation_rechecks_both_subjects_after_lookup(lane, at_launch):
     host.find_issue_by_marker.side_effect = lookup
     with pytest.raises(ReconciliationRequired):
         if at_launch:
-            launch = ScopedReworkLaunch(
-                store,
-                host,
-                lambda actions, **_: all(r.success for r in applier.apply_all(actions)),
-            )
+            launch = ScopedReworkLaunch(store, host, applier.apply)
             launch.admit(PendingRework(issue.key, "agent:coder", pr_number=94), 94)
         else:
             applier.apply(action)

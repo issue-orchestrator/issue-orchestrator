@@ -6,10 +6,12 @@ actionable message (permanent), and that a *persistent* repo-not-found is
 promoted from transient to permanent.
 """
 
+import httpx
 import pytest
 
 from issue_orchestrator.adapters.github.errors import GitHubTransportError
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+from issue_orchestrator.adapters.github.rate_limit import github_http_failure
 from issue_orchestrator.control.issue_fetch_resilience import (
     FetchFailureKind,
     IssueFetchResilience,
@@ -19,10 +21,15 @@ from issue_orchestrator.control.issue_fetch_resilience import (
 
 
 def http_error(status_code: int, *, response_text: str = "") -> GitHubHttpError:
-    return GitHubHttpError(
+    # Through the adapter's one failure constructor, so a rate-limit body
+    # arrives typed exactly as it does in production (#7297).
+    return github_http_failure(
         f"GitHub request failed: {status_code}",
         status_code=status_code,
+        headers=httpx.Headers(),
         response_text=response_text,
+        method="GET",
+        url="/repos/owner/repo/issues",
     )
 
 

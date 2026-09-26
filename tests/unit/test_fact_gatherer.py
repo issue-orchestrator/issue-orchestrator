@@ -113,6 +113,36 @@ def fact_gatherer(mock_config, mock_repository_host):
     return FactGatherer(config=mock_config, repository_host=mock_repository_host)
 
 
+class TestFactGathererHostRateLimit:
+    """#7297: the planner can only honour a rate-limit window the tick sampled."""
+
+    def test_open_window_reaches_the_snapshot(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        from datetime import UTC, datetime, timedelta
+
+        from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+
+        now = datetime.now(UTC)
+        resets = now + timedelta(minutes=30)
+        sample_state.host_rate_limit.observe(
+            HostRateLimit(resets_at=resets, kind="primary", resource="search"), now,
+            "tech_lead",
+        )
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.host_rate_limit_hold is not None
+        assert snapshot.host_rate_limit_hold.limit.resets_at == resets
+
+    def test_no_window_leaves_launches_free(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.host_rate_limit_hold is None
+
+
 class TestFactGathererE2ESlotFacts:
     """The E2E worker-slot facts are threaded from the injected reader into the
     snapshot only when e2e.occupies_session_slot is on (observation boundary)."""

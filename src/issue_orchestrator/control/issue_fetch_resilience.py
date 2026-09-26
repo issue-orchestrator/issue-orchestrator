@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, TypeVar
 
-from ..ports.repository_host import RepositoryHostError
+from ..ports.repository_host import RepositoryHostError, host_rate_limit_of
 
 logger = logging.getLogger(__name__)
 
@@ -219,12 +219,13 @@ class IssueFetchResilience:
         """Return True for a genuine auth/authorization failure.
 
         401 is always auth. 403 is auth *unless* it is GitHub's rate-limit
-        flavor of 403 (which is transient), detected via the response body.
+        flavor of 403 (which is transient) - the typed rate limit the adapter
+        raises (#7297), not a second reading of the response body.
         """
         if status == 401:
             return True
         if status == 403:
-            return not _looks_like_rate_limit(error)
+            return host_rate_limit_of(error) is None
         return False
 
 
@@ -232,7 +233,3 @@ def _status_code(error: RepositoryHostError) -> int | None:
     value = getattr(error, "status_code", None)
     return value if isinstance(value, int) else None
 
-
-def _looks_like_rate_limit(error: RepositoryHostError) -> bool:
-    text = getattr(error, "response_text", None) or str(error)
-    return "rate limit" in text.lower()

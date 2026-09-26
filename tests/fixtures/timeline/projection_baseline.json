@@ -809,6 +809,12 @@
     "status": "failed",
     "step": "launch_blocked_provider"
   },
+  "session.launch_deferred_rate_limit": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "started",
+    "step": "launch_deferred_rate_limit"
+  },
   "session.launched": {
     "level": "detail",
     "phase": "in_progress",

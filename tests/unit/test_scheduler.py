@@ -11,6 +11,7 @@ from issue_orchestrator.control.scheduler import (
     PatternStrategy, NameStrategy, get_milestone_strategy, load_strategy_class,
     BUILTIN_STRATEGIES
 )
+from issue_orchestrator.domain.host_rate_limit import HostRateLimitWindow
 from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
@@ -1425,6 +1426,9 @@ class TestLaunchSessionDependencyCAS:
             orch.config = config
             orch.state = MagicMock()
             orch.state.active_sessions = []
+            # A real window: every launch passes the host rate-limit gate
+            # (#7297), and a MagicMock window would read as permanently open.
+            orch.state.host_rate_limit = HostRateLimitWindow()
             orch.scheduler = MagicMock()
             orch.scheduler.dependency_evaluator = evaluator
             # Create mock deps with all required attributes
@@ -1527,6 +1531,9 @@ class TestLaunchSessionDependencyCAS:
             orch.config = config
             orch.state = MagicMock()
             orch.state.active_sessions = []
+            # A real window: every launch passes the host rate-limit gate
+            # (#7297), and a MagicMock window would read as permanently open.
+            orch.state.host_rate_limit = HostRateLimitWindow()
             orch.scheduler = MagicMock()
             orch.scheduler.dependency_evaluator = evaluator
             # Create mock deps with all required attributes

@@ -42,6 +42,7 @@ from ..ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ..ports.stack_branch_ancestry import StackBranchAncestry
 from ..ports.stack_predecessor_facts import StackPredecessorFactsProvider
 from .dependency_error_messages import milestone_scope_error, source_missing_milestone_error
+from .dependency_lookup_failure import unknown_dependency
 
 logger = logging.getLogger(__name__)
 
@@ -551,9 +552,9 @@ class DependencyEvaluator:
                 "Error checking dependency %s: %s",
                 ref.external_id or f"#{issue_number}", e,
             )
-            return Dependency(
-                issue_number=issue_number, external_id=external_id, repository=repo,
-                mode=ref.mode, state=DependencyState.UNKNOWN, error=str(e),
+            return unknown_dependency(
+                cause=e, error=str(e), issue_number=issue_number,
+                external_id=external_id, repository=repo, mode=ref.mode,
             )
 
     def _check_milestone_scope_for_edge(
@@ -756,9 +757,8 @@ class DependencyEvaluator:
             logger.warning(
                 "External ID %s could not be queried: %s", external_id, e,
             )
-            return self._ExternalIdResult(error=True, dependency=Dependency(
-                issue_number=None, external_id=external_id,
-                state=DependencyState.UNKNOWN,
+            return self._ExternalIdResult(error=True, dependency=unknown_dependency(
+                cause=e, issue_number=None, external_id=external_id,
                 error=f"Resolver query failed for {external_id}: {e}",
             ))
 

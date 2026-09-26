@@ -39,6 +39,7 @@ from .pending_session_queues import (
     TECH_LEAD_LAUNCH_RETRY_LIMIT,
     PendingSessionQueues,
 )
+from .host_rate_limit_launch_gate import HostRateLimitLaunchGate
 from .in_flight_work import InFlightWorkLedger
 from .launch_transaction import (
     LaunchSettlement,
@@ -75,8 +76,12 @@ def orchestrator_launch_review_session(
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.REVIEW, review), claims=claims
     )
-    result = session_launcher.launch_review_session(
-        review, state.active_sessions, work_claim=work
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_review_session(
+            review, state.active_sessions, work_claim=work
+        ),
+        issue_number=review.issue_number,
+        work=PendingWorkKind.REVIEW.value,
     )
     return LaunchSettlement(
         work=work,
@@ -108,10 +113,12 @@ def orchestrator_launch_retrospective_review_session(
         claim=PendingWorkClaim(PendingWorkKind.RETROSPECTIVE_REVIEW, review),
         claims=claims,
     )
-    result = session_launcher.launch_retrospective_review_session(
-        review,
-        state.active_sessions,
-        work_claim=work,
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_retrospective_review_session(
+            review, state.active_sessions, work_claim=work
+        ),
+        issue_number=review.issue_number,
+        work=PendingWorkKind.RETROSPECTIVE_REVIEW.value,
     )
     return LaunchSettlement(
         work=work,
@@ -143,8 +150,12 @@ def orchestrator_launch_rework_session(
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.REWORK, rework), claims=claims
     )
-    result = session_launcher.launch_rework_session(
-        rework, state.active_sessions, work_claim=work
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_rework_session(
+            rework, state.active_sessions, work_claim=work
+        ),
+        issue_number=rework.resolve_issue_number(),
+        work=PendingWorkKind.REWORK.value,
     )
     def _restore_rework() -> Optional[Session]:
         issue_number = rework.resolve_issue_number()
@@ -181,8 +192,12 @@ def orchestrator_launch_validation_retry_session(
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.VALIDATION_RETRY, retry), claims=claims
     )
-    result = session_launcher.launch_validation_retry_session(
-        retry, state.active_sessions, work_claim=work
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_validation_retry_session(
+            retry, state.active_sessions, work_claim=work
+        ),
+        issue_number=retry.issue_number,
+        work=PendingWorkKind.VALIDATION_RETRY.value,
     )
     return LaunchSettlement(
         work=work,
@@ -224,13 +239,17 @@ def orchestrator_launch_tech_lead_session(
     :class:`PendingSessionQueues` on success, on restore of an existing
     terminal, and on permanent launch failure (labels-as-truth recovers a
     dropped batch at startup; a dropped investigation is a best-effort audit).
-    It is retained in exactly three cases:
+    It is retained in exactly four cases:
 
     - ``EXISTING_TERMINAL`` — a terminal that could not be restored yet;
     - ``PROVIDER_DEFERRED`` — the provider refused before anything was
       attempted. Nothing about the investigation failed, so it keeps its full
       retry budget and simply waits for a tick when the provider is ready
       (#6999 F10);
+    - ``HOST_RATE_LIMITED`` — GitHub refused on a rate limit with a known
+      reset (#7297). Also no budget spent: the gate defers every launch until
+      the reset, and only a limit that holds past its deferral bound comes
+      back as a ``RETRYABLE_FAILURE`` that counts;
     - ``RETRYABLE_FAILURE`` — the launch attempt failed transiently BEFORE the
       session started: required-input prep, or a terminal that never came up.
       For failure investigations the queued item is the only record of the
@@ -258,14 +277,19 @@ def orchestrator_launch_tech_lead_session(
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.TECH_LEAD, tech_lead), claims=claims
     )
-    result = session_launcher.launch_issue_session(
-        # repo is REQUIRED, not decorative: it becomes `issue_scope` in the run
-        # ledger via `Issue.key.scope()`, and an empty one poisons the row so the
-        # session can never terminalize (#7255 -- 218 re-completions in 2h).
-        Issue(tech_lead.issue_number, tech_lead.title, [agent], repo=require_repo(config)),
-        state.active_sessions,
-        tech_lead_scope=tech_lead.launch_scope(),
-        work_claim=work,
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_issue_session(
+            # repo is REQUIRED, not decorative: it becomes `issue_scope` in the
+            # run ledger via `Issue.key.scope()`, and an empty one poisons the
+            # row so the session can never terminalize (#7255 -- 218
+            # re-completions in 2h).
+            Issue(tech_lead.issue_number, tech_lead.title, [agent], repo=require_repo(config)),
+            state.active_sessions,
+            tech_lead_scope=tech_lead.launch_scope(),
+            work_claim=work,
+        ),
+        issue_number=tech_lead.issue_number,
+        work=PendingWorkKind.TECH_LEAD.value,
     )
 
     def _plan_retry(_claim: PendingWorkClaim) -> RetryPlan:
@@ -366,6 +390,17 @@ def _commit_dropped_tech_lead(
         tech_lead.flavor.value,
     )
     return False
+
+
+def _rate_limit_gate(
+    state: "OrchestratorState", session_launcher: SessionLauncher
+) -> HostRateLimitLaunchGate:
+    """Every launch below passes the host's rate-limit window first (#7297).
+
+    One gate over the one shared window, so a limit observed by any launch
+    path defers all of them, and none counts the wait as a failure.
+    """
+    return HostRateLimitLaunchGate(state.host_rate_limit, session_launcher.events)
 
 
 def session_launcher_callback(
@@ -554,8 +589,12 @@ def orchestrator_launch_session(
     tech_lead_scope: TechLeadLaunchScope | None = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
-    result = session_launcher.launch_issue_session(
-        issue, state.active_sessions, tech_lead_scope=tech_lead_scope
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_issue_session(
+            issue, state.active_sessions, tech_lead_scope=tech_lead_scope
+        ),
+        issue_number=issue.number,
+        work="issue",
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])

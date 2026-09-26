@@ -34,14 +34,20 @@ wait out a lease for work that never started.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
+from ..domain.host_rate_limit import RateLimitEpisode
 from ..domain.models import PendingTechLeadReview
+from ..domain.pending_work import PendingWorkKind
+from ..ports.repository_host import host_rate_limit_of
+from .host_rate_limit_launch_gate import HostRateLimitLaunchGate
 from ..domain.tech_lead_run import (
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
     REASON_CLAIMED_BY_PEER,
+    REASON_GITHUB_RATE_LIMITED,
     REASON_NO_TECH_LEAD_AGENT,
     REASON_RUN_CLAIM_UNAVAILABLE,
     REASON_TECH_LEAD_DISABLED,
@@ -155,9 +161,28 @@ class TechLeadLaunchAuthority:
                 if explicitly_disabled
                 else "No tech lead agent is configured for this repository.",
             )
+        # Checked before AND after revalidation (#7297): an open window means
+        # no read is attempted, and a read the host refused proves nothing
+        # about the subject, so it must neither fall through to a launch "on
+        # the evidence we have" nor read as "unreadable".
+        episode = self._open_rate_limit()
+        if episode is not None and not episode.bound_exceeded:
+            return self._rate_limit_hold(tech_lead, scope, episode)
         withdrawal = self._revalidate_subject(tech_lead, scope)
-        if withdrawal is not None:
+        episode = self._open_rate_limit()
+        if episode is None:
+            if withdrawal is not None:
+                return withdrawal
+        elif not episode.bound_exceeded:
+            return self._rate_limit_hold(tech_lead, scope, episode)
+        elif withdrawal is not None and not withdrawal.retained:
+            # Positive evidence still wins past the bound: a subject read that
+            # got through and shows the run is finished withdraws it.
             return withdrawal
+        # Past the deferral bound a run is no longer held on the window or on
+        # an unreadable subject: the launch is attempted, and a refusal it
+        # meets once it holds its durable claim is counted against the queue's
+        # budget, so a limit that never lifts still reaches its escalation.
         barrier = self._local_scope_barrier(tech_lead)
         if barrier is not None:
             # The gate's own barrier vocabulary is the reason, so a local
@@ -169,6 +194,26 @@ class TechLeadLaunchAuthority:
                 f"Held by tech-lead scope exclusivity ({barrier}).",
             )
         return self._shared_execution_refusal(tech_lead, scope)
+
+    def _open_rate_limit(self) -> Optional[RateLimitEpisode]:
+        return self._state.host_rate_limit.open_at(
+            datetime.now(UTC), PendingWorkKind.TECH_LEAD.value
+        )
+
+    @staticmethod
+    def _rate_limit_hold(
+        tech_lead: PendingTechLeadReview,
+        scope: TechLeadRunScope,
+        episode: RateLimitEpisode,
+    ) -> TechLeadLaunchRefusal:
+        """Hold the run while the host's rate-limit window is open."""
+        return TechLeadLaunchRefusal(
+            scope.run_key,
+            tech_lead.issue_number,
+            REASON_GITHUB_RATE_LIMITED,
+            f"GitHub rate limit ({episode.limit.kind}) holds launches until"
+            f" {episode.limit.resets_at.isoformat()}.",
+        )
 
     def _revalidate_subject(
         self, tech_lead: PendingTechLeadReview, scope: TechLeadRunScope
@@ -353,7 +398,13 @@ class TechLeadLaunchAuthority:
         assert self._repository_host is not None
         try:
             return self._repository_host.get_issue(number)
-        except Exception as exc:  # pragma: no cover - transport specific
+        except Exception as exc:
+            if (limit := host_rate_limit_of(exc)) is not None:
+                # Opens the window every launch honours (#7297), so the planner
+                # stops re-reading this subject every tick until the reset.
+                HostRateLimitLaunchGate(self._state.host_rate_limit, self._events).observe(
+                    limit, issue_number=number, work=PendingWorkKind.TECH_LEAD.value
+                )
             logger.warning(
                 "[TECH_LEAD_RUN] Could not revalidate subject #%d before launch:"
                 " %s; launching on the evidence we have",

@@ -65,7 +65,9 @@ from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
     is_tech_lead_session,
     prepare_tech_lead_session_data,
+    tech_lead_prep_failure,
 )
+from .host_rate_limit_launch_gate import apply_launch_mutations, converge_claim
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -328,18 +330,7 @@ class SessionLauncher:
         }
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
-        all_ok = True
-        for action in actions:
-            result = self._action_applier.apply(action)
-            if not result.success:
-                all_ok = False
-                logger.warning(
-                    "[launch] Failed to apply %s (%s): %s",
-                    action.action_type.value,
-                    context,
-                    result.error,
-                )
-        return all_ok
+        return apply_launch_mutations(self._action_applier.apply, actions, context=context).ok
 
     def escalate_issue_needs_human(
         self,
@@ -504,12 +495,15 @@ class SessionLauncher:
             ))
             return ClaimAcquisitionResult(
                 success=False,
-                error=f"Failed to claim issue: {claim_result.error}"
+                error=f"Failed to claim issue: {claim_result.error}",
+                host_rate_limit=claim_result.host_rate_limit,
             )
 
         # Run convergence to confirm ownership
         logger.info(issue_log(issue.number, "Running claim convergence..."))
-        converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
+        converged = converge_claim(self._claim_manager, issue.number, claim_result.lease_id or "")
+        if isinstance(converged, ClaimAcquisitionResult):
+            return converged
 
         if not converged:
             log_transition(
@@ -636,19 +630,12 @@ class SessionLauncher:
         disposable_worktree: bool,
     ) -> LaunchResult:
         """Fail the launch when required tech_lead inputs cannot be prepared; the
-        result is retry-queued (transient inputs; queue owner bounds retries) and
-        prep's authority row is discarded (post-prep guard never runs here)."""
-        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "tech_lead session data preparation failed")
-        logger.error(issue_log(issue.number, "FAILED: tech_lead session data preparation failed: %s"), error)
-        self.events.publish(make_trace_event(
-            EventName.SESSION_START_FAILED,
-            {
-                "issue_number": issue.number,
-                "session_name": session_name,
-                "reason": "tech_lead_session_data_failed",
-                "error": str(error),
-            },
-        ))
+        result is retry-queued (transient inputs; queue owner bounds retries), or
+        deferred without a spend on a GitHub rate limit (#7297), and prep's
+        authority row is discarded (post-prep guard never runs here)."""
+        result = tech_lead_prep_failure(
+            self.events, issue_number=issue.number, session_name=session_name, error=error
+        )
         self._cleanup_pre_active_launch_worktree(
             issue.number,
             worktree_path,
@@ -657,7 +644,7 @@ class SessionLauncher:
         )
         self._discard_tech_lead_authority_after_failed_launch(issue, ctx)
         self._release_claim_if_held(issue.number, claim)
-        return LaunchResult(None, False, f"Tech Lead session data preparation failed: {error}", disposition=LaunchDisposition.RETRYABLE_FAILURE)
+        return result
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
@@ -951,7 +938,7 @@ class SessionLauncher:
             # Add in-progress label
             step_start = time.time()
             in_progress_label = self._lm.in_progress
-            label_ok = self._apply_actions([
+            label = apply_launch_mutations(self._action_applier.apply, [
                 AddLabelAction(
                     issue_number=issue.number,
                     label=in_progress_label,
@@ -959,17 +946,18 @@ class SessionLauncher:
                     issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_in_progress_label")
-            if not label_ok:
+            if not label.ok:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
                 logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-                self.events.publish(make_trace_event(
-                    EventName.SESSION_START_FAILED,
-                    {
-                        "issue_number": issue.number,
-                        "session_name": session_name,
-                        "reason": "in_progress_label_failed",
-                    },
-                ))
+                if label.host_rate_limit is None:  # a rate limit is a deferral the gate announces
+                    self.events.publish(make_trace_event(
+                        EventName.SESSION_START_FAILED,
+                        {
+                            "issue_number": issue.number,
+                            "session_name": session_name,
+                            "reason": "in_progress_label_failed",
+                        },
+                    ))
                 self._cleanup_pre_active_launch_worktree(
                     issue.number,
                     worktree_path,
@@ -977,7 +965,7 @@ class SessionLauncher:
                     failure_stage="in-progress label failure",
                 )
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, "Failed to add in-progress label")
+                return label.refused("Failed to add in-progress label")
             label_time = time.time() - step_start
             logger.info("[launch] Label added in %.1fs", label_time)
 
@@ -1323,7 +1311,7 @@ class SessionLauncher:
                 suffix="validation_retry",
             )
 
-            label_ok = self._apply_actions([
+            label = apply_launch_mutations(self._action_applier.apply, [
                 AddLabelAction(
                     issue_number=issue.number,
                     label=self._lm.in_progress,
@@ -1331,10 +1319,10 @@ class SessionLauncher:
                     issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_validation_retry_in_progress_label")
-            if not label_ok:
+            if not label.ok:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, "Failed to add in-progress label")
+                return label.refused("Failed to add in-progress label")
 
             prompt_path = self._persist_session_prompt(run.run_dir, retry_prompt)
             self._session_output.write_retry_prompt(run.run_dir, retry_prompt)
@@ -2171,7 +2159,7 @@ class SessionLauncher:
             session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
-            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),
+            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim

@@ -3,8 +3,10 @@
 from typing import Any
 
 from ...ports.repository_host import (
+    HostRateLimit,
     RepositoryHostError,
     RepositoryHostErrorKind,
+    RepositoryHostRateLimitedError,
     RepositoryScanIncompleteError,
 )
 
@@ -80,9 +82,37 @@ class GitHubScanIncompleteError(GitHubHttpError, RepositoryScanIncompleteError):
     """
 
 
+class GitHubRateLimitedError(GitHubHttpError, RepositoryHostRateLimitedError):
+    """GitHub refused the request on a rate limit; ``rate_limit`` says until when.
+
+    Subclasses ``GitHubHttpError`` so every existing handler keeps catching it,
+    and the port-level marker so launch policy can defer until the reset
+    instead of spending a retry on a request GitHub has already said it will
+    refuse (#7297).
+    """
+
+    def __init__(
+        self, message: str, *, rate_limit: HostRateLimit, **kwargs: Any
+    ) -> None:
+        super().__init__(message, **kwargs)
+        self.rate_limit = rate_limit
+
+
+class GitHubRateLimitedScanIncompleteError(
+    GitHubRateLimitedError, GitHubScanIncompleteError
+):
+    """An exhaustive scan stopped on a rate-limited page.
+
+    Both at once: the scan is still incomplete (callers must never treat it as
+    a skippable outage) and the reason is a rate limit with a known reset.
+    """
+
+
 __all__ = [
     "GitHubAuthError",
     "GitHubHttpError",
+    "GitHubRateLimitedError",
+    "GitHubRateLimitedScanIncompleteError",
     "GitHubScanIncompleteError",
     "GitHubTransportError",
 ]

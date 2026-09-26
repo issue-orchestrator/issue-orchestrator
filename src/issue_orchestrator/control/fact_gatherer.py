@@ -25,6 +25,7 @@ import time
 from collections.abc import Mapping, Sequence
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
 from ..infra.config import Config
@@ -240,6 +241,7 @@ class FactGatherer:
             pending_reworks=tuple(state.pending_reworks),
             pending_tech_lead=tuple(state.pending_tech_lead_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
+            host_rate_limit_hold=state.host_rate_limit.open_at(datetime.now(UTC)),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,

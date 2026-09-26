@@ -180,6 +180,27 @@ class TestAddLabelAction:
         assert not result.success
         assert "API error" in result.error
 
+    def test_rate_limited_label_failure_keeps_its_typed_limit(self, applier, mock_labels):
+        """#7297: a launch must be able to tell a rate-limited write from a failed one."""
+        import httpx
+
+        from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+
+        mock_labels.add_label.side_effect = github_http_failure(
+            "GitHub POST labels failed: 403",
+            status_code=403,
+            headers=httpx.Headers({"retry-after": "120"}),
+            response_text='{"message": "You have exceeded a secondary rate limit"}',
+            method="POST",
+            url="/repos/o/r/issues/123/labels",
+        )
+
+        result = applier.apply(AddLabelAction(issue_number=123, label="in-progress"))
+
+        assert not result.success
+        assert result.host_rate_limit is not None
+        assert result.host_rate_limit.kind == "secondary"
+
     def test_add_label_noop_when_already_present(self, applier, mock_labels):
         """Skip add_label mutation when label is already present."""
         mock_labels.has_label.return_value = True
