@@ -33,6 +33,7 @@ from .invalid_record_actions import (
 from .label_manager import LabelManager
 from .provider_availability import ProviderAvailabilityPolicy
 from .provider_blocked_completion import provider_blocked_actions
+from .review_exchange_halt_actions import review_exchange_halted_actions
 from .reconciliation import ExpectedState, build_expected_for_mutation
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..ports.provider_resilience import ProviderErrorType
@@ -311,7 +312,7 @@ class CompletionActionPlanner:
         ``recovery_holds_validated_work`` is the capture this completion just
         made: the recovery lane holds unresolved validated work for the issue.
         A halted exchange then leaves the issue to recovery instead of blocking
-        it (see ``_generate_review_exchange_halted_actions``). A capture that
+        it (see ``review_exchange_halted_actions``). A capture that
         faulted proves no custody, so its caller passes False and the halt
         keeps its own block.
         """
@@ -340,8 +341,9 @@ class CompletionActionPlanner:
                 session.issue.number,
             )
             return tuple(
-                self._generate_review_exchange_halted_actions(
-                    session, expected, recovery_holds_validated_work
+                review_exchange_halted_actions(
+                    session, expected, self._lm,
+                    recovery_holds_validated_work=recovery_holds_validated_work,
                 )
             )
 
@@ -736,67 +738,3 @@ class CompletionActionPlanner:
         # Review/rework BLOCKED completions do not map to issue-blocking labels;
         # their parent workflows own any PR/review state transitions.
         return []
-
-    def _generate_review_exchange_halted_actions(
-        self,
-        session: Session,
-        expected: ExpectedState,
-        recovery_holds_validated_work: bool,
-    ) -> list[Action]:
-        """Generate hold actions when a review exchange halts without progress.
-
-        When recovery already holds the run's validated work, recovery owns the
-        issue: it blocks it with ``recovery-pending``, publishes the work as a PR
-        and routes it to code review, or escalates it itself. Adding
-        ``blocked-failed`` on top would veto that review and leave the issue for
-        the stuck sweep to escalate, so the halt only reports and releases.
-        """
-        issue_number = session.issue.number
-        header = (
-            "⚠️ **Review Exchange Halted**\n\n"
-            "The automated review exchange stopped because it could not make further progress.\n\n"
-            f"- Session: `{session.terminal_id}`\n"
-            f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
-        )
-        release = RemoveLabelAction(
-            issue_number=issue_number,
-            label=self._lm.in_progress,
-            reason="Review exchange halted - releasing claim",
-            expected=expected,
-        )
-        if recovery_holds_validated_work:
-            return [
-                AddCommentAction(
-                    number=issue_number,
-                    comment=(
-                        header
-                        + "This run's validated work is held by recovery "
-                        f"(`{self._lm.recovery_pending}`), so this issue is not marked "
-                        f"`{self._lm.blocked_failed}`. Once recovery publishes it, the pull "
-                        "request goes to code review. Until then recovery keeps the issue "
-                        "blocked, and escalates it if the work cannot be published."
-                    ),
-                    reason="Notify that review exchange halted and recovery holds the work",
-                    expected=expected,
-                ),
-                release,
-            ]
-        return [
-            AddLabelAction(
-                issue_number=issue_number,
-                label=self._lm.blocked_failed,
-                reason="Review exchange halted with no progress",
-                expected=expected,
-            ),
-            AddCommentAction(
-                number=issue_number,
-                comment=(
-                    header
-                    + f"This issue has been marked as `{self._lm.blocked_failed}` and will not be retried automatically.\n"
-                    "Use Retry/Unblock when you want to run it again."
-                ),
-                reason="Notify that review exchange halted and issue is on hold",
-                expected=expected,
-            ),
-            release,
-        ]
