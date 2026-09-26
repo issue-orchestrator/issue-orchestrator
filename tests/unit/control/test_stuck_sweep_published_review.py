@@ -315,6 +315,13 @@ def test_a_queued_investigation_yields_to_work_published_after_it_was_queued():
     revalidated = _revalidate(snapshot, lm)
 
     assert snapshot.published_review_subjects == frozenset({HELD})
+    # The FIRST tick already plans no escalation: needs-human landing now would
+    # also stop the review release that the withdrawal makes way for.
+    assert snapshot.stuck_sweep_escalations == ()
+    assert state.pending_stuck_sweep_escalations == set()
+    first_plan = Planner(config=_config(), scheduler=Scheduler(_config())).plan(snapshot)
+    assert not [a for a in first_plan.actions
+                if getattr(a, "label", None) == lm.needs_human and getattr(a, "issue_number", None) == HELD]
     assert [w.item.issue_number for w in revalidated.withdrawn] == [HELD]
     assert revalidated.withdrawn[0].reason == "published_validated_work_under_review"
     assert revalidated.still_eligible == ()
@@ -343,3 +350,19 @@ def test_a_queued_investigation_without_published_work_is_kept():
     assert snapshot.published_review_subjects == frozenset()
     assert revalidated.withdrawn == ()
     assert [item.issue_number for item in revalidated.still_eligible] == [HELD]
+
+
+def test_an_exhausted_release_budget_keeps_its_escalation():
+    """Only an investigation's escalation yields to review custody: a release
+    that kept failing is exactly what the human is for."""
+    records, prs = _published(HELD)
+    gatherer = _gatherer([_failed(HELD)], records=records, prs=prs)
+    state = OrchestratorState()
+    state.pending_tech_lead_reviews = [_queued_investigation(HELD)]
+    state.recovery_attempts = {HELD: 3}
+    state.review_release_budgets = {HELD}
+    state.pending_stuck_sweep_escalations = {HELD}
+
+    snapshot = gatherer.create_snapshot(state, issues=[_failed(HELD)])
+
+    assert snapshot.stuck_sweep_escalations == (HELD,)

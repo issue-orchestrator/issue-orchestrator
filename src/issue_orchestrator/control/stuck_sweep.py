@@ -247,6 +247,7 @@ def run_stuck_sweep(
     for number in released - _owned_issue_numbers(state) - open_proposal_targets:
         state.recovery_attempts.pop(number, None)
     _ack_landed_escalations(state, scan)
+    _withdraw_escalations_superseded_by_review(state, published_review)
     # A held issue's review owns it (#7293): whatever budget an earlier remedy
     # spent says nothing about the issue once that custody ends.
     for number in scan.held_for_review:
@@ -290,6 +291,25 @@ def run_stuck_sweep(
         held_for_review=tuple(sorted(scan.held_for_review)),
         released_for_review=tuple(releases),
     )
+
+
+def _withdraw_escalations_superseded_by_review(
+    state: "OrchestratorState", published_review: PublishedReviewHolds
+) -> None:
+    """Drop an unlanded investigation escalation once published work owns the issue.
+
+    Checked for EVERY pending escalation, owned or not (#7293): an issue whose
+    queued investigation is being withdrawn is still skipped by the scan this
+    sweep, and its escalation must not land needs-human - which would also stop
+    the review release - in the very tick the withdrawal is planned. An
+    escalation that exhausted a REVIEW-RELEASE budget is kept: releasing kept
+    failing, and that is exactly what the human is for.
+    """
+    state.pending_stuck_sweep_escalations -= {
+        number
+        for number in state.pending_stuck_sweep_escalations
+        if number not in state.review_release_budgets and published_review.holds(number)
+    }
 
 
 def _restart_budget_on_remedy_change(
