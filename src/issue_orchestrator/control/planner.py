@@ -77,7 +77,7 @@ from .awaiting_merge_post_publish_policy import (
 )
 from .queue_decision_log import QueueDecisionLog
 from .reactive_tech_lead_planning import plan_reactive_tech_lead
-from .host_rate_limit_launch_gate import RATE_LIMIT_DEFER_REASON, rate_limited_launch_skips
+from .host_rate_limit_launch_gate import plan_launches_or_wait
 from .tech_lead_launch_log import TechLeadLaunchLog
 from .tech_lead_ledger_planning import plan_tech_lead_ledger_actions
 from .tech_lead_reaction import TechLeadReactionPolicy
@@ -87,7 +87,7 @@ from .worker_budget import (
     tech_lead_slot_availability,
     worker_slot_availability,
 )
-from .reactive_tech_lead_planning import plan_tech_lead_launch_queue
+from .reactive_tech_lead_planning import TechLeadLaunchPlan, plan_tech_lead_launch_queue
 from .reconciliation import build_expected_for_mutation
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
@@ -316,13 +316,19 @@ class Planner:
         history_reconciliation_actions = self._plan_awaiting_merge_reconciliations(snapshot)
         actions.extend(history_reconciliation_actions)
 
-        launch_actions, launch_skipped = self._plan_launches_unless_rate_limited(
+        # Suppress individual investigation launches only when the cohort was
+        # actually escalated this tick; on a deferred storm the fallback
+        # investigations must be allowed to launch (#6780).
+        suppressed = reactive.suppressed_issue_numbers
+        launch_actions, launch_skipped = plan_launches_or_wait(
             snapshot,
-            plan_context,
-            # Suppress individual investigation launches only when the cohort
-            # was actually escalated this tick; on a deferred storm the fallback
-            # investigations must be allowed to launch (#6780).
-            suppressed_tech_lead_issue_numbers=reactive.suppressed_issue_numbers,
+            launch_log=self._tech_lead_launch_log,
+            plan_launches=lambda: self._plan_session_launches(
+                snapshot, plan_context, suppressed_tech_lead_issue_numbers=suppressed
+            ),
+            withdrawals=lambda skipped: self._plan_tech_lead_queue(
+                snapshot, suppressed, skipped
+            ).withdrawals,
         )
         actions.extend(launch_actions)
         skipped.extend(launch_skipped)
@@ -373,28 +379,24 @@ class Planner:
         assert slot.reason is not None  # invariant of TechLeadSlotAvailability
         self._tech_lead_launch_log.defer_all(snapshot.pending_tech_lead, slot.reason)
 
-    def _plan_launches_unless_rate_limited(
+    def _plan_tech_lead_queue(
         self,
         snapshot: OrchestratorSnapshot,
-        plan_context: PlanContext,
-        *,
-        suppressed_tech_lead_issue_numbers: frozenset[int],
-    ) -> tuple[list[Action], list[SkippedItem]]:
-        """GitHub has said when it will answer again (#7297): launch nothing
-        before then, or each attempt is a refusal counted as a failure. Past the
-        deferral bound, plan as usual: each launch is attempted again, and a
-        refusal it meets is counted against the queue's budget, which is how a
-        limit that never lifts reaches the escalation."""
-        hold = snapshot.host_rate_limit_hold
-        if hold is None or hold.bound_exceeded:
-            return self._plan_session_launches(
-                snapshot,
-                plan_context,
-                suppressed_tech_lead_issue_numbers=suppressed_tech_lead_issue_numbers,
-            )
-        self._tech_lead_launch_log.defer_all(snapshot.pending_tech_lead, RATE_LIMIT_DEFER_REASON)
-        self._tech_lead_launch_log.retain(snapshot.pending_tech_lead)
-        return [], rate_limited_launch_skips(snapshot, hold)
+        suppressed: frozenset[int],
+        skipped: list[SkippedItem],
+    ) -> TechLeadLaunchPlan:
+        """Launch-time eligibility of the queued tech-lead runs (withdrawals)."""
+        return plan_tech_lead_launch_queue(
+            self.config,
+            snapshot,
+            suppressed_issue_numbers=suppressed,
+            launch_log=self._tech_lead_launch_log,
+            skipped=skipped,
+            is_blocking_any=self._lm.is_blocking_any,
+            workflow_configured=bool(
+                self.tech_lead_workflow and self.tech_lead_workflow.is_configured()
+            ),
+        )
 
     def _plan_session_launches(
         self,
@@ -518,14 +520,8 @@ class Planner:
         # Eligibility is decided OUTSIDE the capacity branch: withdrawal is not
         # a capacity decision, and an ineligible run must leave the queue even
         # on a tick that could not have launched anything.
-        tech_lead_plan = plan_tech_lead_launch_queue(
-            self.config,
-            snapshot,
-            suppressed_issue_numbers=suppressed_tech_lead_issue_numbers,
-            launch_log=self._tech_lead_launch_log,
-            skipped=skipped,
-            is_blocking_any=self._lm.is_blocking_any,
-            workflow_configured=workflow_configured,
+        tech_lead_plan = self._plan_tech_lead_queue(
+            snapshot, suppressed_tech_lead_issue_numbers, skipped
         )
         actions.extend(tech_lead_plan.withdrawals)
         if tech_lead_slot.available > 0:

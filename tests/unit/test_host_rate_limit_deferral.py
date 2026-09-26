@@ -79,7 +79,7 @@ def _deferral_events(events: InMemoryEventSink) -> list[dict]:
 class TestHostRateLimitWindow:
     def test_open_until_the_reset_then_closed(self) -> None:
         window = HostRateLimitWindow()
-        window.observe(_limit(T0 + timedelta(minutes=5)), T0)
+        window.observe(_limit(T0 + timedelta(minutes=5)), T0, "tech_lead")
 
         held = window.open_at(T0 + timedelta(minutes=4))
         assert held is not None and held.limit.resets_at == T0 + timedelta(minutes=5)
@@ -88,11 +88,11 @@ class TestHostRateLimitWindow:
     def test_back_to_back_refusals_are_one_episode_and_hit_the_bound(self) -> None:
         window = HostRateLimitWindow()
         now = T0
-        episode = window.observe(_limit(now + timedelta(hours=1)), now)
+        episode = window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
         while not episode.bound_exceeded:
             # Re-attempted just after each reset, still refused.
             now = episode.limit.resets_at + timedelta(minutes=1)
-            episode = window.observe(_limit(now + timedelta(hours=1)), now)
+            episode = window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
 
         assert episode.limited_since == T0
         assert episode.limited_for >= RATE_LIMIT_DEFERRAL_BOUND
@@ -101,30 +101,42 @@ class TestHostRateLimitWindow:
         """Codex r3: only positive recovery ends an episode, never elapsed time."""
         window = HostRateLimitWindow()
         now = T0
-        episode = window.observe(_limit(now + timedelta(hours=1)), now)
+        episode = window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
         while not episode.bound_exceeded:
             # Each refusal lands eleven minutes after the previous reset.
             now = episode.limit.resets_at + timedelta(minutes=11)
-            episode = window.observe(_limit(now + timedelta(hours=1)), now)
+            episode = window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
+
+        assert episode.limited_since == T0
+
+    def test_another_path_getting_through_does_not_end_this_episode(self) -> None:
+        """Codex r7: a review on ``core`` proves nothing about tech-lead's ``search``."""
+        window = HostRateLimitWindow()
+        now = T0
+        episode = window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
+        while not episode.bound_exceeded:
+            now = episode.limit.resets_at + timedelta(minutes=1)
+            window.recovered("review")
+            episode = window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
 
         assert episode.limited_since == T0
 
     def test_recovery_starts_the_next_episode_afresh(self) -> None:
         window = HostRateLimitWindow()
-        window.observe(_limit(T0 + timedelta(hours=1)), T0)
-        window.recovered()
+        window.observe(_limit(T0 + timedelta(hours=1)), T0, "tech_lead")
+        window.recovered("tech_lead")
         later = T0 + timedelta(hours=3)
 
-        episode = window.observe(_limit(later + timedelta(minutes=1)), later)
+        episode = window.observe(_limit(later + timedelta(minutes=1)), later, "tech_lead")
 
         assert episode.limited_since == later
         assert not episode.bound_exceeded
 
     def test_an_earlier_reset_never_shortens_the_window(self) -> None:
         window = HostRateLimitWindow()
-        window.observe(_limit(T0 + timedelta(hours=1)), T0)
+        window.observe(_limit(T0 + timedelta(hours=1)), T0, "tech_lead")
 
-        episode = window.observe(_limit(T0 + timedelta(minutes=2), "secondary"), T0)
+        episode = window.observe(_limit(T0 + timedelta(minutes=2), "secondary"), T0, "tech_lead")
 
         assert episode.limit.resets_at == T0 + timedelta(hours=1)
 
@@ -187,7 +199,7 @@ class TestHostRateLimitLaunchGate:
     def test_open_window_is_not_attempted(self) -> None:
         clock = _Clock(T0)
         gate, events = self._gate(clock)
-        gate.window.observe(_limit(T0 + timedelta(minutes=10)), T0)
+        gate.window.observe(_limit(T0 + timedelta(minutes=10)), T0, "tech_lead")
         attempts: list[int] = []
 
         def attempt() -> LaunchResult:
@@ -222,7 +234,7 @@ class TestHostRateLimitLaunchGate:
         # Refused hourly since T0, re-attempted a minute after each reset.
         now = T0
         while now - T0 < RATE_LIMIT_DEFERRAL_BOUND:
-            gate.window.observe(_limit(now + timedelta(hours=1)), now)
+            gate.window.observe(_limit(now + timedelta(hours=1)), now, "tech_lead")
             now += timedelta(hours=1, minutes=1)
         clock.now = now
 
@@ -246,7 +258,7 @@ class TestHostRateLimitLaunchGate:
     def test_a_launch_that_gets_through_ends_the_episode(self) -> None:
         clock = _Clock(T0)
         gate, _ = self._gate(clock)
-        gate.window.observe(_limit(T0 + timedelta(minutes=1)), T0)
+        gate.window.observe(_limit(T0 + timedelta(minutes=1)), T0, "issue")
         clock.now = T0 + timedelta(hours=5)
 
         gate.launch(lambda: LaunchResult(None, True), issue_number=1, work="issue")
@@ -275,7 +287,7 @@ class TestPlannerHonoursTheWindow:
         config = make_config(max_concurrent_sessions=3)
         planner = Planner(config=config, scheduler=Scheduler(config))
         window = HostRateLimitWindow()
-        window.observe(_limit(T0 + timedelta(minutes=5)), T0)
+        window.observe(_limit(T0 + timedelta(minutes=5)), T0, "tech_lead")
         from issue_orchestrator.domain.models import PendingTechLeadReview
         from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
@@ -299,7 +311,7 @@ class TestPlannerHonoursTheWindow:
         config = make_config(max_concurrent_sessions=3)
         planner = Planner(config=config, scheduler=Scheduler(config))
         window = HostRateLimitWindow()
-        window.observe(_limit(T0 + timedelta(hours=3), "secondary"), T0)
+        window.observe(_limit(T0 + timedelta(hours=3), "secondary"), T0, "tech_lead")
         past_bound = T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(minutes=1)
 
         plan = planner.plan(make_snapshot(
@@ -323,7 +335,7 @@ class TestPastTheBoundEveryRefusalCounts:
         """Codex r4/r5: only an ATTEMPTED refusal can be counted durably."""
         clock = _Clock(T0)
         gate = HostRateLimitLaunchGate(HostRateLimitWindow(), InMemoryEventSink(), clock)
-        gate.window.observe(_limit(T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(hours=1)), T0)
+        gate.window.observe(_limit(T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(hours=1)), T0, "tech_lead")
         clock.now = T0 + RATE_LIMIT_DEFERRAL_BOUND + timedelta(minutes=1)
 
         def refused() -> LaunchResult:

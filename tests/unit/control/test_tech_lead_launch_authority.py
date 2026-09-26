@@ -453,6 +453,7 @@ def test_past_the_deferral_bound_the_authority_stops_holding():
     harness.state.host_rate_limit.observe(
         HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
         now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead",
     )
 
     harness.launch(anchor)
@@ -473,6 +474,7 @@ def test_past_the_bound_a_closed_anchor_is_still_withdrawn():
     harness.state.host_rate_limit.observe(
         HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
         now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead",
     )
 
     assert harness.launch(anchor) is None

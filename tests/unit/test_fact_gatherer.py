@@ -126,7 +126,8 @@ class TestFactGathererHostRateLimit:
         now = datetime.now(UTC)
         resets = now + timedelta(minutes=30)
         sample_state.host_rate_limit.observe(
-            HostRateLimit(resets_at=resets, kind="primary", resource="search"), now
+            HostRateLimit(resets_at=resets, kind="primary", resource="search"), now,
+            "tech_lead",
         )
 
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)

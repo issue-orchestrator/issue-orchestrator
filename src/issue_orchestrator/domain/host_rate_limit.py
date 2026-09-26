@@ -19,7 +19,7 @@ re-observes the limit and reopens the window at once.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -75,37 +75,59 @@ class RateLimitEpisode:
 
 @dataclass(slots=True)
 class HostRateLimitWindow:
-    """The host's current rate-limit window, shared by every launch path."""
+    """The host's current rate-limit window, shared by every launch path.
+
+    The HOLD is shared: one token, one reset, so no launch is attempted before
+    it. The EPISODE - how long the limit has held, measured against the bound -
+    is kept per launch path (``work``). Different paths spend different GitHub
+    budgets: a review that gets through on ``core`` proves nothing about the
+    ``search`` budget tech-lead prep needs. So only the refused path getting
+    through again ends its episode.
+    """
 
     _limit: HostRateLimit | None = None
-    _limited_since: datetime | None = None
+    _refused_since: dict[str, datetime] = field(default_factory=dict)
 
-    def open_at(self, now: datetime) -> RateLimitEpisode | None:
-        """The episode still holding launches back at ``now``, if any."""
-        limit, since = self._limit, self._limited_since
-        if limit is None or since is None or now >= limit.resets_at:
+    def open_at(self, now: datetime, work: str | None = None) -> RateLimitEpisode | None:
+        """The episode still holding launches back at ``now``, if any.
+
+        ``work`` names the launch path whose episode is measured; ``None``
+        (the planner's whole-tick view) measures the oldest one, so a tick is
+        past the bound as soon as any path is.
+        """
+        limit = self._limit
+        if limit is None or now >= limit.resets_at:
             return None
+        since = (
+            min(self._refused_since.values(), default=now)
+            if work is None
+            else self._refused_since.get(work, now)
+        )
         return RateLimitEpisode(limit=limit, limited_since=since, observed_at=now)
 
-    def observe(self, limit: HostRateLimit, now: datetime) -> RateLimitEpisode:
-        """Record that the host refused a launch under ``limit``.
+    def observe(self, limit: HostRateLimit, now: datetime, work: str) -> RateLimitEpisode:
+        """Record that the host refused a ``work`` launch under ``limit``.
 
-        Extends the current episode however long ago its window closed: only
+        Extends that path's episode however long ago the window closed: only
         positive evidence of recovery (:meth:`recovered`) ends it. Elapsed time
         alone proves nothing - a tick that happens to arrive late would
         otherwise restart the clock and keep the bound out of reach.
         """
-        previous, since = self._limit, self._limited_since
-        if previous is not None and since is not None:
-            governing = limit if limit.resets_at >= previous.resets_at else previous
-        else:
-            governing, since = limit, now
-        self._limit, self._limited_since = governing, since
+        previous = self._limit
+        governing = (
+            limit
+            if previous is None or limit.resets_at >= previous.resets_at
+            else previous
+        )
+        self._limit = governing
+        since = self._refused_since.setdefault(work, now)
         return RateLimitEpisode(limit=governing, limited_since=since, observed_at=now)
 
-    def recovered(self) -> None:
-        """The host answered a launch: the episode, and its bound, are over."""
-        self._limit, self._limited_since = None, None
+    def recovered(self, work: str) -> None:
+        """A ``work`` launch got through: that path's episode is over."""
+        self._refused_since.pop(work, None)
+        if not self._refused_since:
+            self._limit = None
 
 
 __all__ = [

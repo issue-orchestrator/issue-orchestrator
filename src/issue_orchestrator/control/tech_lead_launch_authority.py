@@ -196,7 +196,9 @@ class TechLeadLaunchAuthority:
         return self._shared_execution_refusal(tech_lead, scope)
 
     def _open_rate_limit(self) -> Optional[RateLimitEpisode]:
-        return self._state.host_rate_limit.open_at(datetime.now(UTC))
+        return self._state.host_rate_limit.open_at(
+            datetime.now(UTC), PendingWorkKind.TECH_LEAD.value
+        )
 
     @staticmethod
     def _rate_limit_hold(

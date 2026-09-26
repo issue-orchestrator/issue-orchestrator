@@ -9802,6 +9802,7 @@ class TestLaunchDefersOnGitHubRateLimit:
                     kind="primary",
                 ),
                 seen,
+                "tech_lead",
             )
             seen += timedelta(hours=1, minutes=1)
 
@@ -9828,6 +9829,7 @@ class TestLaunchDefersOnGitHubRateLimit:
         state.host_rate_limit.observe(
             HostRateLimit(resets_at=now + timedelta(hours=1), kind="secondary"),
             now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+            "tech_lead",
         )
 
         assert self._launch_queued(state, config, launcher_bundle) is None

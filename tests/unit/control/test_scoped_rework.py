@@ -655,10 +655,7 @@ def test_queued_request_merged_before_launch_uses_same_forward_fix_owner(lane):
     assert executor.apply(approved_action(store, proposal)).success
     pr.state, issue.state = "merged", "closed"
 
-    def apply(actions, **kwargs):
-        return all(executor.apply(action).success for action in actions)
-
-    launch = ScopedReworkLaunch(store, host, apply)
+    launch = ScopedReworkLaunch(store, host, executor.apply)
     rework = PendingRework(
         issue.key, "agent:coder", pr_number=94, scoped_request_keys=(request.key,)
     )
@@ -666,6 +663,38 @@ def test_queued_request_merged_before_launch_uses_same_forward_fix_owner(lane):
     assert not result.success
     assert store.load_rework_receipt(request.key).status == "forward_fix"
     host.create_issue.assert_called_once()
+
+
+def test_rate_limited_forward_fix_reconciliation_defers_the_launch(lane):
+    """Codex r7 (#7297): the typed limit must survive the executor boundary."""
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+    from issue_orchestrator.control.session_launch_types import LaunchDisposition
+    from issue_orchestrator.domain.models import PendingRework
+
+    executor, store, host, issue, pr, proposal, request, _, _ = lane
+    assert executor.apply(approved_action(store, proposal)).success
+    pr.state, issue.state = "merged", "closed"
+    reset = int((datetime.now(UTC) + timedelta(minutes=5)).timestamp())
+    host.find_issue_by_marker.side_effect = github_http_failure(
+        "GitHub GET /search/issues failed: 403",
+        status_code=403,
+        headers=httpx.Headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)}),
+        response_text='{"message": "API rate limit exceeded"}',
+        method="GET",
+        url="/search/issues",
+    )
+    rework = PendingRework(
+        issue.key, "agent:coder", pr_number=94, scoped_request_keys=(request.key,)
+    )
+
+    result = ScopedReworkLaunch(store, host, executor.apply).admit(rework, 94)
+
+    assert result.disposition is LaunchDisposition.HOST_RATE_LIMITED
+    host.create_issue.assert_not_called()
 
 
 @pytest.mark.parametrize("interruption", ["create", "receipt"])
@@ -695,9 +724,9 @@ def test_launch_forward_conversion_retains_proposal_after_interruption_and_reope
     if interruption == "create":
         host.create_issue.side_effect = OSError("create response lost")
 
-    def apply(actions, **kwargs):
-        assert actions[0].proposal_issue_number == 0
-        return all(executor.apply(action).success for action in actions)
+    def apply(action):
+        assert action.proposal_issue_number == 0
+        return executor.apply(action)
 
     rework = PendingRework(issue.key, "agent:coder", pr_number=94,
         scoped_request_keys=(request.key,))

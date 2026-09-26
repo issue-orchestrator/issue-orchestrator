@@ -16,7 +16,8 @@ from ..domain.scoped_rework import ReworkReceipt
 from ..domain.session_run import SessionRunAssets, SessionRunIdentity
 from ..ports import RepositoryHost
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
-from .actions import Action, RequestReworkAction
+from .actions import Action, ActionResult, RequestReworkAction
+from .host_rate_limit_launch_gate import apply_launch_mutations
 from .launch_transaction import LaunchWorkClaim, WorkDisposal, NO_LAUNCH_WORK_CLAIM
 from .reconciliation import build_expected_for_mutation
 from .scoped_rework_eligibility import rework_target_stale_reason
@@ -47,7 +48,10 @@ class ScopedReworkInstruction:
 class ScopedReworkLaunch:
     store: TechLeadAuthorityStore
     repository: RepositoryHost
-    apply_actions: Callable[..., bool]
+    #: Applies ONE action and reports its typed result, so a rate-limited
+    #: reconciliation arrives with its host limit rather than as a bare
+    #: ``False`` (#7297).
+    apply_action: Callable[[Action], ActionResult]
 
     def admit(
         self, rework: PendingRework, pr_number: int, *,
@@ -195,11 +199,13 @@ class ScopedReworkLaunch:
             actions: list[Action] = [
                 RequestReworkAction(request=request, proposal_id=request.key, expected=build_expected_for_mutation())
             ]
-            committed = self.apply_actions(
-                actions, context="scoped_rework_merged_before_launch"
+            mutations = apply_launch_mutations(
+                self.apply_action, actions, context="scoped_rework_merged_before_launch"
             )
+            if mutations.host_rate_limit is not None:
+                return mutations.refused("Forward-fix reconciliation refused by a GitHub rate limit")
             outcome = self.store.load_rework_receipt(request.key)
-            if not committed or outcome is None or outcome.status != "forward_fix":
+            if not mutations.ok or outcome is None or outcome.status != "forward_fix":
                 return LaunchResult(
                     None,
                     False,

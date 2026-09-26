@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from .session_launch_types import ClaimAcquisitionResult
     from .action_results import ActionResult
     from .planner_types import OrchestratorSnapshot, SkippedItem
+    from .tech_lead_launch_log import TechLeadLaunchLog
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class HostRateLimitLaunchGate:
         whose issue cannot be resolved, which its launcher refuses before any
         GitHub read.
         """
-        holding = self.window.open_at(self.clock())
+        holding = self.window.open_at(self.clock(), work)
         # Past the bound the window no longer holds the launch back: it is
         # attempted, so a refusal lands AFTER the launch holds its durable
         # pending-work claim. That is the only kind of failure the queue's
@@ -109,7 +110,7 @@ class HostRateLimitLaunchGate:
             if result.success:
                 # Positive evidence the host answers again: only this ends an
                 # episode, so the bound cannot be dodged by a late tick.
-                self.window.recovered()
+                self.window.recovered(work)
             return result
         episode = self.observe(
             result.host_rate_limit, issue_number=issue_number, work=work
@@ -127,7 +128,7 @@ class HostRateLimitLaunchGate:
         tech-lead launch authority's subject revalidation): they must open the
         same window, or the planner would keep asking GitHub every tick.
         """
-        episode = self.window.observe(limit, self.clock())
+        episode = self.window.observe(limit, self.clock(), work)
         self._publish(episode, issue_number=issue_number, work=work, attempted=True)
         log = logger.error if episode.bound_exceeded else logger.warning
         log(
@@ -301,6 +302,34 @@ def _past_bound(reason: str, episode: RateLimitEpisode) -> LaunchResult:
     )
 
 
+def plan_launches_or_wait(
+    snapshot: "OrchestratorSnapshot",
+    *,
+    launch_log: "TechLeadLaunchLog",
+    plan_launches: Callable[[], tuple[list["Action"], list["SkippedItem"]]],
+    withdrawals: Callable[[list["SkippedItem"]], Sequence["Action"]],
+) -> tuple[list["Action"], list["SkippedItem"]]:
+    """What a tick plans for launches, given the host's rate-limit window.
+
+    GitHub has said when it will answer again: launch nothing before then, or
+    each attempt is a refusal. Every queued request is named with the reset it
+    waits for. Withdrawal needs no launch, though, so a run positively known to
+    be finished still leaves the queue instead of waiting out the hold.
+
+    Past the deferral bound it plans as usual: each launch is attempted again,
+    and a refusal it meets is counted against the queue's budget - which is how
+    a limit that never lifts reaches the escalation.
+    """
+    hold = snapshot.host_rate_limit_hold
+    if hold is None or hold.bound_exceeded:
+        return plan_launches()
+    skipped = rate_limited_launch_skips(snapshot, hold)
+    withdrawn = list(withdrawals(skipped))
+    launch_log.defer_all(snapshot.pending_tech_lead, RATE_LIMIT_DEFER_REASON)
+    launch_log.retain(snapshot.pending_tech_lead)
+    return withdrawn, skipped
+
+
 def _minutes(episode: RateLimitEpisode) -> int:
     return int(episode.limited_for.total_seconds() // 60)
 
@@ -311,5 +340,6 @@ __all__ = [
     "LaunchMutations",
     "apply_launch_mutations",
     "converge_claim",
+    "plan_launches_or_wait",
     "rate_limited_launch_skips",
 ]

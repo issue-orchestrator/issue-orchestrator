@@ -2159,7 +2159,7 @@ class SessionLauncher:
             session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
-            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),
+            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim
