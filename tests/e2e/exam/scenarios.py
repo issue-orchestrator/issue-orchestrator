@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, RunEnd, Scorecard, grade
 from issue_orchestrator.testing.exam.cases import (
@@ -43,10 +42,14 @@ from tests.e2e.flows import E2EFlow, close_pr
 
 logger = logging.getLogger(__name__)
 
-_NOISE_PREFIXES = ("tick.", "labels.mutation_summary", "queue.", "orchestrator.")
 
 #: Production tech-lead authority (the operator's io/porchpin configs), so a
 #: destructive remedy is really executed — and really graded — as it would be.
+#: Title ids (``[M0-760]``): e2e issues must carry one, and the engine keys
+#: an item's snapshot and some of its events by it.
+CASE_A_EXTERNAL_ID = "M0-760"
+CASE_B_EXTERNAL_ID = "M0-761"
+
 PRODUCTION_TECH_LEAD_AUTHORITY = {
     "reset_retry": "execute",
     "kill_hung_session": "execute",
@@ -70,11 +73,39 @@ class ExamRun:
 
 
 def _progress_events(engine: ExamEngine) -> int:
-    return sum(
-        1
-        for event in engine.runtime.watcher.view.global_events
-        if not str(event.get("type", "")).startswith(_NOISE_PREFIXES)
-    )
+    """Events about some work item. Tick, plan and fetch events carry no
+    ``issue_key`` and fire every tick, so they never count as progress."""
+    return sum(1 for event in engine.runtime.watcher.view.global_events if event.get("issue_key"))
+
+
+def goals_met_probe(
+    run: ExamRun, engine: ExamEngine, item: TrackedItem, *, every_s: float = 60.0
+) -> Callable[[], Awaitable[bool]]:
+    """``done`` for :func:`drive`: the case's own goals, on GitHub's state.
+
+    The goals ARE the definition of done, so the loop asks them rather than a
+    second, drift-prone predicate over the watcher's partial view (which, for
+    one, never learns a PR's draft flag). Throttled to one GitHub read per
+    ``every_s``.
+    """
+    last = 0.0
+
+    async def done() -> bool:
+        nonlocal last
+        now = time.monotonic()
+        if now - last < every_s:
+            return False
+        last = now
+        fact = observe_item(
+            repo=run.repo,
+            config=engine.config,
+            item=item,
+            watcher=engine.runtime.watcher,
+            read_checks=False,
+        )
+        return all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role)
+
+    return done
 
 
 async def drive(
@@ -189,29 +220,22 @@ async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> Scorecard:
             flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
             flow_cleanup.append(flow)
             started = time.monotonic()
-            issue, number = flow.create_issue(
-                "[M0-760] [EXAM-A] Halted review exchange with validated work",
+            _, number = flow.create_issue(
+                f"[{CASE_A_EXTERNAL_ID}] [EXAM-A] Halted review exchange with validated work",
                 [CODER_LABEL, E2E_DATA_LABEL],
                 body="Tech-lead exam case A: the exchange reviewer never answers.",
             )
-            labels = _labels(config)
-            key = GitHubIssueKey(repo=run.repo, external_id=str(number)).stable_id()
-
-            async def reached() -> bool:
-                view = runtime.watcher.view.issues.get(key)
-                return bool(
-                    view is not None
-                    and view.pr.number
-                    and view.pr.draft is False
-                    and labels.code_reviewed in view.pr.labels
-                    and not ({labels.blocked_failed, labels.needs_human} & set(view.labels))
-                )
-
-            ended_by = await drive(engine, done=reached, quiet_s=420, timeout_s=45 * 60)
+            subject = TrackedItem(SUBJECT, number, external_id=CASE_A_EXTERNAL_ID)
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, subject),
+                quiet_s=420,
+                timeout_s=45 * 60,
+            )
             return await _finish(
                 run,
                 engine,
-                items=[TrackedItem(SUBJECT, number)],
+                items=[subject],
                 extra_prs={},
                 started=started,
                 ended_by=ended_by,
@@ -261,8 +285,8 @@ async def run_case_b(
         flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
         flow_cleanup.append(flow)
         flow.ensure_labels([blocked_failed, labels.pr_pending, labels.code_review])
-        _, number = flow.create_issue(
-            "[M0-761] [EXAM-B] Blocked issue whose green PR waits on review",
+        issue, number = flow.create_issue(
+            f"[{CASE_B_EXTERNAL_ID}] [EXAM-B] Blocked issue whose green PR waits on review",
             [CODER_LABEL, E2E_DATA_LABEL, blocked_failed, labels.pr_pending],
             body=(
                 "Tech-lead exam case B: this issue carries blocked-failed while its"
@@ -285,11 +309,17 @@ async def run_case_b(
         try:
             started = time.monotonic()
             flow.watcher = runtime.watcher
-            key = GitHubIssueKey(repo=run.repo, external_id=str(number)).stable_id()
-            await flow.issue_seen(GitHubIssueKey(repo=run.repo, external_id=str(number)), timeout_s=180)
+            try:
+                await flow.issue_seen(issue, timeout_s=180)
+            except TimeoutError:
+                # Not a harness failure: an item the engine cannot see is a
+                # finding the scorecard must carry.
+                run.notes.append(
+                    f"subject #{number} never appeared in the engine's snapshot within 180s"
+                )
             admission = engine.request_health_review()
             run.notes.append(f"health review request: {admission}")
-            logger.info("[EXAM] health review admission: %s (subject key %s)", admission, key)
+            logger.info("[EXAM] health review admission: %s", admission)
 
             async def concluded() -> bool:
                 return bool(terminal_tech_lead_runs(checkout.state_dir))
@@ -301,7 +331,7 @@ async def run_case_b(
             return await _finish(
                 run,
                 engine,
-                items=[TrackedItem(SUBJECT, number)],
+                items=[TrackedItem(SUBJECT, number, external_id=CASE_B_EXTERNAL_ID)],
                 extra_prs={SUBJECT: [seeded.number]},
                 started=started,
                 ended_by=ended_by,

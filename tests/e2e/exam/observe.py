@@ -25,7 +25,6 @@ from typing import Any, Iterable, Mapping
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.review_validity import evaluate_review_validity
-from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.tech_lead_artifacts import (
     TECH_LEAD_DECISION_FILENAME,
     TECH_LEAD_REPORT_FILENAME,
@@ -45,7 +44,7 @@ from issue_orchestrator.testing.exam import (
     TechLeadRunFact,
     WorkItemFact,
 )
-from issue_orchestrator.testing.exam.stall import ItemEvent, stall_facts
+from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
 
 from tests.e2e.fixtures import _github_adapter
 from tests.e2e.exam.seeding import describe_rollup
@@ -57,15 +56,26 @@ logger = logging.getLogger(__name__)
 class TrackedItem:
     role: str
     issue_number: int
+    external_id: str
+    """The title's ``[M0-760]`` id — the engine keys some events by it."""
 
 
-def item_events(watcher: OrchestratorWatcher, repo: str, issue_number: int) -> list[ItemEvent]:
-    key = GitHubIssueKey(repo=repo, external_id=str(issue_number)).stable_id()
-    raw = watcher.view.issue_events.get(key, ())
-    return [ItemEvent.from_stream(event) for event in raw]
+def item_events(
+    watcher: OrchestratorWatcher, item: TrackedItem, pr_numbers: Iterable[int]
+) -> list[ItemEvent]:
+    return [
+        ItemEvent.from_stream(event)
+        for event in watcher.view.global_events
+        if concerns_item(
+            event,
+            issue_keys=frozenset({str(item.issue_number), item.external_id}),
+            issue_number=item.issue_number,
+            pr_numbers=frozenset(pr_numbers),
+        )
+    ]
 
 
-def _pr_fact(repo: str, pr: PRInfo) -> PullRequestFact:
+def _pr_fact(repo: str, pr: PRInfo, *, read_checks: bool) -> PullRequestFact:
     adapter = _github_adapter(repo)
     fresh = adapter.get_pr(pr.number)
     if fresh is None:
@@ -79,7 +89,9 @@ def _pr_fact(repo: str, pr: PRInfo) -> PullRequestFact:
         labels=frozenset(fresh.labels),
         branch=fresh.branch,
         branch_exists=adapter.branch_exists(fresh.branch),
-        checks=describe_rollup(adapter.read_pr_status_check_rollup(fresh.number)),
+        checks=describe_rollup(adapter.read_pr_status_check_rollup(fresh.number))
+        if read_checks
+        else "NOT_READ",
     )
 
 
@@ -102,7 +114,10 @@ def observe_item(
     item: TrackedItem,
     watcher: OrchestratorWatcher,
     extra_pr_numbers: Iterable[int] = (),
+    read_checks: bool = True,
 ) -> WorkItemFact:
+    """The item's final facts; ``read_checks=False`` skips the GraphQL rollup
+    read for the cheap progress probe the drive loop makes."""
     adapter = _github_adapter(repo)
     issue = adapter.get_issue(item.issue_number)
     if issue is None:
@@ -114,10 +129,13 @@ def observe_item(
             if pr is None:
                 raise RuntimeError(f"seeded PR #{number} vanished while observing")
             linked[number] = pr
-    facts = tuple(_pr_fact(repo, pr) for pr in sorted(linked.values(), key=lambda p: p.number))
+    facts = tuple(
+        _pr_fact(repo, pr, read_checks=read_checks)
+        for pr in sorted(linked.values(), key=lambda p: p.number)
+    )
     open_prs = [adapter.get_pr(f.number) for f in facts if f.state.is_open]
     labels = LabelManager(config)
-    events = item_events(watcher, repo, item.issue_number)
+    events = item_events(watcher, item, (fact.number for fact in facts))
     return WorkItemFact(
         role=item.role,
         issue_number=item.issue_number,

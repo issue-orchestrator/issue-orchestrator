@@ -41,8 +41,53 @@ class ItemEvent:
         return cls(name=name, at=str(at), payload=payload)
 
 
+def concerns_item(
+    raw: Mapping[str, Any],
+    *,
+    issue_keys: frozenset[str],
+    issue_number: int,
+    pr_numbers: frozenset[int],
+) -> bool:
+    """Whether one stream event is about this work item.
+
+    The engine keys an item's events inconsistently: by issue number
+    (``"7305"``), by the title's external id (``"M0-760"``), and — for review
+    events — by the PR number (``"7306"``). Payloads that name the item carry
+    ``issue_number`` / ``pr_number``. Any of those identifies the item.
+    """
+    key = raw.get("issue_key")
+    if isinstance(key, str) and (key in issue_keys or _is_number(key, pr_numbers)):
+        return True
+    payload = raw.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    return _as_int(payload.get("issue_number")) == issue_number or (
+        _as_int(payload.get("pr_number")) in pr_numbers
+    )
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _is_number(key: str, numbers: frozenset[int]) -> bool:
+    return _as_int(key) in numbers
+
+
 def unanswered_screen(events: Sequence[ItemEvent]) -> str:
-    """The last agent screen that never took its prompt, if any."""
+    """The last agent that never took its prompt, if any.
+
+    From the engine's side an unanswered dialog (Codex 0.156's "Folder
+    access") and an agent that died before reading are the same signal —
+    the prompt write or acceptance failed — so the report says what is known
+    rather than guessing which.
+    """
     for event in reversed(events):
         if event.name != "review_exchange.role_timeout":
             continue
@@ -51,7 +96,7 @@ def unanswered_screen(events: Sequence[ItemEvent]) -> str:
             role = event.payload.get("role") or "agent"
             composer = event.payload.get("composer_state")
             suffix = f", composer {composer}" if composer else ""
-            return f"{role}: {failure}{suffix}"
+            return f"{role} never took its prompt ({failure}{suffix})"
     return ""
 
 

@@ -119,7 +119,9 @@ def test_an_agent_that_never_took_its_prompt_is_an_unanswered_screen() -> None:
         _event("review_exchange.role_timeout", role="reviewer", failure_reason="process_exited_before_response"),
     ]
 
-    assert unanswered_screen(events) == "reviewer: prompt_not_accepted, composer undetermined"
+    assert unanswered_screen(events) == (
+        "reviewer never took its prompt (prompt_not_accepted, composer undetermined)"
+    )
 
 
 def test_a_process_that_simply_exited_is_not_an_unanswered_screen() -> None:
@@ -134,3 +136,29 @@ def test_stream_events_without_a_type_are_refused() -> None:
         ItemEvent.from_stream({"payload": {}})
     parsed = ItemEvent.from_stream({"type": "session.started", "payload": {"timestamp": "t9"}})
     assert (parsed.name, parsed.at) == ("session.started", "t9")
+
+
+def _concerns(raw: dict) -> bool:
+    from issue_orchestrator.testing.exam.stall import concerns_item
+
+    return concerns_item(
+        raw,
+        issue_keys=frozenset({"7305", "M0-760"}),
+        issue_number=7305,
+        pr_numbers=frozenset({7306}),
+    )
+
+
+def test_item_events_are_recognised_by_every_key_the_engine_uses() -> None:
+    """Seen live: one item's events carried "7305", "M0-760" and "7306"."""
+    assert _concerns({"type": "session.started", "issue_key": "7305"})
+    assert _concerns({"type": "claim.acquired", "issue_key": "M0-760"})
+    assert _concerns({"type": "review.started", "issue_key": "7306"})
+    assert _concerns({"type": "review.queued", "payload": {"issue_number": 7305}})
+    assert _concerns({"type": "pr.view_changed", "payload": {"pr_number": "7306"}})
+
+
+def test_other_items_and_housekeeping_are_not_the_items_events() -> None:
+    assert not _concerns({"type": "tick.completed", "issue_key": None, "payload": {"tick_id": 7305}})
+    assert not _concerns({"type": "session.started", "issue_key": "7307"})
+    assert not _concerns({"type": "review.queued", "payload": {"issue_number": 7307, "pr_number": True}})
