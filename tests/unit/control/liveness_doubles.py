@@ -271,25 +271,27 @@ class _PassthroughLiveness:
 PASSTHROUGH_LIVENESS = _PassthroughLiveness()
 
 
-def _queued_on_issue_one(_record_id: str):
-    from types import SimpleNamespace
+class QueuedOnIssueOne:
+    """Record facts for drain tests that do not look at them: every record is
+    queued on issue 1 with no attached evidence."""
 
-    from issue_orchestrator.domain.validated_work import ValidatedWorkState
+    def get(self, _record_id: str):
+        from types import SimpleNamespace
 
-    return SimpleNamespace(key=SimpleNamespace(issue_number=1), state=ValidatedWorkState.QUEUED)
+        from issue_orchestrator.domain.validated_work import ValidatedWorkState
+
+        return SimpleNamespace(key=SimpleNamespace(issue_number=1), state=ValidatedWorkState.QUEUED)
+
+    def attached_evidence(self, _record_id: str) -> tuple:
+        return ()
 
 
-def drain_liveness(
-    owner: ActionLivenessOwner | None = None,
-    *,
-    record_disposition=_queued_on_issue_one,
-    attached_evidence=lambda _record_id: frozenset(),
-):
-    """A recovery-drain liveness over an in-memory owner (#7350)."""
+def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None):
+    """A recovery-drain liveness over an in-memory owner (#7350); ``records``
+    is the validated-work store (or a stand-in for its two fact reads)."""
     from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
 
     return RecoveryDrainLiveness(
         owner=owner or liveness_owner(),
-        record_disposition=record_disposition,
-        attached_evidence=attached_evidence,
+        records=records if records is not None else QueuedOnIssueOne(),
     )

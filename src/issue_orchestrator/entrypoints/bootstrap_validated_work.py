@@ -350,12 +350,7 @@ def build_validated_work_recovery(
     # and the scope sweep.
     liveness = RecoveryDrainLiveness(
         owner=action_liveness,
-        record_disposition=lambda record_id: owners.records.record_for_id(
-            record_id
-        ).disposition,
-        attached_evidence=lambda record_id: frozenset(
-            row.evidence_id for row in owners.records.attached_evidence(record_id)
-        ),
+        records=owners.records,
     )
     return RecoveryDrain(
         queue=owners.records,

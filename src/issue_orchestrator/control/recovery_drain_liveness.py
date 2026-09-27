@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from ..domain.action_liveness import (
     ActionIdentity,
@@ -43,6 +44,7 @@ from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_commands import ValidatedWorkDisposition
+from ..domain.validated_work_store import EvidenceRow
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..ports.repository_host import host_rate_limit_of
@@ -99,17 +101,28 @@ _OUTCOMES: dict[
 }
 
 
+class RecordFacts(Protocol):
+    """The record facts a drain key is made of: the validated-work store.
+
+    Only the disposition and the attached evidence rows -- never the full
+    record, whose read is the operation's own and may fail after admission,
+    where that failure is settled and bounded under a stable key.
+    """
+
+    def get(self, record_id: str) -> ValidatedWorkDisposition: ...
+
+    def attached_evidence(self, record_id: str) -> tuple[EvidenceRow, ...]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryDrainLiveness:
     """Keys drain requests and settles their outcomes through the one owner."""
 
     owner: ActionLivenessOwner
-    #: A record's current disposition: its issue (where a park is escalated)
-    #: and its durable state (a fact of the question). One read, one owner.
-    record_disposition: Callable[[str], ValidatedWorkDisposition]
-    #: The evidence ids attached to a record besides its current one: the
-    #: scope judgement reads them too, so they are facts of its question.
-    attached_evidence: Callable[[str], frozenset[str]]
+    #: A record's disposition gives its issue (where a park is escalated) and
+    #: its durable state; its attached evidence, which the scope judgement
+    #: also reads, is a fact of that question.
+    records: RecordFacts
 
     def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
         if isinstance(request, RemoteAuthorityRefreshRequest):
@@ -130,7 +143,9 @@ class RecoveryDrainLiveness:
         bounded under it; once readable, the real set is a new question.
         """
         try:
-            attached: object = self.attached_evidence(request.record_id)
+            attached: object = frozenset(
+                row.evidence_id for row in self.records.attached_evidence(request.record_id)
+            )
         except Exception:
             logger.warning(
                 "Attached evidence of record %s is unreadable", request.record_id, exc_info=True
@@ -143,7 +158,7 @@ class RecoveryDrainLiveness:
     def _record_key(
         self, action: str, record_id: str, evidence_id: str, **extra: object
     ) -> LivenessKey:
-        disposition = self.record_disposition(record_id)
+        disposition = self.records.get(record_id)
         facts = {
             "record_id": record_id, "evidence_id": evidence_id,
             "state": disposition.state, **extra,

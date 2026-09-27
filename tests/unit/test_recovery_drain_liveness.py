@@ -88,18 +88,23 @@ class _Engine:
             clock=lambda: self.now.value,
             liveness=drain_liveness(
                 self.owner,
-                record_disposition=self._disposition,
+                records=self,
             ),
         )
 
     #: A durable state another path moved the record to, else its stored one.
     moved_to = None
 
-    def _disposition(self, record_id: str):
-        disposition = self.store.record_for_id(record_id).disposition
+    # The record facts the drain's keys read: the real store, with the state
+    # optionally moved on by "another path".
+    def get(self, record_id: str):
+        disposition = self.store.get(record_id)
         if self.moved_to is None:
             return disposition
         return dataclasses.replace(disposition, state=self.moved_to)
+
+    def attached_evidence(self, record_id: str):
+        return self.store.attached_evidence(record_id)
 
     def passes(self, count: int) -> None:
         for _ in range(count):

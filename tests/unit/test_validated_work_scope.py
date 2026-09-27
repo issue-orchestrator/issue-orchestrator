@@ -625,8 +625,15 @@ def _scope_rig(tmp_path, proof, *, issues=(6914,)):
         source=store, store=store, execution=execution, retirement=retirement, batch_size=5,
         liveness=drain_liveness(
             owner,
-            record_disposition=lambda rid: store.record_for_id(rid).disposition,
-            attached_evidence=lambda rid: rig.attached_evidence(rid),
+            records=SimpleNamespace(
+                get=store.get,
+                # The full read the key must NOT depend on (review B r7).
+                record_for_id=lambda rid: store.record_for_id(rid),
+                attached_evidence=lambda rid: tuple(
+                    SimpleNamespace(evidence_id=evidence_id)
+                    for evidence_id in sorted(rig.attached_evidence(rid))
+                ),
+            ),
         ),
     )
 
@@ -733,6 +740,36 @@ def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp
     unreadable.clear()
     rig.passes(1)
     assert rig.proofs.count(first) == rig.policy.max_attempts + 1
+
+
+def test_an_unreadable_record_is_judged_bounded_and_never_starves_the_sweep(tmp_path):
+    """The first record's disposition reads but its full record does not. The
+    key needs only the disposition, so the failing read happens inside the
+    judgement: bounded and parked, while the second record keeps being judged
+    (review B r7)."""
+    rig = _scope_rig(tmp_path, proof=lambda record: True, issues=(6914, 6915))
+    first, second = rig.record_ids
+    before = rig.store.get(first)
+    full_read = rig.store.record_for_id
+    reads: list[str] = []
+
+    def record_for_id(record_id):
+        if record_id == first:
+            reads.append(record_id)
+            raise ValueError("evidence payload does not decode")
+        return full_read(record_id)
+
+    rig.store.record_for_id = record_for_id
+    for _ in range(10):
+        rig.sweep._owned.clear()
+        rig.passes(1)
+
+    assert len(reads) == rig.policy.max_attempts
+    assert rig.proofs.count(second) == 10
+    [parked] = rig.escalation.parked
+    assert parked.key.identity.subject == f"validated_work:{first}"
+    assert parked.key.escalation_issue == before.key.issue_number
+    assert rig.store.get(first) == before
 
 
 def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
