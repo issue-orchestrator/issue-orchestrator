@@ -162,7 +162,10 @@ def _rig(tmp_path, agent_label):
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
-        working_copy=wc, observer=observer)
+        working_copy=wc, observer=observer,
+        # No remote in this rig: the base is unreadable, so the kind alone
+        # decides here (the ahead-of-base rule has its own tests).
+        base_ref=lambda: "origin/main")
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
