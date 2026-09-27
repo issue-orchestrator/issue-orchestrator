@@ -240,8 +240,72 @@ def resolve_recorded_transition(
     return None
 
 
+class TerminalRetirementPolicy(Enum):
+    """How a terminal write treats a signature ALREADY terminal under another id.
+
+    Two kinds of writer retire a case file, and they mean different things by
+    it. A REVIEWED decision (bulk lifecycle reconciliation) states which
+    terminal disposition an operator chose; landing it on a signature some
+    other transition already retired would silently overrule that history, so
+    it must be refused — changing a terminal disposition is a reopen, and a
+    reopen needs its own explicit transition. An OBSERVED outcome (promotion
+    settlement) only reports that the lane for this signature has ended; if
+    shared authority already recorded a terminal disposition, that disposition
+    IS the answer, whichever writer recorded it and under whatever identity.
+
+    Refusing an observed outcome is not fail-fast, it is a livelock: nothing
+    can ever make the write admissible, so the writer retries on every tick
+    forever (#7345). The writer declares its kind; what adoption MEANS is
+    decided once, in :func:`resolve_admitted_transition`.
+    """
+
+    REFUSE = "refuse"
+    ADOPT = "adopt"
+
+
+def resolve_admitted_transition(
+    entry: PatternRegistryEntry,
+    requested: CaseFileLifecycleTransition,
+    *,
+    already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
+) -> CaseFileLifecycleTransition | None:
+    """The recorded transition that already ANSWERS *requested*, or ``None``.
+
+    Two recorded facts can answer a lifecycle write without a new one:
+
+    * the same ``transition_id`` — an idempotent replay
+      (:func:`resolve_recorded_transition`, which also refuses a changed
+      payload under a reused identity);
+    * under :attr:`TerminalRetirementPolicy.ADOPT`, a TERMINAL request against
+      a signature whose latest transition is already terminal — the recorded
+      terminal transition is adopted as the outcome, never overwritten.
+
+    A non-terminal request is never answered by adoption: moving a terminal
+    signature back to ``active``/``needs_human`` is a reopen, and stays
+    refused by :func:`admit_lifecycle_transition` for every writer.
+
+    Admission and the lifecycle owner's result resolution both go through this,
+    so the transition a registry treats as "already recorded" and the one the
+    owner reports back to its caller cannot disagree.
+    """
+    recorded = resolve_recorded_transition(entry, requested)
+    if recorded is not None:
+        return recorded
+    if (
+        already_terminal is TerminalRetirementPolicy.ADOPT
+        and requested.terminal
+        and entry.lifecycle
+        and entry.lifecycle[-1].terminal
+    ):
+        return entry.lifecycle[-1]
+    return None
+
+
 def admit_lifecycle_transition(
-    entry: PatternRegistryEntry, transition: CaseFileLifecycleTransition
+    entry: PatternRegistryEntry,
+    transition: CaseFileLifecycleTransition,
+    *,
+    already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
 ) -> bool:
     """THE admission rule for one durable lifecycle write, in one place.
 
@@ -260,8 +324,18 @@ def admit_lifecycle_transition(
     but admitted locally — closing the case file twice and appending two
     terminal transitions, depending only on which registry a deployment runs
     (#7247 final abstraction pass).
+
+    ``already_terminal`` is the writer's declared kind: under
+    :attr:`TerminalRetirementPolicy.ADOPT` a terminal write on an
+    already-terminal signature is answered by the recorded terminal transition
+    (``True``, like a replay) instead of refused (#7345).
     """
-    if resolve_recorded_transition(entry, transition) is not None:
+    if (
+        resolve_admitted_transition(
+            entry, transition, already_terminal=already_terminal
+        )
+        is not None
+    ):
         return True
     if entry.lifecycle and entry.lifecycle[-1].terminal:
         raise PatternRegistryError(
@@ -471,6 +545,7 @@ class PatternCaseFileRegistry(Protocol):
         issue_number: int,
         expected_revision: str | None = None,
         expected_signatures: frozenset[str] | None = None,
+        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
     ) -> PatternReservation:
         """Reserve one exact terminal transition against its canonical case file.
 
@@ -485,6 +560,13 @@ class PatternCaseFileRegistry(Protocol):
         reviewed plan: see :func:`require_reviewed_revision`. It is checked once
         the reservation is known to be new — an in-flight retirement is a resume
         of the same reviewed intent, not a second decision.
+
+        ``already_terminal`` is the writer's declared kind
+        (:class:`TerminalRetirementPolicy`). Under ``ADOPT``, a signature that is
+        already terminal under a different transition answers ``COMMITTED`` with
+        the current entry, exactly as a replay does, rather than raising; the
+        recorded terminal transition is resolved by
+        :func:`resolve_admitted_transition` (#7345).
         """
         ...
 

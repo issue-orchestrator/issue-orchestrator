@@ -13,8 +13,9 @@ from ..ports.pattern_registry import (
     PatternReservation,
     PatternReservationState,
     PatternRetirementPhase,
+    TerminalRetirementPolicy,
     require_canonical_case_file,
-    resolve_recorded_transition,
+    resolve_admitted_transition,
 )
 from .comment_publication import ensure_comment_published
 from .tech_lead_case_file_owner import AmbiguousPatternPublicationError
@@ -26,9 +27,20 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class CaseFileRetirementOutcome:
+    """What durable authority recorded for one retirement request.
+
+    ``transition`` is ALWAYS the registry's recorded transition. It differs from
+    the request only when ``adopted``: the signature was already terminal under
+    another transition and the writer declared
+    :attr:`TerminalRetirementPolicy.ADOPT`, so its disposition may differ from
+    the one requested (#7345). Callers that project the outcome into their own
+    ledgers must read the disposition from here, never from their request.
+    """
+
     issue_number: int
     transition: CaseFileLifecycleTransition
     deduplicated: bool
+    adopted: bool = False
 
 
 def lifecycle_marker(transition_id: str) -> str:
@@ -87,10 +99,17 @@ class PatternCaseFileLifecycleOwner:
         signature: str,
         transition: CaseFileLifecycleTransition,
         issue_number: int,
+        already_terminal: TerminalRetirementPolicy,
         expected_revision: str | None = None,
         expected_signatures: frozenset[str] | None = None,
     ) -> CaseFileRetirementOutcome:
         """Publish evidence, close idempotently, then commit terminal authority.
+
+        ``already_terminal`` is REQUIRED so every writer states what a signature
+        some other transition already retired means to it: a reviewed decision
+        refuses (changing a terminal disposition is a reopen), an observed
+        outcome adopts the recorded disposition and performs no GitHub effect
+        (#7345). See :class:`TerminalRetirementPolicy`.
 
         ``issue_number`` is the case file the CALLER is authorized to mutate —
         the guarded command's reconciliation subject. It rides into the reserving
@@ -108,10 +127,15 @@ class PatternCaseFileLifecycleOwner:
             issue_number=issue_number,
             expected_revision=expected_revision,
             expected_signatures=expected_signatures,
+            already_terminal=already_terminal,
         )
         if reservation.state is PatternReservationState.COMMITTED:
             return self._outcome(
-                reservation.entry, issue_number, transition, deduplicated=True
+                reservation.entry,
+                issue_number,
+                transition,
+                deduplicated=True,
+                already_terminal=already_terminal,
             )
         reservation = self._recover_or_acquire(reservation, issue_number)
         entry = self._subject(reservation.entry, issue_number)
@@ -246,6 +270,7 @@ class PatternCaseFileLifecycleOwner:
         requested: CaseFileLifecycleTransition,
         *,
         deduplicated: bool,
+        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
     ) -> CaseFileRetirementOutcome:
         """Report the transition the REGISTRY committed, never the attempt's.
 
@@ -256,20 +281,33 @@ class PatternCaseFileLifecycleOwner:
         authority says something earlier. Resolving *requested* against the
         committed lifecycle keeps this owner's result and its authority the same
         fact (#7247 review F1).
+
+        An ADOPTED outcome is resolved by the same rule the registry admitted it
+        under (:func:`resolve_admitted_transition`), so the disposition reported
+        here is the one shared authority recorded, not the one requested.
         """
         entry = self._subject(entry, issue_number)
+        committed = self._committed_transition(
+            entry, requested, already_terminal=already_terminal
+        )
         return CaseFileRetirementOutcome(
             issue_number=issue_number,
-            transition=self._committed_transition(entry, requested),
+            transition=committed,
             deduplicated=deduplicated,
+            adopted=committed.transition_id != requested.transition_id,
         )
 
     @staticmethod
     def _committed_transition(
-        entry: "PatternRegistryEntry", requested: CaseFileLifecycleTransition
+        entry: "PatternRegistryEntry",
+        requested: CaseFileLifecycleTransition,
+        *,
+        already_terminal: TerminalRetirementPolicy,
     ) -> CaseFileLifecycleTransition:
-        """The durable record of *requested*, matched on its stable identity."""
-        recorded = resolve_recorded_transition(entry, requested)
+        """The durable transition that answers *requested*."""
+        recorded = resolve_admitted_transition(
+            entry, requested, already_terminal=already_terminal
+        )
         if recorded is None:
             raise PatternRegistryError(
                 f"pattern {entry.signature!r} reports a completed retirement, but"

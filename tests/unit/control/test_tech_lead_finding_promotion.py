@@ -64,7 +64,10 @@ from issue_orchestrator.ports.promotion_target import (
     PromotedIssueOutcome,
 )
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
-from issue_orchestrator.ports.pattern_registry import PatternRetirementPhase
+from issue_orchestrator.ports.pattern_registry import (
+    PatternRetirementPhase,
+    TerminalRetirementPolicy,
+)
 from issue_orchestrator.ports.tech_lead_authority import (
     InMemoryTechLeadAuthorityStore,
     TechLeadPromotionConflictError,
@@ -2382,6 +2385,7 @@ class TestTerminalCaseFilesAreNeverPromoted:
                 recorded_at="2026-09-12T01:40:00+00:00",
             ),
             issue_number=issue_number,
+            already_terminal=TerminalRetirementPolicy.REFUSE,
         )
 
     def _promotable(self, config, authority):
@@ -2514,6 +2518,7 @@ class TestTerminalCaseFilesAreNeverPromoted:
                 recorded_at="2026-09-12T01:40:00+00:00",
             ),
             issue_number=65,
+            already_terminal=TerminalRetirementPolicy.REFUSE,
         )
 
         assert self._promotable(config, authority) == ()
@@ -2730,6 +2735,7 @@ class TestAnAdmittedRetirementLeavesThePromotionLaneImmediately:
             signature=self.SIGNATURE,
             transition=transition,
             issue_number=self.CASE_FILE,
+            already_terminal=TerminalRetirementPolicy.REFUSE,
         )
 
         settled = shared.read(signature=self.SIGNATURE)
@@ -2757,3 +2763,247 @@ class TestAnAdmittedRetirementLeavesThePromotionLaneImmediately:
         [evidence] = authority.list_pattern_evidence()
         assert evidence.observation_count == 3 and evidence.blocks_promotion
         assert self._promotable(authority) == []
+
+
+# --- settlement adopts a retirement another writer already recorded (#7345) --
+
+
+class TestSettlementAdoptsAnAlreadyTerminalCaseFile:
+    """The porchpin livelock, reproduced in its exact registry shape.
+
+    The #7240 bulk reconciliation retired the case file as ``shipped`` under its
+    own transition id. The promoted issue was later closed WITHOUT a closing PR
+    (the fix landed in another repo's PR), so settlement planned ``declined``
+    under ``promotion:<sig>:<repo>:<n>:declined``. Admission refused anything on
+    a terminal entry that was not a same-id replay, the refusal came before the
+    ledger write, and the promotion stayed ``promoted`` — replanned, re-read,
+    and re-refused on every tick (1,963 times).
+    """
+
+    SIGNATURE = "tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard"
+    CASE_FILE = 216
+    TARGET = "porchpin/porchpin"
+    TARGET_ISSUE = 229
+    RECONCILIATION_ID = f"7240-porchpin-case-files-2026-09:{SIGNATURE}"
+
+    @staticmethod
+    def _counting_target():
+        class Counting(InMemoryPromotionTargetHost):
+            def __init__(self):
+                super().__init__()
+                self.reads: list[int] = []
+
+            def read_outcome(self, *, repo: str, issue_number: int):
+                self.reads.append(issue_number)
+                return super().read_outcome(repo=repo, issue_number=issue_number)
+
+        return Counting()
+
+    def _world(self, *, recorded_disposition: str = "shipped"):
+        """Shared registry already terminal under the RECONCILIATION's id."""
+        from issue_orchestrator.adapters.github.pattern_registry import (
+            GitHubRefPatternRegistry,
+        )
+        from issue_orchestrator.control.pattern_registry import (
+            MirroredPatternCaseFileRegistry,
+        )
+        from issue_orchestrator.domain.tech_lead_findings import (
+            CaseFileLifecycleTransition,
+            PendingCaseFile,
+        )
+        from tests.unit.adapters.github.test_ref_claim_adapter import (
+            FakeGitHubRefClient,
+        )
+
+        shared = GitHubRefPatternRegistry(
+            cast(Any, FakeGitHubRefClient()), claimant_id="porchpin", lease_seconds=30
+        )
+        reserved = shared.reserve(
+            PendingCaseFile(
+                signature=self.SIGNATURE,
+                title="Pattern case file",
+                idempotency_marker="<!-- m -->",
+                body_observation_id="obs-1",
+                fix_class="code",
+            )
+        )
+        shared.finalize(
+            signature=self.SIGNATURE,
+            reservation_id=reserved.entry.reservation_id,
+            issue_number=self.CASE_FILE,
+        )
+        authority = InMemoryTechLeadAuthorityStore()
+        registry = MirroredPatternCaseFileRegistry(
+            shared=shared, local=authority, claimant_id="porchpin"
+        )
+        registry.synchronize()
+        # The #7240 reconciliation: a REVIEWED decision, under its own id.
+        PatternCaseFileLifecycleOwner(
+            registry=registry, repository_host=cast(Any, _RecordingRepository())
+        ).retire(
+            signature=self.SIGNATURE,
+            transition=CaseFileLifecycleTransition(
+                transition_id=self.RECONCILIATION_ID,
+                disposition=recorded_disposition,  # type: ignore[arg-type]
+                reason="Reviewed backlog reconciliation.",
+                evidence=("issue-orchestrator/issue-orchestrator#7238",),
+                recorded_at="2026-09-12T01:40:00+00:00",
+            ),
+            issue_number=self.CASE_FILE,
+            already_terminal=TerminalRetirementPolicy.REFUSE,
+        )
+        authority.record_promotion(
+            promotion=_promotion(
+                self.SIGNATURE,
+                repo=self.TARGET,
+                issue=self.TARGET_ISSUE,
+                case_file=self.CASE_FILE,
+            )
+        )
+        return shared, registry, authority
+
+    def _tick(self, config, authority, target, budget):
+        _promotable, _updates, settled = gather_finding_promotion_facts(
+            config, authority=authority, target=target, read_budget=budget
+        )
+        return plan_promotion_settlements(settled)
+
+    def _apply(self, action, *, registry, authority, repository):
+        return apply_settle_tech_lead_promotion(
+            action,
+            repository_host=cast(Any, repository),
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-23T07:27:00+00:00",
+        )
+
+    def test_a_decline_adopts_the_recorded_shipped_retirement_and_converges(self):
+        shared, registry, authority = self._world()
+        target = self._counting_target()
+        # Closed as completed with NO closing PR: the fix merged elsewhere.
+        target.outcomes[(self.TARGET, self.TARGET_ISSUE)] = PromotedIssueOutcome(
+            state="closed"
+        )
+        config = _config()
+        budget = PromotionReadBudget()
+
+        [action] = self._tick(config, authority, target, budget)
+        assert isinstance(action, SettleTechLeadPromotionAction)
+        assert not action.shipped, "baseline: settlement wants 'declined'"
+
+        repository = _RecordingRepository()
+        result = self._apply(
+            action, registry=registry, authority=authority, repository=repository
+        )
+
+        assert result.success, result.error
+        assert result.details["adopted"] is True
+        # The ledger row settles to what shared authority RECORDED.
+        promotion = authority.load_promotion(signature=self.SIGNATURE)
+        assert promotion is not None
+        assert promotion.state == PROMOTION_STATE_SHIPPED
+        # No merged PR url exists, so no shipped-fix row can be evidenced.
+        assert authority.list_recent_shipped_fixes(limit=5) == ()
+        # Adoption performs no GitHub effect and writes no conflicting transition.
+        assert repository.comments == [] and repository.closed == []
+        entry = shared.read(signature=self.SIGNATURE)
+        assert entry is not None
+        assert [item.transition_id for item in entry.lifecycle] == [
+            self.RECONCILIATION_ID
+        ]
+        assert entry.disposition == "shipped"
+
+        # The NEXT tick plans nothing and reads nothing.
+        assert self._tick(config, authority, target, budget) == []
+        assert target.reads == [self.TARGET_ISSUE]
+
+    def test_a_merged_fix_adopts_a_recorded_decline_without_a_shipped_fix_row(self):
+        shared, registry, authority = self._world(recorded_disposition="declined")
+        target = self._counting_target()
+        target.outcomes[(self.TARGET, self.TARGET_ISSUE)] = PromotedIssueOutcome(
+            state="closed", merged_pr_url="https://github.com/porchpin/porchpin/pull/9"
+        )
+        [action] = self._tick(_config(), authority, target, PromotionReadBudget())
+        assert isinstance(action, SettleTechLeadPromotionAction)
+        assert action.shipped
+
+        result = self._apply(
+            action,
+            registry=registry,
+            authority=authority,
+            repository=_RecordingRepository(),
+        )
+
+        assert result.success, result.error
+        assert result.details == {
+            "issue_number": self.CASE_FILE,
+            "shipped": False,
+            "adopted": True,
+        }
+        promotion = authority.load_promotion(signature=self.SIGNATURE)
+        assert promotion is not None
+        assert promotion.state == PROMOTION_STATE_DECLINED
+        assert promotion.shipped_pr_url == ""
+        assert authority.list_recent_shipped_fixes(limit=5) == ()
+        entry = shared.read(signature=self.SIGNATURE)
+        assert entry is not None and entry.disposition == "declined"
+
+    def test_an_own_settlement_is_not_reported_as_adopted(self):
+        """The ordinary path is unchanged: its own transition, not adoption."""
+        authority = InMemoryTechLeadAuthorityStore()
+        authority.record_promotion(promotion=_promotion("anchor-close"))
+        action = SettleTechLeadPromotionAction(
+            signature="anchor-close",
+            case_file_issue_number=65,
+            target_repo=UPSTREAM,
+            target_issue_number=500,
+        )
+        repository, registry = _settlement_ports(
+            authority, signature=action.signature, case_file=65
+        )
+
+        result = apply_settle_tech_lead_promotion(
+            action,
+            repository_host=repository,
+            authority=authority,
+            pattern_registry=registry,
+            now_iso="2026-09-10T12:00:00+00:00",
+        )
+
+        assert result.success
+        assert result.details["adopted"] is False
+        repository.update_issue_state.assert_called_once_with(65, "closed")
+        entry = registry.read(signature="anchor-close")
+        assert entry is not None
+        assert [item.transition_id for item in entry.lifecycle] == [
+            f"promotion:anchor-close:{UPSTREAM}:500:declined"
+        ]
+
+
+@pytest.mark.parametrize(
+    ("disposition", "state"),
+    (
+        ("shipped", PROMOTION_STATE_SHIPPED),
+        ("declined", PROMOTION_STATE_DECLINED),
+        ("superseded", PROMOTION_STATE_DECLINED),
+        ("invalid", PROMOTION_STATE_DECLINED),
+    ),
+)
+def test_every_terminal_disposition_projects_onto_one_promotion_state(
+    disposition, state
+):
+    from issue_orchestrator.domain.tech_lead_findings import (
+        promotion_state_for_retirement,
+    )
+
+    assert promotion_state_for_retirement(disposition) == state
+
+
+@pytest.mark.parametrize("disposition", ("active", "needs_human"))
+def test_a_nonterminal_disposition_cannot_settle_a_promotion(disposition):
+    from issue_orchestrator.domain.tech_lead_findings import (
+        promotion_state_for_retirement,
+    )
+
+    with pytest.raises(ValueError, match="not terminal"):
+        promotion_state_for_retirement(disposition)
