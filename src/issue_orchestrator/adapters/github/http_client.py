@@ -2193,6 +2193,43 @@ class GitHubHttpClient:
                 raise self._incomplete_open_prs("reported another page without a cursor")
         raise self._incomplete_open_prs(f"exceeded the {page_cap * 100}-PR page cap")
 
+    def list_prs_numbered_above(
+        self, number_floor: int, *, page_cap: int = 20
+    ) -> list[dict[str, Any]]:
+        """Every PR in any state numbered above ``number_floor``, or an error.
+
+        PR numbers share the issue sequence, so every PR for an issue is
+        numbered above it: a caller that must see ALL of an issue's PRs,
+        closed ones included, asks for the PRs above its number. Walks
+        ``/pulls`` newest first through the shared fail-loud pager and stops
+        once a page reaches the floor, so the walk is bounded by the PRs
+        created since, not by the repository. A PR created mid-walk shifts
+        the offset pages down, which can repeat a PR but never skip one;
+        repeats are dropped by number.
+        """
+        collected: dict[int, dict[str, Any]] = {}
+        for batch in self._paginate_fresh(
+            f"/repos/{self._config.repo}/pulls",
+            params={"state": "all", "sort": "created", "direction": "desc", "per_page": 100},
+            start_page=1,
+            page_cap=page_cap,
+            what="pull requests",
+        ):
+            numbers: list[int] = []
+            for pr in batch:
+                if not (isinstance(pr, dict) and type(pr.get("number")) is int):
+                    raise GitHubScanIncompleteError(
+                        f"GitHub returned a malformed pull request while paging: {pr!r}",
+                        method="GET",
+                        url=f"/repos/{self._config.repo}/pulls",
+                    )
+                numbers.append(pr["number"])
+                if pr["number"] > number_floor:
+                    collected[pr["number"]] = pr
+            if min(numbers) <= number_floor:
+                break
+        return [collected[number] for number in sorted(collected)]
+
     def _incomplete_open_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
             f"Listing open pull requests {why}; refusing to treat it as complete",
