@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Protocol
 
 from ..domain.action_liveness import (
@@ -128,10 +127,9 @@ class RecoveryDrainLiveness:
     #: its durable state; its attached evidence, which the scope judgement
     #: also reads, is a fact of that question.
     records: RecordFacts
-    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
-    #: Records whose attached evidence could not be read, by when it was last
-    #: tried: re-read at most once per ``max_backoff``, never every pass.
-    _unreadable: dict[str, datetime] = field(default_factory=dict, init=False)
+    #: Records whose attached evidence could not be read: re-read only when
+    #: their "unreadable" key is admitted, never every pass.
+    _unreadable: set[str] = field(default_factory=set, init=False)
 
     def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
         if isinstance(request, RemoteAuthorityRefreshRequest):
@@ -147,29 +145,25 @@ class RecoveryDrainLiveness:
         """The scope sweep's judgement of one record (#7323's lane), over every
         evidence row it reads: newly attached evidence is a new question.
 
-        Attached evidence that cannot be read is itself a fact, under a stable
-        "unreadable" key. Its discovery is that key's first failed attempt,
-        settled here (``None``: nothing to run). Until ``max_backoff`` passes,
-        the key is made without reading again; the judgement's own read, after
-        admission, is what the budget bounds. A later re-read that succeeds is
-        a new question.
+        Attached evidence that cannot be read is a fact of its own, under a
+        stable "unreadable" key, and each failed read is that key's attempt,
+        settled here (``None``: nothing else to run). Once a read has failed,
+        the next one is made only when that key is admitted -- its backoff
+        paces the reads and its park stops them until an operator releases
+        it. A read that succeeds is a new question.
         """
         record_id = request.record_id
-        now = self.clock()
-        tried = self._unreadable.get(record_id)
-        if tried is not None and now - tried < self.owner.policy.max_backoff:
-            return self._scope_key(request, _UNREADABLE)
+        unreadable = self._scope_key(request, _UNREADABLE)
+        if record_id in self._unreadable and not self.owner.admit(unreadable).admitted:
+            return unreadable
         try:
             attached = frozenset(row.evidence_id for row in self.records.attached_evidence(record_id))
         except Exception as error:
             logger.warning("Attached evidence of record %s is unreadable", record_id, exc_info=True)
-            self._unreadable[record_id] = now
-            key = self._scope_key(request, _UNREADABLE)
-            if tried is not None:
-                return key
-            self.settle_error(key, error)
+            self._unreadable.add(record_id)
+            self.settle_error(unreadable, error)
             return None
-        self._unreadable.pop(record_id, None)
+        self._unreadable.discard(record_id)
         return self._scope_key(request, attached)
 
     def _scope_key(self, request: RecoveryRecordRequest, attached: object) -> LivenessKey:

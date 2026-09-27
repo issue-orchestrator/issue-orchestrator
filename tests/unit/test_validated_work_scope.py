@@ -634,7 +634,6 @@ def _scope_rig(tmp_path, proof, *, issues=(6914,)):
                     for evidence_id in sorted(rig.attached_evidence(rid))
                 ),
             ),
-            clock=rig.clock,
         ),
     )
 
@@ -709,8 +708,9 @@ def test_a_retirement_the_store_keeps_refusing_is_bounded(tmp_path):
 def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp_path):
     """The first record's attached evidence cannot be read, by the key and by
     the proof alike. The READ is attempted exactly max_attempts times, then
-    the record parks; the second record is still judged every pass; a paced
-    re-read that succeeds is a new question (review B r5, r8)."""
+    the record parks and reads stop; the second record is still judged every
+    pass; after a release, a read that succeeds is a new question (review B
+    r5, r8, r10)."""
     from datetime import timedelta
 
     unreadable: set[str] = set()
@@ -743,8 +743,18 @@ def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp
     assert parked.key.identity.subject == f"validated_work:{first}"
     assert "evidence store unreadable" in parked.last_reason
 
+    # Parked: no further reads, however long it stays unreadable.
+    rig.passes(10, step=rig.policy.max_backoff)
+    assert reads.count(first) == rig.policy.max_attempts
+
+    # Healed, and an operator releases the park: read once more, and the
+    # readable set is a new question, judged at once.
     unreadable.clear()
-    rig.clock.advance(rig.policy.max_backoff)
+    from issue_orchestrator.domain.action_liveness import ActionIdentity
+
+    rig.sweep._liveness.owner.release_identity(
+        ActionIdentity(f"validated_work:{first}", "judge_record_scope")
+    )
     judged = rig.proofs.count(first)
     rig.passes(1, step=minute)
     assert rig.proofs.count(first) == judged + 1
@@ -812,6 +822,35 @@ def test_retiring_a_record_releases_every_lanes_park(tmp_path):
     rig.clock.advance(rig.policy.max_backoff)
     liveness.owner.reconcile_effects()
     assert recover_key in [row.key for batch in rig.escalation.released for row in batch]
+    assert rig.escalation.unblocks == [(recover_key.escalation_issue, True)]
+
+
+def test_a_retirement_that_committed_before_a_later_step_raised_still_resolves(tmp_path):
+    """The store retires the record, then the block projection raises. The
+    record is resolved, so every lane's park is released rather than the
+    error being counted against a record the sweep will never see again
+    (review B r10)."""
+    from issue_orchestrator.domain.action_liveness import ActionOutcome
+    from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+
+    rig = _scope_rig(tmp_path, proof=lambda record: False)
+    record = rig.store.record_for_id(rig.record_id)
+    liveness = rig.sweep._liveness
+    recover_key = liveness.key(
+        RecoveryRecordRequest(rig.record_id, record.current_evidence.evidence_id)
+    )
+    liveness.owner.record(recover_key, ActionOutcome.permanent("publish refused"))
+    rig.sweep._retirement._blocks.reconcile_issue_block.side_effect = RuntimeError(
+        "label projection failed"
+    )
+
+    report = rig.sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert rig.store.get(rig.record_id).state is ValidatedWorkState.ABANDONED
+    assert report.retired == (rig.record_id,)
+    assert rig.rows.rows == {}
+    rig.clock.advance(rig.policy.max_backoff)
+    liveness.owner.reconcile_effects()
     assert rig.escalation.unblocks == [(recover_key.escalation_issue, True)]
 
 

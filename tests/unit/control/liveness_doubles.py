@@ -286,7 +286,7 @@ class QueuedOnIssueOne:
         return ()
 
 
-def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None, clock=None):
+def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None):
     """A recovery-drain liveness over an in-memory owner (#7350); ``records``
     is the validated-work store (or a stand-in for its two fact reads)."""
     from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
@@ -294,5 +294,4 @@ def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None, cl
     return RecoveryDrainLiveness(
         owner=owner or liveness_owner(),
         records=records if records is not None else QueuedOnIssueOne(),
-        clock=clock if clock is not None else ManualClock(),
     )

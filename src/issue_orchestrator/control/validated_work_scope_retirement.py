@@ -214,6 +214,11 @@ class OutOfScopeRetirementSweep:
             judgement = self._judge(request)
         except Exception as error:
             logger.exception("Recovery scope judgement failed for record %s", request.record_id)
+            if self._resolved(request.record_id):
+                # The retirement committed before something after it raised:
+                # the record is resolved, so every lane's question is answered.
+                self._liveness.resolve_record(request.record_id)
+                return True
             self._liveness.settle_error(key, error)
             return False
         self._liveness.record(key, judgement.outcome)
@@ -221,6 +226,14 @@ class OutOfScopeRetirementSweep:
             # Resolved: no lane's question about this record is still open.
             self._liveness.resolve_record(request.record_id)
         return judgement.retired
+
+    def _resolved(self, record_id: str) -> bool:
+        """Whether the record is durably resolved; unknown counts as not."""
+        try:
+            return not self._store.get(record_id).unresolved
+        except Exception:
+            logger.warning("Record %s disposition is unreadable", record_id, exc_info=True)
+            return False
 
     def _judge(self, request: RecoveryRecordRequest) -> "_Judgement":
         """What judging the record came to, in the liveness owner's terms."""
