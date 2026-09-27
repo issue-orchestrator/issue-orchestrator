@@ -260,29 +260,21 @@ class ActionApplier:
         return result
 
     def apply_all(
-        self,
-        actions: Sequence[Action],
-        on_result: Callable[[ActionResult], None] | None = None,
+        self, actions: Sequence[Action], on_result: Callable[[ActionResult], None] | None = None
     ) -> list[ActionResult]:
-        """Apply multiple actions in sequence.
+        """Apply actions in sequence, returning their results in order.
 
-        Args:
-            actions: The actions to apply
-            on_result: Told each result as it lands, so a caller keeps the
-                progress of a batch whose later action raises (#7362).
-
-        Returns:
-            List of ActionResults
+        ``on_result`` is told each result as it lands, so a caller keeps the
+        progress of a batch whose later action raises (#7362).
         """
         self._active_label_mutation_stats = LabelMutationStats()
         self._active_label_mutation_by_issue = {}
         try:
             results: list[ActionResult] = []
             for action in actions:
-                result = self.apply(action)
-                results.append(result)
+                results.append(self.apply(action))
                 if on_result is not None:
-                    on_result(result)
+                    on_result(results[-1])
             return results
         finally:
             self._emit_label_mutation_summary()
