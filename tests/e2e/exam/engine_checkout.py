@@ -17,9 +17,10 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from tests.e2e.exam.run_identity import RunIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +53,19 @@ class EngineCheckout:
 
     @classmethod
     def create(
-        cls, *, harness_root: Path, ref: str, case_id: str, parent: Path = WORKTREE_PARENT
+        cls,
+        *,
+        harness_root: Path,
+        ref: str,
+        identity: RunIdentity,
+        parent: Path = WORKTREE_PARENT,
     ) -> "EngineCheckout":
         commit = _git(harness_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
         origin = _git(harness_root, "remote", "get-url", "origin")
         venv = harness_root / ".venv"
         if not venv.is_dir():
             raise RuntimeError(f"harness virtualenv missing at {venv}")
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        root = parent / f"exam-engine-{commit[:10]}-{case_id[:1].lower()}-{stamp}"
+        root = parent / identity.checkout_name(commit)
         # Reserve the destination first: from here on it is ours, and every
         # failure — the clone itself included — removes it (a network outage
         # mid-fetch once left a half-built clone behind).

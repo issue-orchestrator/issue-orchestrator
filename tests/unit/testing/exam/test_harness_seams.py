@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.exam.agents import SHIM, shim_command
+from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.fixtures.orchestrator_process import merge_config_overlay
 
 
@@ -234,21 +235,24 @@ def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_pat
         )
 
     assert registered == pushed == ["7-exam"]
-    seeding.delete_registered_branches("o/r", registered)
+    from tests.e2e.exam import cleanup
+
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    cleanup.delete_registered_branches("o/r", registered)
     assert adapter.deleted == ["7-exam"] and adapter.closed == []
 
 
 def test_branch_cleanup_closes_the_open_pr_then_deletes_the_branch(monkeypatch) -> None:
     from types import SimpleNamespace
 
-    from tests.e2e.exam import seeding
+    from tests.e2e.exam import cleanup
 
     adapter = _FakeAdapter()
     adapter.branches = {"8-exam"}
     adapter.prs = {"8-exam": [SimpleNamespace(number=80, state="open")]}
-    monkeypatch.setattr(seeding, "_github_adapter", lambda _repo: adapter)
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
 
-    seeding.delete_registered_branches("o/r", ["8-exam", "9-gone"])
+    cleanup.delete_registered_branches("o/r", ["8-exam", "9-gone"])
 
     assert adapter.closed == [80]
     assert adapter.deleted == ["8-exam"]
@@ -279,7 +283,7 @@ def test_a_failed_engine_checkout_leaves_nothing_behind(monkeypatch, tmp_path, f
     monkeypatch.setattr(engine_checkout, "_git", fake_git)
 
     with pytest.raises(RuntimeError, match=f"git {failing_step} failed"):
-        engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", case_id="A", parent=parent)
+        engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("A"), parent=parent)
 
     assert list(parent.iterdir()) == []
     assert (harness / ".venv").is_dir()  # the harness venv is never followed into
@@ -296,7 +300,7 @@ def test_a_built_checkout_removes_cleanly_without_touching_the_harness_venv(monk
         engine_checkout, "_git", lambda cwd, *argv: "b" * 40 if argv[0] == "rev-parse" else ""
     )
 
-    checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", case_id="B", parent=parent)
+    checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("B"), parent=parent)
 
     assert (checkout.root / ".venv").is_symlink()
     checkout.remove()
@@ -355,3 +359,89 @@ def test_open_prs_come_from_the_complete_walk_not_one_page(monkeypatch) -> None:
     monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *newer]))
 
     assert [pr.number for pr in observe.linked_pull_requests("o/r", 1000, state="open")] == [1001]
+
+
+
+def test_two_runs_of_one_case_in_the_same_second_never_share_an_identity(monkeypatch) -> None:
+    """Round 6 F1: cleanup selects by label, so a shared label lets one run
+    close another's live issues and PRs."""
+    import time as time_module
+
+    monkeypatch.setattr(time_module, "time", lambda: 1_790_000_000.0)
+    first, second = RunIdentity.new("A-case"), RunIdentity.new("A-case")
+
+    assert first.label != second.label
+    assert first.checkout_name("a" * 40) != second.checkout_name("a" * 40)
+    assert first.label.startswith("io:e2e:exam-a-")  # the prefix real engines exclude
+
+
+class _StrictFake(_FakeAdapter):
+    """Branch deletion that can silently fail, and a PR the exam can close."""
+
+    def __init__(self, *, delete_works: bool) -> None:
+        super().__init__()
+        self.delete_works = delete_works
+        self.pr_state = {70: "open"}
+        self.issues: list = []
+
+    def delete_branch(self, branch: str) -> None:
+        self.deleted.append(branch)
+        if self.delete_works:
+            self.branches.discard(branch)
+
+    def get_pr(self, number: int):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(number=number, state=self.pr_state[number], branch="7-exam")
+
+    def close_pr(self, number: int) -> None:
+        self.closed.append(number)
+        self.pr_state[number] = "closed"
+
+    def list_issues(self, labels, state):
+        return self.issues
+
+
+def test_a_pr_whose_branch_survives_deletion_fails_cleanup(monkeypatch) -> None:
+    """Round 6 F2: the shared close_pr swallowed this; the exam must not."""
+    from tests.e2e.exam import cleanup
+
+    adapter = _StrictFake(delete_works=False)
+    adapter.branches = {"7-exam"}
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+
+    with pytest.raises(cleanup.ExamCleanupError, match="branch 7-exam still exists"):
+        cleanup.remove_pr("o/r", 70)
+    assert adapter.closed == [70] and adapter.deleted == ["7-exam"]
+
+
+def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeypatch) -> None:
+    """A recovery-published PR (no cleanup labels) found through the issue
+    link; its branch deletion failing surfaces through run_all_steps while the
+    other steps still run."""
+    from types import SimpleNamespace
+
+    from tests.e2e.exam import cleanup
+    from tests.e2e.exam.cleanup_steps import run_all_steps
+
+    adapter = _StrictFake(delete_works=False)
+    adapter.branches = {"7-exam"}
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    monkeypatch.setattr(
+        cleanup, "linked_pull_requests",
+        lambda _repo, number, state: [SimpleNamespace(number=70)] if number == 7 else [],
+    )
+    ran: list[str] = []
+
+    with pytest.raises(ExceptionGroup) as caught:
+        run_all_steps(
+            "exam cleanup",
+            [
+                ("teardown", lambda: cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])),
+                ("close issues", lambda: ran.append("close issues")),
+            ],
+        )
+
+    assert ran == ["close issues"]
+    assert [type(e) for e in caught.value.exceptions] == [cleanup.ExamCleanupError]
+    assert "7-exam" in str(caught.value.exceptions[0])

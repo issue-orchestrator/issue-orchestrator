@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable
 from pathlib import Path
 
 from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER
@@ -104,21 +104,6 @@ def seed_pull_request(
         adapter.add_label(pr.number, label)
     logger.info("[EXAM] seeded PR #%d on %s (%s)", pr.number, branch, commit[:10])
     return SeededPullRequest(number=pr.number, branch=branch, head_sha=commit)
-
-
-def delete_registered_branches(repo: str, branches: Iterable[str]) -> None:
-    """Close any open PR of each harness-pushed branch, then delete the branch.
-
-    Runs whatever state seeding reached — a branch with no PR (create_pr
-    failed) is deleted too. Failures propagate to the cleanup runner.
-    """
-    adapter = _github_adapter(repo)
-    for branch in branches:
-        for pr in adapter.get_prs_for_branch(branch):
-            if pr.state == "open":
-                adapter.close_pr(pr.number)
-        if adapter.branch_exists(branch):
-            adapter.delete_branch(branch)
 
 
 def wait_for_checks(repo: str, pr_number: int, *, timeout_s: float) -> str:

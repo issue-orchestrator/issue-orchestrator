@@ -35,9 +35,9 @@ from issue_orchestrator.testing.exam.cases import (
 )
 from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
-from tests.e2e.conftest import e2e_label
 from tests.e2e.exam.cleanup_steps import run_all_steps
-from tests.e2e.exam.seeding import delete_registered_branches
+from tests.e2e.exam.cleanup import delete_registered_branches, teardown_run
+from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.scenarios import (
     ExamResult,
     ExamRun,
@@ -45,7 +45,6 @@ from tests.e2e.exam.scenarios import (
     case_b,
     run_case_a,
     run_case_b,
-    teardown_run,
 )
 from tests.e2e.flows import E2EFlow
 
@@ -87,12 +86,6 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
     run_all_steps(f"exam cleanup left artifacts for {run_label}", steps)
 
 
-def _run_label(case_id: str) -> str:
-    """A per-run label: the engine's filter, and an ``io:e2e:`` prefix every
-    real engine excludes (``filtering.exclude_label_prefixes``)."""
-    return e2e_label(f"exam-{case_id[:1].lower()}-{int(time.time())}")
-
-
 @pytest.mark.e2e
 @pytest.mark.live
 @pytest.mark.tech_lead_exam
@@ -113,7 +106,8 @@ async def test_tech_lead_exam(
     e2e_project_root: Path,
     e2e_session_config: Config,
 ) -> None:
-    run_label = _run_label(case_id)
+    identity = RunIdentity.new(case_id)
+    run_label = identity.label
     make_case = case_a if case_id == HALTED_EXCHANGE_WITH_VALIDATED_WORK else case_b
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -121,7 +115,7 @@ async def test_tech_lead_exam(
         harness_root=e2e_project_root,
         engine_ref=os.environ.get("E2E_EXAM_ENGINE_REF", "HEAD"),
         base_config=e2e_session_config,
-        run_label=run_label,
+        identity=identity,
     )
     flows: list[E2EFlow] = []
     try:

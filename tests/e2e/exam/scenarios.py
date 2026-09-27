@@ -24,6 +24,7 @@ from issue_orchestrator.testing.exam.cases import (
 )
 
 from tests.e2e.exam.agents import CODER_LABEL
+from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.engine import (
     EngineCheckout,
     ExamEngine,
@@ -40,8 +41,8 @@ from tests.e2e.exam.observe import (
     terminal_tech_lead_runs,
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
-from tests.e2e.fixtures import _github_adapter, fetch_gh_audit_report
-from tests.e2e.flows import E2EFlow, close_pr
+from tests.e2e.fixtures import fetch_gh_audit_report
+from tests.e2e.flows import E2EFlow
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +86,15 @@ class ExamRun:
     harness_root: Path
     engine_ref: str
     base_config: Config
-    run_label: str
+    identity: RunIdentity
     notes: list[str] = field(default_factory=list)
     branches: list[str] = field(default_factory=list)
     """Remote branches the harness pushed, registered the moment they exist
     so cleanup can delete them even if the PR was never created."""
+
+    @property
+    def run_label(self) -> str:
+        return self.identity.label
 
 
 def _progress_events(engine: ExamEngine) -> int:
@@ -214,22 +219,6 @@ def _labels(config: Config) -> LabelManager:
     return LabelManager(config)
 
 
-def teardown_run(repo: str, run_label: str, created: list[int]) -> None:
-    """Close every open PR of every issue the run touched, and its branch.
-
-    "Touched" is the issues the harness created plus every issue carrying the
-    run label — the engine files some itself (tech-lead anchors, follow-ups,
-    case files) and can publish PRs for them. Recovery-published PRs need not
-    carry the e2e cleanup labels, so label-based reconciliation cannot be
-    relied on to find them. The issues themselves are closed by the caller.
-    """
-    labelled = [issue.number for issue in _github_adapter(repo).list_issues(labels=[run_label], state="all")]
-    for number in sorted(set(created) | set(labelled)):
-        for pr in linked_pull_requests(repo, number, state="open"):
-            close_pr(repo, pr.number)
-            logger.info("[EXAM] closed PR #%d of exam issue #%d", pr.number, number)
-
-
 # ---------------------------------------------------------------------------
 # Case A
 # ---------------------------------------------------------------------------
@@ -237,7 +226,7 @@ def teardown_run(repo: str, run_label: str, created: list[int]) -> None:
 
 async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
     checkout = EngineCheckout.create(
-        harness_root=run.harness_root, ref=run.engine_ref, case_id=run.case.case_id
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity
     )
     try:
         config = exam_config(
@@ -296,7 +285,7 @@ async def run_case_b(
     run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str
 ) -> ExamResult:
     checkout = EngineCheckout.create(
-        harness_root=run.harness_root, ref=run.engine_ref, case_id=run.case.case_id
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity
     )
     try:
         config = exam_config(
