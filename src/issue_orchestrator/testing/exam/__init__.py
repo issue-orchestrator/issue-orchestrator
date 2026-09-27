@@ -34,6 +34,7 @@ from .observation import (
     StallFacts,
     TechLeadActionDisposition,
     TechLeadActionFact,
+    TechLeadReceipt,
     TechLeadRunFact,
     WorkItemFact,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "StallFacts",
     "TechLeadActionDisposition",
     "TechLeadActionFact",
+    "TechLeadReceipt",
     "TechLeadRunFact",
     "TermGroup",
     "WorkItemFact",

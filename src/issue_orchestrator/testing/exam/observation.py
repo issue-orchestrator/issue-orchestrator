@@ -200,6 +200,9 @@ class TechLeadRunFact:
     """One tech-lead run, from the engine's run history and archived artifacts."""
 
     run_id: str
+    anchor_issue_number: int
+    """The issue the run's events are published against (for an
+    investigation, its subject)."""
     flavor: str
     phase: str
     detail: str
@@ -220,6 +223,7 @@ class TechLeadRunFact:
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
+            "anchor_issue_number": self.anchor_issue_number,
             "flavor": self.flavor,
             "phase": self.phase,
             "detail": self.detail,
@@ -234,6 +238,7 @@ class TechLeadRunFact:
     def from_dict(cls, data: Mapping[str, Any]) -> "TechLeadRunFact":
         return cls(
             run_id=str(data["run_id"]),
+            anchor_issue_number=int(data["anchor_issue_number"]),
             flavor=str(data["flavor"]),
             phase=str(data["phase"]),
             detail=str(data["detail"]),
@@ -242,6 +247,36 @@ class TechLeadRunFact:
             report_text=str(data["report_text"]),
             actions=tuple(TechLeadActionFact.from_dict(a) for a in data["actions"]),
             last_screen=str(data["last_screen"]),
+        )
+
+
+@dataclass(frozen=True)
+class TechLeadReceipt:
+    """One ``tech_lead.action_executed`` event: an effect that reached GitHub.
+
+    Kept raw, beside the per-run decisions, because what was EXECUTED must
+    not depend on attributing it to a run: destruction and out-of-scope
+    effects are judged from these.
+    """
+
+    action_type: str
+    target_number: int | None
+    anchor_issue_number: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_type": self.action_type,
+            "target_number": self.target_number,
+            "anchor_issue_number": self.anchor_issue_number,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TechLeadReceipt":
+        target = data["target_number"]
+        return cls(
+            action_type=str(data["action_type"]),
+            target_number=None if target is None else int(target),
+            anchor_issue_number=int(data["anchor_issue_number"]),
         )
 
 
@@ -261,10 +296,21 @@ class ExamObservation:
     engine_commit: str
     items: tuple[WorkItemFact, ...]
     tech_lead_runs: tuple[TechLeadRunFact, ...]
+    tech_lead_receipts: tuple[TechLeadReceipt, ...]
     github_calls: GitHubCallCounts
     elapsed_seconds: float
     ended_by: RunEnd
     notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def exam_numbers(self) -> frozenset[int]:
+        """Every issue/PR number the run owns: its items, their PRs, and the
+        tech-lead runs' anchors. An effect on anything else touched real work."""
+        numbers = {run.anchor_issue_number for run in self.tech_lead_runs}
+        for item in self.items:
+            numbers.add(item.issue_number)
+            numbers.update(pr.number for pr in item.pull_requests)
+        return frozenset(numbers)
 
     def item(self, role: str) -> WorkItemFact:
         matches = [item for item in self.items if item.role == role]
@@ -281,6 +327,7 @@ class ExamObservation:
             "engine_commit": self.engine_commit,
             "items": [item.to_dict() for item in self.items],
             "tech_lead_runs": [run.to_dict() for run in self.tech_lead_runs],
+            "tech_lead_receipts": [receipt.to_dict() for receipt in self.tech_lead_receipts],
             "github_calls": self.github_calls.to_dict(),
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "ended_by": self.ended_by.value,
@@ -295,6 +342,9 @@ class ExamObservation:
             engine_commit=str(data["engine_commit"]),
             items=tuple(WorkItemFact.from_dict(item) for item in data["items"]),
             tech_lead_runs=tuple(TechLeadRunFact.from_dict(r) for r in data["tech_lead_runs"]),
+            tech_lead_receipts=tuple(
+                TechLeadReceipt.from_dict(r) for r in data["tech_lead_receipts"]
+            ),
             github_calls=GitHubCallCounts.from_dict(data["github_calls"]),
             elapsed_seconds=float(data["elapsed_seconds"]),
             ended_by=RunEnd(data["ended_by"]),

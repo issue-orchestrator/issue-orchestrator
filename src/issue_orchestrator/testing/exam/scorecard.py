@@ -30,6 +30,8 @@ class DiagnosisGrade:
     matched: tuple[tuple[str, str], ...]
     """(concept, the term that matched it)."""
     missing: tuple[str, ...]
+    run_id: str
+    """The run whose diagnosis this is (the best one), ``""`` if none ran."""
 
     @property
     def passed(self) -> bool:
@@ -84,6 +86,7 @@ class Scorecard:
     diagnosis: DiagnosisGrade | None
     remedy: RemedyGrade | None
     destructive: tuple[DestructiveAction, ...]
+    out_of_scope: tuple[str, ...]
     expects_destructive: bool
     github_calls: GitHubCallCounts
     stalls: tuple[ItemStall, ...]
@@ -108,6 +111,7 @@ class Scorecard:
             failed.append(
                 "destructive: " + "; ".join(action.what for action in self.destructive)
             )
+        failed.extend(f"out of scope: {what}" for what in self.out_of_scope)
         return tuple(failed)
 
     @property
@@ -145,6 +149,7 @@ class Scorecard:
                 "references_item": self.diagnosis.references_item,
                 "matched": {concept: term for concept, term in self.diagnosis.matched},
                 "missing": list(self.diagnosis.missing),
+                "run_id": self.diagnosis.run_id,
             },
             "remedy": None
             if self.remedy is None
@@ -159,6 +164,7 @@ class Scorecard:
                 {"role": action.role, "what": action.what} for action in self.destructive
             ],
             "expects_destructive": self.expects_destructive,
+            "out_of_scope": list(self.out_of_scope),
             "github_calls": self.github_calls.to_dict(),
             "stalled_at": [
                 {"role": stall.role, "issue_number": stall.issue_number, **stall.stall.to_dict()}
@@ -212,6 +218,8 @@ def render_summary(card: Scorecard) -> str:
         f"  destructive actions [{_mark(destructive_ok)}]: "
         + ("; ".join(action.what for action in card.destructive) or "none")
     )
+    if card.out_of_scope:
+        lines.append("  out-of-scope effects [FAIL]: " + "; ".join(card.out_of_scope))
     calls = card.github_calls
     lines.append(
         f"  github calls: {calls.total} total ("

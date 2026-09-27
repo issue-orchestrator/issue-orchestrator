@@ -41,6 +41,7 @@ def _real_run() -> TechLeadRunFact:
     decision = decision.get("decision", decision)
     return TechLeadRunFact(
         run_id="real-b",
+        anchor_issue_number=7316,
         flavor="failure_investigation",
         phase="needs_human",
         detail="",
@@ -89,6 +90,7 @@ def _observation(runs: tuple[TechLeadRunFact, ...]) -> ExamObservation:
         engine_commit="d5e487e",
         items=(subject,),
         tech_lead_runs=runs,
+        tech_lead_receipts=(),
         github_calls=GitHubCallCounts.between(None, {"by_command": {"GET /search/issues": 1}}),
         elapsed_seconds=900.0,
         ended_by=RunEnd.TECH_LEAD_CONCLUDED,

@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from .observation import TechLeadActionDisposition
+from .observation import TechLeadActionDisposition, TechLeadReceipt
 
 REJECTED = "tech_lead.decision_rejected"
 EXECUTED = "tech_lead.action_executed"
@@ -67,24 +67,60 @@ def resolve_dispositions(
     events: Iterable[Mapping[str, Any]],
     *,
     anchor_issue_number: int,
+    anchor_shared: bool,
     run_failed: bool,
     actions: Iterable[ProposedAction],
 ) -> tuple[TechLeadActionDisposition, ...]:
-    """One disposition per action, in the decision's order."""
+    """One disposition per action, in the decision's order.
+
+    Events carry the anchor and the decision's action id, but no run id and
+    no time: when several runs share an anchor (the stuck sweep can
+    re-investigate an issue), an event cannot be attributed to one of them
+    and every action resolves UNKNOWN — fail closed rather than hand one
+    run's receipt, or rejection, to another. Destruction does not depend on
+    this: it is judged from the raw receipts.
+    """
+    wanted = list(actions)
+    if anchor_shared:
+        return tuple(TechLeadActionDisposition.UNKNOWN for _ in wanted)
     scoped = [
         (str(event.get("type", "")), _payload(event))
         for event in events
         if _payload(event).get("issue_number") == anchor_issue_number
     ]
-    wanted = list(actions)
-    if run_failed or any(name == REJECTED for name, _ in scoped):
-        return tuple(TechLeadActionDisposition.REJECTED for _ in wanted)
+    rejected = run_failed or any(name == REJECTED for name, _ in scoped)
     resolved: list[TechLeadActionDisposition] = []
     for action in wanted:
+        # An observed execution wins over the run's fate: a failed run can
+        # still have executed an action (e.g. a kill) before it failed.
         if any(name == EXECUTED and _matches(p, action) for name, p in scoped):
             resolved.append(TechLeadActionDisposition.EXECUTED)
+        elif rejected:
+            resolved.append(TechLeadActionDisposition.REJECTED)
         elif any(name == PROPOSED and _matches(p, action) for name, p in scoped):
             resolved.append(TechLeadActionDisposition.PROPOSED)
         else:
             resolved.append(TechLeadActionDisposition.UNKNOWN)
     return tuple(resolved)
+
+
+def executed_receipts(events: Iterable[Mapping[str, Any]]) -> tuple[TechLeadReceipt, ...]:
+    """Every ``tech_lead.action_executed`` event, unattributed."""
+    receipts: list[TechLeadReceipt] = []
+    for event in events:
+        if event.get("type") != EXECUTED:
+            continue
+        payload = _payload(event)
+        anchor = payload.get("issue_number")
+        action_type = _event_action_type(payload)
+        if not isinstance(anchor, int) or isinstance(anchor, bool) or action_type is None:
+            raise ValueError(f"tech-lead execution receipt without anchor/action: {event!r}")
+        target = payload.get("target_number")
+        receipts.append(
+            TechLeadReceipt(
+                action_type=action_type,
+                target_number=target if isinstance(target, int) and not isinstance(target, bool) else None,
+                anchor_issue_number=anchor,
+            )
+        )
+    return tuple(receipts)

@@ -47,7 +47,11 @@ from issue_orchestrator.testing.exam import (
 )
 from issue_orchestrator.testing.exam.screens import SCREEN_QUOTE_CHARS, render_recording, silent_screen
 from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
-from issue_orchestrator.testing.exam.tech_lead import ProposedAction, resolve_dispositions
+from issue_orchestrator.testing.exam.tech_lead import (
+    ProposedAction,
+    executed_receipts,
+    resolve_dispositions,
+)
 
 from tests.e2e.fixtures import _github_adapter
 from tests.e2e.exam.seeding import describe_rollup
@@ -249,8 +253,10 @@ def observe_tech_lead_runs(
     state_dir: Path, watcher: OrchestratorWatcher, *, worktree_base: Path
 ) -> tuple[TechLeadRunFact, ...]:
     events = list(watcher.view.global_events)
+    rows = _run_rows(state_dir)
+    anchors = [_anchor(row) for row in rows]
     runs: list[TechLeadRunFact] = []
-    for row in _run_rows(state_dir):
+    for row in rows:
         data_dir = Path(str(row.get("artifact_dir") or "")) / TECH_LEAD_DATA_DIRNAME
         decision_path = data_dir / TECH_LEAD_DECISION_FILENAME
         report_path = data_dir / TECH_LEAD_REPORT_FILENAME
@@ -263,6 +269,7 @@ def observe_tech_lead_runs(
         dispositions = resolve_dispositions(
             events,
             anchor_issue_number=_anchor(row),
+            anchor_shared=anchors.count(_anchor(row)) > 1,
             run_failed=row["phase"] == "failed",
             actions=[
                 ProposedAction(str(a.get("id", "")), str(a.get("action_type", "")))
@@ -298,6 +305,7 @@ def observe_tech_lead_runs(
         runs.append(
             TechLeadRunFact(
                 run_id=str(row["run_id"]),
+                anchor_issue_number=_anchor(row),
                 flavor=str(row["flavor"]),
                 phase=str(row["phase"]),
                 detail=str(row.get("detail") or ""),
@@ -317,6 +325,7 @@ def build_observation(
     engine_commit: str,
     items: tuple[WorkItemFact, ...],
     tech_lead_runs: tuple[TechLeadRunFact, ...],
+    events: Iterable[Mapping[str, Any]],
     gh_audit_report: Mapping[str, Any],
     elapsed_seconds: float,
     ended_by: RunEnd,
@@ -327,6 +336,7 @@ def build_observation(
         engine_commit=engine_commit,
         items=items,
         tech_lead_runs=tech_lead_runs,
+        tech_lead_receipts=executed_receipts(events),
         # The engine is a fresh process per run, so its report IS the run's calls.
         github_calls=GitHubCallCounts.between(None, gh_audit_report),
         elapsed_seconds=elapsed_seconds,

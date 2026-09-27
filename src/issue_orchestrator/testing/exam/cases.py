@@ -13,6 +13,7 @@ from .case import (
     RootCauseSpec,
     TermGroup,
     issue_lacks_labels,
+    pr_checks_green,
     pr_has_label,
     pr_in_state,
     published_work_survives,
@@ -103,6 +104,7 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
         ),
         goals=(
             pr_in_state(SUBJECT, PullRequestState.DRAFT, PullRequestState.READY, PullRequestState.MERGED),
+            pr_checks_green(SUBJECT),
             published_work_survives(SUBJECT),
         ),
         root_cause=RootCauseSpec(

@@ -86,6 +86,9 @@ class ExamRun:
     base_config: Config
     run_label: str
     notes: list[str] = field(default_factory=list)
+    branches: list[str] = field(default_factory=list)
+    """Remote branches the harness pushed, registered the moment they exist
+    so cleanup can delete them even if the PR was never created."""
 
 
 def _progress_events(engine: ExamEngine) -> int:
@@ -193,6 +196,7 @@ async def _finish(
         tech_lead_runs=observe_tech_lead_runs(
             engine.checkout.state_dir, watcher, worktree_base=engine.config.worktree_base
         ),
+        events=list(watcher.view.global_events),
         gh_audit_report=report,
         elapsed_seconds=time.monotonic() - started,
         ended_by=ended_by,
@@ -338,9 +342,16 @@ async def run_case_b(
             slug="exam-b-green-pr-awaiting-review",
             labels=[labels.code_review, run.run_label, E2E_DATA_LABEL],
             draft=True,
+            register_branch=run.branches.append,
         )
         checks = wait_for_checks(run.repo, seeded.number, timeout_s=15 * 60)
-        run.notes.append(f"seeded PR #{seeded.number} checks before the engine started: {checks}")
+        if checks != "SUCCESS":
+            # The case is "a GREEN PR waits on review"; without green checks
+            # the fault was not planted, and any grade would be meaningless.
+            raise RuntimeError(
+                f"seeded PR #{seeded.number} checks are {checks}, not SUCCESS;"
+                " case B's premise was not planted"
+            )
 
         engine = ExamEngine(config, checkout, overlay=overlay)
         runtime = await engine.start()

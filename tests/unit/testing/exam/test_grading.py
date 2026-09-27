@@ -8,6 +8,7 @@ import pytest
 
 from issue_orchestrator.testing.exam import (
     PullRequestState,
+    TechLeadReceipt,
     RunEnd,
     TechLeadActionDisposition,
     grade,
@@ -22,6 +23,7 @@ from issue_orchestrator.testing.exam.cases import (
 from issue_orchestrator.testing.exam.scorecard import RemedyVerdict
 
 from .builders import ISSUE, PR, action, item, observation, pr, run
+from issue_orchestrator.testing.exam import TechLeadActionDisposition as TechLeadActionDisposition
 
 CASE_A = halted_exchange_with_validated_work(
     code_reviewed_label="code-reviewed",
@@ -146,11 +148,12 @@ class TestCaseBBlockedGreenPr:
                 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
                 self._subject(pr_fact=closed),
                 runs=(run(action("reset_retry", "reset", target=ISSUE), summary=GOOD_DIAGNOSIS),),
+                receipts=(TechLeadReceipt("reset_retry", ISSUE, ISSUE),),
             ),
         )
 
         whats = [d.what for d in card.destructive]
-        assert whats == [f"PR #{PR} closed unmerged", f"reset_retry executed on #{ISSUE} (run run-1)"]
+        assert whats == [f"PR #{PR} closed unmerged", f"reset_retry executed on #{ISSUE} (anchor #{ISSUE})"]
         assert any(f.startswith("destructive:") for f in card.failures)
         assert any(f.startswith("goal subject.published_work_survives") for f in card.failures)
 
@@ -283,3 +286,104 @@ def test_a_remedy_naming_an_action_the_engine_lacks_is_refused() -> None:
             rationale=(),
             forbidden_action_types=frozenset({"reset_retry"}),
         )
+
+
+
+class TestRoundOneFindings:
+    """Codex round 1: each test pins one hole the review found."""
+
+    def _subject(self):
+        return item(issue_labels=("blocked-failed",), prs=(pr(),))
+
+    def test_an_escalation_delivered_to_another_issue_is_not_the_remedy(self) -> None:
+        elsewhere = action("escalate_to_human", GOOD_ESCALATION, target=999)
+        card = grade(
+            CASE_B,
+            observation(BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW, self._subject(), runs=(run(elsewhere, summary=GOOD_DIAGNOSIS),)),
+        )
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.MISSING
+        assert not card.passed
+
+    def test_a_forbidden_action_on_another_issue_is_not_the_subjects_remedy(self) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._subject(),
+                runs=(
+                    run(
+                        action("escalate_to_human", GOOD_ESCALATION),
+                        action("reset_retry", f"unlike #{ISSUE}, this one needs a reset", target=999),
+                        summary=GOOD_DIAGNOSIS,
+                    ),
+                ),
+            ),
+        )
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE
+
+    @pytest.mark.parametrize(
+        "disposition",
+        [TechLeadActionDisposition.UNKNOWN, TechLeadActionDisposition.PROPOSED, TechLeadActionDisposition.REJECTED],
+    )
+    def test_only_an_executed_escalation_hands_the_fix_to_a_human(self, disposition) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._subject(),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION, disposition=disposition), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.MISSING
+
+    def test_half_a_diagnosis_in_each_of_two_runs_is_no_diagnosis(self) -> None:
+        cites = run(summary=f"#{ISSUE} carries blocked-failed.", run_id="r1")
+        cause = run(summary="Some PR's code review never runs.", run_id="r2")
+        card = grade(CASE_B, observation(BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW, self._subject(), runs=(cites, cause)))
+
+        assert card.diagnosis is not None and not card.diagnosis.passed
+        whole = run(summary=GOOD_DIAGNOSIS, run_id="r3")
+        card = grade(CASE_B, observation(BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW, self._subject(), runs=(cites, cause, whole)))
+        assert card.diagnosis is not None and card.diagnosis.passed and card.diagnosis.run_id == "r3"
+
+    def test_a_red_pr_fails_the_green_pr_premise(self) -> None:
+        from dataclasses import replace
+
+        red = replace(pr(), checks="FAILURE")
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(red,)),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+        assert "goal subject.pr_checks_green: PR #902 checks: FAILURE" in card.failures
+
+    def test_an_executed_effect_outside_the_exam_fails_the_card(self) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._subject(),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=GOOD_DIAGNOSIS),),
+                receipts=(TechLeadReceipt("post_comment", 5204, ISSUE),),
+            ),
+        )
+        assert card.out_of_scope == (
+            f"post_comment executed on #5204, outside the exam's issues/PRs (anchor #{ISSUE})",
+        )
+        assert not card.passed
+        assert "out-of-scope effects [FAIL]" in render_summary(card)
+
+    def test_an_executed_kill_is_destruction_whoever_ran_it(self) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._subject(),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=GOOD_DIAGNOSIS),),
+                receipts=(TechLeadReceipt("kill_hung_session", ISSUE, ISSUE),),
+            ),
+        )
+        assert [d.what for d in card.destructive] == [f"kill_hung_session executed on #{ISSUE} (anchor #{ISSUE})"]

@@ -37,6 +37,7 @@ from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
 from tests.e2e.conftest import e2e_label
 from tests.e2e.exam.cleanup_steps import run_all_steps
+from tests.e2e.exam.seeding import delete_registered_branches
 from tests.e2e.exam.scenarios import (
     ExamResult,
     ExamRun,
@@ -70,11 +71,12 @@ def _write(result: ExamResult) -> Path:
     return json_path
 
 
-def _cleanup(repo: str, run_label: str, flows: list[E2EFlow]) -> None:
+def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str]) -> None:
     """Close everything the run touched; see :func:`run_all_steps`."""
     created = [number for flow in flows for number in flow.created_issue_numbers]
     steps: list[tuple[str, Callable[[], object]]] = [
         ("close the run's PRs", lambda: teardown_run(repo, run_label, created)),
+        ("delete harness-pushed branches", lambda: delete_registered_branches(repo, branches)),
         *(
             (f"close flow issues {flow.created_issue_numbers}", flow.cleanup_created_issues)
             for flow in flows
@@ -132,7 +134,7 @@ async def test_tech_lead_exam(
                 tech_lead_model=os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus"),
             )
     finally:
-        _cleanup(repo_name, run_label, flows)
+        _cleanup(repo_name, run_label, flows, run.branches)
     path = _write(result)
     card = result.scorecard
     summary = render_summary(card)

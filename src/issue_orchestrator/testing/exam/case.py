@@ -201,6 +201,19 @@ def issue_lacks_labels(role: str, labels: Iterable[str]) -> Goal:
     )
 
 
+def pr_checks_green(role: str) -> Goal:
+    """The item's open PR is CI-green: a case whose premise is "green PR"
+    must not pass on a red or unverifiable one."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        open_pr = item.open_pull_request
+        if open_pr is None:
+            return GoalCheck(False, f"issue #{item.issue_number} has no open pull request")
+        return GoalCheck(open_pr.checks == "SUCCESS", f"PR #{open_pr.number} checks: {open_pr.checks}")
+
+    return Goal(f"{role}.pr_checks_green", role, f"the {role} PR's checks are green", check)
+
+
 def published_work_survives(role: str) -> Goal:
     """No pull request of the item was closed unmerged or lost its branch."""
 

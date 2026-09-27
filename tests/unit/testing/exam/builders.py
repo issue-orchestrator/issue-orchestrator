@@ -11,6 +11,7 @@ from issue_orchestrator.testing.exam import (
     StallFacts,
     TechLeadActionDisposition,
     TechLeadActionFact,
+    TechLeadReceipt,
     TechLeadRunFact,
     WorkItemFact,
 )
@@ -75,7 +76,7 @@ def action(
     action_type: str,
     body: str,
     *,
-    target: int | None = 7000,
+    target: int | None = ISSUE,
     disposition: TechLeadActionDisposition = TechLeadActionDisposition.EXECUTED,
 ) -> TechLeadActionFact:
     return TechLeadActionFact(
@@ -83,9 +84,16 @@ def action(
     )
 
 
-def run(*actions: TechLeadActionFact, summary: str = "", phase: str = "completed") -> TechLeadRunFact:
+def run(
+    *actions: TechLeadActionFact,
+    summary: str = "",
+    phase: str = "completed",
+    run_id: str = "run-1",
+    anchor: int = ISSUE,
+) -> TechLeadRunFact:
     return TechLeadRunFact(
-        run_id="run-1",
+        run_id=run_id,
+        anchor_issue_number=anchor,
         flavor="health_review",
         phase=phase,
         detail="",
@@ -101,6 +109,7 @@ def observation(
     subject: WorkItemFact,
     *,
     runs: tuple[TechLeadRunFact, ...] = (),
+    receipts: tuple[TechLeadReceipt, ...] = (),
     ended_by: RunEnd = RunEnd.GOAL_REACHED,
 ) -> ExamObservation:
     return ExamObservation(
@@ -108,6 +117,7 @@ def observation(
         engine_commit="c3784fe0000000000000000000000000000000000",
         items=(subject,),
         tech_lead_runs=runs,
+        tech_lead_receipts=receipts,
         github_calls=GitHubCallCounts.between(None, AUDIT),
         elapsed_seconds=321.0,
         ended_by=ended_by,
