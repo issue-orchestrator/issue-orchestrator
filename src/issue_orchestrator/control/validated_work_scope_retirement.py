@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 from functools import partial
 
+from ..domain.action_liveness import ActionOutcome
 from ..domain.recovery_attempt import RecoveryAttemptPending
 from ..domain.recovery_drain import RecoveryDrainMode, RecoveryScopeSweepReport
 from ..domain.recovery_entry import RecoveryRecordRequest
@@ -126,10 +127,31 @@ class OutOfScopeRecordRetirement:
 
 
 @dataclass(frozen=True, slots=True)
-class _HeldElsewhere:
-    """Another owner holds the record, so the sweep reached no judgement."""
+class _Judgement:
+    """What judging one record came to, as the liveness owner counts it."""
 
-    reason: str
+    outcome: ActionOutcome
+    retired: bool = False
+
+    @classmethod
+    def held(cls, reason: str) -> "_Judgement":
+        """Another owner holds the record: not a failure, but shown and paced,
+        since some records the sweep judges no publication lane selects."""
+        return cls(ActionOutcome.waiting(reason))
+
+
+#: The record moved on (new evidence, or resolved) before it was judged: the
+#: question is answered.
+_MOVED_ON = _Judgement(ActionOutcome.done())
+#: The retirement owner's typed outcome. A refused retirement (CHANGED)
+#: repeated under unchanged facts is a loop, so it spends a budget.
+_BY_STATUS = {
+    ScopeRetirementStatus.IN_SCOPE: _Judgement(ActionOutcome.done()),
+    ScopeRetirementStatus.RETIRED: _Judgement(ActionOutcome.done(), retired=True),
+    ScopeRetirementStatus.CHANGED: _Judgement(ActionOutcome.transient(
+        "Scope retirement was refused: evidence or claim moved"
+    )),
+}
 
 
 class OutOfScopeRetirementSweep:
@@ -166,24 +188,7 @@ class OutOfScopeRetirementSweep:
             self._after = request.record_id
             if request.evidence_id in self._owned:
                 continue
-            # A judgement that fails the same way every pass is bounded like
-            # any other replanned action (#7350): held, then parked.
-            key = self._liveness.scope_key(request)
-            if not self._liveness.admit(key).admitted:
-                continue
-            try:
-                judged = self._judge(request)
-            except Exception as error:
-                logger.exception("Recovery scope judgement failed for record %s", request.record_id)
-                self._liveness.settle_error(key, error)
-                continue
-            if isinstance(judged, _HeldElsewhere):
-                # Not a failure, but shown and paced: a record no publication
-                # lane selects must not sit held without a signal.
-                self._liveness.waiting(key, judged.reason)
-                continue
-            self._liveness.judged(key)
-            if judged is True:
+            if self._judge_bounded(request):
                 retired.append(request.record_id)
         if len(requests) < self._batch_size:
             self._after = ""
@@ -196,35 +201,50 @@ class OutOfScopeRetirementSweep:
             requests = self._source.unresolved_records(after_record_id="", limit=self._batch_size)
         return requests
 
-    def _judge(self, request: RecoveryRecordRequest) -> "bool | _HeldElsewhere":
-        """Whether the record was retired; :class:`_HeldElsewhere` when another
-        owner holds it, so no judgement was reached."""
+    def _judge_bounded(self, request: RecoveryRecordRequest) -> bool:
+        """Judge one record through the drain's liveness (#7350); whether it
+        was retired. A judgement that fails the same way every pass is held,
+        then parked, like any other replanned action."""
+        key = self._liveness.scope_key(request)
+        if not self._liveness.admit(key).admitted:
+            return False
+        try:
+            judgement = self._judge(request)
+        except Exception as error:
+            logger.exception("Recovery scope judgement failed for record %s", request.record_id)
+            self._liveness.settle_error(key, error)
+            return False
+        self._liveness.record(key, judgement.outcome)
+        return judgement.retired
+
+    def _judge(self, request: RecoveryRecordRequest) -> "_Judgement":
+        """What judging the record came to, in the liveness owner's terms."""
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return _HeldElsewhere("Record is executing under another owner")
+            return _Judgement.held("Record is executing under another owner")
         with lease as token:
             if not self._execution.relinquish(token):
-                return _HeldElsewhere("Record awaits its reserved stop operation")
+                return _Judgement.held("Record awaits its reserved stop operation")
             try:
                 record = self._store.record_for_id(request.record_id)
                 if (record.current_evidence.evidence_id != request.evidence_id
                         or record.disposition.state not in UNRESOLVED_STATES):
-                    return False
+                    return _MOVED_ON
                 # Prove before claiming: an in-scope record is never claimed here,
                 # so this lane cannot contend with its publication or abandonment.
                 if self._retirement.recovery_owns_record(record):
                     self._owned.add(request.evidence_id)
-                    return False
+                    return _BY_STATUS[ScopeRetirementStatus.IN_SCOPE]
                 claim = self._store.acquire_claim(
                     request.record_id, expected_states=frozenset({record.disposition.state}),
                     evidence_id=request.evidence_id,
                 )
                 if claim is None:
-                    return _HeldElsewhere("Record's claim is held by another owner")
+                    return _Judgement.held("Record's claim is held by another owner")
                 self._execution.remember_claim(token, claim)
                 outcome = self._retirement.retire_if_outside(token, claim, record)
                 if outcome.status is ScopeRetirementStatus.IN_SCOPE:
                     self._owned.add(request.evidence_id)
-                return outcome.status is ScopeRetirementStatus.RETIRED
+                return _BY_STATUS[outcome.status]
             finally:
                 self._execution.relinquish(token)

@@ -147,17 +147,10 @@ class RecoveryDrainLiveness:
     def settle(
         self, key: LivenessKey, result: RecoveryCompleted | RecoveryAttemptPending
     ) -> None:
-        self._record(key, drain_outcome(result))
+        self.record(key, drain_outcome(result))
 
-    def judged(self, key: LivenessKey) -> None:
-        """The scope sweep reached a judgement (retired or in scope)."""
-        self._record(key, ActionOutcome.done())
-
-    def waiting(self, key: LivenessKey, reason: str) -> None:
-        """Another owner holds the record: a visible, paced wait."""
-        self._record(key, ActionOutcome.waiting(reason))
-
-    def _record(self, key: LivenessKey, outcome: ActionOutcome) -> None:
+    def record(self, key: LivenessKey, outcome: ActionOutcome) -> None:
+        """Settle one attempt of a drain lane's action."""
         self.owner.record(key, outcome)
         if outcome.kind is OutcomeKind.DONE:
             # Done: no question this action asked about the record is still

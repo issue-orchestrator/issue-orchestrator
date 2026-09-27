@@ -660,6 +660,26 @@ def test_newly_attached_evidence_is_a_new_scope_question(tmp_path):
     assert len(rig.proofs) == rig.policy.max_attempts + 1
 
 
+def test_a_retirement_the_store_keeps_refusing_is_bounded(tmp_path):
+    """The store refuses the retirement (CHANGED) every pass while the record's
+    facts stay put: a loop, so it spends a budget and parks (review B r4)."""
+    rig = _scope_rig(tmp_path, proof=lambda record: False)
+    refusals: list[str] = []
+
+    def refuse(claim, **kwargs):
+        refusals.append(claim.record_id)
+        return False
+
+    rig.store.retire_outside_scope = refuse
+
+    rig.passes(30)
+
+    assert len(refusals) == rig.policy.max_attempts
+    [parked] = rig.escalation.parked
+    assert parked.key.identity.action == "judge_record_scope"
+    assert "refused" in parked.last_reason
+
+
 def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
     """The scope sweep re-selects an unchanged record each interval. A proof
     that raises every time is held, then parked on the record's issue, and the

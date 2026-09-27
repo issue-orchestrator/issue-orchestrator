@@ -217,6 +217,20 @@ def _operator_retry(engine: _Engine) -> StoredEvidenceCommand:
     )
 
 
+def test_an_explicit_recovery_that_raises_is_still_settled(tmp_path) -> None:
+    """The operator's attempt ran and failed: the error propagates to the
+    operator and is recorded as a spent attempt (review B r4)."""
+    import pytest
+
+    engine = _Engine(tmp_path, RuntimeError("publisher exploded"))
+
+    with pytest.raises(RuntimeError, match="publisher exploded"):
+        engine.drain.recover(_operator_retry(engine), OrchestratorState())
+
+    [row] = engine.rows.rows.values()
+    assert row.attempts == 1 and "publisher exploded" in row.last_reason
+
+
 def test_a_state_change_is_a_new_question(tmp_path) -> None:
     """Parked while queued; the record then moves to publishing with the same
     evidence. That is new facts, so the drain tries it again (review B r1)."""

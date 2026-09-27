@@ -72,7 +72,11 @@ class RecoveryDrain:
         """
         request = self._request(command)
         key = self._liveness.key(request)
-        result = self._operation.run(request, state)
+        try:
+            result = self._operation.run(request, state)
+        except Exception as error:
+            self._liveness.settle_error(key, error)
+            raise
         self._liveness.settle(key, result)
         return result
 
