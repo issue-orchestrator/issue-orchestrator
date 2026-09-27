@@ -54,6 +54,21 @@ def linked_issue_number(body: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def linked_issue_numbers(body: str) -> frozenset[int]:
+    """EVERY issue a PR body links: each GitHub closing reference and each
+    partial ``Refs #N``, but never a bare ``#N`` mention.
+
+    Not :func:`linked_issue_number`, which answers the single issue that OWNS
+    the PR. This answers which issues an open PR is still working on, so a
+    gate kept over them (Retry's pr-pending) covers all of them.
+    """
+    return frozenset(
+        int(match.group(1))
+        for pattern in (_GITHUB_CLOSING_RE, _REFS_RE)
+        for match in pattern.finditer(body)
+    )
+
+
 def body_links_issue(body: str, issue_numbers: Iterable[int]) -> bool:
     """Whether the body links (closing or partial) any of ``issue_numbers``."""
     wanted = set(issue_numbers)

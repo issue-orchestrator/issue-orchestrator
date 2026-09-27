@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Protocol
 
 from ..domain.branch_naming import extract_issue_number_from_branch
-from ..domain.pr_issue_reference import body_links_issue, linked_issue_number
+from ..domain.pr_issue_reference import body_links_issue, linked_issue_number, linked_issue_numbers
 from ..ports.pull_request_tracker import PRInfo
 from .issue_scope import IssueScopeDecision, evaluate_issue_scope
 
@@ -65,8 +65,7 @@ def issues_with_open_prs(prs: Iterable[PRInfo]) -> frozenset[int]:
     for pr in prs:
         from_branch = extract_issue_number_from_branch(pr.branch) if pr.branch else None
         issues.update(number for number in (from_branch,) if number is not None)
-        linked = linked_issue_number(pr.body or "")
-        issues.update(number for number in (linked,) if number is not None)
+        issues.update(linked_issue_numbers(pr.body or ""))
     return frozenset(issues)
 
 

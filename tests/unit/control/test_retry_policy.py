@@ -121,3 +121,30 @@ def test_one_index_lists_open_prs_once_for_many_issues() -> None:
         retry_label_removals(issue, [lm.blocked_failed, lm.pr_pending], lm, index)
 
     reader.list_open_prs_complete.assert_called_once_with()
+
+
+def test_every_issue_an_open_pr_links_keeps_pr_pending() -> None:
+    """#7302 round 4: an open PR closing two issues holds BOTH gates.
+
+    Only the first link names the PR's owner, but Retry's gate protects every
+    issue the open PR is still working on; indexing only the first would let
+    Retry strip #ISSUE's pr-pending and launch a second coder beside it.
+    """
+    lm = _label_manager()
+    reader = _reader(_pr(9, branch="feature/combined", body=f"Closes #100\n\nFixes #{ISSUE}"))
+
+    result = retry_label_removals(
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader))
+
+    assert result == [lm.blocked_failed]
+
+
+def test_an_open_partial_pr_keeps_its_issue_gated() -> None:
+    """#7288 x #7293: a partial PR links its issue with Refs, not Closes."""
+    lm = _label_manager()
+    reader = _reader(_pr(9, branch="feature/renamed", body=f"Refs #{ISSUE}"))
+
+    result = retry_label_removals(
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader))
+
+    assert result == [lm.blocked_failed]
