@@ -25,6 +25,7 @@ A park is released by progress, never by elapsed time alone:
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -123,6 +124,11 @@ class ActionLivenessOwner:
         self._escalation = escalation
         self._policy = policy
         self._clock = clock
+        # Escalation and withdrawal are decided and written one at a time: the
+        # planner's tick, the recovery drain's worker and operator commands
+        # all reach this owner, and a withdrawal that read "no park" must not
+        # take off a block another thread lands meanwhile.
+        self._effects = threading.RLock()
 
     @property
     def policy(self) -> LivenessPolicy:
@@ -255,6 +261,10 @@ class ActionLivenessOwner:
         Each is a separate durable debt. The comment is owed only once the block
         has landed, and its attempts are paced from that moment.
         """
+        with self._effects:
+            return self._escalate_serialized(row, now)
+
+    def _escalate_serialized(self, row: LivenessRow, now: datetime) -> LivenessRow:
         issue = row.key.escalation_issue
         if issue is None:
             return row
@@ -302,6 +312,10 @@ class ActionLivenessOwner:
             self._unblock(issue, now)
 
     def _unblock(self, issue_number: int, now: datetime) -> None:
+        with self._effects:
+            self._unblock_serialized(issue_number, now)
+
+    def _unblock_serialized(self, issue_number: int, now: datetime) -> None:
         if self._store.clear_release_if_escalated_park(issue_number):
             # Another park's committed block is the one on the issue now.
             return
