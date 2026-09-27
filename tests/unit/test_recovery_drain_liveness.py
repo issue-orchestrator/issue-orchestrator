@@ -10,6 +10,7 @@ fake at its port.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from issue_orchestrator.domain.recovery_completion import RecoveryCompleted
 from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
+from issue_orchestrator.domain.validated_work import ValidatedWorkState
 from issue_orchestrator.domain.validated_work_commands import (
     DispositionInitiator,
     StoredEvidenceCommand,
@@ -86,11 +88,18 @@ class _Engine:
             clock=lambda: self.now.value,
             liveness=drain_liveness(
                 self.owner,
-                record_issue=lambda record_id: self.store.record_for_id(
-                    record_id
-                ).disposition.key.issue_number,
+                record_disposition=self._disposition,
             ),
         )
+
+    #: A durable state another path moved the record to, else its stored one.
+    moved_to = None
+
+    def _disposition(self, record_id: str):
+        disposition = self.store.record_for_id(record_id).disposition
+        if self.moved_to is None:
+            return disposition
+        return dataclasses.replace(disposition, state=self.moved_to)
 
     def passes(self, count: int) -> None:
         for _ in range(count):
@@ -192,6 +201,55 @@ def test_explicit_recovery_runs_despite_a_park_and_its_success_releases_it(tmp_p
     assert engine.escalation.unblocks == [(410, True)]
 
 
+def _operator_retry(engine: _Engine) -> StoredEvidenceCommand:
+    request = engine.store.drain_requests(after_record_id="", limit=1)[0]
+    evidence = engine.store.record_for_id(request.record_id).current_evidence
+    return StoredEvidenceCommand(
+        issue_number=410,
+        reason="operator retry",
+        initiator=DispositionInitiator.OPERATOR,
+        evidence_id=evidence.evidence_id,
+        actor="operator",
+        authority=evidence.authority,
+    )
+
+
+def test_a_state_change_is_a_new_question(tmp_path) -> None:
+    """Parked while queued; the record then moves to publishing with the same
+    evidence. That is new facts, so the drain tries it again (review B r1)."""
+    engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"))
+    engine.passes(10)
+    assert len(engine.operation.called) == POLICY.max_attempts
+
+    engine.moved_to = ValidatedWorkState.PUBLISHING
+    engine.passes(1)
+
+    assert len(engine.operation.called) == POLICY.max_attempts + 1
+
+
+def test_a_completed_recovery_releases_its_records_older_parks(tmp_path) -> None:
+    """A park asked under the record's older state is answered by its recovery:
+    released, and its block withdrawn (review B r1)."""
+    engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"))
+    engine.passes(10)
+    [queued_park] = engine.escalation.parked
+    # The park is still being asked about (a held pass just now), so nothing
+    # retires it as superseded within stale_after: only the recovery can.
+    engine.drain.tick(OrchestratorState(), ACTIVE)
+    engine.moved_to = ValidatedWorkState.PUBLISHING
+
+    completed = RecoveryCompleted.__new__(RecoveryCompleted)
+    engine.operation.result = completed
+    assert engine.drain.recover(_operator_retry(engine), OrchestratorState()) is completed
+    engine.clock.advance(POLICY.max_backoff)
+    assert POLICY.max_backoff < POLICY.stale_after
+    engine.owner.reconcile_effects()
+
+    assert [row.key for rows in engine.escalation.released for row in rows] == [queued_park.key]
+    assert engine.escalation.unblocks == [(410, True)]
+    assert engine.rows.rows == {}
+
+
 # --- The operations mark contention, which the drain then does not count ----
 
 
@@ -270,6 +328,72 @@ def test_a_rate_limited_remote_read_waits_for_its_reset(tmp_path) -> None:
     assert row.attempts == 0 and not row.parked
 
 
+def test_a_rate_limit_behind_a_returned_refusal_waits_for_its_reset(tmp_path) -> None:
+    """An operation that CAUGHT a typed limit (an unreadable remote or issue)
+    returns it on the refusal; the drain spends nothing until reset (#7350)."""
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.domain.validated_work import ValidatedWorkFailure
+
+    def refused(request):
+        return RecoveryAttemptPending(
+            "remote unreadable", ValidatedWorkFailure.REMOTE_UNREADABLE,
+            rate_limit=HostRateLimit(
+                resets_at=engine.clock.now + timedelta(minutes=30), kind="primary"
+            ),
+        )
+
+    engine = _Engine(tmp_path, refused)
+    reset = engine.clock.now + timedelta(minutes=30)
+
+    for _ in range(20):
+        engine.drain.tick(OrchestratorState(), ACTIVE)
+        engine.now.value += 60
+        engine.clock.advance(timedelta(minutes=1))
+
+    assert len(engine.operation.called) == 1
+    [row] = engine.rows.rows.values()
+    assert (row.attempts, row.next_attempt_at) == (0, reset)
+
+
+def test_a_rate_limited_issue_read_carries_the_hosts_reset() -> None:
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.claimed_recovery_preparation import (
+        ClaimedRecoveryPreparation,
+    )
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+    from issue_orchestrator.ports.recovery_issue_reader import RecoveryIssueReadError
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+    limited.rate_limit = HostRateLimit(
+        resets_at=datetime(2026, 9, 27, 13, tzinfo=timezone.utc), kind="primary"
+    )
+
+    def read(repo, number):
+        raise RecoveryIssueReadError("cannot read recovery issue") from limited
+
+    record = MagicMock()
+    record.disposition.key.repo_slug = "o/r"
+    record.disposition.key.issue_number = 5
+    preparation = ClaimedRecoveryPreparation(
+        effects=MagicMock(perform=lambda token, claim, fn: fn()),
+        store=MagicMock(record_for_id=lambda _rid: record),
+        issues=MagicMock(read=read),
+        runtime=MagicMock(), gate=MagicMock(), workspaces=MagicMock(),
+        preparation=MagicMock(), repo_slug="o/r", pause_label="io:needs-reconcile",
+    )
+    request = MagicMock(spec=RecoveryRecordRequest)
+    request.refusal.return_value = None
+
+    result = preparation.prepare(object(), MagicMock(record_id="r1"), request)
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.rate_limit == limited.rate_limit
+
+
 # --- Coordinator enumeration (#7346 fix): every pending kind is counted ------
 
 
@@ -306,12 +430,17 @@ def test_a_paused_issue_parks_as_needs_human_at_once(tmp_path) -> None:
 
 def test_the_preparation_names_how_each_refusal_counts() -> None:
     """Closed: a bounded failure (census #7). Paused: needs a person. Runtime
-    active: a wait. Disposition gate busy: contention."""
+    active: a wait; a runtime probe that cannot answer: a bounded failure.
+    Disposition gate busy: contention."""
     from contextlib import contextmanager
     from unittest.mock import MagicMock
 
     from issue_orchestrator.control.claimed_recovery_preparation import (
         ClaimedRecoveryPreparation,
+    )
+    from issue_orchestrator.control.review_exchange_lifecycle import (
+        IssueRuntimeActivity,
+        IssueRuntimeOwnerKind,
     )
     from issue_orchestrator.domain.issue_disposition_gate import IssueDispositionGateStatus
     from issue_orchestrator.domain.recovery_entry import (
@@ -320,7 +449,8 @@ def test_the_preparation_names_how_each_refusal_counts() -> None:
         RecoveryRecordRequest,
     )
 
-    def prepare(*, state=RecoveryIssueState.OPEN, labels=(), busy=False, gate_busy=False):
+    def prepare(*, state=RecoveryIssueState.OPEN, labels=(), active=(), unverifiable=(),
+                gate_busy=False):
         record = MagicMock()
         record.disposition.key.repo_slug = "o/r"
         record.disposition.key.issue_number = 5
@@ -335,7 +465,9 @@ def test_the_preparation_names_how_each_refusal_counts() -> None:
             effects=MagicMock(perform=lambda token, claim, fn: fn()),
             store=store,
             issues=issues,
-            runtime=MagicMock(probe=lambda number: MagicMock(busy=busy)),
+            runtime=MagicMock(probe=lambda number: IssueRuntimeActivity(
+                frozenset(active), frozenset(unverifiable)
+            )),
             gate=MagicMock(try_acquire=try_acquire),
             workspaces=MagicMock(),
             preparation=MagicMock(),
@@ -348,7 +480,11 @@ def test_the_preparation_names_how_each_refusal_counts() -> None:
 
     assert prepare(state=RecoveryIssueState.CLOSED).kind is RecoveryPendingKind.FAILED
     assert prepare(labels=("io:needs-reconcile",)).kind is RecoveryPendingKind.NEEDS_HUMAN
-    assert prepare(busy=True).kind is RecoveryPendingKind.WAITING
+    assert prepare(active=(IssueRuntimeOwnerKind.SESSIONS,)).kind is RecoveryPendingKind.WAITING
+    assert prepare(
+        active=(IssueRuntimeOwnerKind.SESSIONS,), unverifiable=(IssueRuntimeOwnerKind.EXCHANGE_PAIR,)
+    ).kind is RecoveryPendingKind.WAITING
+    assert prepare(unverifiable=(IssueRuntimeOwnerKind.EXCHANGE_PAIR,)).kind is RecoveryPendingKind.FAILED
     assert prepare(gate_busy=True).kind is RecoveryPendingKind.CONTENDED
 
 

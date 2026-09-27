@@ -15,6 +15,7 @@ from ..domain.validated_work_execution import RecordExecutionToken
 from ..ports.issue_disposition_gate import IssueDispositionMutationGate
 from ..ports.publication_workspace import PublicationWorkspaces
 from ..ports.recovery_issue_reader import RecoveryIssueReader, RecoveryIssueReadError
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_store import ValidatedWorkStore
 from .retained_completion_preparation import RetainedCompletionPreparation
@@ -50,7 +51,8 @@ class ClaimedRecoveryPreparation:
         try:
             issue = perform(lambda: self._issues.read(self._repo, key.issue_number))
         except RecoveryIssueReadError as error:
-            return RecoveryAttemptPending(str(error), ValidatedWorkFailure.ISSUE_UNREADABLE)
+            return RecoveryAttemptPending(str(error), ValidatedWorkFailure.ISSUE_UNREADABLE,
+                                          rate_limit=host_rate_limit_of(error))
         issue.require_identity(self._repo, key.issue_number)
         if not issue.permits_recovery(self._pause_label):
             # A paused issue waits for a person; a closed one is a question
@@ -62,11 +64,22 @@ class ClaimedRecoveryPreparation:
                 else "Issue is closed; recovery remains retained",
                 kind=RecoveryPendingKind.NEEDS_HUMAN if paused else RecoveryPendingKind.FAILED,
             )
-        if perform(lambda: self._runtime.probe(key.issue_number)).busy:
+        activity = perform(lambda: self._runtime.probe(key.issue_number))
+        if activity.active:
+            # Another owner is confirmed working the issue: a visible wait that
+            # ends when it does.
             return RecoveryAttemptPending(
-                "Other issue runtime is active or unverifiable",
+                "Other issue runtime is active",
                 ValidatedWorkFailure.RUNTIME_ACTIVE,
                 kind=RecoveryPendingKind.WAITING,
+            )
+        if activity.unverifiable:
+            # A probe that cannot answer is a failure, not a wait: a broken
+            # probe would otherwise hold the record forever without a park.
+            return RecoveryAttemptPending(
+                "Other issue runtime is unverifiable: "
+                + ", ".join(sorted(str(kind) for kind in activity.unverifiable)),
+                ValidatedWorkFailure.RUNTIME_ACTIVE,
             )
         with self._gate.try_acquire(self._repo, key.issue_number) as acquired:
             if acquired is IssueDispositionGateStatus.BUSY:

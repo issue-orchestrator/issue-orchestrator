@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
+from .host_rate_limit import HostRateLimit
 from .published_work_finalization import PublishedWorkTarget
 from .publication_verification import PublicationVerification
 from .recovery_publication import PreparedRecoveryPublication
@@ -97,6 +98,9 @@ class RecoveryAttemptPending:
     authority_stale: RecoveryAuthorityStale | None = None
     #: How the action liveness owner counts this result (#7350).
     kind: "RecoveryPendingKind" = field(default_factory=lambda: RecoveryPendingKind.FAILED)
+    #: The host's typed rate limit behind a failed remote read, if any: the
+    #: owner then waits for its reset instead of spending budget (#7350).
+    rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -109,7 +113,9 @@ class RecoveryAttemptPending:
 def target_from_verification(prepared: PreparedRecoveryPublication,
                              verified: PublicationVerification) -> PublishedWorkTarget | RecoveryAttemptPending:
     if not verified.verified:
-        return RecoveryAttemptPending(verified.message, verified.failure)
+        return RecoveryAttemptPending(
+            verified.message, verified.failure, rate_limit=verified.rate_limit
+        )
     pr = verified.pull_request
     if pr is None or pr.head_sha != prepared.command.target_head_sha or verified.branch_head != pr.head_sha:
         return RecoveryAttemptPending("Exact publication target is not confirmed", ValidatedWorkFailure.PUBLISH_TARGET_MISMATCH)

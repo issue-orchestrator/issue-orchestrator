@@ -48,7 +48,7 @@ class RecoveryPublicationAttempt:
             return self._confirm(token, claim, prepared, plan.command)
         fresh = perform(lambda: self._verifier.before_publication(plan.command, plan.phase))
         if not fresh.verified:
-            return RecoveryAttemptPending(fresh.message, fresh.failure)
+            return RecoveryAttemptPending(fresh.message, fresh.failure, rate_limit=fresh.rate_limit)
         attempt = perform(lambda: self._store.begin_publish_attempt(
             claim, expected_attempt_no=plan.previous_attempt_no,
             target_head_sha=plan.command.target_head_sha,

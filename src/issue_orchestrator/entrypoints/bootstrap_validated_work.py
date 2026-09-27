@@ -376,8 +376,8 @@ def build_validated_work_recovery(
         interval_seconds=config.validated_work.drain_interval_seconds,
         liveness=RecoveryDrainLiveness(
             owner=action_liveness,
-            record_issue=lambda record_id: owners.records.record_for_id(
+            record_disposition=lambda record_id: owners.records.record_for_id(
                 record_id
-            ).disposition.key.issue_number,
+            ).disposition,
         ),
     )

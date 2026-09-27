@@ -271,8 +271,20 @@ class _PassthroughLiveness:
 PASSTHROUGH_LIVENESS = _PassthroughLiveness()
 
 
-def drain_liveness(owner: ActionLivenessOwner | None = None, *, record_issue=lambda _record_id: 1):
+def _queued_on_issue_one(_record_id: str):
+    from types import SimpleNamespace
+
+    from issue_orchestrator.domain.validated_work import ValidatedWorkState
+
+    return SimpleNamespace(key=SimpleNamespace(issue_number=1), state=ValidatedWorkState.QUEUED)
+
+
+def drain_liveness(
+    owner: ActionLivenessOwner | None = None, *, record_disposition=_queued_on_issue_one
+):
     """A recovery-drain liveness over an in-memory owner (#7350)."""
     from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
 
-    return RecoveryDrainLiveness(owner=owner or liveness_owner(), record_issue=record_issue)
+    return RecoveryDrainLiveness(
+        owner=owner or liveness_owner(), record_disposition=record_disposition
+    )

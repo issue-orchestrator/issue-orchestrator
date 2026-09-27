@@ -13,6 +13,7 @@ from ..domain.validated_work_remote_authority import (
     RemoteAuthorityRefreshRequest,
     refreshed_remote_authority,
 )
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
@@ -84,7 +85,9 @@ class RemoteAuthorityRefreshOperation:
                     )
                 except PublicationRemoteError as error:
                     return RecoveryAttemptPending(
-                        str(error), ValidatedWorkFailure.REMOTE_UNREADABLE
+                        str(error),
+                        ValidatedWorkFailure.REMOTE_UNREADABLE,
+                        rate_limit=host_rate_limit_of(error),
                     )
                 decision = refreshed_remote_authority(record, facts)
                 updated = perform(

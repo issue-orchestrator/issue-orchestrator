@@ -90,3 +90,36 @@ def test_lagging_pr_observation_cannot_confirm_target(setup):
     remote.stale_pr_head = rig.base
     result = RemotePublicationVerifier(remote).confirm_target(command)
     assert result.failure is ValidatedWorkFailure.PUBLISH_TARGET_MISMATCH
+
+
+def test_a_rate_limited_remote_read_carries_the_hosts_reset(setup):
+    """A typed GitHub rate limit behind an unreadable remote reaches the
+    recovery drain's liveness owner, which waits for its reset (#7350)."""
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.domain.recovery_attempt import (
+        RecoveryAttemptPending,
+        target_from_verification,
+    )
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    _, remote, _, command = setup
+    limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+    limited.rate_limit = HostRateLimit(
+        resets_at=datetime(2026, 9, 27, 13, tzinfo=timezone.utc), kind="primary"
+    )
+
+    def read_branch(_command):
+        raise PublicationRemoteError("quota unavailable") from limited
+
+    remote.read_branch = read_branch
+    result = RemotePublicationVerifier(remote).before_publication(command, DispositionPhase.PRE_SUBMISSION)
+
+    assert result.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert result.rate_limit == limited.rate_limit
+    pending = target_from_verification(MagicMock(), result)
+    assert isinstance(pending, RecoveryAttemptPending)
+    assert pending.rate_limit == limited.rate_limit

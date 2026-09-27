@@ -12,10 +12,12 @@ Each drain attempt is keyed like any other action:
 
 * subject ``validated_work:<record_id>``;
 * action ``recover_validated_work`` or ``refresh_remote_authority``;
-* fingerprint over the request itself - the record and its CURRENT evidence id,
-  and for a refresh the authority snapshot, state and failure it was selected
-  under. New evidence, a state change or a new observation revision is a new
-  question; the same selection failing again spends from the same budget;
+* fingerprint over the request itself - the record, its CURRENT evidence id and
+  its durable state, and for a refresh the authority snapshot, state and
+  failure it was selected under. New evidence, a state change or a new
+  observation revision is a new question; the same selection failing again
+  spends from the same budget. A recovery that completes answers every
+  question about its record, so it releases the record's older rows too;
 * escalation issue: the record's issue, so a park is visible where the work is.
 
 Parking never touches the record. Validated commits, evidence and the record's
@@ -37,6 +39,7 @@ from ..domain.action_liveness import (
 from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.validated_work import ValidatedWorkFailure
+from ..domain.validated_work_commands import ValidatedWorkDisposition
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..ports.repository_host import host_rate_limit_of
@@ -60,7 +63,7 @@ def drain_outcome(
     reason = f"{result.message}{failure}"
     if result.failure in _DETERMINISTIC_REFUSALS:
         return ActionOutcome.permanent(reason)
-    return _OUTCOMES[result.kind](reason)
+    return _OUTCOMES[result.kind](reason, result)
 
 
 #: Failures the same selection will meet every time (#7357's typed PR-create
@@ -72,11 +75,17 @@ _DETERMINISTIC_REFUSALS = frozenset(
 
 #: One mapping from how a pending result says it should be counted to the
 #: owner's vocabulary. Every kind is named: a new one fails here, not silently.
-_OUTCOMES = {
-    RecoveryPendingKind.FAILED: ActionOutcome.transient,
-    RecoveryPendingKind.CONTENDED: lambda _reason: None,
-    RecoveryPendingKind.WAITING: ActionOutcome.waiting,
-    RecoveryPendingKind.NEEDS_HUMAN: ActionOutcome.needs_human,
+_OUTCOMES: dict[
+    RecoveryPendingKind, Callable[[str, RecoveryAttemptPending], ActionOutcome | None]
+] = {
+    # A failed remote read keeps the host's typed rate limit, so it waits for
+    # the reset instead of spending budget.
+    RecoveryPendingKind.FAILED: lambda reason, result: transient_outcome(
+        reason, result.rate_limit
+    ),
+    RecoveryPendingKind.CONTENDED: lambda _reason, _result: None,
+    RecoveryPendingKind.WAITING: lambda reason, _result: ActionOutcome.waiting(reason),
+    RecoveryPendingKind.NEEDS_HUMAN: lambda reason, _result: ActionOutcome.needs_human(reason),
 }
 
 
@@ -85,8 +94,9 @@ class RecoveryDrainLiveness:
     """Keys drain requests and settles their outcomes through the one owner."""
 
     owner: ActionLivenessOwner
-    #: The issue a record's work belongs to - where its park is escalated.
-    record_issue: Callable[[str], int]
+    #: A record's current disposition: its issue (where a park is escalated)
+    #: and its durable state (a fact of the question). One read, one owner.
+    record_disposition: Callable[[str], ValidatedWorkDisposition]
 
     def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
         if isinstance(request, RemoteAuthorityRefreshRequest):
@@ -96,8 +106,13 @@ class RecoveryDrainLiveness:
             # approval is authority to run, not a fact: the explicit recovery
             # of a parked selection is the same question, and its success
             # must settle that park.
-            action, issue = RECOVER_ACTION, self.record_issue(request.record_id)
-            facts = {"record_id": request.record_id, "evidence_id": request.evidence_id}
+            disposition = self.record_disposition(request.record_id)
+            action, issue = RECOVER_ACTION, disposition.key.issue_number
+            facts = {
+                "record_id": request.record_id,
+                "evidence_id": request.evidence_id,
+                "state": disposition.state,
+            }
         return LivenessKey(
             identity=ActionIdentity(drain_subject(request.record_id), action),
             fingerprint=fact_fingerprint(facts),
@@ -111,8 +126,13 @@ class RecoveryDrainLiveness:
         self, key: LivenessKey, result: RecoveryCompleted | RecoveryAttemptPending
     ) -> None:
         outcome = drain_outcome(result)
-        if outcome is not None:
-            self.owner.record(key, outcome)
+        if outcome is None:
+            return
+        self.owner.record(key, outcome)
+        if isinstance(result, RecoveryCompleted) and key.identity.action == RECOVER_ACTION:
+            # Recovered: no question about this record is still open, including
+            # ones asked under its older evidence or state.
+            self.owner.release_identity(key.identity)
 
     def settle_error(self, key: LivenessKey, error: Exception) -> None:
         self.owner.record(
