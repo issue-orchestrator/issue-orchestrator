@@ -138,15 +138,19 @@ def test_the_contract_rejects_a_state_it_does_not_know() -> None:
 
 
 def test_the_card_signal_ignores_the_ticking_age_but_not_what_the_card_says() -> None:
-    young = _custody(6, CustodyState.INVESTIGATING)
-    older = _custody(
-        6, CustodyState.INVESTIGATING, clock=CustodyClock(since=NOW - 9 * HOUR, basis="x")
+    custody = _custody(6, CustodyState.INVESTIGATING)
+    restarted = _custody(
+        6, CustodyState.INVESTIGATING, clock=CustodyClock(since=NOW - HOUR, basis="session started")
     )
     stale = _custody(6, CustodyState.INVESTIGATING, stale=True)
 
-    assert custody_signal(young) == custody_signal(older)
-    assert custody_signal(young) != custody_signal(stale)
-    assert custody_signal(young) != custody_signal(_custody(6, CustodyState.HELD))
+    # Only time passing: the payload's age label changes, the signal does not.
+    assert custody_payload(custody, NOW).age_label != custody_payload(custody, NOW + 9 * HOUR).age_label
+    assert custody_signal(custody) == custody_signal(custody)
+    # A new entry into the same state (a second investigation) is a new card.
+    assert custody_signal(custody) != custody_signal(restarted)
+    assert custody_signal(custody) != custody_signal(stale)
+    assert custody_signal(custody) != custody_signal(_custody(6, CustodyState.HELD))
 
 
 # -- the column summary ---------------------------------------------------------------

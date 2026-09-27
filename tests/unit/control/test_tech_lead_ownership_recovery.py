@@ -20,6 +20,8 @@ clock, and recorded terminations instead of real ones.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from types import SimpleNamespace
 from typing import Optional
 
@@ -105,6 +107,7 @@ class FakeOrchestrator:
             repository_host=SimpleNamespace(get_issue=lambda _n: None),
             run_ownership=self.ownership,
             events=self.events,
+            pending_work_claims=MagicMock(),
         )
 
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]:

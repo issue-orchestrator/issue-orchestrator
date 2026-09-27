@@ -124,6 +124,21 @@ class HostRateLimitWindow:
             since = episodes.get(key, now)
         return RateLimitEpisode(limit=limit, limited_since=since, observed_at=now)
 
+    def holding(
+        self, now: datetime, key: str, *, live: frozenset[str]
+    ) -> RateLimitEpisode | None:
+        """The episode holding ``key``'s launch back at ``now``, if any.
+
+        The ONE hold rule: the window must be open AND the launch's own
+        episode still inside :data:`RATE_LIMIT_DEFERRAL_BOUND`. Past the bound
+        the launch is attempted, so it is no longer held (#7297). The launch
+        gate decides with it, and the board reports it (#7331).
+        """
+        episode = self.open_at(now, key, live=live)
+        if episode is None or episode.bound_exceeded:
+            return None
+        return episode
+
     def waiting_since(self, key: str) -> datetime | None:
         """When ``key``'s own episode began, or None if it has none (#7331).
 
