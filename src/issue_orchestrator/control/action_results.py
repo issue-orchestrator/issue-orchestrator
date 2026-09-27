@@ -95,12 +95,20 @@ class ActionResult:
         )
 
     @classmethod
-    def fail_from(cls, action: "Action", error: Exception) -> "ActionResult":
-        """A failure raised by ``error``, keeping any typed host rate limit behind it."""
+    def fail_from(
+        cls, action: "Action", error: Exception, **details: str | int | bool | list[str] | None
+    ) -> "ActionResult":
+        """A failure raised by ``error``, keeping any typed host rate limit behind it.
+
+        Every applier that turns a caught exception into a failure uses this, so
+        the action liveness owner sees a GitHub rate limit as a wait until its
+        reset rather than as a spent attempt (#7350).
+        """
         return cls(
             action=action,
             result_type=ActionResultType.FAILURE,
             error=str(error),
+            details=details,
             host_rate_limit=host_rate_limit_of(error),
         )
 

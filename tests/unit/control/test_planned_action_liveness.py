@@ -832,3 +832,59 @@ def test_a_sibling_success_across_a_long_gap_does_not_refresh_a_budget(sample_co
 
     applied = [call.args[0] for call in engine.applier.apply.call_args_list]
     assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
+
+
+# --- Every applier keeps a caught rate limit typed (review r11) -------------
+
+
+def test_a_promotion_applier_hands_its_rate_limit_to_the_owner() -> None:
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.planned_action_liveness import outcome_of_result
+    from issue_orchestrator.control.tech_lead_promotion_appliers import (
+        apply_report_promoted_finding_evidence,
+    )
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    reset = datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
+    limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+    limited.rate_limit = HostRateLimit(resets_at=reset, kind="primary")
+    action = ReportPromotedFindingEvidenceAction(
+        signature="sig", case_file_issue_number=229, target_repo="o/r",
+        target_issue_number=7289, observation_count=4, comment="evidence",
+        reason="report", expected=build_expected_for_mutation(),
+    )
+    promotion = MagicMock(
+        target_repo="o/r", target_issue_number=7289, is_open=True, reported_observations=1
+    )
+    result = apply_report_promoted_finding_evidence(
+        action,
+        target=MagicMock(add_comment=MagicMock(side_effect=limited)),
+        authority=MagicMock(load_promotion=MagicMock(return_value=promotion)),
+    )
+
+    owner = liveness_owner(policy=POLICY)
+    key = planned_action_key(action, {}, escalation_label=NEEDS_HUMAN)
+    row = owner.record(key, outcome_of_result(result))
+    assert row is not None and row.attempts == 0 and row.next_attempt_at == reset
+
+
+def test_no_applier_flattens_a_caught_exception_to_its_text() -> None:
+    """``ActionResult.fail(action, str(exc))`` drops a typed rate limit; every
+    caught exception goes through ``ActionResult.fail_from`` instead."""
+    import re
+    from pathlib import Path
+
+    import issue_orchestrator
+
+    root = Path(issue_orchestrator.__file__).parent
+    flattened = re.compile(r"ActionResult\.fail\(\s*\w+,\s*str\(")
+    offenders = [
+        f"{path.relative_to(root)}:{number}"
+        for path in root.rglob("*.py")
+        for number, line in enumerate(path.read_text().splitlines(), start=1)
+        if flattened.search(line)
+    ]
+    assert offenders == []

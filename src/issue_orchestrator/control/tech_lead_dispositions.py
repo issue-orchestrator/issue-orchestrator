@@ -263,7 +263,7 @@ def apply_record_tech_lead_disposition(
         current = authority.load_disposition(issue_number=disposition.issue_number)
         pending = pending and current is not None and current.phase == "prepared"
         logger.exception("Could not commit disposition for #%d", disposition.issue_number)
-        return ActionResult.fail(action, str(exc), pending_disposition=pending)
+        return ActionResult.fail_from(action, exc, pending_disposition=pending)
     return ActionResult.ok(action, issue_number=disposition.issue_number,
         tracker_issue_number=disposition.tracker_issue_number)
 

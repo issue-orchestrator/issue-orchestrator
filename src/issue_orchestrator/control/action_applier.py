@@ -709,7 +709,7 @@ class ActionApplier:
                 action.state,
                 e,
             )
-            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
+            return ActionResult.fail_from(action, e, issue_number=action.issue_number)
 
     @property
     def _gate(self) -> ReconciliationGate:
@@ -1697,7 +1697,7 @@ class ActionApplier:
                 self.on_worktree_removed(action.worktree_path)
             return ActionResult.ok(action, worktree_path=action.worktree_path, validated_work=batch)
         except Exception as e:
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _emit_issue_labels_changed(
         self,
