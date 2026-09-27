@@ -33,12 +33,12 @@
       "value": 4
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/blocked_item_custody.py": {
-      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "detail": "11 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/blocked_item_custody.py",
       "path": "src/issue_orchestrator/control/blocked_item_custody.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 10
+      "value": 11
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/cleanup_manager.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
