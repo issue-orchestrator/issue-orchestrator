@@ -575,3 +575,60 @@ def test_thresholds_must_cover_every_owned_state() -> None:
         CustodyStaleThresholds(
             by_state={**THRESHOLDS.by_state, CustodyState.UNOWNED: HOUR}
         )
+
+
+def test_a_policy_needs_human_the_sweep_is_still_retrying_is_queued() -> None:
+    """The sweep treats the label as eligible while its budget lasts."""
+    causes = frozenset({NeedsHumanCause.SESSION_LIFECYCLE})
+
+    custody = _derive(_item(labels=NEEDS_HUMAN, needs_human_causes=causes, sweep_attempts=1))
+
+    assert custody.state is CustodyState.QUEUED_FOR_TECH_LEAD
+    assert "failed cycles 1 of 3" in custody.reason
+    off = replace(BOARD, sweep=replace(SWEEP_ON, enabled=False, next_due_at=None))
+    assert (
+        _derive(_item(labels=NEEDS_HUMAN, needs_human_causes=causes, sweep_attempts=1), off).state
+        is CustodyState.HELD
+    )
+
+
+def test_a_proposal_is_explained_only_by_the_decision_linked_to_it() -> None:
+    earlier = _decision(
+        "kill_hung_session",
+        ceiling=CharterAuthority.PROPOSE,
+        tracks_proposal=True,
+        proposal_issue_number=10,
+        action_id="A1",
+    )
+
+    custody = _derive(
+        _item(
+            proposals=(OpenProposal(20, "kill_hung_session", NOW - HOUR),),
+            decisions=(earlier,),
+        )
+    )
+
+    assert custody.state is CustodyState.WAITING_ON_YOU
+    assert "Proposal #20" in custody.reason
+    assert custody.charter is None
+
+
+def test_the_latest_effect_decides_verify_not_the_latest_decision() -> None:
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterProposalLifecycle
+
+    approved = _decision(
+        "kill_hung_session",
+        ceiling=CharterAuthority.PROPOSE,
+        tracks_proposal=True,
+        at=NOW - 4 * HOUR,
+        action_id="A1",
+    ).with_lifecycle(
+        CharterProposalLifecycle.APPROVED_APPLIED, at=(NOW - HOUR).isoformat(), proposal_issue_number=700
+    )
+    executed = _decision("recover_validated_work", at=NOW - 3 * HOUR, action_id="A2")
+
+    custody = _derive(_item(decisions=(executed, approved), blocked_at=NOW - 5 * HOUR))
+
+    assert custody.state is CustodyState.VERIFY
+    assert custody.charter is not None and custody.charter.decision_id == approved.decision_id
+    assert custody.clock is not None and custody.clock.since == NOW - HOUR
