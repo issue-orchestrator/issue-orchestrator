@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.action_liveness import (
     ActionIdentity,
@@ -234,7 +235,8 @@ def test_a_release_github_refused_is_retried_until_it_lands() -> None:
 
 def test_success_keeps_the_block_while_another_park_stands_on_the_issue() -> None:
     escalation = RecordingEscalation()
-    owner = liveness_owner(escalation=escalation)
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=escalation)
     other = LivenessKey(ActionIdentity("issue:229", "add_comment"), "c" * 32, 229)
     owner.record(KEY, ActionOutcome.permanent("stuck"))
     owner.record(other, ActionOutcome.permanent("also stuck"))
@@ -243,6 +245,7 @@ def test_success_keeps_the_block_while_another_park_stands_on_the_issue() -> Non
 
     assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]
     assert escalation.unblocks == []
+    assert store.releases == {}, "the other park's landed block owns the label now"
     assert owner.admit(other).admission is Admission.PARKED
 
 
@@ -380,3 +383,55 @@ def test_a_crash_before_publishing_a_park_still_announces_it(tmp_path, mock_even
     assert event.data["subject"] == "issue:229"
     restarted.reconcile_effects()
     assert len(mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)) == 1
+
+
+def test_the_block_stays_while_a_park_whose_own_block_has_not_landed_stands(tmp_path) -> None:
+    """Park A's block landed; park B's did not. Releasing A must leave the
+    label, which is B's block too; once B is gone it comes off (review r15)."""
+    from issue_orchestrator.control.action_liveness_escalation import ActionLivenessEscalation
+    from issue_orchestrator.control.actions import ActionResult, AddLabelAction
+    from tests.unit.control.test_action_liveness_escalation import _shared_block
+
+    labels, block = _shared_block(tmp_path)
+
+    class _Applier:
+        refuse_labels = False
+
+        def apply(self, action):
+            from issue_orchestrator.control.actions import AddCommentAction, RemoveLabelAction
+            from issue_orchestrator.domain.human_block import HumanBlockRequest
+
+            if isinstance(action, AddCommentAction):
+                return ActionResult.ok(action)
+            request = HumanBlockRequest(action.issue_number, action.needs_human_cause, "r")
+            if isinstance(action, AddLabelAction):
+                if self.refuse_labels:
+                    return ActionResult.fail(action, "502")
+                return ActionResult.ok(action) if block.acquire(request).committed else ActionResult.fail(action, "x")
+            assert isinstance(action, RemoveLabelAction)
+            block.release(request)
+            return ActionResult.ok(action)
+
+    applier = _Applier()
+    clock = ManualClock()
+    owner = liveness_owner(
+        escalation=ActionLivenessEscalation(
+            events=MagicMock(),
+            applier=applier, needs_human_label="needs-human",
+        ),
+        clock=clock, policy=POLICY,
+    )
+    first = KEY
+    second = LivenessKey(ActionIdentity("issue:229", "add_comment#x"), "e" * 32, 229)
+    owner.record(first, ActionOutcome.permanent("stuck"))
+    applier.refuse_labels = True
+    owner.record(second, ActionOutcome.permanent("also stuck"))
+    applier.refuse_labels = False
+
+    owner.record(first, ActionOutcome.done())
+    assert "needs-human" in labels.live[229], "still B's block"
+
+    owner.release_identity(second.identity)
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+    assert "needs-human" not in labels.live[229]

@@ -111,8 +111,8 @@ class ActionLivenessStore(Protocol):
         """
         ...
 
-    def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        """Parked rows whose escalation committed on ``issue_number``."""
+    def parked_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
+        """Every parked row that escalates on ``issue_number``, block landed or not."""
         ...
 
     def parked_rows(self) -> tuple[LivenessRow, ...]:

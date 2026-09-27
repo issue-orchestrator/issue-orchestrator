@@ -85,8 +85,8 @@ _ORDER = " ORDER BY last_failed_at, subject, action, fingerprint"
 _BY_KEY = _SELECT + " WHERE subject=? AND action=? AND fingerprint=?"
 _BY_IDENTITY = _SELECT + " WHERE subject=? AND action=?"
 _BY_ISSUE = _SELECT + " WHERE escalation_issue=?"
-_ESCALATED_ON_ISSUE = (
-    _SELECT + " WHERE escalation_issue=? AND escalated=1 AND next_attempt_at IS NULL" + _ORDER
+_PARKED_ON_ISSUE = (
+    _SELECT + " WHERE escalation_issue=? AND next_attempt_at IS NULL" + _ORDER
 )
 _PARKED = _SELECT + " WHERE next_attempt_at IS NULL" + _ORDER
 _OWING_ESCALATION = (
@@ -296,8 +296,8 @@ class SQLiteActionLivenessStore:
                     _owe_announcement(conn, row, LivenessAnnouncement.RELEASED)
         return rows
 
-    def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        return self._select(_ESCALATED_ON_ISSUE, (issue_number,))
+    def parked_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
+        return self._select(_PARKED_ON_ISSUE, (issue_number,))
 
     def parked_rows(self) -> tuple[LivenessRow, ...]:
         return self._select(_PARKED, ())

@@ -1362,10 +1362,11 @@ class ActionApplier:
         )
         if not shed_result.success:
             # Do not finalize history; keep the entry reconcilable for retry.
-            return ActionResult.fail(
+            return ActionResult.fail_limited(
                 action,
                 "recovered-label shed failed; awaiting-merge history left "
                 f"reconcilable for retry: {shed_result.error}",
+                shed_result.host_rate_limit,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
             )
@@ -1383,9 +1384,10 @@ class ActionApplier:
             )
         )
         if not history_result.success:
-            return ActionResult.fail(
+            return ActionResult.fail_limited(
                 action,
                 history_result.error or "history reconciliation failed",
+                history_result.host_rate_limit,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
             )

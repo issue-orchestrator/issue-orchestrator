@@ -96,7 +96,11 @@ class ActionResult:
 
     @classmethod
     def fail_limited(
-        cls, action: "Action", error: str, host_rate_limit: HostRateLimit | None
+        cls,
+        action: "Action",
+        error: str,
+        host_rate_limit: HostRateLimit | None,
+        **details: str | int | bool | list[str] | None,
     ) -> "ActionResult":
         """A failure forwarding a typed GitHub rate limit a composite applier
         observed in a result or exception it wrapped (#7350), so the liveness
@@ -105,6 +109,7 @@ class ActionResult:
             action=action,
             result_type=ActionResultType.FAILURE,
             error=error,
+            details=details,
             host_rate_limit=host_rate_limit,
         )
 

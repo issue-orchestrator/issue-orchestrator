@@ -90,7 +90,7 @@ def test_escalation_queries_and_release_by_issue(tmp_path) -> None:
     for row in (escalated, silent, elsewhere, no_issue):
         store.put(row)
 
-    assert store.escalated_rows_for_issue(410) == (escalated,)
+    assert set(store.parked_rows_for_issue(410)) == {escalated, silent}
     assert set(store.clear_escalation_issue(410)) == {escalated, silent}
     assert set(store.parked_rows()) == {elsewhere, no_issue}
 

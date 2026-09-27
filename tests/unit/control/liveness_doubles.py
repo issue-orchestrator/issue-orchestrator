@@ -123,11 +123,11 @@ class InMemoryActionLivenessStore:
                 self._owe(LivenessAnnouncement.RELEASED, row)
         return gone
 
-    def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
+    def parked_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         return tuple(
             row
             for row in self.rows.values()
-            if row.key.escalation_issue == issue_number and row.escalated and row.parked
+            if row.key.escalation_issue == issue_number and row.parked
         )
 
     def parked_rows(self) -> tuple[LivenessRow, ...]:
