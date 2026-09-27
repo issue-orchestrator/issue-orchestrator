@@ -40,8 +40,17 @@ from ..domain.action_liveness import (
     admission,
 )
 from ..ports.action_liveness import ActionLivenessStore, LivenessEscalation
+from ..ports.blocked_item_custody import ParkedActionFact
 
 logger = logging.getLogger(__name__)
+
+
+def _action_kind(operation: str) -> str:
+    """The action kind an operation names, without its label, signature or
+    fact prefix (``add_label:needs-human`` -> ``add_label``)."""
+    for separator in (":", "#", ">"):
+        operation = operation.split(separator, 1)[0]
+    return operation
 
 
 def release_parked_action(
@@ -199,6 +208,21 @@ class ActionLivenessOwner:
     def parked(self) -> tuple[LivenessRow, ...]:
         """Every parked row, for the tech-lead board and diagnostics."""
         return self._store.parked_rows()
+
+    def parked_for_issue(self, issue_number: int) -> tuple[ParkedActionFact, ...]:
+        """What this owner holds on ``issue_number``: blocked-item custody's
+        "Held" (the :class:`~..ports.blocked_item_custody.ParkedActionReader`
+        seam, #7331). A park escalated on the issue holds it, block landed or
+        not, since each is this owner's decision to stop retrying."""
+        return tuple(
+            ParkedActionFact(
+                action=_action_kind(row.key.identity.action),
+                outcome=row.last_outcome.value,
+                reason=row.last_reason,
+                parked_since=row.last_failed_at,
+            )
+            for row in self._store.parked_rows_for_issue(issue_number)
+        )
 
     def _publish_announcements(self) -> None:
         """Publish every owed announcement, then acknowledge it (at least once)."""

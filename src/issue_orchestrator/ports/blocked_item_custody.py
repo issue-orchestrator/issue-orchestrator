@@ -5,9 +5,9 @@
   projection never derives a state itself.
 * :class:`ParkedActionReader` — the seam for the action liveness owner
   (#7350). An action that owner stopped retrying holds its item on purpose
-  ("Held"). Until that owner is composed into the engine the seam is
-  :data:`NO_ACTION_LIVENESS_OWNER`, which says so by name rather than passing
-  for "nothing is parked".
+  ("Held"). The engine composes the owner itself
+  (``ActionLivenessOwner.parked_for_issue``); :data:`NO_ACTION_LIVENESS_OWNER`
+  names, rather than passes for, a surface with no engine and so no owner.
 """
 
 from __future__ import annotations
@@ -82,10 +82,11 @@ class ParkedActionReader(Protocol):
 
 
 class _NoActionLivenessOwner:
-    """The engine composes no action liveness owner yet (#7350 is in flight).
+    """No action liveness owner is composed: a surface with no engine.
 
     Deliberately not a stand-in store: nothing CAN be parked while no owner
-    parks anything, so an empty answer is the truth, not a default.
+    parks anything, so an empty answer is the truth, not a default. A running
+    engine always reads its own owner (#7350).
     """
 
     def parked_for_issue(self, issue_number: int) -> tuple[ParkedActionFact, ...]:

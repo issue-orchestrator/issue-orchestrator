@@ -513,11 +513,9 @@ def build_blocked_item_custody_reader(
 ) -> StateBlockedItemCustodyReader:
     """Bind the custody owner to the engine's read-only owners.
 
-    ``parked_actions`` is :data:`NO_ACTION_LIVENESS_OWNER` until the action
-    liveness owner (#7350) is composed into ``deps``; that is the only line
-    that changes when it is.
+    ``parked_actions`` is the action liveness owner (#7350): an action it
+    stopped retrying holds its item on purpose ("Held").
     """
-    from ..ports.blocked_item_custody import NO_ACTION_LIVENESS_OWNER
     from .label_manager import LabelManager
     from .provider_availability import ProviderAvailabilityPolicy
 
@@ -536,7 +534,7 @@ def build_blocked_item_custody_reader(
         needs_human_causes=deps.needs_human_block.recorded_causes,
         provider_lanes=providers.open_lanes_for_agent,
         provider_circuits=deps.provider_resilience,
-        parked_actions=NO_ACTION_LIVENESS_OWNER,
+        parked_actions=deps.action_liveness.owner,
         clock=lambda: datetime.now(timezone.utc),
     )
 
