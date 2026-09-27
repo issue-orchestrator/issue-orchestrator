@@ -306,19 +306,13 @@ def _awaiting_approval(item: ItemCustodyFacts, board: BoardCustodyFacts) -> _Cla
     if not item.proposals:
         return None
     proposal = min(item.proposals, key=_proposal_age_order)
+    # Only the decision linked to THIS proposal explains it; an unlinked one of
+    # the same kind may be an earlier, discarded proposal's.
     decision = next(
         (
             record
             for record in item.decisions
             if record.proposal_issue_number == proposal.proposal_issue_number
-        ),
-        None,
-    ) or next(
-        (
-            record
-            for record in item.decisions
-            if record.lifecycle is CharterProposalLifecycle.AWAITING_APPROVAL
-            and record.action_kind == proposal.op_type
         ),
         None,
     )
@@ -394,7 +388,12 @@ def _held(
             # Not the board-wide sweep time: every sweep would restart it.
             _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
-    if NeedsHumanCause.SESSION_LIFECYCLE in item.needs_human_causes:
+    sweep_still_trying = (
+        board.sweep.enabled and swept is not None and swept < board.sweep.max_attempts
+    )
+    # The sweep treats a policy needs-human as eligible for another pass, so
+    # while its budget lasts the next owner is the sweep, not the hold.
+    if NeedsHumanCause.SESSION_LIFECYCLE in item.needs_human_causes and not sweep_still_trying:
         return _Claim(
             CustodyState.HELD,
             "Escalated by policy: the orchestrator stopped on it and set needs-human.",
@@ -551,17 +550,17 @@ def _latest_remedy(
     needs-human block and the disposition ledger above.
     """
     del labels, board
-    decision = next(
-        (
-            record
-            for record in item.decisions
-            if record.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
-            # Aimed AT this item: a follow-up filed for it (an untargeted
-            # create_issue) is not a remedy of its block.
-            and record.target_number == item.issue_number
-        ),
-        None,
-    )
+    remedial = [
+        record
+        for record in item.decisions
+        if record.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
+        # Aimed AT this item: a follow-up filed for it (an untargeted
+        # create_issue) is not a remedy of its block.
+        and record.target_number == item.issue_number
+    ]
+    # The newest EFFECT decides: an approval applied later outranks a remedy
+    # executed earlier, whatever order the decisions were recorded in.
+    decision = max(remedial, key=_effect_order, default=None)
     if decision is None:
         return None
     action = decision.action_kind.replace("_", " ")
@@ -582,10 +581,7 @@ def _latest_remedy(
     if decision.outcome is CharterOutcome.EXECUTED or (
         decision.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
     ):
-        applied = _parse(
-            (decision.lifecycle_updated_at if decision.lifecycle else None)
-            or decision.decided_at
-        )
+        applied = _effect_time(decision)
         if not _about_this_block(applied, item):
             return None
         return _Claim(
@@ -596,6 +592,18 @@ def _latest_remedy(
             _basis(decision),
         )
     return None
+
+
+def _effect_time(decision: "TechLeadCharterDecision") -> datetime | None:
+    """When the decision took effect: its approval's application, else its decision."""
+    if decision.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED:
+        return _parse(decision.lifecycle_updated_at or decision.decided_at)
+    return _parse(decision.decided_at)
+
+
+def _effect_order(decision: "TechLeadCharterDecision") -> tuple[float, str]:
+    at = _effect_time(decision)
+    return (at.timestamp() if at else float("-inf"), decision.decision_id)
 
 
 def _about_this_block(at: datetime | None, item: ItemCustodyFacts) -> bool:
