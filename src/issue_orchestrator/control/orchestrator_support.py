@@ -50,6 +50,8 @@ from .tech_lead_run_wiring import tech_lead_state_handlers
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
 from .reconciliation import ReconciliationRequired, ReconciliationResponse, get_pause_label, response_to
+from .planned_action_liveness import PlannedActionLiveness, outcome_of_error, outcome_of_result
+from ..domain.action_liveness import ActionOutcome
 from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
@@ -225,6 +227,9 @@ class OrchestratorSupport:
             logger.info("[REFRESH] Manual refresh requested")
 
     def apply_plan(self, plan: "Plan", pause_issue_callback: Callable[[int, str], None]) -> None:
+        liveness = plan.liveness
+        if liveness is None:
+            raise ValueError("an ungated plan cannot be applied: admit it through PlannedActionLiveness first (#7350)")
         if plan.action_count == 0:
             return
 
@@ -236,7 +241,7 @@ class OrchestratorSupport:
         # every other subject's actions still run (#7349).
         isolation = PlanSubjectIsolation()
 
-        for action in plan.actions:
+        for index, action in enumerate(plan.actions):
             if self.state.paused:
                 break
 
@@ -246,7 +251,9 @@ class OrchestratorSupport:
                 failed_count += 1
                 continue
 
-            result_info = self._apply_single_action(action, pause_issue_callback)
+            result_info = self._apply_single_action(
+                action, pause_issue_callback, lambda outcome, i=index: liveness.settle(i, outcome)
+            )
             if result_info.success:
                 applied_count += 1
             else:
@@ -262,28 +269,31 @@ class OrchestratorSupport:
         # Subjects whose remaining actions this application must not run.
         withhold_subjects: frozenset[int] = frozenset()
 
-    def _apply_single_action(self, action: "Action", pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
-        """Apply a single action and return the result."""
-        from .actions import ActionType
+    def _apply_single_action(
+        self,
+        action: "Action",
+        pause_issue_callback: Callable[[int, str], None],
+        settle: Callable[[ActionOutcome], None],
+    ) -> "_ActionApplyResult":
+        """Apply a single action and its state handler, then settle the WHOLE attempt once.
 
-        # Check tech_lead cooldown
-        if action.action_type == ActionType.CREATE_TECH_LEAD_ISSUE and self._cleanup_manager:
-            if not self._cleanup_manager.should_retry_tech_lead_issue():
-                logger.warning("[PLAN] Skipping tech_lead issue creation due to cooldown")
-                self._emit_apply_failed(action, "tech_lead_issue_creation_cooldown")
-                return self._ActionApplyResult(success=False)
-
+        The liveness outcome is the outcome of the complete path: an applied
+        action whose state handler raises did not succeed (#7350 review r5).
+        """
         try:
             result = self._aa.apply(action)
-            if result.success:
-                return self._handle_action_success(action, result)
-            return self._handle_action_failure(action, result)
+            handler = self._handle_action_success if result.success else self._handle_action_failure
+            applied, outcome = handler(action, result), outcome_of_result(result)
         except ReconciliationRequired as rr:
-            return self._handle_reconciliation_error(action, rr, pause_issue_callback)
+            outcome = outcome_of_error(rr)
+            applied = self._handle_reconciliation_error(action, rr, pause_issue_callback)
         except Exception as e:
+            outcome = outcome_of_error(e)
             logger.exception("Failed to apply action %s: %s", action, e)
             self.events.publish(make_trace_event(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
-            return self._ActionApplyResult(success=False)
+            applied = self._ActionApplyResult(success=False)
+        settle(outcome)
+        return applied
 
     def _handle_action_success(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
         """Handle successful action application."""
@@ -313,13 +323,6 @@ class OrchestratorSupport:
             if issue_number is not None:
                 self.state.failed_this_cycle.add(issue_number)
                 logger.info("[PLAN] Marked issue #%d failed_this_cycle due to %s failure", issue_number, action.action_type.value)
-
-        # Handle tech_lead issue failure cooldown
-        if action.action_type.value == "create_tech_lead_issue" and self._cleanup_manager:
-            try:
-                self._cleanup_manager.mark_tech_lead_issue_failure()
-            except Exception:
-                pass
 
         self._emit_apply_failed(action, result.error or "unknown")
         return self._ActionApplyResult(success=False)
@@ -642,6 +645,8 @@ def run_planning_cycle(
     io_claimed_label: str = "io:claimed",
     open_issue_corpus: "OpenIssueCorpusManager | None" = None,
     provider_launch_sampler: "ProviderLaunchReadinessSampler | None" = None,
+    *,
+    action_liveness: PlannedActionLiveness,
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
     now = time.time()
@@ -690,7 +695,10 @@ def run_planning_cycle(
     snapshot = fact_gatherer.create_snapshot(state, state.cached_queue_issues, stale_in_progress_issues=stale_issues, stale_claim_issues=stale_claim_issues, provider_launch=provider_launch)
     _emit_facts_gathered(events, event_context, state, stale_issues)
 
-    plan = planner.plan(snapshot)
+    # The planner re-derives actions from facts; the liveness owner decides
+    # which of them may run now (#7350). Parked and backing-off actions leave
+    # the plan with the owner's reason in ``skipped``.
+    plan = action_liveness.admit(planner.plan(snapshot), snapshot)
     _emit_plan_computed(events, event_context, plan)
 
     if plan.action_count > 0:

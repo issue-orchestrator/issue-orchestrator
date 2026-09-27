@@ -426,6 +426,9 @@ class EscalateTechLeadDispositionAction(Action):
     comment: str = ""
     action_type: ActionType = field(default=ActionType.ESCALATE_TECH_LEAD_DISPOSITION, init=False)
 
+    def liveness_facts(self) -> object | None:
+        return None  # a request for a human is never parked (#7350)
+
     def __post_init__(self) -> None:
         if isinstance(self.issue_number, bool) or self.issue_number <= 0 or not self.comment.strip():
             raise ValueError("tech-lead human disposition requires an issue and explanation")

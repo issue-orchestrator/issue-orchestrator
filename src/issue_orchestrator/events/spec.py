@@ -124,6 +124,10 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     PublicEventName.PROVIDER_ISSUE_BLOCKED: EventSpec(phase='blocked', step='provider_blocked', status='failed', level='phase'),
     PublicEventName.PROVIDER_ISSUE_UNBLOCKED: EventSpec(phase='in_progress', step='provider_unblocked', status='completed', level='phase'),
 
+    # ----- Action liveness (#7350): a replanned action stopped / resumed -----
+    PublicEventName.ACTION_PARKED: EventSpec(phase='needs_human', step='action_parked', status='failed', level='phase'),
+    PublicEventName.ACTION_RELEASED: EventSpec(phase='orchestrator', step='action_released', status='completed', level='detail'),
+
     # ----- Publish failure -----
     PublicEventName.PUBLISH_FAILED: EventSpec(phase='orchestrator', step='publish.failed', status='failed', level='detail'),
 }

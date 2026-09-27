@@ -99,7 +99,7 @@ def apply_promote_tech_lead_finding(
             action.signature,
             action.target_repo,
         )
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
     logger.info(
         "[tech_lead] Promoted finding %r -> %s#%d (case file #%d)%s",
         action.signature,
@@ -179,7 +179,7 @@ def apply_report_promoted_finding_evidence(
             "Failed to report later evidence for promoted finding %r",
             action.signature,
         )
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
     return ActionResult.ok(
         action,
         issue_number=action.target_issue_number,
@@ -322,7 +322,7 @@ def apply_settle_tech_lead_promotion(
         logger.exception(
             "Failed to settle promoted tech_lead finding %r", action.signature
         )
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
     return ActionResult.ok(
         action,
         issue_number=action.case_file_issue_number,

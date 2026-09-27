@@ -40,6 +40,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
+from .action_results import FailureCollector
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
@@ -713,7 +714,7 @@ class ActionApplier:
                 action.state,
                 e,
             )
-            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
+            return ActionResult.fail_from(action, e, issue_number=action.issue_number)
 
     @property
     def _gate(self) -> ReconciliationGate:
@@ -855,7 +856,7 @@ class ActionApplier:
         if not should_proceed:
             return ActionResult.fail(action, f"Reconciliation failed: {msg}")
 
-        errors = []
+        errors = FailureCollector()
 
         # Add labels. A collection is exactly where the governed block could be
         # smuggled past its owner, so the capability refuses it by value and the
@@ -868,7 +869,7 @@ class ActionApplier:
                 self._record_label_stat(action.issue_number, "label_add_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"add {label}: {e}")
+                errors.add(f"add {label}: {e}", e)
 
         # Remove labels
         for label in action.remove_labels:
@@ -879,10 +880,10 @@ class ActionApplier:
                 self._record_label_stat(action.issue_number, "label_remove_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"remove {label}: {e}")
+                errors.add(f"remove {label}: {e}", e)
 
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return errors.result(action)
 
         self._emit_issue_labels_changed(
             action.issue_number,
@@ -925,7 +926,7 @@ class ActionApplier:
         to_remove = self.label_manager.recovered_workflow_labels(sorted(current))
 
         removed: list[str] = []
-        errors: list[str] = []
+        errors = FailureCollector()
         for label in to_remove:
             self._record_label_stat(action.issue_number, "label_remove_attempted")
             try:
@@ -965,14 +966,14 @@ class ActionApplier:
                 removed.append(label)
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"remove {label}: {e}")
+                errors.add(f"remove {label}: {e}", e)
 
         if removed:
             self._emit_issue_labels_changed(
                 action.issue_number, [], removed, issue_key=action.issue_key
             )
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return errors.result(action)
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,
@@ -1341,17 +1342,18 @@ class ActionApplier:
             # Close-on-merge fallback (porchpin #81): revalidation ordering
             # and rationale live in run_close_on_merge_fallback — the module
             # owns the destructive precondition; the planner's bit is advisory.
-            close_applied, close_error = run_close_on_merge_fallback(
+            close_applied, close_failure = run_close_on_merge_fallback(
                 repository_host=self.repository_host,
                 action=action,
                 close=self._apply_close_issue,
             )
-            if close_error is not None:
+            if close_failure is not None:
                 # Fail without any further mutation (no shed, no history);
                 # the entry stays reconcilable for retry.
-                return ActionResult.fail(
+                return ActionResult.fail_limited(
                     action,
-                    close_error,
+                    close_failure.reason,
+                    close_failure.host_rate_limit,
                     issue_number=action.issue_number,
                     pr_number=action.pr_number,
                 )
@@ -1365,10 +1367,11 @@ class ActionApplier:
         )
         if not shed_result.success:
             # Do not finalize history; keep the entry reconcilable for retry.
-            return ActionResult.fail(
+            return ActionResult.fail_limited(
                 action,
                 "recovered-label shed failed; awaiting-merge history left "
                 f"reconcilable for retry: {shed_result.error}",
+                shed_result.host_rate_limit,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
             )
@@ -1386,9 +1389,10 @@ class ActionApplier:
             )
         )
         if not history_result.success:
-            return ActionResult.fail(
+            return ActionResult.fail_limited(
                 action,
                 history_result.error or "history reconciliation failed",
+                history_result.host_rate_limit,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
             )
@@ -1689,7 +1693,7 @@ class ActionApplier:
                 self.on_worktree_removed(action.worktree_path)
             return ActionResult.ok(action, worktree_path=action.worktree_path, validated_work=batch)
         except Exception as e:
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _emit_issue_labels_changed(
         self,

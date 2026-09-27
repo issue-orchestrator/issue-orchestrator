@@ -53,6 +53,7 @@ class E2ESlotSignals:
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
+    from .planned_action_liveness import PlanLiveness
 
 
 @dataclass(frozen=True)
@@ -253,6 +254,14 @@ class Plan:
 
     actions: tuple[Action, ...]
     skipped: tuple[SkippedItem, ...]
+    #: Set by the liveness gate (#7350): the key each action was admitted
+    #: under. ``None`` until the plan is gated, and an ungated plan cannot be
+    #: applied - every applied action's outcome must reach the liveness owner.
+    liveness: Optional["PlanLiveness"] = None
+
+    def __post_init__(self) -> None:
+        if self.liveness is not None and len(self.liveness.keys) != len(self.actions):
+            raise ValueError("a gated plan needs exactly one liveness key per action")
 
     @classmethod
     def empty(cls) -> "Plan":

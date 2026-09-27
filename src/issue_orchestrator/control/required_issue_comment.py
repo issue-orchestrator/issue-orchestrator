@@ -167,7 +167,7 @@ def apply_required_issue_comment(action: RequiredIssueCommentAction, *,
         return ActionResult.ok(action, comment_id=receipt.comment_id,
             body_sha256=receipt.body_sha256, author_key=receipt.author_key)
     except Exception as exc:
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
 
 
 def note_tech_lead_comment_applied(
@@ -239,4 +239,4 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
             }))
         return ActionResult.ok(action, number=action.number, is_pr=action.is_pr)
     except Exception as exc:
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)

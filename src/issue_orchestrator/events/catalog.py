@@ -338,6 +338,12 @@ class EventName(str, Enum):
     RECONCILIATION_WARNING = "reconciliation.warning"
     RECONCILIATION_REQUIRED = "reconciliation.required"  # Drift detected, action blocked
     ISSUE_PAUSED_RECONCILE = "issue.paused_reconcile"  # Issue paused due to drift
+
+    # =========================================================================
+    # Action liveness (#7350): a replanned action stopped, or started again
+    # =========================================================================
+    ACTION_PARKED = "action.parked"  # Failed permanently / needs a human / budget spent
+    ACTION_RELEASED = "action.released"  # Progress, changed facts, or operator retry
     VALIDATED_WORK_DISPOSITION_OBSERVED = "validated_work.disposition_observed"
     VALIDATED_WORK_ABANDONED = "validated_work.abandoned"
     VALIDATED_WORK_CAPTURE_FAILED = "validated_work.capture_failed"  # Teardown capture faulted; transition continued
@@ -529,6 +535,9 @@ class PublicEventName(str, Enum):
 
     PROVIDER_ISSUE_BLOCKED = "provider.issue_blocked"
     PROVIDER_ISSUE_UNBLOCKED = "provider.issue_unblocked"
+
+    ACTION_PARKED = "action.parked"
+    ACTION_RELEASED = "action.released"
 
     PUBLISH_FAILED = "publish.failed"
 

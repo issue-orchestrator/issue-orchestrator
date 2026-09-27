@@ -242,6 +242,25 @@ class ApplyProviderImpactAction(Action):
                 f"{list(self.assessment.open_providers)} (issue #{self.issue_number})"
             )
 
+    def liveness_facts(self) -> object:
+        """The provider partition, not the moment it was sampled (#7350).
+
+        ``assessed_at`` and ``cooldown_remaining_seconds`` change on every tick
+        while the circuits stay exactly as they were; the absolute
+        ``next_retry_at`` does not. Fingerprinting the sample would give every
+        failed write a fresh retry budget.
+        """
+        assessment = self.assessment
+        return {
+            "issue_number": self.issue_number,
+            "transition": self.transition,
+            "label": self.label,
+            "open_providers": assessment.open_providers,
+            "recovering_providers": assessment.recovering_providers,
+            "healthy_providers": assessment.healthy_providers,
+            "next_retry_at": assessment.next_retry_at,
+        }
+
     @property
     def providers(self) -> tuple[str, ...]:
         """The providers this transition is *about*.
@@ -355,8 +374,10 @@ def apply_provider_impact(
     """
     label_result = apply_label(action.label_action())
     if not label_result.success:
-        return ActionResult.fail(
-            action, label_result.error or "provider blocked-label transition failed"
+        return ActionResult.fail_limited(
+            action,
+            label_result.error or "provider blocked-label transition failed",
+            label_result.host_rate_limit,
         )
     if bool(label_result.details.get("no_op")):
         return ActionResult.ok(

@@ -113,7 +113,7 @@ def _creation_preflight(
             logger.exception(
                 "Failed to reconcile pattern ledger before case-file creation"
             )
-            return ActionResult.fail(action, str(exc))
+            return ActionResult.fail_from(action, exc)
     return None
 
 
@@ -143,7 +143,7 @@ def _inspect_existing_case_file(
         raise
     except Exception as exc:
         logger.exception("Failed to inspect pattern registry before creation")
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
 
 
 def apply_create_tech_lead_issue(
@@ -215,7 +215,7 @@ def apply_create_tech_lead_issue(
         raise
     except Exception as exc:
         logger.exception("Failed to create tech_lead issue")
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
 
     issue_number = result.get("number") if result else None
     if not issue_number:

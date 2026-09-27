@@ -99,6 +99,18 @@ class AddLabelAction(Action):
     fresh_presence: bool = False
     action_type: ActionType = field(default=ActionType.ADD_LABEL, init=False)
 
+    def liveness_facts(self) -> object | None:
+        """A request for a human is never silenced by the liveness owner (#7350).
+
+        Every cause-carrying needs-human write belongs to a lifecycle that keeps
+        re-asserting it until the label is observed (the stuck sweep's pending
+        set, the tech-lead marker, the quarantine ledger, the liveness owner's
+        own escalation). Parking it would hide exactly the problem it reports.
+        """
+        if self.needs_human_cause is not None:
+            return None
+        return super().liveness_facts()
+
 
 @dataclass(frozen=True)
 class RemoveLabelAction(Action):
@@ -155,6 +167,15 @@ class LaunchSessionAction(Action):
     title: Optional[str] = None
     action_type: ActionType = field(default=ActionType.LAUNCH_SESSION, init=False)
 
+    def liveness_facts(self) -> object | None:
+        """Launch liveness belongs to ``LaunchSettlement`` (#7350).
+
+        The applier flattens every launch disposition - provider-deferred,
+        host-rate-limited, claim-unrecorded, retryable, permanent - into one
+        failed result; only the settlement sees which it was.
+        """
+        return None
+
 
 @dataclass(frozen=True)
 class LaunchValidationRetryAction(Action):
@@ -163,6 +184,10 @@ class LaunchValidationRetryAction(Action):
     issue_number: int = 0
     retry_count: int = 0
     action_type: ActionType = field(default=ActionType.LAUNCH_VALIDATION_RETRY, init=False)
+
+    def liveness_facts(self) -> object | None:
+        """Launch liveness belongs to ``LaunchSettlement`` (#7350)."""
+        return None
 
     def __post_init__(self) -> None:
         if self.issue_number <= 0:
@@ -311,6 +336,10 @@ class EscalateToHumanAction(Action):
     comment_override: Optional[str] = None
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
+    def liveness_facts(self) -> object | None:
+        """A request for a human is never silenced by the liveness owner (#7350)."""
+        return None
+
 
 @dataclass(frozen=True)
 class AddCommentAction(Action):
@@ -435,6 +464,11 @@ class RecoverTerminalIssueAction(Action):
     action_type: ActionType = field(
         default=ActionType.RECOVER_TERMINAL_ISSUE, init=False
     )
+
+    def liveness_resolves_subject(self) -> bool:
+        """Terminal recovery ends the issue's work and force-clears its block,
+        so nothing parked against the issue is still a question (#7350)."""
+        return True
 
 
 @dataclass(frozen=True)

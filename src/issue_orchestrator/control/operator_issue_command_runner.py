@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.operator_issue_commands import LockedRunner
     from ..ports.queue_cache_store import QueueCacheStore
+    from .action_liveness import ActionLivenessOwner
     from .retry_policy import OpenPullRequestIndex
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,10 @@ class OperatorIssueCommandRunner:
     #: Which issues have an open PR, listed at most once for this runner - one
     #: runner serves one operator request, however many issues it retries.
     open_prs: "OpenPullRequestIndex"
+    #: The action liveness owner (#7350). An operator retrying or dismissing an
+    #: issue is the human answer to every action parked against it, so each of
+    #: those gets a fresh budget once the labels have settled.
+    liveness: "ActionLivenessOwner"
 
     def retry(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear the retry-gating labels, then make the issue eligible again."""
@@ -134,7 +139,7 @@ class OperatorIssueCommandRunner:
             return self._outcome(
                 issue_number, intent, OperatorCommandStatus.INCOMPLETE, labels
             )
-        self.run_locked(lambda: commit(labels))
+        self.run_locked(lambda: self._commit_locally(issue_number, commit, labels))
         logger.info(
             "[%s] Issue #%d settled, removed labels: %s",
             intent.value,
@@ -144,6 +149,21 @@ class OperatorIssueCommandRunner:
         return self._outcome(
             issue_number, intent, OperatorCommandStatus.COMMITTED, labels
         )
+
+    def _commit_locally(
+        self,
+        issue_number: int,
+        commit: Callable[[OperatorUnblockOutcome], None],
+        labels: OperatorUnblockOutcome,
+    ) -> None:
+        """The local half both commands share, once their labels settled.
+
+        Retry and dismiss are each a person's answer to every action the
+        liveness owner parked on this issue (#7350), so both give those a fresh
+        budget; what else settling means is the command's own ``commit``.
+        """
+        commit(labels)
+        self.liveness.release_issue(issue_number)
 
     def _outcome(
         self,

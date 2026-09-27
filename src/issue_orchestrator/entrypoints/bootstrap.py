@@ -59,6 +59,8 @@ from .bootstrap_issue_runtime import build_issue_runtime, pull_request_base_bran
 from . import bootstrap_validated_work as validated_work_bootstrap
 from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
+from .bootstrap_action_liveness import build_action_liveness
+from .bootstrap_github_scopes import check_github_token_scopes
 from .bootstrap_testing import Dependencies as Dependencies, TestingFreshIssueReader, manual_publication_for_testing
 from .bootstrap_completion import (
     _validation_attempt_key_factory,
@@ -500,7 +502,7 @@ def build_orchestrator(
     # Configure GitHub audit logging
     _configure_gh_audit(config, events, github)
     if github:
-        _check_github_token_scopes(config, github)
+        check_github_token_scopes(config, github)
 
     # Create label manager (shared instance for all control-layer components)
     from ..control.label_manager import LabelManager as _LabelManager
@@ -807,6 +809,9 @@ def build_orchestrator(
         runtime=runtime_lifecycle.core, working_copy=working_copy, fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier, label_manager=label_manager,
     )
+    action_liveness = build_action_liveness(
+        config, events=events, action_applier=action_applier, label_manager=label_manager
+    )
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -852,6 +857,7 @@ def build_orchestrator(
             needs_human_block=pending_work.needs_human_block,
             fresh_issue_reader=fresh_issue_reader,
             queue_cache_store=queue_cache_store, published_review=runtime_lifecycle.published_review,
+            action_liveness=action_liveness.owner,
         ),
         board_snapshot_builder=create_board_snapshot_builder(
             config, timeline_store, tech_lead_board_publisher, working_copy
@@ -862,6 +868,7 @@ def build_orchestrator(
         run_ownership=run_ownership,
         publish_recovery=publish_recovery,
         validated_work_recovery=validated_work_recovery,
+        action_liveness=action_liveness,
         services=infra_services,
     )
 
@@ -869,32 +876,6 @@ def build_orchestrator(
     # Act-level executor wiring closes over live orchestrator state (#6764/#6778).
     wire_tech_lead_act_executors(orchestrator)
     return orchestrator
-
-
-def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
-    if getattr(github, "auth_kind", None) == "github_app":
-        logger.info("Skipping OAuth scope check for GitHub App installation auth")
-        return
-    required = {scope.strip() for scope in (config.github_required_scopes or []) if scope.strip()}
-    allowed = {scope.strip() for scope in (config.github_allowed_scopes or []) if scope.strip()}
-    try:
-        scopes = set(github.get_token_scopes())
-    except Exception as exc:
-        logger.warning("Failed to fetch GitHub token scopes: %s", exc)
-        return
-
-    if required and not required.issubset(scopes):
-        missing = sorted(required - scopes)
-        raise ValueError(f"GitHub token missing required scopes: {missing}")
-
-    if allowed and not scopes.issubset(allowed):
-        extra = sorted(scopes - allowed)
-        raise ValueError(f"GitHub token has disallowed scopes: {extra}")
-
-    if scopes:
-        logger.info("GitHub token scopes: %s", ", ".join(sorted(scopes)))
-    else:
-        logger.info("GitHub token scopes unavailable (fine-grained token or missing header)")
 
 
 def build_orchestrator_for_testing(
@@ -1253,6 +1234,9 @@ def build_orchestrator_for_testing(
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims,
         base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
+    action_liveness = build_action_liveness(
+        config, events=events, action_applier=action_applier, label_manager=label_manager
+    )
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
         events=events,
@@ -1295,6 +1279,7 @@ def build_orchestrator_for_testing(
             needs_human_block=pending_work.needs_human_block,
             fresh_issue_reader=fresh_issue_reader,
             queue_cache_store=queue_cache_store, published_review=runtime_lifecycle.published_review,
+            action_liveness=action_liveness.owner,
         ),
         board_snapshot_builder=create_board_snapshot_builder(
             config, timeline_store, tech_lead_board_publisher_for_testing, working_copy
@@ -1305,6 +1290,7 @@ def build_orchestrator_for_testing(
         run_ownership=run_ownership,
         publish_recovery=publish_recovery,
         validated_work_recovery=NullValidatedWorkRecoveryDrain(),
+        action_liveness=action_liveness,
         services=infra_services,
     )
 

@@ -300,7 +300,7 @@ def test_board_shows_active_dials_and_counts_read_from_the_ledger(store) -> None
         build_tech_lead_board_view(
             ops=(), gated_proposals=(), case_files=(), area_counts=(),
             last_health_review_at=0, now=datetime(2026, 9, 26, tzinfo=timezone.utc),
-            charter=rows,
+            held_actions=(), charter=rows,
         )
     )
 

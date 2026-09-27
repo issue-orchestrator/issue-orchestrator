@@ -699,6 +699,42 @@ def test_an_action_the_liveness_owner_parked_holds_its_item() -> None:
     assert "remove label" in custody.reason
 
 
+def test_the_engine_composes_the_liveness_owner_into_custody() -> None:
+    """An action the real owner parked on an item shows as "Held" with its
+    reason, through the engine's own composition (#7350 x #7331)."""
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.blocked_item_custody_reader import (
+        build_blocked_item_custody_reader,
+    )
+    from issue_orchestrator.control.planned_action_liveness import PlannedActionLiveness
+    from issue_orchestrator.domain.action_liveness import (
+        ActionIdentity,
+        ActionOutcome,
+        LivenessKey,
+    )
+    from tests.unit.control.liveness_doubles import ManualClock, liveness_owner
+
+    owner = liveness_owner(clock=ManualClock(NOW - HOUR))
+    owner.record(
+        LivenessKey(ActionIdentity("issue:110", "remove_label:in-progress"), "f" * 32, 110),
+        ActionOutcome.needs_human("pause label forbids every write"),
+    )
+    deps = MagicMock()
+    deps.tech_lead_authority = InMemoryTechLeadAuthorityStore()
+    deps.needs_human_block.recorded_causes = _causes_reader({}, broken=False)
+    deps.provider_resilience = StaticProviderCircuitStatusReader(statuses=())
+    deps.action_liveness = PlannedActionLiveness(owner, escalation_label="needs-human")
+    state = OrchestratorState(cached_scope_issues=[_blocked(110, "blocked-failed")])
+
+    reader = build_blocked_item_custody_reader(_config(), deps, lambda: state)
+    custody = reader.read([110]).for_issue(110)
+
+    assert custody.state is CustodyState.HELD
+    assert "remove label (needs_human): pause label forbids every write" in custody.reason
+    assert custody.clock is not None and custody.clock.since == NOW - HOUR
+
+
 # -- fail visible -----------------------------------------------------------------------
 
 

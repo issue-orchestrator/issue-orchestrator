@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Sequence
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 
 if TYPE_CHECKING:
+    from ..domain.action_liveness import LivenessRow
     from ..domain.tech_lead_session import (
         GatedTechLeadProposal,
         StoredTechLeadOp,
@@ -76,6 +77,23 @@ class TechLeadBoardCaseFile:
 
 
 @dataclass(frozen=True)
+class TechLeadBoardHeldAction:
+    """One action the liveness owner parked (#7350), as shown on the board.
+
+    "Held - waiting on you": the orchestrator stopped retrying it, and it runs
+    again only when its facts change, it succeeds, or an operator retries the
+    issue. ``issue_number`` is the escalation issue, 0 when there is none.
+    """
+
+    subject: str
+    action: str
+    outcome: str
+    reason: str
+    parked_since: str
+    issue_number: int
+
+
+@dataclass(frozen=True)
 class TechLeadBoardCharterRole:
     """One charter role: its active dials and what its recent decisions were (#7330).
 
@@ -99,6 +117,7 @@ class TechLeadBoardView:
     case_files: tuple[TechLeadBoardCaseFile, ...]
     area_counts: tuple[tuple[str, int], ...]
     last_health_review: str  # ISO timestamp; "" when never
+    held_actions: tuple[TechLeadBoardHeldAction, ...] = ()
     charter: tuple[TechLeadBoardCharterRole, ...] = ()
 
 
@@ -163,6 +182,7 @@ def build_tech_lead_board_view(
     area_counts: Sequence[tuple[str, int]],
     last_health_review_at: float,
     now: datetime,
+    held_actions: Sequence["LivenessRow"],
     charter: Sequence[TechLeadBoardCharterRole] = (),
 ) -> TechLeadBoardView:
     """Project the ledgers + observed facts onto the board.
@@ -192,6 +212,17 @@ def build_tech_lead_board_view(
             for item in ranked
         ),
         area_counts=tuple(area_counts),
+        held_actions=tuple(
+            TechLeadBoardHeldAction(
+                subject=row.key.identity.subject,
+                action=row.key.identity.action,
+                outcome=row.last_outcome.value,
+                reason=row.last_reason,
+                parked_since=row.last_failed_at.isoformat(),
+                issue_number=row.key.escalation_issue or 0,
+            )
+            for row in held_actions
+        ),
         last_health_review=(
             datetime.fromtimestamp(last_health_review_at, tz=timezone.utc).isoformat()
             if last_health_review_at > 0
@@ -229,6 +260,7 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
         lines.extend(_ledgerless_proposal_note(view.open_proposals))
     else:
         lines.append("None.")
+    lines.extend(_held_actions_section(view.held_actions))
     lines.extend(["", "## Open pattern case files", ""])
     if view.case_files:
         lines.extend(
@@ -254,6 +286,33 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
         lines.append("None.")
     lines.extend(_charter_lines(view.charter))
     return "\n".join(lines) + "\n"
+
+
+def _held_actions_section(held: Sequence[TechLeadBoardHeldAction]) -> list[str]:
+    """Actions the orchestrator stopped retrying (#7350), oldest park first."""
+    lines = ["", "## Held — waiting on you", ""]
+    if not held:
+        lines.append("None.")
+        return lines
+    lines.extend(
+        [
+            f"{len(held)} action(s) stopped retrying. Each runs again when its"
+            " facts change, when an operator retries its issue, or when released"
+            " with `issue-orchestrator action-liveness release --subject <subject>"
+            " --action <action>`.",
+            "",
+            "| Issue | Subject | Action | Outcome | Parked since | Reason |",
+            "|---|---|---|---|---|---|",
+            *(
+                f"| {f'#{item.issue_number}' if item.issue_number else _UNKNOWN_CELL}"
+                f" | `{_markdown_cell(item.subject)}` | `{item.action}`"
+                f" | {item.outcome} | {item.parked_since}"
+                f" | {_markdown_cell(item.reason)} |"
+                for item in held
+            ),
+        ]
+    )
+    return lines
 
 
 def _charter_lines(roles: Sequence[TechLeadBoardCharterRole]) -> list[str]:

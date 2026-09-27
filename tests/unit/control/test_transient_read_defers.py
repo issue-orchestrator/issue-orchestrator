@@ -40,6 +40,12 @@ from issue_orchestrator.domain.host_rate_limit import HostRateLimit
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReadError
 from issue_orchestrator.ports.repository_host import host_rate_limit_of
+from tests.unit.control.liveness_doubles import (
+    InMemoryActionLivenessStore,
+    ManualClock,
+    gated,
+    liveness_owner,
+)
 
 SUBJECT = 410
 OTHER = 379
@@ -220,7 +226,7 @@ def test_a_transient_read_failure_defers_the_subject_without_pausing_it():
         _FlakyReader(GitHubTransportError("connection reset")), events
     )
 
-    support.apply_plan(_plan(), pause)
+    support.apply_plan(gated(_plan()), pause)
 
     assert (SUBJECT, get_pause_label()) not in labels.added
     assert labels.added == [(OTHER, "needs-code-review")]
@@ -235,11 +241,37 @@ def test_a_real_disagreement_still_pauses_the_subject():
     reader.read_issue_labels.side_effect = lambda n: ["blocked"] if n == SUBJECT else []
     support, labels, pause = _support_over(reader, events)
 
-    support.apply_plan(Plan(actions=(
+    support.apply_plan(gated(Plan(actions=(
         AddLabelAction(issue_number=SUBJECT, label="pr-pending", reason="done",
                        expected=build_expected_for_mutation(forbidden={"blocked"})),
-    ), skipped=()), pause)
+    ), skipped=())), pause)
 
     assert (SUBJECT, get_pause_label()) in labels.added
     [refusal] = events.named(EventName.RECONCILIATION_REQUIRED)
     assert refusal.data["response"] == "pause"
+
+
+def test_a_rate_limited_deferral_waits_for_the_reset_and_spends_nothing():
+    """The deferral is the action liveness owner's ``transient(retry_at)``
+    (#7350): the subject is held until the host's reset, with its budget
+    untouched, however many ticks the limit lasts."""
+    from issue_orchestrator.domain.action_liveness import Admission, LivenessPolicy
+
+    limited = _rate_limited()
+    assert limited.rate_limit is not None
+    reset = limited.rate_limit.resets_at
+    clock = ManualClock(datetime.now(timezone.utc))
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, clock=clock, policy=LivenessPolicy(max_attempts=2))
+    support, labels, pause = _support_over(_FlakyReader(limited), _Events())
+
+    # More ticks than the budget, all before the reset (five minutes out).
+    for _ in range(3):
+        support.apply_plan(gated(_plan(), owner), pause)
+        clock.advance(timedelta(minutes=1))
+
+    [row] = [r for r in store.rows.values() if r.key.escalation_issue == SUBJECT]
+    assert not row.parked
+    assert (row.attempts, row.next_attempt_at) == (0, reset)
+    assert owner.admit(row.key).admission is Admission.BACKING_OFF
+    assert (SUBJECT, get_pause_label()) not in labels.added

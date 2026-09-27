@@ -26,6 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import attach_real_pause_controller
+from tests.unit.control.liveness_doubles import liveness_owner
 from issue_orchestrator.entrypoints.control_api import (
     control_app,
     get_supervisor,
@@ -162,6 +163,7 @@ def create_mock_orchestrator():
                 fresh_issue_reader=_FreshLabels(),
                 queue_cache_store=mock.deps.queue_cache_store,
                 published_review=NO_PUBLISHED_REVIEW_HOLDS,
+                action_liveness=liveness_owner(),
             )
         )
         return mock.deps.operator_issue_command_factory(
