@@ -32,7 +32,8 @@ from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.models import CompletionOutcome
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
@@ -551,7 +552,7 @@ def test_completion_record_drives_expected_review_actions(
 def _make_test_session(issue: Issue, worktree: Path) -> Session:
     terminal_id = f"issue-{issue.number}"
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=SessionKind.CODE),
         issue=issue,
         terminal_id=terminal_id,
         branch_name=terminal_id,

@@ -105,7 +105,7 @@ def plan_tech_lead_launch_gate(
 
     global_queued = tuple(item for item in items if is_global_pending(item))
     if global_queued:
-        if active_tech_lead_sessions(config, active_sessions):
+        if active_tech_lead_sessions(active_sessions):
             return TechLeadLaunchGate((), items, BARRIER_GLOBAL_AWAITING_DRAIN)
         # Whose turn it is comes from the SHARED authority, never from where a
         # run happens to sit in this engine's list. Startup recovery preserves
@@ -122,7 +122,7 @@ def plan_tech_lead_launch_gate(
         return TechLeadLaunchGate(
             (first,), held, BARRIER_GLOBAL_RUN_QUEUED if held else None
         )
-    if has_active_global_run(config, active_sessions):
+    if has_active_global_run(active_sessions):
         return TechLeadLaunchGate((), items, BARRIER_GLOBAL_RUN_ACTIVE)
     return TechLeadLaunchGate(items, ())
 

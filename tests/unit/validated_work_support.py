@@ -258,17 +258,17 @@ def owned_intake(task=None):
     """An intake ledger whose custody proves every evidence's run role.
 
     Defaults to a coding run: work recovery owns (#7323). Pass
-    ``TaskKind.TECH_LEAD`` for work it never owns.
+    ``SessionKind.TECH_LEAD`` for work it never owns.
     """
     from types import SimpleNamespace
     from unittest.mock import Mock
 
     from issue_orchestrator.domain.registered_completion import CompletionRunRole
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.ports.completion_intake import CompletionIntakeLedger
 
-    task = TaskKind.CODE if task is None else task
-    label = "agent:tech-lead" if task is TaskKind.TECH_LEAD else "agent:coder"
+    task = SessionKind.CODE if task is None else task
+    label = "agent:tech-lead" if task is SessionKind.TECH_LEAD else "agent:coder"
     intake = Mock(spec=CompletionIntakeLedger)
     intake.prepare_evidence.side_effect = lambda evidence: SimpleNamespace(
         role=CompletionRunRole(evidence.identity.key.issue_number, task, label)

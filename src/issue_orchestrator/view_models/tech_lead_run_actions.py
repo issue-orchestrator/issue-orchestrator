@@ -181,8 +181,8 @@ def read_tech_lead_run_actions(
         return TechLeadRunActionsView.empty()
 
     pending = list(state.pending_tech_lead_reviews)
-    active = active_tech_lead_sessions(config, state.active_sessions)
-    global_running = has_active_global_run(config, state.active_sessions)
+    active = active_tech_lead_sessions(state.active_sessions)
+    global_running = has_active_global_run(state.active_sessions)
     global_queued = any(is_global_pending(item) for item in pending)
 
     if global_running:
@@ -230,7 +230,7 @@ def _health_review_status(config: "Config", state: "OrchestratorState") -> str:
     queued batch review is a barrier the health request waits behind, never a
     reason to refuse it (#6994 round 2 F5).
     """
-    for session in active_tech_lead_sessions(config, state.active_sessions):
+    for session in active_tech_lead_sessions(state.active_sessions):
         if _is_health_review_scope(session.tech_lead_scope):
             return STATUS_RUNNING
     for item in state.pending_tech_lead_reviews:
@@ -287,7 +287,7 @@ def _global_run_issue_numbers(config: "Config", state: "OrchestratorState") -> s
         for item in state.pending_tech_lead_reviews
         if is_global_pending(item)
     }
-    for session in active_tech_lead_sessions(config, state.active_sessions):
+    for session in active_tech_lead_sessions(state.active_sessions):
         scope = session.tech_lead_scope
         if scope is not None and not _is_focus_scope(scope):
             numbers.add(session.issue.number)

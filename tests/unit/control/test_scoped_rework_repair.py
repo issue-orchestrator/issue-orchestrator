@@ -240,7 +240,7 @@ def test_completion_settlement_relaunches_exact_deferred_instruction_after_resta
     from issue_orchestrator.domain.registered_completion import (
         CompletionProcessingPolicy,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.execution.pending_work_claim_store import (
         SqlitePendingWorkClaimStore,
     )
@@ -259,7 +259,7 @@ def test_completion_settlement_relaunches_exact_deferred_instruction_after_resta
     assert applier.apply(approved_action(store, proposal)).success
     session = make_session(
         issue_number=5,
-        task=TaskKind.REWORK,
+        task=SessionKind.REWORK,
         terminal_id="rework-94",
         branch_name=pr.branch,
     )

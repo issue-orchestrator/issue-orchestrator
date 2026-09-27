@@ -673,7 +673,7 @@ def _active_session_status_payload(session: Any) -> dict[str, Any]:
         "issue_number": session.issue.number,
         "title": session.issue.title,
         "runtime_minutes": runtime_minutes,
-        "agent_type": session.issue.agent_type,
+        "agent_type": session.agent_label,
         "status": "running" if runtime_minutes < timeout_minutes else "slow",
         "branch": session.branch_name,
     }

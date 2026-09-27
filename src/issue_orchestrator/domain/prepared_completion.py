@@ -33,7 +33,7 @@ from .models import CompletionOutcome, CompletionRecord
 def prepare_candidate_evidence(run: IssueRunRecord, role: CompletionRunRole, entry: CompletionIntakeEntry,
         validation: CompletionValidationAttestation | None, completion_bytes: bytes | None,
         validation_bytes: bytes | None) -> PreparedCompletionEvidence | None:
-    if (role.agent_label, role.task) != (run.agent_label, run.completion_task):
+    if (role.agent_label, role.kind) != (run.agent_label, run.session_key.kind):
         raise CompletionIntakeError("receipt role differs from exact recorded allocation")
     if entry.run != run.run:
         raise CompletionIntakeError("receipt differs from exact recorded run")

@@ -78,6 +78,11 @@ class LaunchResult:
     #: Present exactly when the disposition is ``HOST_RATE_LIMITED``: the typed
     #: reset the deferral waits for, never re-derived from ``reason`` text.
     host_rate_limit: HostRateLimit | None = None
+    #: Present exactly when the disposition is ``EXISTING_TERMINAL``: the name
+    #: of the terminal that is actually running. A caller never re-derives it:
+    #: since #7347 a kind can find its work under more than one name (a tech
+    #: lead launched before the upgrade runs as ``issue-N``).
+    existing_terminal: str | None = None
 
     def __post_init__(self) -> None:
         if self.success:
@@ -88,6 +93,23 @@ class LaunchResult:
                 "a HOST_RATE_LIMITED launch result must carry its host rate "
                 "limit, and no other result may"
             )
+        existing = self.disposition is LaunchDisposition.EXISTING_TERMINAL
+        if existing != (self.existing_terminal is not None):
+            raise ValueError(
+                "an EXISTING_TERMINAL launch result must name the running "
+                "terminal, and no other result may"
+            )
+
+    @classmethod
+    def terminal_already_running(cls, terminal: str) -> "LaunchResult":
+        """A terminal for this work is already running under ``terminal``."""
+        return cls(
+            None,
+            False,
+            "Terminal session already running",
+            disposition=LaunchDisposition.EXISTING_TERMINAL,
+            existing_terminal=terminal,
+        )
 
     @classmethod
     def terminal_spawn_failed(cls) -> "LaunchResult":

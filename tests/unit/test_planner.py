@@ -52,7 +52,8 @@ from issue_orchestrator.domain.models import (
 )
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
@@ -99,16 +100,23 @@ def make_issue(number: int, title: str = "Test issue", **kwargs) -> Issue:
     return Issue(**defaults)
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
-    """Create a test session for an issue."""
+def make_session(issue: Issue, task: SessionKind | None = None) -> Session:
+    """Create a test session for an issue.
+
+    Without an explicit kind, the session is stamped as its launch would stamp
+    it (#7347): the tech-lead agent's issue launches as TECH_LEAD, any other as
+    CODE.
+    """
     from pathlib import Path
     from datetime import datetime
 
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/test.md"),
     )
+    if task is None:
+        task = SessionKind.for_issue_launch(issue.agent_type, "agent:tech-lead")
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     return Session(
         key=session_key,
         issue=issue,
@@ -423,7 +431,7 @@ class TestPlanValidationRetries:
                     validation_error="dirty worktree",
                     validation_error_file=None,
                     retry_count=1,
-                    source_task=TaskKind.CODE,
+                    source_kind=SessionKind.CODE,
                     validation_cmd="make test",
                 ),
             ],
@@ -463,7 +471,7 @@ class TestPlanValidationRetries:
                     validation_error="dirty worktree",
                     validation_error_file=None,
                     retry_count=1,
-                    source_task=TaskKind.CODE,
+                    source_kind=SessionKind.CODE,
                     validation_cmd="make test",
                 ),
             ],
@@ -840,7 +848,7 @@ class TestExplainSkip:
         )
         config.tech_lead.max_concurrent = 1
         planner = Planner(config=config, scheduler=Scheduler(config))
-        tech_lead_session = make_session(make_issue(9))
+        tech_lead_session = make_session(make_issue(9), SessionKind.TECH_LEAD)
         tech_lead_session.agent_label = "agent:tech-lead"
         snapshot = make_snapshot(
             issues=[make_issue(2)],
@@ -4308,7 +4316,7 @@ class TestSnapshotFromState:
             validation_error="dirty",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         state.pending_validation_retries = [validation_retry]

@@ -536,7 +536,7 @@ class Orchestrator:
             publish_recovery=self.deps.publish_recovery,
             pending_work_claims=self.deps.pending_work_claims,
             provider_error_type=provider_error_type,
-            processing_policy=unprocessed_session_policy(session, self.config),
+            processing_policy=unprocessed_session_policy(session),
         )
 
     def tick(self) -> bool:

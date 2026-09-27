@@ -42,7 +42,7 @@ from ..domain.models import (
     session_history_status_from_session_status,
 )
 from ..domain.session_event_identity import SessionEventIdentity
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..ports import (
     EventSink,
     Issue,
@@ -551,7 +551,7 @@ class CompletionHandler:
         return SessionHistoryEntry(
             issue_number=session.issue.number,
             title=session.issue.title,
-            agent_type=session.issue.agent_type or "unknown",
+            agent_type=session.agent_label or "unknown",
             status=session_history_status_from_session_status(status),
             runtime_minutes=session.runtime_minutes,
             pr_url=pr_url,
@@ -644,7 +644,7 @@ class CompletionHandler:
         """Emit events for a completed session (coding/rework only)."""
         # Review sessions get their events from _publish_review_outcome().
         # Retrospective review sessions complete through label/state actions.
-        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind.capabilities.reports_verdict:
             return
 
         identity = SessionEventIdentity.of(session)
@@ -746,11 +746,10 @@ class CompletionHandler:
         self._update_issue_machine(session, status, pr_url)
 
         # 3. Update review state machine
-        is_review = session.terminal_id.startswith("review-")
-        is_rework = session.terminal_id.startswith("rework-")
-        if is_review and status == SessionStatus.COMPLETED:
+        kind = session.key.kind
+        if kind is SessionKind.REVIEW and status == SessionStatus.COMPLETED:
             self._update_review_machine(session)
-        elif is_rework and status == SessionStatus.COMPLETED:
+        elif kind is SessionKind.REWORK and status == SessionStatus.COMPLETED:
             self._complete_rework_review_machine(session)
 
     def _update_session_machine(
@@ -791,7 +790,7 @@ class CompletionHandler:
             logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
             # Only trigger pr_created for issue sessions (not review/rework sessions)
             # Review/rework sessions work on issues that already have PRs
-            is_issue_session = session.terminal_id.startswith("issue-")
+            is_issue_session = session.key.kind.capabilities.open_pr_means_done
             if status == SessionStatus.COMPLETED and pr_url and is_issue_session:
                 if issue_machine.can_transition("pr_created"):
                     logger.info(
@@ -992,11 +991,9 @@ class CompletionHandler:
         if not self._cleanup_actions_requested():
             return CleanupDecision.none()
 
-        is_work_session = session.key.task not in {
-            TaskKind.REVIEW,
-            TaskKind.RETROSPECTIVE_REVIEW,
-            TaskKind.REWORK,
-        }
+        # Only a session whose own PR is its output waits for that PR's review
+        # before its worktree goes (#7347: a tech-lead run no longer does).
+        is_work_session = session.key.kind.capabilities.open_pr_means_done
 
         if is_work_session and pr_url and pr_number and self._should_wait_for_review_before_cleanup():
             pending_cleanup = PendingCleanup(
@@ -1044,7 +1041,7 @@ class CompletionHandler:
         Note: This returns True even for dry-run PRs (so pr-pending label gets added).
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
-        is_review_session = session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}
+        is_review_session = session.key.kind.capabilities.reports_verdict
         should_queue = should_queue_pr_review(
             has_pr=bool(pr_url),
             code_review_agent_configured=bool(self.config.code_review_agent),
@@ -1084,7 +1081,7 @@ class CompletionHandler:
         """Return label actions after an approved local review exchange."""
         if not review_exchange_completed or not pr_url:
             return ()
-        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind.capabilities.reports_verdict:
             return ()
         return (
             AddLabelAction(

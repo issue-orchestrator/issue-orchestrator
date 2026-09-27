@@ -10,7 +10,7 @@ from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable, RunTerminalBinding
 from issue_orchestrator.domain.registered_completion import CompletionRunRole
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
@@ -24,14 +24,15 @@ def test_prepared_role_is_frozen_at_allocation_not_current_settings(custody, tec
     config.tech_lead_review_agent = "agent:test" if tech_lead else None
     allocator = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=config)
     recorded = custody.ledger.recorded_run(custody.run)
+    kind = SessionKind.TECH_LEAD if tech_lead else SessionKind.CODE
     run = allocator.allocate(IssueRunAllocation(custody.worktree, "coding-2", 42,
-        recorded.session_key, "agent:test", "test", terminal_id="visible-worker"))
+        replace(recorded.session_key, kind=kind), "agent:test", "test", terminal_id="visible-worker"))
     config.tech_lead_review_agent = "agent:changed"
     receipt = custody.intake.submit(custody.ledger.submission_capability(run), command(completion()))
     candidate = custody.intake.prepare_receipt_for_issue(receipt, run, 42)
-    expected = CompletionRunRole(42, TaskKind.TECH_LEAD if tech_lead else TaskKind.CODE, "agent:test")
+    expected = CompletionRunRole(42, kind, "agent:test")
     assert candidate.role == expected
-    assert candidate.run.session_key.task is TaskKind.CODE
+    assert candidate.run.session_key.kind is kind
     assert candidate.run.branch_name == "feature"
     assert candidate.run.terminal_binding == RunTerminalBinding("visible-worker")
     reopened = SqliteIssueRunLedger(custody.state / "runs.sqlite", repo_slug="test-owner/test-repo")
@@ -51,7 +52,10 @@ def test_schema_join_preserves_known_fields_without_inventing_missing_ones(custo
         for column in columns:
             conn.execute(f"ALTER TABLE issue_runs DROP COLUMN {column}")
     reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
-    assert reopened.recorded_run(custody.run) == replace(original, **dict.fromkeys(columns))
+    # ``completion_task`` is the kind's role record, not a record field: a row
+    # without it (and its agent label) keeps its stamped kind and no role.
+    unknown = dict.fromkeys(c for c in columns if c != "completion_task")
+    assert reopened.recorded_run(custody.run) == replace(original, **unknown)
     # Migrated physical column ordering must not change fresh insert bindings.
     next_record = replace(original, run=FileSystemSessionOutput().start_run(custody.worktree, "fresh"))
     reopened.record_run(42, next_record)
@@ -62,7 +66,6 @@ def test_schema_join_preserves_known_fields_without_inventing_missing_ones(custo
     {"branch_name": "different"},
     {"terminal_binding": RunTerminalBinding(None)},
     {"agent_label": "agent:different"},
-    {"completion_task": TaskKind.TECH_LEAD},
 ])
 def test_registration_retry_cannot_rebind_any_frozen_authority(custody, change):
     original = custody.ledger.recorded_run(custody.run)
@@ -74,7 +77,7 @@ def test_registration_retry_cannot_rebind_any_frozen_authority(custody, change):
 def test_unknown_role_refuses_before_processing_or_automatic_admission(custody):
     receipt = custody.intake.submit(custody.capability, command(completion()))
     with sqlite3.connect(custody.state / "runs.sqlite") as conn:
-        conn.execute("UPDATE issue_runs SET completion_task=NULL")
+        conn.execute("UPDATE issue_runs SET completion_task=NULL, agent_label=NULL")
     with pytest.raises(CompletionIntakeError, match="role is missing"):
         custody.intake.prepare_receipt_for_issue(receipt, custody.run, 42)
     assert custody.ledger.validation_for_receipt(receipt.entry_id) is None
@@ -85,7 +88,68 @@ def test_unknown_role_refuses_before_processing_or_automatic_admission(custody):
     custody.pair.release.assert_not_called()
 
 
-@pytest.mark.parametrize("task", [TaskKind.REVIEW, TaskKind.TECH_LEAD])
+@pytest.mark.parametrize("task", [SessionKind.REVIEW, SessionKind.TECH_LEAD])
 def test_historical_operator_role_cannot_become_an_agent_authority(task):
     with pytest.raises(CompletionIntakeError, match="role is missing or invalid"):
         CompletionRunRole(42, task, "operator:historical")
+
+
+@pytest.mark.parametrize(
+    ("kind", "label"),
+    [(SessionKind.CODE, "agent:tech-lead"), (SessionKind.TECH_LEAD, "agent:test")],
+)
+def test_allocation_refuses_a_kind_that_contradicts_the_agent_role(custody, kind, label):
+    """The launch stamps the kind; allocation is the last check before it is durable.
+
+    The ledger used to re-derive a tech lead's role from its label, which is how
+    a tech-lead run stamped CODE stayed invisible to every ``kind`` question
+    (#7347). A contradicting stamp now fails before anything is recorded.
+    """
+    config = Config(repo="owner/repo")
+    config.tech_lead_review_agent = "agent:tech-lead"
+    allocator = IssueRunAllocationService(
+        FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=config
+    )
+    recorded = custody.ledger.recorded_run(custody.run)
+    with pytest.raises(IssueRunEvidenceUnavailable, match="does not match its agent role"):
+        allocator.allocate(IssueRunAllocation(
+            custody.worktree, "coding-2", 42, replace(recorded.session_key, kind=kind),
+            label, "test", terminal_id="visible-worker",
+        ))
+    assert custody.ledger.recorded_runs(42) == (recorded,)
+
+
+@pytest.mark.parametrize(
+    "kind", [SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW, SessionKind.REWORK]
+)
+def test_a_kind_chosen_by_the_work_may_run_under_the_tech_lead_agent(custody, kind):
+    """#7347 review r4: the configured reviewer may also be the tech lead. Only
+    the issue-lane kinds (CODE / TECH_LEAD) are decided by the agent label."""
+    config = Config(repo="owner/repo")
+    config.tech_lead_review_agent = "agent:tech-lead"
+    allocator = IssueRunAllocationService(
+        FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=config
+    )
+    recorded = custody.ledger.recorded_run(custody.run)
+    run = allocator.allocate(IssueRunAllocation(
+        custody.worktree, "review-2", 42, replace(recorded.session_key, kind=kind),
+        "agent:tech-lead", "test", terminal_id="visible-reviewer",
+    ))
+    assert custody.ledger.recorded_run(run).session_key.kind is kind
+
+
+def test_a_refused_allocation_leaves_no_run_directory(custody, tmp_path):
+    config = Config(repo="owner/repo")
+    config.tech_lead_review_agent = "agent:tech-lead"
+    output = FileSystemSessionOutput()
+    allocator = IssueRunAllocationService(output, custody.ledger, custody.wc, configuration=config)
+    recorded = custody.ledger.recorded_run(custody.run)
+    sessions = custody.worktree / ".issue-orchestrator" / "sessions"
+    before = sorted(sessions.iterdir()) if sessions.exists() else []
+    with pytest.raises(IssueRunEvidenceUnavailable, match="does not match its agent role"):
+        allocator.allocate(IssueRunAllocation(
+            custody.worktree, "coding-2", 42, recorded.session_key,
+            "agent:tech-lead", "test", terminal_id="visible-worker",
+        ))
+    after = sorted(sessions.iterdir()) if sessions.exists() else []
+    assert after == before

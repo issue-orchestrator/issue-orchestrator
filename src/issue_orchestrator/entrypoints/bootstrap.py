@@ -50,11 +50,12 @@ from .bootstrap_pending_work import (
 )
 from .bootstrap_session_launcher import build_session_launcher_factory
 from .bootstrap_run_services import (
+    build_session_restorer,
     create_io_adapters as _create_io_adapters,
     build_issue_run_services,
     build_completion_intake,
 )
-from .bootstrap_issue_runtime import build_issue_runtime
+from .bootstrap_issue_runtime import build_issue_runtime, pull_request_base_branch
 from . import bootstrap_validated_work as validated_work_bootstrap
 from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
@@ -159,6 +160,7 @@ if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
     from ..ports.attempt_store import AttemptStore
     from ..control.pr_scanner import PRScanner
+    from ..control.stack_publish_gate import StackBaseGate
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
     from ..control.session_controller import SessionController
@@ -367,11 +369,11 @@ def _wire_stack_publish_gate(
     github: GitHubAdapter | None,
     command_runner: LocalCommandRunner,
     config: Config,
-) -> None:
+) -> "StackBaseGate | None":
     """Only compose publication once all required collaborators exist."""
     if completion_processor is None or dependency_evaluator is None or github is None:
-        return
-    wire_stack_publish_gate(
+        return None
+    return wire_stack_publish_gate(
         completion_processor, dependency_evaluator, github, command_runner, config
     )
 def _validate_required_deps(
@@ -433,7 +435,6 @@ def build_orchestrator(
         Fully configured Orchestrator instance
     """
     from ..infra.orchestrator import Orchestrator
-    from ..control.session_restorer import SessionRestorer
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..execution.tech_lead_downloader import TechLeadDownloader
@@ -589,13 +590,6 @@ def build_orchestrator(
         if github
         else None
     )
-    session_restorer = SessionRestorer(
-        config=config,
-        repository_host=github,
-        working_copy=working_copy,
-        tech_lead_authority=tech_lead_authority,
-    ) if github else None
-
     # Create state machine manager
     state_machine_manager = StateMachineManager(config=config)
 
@@ -645,6 +639,9 @@ def build_orchestrator(
     assert action_applier is not None
     assert fresh_issue_reader is not None
     assert github is not None
+    session_restorer = build_session_restorer(
+        config, github, working_copy, issue_run_ledger, tech_lead_authority
+    )
     validated_work = validated_work_bootstrap.build_validated_work_runtime(
         config, working_copy, issue_run_ledger, command_runner, validated_work_liveness,
         github, fresh_issue_reader, action_applier, label_manager, pending_work.needs_human_block,
@@ -685,7 +682,7 @@ def build_orchestrator(
             coder_prompt_addendum=coder_prompt_addendum,
         )
     )
-    _wire_stack_publish_gate(
+    stack_gate = _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
@@ -804,7 +801,8 @@ def build_orchestrator(
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
-        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims)
+        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims,
+        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
         config, events=events, action_applier=action_applier, label_manager=label_manager
@@ -1022,13 +1020,8 @@ def build_orchestrator_for_testing(
         config, github, events, working_copy, tech_lead_authority_for_testing,
     )
 
-    # Create SessionRestorer for testing
-    from ..control.session_restorer import SessionRestorer
-    session_restorer = SessionRestorer(
-        config=config,
-        repository_host=github,
-        working_copy=working_copy,
-        tech_lead_authority=tech_lead_authority_for_testing,
+    session_restorer = build_session_restorer(
+        config, github, working_copy, issue_run_ledger, tech_lead_authority_for_testing
     )
 
     # Create StateMachineManager for testing
@@ -1106,7 +1099,7 @@ def build_orchestrator_for_testing(
         tech_lead_authority=tech_lead_authority_for_testing,
         needs_human_block=pending_work.needs_human_block,
     )
-    _wire_stack_publish_gate(
+    stack_gate = _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
@@ -1238,7 +1231,8 @@ def build_orchestrator_for_testing(
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
-        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims)
+        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims,
+        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
         config, events=events, action_applier=action_applier, label_manager=label_manager

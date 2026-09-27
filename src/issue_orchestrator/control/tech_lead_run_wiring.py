@@ -502,9 +502,7 @@ def _stop_unowned_active_sessions(
     """
     from .tech_lead_run_admission import active_tech_lead_sessions, scope_of_session
 
-    for session in active_tech_lead_sessions(
-        orchestrator.config, list(orchestrator.state.active_sessions)
-    ):
+    for session in active_tech_lead_sessions(list(orchestrator.state.active_sessions)):
         scope = scope_of_session(session)
         if scope is None or scope.run_key not in lost:
             continue

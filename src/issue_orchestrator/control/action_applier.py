@@ -80,6 +80,7 @@ from .needs_human_block import (
 from .reconciliation import ReconciliationRequired
 from .claim_gate import ClaimGate, ClaimLostError
 from .review_exchange_lifecycle import (
+    ISSUE_RUNTIME_SESSION_TYPES,
     IssueRuntimeLifecycleOwners,
 
 )
@@ -1081,7 +1082,7 @@ class ActionApplier:
         assert isinstance(action, StopSessionAction)
 
         ref = SessionRef(session_type=action.session_type, number=action.number)
-        if ref.session_type in {SessionType.ISSUE, SessionType.REWORK}:
+        if ref.session_type in ISSUE_RUNTIME_SESSION_TYPES:
             termination = self.runtime_lifecycle.terminate(ref.number, "session-stopped")
             result = ActionResult.ok(action, session_name=ref.name) if termination.stopped_session_ids else ActionResult.skip(action, f"Session {ref.name} not running")
             return replace(result, validated_work=termination.validated_work, details={**result.details,
@@ -1116,7 +1117,7 @@ class ActionApplier:
         *,
         reason: str,
     ) -> "ReviewExchangeCancellation | None":
-        if ref.session_type not in {SessionType.ISSUE, SessionType.REWORK}:
+        if ref.session_type not in ISSUE_RUNTIME_SESSION_TYPES:
             return None
         return self._cancel_review_exchange_for_issue(ref.number, reason=reason)
 

@@ -17,7 +17,7 @@ from issue_orchestrator.control.tech_lead_artifact_retention import (
     tech_lead_problem_artifact_hold_issue_numbers,
 )
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunIdentity
 
 ORIGINAL = SessionRunIdentity(
@@ -47,7 +47,9 @@ def _retry(
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        # Only a tech-lead retry inherits launch authority (#7347); one that
+        # names none is read as the pre-#7273 "code" stamp it was queued under.
+        source_kind=SessionKind.TECH_LEAD if authority_run is not None else SessionKind.CODE,
         validation_cmd="make test",
         authority_run=authority_run,
     )
@@ -141,6 +143,9 @@ def test_switching_tech_lead_review_off_does_not_release_an_ACTIVE_session(
     session = MagicMock()
     session.issue.number = 6410
     session.agent_label = "agent:backend"
+    # The run's launch-stamped kind (#7347) is a fact about the RUN, restored
+    # from the ledger -- not a reading of the current configuration.
+    session.key.kind = SessionKind.TECH_LEAD
     session.tech_lead_scope = TechLeadLaunchScope(
         flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
     )

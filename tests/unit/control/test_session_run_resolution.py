@@ -16,7 +16,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
 )
 from issue_orchestrator.domain.session_run import (
     SessionRunAssets,
@@ -37,7 +37,7 @@ def _session(
     prompt_path.write_text("prompt", encoding="utf-8")
     issue = Issue(number=123, title="Test issue", labels=["agent:test"])
     return Session(
-        key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=AgentConfig(prompt_path=prompt_path, model="sonnet"),
         terminal_id="issue-123",
@@ -94,7 +94,7 @@ def test_missing_recorded_run_dir_still_prevents_discovery_fallback(
 def test_active_session_requires_run_dir_at_construction(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         Session(  # type: ignore[call-arg]
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=Issue(number=123, title="Test issue", labels=["agent:test"]),
             agent_config=AgentConfig(prompt_path=tmp_path / "prompt.md", model="sonnet"),
             terminal_id="issue-123",

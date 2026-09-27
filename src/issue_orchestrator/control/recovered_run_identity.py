@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.registered_completion import CompletionProcessingPolicy
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunIdentity
 from ..domain.tech_lead_session import TechLeadAuthorityKey
 
@@ -35,8 +36,10 @@ class RecoveredRun:
     """What the DURABLE allocation says about the run a retry came from."""
 
     agent_label: str
-    source_task: TaskKind
+    source_kind: SessionKind
     authority_run: SessionRunIdentity | None
+    # The PR and cycle a rework's run recorded at allocation (#7347).
+    rework_target: ReworkTarget | None = None
 
 
 
@@ -53,7 +56,7 @@ def registered_run(
     """Join a run-scoped retry to its exact orchestrator-owned allocation."""
     if artifacts.run_dir is None:
         # Legacy worktree-level retry state predates run allocation.
-        return RecoveredRun("", artifacts.source_task, None), None
+        return RecoveredRun("", artifacts.source_kind, None), None
     if ledger is None or authority is None:
         return None, (
             "Validation retry recovery cannot verify its source because the "
@@ -76,21 +79,21 @@ def registered_run(
             f"{len(matches)} exact durable allocation records; relaunch is refused"
         )
     record = matches[0]
-    if record.agent_label is None or record.completion_task is None:
+    if record.agent_label is None:
         return None, (
             f"Validation retry run {key.run_id}/{key.session_name} has no "
             "durably recorded completion role"
         )
-    if record.session_key.task.is_review_only:
+    if not record.session_key.kind.capabilities.produces_commits:
         return None, (
             f"Validation retry run {key.run_id}/{key.session_name} is "
-            f"review-only work ({record.session_key.task.value})"
+            f"review-only work ({record.session_key.kind.value})"
         )
-    policy = CompletionProcessingPolicy(record.agent_label, record.completion_task)
+    policy = CompletionProcessingPolicy(record.agent_label, record.session_key.kind)
     authority_run = policy.inheritable_launch_authority(record.run.identity)
     grant = authority.load(run_id=key.run_id, session_name=key.session_name)
     recovered = RecoveredRun(
-        record.agent_label, record.session_key.task, authority_run
+        record.agent_label, record.session_key.kind, authority_run, record.rework_target
     )
     if authority_run is not None and grant is None:
         return recovered, (

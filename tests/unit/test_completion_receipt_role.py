@@ -25,7 +25,8 @@ from issue_orchestrator.domain.models import (
     CompletionRecord,
     RequestedAction,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadAssignment,
     TechLeadLaunchAuthority,
@@ -115,12 +116,20 @@ def role_boundary(
     )
 
 
-def allocate(tmp_path, allocator, *, label="agent:tech-lead", exchange=False):
+def _stamped_kind(label: str) -> SessionKind:
+    """The kind the launcher stamps for this agent (#7347): tech-lead or coding."""
+    return SessionKind.TECH_LEAD if label.endswith("tech-lead") else SessionKind.CODE
+
+
+def allocate(
+    tmp_path, allocator, *, label="agent:tech-lead", exchange=False,
+    kind: SessionKind | None = None,
+):
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    # Production Tech Lead launches share the CODE slot. Completion policy is
-    # independently selected by the allocation owner from configured identity.
-    key = SessionKey(FakeIssueKey("42", "example/repo"), TaskKind.CODE)
+    # The launcher stamps the kind; the allocation owner records it and refuses
+    # a stamp that contradicts the configured tech-lead identity.
+    key = SessionKey(FakeIssueKey("42", "example/repo"), kind or _stamped_kind(label))
     if exchange:
         return allocator.allocate_exchange(
             IssueExchangeRunAllocation(worktree, 42, key, "issue-42", label)
@@ -191,7 +200,7 @@ def test_recorded_tech_lead_gate_precedes_every_effect(
     run.manifest_path.write_text(json.dumps(manifest))
     context = owner.processing_context(receipt, run)
     assert context.artifact.path.name == "completion.json"
-    assert context.role.task is TaskKind.TECH_LEAD
+    assert context.role.kind is SessionKind.TECH_LEAD
     assert context.role.agent_label == "agent:tech-lead"
     if path == "resume":
         result = owner.resume_receipt(
@@ -223,8 +232,11 @@ def test_restart_preserves_role_for_both_allocation_paths(
         == owner.processing_context(receipt, run).role
     )
     (record,) = reopened.recorded_runs(42)
-    assert record.session_key.task is TaskKind.CODE
-    assert record.completion_task is TaskKind.TECH_LEAD
+    assert record.session_key.kind is SessionKind.TECH_LEAD
+    with sqlite3.connect(tmp_path / "state" / "runs.sqlite") as conn:
+        assert conn.execute("SELECT task, completion_task FROM issue_runs").fetchall() == [
+            ("tech-lead", "tech-lead")
+        ]
 
 
 @pytest.mark.parametrize(
@@ -293,6 +305,24 @@ def test_recorded_coder_receipt_still_processes(tmp_path, role_boundary):
     effects[1].add_comment.assert_called_once()
 
 
+def test_a_review_by_the_tech_lead_agent_processes_as_a_review(tmp_path, role_boundary):
+    """#7347 review r5: the reviewer may also be the configured tech lead. The
+    allocator records its REVIEW run; completion processing must accept that
+    recorded role by the same rule - not reject it for sharing the label."""
+    ledger, allocator, owner, processor, _, _, _ = role_boundary
+    run = allocate(tmp_path, allocator, label="agent:tech-lead", kind=SessionKind.REVIEW)
+    receipt = submit(owner, ledger, run)
+
+    result = owner.resume_receipt(
+        ledger.submission_capability(run), receipt, 42, "Review", processor
+    )
+
+    policy = result.require_processing_policy()
+    assert (policy.agent_label, policy.kind) == ("agent:tech-lead", SessionKind.REVIEW)
+    assert not policy.is_tech_lead
+    assert not any("tech_lead" in error for error in result.errors or ())
+
+
 def test_new_allocation_captures_current_configuration_without_rewriting_old_role(
     tmp_path, role_boundary
 ):
@@ -300,9 +330,9 @@ def test_new_allocation_captures_current_configuration_without_rewriting_old_rol
     config.tech_lead_review_agent = "agent:new-tech-lead"
     run = allocate(tmp_path, allocator, label="agent:new-tech-lead")
     receipt = submit(owner, ledger, run)
-    assert owner.processing_context(receipt, run).role.task is TaskKind.TECH_LEAD
+    assert owner.processing_context(receipt, run).role.kind is SessionKind.TECH_LEAD
     config.tech_lead_review_agent = None
-    assert ledger.role_for_receipt(receipt.entry_id).task is TaskKind.TECH_LEAD
+    assert ledger.role_for_receipt(receipt.entry_id).kind is SessionKind.TECH_LEAD
 
 
 def test_legacy_schema_upgrade_keeps_unknown_roles_and_original_facts(
@@ -324,7 +354,8 @@ def test_legacy_schema_upgrade_keeps_unknown_roles_and_original_facts(
             row[:-2] for row in conn.execute("SELECT * FROM issue_runs").fetchall()
         ] == original
     (record,) = reopened.recorded_runs(42)
-    assert record.agent_label is None and record.completion_task is None
+    assert record.agent_label is None
+    assert record.session_key.kind is SessionKind.TECH_LEAD  # the stamped slot kind
     with pytest.raises(CompletionIntakeError, match="role is missing"):
         reopened.role_for_receipt(receipt.entry_id)
     assert all(not port.mock_calls for port in effects)
@@ -399,7 +430,7 @@ def test_settings_change_cannot_reselect_in_flight_processing_role(
     from tests.unit.test_completion_action_planner import make_planner
 
     session = Session(
-        key=SessionKey(FakeIssueKey("42", "example/repo"), TaskKind.CODE),
+        key=SessionKey(FakeIssueKey("42", "example/repo"), _stamped_kind(label)),
         issue=Issue(42, "Review", labels=[label]),
         agent_config=config.agents[label], terminal_id="issue-42",
         worktree_path=run.worktree_path, branch_name="feature", run_assets=run,

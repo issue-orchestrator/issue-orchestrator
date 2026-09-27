@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.control.needs_human_block import (
     NO_OTHER_NEEDS_HUMAN_CAUSES,
     NeedsHumanBlock,
@@ -134,7 +135,7 @@ def test_the_engine_facade_derives_custody_from_its_own_state(
         Issue(number=2, title="b", labels=["agent:web", "blocked-failed"]),
     ]
     orchestrator.state.active_sessions.append(
-        replace(make_session(issue_number=2), agent_label=tech_lead)
+        replace(make_session(issue_number=2, task=SessionKind.TECH_LEAD), agent_label=tech_lead)
     )
 
     board = orchestrator.blocked_item_custody.read([1, 2])

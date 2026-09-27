@@ -39,7 +39,8 @@ from tests.conftest import make_provider_availability
 from issue_orchestrator.domain.board_snapshot import BoardFailure, BoardSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_manifest import PRToReview, TechLeadManifest
 from issue_orchestrator.domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from issue_orchestrator.domain.tech_lead_session import (
@@ -101,10 +102,15 @@ def make_session(
     issue: Issue | None = None,
     terminal_id: str = "issue-1",
 ) -> Session:
-    """Create a session for planner tests."""
+    """Create a session for planner tests.
+
+    Its kind is the one the launcher naming a terminal this way stamps (#7347):
+    policy reads the kind, never the name.
+    """
     issue = issue or make_issue()
+    kind = SessionKind.from_phase_label(terminal_id) or SessionKind.CODE
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=kind),
         issue=issue,
         agent_config=AgentConfig(
             prompt_path=tmp_path / "prompt.md", timeout_minutes=45
@@ -2346,7 +2352,7 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     config = make_tech_lead_config(tmp_path)
     config.tech_lead.authority.kill_hung_session = "execute"
     session = make_tech_lead_session(tmp_path)
-    observed = TechLeadSessionGeneration(issue_number=1, task_kind=TaskKind.CODE, terminal_id="worker-1", run_id="worker-run")
+    observed = TechLeadSessionGeneration(issue_number=1, task_kind=SessionKind.CODE, terminal_id="worker-1", run_id="worker-run")
     arm_investigation_session(config, session, generations=(observed,))
     _plant_decision_with_actions(session, [
         {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
@@ -2424,3 +2430,44 @@ def test_a_rework_the_charter_keeps_as_advice_still_marks_the_pr_reviewed(tmp_pa
     assert {action.issue_number for action in _tech_lead_labels(actions)} == reviewed
     held = review_loop_depth == "fix"
     assert any(isinstance(a, CreateTechLeadProposalIssueAction) for a in actions) is held
+
+
+@pytest.mark.parametrize(
+    ("status", "extra"),
+    [
+        (SessionStatus.TIMED_OUT, {}),
+        (SessionStatus.FAILED, {}),
+        (SessionStatus.BLOCKED, {"blocked_reason": "stuck"}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("terminal_id", "releases_claim"),
+    [
+        ("issue-7", True),
+        # A tech-lead run is named ``tech-lead-N`` since #7347 but still holds
+        # its issue's claim: the kind, not the name prefix, decides.
+        ("tech-lead-7", True),
+        # A rework - and so a rework's validation retry, which relaunches as
+        # rework since #7347 - never took the claim, so it does not release it.
+        ("rework-7", False),
+        ("review-7", False),
+    ],
+)
+def test_terminal_failure_custody_follows_the_kind(tmp_path, status, extra, terminal_id, releases_claim):
+    config = Config()
+    session = make_session(tmp_path, issue=make_issue(), terminal_id=terminal_id)
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        status,
+        processing_policy=CompletionProcessingPolicy(session.agent_label, session.key.kind),
+        **extra,
+    )
+
+    released = [
+        action
+        for action in actions
+        if isinstance(action, RemoveLabelAction)
+        and action.label == LabelManager(config).in_progress
+    ]
+    assert bool(released) is releases_claim

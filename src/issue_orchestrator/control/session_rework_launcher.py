@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
 from ..domain.coder_prompt import (
     CoderPromptAddendumUnavailable,
@@ -19,7 +20,7 @@ from ..domain.models import (
     PendingRework,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
     get_completion_path,
 )
 from ..domain.session_run import SessionRunAssets
@@ -43,7 +44,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .launch_dependency_gate import dependency_blocked_result
-from .session_launch_types import LaunchDisposition, LaunchResult
+from .session_launch_types import LaunchResult
 from .stack_base import StackBaseDecision
 from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback, combine_rework_feedback
 from .session_worktree_diagnostics import (
@@ -273,10 +274,7 @@ def _rework_launch_identity(
         return LaunchResult(
             None, False, f"Unresolved issue number for rework {rework.issue_key}"
         )
-    prepared_coder_prompt = deps.coder_prompt_addendum.prepare(
-        task=TaskKind.REWORK,
-        agent_label=rework.agent_type,
-    )
+    prepared_coder_prompt = deps.coder_prompt_addendum.prepare(kind=SessionKind.REWORK)
     if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
         return LaunchResult.required_input_unavailable(prepared_coder_prompt.reason)
     if result := deps.check_provider_ready(agent_config, issue_number):
@@ -298,14 +296,14 @@ def launch_rework_session(
     agent_config, issue_number, prepared_coder_prompt = resolved
 
     issue_key = rework.issue_key
-    session_key = SessionKey(issue=issue_key, task=TaskKind.REWORK)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.REWORK)
     pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
 
     scoped = deps.scoped_rework.admit(rework, pr_number, work_claim=work_claim)
     if isinstance(scoped, LaunchResult):
         return scoped
     work_claim = deps.scoped_rework.claim(work_claim, scoped.keys)
-    session_name = f"rework-{issue_number}"
+    session_name = SessionKind.REWORK.terminal_name(issue_number)
     # Preflight: session conflicts, then the stack work gate. A blocked/ambiguous
     # stack predecessor fails the rework closed before the reused successor
     # worktree is reset onto the default base (#6596).
@@ -330,7 +328,7 @@ def launch_rework_session(
         issue_key,
         pr_number,
         rework.agent_type,
-        TaskKind.REWORK.value,
+        SessionKind.REWORK.value,
         session_name,
         branch_name,
         rework.rework_cycle,
@@ -346,7 +344,7 @@ def launch_rework_session(
     )
 
     coding_attempt = rework.rework_cycle + 1
-    phase_name = f"coding-{coding_attempt}"
+    phase_name = SessionKind.REWORK.phase_label(coding_attempt)
     ctx = WorktreeContext.create(
         command_runner=deps.command_runner,
         worktree_manager=deps.worktree_manager,
@@ -365,6 +363,7 @@ def launch_rework_session(
         reuse_options=deps.worktree_reuse_options(allow_remote_branch_delete=False),
         phase_name=phase_name,
         stack_base_branch=stack_base_branch,
+        rework_target=ReworkTarget(pr_number, rework.rework_cycle),
     )
 
     if ctx.error:
@@ -410,7 +409,7 @@ def launch_rework_session(
 
         ctx.write_worktree_note()
         ctx.write_session_identity({
-            "task": TaskKind.REWORK.value,
+            "task": SessionKind.REWORK.value,
             "issue_key": issue_key.stable_id(),
             "pr_number": pr_number,
             "session_key": session_key.stable_id(),
@@ -492,7 +491,7 @@ def launch_rework_session(
             issue_title=issue_title,
             worktree=worktree_path,
             pr_number=pr_number,
-            task_kind=TaskKind.REWORK.value,
+            task_kind=SessionKind.REWORK.value,
         )
         base_command = deps.wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(rework.agent_type, run_dir=run.run_dir.name)
@@ -644,7 +643,7 @@ def check_rework_conflicts(
         return LaunchResult(None, False, "Already in active sessions")
     if session_exists(session_name):
         log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
-        return LaunchResult(None, False, "Terminal session already running", disposition=LaunchDisposition.EXISTING_TERMINAL)
+        return LaunchResult.terminal_already_running(session_name)
     return None
 
 

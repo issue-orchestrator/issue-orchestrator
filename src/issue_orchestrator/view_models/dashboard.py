@@ -10,7 +10,7 @@ from typing import Any, Callable, assert_never
 
 from ..domain.issue_key import format_issue_label, parse_external_id
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..history import issues_held_by_session_history, latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
@@ -487,11 +487,10 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
     for session in state.active_sessions:
         runtime = session.runtime_minutes
         timeout = session.agent_config.timeout_minutes
-        tmux_name = session.terminal_id or ""
-        is_review = tmux_name.startswith("review-")
-        phase = "Reviewing" if is_review else "Coding"
+        kind = session.key.kind
+        phase = "Reviewing" if kind is SessionKind.REVIEW else "Coding"
 
-        agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
+        agent_label = (session.agent_label or "unknown").replace("agent:", "")
         if runtime >= timeout:
             status = "slow"
             status_reason = f"Over timeout ({runtime} min / {timeout} min)"
@@ -500,16 +499,17 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             status_reason = f"Running for {runtime} min"
 
         seen_issues.add(session.issue.number)
-        if session.key.task == TaskKind.REVIEW:
+        if kind is SessionKind.REVIEW:
             flow_stage = "review"
-        elif session.key.task == TaskKind.RETROSPECTIVE_REVIEW:
+        elif kind is SessionKind.RETROSPECTIVE_REVIEW:
             flow_stage = "review"
             phase = "Retro review"
             status_reason = f"Reviewing existing implementation for {runtime} min"
-        elif session.key.task == TaskKind.REWORK:
+        elif kind is SessionKind.REWORK:
             flow_stage = "rework"
-        elif session.key.task == TaskKind.TECH_LEAD:
+        elif kind is SessionKind.TECH_LEAD:
             flow_stage = "tech_lead"
+            phase = "Tech lead"
         else:
             flow_stage = "in_progress"
         flow_steps = flow_steps_for(flow_stage)

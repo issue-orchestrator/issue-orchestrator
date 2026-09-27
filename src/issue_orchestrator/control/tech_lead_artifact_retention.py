@@ -45,7 +45,7 @@ def tech_lead_problem_artifact_hold_issue_numbers(
     """
     from ..domain.tech_lead_scratch_identity import scratch_worktree_focus_issue
     from ..domain.tech_lead_session import TechLeadSessionFlavor
-    from .tech_lead_session_policy import is_tech_lead_session
+    from ..domain.session_kind import SessionKind
 
     # Keyed on the CHECKOUT, not on `authority_run`. The checkout path is a
     # durable fact: an investigation runs in a run-scoped scratch worktree whose
@@ -65,12 +65,10 @@ def tech_lead_problem_artifact_hold_issue_numbers(
         # succeeded, so the durable row below is the single cohort authority.
         referenced_anchors.add(item.issue_number)
     for session in state.active_sessions:
-        # `tech_lead_scope` first: a restored session carries its scope from the
-        # claim, and it is a durable fact about the RUN rather than a reading of
-        # the current configuration.
-        if session.tech_lead_scope is not None or is_tech_lead_session(
-            config.tech_lead_review_agent, session.agent_label
-        ):
+        # The run's stamped kind (#7347): a durable fact about the RUN, restored
+        # from the run ledger, rather than a reading of the current
+        # configuration's agent label.
+        if session.key.kind is SessionKind.TECH_LEAD:
             held.add(session.issue.number)
             referenced_anchors.add(session.issue.number)
 

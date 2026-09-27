@@ -20,10 +20,9 @@ from ..domain.models import (
     PendingRework,
     Session,
     SessionStatus,
-    is_retrospective_review_session,
     resolve_retrospective_coder_agent,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink
@@ -141,7 +140,7 @@ def _queue_rework_after_retrospective_changes(
     Label/state effects live in CompletionHandler; this owns only the rework queue.
     """
 
-    if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
+    if session.key.kind != SessionKind.RETROSPECTIVE_REVIEW:
         return
     if status != SessionStatus.COMPLETED:
         return
@@ -280,8 +279,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     """
     from ..domain.models import PendingValidationRetry
 
-    name = session.terminal_id
-    entity = "retrospective-review" if is_retrospective_review_session(session) else "review" if name.startswith("review-") else "rework" if name.startswith("rework-") else "issue"
+    entity = session.key.kind.session_type.value
     log_transition(
         entity,
         session.issue.number,
@@ -324,17 +322,11 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             next_retry_count,
         )
         completion_handler.mark_session_retry(session, reason="validation_retry")
-        pending_retry = PendingValidationRetry(
-            issue_number=session.issue.number,
-            issue_title=session.issue.title,
-            agent_label=session.agent_label or "",
-            worktree_path=str(session.worktree_path),
-            branch_name=session.branch_name,
-            original_prompt=session.original_prompt,
+        pending_retry = PendingValidationRetry.of_session(
+            session,
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
             retry_count=next_retry_count,
-            source_task=session.key.task,
             validation_cmd=config.validation.quick.cmd,
             authority_run=processing_policy.inheritable_launch_authority(session.run_assets.identity),
         )
@@ -490,7 +482,6 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     record_completed_session_problem(
         status=effective_status,
         session=session,
-        tech_lead_agent=config.tech_lead_review_agent,
         blocking_label=blocked_label or "",
         artifact_hints=lambda: _failure_artifact_hints(session.worktree_path, run_dir, diagnostic_path, claude_log_path),
         record=state.record_discovered_failure,
@@ -674,7 +665,7 @@ def _completion_decider(
             repo_root=config.repo_root,
             issue_key=issue_key,
             session_run_assets=session.run_assets,
-            task_kind=session.key.task,
+            task_kind=session.key.kind,
         )
 
     return decide
@@ -698,11 +689,13 @@ def _apply_completed_decisions(
     raise BaseExceptionGroup("completion decision apply failures", errors)
 
 
-def unprocessed_session_policy(session: Session, config: Config) -> CompletionProcessingPolicy:
-    """Classify terminal-only paths that never invoked completion processing."""
-    return CompletionProcessingPolicy.for_unprocessed_session(
-        session.agent_label, config.tech_lead_review_agent
-    )
+def unprocessed_session_policy(session: Session) -> CompletionProcessingPolicy:
+    """Classify terminal-only paths that never invoked completion processing.
+
+    The session's launch-stamped kind is the role (#7347); the agent label is
+    carried for the effects that address the agent, never re-read as the kind.
+    """
+    return CompletionProcessingPolicy(session.agent_label, session.key.kind)
 
 
 def _apply_completed_decision(
@@ -759,7 +752,7 @@ def _apply_completed_decision(
     processing_policy = (
         decision.processing_result.require_processing_policy()
         if decision.processing_result is not None
-        else unprocessed_session_policy(session, config)
+        else unprocessed_session_policy(session)
     )
     handle_session_completion(
         session,
