@@ -178,6 +178,19 @@ class SessionKind(Enum):
         """
         return f"{self.session_type.value}-{number}"
 
+    def conflicting_terminal_names(self, number: int) -> tuple[str, ...]:
+        """Every terminal name a live run of this kind for ``number`` may hold.
+
+        Its own name first; then, for a tech-lead run - which launched under
+        the issue lane before #7347 - the ``issue-N`` a run launched before the
+        upgrade may still be running under. A launch must treat either as an
+        existing terminal, or it starts a second run of the same work.
+        """
+        own = self.terminal_name(number)
+        if self in _LAUNCHED_AS_ISSUE_BEFORE_7347:
+            return (own, SessionKind.CODE.terminal_name(number))
+        return (own,)
+
     def phase_label(self, attempt: int) -> str:
         """The run-directory phase label for this kind's ``attempt``-th run.
 
@@ -383,6 +396,8 @@ _SESSION_TYPE: dict[SessionKind, SessionType] = {
     SessionKind.REWORK: SessionType.REWORK,
     SessionKind.TECH_LEAD: SessionType.TECH_LEAD,
 }
+
+_LAUNCHED_AS_ISSUE_BEFORE_7347 = frozenset({SessionKind.TECH_LEAD})
 
 _PHASE_PREFIX: dict[SessionKind, str] = {
     SessionKind.CODE: "coding",

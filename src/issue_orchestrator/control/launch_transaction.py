@@ -433,7 +433,7 @@ class LaunchSettlement:
     # an optional every caller of `settle` would have to re-check. The retry
     # callback PLANS rather than acts, because the spend has to reach the ledger
     # before it reaches the queue (#6999 F2).
-    restore_existing: Callable[[], Optional[Session]] = field(default=lambda: None)
+    restore_existing: Callable[[str], Optional[Session]] = field(default=lambda _terminal: None)
     plan_retry: Callable[[PendingWorkClaim], RetryPlan] = field(
         default=unbounded_retry
     )
@@ -449,7 +449,10 @@ class LaunchSettlement:
             append_unique_active_sessions(state.active_sessions, [result.session])
             return result.session
         if result.disposition is LaunchDisposition.EXISTING_TERMINAL:
-            restored = self.restore_existing()
+            # The terminal the launcher actually found, never a re-derived name
+            # (#7347: a tech lead may still run as a pre-upgrade ``issue-N``).
+            assert result.existing_terminal is not None  # the result type's invariant
+            restored = self.restore_existing(result.existing_terminal)
             if restored:
                 # An adopted terminal is running this work exactly as a freshly
                 # spawned one is, so it holds the claim on the same terms.

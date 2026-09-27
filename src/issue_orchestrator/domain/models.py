@@ -1946,6 +1946,46 @@ class PendingValidationRetry:
     #: "authority required but damaged" must not be indistinguishable from
     #: "ordinary retry that needs none" (#7273 round 3 finding 1).
     recovery_error: str | None = None
+    #: A rework's retry is still that rework (#7347): the PR it is fixing and
+    #: its cycle travel with it, so a provider block restores ``needs-rework``
+    #: on that PR and a completion advances that PR's review machine. ``None``
+    #: when the source was not a rework, or the retry was rebuilt from
+    #: artifacts that never recorded them (a restored rework is the same).
+    pr_number: int | None = None
+    rework_cycle: int | None = None
+
+    @classmethod
+    def of_session(
+        cls,
+        session: "Session",
+        *,
+        validation_error: str,
+        validation_error_file: str | None,
+        retry_count: int,
+        validation_cmd: str | None,
+        authority_run: SessionRunIdentity | None,
+    ) -> "PendingValidationRetry":
+        """The retry of a session whose completion failed validation.
+
+        It continues the SAME work (#7347): the session's stamped kind, its
+        agent role, and - for a rework - the PR it is fixing and its cycle.
+        """
+        return cls(
+            issue_number=session.issue.number,
+            issue_title=session.issue.title,
+            agent_label=session.agent_label or "",
+            worktree_path=str(session.worktree_path),
+            branch_name=session.branch_name,
+            original_prompt=session.original_prompt,
+            validation_error=validation_error,
+            validation_error_file=validation_error_file,
+            retry_count=retry_count,
+            source_kind=session.key.kind,
+            validation_cmd=validation_cmd,
+            authority_run=authority_run,
+            pr_number=session.pr_number,
+            rework_cycle=session.rework_cycle,
+        )
 
     def __post_init__(self) -> None:
         if self.recovery_error is not None and not self.recovery_error.strip():

@@ -43,7 +43,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .launch_dependency_gate import dependency_blocked_result
-from .session_launch_types import LaunchDisposition, LaunchResult
+from .session_launch_types import LaunchResult
 from .stack_base import StackBaseDecision
 from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback, combine_rework_feedback
 from .session_worktree_diagnostics import (
@@ -641,7 +641,7 @@ def check_rework_conflicts(
         return LaunchResult(None, False, "Already in active sessions")
     if session_exists(session_name):
         log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
-        return LaunchResult(None, False, "Terminal session already running", disposition=LaunchDisposition.EXISTING_TERMINAL)
+        return LaunchResult.terminal_already_running(session_name)
     return None
 
 

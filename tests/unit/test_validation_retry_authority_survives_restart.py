@@ -124,3 +124,27 @@ def test_work_that_makes_no_launched_commits_is_never_retried(kind: SessionKind)
 
     with pytest.raises(ValueError, match="only a launched session that makes commits"):
         replace(_retry(None), source_kind=kind)
+
+
+def test_a_reworks_retry_keeps_its_pr_and_cycle_across_a_restart() -> None:
+    from dataclasses import replace
+
+    rework = replace(
+        _retry(None), source_kind=SessionKind.REWORK, agent_label="agent:web",
+        pr_number=456, rework_cycle=2,
+    )
+    restored = _round_trip(rework)
+    assert (restored.pr_number, restored.rework_cycle) == (456, 2)
+
+
+def test_a_pre_7347_retry_payload_has_no_pr_or_cycle_and_is_not_guessed() -> None:
+    payload = encode_claim(
+        PendingWorkClaim(kind=PendingWorkKind.VALIDATION_RETRY, request=_retry(None))
+    )
+    payload["request"].pop("pr_number")
+    payload["request"].pop("rework_cycle")
+
+    restored = decode_claim(payload).request
+
+    assert isinstance(restored, PendingValidationRetry)
+    assert (restored.pr_number, restored.rework_cycle) == (None, None)

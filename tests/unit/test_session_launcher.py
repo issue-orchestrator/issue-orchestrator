@@ -4140,16 +4140,12 @@ class TestOrchestratorLaunchTechLeadSession:
         sample_config.tech_lead_review_agent = "agent:web"
         state = OrchestratorState()
         PendingSessionQueues(state).queue_batch_review(789, "Tech Lead batch")
-        launcher = _stub_tech_lead_launcher(
-            LaunchResult(
-                session=None,
-                success=False,
-                disposition=LaunchDisposition.EXISTING_TERMINAL,
-            )
-        )
+        launcher = _stub_tech_lead_launcher(LaunchResult.terminal_already_running("issue-789"))
+        restorer = MagicMock()
+        restorer.restore_known_terminal.return_value = []
 
         result = orchestrator_launch_tech_lead_session(
-            state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock(),
+            state.pending_tech_lead_reviews[0], state, sample_config, launcher, restorer,
             _claims_store(),
         )
 
@@ -10100,6 +10096,39 @@ class TestTheLaunchStampsOneKind:
         # A rework launch never takes the issue's in-progress claim; neither
         # does its retry.
         assert self._in_progress_moves(launcher_bundle) == []
+
+    def test_a_reworks_retry_keeps_the_pr_and_cycle_it_is_fixing(self, launcher_bundle) -> None:
+        """The retry is still that rework: a provider block must be able to put
+        ``needs-rework`` back on its PR, and a completion must advance that
+        PR's review machine (#7347 review round 1)."""
+        from dataclasses import replace
+
+        retry = replace(self._retry(SessionKind.REWORK), pr_number=456, rework_cycle=2)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert (session.pr_number, session.rework_cycle) == (456, 2)
+        # Cycle 2 ran as coding-3; its first retry is the next iteration.
+        assert session.run_assets.session_name == "coding-4"
+
+    def test_a_tech_lead_still_running_under_its_pre_upgrade_name_is_not_launched_twice(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """A tech-lead run launched before #7347 runs as ``issue-N``. A new launch
+        checks that name too and hands the terminal it FOUND to restoration."""
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        launcher_bundle.session_exists_override[0] = lambda name: name == "issue-125"
+        issue = Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo")
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.disposition is LaunchDisposition.EXISTING_TERMINAL
+        assert result.existing_terminal == "issue-125"
+        assert launcher_bundle.create_session_calls == []
+        assert launcher_bundle.issue_run_ledger.recorded_runs(125) == ()
 
     def test_a_coders_retry_still_takes_the_claim(self, launcher_bundle) -> None:
         result = launcher_bundle.launcher.launch_validation_retry_session(

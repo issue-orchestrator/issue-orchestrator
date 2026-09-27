@@ -4689,3 +4689,24 @@ class TestAQueuedValidationRetryNamesTheRunItCameFrom:
         assert retry.authority_run is None, (
             "a coder retry named an authority row that was never recorded"
         )
+
+
+def test_a_reworks_validation_retry_is_queued_with_its_pr_and_cycle(sample_config, tmp_path):
+    """The producer side of #7347 review round 1 finding 1: the retry of a rework
+    carries the PR it is fixing and its cycle, so the relaunch is that rework."""
+    manager = MagicMock()
+    manager.worktree_path = tmp_path / "worktree"
+    manager.worktree_path.mkdir(parents=True)
+    issue = create_issue(6410, labels=["agent:coder"])
+    session = create_session(issue, task=SessionKind.REWORK)
+    session.agent_label = "agent:coder"
+    session.pr_number = 456
+    session.rework_cycle = 2
+    orchestrator = create_test_orchestrator(sample_config, worktree_manager=manager)
+    track_session(orchestrator, session)
+
+    orchestrator.handle_session_completion(session, SessionStatus.NEEDS_VALIDATION_RETRY)
+
+    [retry] = orchestrator.state.pending_validation_retries
+    assert retry.source_kind is SessionKind.REWORK
+    assert (retry.pr_number, retry.rework_cycle) == (456, 2)

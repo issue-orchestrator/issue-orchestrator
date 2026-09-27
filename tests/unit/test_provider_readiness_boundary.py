@@ -3533,7 +3533,7 @@ def test_a_provider_deferral_touches_neither_restoration_nor_the_retry_budget(
 
     calls: list[str] = []
 
-    def _spy_restore_existing():
+    def _spy_restore_existing(_terminal):
         calls.append("restore_existing")
         return None
 
@@ -7457,3 +7457,25 @@ def test_a_settlement_will_not_project_a_spend_the_ledger_did_not_take(
     assert projected == []
     assert queued.retryable_launch_failures == 0
     assert _pending_count(state, "tech_lead") == 1
+
+
+def test_an_existing_terminal_is_restored_under_the_name_the_launcher_found(tmp_path: Path) -> None:
+    """#7347 review round 1 finding 2: a kind can find its work under more than
+    one name (a pre-upgrade tech lead runs as ``issue-N``), so the settlement
+    restores the terminal the launcher FOUND, never a re-derived name."""
+    from issue_orchestrator.control.launch_transaction import LaunchSettlement
+    from issue_orchestrator.control.session_launch_types import LaunchResult
+
+    asked: list[str] = []
+
+    def restore(terminal: str):
+        asked.append(terminal)
+        return None
+
+    LaunchSettlement(
+        work=_launch_work("tech_lead", _pending_state("tech_lead"), tmp_path),
+        remove=lambda: None,
+        restore_existing=restore,
+    ).settle(LaunchResult.terminal_already_running("issue-7"), _pending_state("tech_lead"))
+
+    assert asked == ["issue-7"]

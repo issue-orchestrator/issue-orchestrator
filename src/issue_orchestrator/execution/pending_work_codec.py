@@ -245,6 +245,8 @@ def _encode_validation_retry(request: PendingWorkRequest) -> dict[str, Any]:
             else None
         ),
         "recovery_error": request.recovery_error,
+        "pr_number": request.pr_number,
+        "rework_cycle": request.rework_cycle,
     }
 
 
@@ -263,7 +265,18 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
         validation_cmd=payload["validation_cmd"],
         authority_run=_decode_run_identity(payload.get("authority_run")),
         recovery_error=payload.get("recovery_error"),
+        # Absent from payloads written before #7347: unknown, not guessed.
+        pr_number=_optional_int(payload.get("pr_number")),
+        rework_cycle=_optional_int(payload.get("rework_cycle")),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PendingWorkClaimDecodeError(f"expected an integer or null, got {value!r}")
+    return value
 
 
 def _decode_retry_source_kind(payload: dict[str, Any]) -> SessionKind:
