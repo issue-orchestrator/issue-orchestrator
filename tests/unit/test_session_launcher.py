@@ -8687,6 +8687,36 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         )
         return result, store, source, granted
 
+    def test_the_resumed_run_keeps_its_run_lease(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """#7347 review r8: the retry relaunches as a TECH_LEAD session, so it
+        must carry the run's launch scope - or the next ownership
+        reconciliation sees no live run and releases the lease of a run whose
+        terminal is still going, for another engine to take."""
+        from issue_orchestrator.control.tech_lead_run_admission import live_run_scopes
+        from issue_orchestrator.domain.tech_lead_run import IssueInvestigationScope
+        from tests.unit.control.run_ledger_doubles import SharedRunLedger
+
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        result, _store, _source, _granted = self._resumed(
+            launcher_bundle, sample_config, tmp_path, checkout
+        )
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.TECH_LEAD
+        assert session.tech_lead_scope is not None
+        assert session.tech_lead_scope.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
+
+        live = live_run_scopes(sample_config, [], [session])
+        assert live == (IssueInvestigationScope(6410),)
+        ownership = SharedRunLedger().ownership("engine-a")
+        assert ownership.claim(IssueInvestigationScope(6410)).owned
+        ownership.reconcile(live)
+        assert ownership.owns(IssueInvestigationScope(6410).run_key)
+
     def test_the_resumed_run_gets_the_original_grant(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:
