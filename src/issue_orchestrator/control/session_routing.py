@@ -23,7 +23,6 @@ from ..domain.pending_work import (
     PendingWorkClaim,
     PendingWorkKind,
 )
-from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from ..events import EventName
 from ..infra.config import Config
@@ -87,10 +86,10 @@ def orchestrator_launch_review_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_review(review.pr_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=review.issue_number,
-                session_name=SessionKind.REVIEW.terminal_name(review.pr_number),
+                session_name=terminal,
                 is_review=True,
                 tab_name=f"Review PR #{review.pr_number}",
             ),
@@ -124,12 +123,10 @@ def orchestrator_launch_retrospective_review_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_retrospective_review(review.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=review.issue_number,
-                session_name=SessionKind.RETROSPECTIVE_REVIEW.terminal_name(
-                    review.issue_number
-                ),
+                session_name=terminal,
                 is_review=True,
             ),
             state=state,
@@ -158,7 +155,7 @@ def orchestrator_launch_rework_session(
         issue_number=rework.resolve_issue_number(),
         work=PendingWorkKind.REWORK.value,
     )
-    def _restore_rework() -> Optional[Session]:
+    def _restore_rework(terminal: str) -> Optional[Session]:
         issue_number = rework.resolve_issue_number()
         if issue_number is None:
             logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
@@ -166,7 +163,7 @@ def orchestrator_launch_rework_session(
         return _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=issue_number,
-                session_name=SessionKind.REWORK.terminal_name(issue_number),
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -203,10 +200,10 @@ def orchestrator_launch_validation_retry_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_validation_retry(retry.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=retry.issue_number,
-                session_name=retry.source_kind.terminal_name(retry.issue_number),
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -315,10 +312,10 @@ def orchestrator_launch_tech_lead_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_tech_lead(tech_lead.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=tech_lead.issue_number,
-                session_name=SessionKind.TECH_LEAD.terminal_name(tech_lead.issue_number),
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -596,12 +593,11 @@ def orchestrator_launch_session(
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.disposition is LaunchDisposition.EXISTING_TERMINAL and session_restorer is not None:
+        assert result.existing_terminal is not None  # the result type's invariant
         restored = _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=issue.number,
-                session_name=SessionKind.for_issue_launch(
-                    issue.agent_type, session_launcher.config.tech_lead_review_agent
-                ).terminal_name(issue.number),
+                session_name=result.existing_terminal,
                 is_review=False,
             ),
             state=state,

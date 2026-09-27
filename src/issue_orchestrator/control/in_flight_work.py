@@ -594,6 +594,10 @@ def _restore_claim_context(session: Session, claim: PendingWorkClaim) -> None:
             session.tech_lead_scope = request.launch_scope()
         case PendingValidationRetry() as request:
             session.validation_retry_count = request.retry_count
+            if request.pr_number is not None:
+                session.pr_number = request.pr_number
+            if request.rework_cycle is not None:
+                session.rework_cycle = request.rework_cycle
         case PendingRework() as request:
             if request.pr_number is not None:
                 session.pr_number = request.pr_number

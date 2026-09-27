@@ -322,17 +322,11 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             next_retry_count,
         )
         completion_handler.mark_session_retry(session, reason="validation_retry")
-        pending_retry = PendingValidationRetry(
-            issue_number=session.issue.number,
-            issue_title=session.issue.title,
-            agent_label=session.agent_label or "",
-            worktree_path=str(session.worktree_path),
-            branch_name=session.branch_name,
-            original_prompt=session.original_prompt,
+        pending_retry = PendingValidationRetry.of_session(
+            session,
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
             retry_count=next_retry_count,
-            source_kind=session.key.kind,
             validation_cmd=config.validation.quick.cmd,
             authority_run=processing_policy.inheritable_launch_authority(session.run_assets.identity),
         )

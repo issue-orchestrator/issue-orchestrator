@@ -425,9 +425,13 @@ class SessionLauncher:
         self,
         issue: "IssueProtocol",
         active_sessions: list[Session],
-        session_name: str,
+        kind: SessionKind,
     ) -> LaunchResult | None:
         """Validate config and check for conflicts before launching.
+
+        A running terminal under ANY name this kind's work can hold - including
+        the ``issue-N`` a tech lead or a rework's retry ran under before #7347 -
+        is an existing terminal, not a slot to launch into again.
 
         Returns LaunchResult on failure, None if preconditions pass.
         """
@@ -447,9 +451,13 @@ class SessionLauncher:
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
             return LaunchResult(None, False, "Already in active sessions")
 
-        if self._session_exists(session_name):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", disposition=LaunchDisposition.EXISTING_TERMINAL)
+        running = next(
+            (name for name in kind.conflicting_terminal_names(issue.number) if self._session_exists(name)),
+            None,
+        )
+        if running is not None:
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", f"terminal session {running} already running")
+            return LaunchResult.terminal_already_running(running)
 
         return None
 
@@ -674,7 +682,7 @@ class SessionLauncher:
         logger.info(issue_log(issue.number, "Session starting: type=%s title=%s"), kind.value, issue.title)
 
         # Phase 1: Validate preconditions
-        if result := self._check_launch_preconditions(issue, active_sessions, session_name):
+        if result := self._check_launch_preconditions(issue, active_sessions, kind):
             return result
 
         # Safe to access after precondition check - issue.agent_type and agent_config
@@ -1128,8 +1136,7 @@ class SessionLauncher:
                 f"No agent config available for validation retry #{retry.issue_number}",
             )
         issue, agent_config, agent_label = resolved
-        session_name = retry.source_kind.terminal_name(issue.number)
-        if result := self._check_launch_preconditions(issue, active_sessions, session_name):
+        if result := self._check_launch_preconditions(issue, active_sessions, retry.source_kind):
             return result
         prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=retry.source_kind)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
@@ -1211,7 +1218,11 @@ class SessionLauncher:
         if not claim.success:
             return claim.as_launch_failure()
 
-        phase_name = kind.phase_label(retry_count + 1)
+        # The retry is the next coding iteration of the run it retries: a
+        # rework of cycle N ran as ``coding-(N+1)``, a first coding run as
+        # ``coding-1``.
+        first_attempt = retry.rework_cycle + 1 if retry.rework_cycle is not None else 1
+        phase_name = kind.phase_label(first_attempt + retry_count)
         ctx = WorktreeContext.create(
             command_runner=self._command_runner,
             worktree_manager=self._worktree_manager,
@@ -1383,6 +1394,8 @@ class SessionLauncher:
                 agent_label=agent_label,
                 validation_retry_count=retry_count,
                 original_prompt=retry.original_prompt,
+                pr_number=retry.pr_number,
+                rework_cycle=retry.rework_cycle,
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
@@ -1518,7 +1531,7 @@ class SessionLauncher:
 
         if self._session_exists(session_name):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", disposition=LaunchDisposition.EXISTING_TERMINAL)
+            return LaunchResult.terminal_already_running(session_name)
 
         if not self.config.repo:
             return LaunchResult(None, False, "No repo configured")
