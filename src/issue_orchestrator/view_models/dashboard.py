@@ -488,7 +488,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
         kind = session.key.kind
         phase = "Reviewing" if kind is SessionKind.REVIEW else "Coding"
 
-        agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
+        agent_label = (session.agent_label or "unknown").replace("agent:", "")
         if runtime >= timeout:
             status = "slow"
             status_reason = f"Over timeout ({runtime} min / {timeout} min)"
