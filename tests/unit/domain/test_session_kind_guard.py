@@ -21,8 +21,9 @@ registered site that no longer compares (a stale entry would silently license
 the next one). To add a site, first ask whether a capability answers the
 question; register it only if the behaviour belongs to one kind alone.
 
-Limits: it sees member attributes spelled ``SessionKind.X``. A kind reached by
-another alias, or compared as a bare string, is not seen.
+Limits: it sees ``SessionKind.X`` under any import alias and through its
+module (``session_kind.SessionKind.X``). A kind compared as a bare string
+(``kind.value == "code"``) is not seen.
 """
 
 from __future__ import annotations
@@ -71,19 +72,31 @@ _PER_KIND_HANDLERS: dict[tuple[str, str], int] = {
 }
 
 
-def _is_member(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "SessionKind"
-        and node.attr.isupper()
-    )
+def _kind_names(tree: ast.AST) -> frozenset[str]:
+    """Every local name ``SessionKind`` is bound to in a module (#7347 PR 2
+    review r3): ``from ... import SessionKind as SK`` names it ``SK``."""
+    names = {"SessionKind"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names if alias.name == "SessionKind")
+    return frozenset(names)
 
 
 class _KindComparisons(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(self, kind_names: frozenset[str] = frozenset({"SessionKind"})) -> None:
         self._scope: list[str] = []
+        self._kind_names = kind_names
         self.found: collections.Counter[str] = collections.Counter()
+
+    def _is_member(self, node: ast.AST) -> bool:
+        """``<SessionKind>.X``, whether ``SessionKind`` is reached by an import
+        alias or through its module (``session_kind.SessionKind.X``)."""
+        if not (isinstance(node, ast.Attribute) and node.attr.isupper()):
+            return False
+        owner = node.value
+        if isinstance(owner, ast.Name):
+            return owner.id in self._kind_names
+        return isinstance(owner, ast.Attribute) and owner.attr == "SessionKind"
 
     def _count(self) -> None:
         self.found[".".join(self._scope) or "<module>"] += 1
@@ -105,13 +118,13 @@ class _KindComparisons(ast.NodeVisitor):
     def visit_Compare(self, node: ast.Compare) -> None:
         # One comparison is one site: a kind set compared against is counted
         # with the comparison, not again as a collection.
-        if any(_is_member(sub) for part in (node.left, *node.comparators) for sub in ast.walk(part)):
+        if any(self._is_member(sub) for part in (node.left, *node.comparators) for sub in ast.walk(part)):
             self._count()
             return
         self.generic_visit(node)
 
     def _collection(self, node: ast.AST, elements: list[ast.expr]) -> None:
-        if any(_is_member(element) for element in elements):
+        if any(self._is_member(element) for element in elements):
             self._count()
         self.generic_visit(node)
 
@@ -129,14 +142,15 @@ class _KindComparisons(ast.NodeVisitor):
         self._collection(node, [*(key for key in node.keys if key is not None), *node.values])
 
     def visit_MatchValue(self, node: ast.MatchValue) -> None:
-        if _is_member(node.value):
+        if self._is_member(node.value):
             self._count()
         self.generic_visit(node)
 
 
 def _direct_kind_comparisons(source: str) -> collections.Counter[str]:
-    visitor = _KindComparisons()
-    visitor.visit(ast.parse(source))
+    tree = ast.parse(source)
+    visitor = _KindComparisons(_kind_names(tree))
+    visitor.visit(tree)
     return visitor.found
 
 
@@ -183,7 +197,13 @@ def f(issue):
 def g(kind):
     policy = {"review": SessionKind.REVIEW}
     return kind in policy.values()
+from issue_orchestrator.domain.session_kind import SessionKind as SK
+from issue_orchestrator.domain import session_kind
+def h(kind):
+    return kind is SK.CODE
+def i(kind):
+    return kind is session_kind.SessionKind.TECH_LEAD
 '''
     assert _direct_kind_comparisons(source) == collections.Counter(
-        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1}
+        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1, "h": 1, "i": 1}
     )
