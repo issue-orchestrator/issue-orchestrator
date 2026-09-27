@@ -261,4 +261,3 @@ def test_the_escalation_adapter_keeps_the_hosts_rate_limit() -> None:
         events=MagicMock(), applier=raising, needs_human_label="needs-human",
     ).unblock(SUBJECT)
     assert not result.committed and result.rate_limit == limited.rate_limit
-

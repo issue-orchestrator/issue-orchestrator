@@ -103,7 +103,8 @@ def state() -> OrchestratorState:
 
 
 def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store=None,
-            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS, liveness=None):
+            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS, liveness=None,
+            run_locked=None):
     from unittest.mock import MagicMock
 
     labels = LabelManager(sample_config)
@@ -119,7 +120,7 @@ def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store
         config=sample_config,
         queue_cache_store=store if store is not None else MagicMock(),
         state=lambda: state,
-        run_locked=lambda fn: fn(),
+        run_locked=run_locked if run_locked is not None else (lambda fn: fn()),
         open_prs=OpenPullRequestIndex(host, repo_slug="owner/repo"),
         liveness=liveness if liveness is not None else liveness_owner(),
     )
@@ -853,6 +854,58 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
         assert runner.retry(ISSUE).committed
         resume.set()
         reconciling.join(timeout=10)
+
+        assert get_pause_label() not in live[ISSUE]
+        assert store.pauses == {}
+
+    def test_no_tick_owes_a_pause_off_labels_a_retry_is_still_changing(
+        self, sample_config, state
+    ):
+        """Retry is held at a GitHub label write when a tick starts that would
+        see the not-yet-removed label as drift and owe a pause. The whole
+        transition holds the engine's state lock, so the tick observes only
+        Retry's settled labels: no drift, no pause (review r2)."""
+        import threading
+
+        from issue_orchestrator.control.reconciliation import get_pause_label
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked}}
+        owner, store, _clock, escalation = self._owner(live)
+        escalation.accepting = True
+        state_lock = threading.RLock()
+
+        def run_locked(fn):
+            with state_lock:
+                return fn()
+
+        writing, resume = threading.Event(), threading.Event()
+
+        class _SlowHost(_RepositoryHost):
+            def remove_label(self, issue_number, label):
+                writing.set()
+                resume.wait(timeout=10)
+                super().remove_label(issue_number, label)
+
+        _labels, runner = _runner(
+            sample_config, state, live, host=_SlowHost(live), liveness=owner,
+            run_locked=run_locked,
+        )
+
+        def tick():
+            with state_lock:
+                if labels.blocked in live[ISSUE]:  # "drift" it would pause on
+                    owner.owe_pause(ISSUE, "drift")
+
+        retrying = threading.Thread(target=lambda: runner.retry(ISSUE))
+        retrying.start()
+        assert writing.wait(timeout=10)
+        ticking = threading.Thread(target=tick)
+        ticking.start()
+        ticking.join(timeout=0.5)  # an unguarded tick finishes here
+        resume.set()
+        retrying.join(timeout=10)
+        ticking.join(timeout=10)
 
         assert get_pause_label() not in live[ISSUE]
         assert store.pauses == {}

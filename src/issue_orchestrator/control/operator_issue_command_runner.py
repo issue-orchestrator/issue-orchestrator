@@ -84,11 +84,11 @@ class OperatorIssueCommandRunner:
                 lambda settled: self._make_retryable(issue_number, observed, settled),
             )
 
-        return self._withholding_owed_pause(issue_number, settle)
+        return self.run_locked(lambda: self._withholding_owed_pause(issue_number, settle))
 
     def dismiss(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear everything holding the issue, then take it off the board."""
-        return self._withholding_owed_pause(
+        return self.run_locked(lambda: self._withholding_owed_pause(
             issue_number,
             lambda: self._settle(
                 issue_number,
@@ -96,7 +96,7 @@ class OperatorIssueCommandRunner:
                 self.unblocker.dismiss(issue_number),
                 lambda settled: self._remove_from_board(issue_number),
             ),
-        )
+        ))
 
     # -- internals ---------------------------------------------------------
 
@@ -105,7 +105,14 @@ class OperatorIssueCommandRunner:
     ) -> OperatorCommandOutcome:
         """Run a person's command on the issue with its owed reconciliation
         pause (#7350) withheld first, so the pause cannot land behind their
-        label writes; handed back if the command did not commit."""
+        label writes; handed back if the command did not commit.
+
+        Called under the facade's state lock for the WHOLE transition -- the
+        fresh read, the GitHub label writes and the local commit -- so no tick
+        observes the issue mid-command (and owes it a new pause off labels
+        the person is still changing). Lock order matches the tick: state lock,
+        then the liveness owner's effects lock.
+        """
         withheld = self.liveness.withhold_pause(issue_number)
         try:
             outcome = command()
@@ -162,7 +169,7 @@ class OperatorIssueCommandRunner:
             return self._outcome(
                 issue_number, intent, OperatorCommandStatus.INCOMPLETE, labels
             )
-        self.run_locked(lambda: self._commit_locally(issue_number, commit, labels))
+        self._commit_locally(issue_number, commit, labels)
         logger.info(
             "[%s] Issue #%d settled, removed labels: %s",
             intent.value,
