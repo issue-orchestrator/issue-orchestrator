@@ -87,6 +87,7 @@ def test_abandonment_reprojects_only_its_record_scoped_blocks(tmp_path):
         "evidence_id": command.authority.evidence_id,
         "actor": command.actor,
         "reason": command.reason,
+        "resolution_kind": "operator_abandoned",
     }
 
 

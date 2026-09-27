@@ -3,7 +3,9 @@
 from typing import Protocol
 
 from ..domain.models import OrchestratorState
-from ..domain.recovery_drain import RecoveryDrainMode, RecoveryDrainReport
+from ..domain.recovery_drain import (
+    RecoveryDrainMode, RecoveryDrainReport, RecoveryScopeSweepReport,
+)
 from ..domain.recovery_attempt import RecoveryAttemptPending
 from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.recovery_entry import RecoveryRecordRequest
@@ -24,6 +26,32 @@ class ValidatedWorkDrainQueue(Protocol):
         never implicitly promotes an approval-required record.
         """
         ...
+
+
+class ValidatedWorkScopeSource(Protocol):
+    def unresolved_records(
+        self, *, after_record_id: str, limit: int
+    ) -> tuple[RecoveryRecordRequest, ...]:
+        """Every unresolved record's current evidence, in stable key order.
+
+        Wider than `drain_requests`: PARKED and FAILED records that no
+        publication lane selects still need their recovery scope judged (#7323).
+        Selection grants no authority.
+        """
+        ...
+
+
+class ValidatedWorkScopeSweep(Protocol):
+    def tick(self, admission: "RecoveryDrainAdmission") -> RecoveryScopeSweepReport:
+        """Resolve a bounded batch of records recovery never owned."""
+        ...
+
+
+class NullValidatedWorkScopeSweep:
+    """Explicit composition with no scope sweep (tests of other drain lanes)."""
+
+    def tick(self, admission: "RecoveryDrainAdmission") -> RecoveryScopeSweepReport:
+        return RecoveryScopeSweepReport(())
 
 
 class ValidatedWorkRecoveryOperation(Protocol):

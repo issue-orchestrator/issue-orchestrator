@@ -159,6 +159,7 @@ class ResolutionKind(StrEnum):
     PUBLISHED                    = "published"      # this record's own publication
     CONTAINED_IN_PUBLISHED_HEAD  = "contained_in_published_head"   # §2.1.4 / §3.5
     OPERATOR_ABANDONED           = "operator_abandoned"
+    OUTSIDE_RECOVERY_SCOPE       = "outside_recovery_scope"     # §2.6; state ABANDONED, no loss
 
 
 class LineageRole(StrEnum):
@@ -1345,6 +1346,46 @@ the disposition modules from importing it. Test fakes raise on any such call, so
 ownership regression fails the suite rather than degrading quietly.
 
 ---
+
+### 2.6 Recovery scope: only coding and rework runs produce validated work (#7323)
+
+Recovery publishes a head that the issue's own coding run validated. The rule
+lives in one place, `domain/validated_work_scope.py`: a completion is
+recoverable when its recorded run role (`CompletionRunRole.task`, settled by
+allocation) is `CODE` or `REWORK`.
+
+A tech-lead run (failure investigation, health review) is recorded against its
+subject issue, but its branch is the tech lead's own and its completion path
+already decides what that branch publishes. Admitting it put a blocking
+`recovery-pending` on the subject or the health-review anchor that no
+publication ever released (porchpin#410: 22 health-review anchors held
+records, one stranded in `PUBLISHING`). Review runs publish nothing.
+
+- **Capture** (`ValidatedWorkPreservationService.dispose_at_termination`, every
+  terminal boundary) drops out-of-scope candidates before admission, so
+  `recovery_holds_captured_work` is false for them.
+- **Escrow repair** (`EscrowReconciliation.reconcile_escrow_orphans`) is an
+  admission path too: an out-of-scope orphan (a pre-rule capture that crashed
+  before its store row) is not admitted and stays in escrow, inert and listed in
+  `EscrowReport.outside_scope`. No role filter authorizes deleting escrow; only
+  a resolved store row does.
+- **Records admitted before the rule** are resolved by
+  `OutOfScopeRecordRetirement`, which both drain lanes consult under the
+  record's claim: `RecoveryRecordOperation` before any issue read or workspace
+  preparation, and `RemoteAuthorityRefreshOperation` before any remote read. It proves
+  the role from exact owner custody (`prepare_evidence`) for the current and
+  every attached evidence; any in-scope evidence leaves the record to recovery,
+  and a missing proof raises rather than resolving. The store then moves the
+  record to `ABANDONED` with `resolution_kind = outside_recovery_scope`, but
+  only while the claim holds and the record's current+attached evidence set is
+  exactly the one proved. The aggregate block projection then withdraws
+  `recovery-pending`; the drain's block sweep heals a projection that was busy.
+  Records neither lane selects (`PARKED` awaiting approval, `FAILED`, non-HEAD
+  lineage peers) are reached by `OutOfScopeRetirementSweep`, a bounded
+  round-robin lane the drain runs before publication. It proves scope read-only
+  and claims only an out-of-scope record, so it never contends with an in-scope
+  record's publication or operator abandonment; a record proven in scope is
+  remembered by its immutable current evidence id.
 
 ## 3. Composition and control flow
 
@@ -4078,7 +4119,7 @@ New `validated_work.*` domain:
 | `VALIDATED_WORK_PARKED` | `evidence_id`, `failure` (why approval is required) |
 | `VALIDATED_WORK_RECOVERED` | `evidence_id`, `published_head_sha`, `pr_number` |
 | `VALIDATED_WORK_DISPOSITION_FAILED` | `evidence_id`, `failure`, `reason` |
-| `VALIDATED_WORK_ABANDONED` | `evidence_id`, `actor`, `reason` — the audit trail for the one action that makes unresolved work resolvable |
+| `VALIDATED_WORK_ABANDONED` | `evidence_id`, `actor`, `reason`, `resolution_kind` — the audit trail for the actions that make unresolved work resolvable: operator abandonment (`operator_abandoned`) and the retirement of a record recovery never owned (`outside_recovery_scope`, §2.6) |
 | `VALIDATED_WORK_DISPOSITION_OBSERVED` | `issue_number`, `reason`, and the whole batch: one entry per record with `record_id`, `evidence_id`, `state`, `lineage_role`, `failure`. Emitted **after** a terminal boundary returns (§3.5), which is why it is a separate event rather than a field on `HISTORY_RECONCILED` — that payload is built before the terminator runs. Re-emission on a re-planned no-op is harmless: it is an observation, not a transition. |
 | `VALIDATED_WORK_AUTHORITY_STALE` | `evidence_id`, `actor`, and which approved fact moved (`pr_number`, `expected_remote_head_sha`, `observation_revision`) — the audit trail for a refused approval (§4.3 check 0) |
 

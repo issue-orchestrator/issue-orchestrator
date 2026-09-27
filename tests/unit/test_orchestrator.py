@@ -39,6 +39,7 @@ from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
@@ -300,6 +301,7 @@ def test_public_pause_requested_during_recovery_stops_the_next_record(
             authority_refresh=MagicMock(),
             claim_maintenance=NullRetainedClaimMaintenance(),
             block_sweep=NullRecoveryBlockSweep(),
+            scope_sweep=NullValidatedWorkScopeSweep(),
             batch_size=2,
             interval_seconds=60,
         ),
