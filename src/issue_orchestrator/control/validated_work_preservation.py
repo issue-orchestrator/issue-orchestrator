@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from dataclasses import dataclass, replace
 
 from ..domain.completion_intake import CompletionIntakeError
@@ -34,7 +35,7 @@ class ValidatedWorkPreservationService:
     def __init__(self, *, intake: CompletionIntakeRuntime, store: ValidatedWorkAdmissionStore,
                  custody: ValidatedWorkCustody, repair: EscrowReconciliation,
                  working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver,
-                 base_ref: Callable[[], str]) -> None:
+                 base_ref: Callable[[int, Path], str | None]) -> None:
         self._intake = intake
         self._store = store
         self._custody = custody
@@ -90,9 +91,9 @@ class ValidatedWorkPreservationService:
                 role.issue_number, candidate.run.run.run_id, outside_scope_reason(role),
             )
             return False
-        base = self._base_ref()
         worktree = candidate.entry.run.worktree_path
-        base_sha = self._working_copy.resolve_commit(worktree, base)
+        base = self._base_ref(role.issue_number, worktree)
+        base_sha = None if base is None else self._working_copy.resolve_commit(worktree, base)
         # A base that cannot be read proves nothing: the head is preserved.
         relation = None if base_sha is None else self._working_copy.compare_commits(
             worktree, left=candidate.validation.head_sha, right=base_sha,

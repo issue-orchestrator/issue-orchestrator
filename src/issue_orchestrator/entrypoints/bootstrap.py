@@ -158,6 +158,7 @@ if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
     from ..ports.attempt_store import AttemptStore
     from ..control.pr_scanner import PRScanner
+    from ..control.stack_publish_gate import StackBaseGate
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
     from ..control.session_controller import SessionController
@@ -366,11 +367,11 @@ def _wire_stack_publish_gate(
     github: GitHubAdapter | None,
     command_runner: LocalCommandRunner,
     config: Config,
-) -> None:
+) -> "StackBaseGate | None":
     """Only compose publication once all required collaborators exist."""
     if completion_processor is None or dependency_evaluator is None or github is None:
-        return
-    wire_stack_publish_gate(
+        return None
+    return wire_stack_publish_gate(
         completion_processor, dependency_evaluator, github, command_runner, config
     )
 def _validate_required_deps(
@@ -679,7 +680,7 @@ def build_orchestrator(
             coder_prompt_addendum=coder_prompt_addendum,
         )
     )
-    _wire_stack_publish_gate(
+    stack_gate = _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
@@ -799,7 +800,7 @@ def build_orchestrator(
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer,
-        base_ref=remote_base_ref(config, working_copy.default_branch))
+        base_ref=remote_base_ref(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
@@ -1117,7 +1118,7 @@ def build_orchestrator_for_testing(
         tech_lead_authority=tech_lead_authority_for_testing,
         needs_human_block=pending_work.needs_human_block,
     )
-    _wire_stack_publish_gate(
+    stack_gate = _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
@@ -1250,7 +1251,7 @@ def build_orchestrator_for_testing(
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer,
-        base_ref=remote_base_ref(config, working_copy.default_branch))
+        base_ref=remote_base_ref(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,

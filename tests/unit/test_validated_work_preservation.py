@@ -39,6 +39,8 @@ from issue_orchestrator.domain.validated_work import (
 )
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
+from issue_orchestrator.control.stack_base import StackBaseDecision
+from issue_orchestrator.control.validated_head_base import PullRequestBaseRef
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.git_tools import create_git
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -93,9 +95,12 @@ def custody(tmp_path):
     repair = EscrowReconciliation(escrow=escrow, store=store, intake=ledger)
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
+    # The base each capture compares against; a test may swap in the
+    # production resolver (the stack-aware PullRequestBaseRef).
+    base = {"ref": lambda _issue, _worktree: "main"}
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
         custody=ValidatedWorkCustody(escrow, store), repair=repair, working_copy=wc,
-        observer=observer, base_ref=lambda: "main")
+        observer=observer, base_ref=lambda issue, worktree: base["ref"](issue, worktree))
     source = IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-07T00:00:00Z")
     sessions = Mock()
     sessions.exists.return_value = False
@@ -107,7 +112,7 @@ def custody(tmp_path):
     return SimpleNamespace(repo=repo, git=git, worktree=worktree, ledger=ledger, run=run,
         capability=ledger.submission_capability(run), intake=intake, escrow=escrow,
         store=store, lifecycle=lifecycle, state=state, wc=wc, repair=repair,
-        pair=pair, jobs=jobs, retry=retry, sessions=sessions, observer=observer)
+        pair=pair, jobs=jobs, retry=retry, sessions=sessions, observer=observer, base=base)
 
 
 def submit(rig, key):
@@ -636,3 +641,71 @@ def test_a_head_the_base_already_contains_is_not_captured(custody, ahead, captur
     batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
 
     assert bool(batch.unresolved) is captured
+
+
+class _StackGate:
+    """The stack base gate's work decision for issue #42, as configured."""
+
+    def __init__(self, decision):
+        self.decision = decision
+        self.asked: list[int] = []
+
+    def decide_work(self, issue_number):
+        self.asked.append(issue_number)
+        return self.decision
+
+
+def _stacked_on_a_predecessor(custody):
+    """Issue #42 is a stack successor of branch ``41-pred``, which is ahead of
+    main; #42's validated head is exactly the predecessor's head."""
+    custody.git.run(custody.repo, ["branch", "41-pred", "main"])
+    custody.git.run(custody.worktree, ["reset", "--hard", "41-pred"])
+    (custody.worktree / "pred").write_text("predecessor work")
+    custody.git.run(custody.worktree, ["add", "pred"])
+    custody.git.run(custody.worktree, ["commit", "-m", "predecessor work"])
+    custody.git.run(custody.repo, ["branch", "-f", "41-pred", custody.git.head_sha(custody.worktree)])
+    custody.git.run(custody.repo, ["remote", "add", "origin", str(custody.repo)])
+    custody.git.run(custody.repo, ["fetch", "-q", "origin"])
+
+
+@pytest.mark.parametrize(
+    ("decision", "captured"),
+    [
+        (StackBaseDecision.allowed_on("41-pred"), False),
+        (StackBaseDecision.not_stack(), True),
+        (StackBaseDecision.blocked("issue unreadable", retryable=True), True),
+    ],
+    ids=["successor-of-41-pred", "ordinary-issue", "base-unknown"],
+)
+def test_a_stack_successor_is_compared_with_its_predecessor(custody, decision, captured):
+    """#7347 PR 2 review r1: a successor whose head is its predecessor's head is
+    ahead of main yet has nothing of its own - its PR targets the predecessor,
+    and a PR of it is refused. An ordinary issue compares with the default
+    branch, and a base the stack gate cannot establish proves nothing, so the
+    head is preserved."""
+    _stacked_on_a_predecessor(custody)
+    gate = _StackGate(decision)
+    custody.base["ref"] = PullRequestBaseRef(lambda: "main", gate)
+    submit(custody, "validated")
+
+    batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
+
+    assert gate.asked == [42]
+    assert bool(batch.unresolved) is captured
+    assert bool(custody.store.for_issue(42).unresolved) is captured
+
+
+def test_a_base_the_stack_gate_cannot_establish_proves_nothing(custody):
+    """Fail-safe: when the gate cannot say which base the PR targets, even a
+    head the default branch contains is preserved rather than dropped."""
+    custody.git.run(custody.worktree, ["reset", "--hard", "main"])
+    custody.git.run(custody.repo, ["remote", "add", "origin", str(custody.repo)])
+    custody.git.run(custody.repo, ["fetch", "-q", "origin"])
+    custody.base["ref"] = PullRequestBaseRef(
+        lambda: "main", _StackGate(StackBaseDecision.blocked("unreadable", retryable=True))
+    )
+    submit(custody, "validated")
+
+    batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
+
+    assert batch.unresolved

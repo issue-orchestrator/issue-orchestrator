@@ -33,6 +33,7 @@ from ..ports.coder_prompt import (
 
 if TYPE_CHECKING:
     from ..control.publish_recovery import PublishRecoveryService
+    from ..control.stack_publish_gate import StackBaseGate
     from ..control.action_applier import ActionApplier
     from ..control.dependency_evaluator import DependencyEvaluator
     from ..ports.fresh_issue_reader import FreshIssueReader
@@ -294,19 +295,22 @@ def wire_stack_publish_gate(
     github: "RepositoryHost",
     command_runner: LocalCommandRunner,
     config: Config,
-) -> None:
-    """Attach branch ancestry and stack-base policy to the completion owner."""
+) -> "StackBaseGate":
+    """Attach branch ancestry and stack-base policy to the completion owner.
+
+    Returns the gate, the one stack-base owner, for the other readers of an
+    issue's PR base (validated-work capture, #7347)."""
     from ..control.stack_publish_gate import StackBaseGate
     from ..execution.stack_branch_ancestry import GitStackBranchAncestry
 
     dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
-    completion_processor.attach_stack_publish_gate(
-        StackBaseGate(
-            evaluator=dependency_evaluator,
-            issue_reader=github,
-            configured_base_branch=config.worktree_base_branch_override,
-        )
+    gate = StackBaseGate(
+        evaluator=dependency_evaluator,
+        issue_reader=github,
+        configured_base_branch=config.worktree_base_branch_override,
     )
+    completion_processor.attach_stack_publish_gate(gate)
+    return gate
 
 
 def build_publish_recovery(
@@ -321,6 +325,7 @@ def build_publish_recovery(
 ) -> "PublishRecoveryService":
     """Wire the retry-publish owner with durable locators and its own runner."""
     from ..control.publish_recovery import PublishRecoveryService
+    from ..control.stack_publish_gate import StackBaseGate
     from ..execution.json_publish_retry_locator_store import (
         JsonPublishRetryLocatorStore,
     )

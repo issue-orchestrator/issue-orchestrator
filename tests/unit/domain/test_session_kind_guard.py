@@ -125,7 +125,8 @@ class _KindComparisons(ast.NodeVisitor):
         self._collection(node, node.elts)
 
     def visit_Dict(self, node: ast.Dict) -> None:
-        self._collection(node, [key for key in node.keys if key is not None])
+        # A kind as a key OR a value is a per-kind table (#7347 PR 2 review r1).
+        self._collection(node, [*(key for key in node.keys if key is not None), *node.values])
 
     def visit_MatchValue(self, node: ast.MatchValue) -> None:
         if _is_member(node.value):
@@ -179,7 +180,10 @@ def e(kind):
     return kind.capabilities.capturable
 def f(issue):
     return SessionKind.CODE.terminal_name(issue)
+def g(kind):
+    policy = {"review": SessionKind.REVIEW}
+    return kind in policy.values()
 '''
     assert _direct_kind_comparisons(source) == collections.Counter(
-        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1}
+        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1}
     )

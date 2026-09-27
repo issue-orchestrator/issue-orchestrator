@@ -19,9 +19,11 @@ from ..control.background_job_supervisor import BackgroundJobSupervisor
 from ..control.session_manager import SessionManager
 from ..domain.models import OrchestratorState
 from ..infra.worktree_base import resolve_base_branch
+from ..control.validated_head_base import PullRequestBaseRef
 from .bootstrap_validated_work import ValidatedWorkAdmissionOwners
 
 if TYPE_CHECKING:
+    from ..control.stack_publish_gate import StackBaseGate
     from ..infra.config import Config
 
 
@@ -32,7 +34,7 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         supervisor: BackgroundJobSupervisor | None,
         publish_recovery: IssuePublishRetryRuntime, events: EventSink,
         pull_requests: BranchPullRequestReader, stuck_sweep: FactGatherer | None,
-        base_ref: Callable[[], str]) -> IssueRuntimeLifecycleOwners:
+        base_ref: Callable[[int, Path], str | None]) -> IssueRuntimeLifecycleOwners:
     def live_runs(issue_number: int) -> tuple[IssueRunRecord, ...]:
         return tuple(IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id))
             for session in state.active_sessions if session.issue.number == issue_number)
@@ -49,17 +51,18 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         pair_registry, supervisor, publish_recovery), preservation, evidence, events, published_review)
 
 
-def remote_base_ref(config: "Config", default_branch: Callable[[Path], str]) -> Callable[[], str]:
-    """The remote base a validated head must be ahead of to be work (#7347).
+def remote_base_ref(
+    config: "Config", default_branch: Callable[[Path], str], stack_gate: "StackBaseGate | None",
+) -> PullRequestBaseRef:
+    """The base a validated head must be ahead of to be work (#7347).
 
-    Resolved lazily, per capture, by the same rule worktrees are created from.
-    A stacked issue's base contains this one, so a head it already contains has
-    nothing beyond the stack base either.
+    Resolved lazily, per capture: a stack successor's predecessor branch from
+    the stack base gate, otherwise the branch worktrees are created from.
     """
-    def resolve() -> str:
-        return "origin/" + resolve_base_branch(
+    def resolve_default() -> str:
+        return resolve_base_branch(
             config.repo_root,
             config_override=config.worktree_base_branch_override,
             default_branch_resolver=default_branch,
         ).branch
-    return resolve
+    return PullRequestBaseRef(resolve_default, stack_gate)

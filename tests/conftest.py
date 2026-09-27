@@ -1289,7 +1289,7 @@ def build_test_orchestrator_deps(
         validated_work=validated_work, working_copy=evidence_working_copy,
         sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
         publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
-        base_ref=lambda: "origin/main",
+        base_ref=lambda _issue, _worktree: "origin/main",
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
 
