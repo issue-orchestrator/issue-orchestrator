@@ -4472,6 +4472,35 @@ def test_a_claim_that_contradicts_the_recorded_kind_is_quarantined(
     assert "kind rework" in quarantined.error and "recorded as code" in quarantined.error
 
 
+def test_a_claim_naming_another_pr_than_the_recorded_rework_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    """A rework's PR is recorded with its run (#7347 review r4); the claim is a
+    witness that must agree, not a patch that overwrites it."""
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    retry = state.pending_validation_retries[0]
+    retry.source_kind, retry.pr_number, retry.rework_cycle = SessionKind.REWORK, 70, 2
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+    assert harness.run_ledger.recorded_run(session.run_assets).rework_target is not None
+    recorded_for_another_pr = replace(session, pr_number=71)
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate(
+        [recorded_for_another_pr]
+    )
+
+    assert restoration.admitted == ()
+    [quarantined] = restoration.quarantined
+    assert "PR #70" in quarantined.error and "PR #71" in quarantined.error
+
+
 def test_a_live_retry_with_unverified_authority_is_quarantined(
     tmp_path: Path,
 ) -> None:
@@ -4536,7 +4565,12 @@ def test_a_restarted_rework_can_still_restore_its_durable_label(
     """
     from issue_orchestrator.domain.session_kind import SessionKind
 
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
     harness = _ready_harness(tmp_path)
+    harness.launcher.repository_host.prs[7] = [PRInfo(
+        number=70, url="u", title="PR", branch="7-rework", labels=[], body="", state="open",
+    )]
     state = _pending_state("rework")
     state.pending_reworks[0].pr_number = 70
     state.pending_reworks[0].rework_cycle = 3
@@ -4545,7 +4579,8 @@ def test_a_restarted_rework_can_still_restore_its_durable_label(
 
     _restarted, restored = _restart(state, session, harness)
 
-    # Identity the terminal name could not supply, taken from the claim.
+    # Identity the terminal name could not supply: from the run's ledger row
+    # (#7347), which its claim agrees with.
     assert restored.pr_number == 70
     assert restored.key.kind is SessionKind.REWORK
     assert restored.rework_cycle == 3

@@ -1251,6 +1251,7 @@ class SessionLauncher:
             stack_base_branch=stack_decision.base_branch,
             scratch=scratch_identity,  # round 16 F2: the DIRECTORY half too
             preserve_run_dir=preserved_source_run(retry),
+            rework_target=retry.rework_target,
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")

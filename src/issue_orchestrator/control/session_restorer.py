@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
 from ..infra.repo_scope import require_repo
+from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.session_key import SessionKey
 from ..domain.session_kind import SessionKind
@@ -259,9 +260,10 @@ class SessionRestorer:
 
         run_assets = self._required_run_assets(session_info, session_name)
         self._assert_restored_session_mode(run_assets, session_name)
-        kind, agent_label = self._recorded_role(run_assets, session_name)
+        kind, agent_label, rework_target = self._recorded_role(run_assets, session_name)
 
-        restored_pr_number: int | None = None
+        # A rework's PR and cycle come from its own ledger row (#7347).
+        restored_pr_number = rework_target.pr_number if rework_target is not None else None
         if kind is SessionKind.REVIEW:
             match = _REVIEW_SESSION_RE.match(session_name)
             restored_pr_number = int(match.group(1)) if match else issue_number
@@ -316,6 +318,7 @@ class SessionRestorer:
             run_assets=run_assets,
             agent_label=agent_label,
             pr_number=restored_pr_number,
+            rework_cycle=rework_target.cycle if rework_target is not None else None,
             # Rebuild the tech-lead launch grant from durable truth. Without it
             # a restored whole-board review stops acting as the exclusive
             # barrier it is, and the dashboard misreports it (#6994 F3).
@@ -326,8 +329,8 @@ class SessionRestorer:
 
     def _recorded_role(
         self, run_assets: SessionRunAssets, session_name: str
-    ) -> tuple[SessionKind, str]:
-        """The kind and agent role the durable ledger recorded for this run.
+    ) -> tuple[SessionKind, str, ReworkTarget | None]:
+        """The kind, agent role and rework target the ledger recorded for this run.
 
         Replaces reading the kind off the terminal-name prefix and the role off
         the issue's first agent label (#7347). Legacy ledger rows decode through
@@ -340,7 +343,7 @@ class SessionRestorer:
                 f"live session {session_name} run {run_assets.run_id} has no "
                 "durably recorded role; it will not be restored under a guess"
             )
-        return record.session_key.kind, record.agent_label
+        return record.session_key.kind, record.agent_label, record.rework_target
 
     def _required_run_assets(
         self,

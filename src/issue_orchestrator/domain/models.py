@@ -4,7 +4,7 @@ import os
 import re
 import shlex
 from urllib.parse import urlsplit
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -16,6 +16,7 @@ from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
+from .issue_run_evidence import ReworkTarget
 from .session_kind import SessionKind
 from .sandbox_scope import (
     SandboxScope,
@@ -1979,6 +1980,33 @@ class PendingValidationRetry:
             pr_number=session.pr_number,
             rework_cycle=session.rework_cycle,
         )
+
+    @property
+    def rework_target(self) -> "ReworkTarget | None":
+        """The PR and cycle a REWORK retry's run records at allocation, if known."""
+        if self.source_kind is not SessionKind.REWORK:
+            return None
+        return ReworkTarget.of(self.pr_number, self.rework_cycle)
+
+    def keeping_rework_target_of(
+        self, claimed: "PendingValidationRetry | None"
+    ) -> "PendingValidationRetry":
+        """This retry, rebuilt from artifacts, keeping a claim's PR and cycle.
+
+        The run ledger is the authority for a rework's target; a run allocated
+        before #7347 recorded none. The durable pending-work claim for the SAME
+        checkout and kind is orchestrator-owned too, so its target survives the
+        rebuild instead of being dropped. Anything else is left as rebuilt.
+        """
+        if (
+            claimed is None
+            or self.rework_target is not None
+            or claimed.rework_target is None
+            or claimed.source_kind is not self.source_kind
+            or Path(claimed.worktree_path).resolve() != Path(self.worktree_path).resolve()
+        ):
+            return self
+        return replace(self, pr_number=claimed.pr_number, rework_cycle=claimed.rework_cycle)
 
     def __post_init__(self) -> None:
         if self.recovery_error is not None and not self.recovery_error.strip():

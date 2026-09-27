@@ -33,6 +33,7 @@ from unittest.mock import MagicMock
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.issue_run_evidence import (
     IssueRunRecord,
+    ReworkTarget,
     RunTerminalBinding,
 )
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
@@ -207,7 +208,10 @@ def _run_assets(checkout: Path) -> SessionRunAssets:
     )
 
 
-def _ledger(checkout: Path, *, agent_label: str, kind: SessionKind):
+def _ledger(
+    checkout: Path, *, agent_label: str, kind: SessionKind,
+    rework_target: ReworkTarget | None = None,
+):
     """A durable issue-run ledger holding this retry's exact allocation."""
     ledger = MagicMock()
     ledger.recorded_runs.return_value = (
@@ -218,6 +222,7 @@ def _ledger(checkout: Path, *, agent_label: str, kind: SessionKind):
             branch_name=f"tech-lead-investigation-6410-{TOKEN}",
             terminal_binding=RunTerminalBinding("issue-6410"),
             agent_label=agent_label,
+            rework_target=rework_target,
         ),
     )
     return ledger
@@ -837,3 +842,98 @@ def test_a_retry_live_under_its_own_kinds_name_is_not_requeued(
 
     assert recovered == 0
     assert state.pending_validation_retries == []
+
+
+def _recover_rework(repo, checkout, state, *, rework_target):
+    _leave_retry_artifacts(checkout, agent_label="agent:coder")
+    return ValidationRetryRecovery(
+        _Config(repo, checkout.parent),
+        _reconciler(repo, checkout.parent, _Config),
+        lambda _name: False,
+        _ledger(
+            checkout, agent_label="agent:coder", kind=SessionKind.REWORK,
+            rework_target=rework_target,
+        ),
+        _authority_store(grant=False),
+    ).recover(state, {})
+
+
+def _published_hold_on(pr_number: int):
+    """An action applier whose custody owner says PR ``pr_number`` holds #6410."""
+    from issue_orchestrator.domain.validated_work import ValidatedWorkState
+    from tests.unit.control.published_review_support import (
+        DispositionStore, PullRequests, custody, disposition, pr,
+    )
+
+    applier = MagicMock()
+    applier.runtime_lifecycle.published_review = custody(
+        DispositionStore(
+            {6410: (disposition(6410, ValidatedWorkState.RECOVERED, pr_number=pr_number),)}
+        ),
+        PullRequests({6410: [pr(6410, pr_number)]}),
+    )
+    applier.apply.return_value = MagicMock(success=True)
+    return applier
+
+
+def test_a_recovered_reworks_retry_resumes_on_its_own_pr(
+    repo: Path, investigation: Path
+) -> None:
+    """#7347 review r4: a restart rebuilds a rework's retry from artifacts. Its
+    PR and cycle come from the run's own ledger row, so the published-review
+    gate still lets it resume on the PR that holds the published work."""
+    from issue_orchestrator.control.published_review_launch_gate import (
+        refuse_launch_over_published_review,
+    )
+
+    state = OrchestratorState()
+    assert _recover_rework(repo, investigation, state, rework_target=ReworkTarget(500, 2)) == 1
+
+    [retry] = state.pending_validation_retries
+    assert (retry.source_kind, retry.pr_number, retry.rework_cycle) == (
+        SessionKind.REWORK, 500, 2,
+    )
+    assert refuse_launch_over_published_review(
+        _published_hold_on(500), MagicMock(), 6410,
+        kind=retry.source_kind, pr_number=retry.pr_number,
+    ) is None
+
+
+def test_a_legacy_reworks_retry_keeps_the_pr_its_durable_claim_recorded(
+    repo: Path, investigation: Path
+) -> None:
+    """A rework run allocated before #7347 has no target on its ledger row; the
+    orchestrator-owned claim for the same checkout still has it, and the
+    artifact rebuild must not drop it."""
+    from dataclasses import replace
+
+    state = OrchestratorState()
+    claimed = replace(
+        _retry(investigation), source_kind=SessionKind.REWORK, agent_label="agent:coder",
+        pr_number=500, rework_cycle=2, authority_run=None,
+    )
+    state.replace_pending_validation_retry(claimed)
+
+    _recover_rework(repo, investigation, state, rework_target=None)
+
+    [retry] = state.pending_validation_retries
+    assert (retry.pr_number, retry.rework_cycle) == (500, 2)
+
+
+def test_a_rework_retry_with_no_recorded_pr_anywhere_is_still_held(
+    repo: Path, investigation: Path
+) -> None:
+    """Unknown is not guessed: with no PR recorded, the hold refuses it."""
+    from issue_orchestrator.control.published_review_launch_gate import (
+        refuse_launch_over_published_review,
+    )
+
+    state = OrchestratorState()
+    _recover_rework(repo, investigation, state, rework_target=None)
+
+    [retry] = state.pending_validation_retries
+    assert retry.pr_number is None
+    assert refuse_launch_over_published_review(
+        _published_hold_on(500), MagicMock(), 6410,
+        kind=retry.source_kind, pr_number=retry.pr_number,
+    ) is not None

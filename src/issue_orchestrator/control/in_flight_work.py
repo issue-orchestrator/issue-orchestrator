@@ -578,32 +578,48 @@ def _restored_identity_mismatch(session: Session, claim: PendingWorkClaim) -> st
             f"its claim holds {claim.kind.value} work of kind {expected.value} "
             f"but the run was recorded as {recorded.value}"
         )
-    return None
+    return _rework_pr_mismatch(session, claim.request)
+
+
+def _rework_pr_mismatch(session: Session, request: object) -> str | None:
+    """A rework's PR is recorded by its run's ledger row; its claim must agree."""
+    match request:
+        case PendingValidationRetry(pr_number=int() as claimed) | PendingRework(pr_number=int() as claimed):
+            recorded = session.pr_number
+        case _:
+            return None
+    if recorded is None or recorded == claimed:
+        return None
+    return f"its claim reworks PR #{claimed} but the run was recorded for PR #{recorded}"
 
 
 def _restore_claim_context(session: Session, claim: PendingWorkClaim) -> None:
     """Carry onto a restored session the facts only its claim holds.
 
-    The kind and role come from the run ledger; these do not live there: a
-    health review's owned cohort (the producer's launch grant), a retry's
-    attempt count, and a rework's PR - which the provider-blocked planner needs
-    to put ``needs-rework`` back (#6999 F4).
+    The kind, role and a rework's PR and cycle come from the run ledger; these
+    do not live there: a health review's owned cohort (the producer's launch
+    grant) and a retry's attempt count. A rework run allocated before #7347
+    recorded no PR, so for it the claim still supplies one - which the
+    provider-blocked planner needs to put ``needs-rework`` back (#6999 F4).
     """
     match claim.request:
         case PendingTechLeadReview() as request:
             session.tech_lead_scope = request.launch_scope()
         case PendingValidationRetry() as request:
             session.validation_retry_count = request.retry_count
-            if request.pr_number is not None:
-                session.pr_number = request.pr_number
-            if request.rework_cycle is not None:
-                session.rework_cycle = request.rework_cycle
+            _fill_unrecorded_rework_target(session, request.pr_number, request.rework_cycle)
         case PendingRework() as request:
-            if request.pr_number is not None:
-                session.pr_number = request.pr_number
-            session.rework_cycle = request.rework_cycle
+            _fill_unrecorded_rework_target(session, request.pr_number, request.rework_cycle)
         case _:
             return
+
+
+def _fill_unrecorded_rework_target(
+    session: Session, pr_number: int | None, cycle: int | None
+) -> None:
+    """Fill a legacy rework's PR and cycle from its claim; never overwrite the ledger's."""
+    session.pr_number = session.pr_number if session.pr_number is not None else pr_number
+    session.rework_cycle = session.rework_cycle if session.rework_cycle is not None else cycle
 
 
 __all__ = [

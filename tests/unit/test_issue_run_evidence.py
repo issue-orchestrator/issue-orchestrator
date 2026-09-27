@@ -17,6 +17,7 @@ from issue_orchestrator.domain.issue_run_evidence import (
     IssueRunEvidenceStatus,
     IssueRunEvidenceUnavailable,
     IssueRunRecord,
+    ReworkTarget,
     RunTerminalBinding,
 )
 from issue_orchestrator.domain.session_key import SessionKey
@@ -327,3 +328,61 @@ def test_legacy_terminal_binding_is_unknown_and_phase_is_not_a_terminal(tmp_path
     fresh = run_record(tmp_path, "new-run")
     reopened.record_run(42, fresh)
     assert fresh in SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").recorded_runs(42)
+
+
+def _rework_record(tmp_path: Path, target: "ReworkTarget | None") -> IssueRunRecord:
+    record = run_record(tmp_path)
+    return replace(
+        record,
+        session_key=replace(record.session_key, kind=SessionKind.REWORK),
+        rework_target=target,
+    )
+
+
+def test_a_rework_runs_pr_and_cycle_are_durable(tmp_path):
+    """#7347 review r4: the ledger, not an agent-writable manifest, says which
+    PR a rework run fixes - so a restart restores it onto that PR."""
+    path = tmp_path / "runs.sqlite"
+    record = _rework_record(tmp_path, ReworkTarget(500, 2))
+    SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").record_run(42, record)
+
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
+
+    assert reopened.recorded_runs(42) == (record,)
+    assert reopened.recorded_run(record.run).rework_target == ReworkTarget(500, 2)
+
+
+def test_a_ledger_from_before_rework_targets_reopens_with_them_unknown(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    record = _rework_record(tmp_path, ReworkTarget(500, 2))
+    SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").record_run(42, record)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN rework_pr_number")
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN rework_cycle")
+
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
+
+    assert reopened.recorded_runs(42) == (replace(record, rework_target=None),)
+
+
+def test_half_a_rework_target_is_corruption(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    record = _rework_record(tmp_path, ReworkTarget(500, 2))
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
+    ledger.record_run(42, record)
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE issue_runs SET rework_cycle=NULL")
+
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        ledger.recorded_run(record.run)
+
+
+@pytest.mark.parametrize("kind", [k for k in SessionKind if k is not SessionKind.REWORK])
+def test_only_a_rework_run_records_a_rework_target(tmp_path, kind):
+    record = run_record(tmp_path)
+    with pytest.raises(ValueError, match="cannot record a rework target"):
+        replace(
+            record,
+            session_key=replace(record.session_key, kind=kind),
+            rework_target=ReworkTarget(500, 2),
+        )

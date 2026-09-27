@@ -1,10 +1,9 @@
 """One boundary joins filesystem allocation to durable issue-run ownership."""
 
 from ..domain.issue_run_allocation import IssueExchangeRunAllocation, IssueRunAllocation
-from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
+from ..domain.issue_run_evidence import IssueRunRecord, ReworkTarget, RunTerminalBinding
 from ..domain.review_exchange_run import ReviewExchangeRun
 from ..domain.session_key import SessionKey
-from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets, RunContainedFile
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.issue_run_allocator import IssueRunRoleConfiguration
@@ -48,7 +47,8 @@ class IssueRunAllocationService:
             retention_pinned=request.retention_pinned,
         )
         self._record(
-            request.issue_number, request.session_key, run, request.agent_label, request.terminal_id
+            request.issue_number, request.session_key, run, request.agent_label, request.terminal_id,
+            rework_target=request.rework_target,
         )
         return run
 
@@ -78,6 +78,8 @@ class IssueRunAllocationService:
         run: SessionRunAssets,
         agent_label: str,
         terminal_id: str | None,
+        *,
+        rework_target: ReworkTarget | None = None,
     ) -> None:
         status = self._working_copy.get_branch_status(run.worktree_path)
         if status is None or not status.branch or status.branch == "HEAD":
@@ -91,6 +93,7 @@ class IssueRunAllocationService:
                 branch_name=status.branch,
                 terminal_binding=RunTerminalBinding(terminal_id),
                 agent_label=agent_label,
+                rework_target=rework_target,
             ),
         )
 
@@ -98,14 +101,14 @@ class IssueRunAllocationService:
         """Refuse a run whose stamped kind contradicts its agent role.
 
         The kind is stamped by the launcher (#7347); allocation is the last
-        point before it becomes durable, so a launch path that stamped a
+        point before it becomes durable, so an issue launch that stamped a
         tech-lead agent's run as anything but ``TECH_LEAD`` (or the reverse)
         fails here, before any run directory or ledger row exists. The ledger
         used to paper over exactly that by re-deriving the role from the label.
+        The rule is the kind owner's (``SessionKind.contradicts_agent_role``).
         """
         tech_lead_agent = self._configuration.tech_lead_review_agent
-        runs_as_tech_lead = key.kind is SessionKind.TECH_LEAD
-        if runs_as_tech_lead != (tech_lead_agent is not None and agent_label == tech_lead_agent):
+        if key.kind.contradicts_agent_role(agent_label, tech_lead_agent):
             raise IssueRunEvidenceUnavailable(
                 f"run stamped {key.kind.value} does not match its agent role "
                 f"{agent_label!r} (configured tech lead: {tech_lead_agent!r})"

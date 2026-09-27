@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunIdentity
@@ -37,6 +38,8 @@ class RecoveredRun:
     agent_label: str
     source_kind: SessionKind
     authority_run: SessionRunIdentity | None
+    # The PR and cycle a rework's run recorded at allocation (#7347).
+    rework_target: ReworkTarget | None = None
 
 
 
@@ -90,7 +93,7 @@ def registered_run(
     authority_run = policy.inheritable_launch_authority(record.run.identity)
     grant = authority.load(run_id=key.run_id, session_name=key.session_name)
     recovered = RecoveredRun(
-        record.agent_label, record.session_key.kind, authority_run
+        record.agent_label, record.session_key.kind, authority_run, record.rework_target
     )
     if authority_run is not None and grant is None:
         return recovered, (
