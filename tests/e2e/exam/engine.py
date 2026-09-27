@@ -164,10 +164,13 @@ class ExamEngine:
     def pending_work(self) -> int:
         """Reviews and reworks the engine has queued but not launched."""
         status = self._get_json(self.config.control_api_port, "/api/status")
-        counts = [status.get("pending_reviews"), status.get("pending_reworks")]
-        if any(isinstance(n, bool) or not isinstance(n, int) for n in counts):
-            raise RuntimeError(f"/api/status queue counts are not ints: {status!r}")
-        return sum(counts)
+        total = 0
+        for key in ("pending_reviews", "pending_reworks"):
+            count = status.get(key)
+            if isinstance(count, bool) or not isinstance(count, int):
+                raise RuntimeError(f"/api/status {key} is not an int: {status!r}")
+            total += count
+        return total
 
     def active_sessions(self) -> int:
         status = self._get_json(self.config.control_api_port, "/api/status")
