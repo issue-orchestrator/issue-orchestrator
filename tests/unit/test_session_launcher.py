@@ -9985,6 +9985,33 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         assert [(a.issue_number, a.label, a.fresh_presence) for a in actions
                 if isinstance(a, AddLabelAction)] == [(123, pr_pending, True)]
 
+    def test_a_rate_limited_gate_repair_defers_on_the_shared_window(
+        self, launcher_bundle, sample_issue, mock_events
+    ):
+        """Codex r11 (#7297): the pr-pending repair GitHub refused on a rate
+        limit defers the launch and opens the window, instead of a permanent
+        refusal that re-reads custody every tick."""
+        from issue_orchestrator.control.action_results import ActionResult
+
+        limited = TestLaunchDefersOnGitHubRateLimit._rate_limited(
+            datetime.now(UTC) + timedelta(minutes=10)
+        )
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply = MagicMock(
+            side_effect=lambda action: ActionResult.fail_from(action, limited)
+        )
+        state = OrchestratorState()
+
+        assert orchestrator_launch_session(sample_issue, state, launcher_bundle.launcher) is None
+
+        assert state.host_rate_limit.open_at(
+            datetime.now(UTC), live=frozenset({"issue:123"})
+        ) is not None
+        assert any(
+            str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+            for e in mock_events.events
+        )
+
     def test_launches_once_the_operator_closed_the_pr(self, launcher_bundle, sample_issue):
         launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody("closed")
 

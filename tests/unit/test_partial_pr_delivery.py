@@ -254,3 +254,72 @@ def test_the_queue_cache_admits_an_issue_released_by_a_partial_merge() -> None:
 
     assert cache.evaluate_issue(Issue(7, "Issue 7", ["agent:web"])) == QueueMutationStatus.ACCEPTED
     assert cache.evaluate_issue(Issue(8, "Issue 8", ["agent:web"])) == QueueMutationStatus.REJECTED_EXCLUDED
+
+
+class _BranchCommits:
+    """The branch's own commit messages, read locally."""
+
+    def __init__(self, *messages: str) -> None:
+        self.messages = messages
+
+    def branch_commit_messages(self, worktree: Path) -> tuple[tuple[str, ...], str | None]:
+        return self.messages, None
+
+
+class _RateLimitedBranchPRs:
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def get_prs_for_branch(self, branch: str, state: str = "open"):
+        import httpx
+
+        from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+
+        self.reads += 1
+        raise github_http_failure(
+            "GitHub GET /repos/owner/repo/pulls failed: 403",
+            status_code=403,
+            headers=httpx.Headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "4000000000"}),
+            response_text='{"message": "API rate limit exceeded"}',
+            method="GET",
+            url="/repos/owner/repo/pulls",
+        )
+
+
+def test_a_rate_limited_open_pr_read_is_a_retryable_refusal_not_the_agents_fault() -> None:
+    """Codex r11 (#7297): the guard could not READ the branch's PR. That says
+    nothing about the delivery, so the publication stays retryable and carries
+    the reset, instead of being refused as if the agent's words were wrong."""
+    from issue_orchestrator.control.partial_delivery_guard import PartialDeliveryGuard
+
+    guard = PartialDeliveryGuard(
+        source=_BranchCommits("Split A"),  # type: ignore[arg-type]
+        prs=_RateLimitedBranchPRs(),
+        repo_slug=lambda: "owner/repo",
+    )
+
+    refusal = guard.refusal(
+        Path("/tmp/wt"), issue_number=123, branch="123-feature",
+        claimed=True, claim_body="Refs #123\n\nOne slice",
+    )
+
+    assert refusal is not None
+    assert refusal.retryable is True
+    assert refusal.host_rate_limit is not None
+
+
+def test_a_closing_claim_stays_a_nonretryable_refusal() -> None:
+    from issue_orchestrator.control.partial_delivery_guard import PartialDeliveryGuard
+
+    guard = PartialDeliveryGuard(
+        source=_BranchCommits("Split A"),  # type: ignore[arg-type]
+        prs=_RateLimitedBranchPRs(),
+        repo_slug=lambda: "owner/repo",
+    )
+
+    refusal = guard.refusal(
+        Path("/tmp/wt"), issue_number=123, branch="123-feature",
+        claimed=True, claim_body="Closes #123\n\nOne slice",
+    )
+
+    assert refusal is not None and refusal.retryable is False
