@@ -115,7 +115,9 @@ def _diagnose_run(spec: RootCauseSpec, item: WorkItemFact, run: TechLeadRunFact)
         matched=tuple(sorted(matched.items())),
         missing=tuple(group.concept for group in spec.concepts if group.concept not in matched),
         run_id=run.run_id,
-        evidence_clause=spec.stating_clause(text),
+        evidence_clause=spec.stating_clause(
+            text, item_numbers=frozenset({item.issue_number, *(pr.number for pr in item.pull_requests)})
+        ),
     )
 
 

@@ -50,7 +50,9 @@ def remove_pr(repo: str, pr_number: int) -> None:
 
 
 def teardown_run(repo: str, run_label: str, created: Iterable[int]) -> None:
-    """Remove every open PR of every issue the run touched.
+    """Remove every PR — open or closed — of every issue the run touched, with
+    its branch (a closed PR can leave its branch behind, e.g. after a partial
+    reset).
 
     "Touched" is the issues the harness created plus every issue carrying the
     run label — the engine files some itself (tech-lead anchors, follow-ups,
@@ -60,7 +62,7 @@ def teardown_run(repo: str, run_label: str, created: Iterable[int]) -> None:
     """
     labelled = [issue.number for issue in _github_adapter(repo).list_issues(labels=[run_label], state="all")]
     for number in sorted(set(created) | set(labelled)):
-        for pr in linked_pull_requests(repo, number, state="open"):
+        for pr in linked_pull_requests(repo, number, state="all"):
             remove_pr(repo, pr.number)
 
 

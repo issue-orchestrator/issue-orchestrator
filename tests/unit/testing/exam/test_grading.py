@@ -553,3 +553,37 @@ class TestRoundFiveFindings:
 
         assert f"goal subject.single_pull_request: linked PRs: [{PR}, {PR + 50}]" in card.failures
         assert not card.passed
+
+
+
+class TestRoundEightFindings:
+    def test_a_cause_stated_for_another_issue_is_not_the_subjects_diagnosis(self) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(
+                    run(
+                        action("escalate_to_human", GOOD_ESCALATION),
+                        summary=f"#{ISSUE} is healthy. Issue #999 has blocked-failed, so its code review never runs.",
+                    ),
+                ),
+            ),
+        )
+        assert card.diagnosis is not None and card.diagnosis.evidence_clause == ""
+        assert not card.passed
+
+    def test_a_merged_green_pr_satisfies_the_green_premise(self) -> None:
+        merged = pr(state=PullRequestState.MERGED, labels=("code-reviewed",))
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(merged,)),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+        goals = {goal.name: goal for goal in card.goals}
+        assert goals["subject.pr_checks_green"].passed, goals["subject.pr_checks_green"].evidence
+        assert card.passed, card.failures

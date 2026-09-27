@@ -115,6 +115,17 @@ def _plain(text: str) -> str:
     return " ".join(text.translate(_MARKDOWN).casefold().split())
 
 
+_REFERENCE = re.compile(r"#(\d+)")
+
+
+def _about_item(clause: str, item_numbers: frozenset[int]) -> bool:
+    """A clause is about the item unless every issue/PR it names is another
+    one ("#999 has blocked-failed, so its code review never runs" diagnoses
+    #999). A clause naming none refers back to the diagnosed item."""
+    named = {int(number) for number in _REFERENCE.findall(clause)}
+    return not named or bool(named & item_numbers)
+
+
 def _clauses(text: str) -> list[str]:
     """Plain clauses: split at sentence ends, line breaks, semicolons, dashes,
     colons and contrast words, then normalized like terms are."""
@@ -144,7 +155,7 @@ class RootCauseSpec:
     role: str
     """The work item the diagnosis must be about (it must cite its issue or PR)."""
 
-    def stating_clause(self, text: str) -> str:
+    def stating_clause(self, text: str, *, item_numbers: frozenset[int]) -> str:
         """The first clause that names EVERY concept together, or ``""``.
 
         One clause, not the whole text: naming the label in one place and the
@@ -157,7 +168,12 @@ class RootCauseSpec:
         audit rather than trusted silently.
         """
         return next(
-            (clause for clause in _clauses(text) if all(group.named_in(clause) for group in self.concepts)),
+            (
+                clause
+                for clause in _clauses(text)
+                if all(group.named_in(clause) for group in self.concepts)
+                and _about_item(clause, item_numbers)
+            ),
             "",
         )
 
@@ -264,14 +280,16 @@ def issue_lacks_labels(role: str, labels: Iterable[str]) -> Goal:
 
 
 def pr_checks_green(role: str) -> Goal:
-    """The item's open PR is CI-green: a case whose premise is "green PR"
+    """The item's latest PR is CI-green: a case whose premise is "green PR"
     must not pass on a red or unverifiable one."""
 
     def check(item: WorkItemFact) -> GoalCheck:
-        open_pr = item.open_pull_request
-        if open_pr is None:
-            return GoalCheck(False, f"issue #{item.issue_number} has no open pull request")
-        return GoalCheck(open_pr.checks == "SUCCESS", f"PR #{open_pr.number} checks: {open_pr.checks}")
+        # The latest PR, like pr_in_state: a merged green PR is still green;
+        # whether its state is acceptable is the state goal's question.
+        if not item.pull_requests:
+            return GoalCheck(False, f"issue #{item.issue_number} has no pull request")
+        latest = max(item.pull_requests, key=lambda pr: pr.number)
+        return GoalCheck(latest.checks == "SUCCESS", f"PR #{latest.number} checks: {latest.checks}")
 
     return Goal(f"{role}.pr_checks_green", role, f"the {role} PR's checks are green", check)
 

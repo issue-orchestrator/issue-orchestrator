@@ -427,10 +427,11 @@ def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeyp
     adapter = _StrictFake(delete_works=False)
     adapter.branches = {"7-exam"}
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
-    monkeypatch.setattr(
-        cleanup, "linked_pull_requests",
-        lambda _repo, number, state: [SimpleNamespace(number=70)] if number == 7 else [],
-    )
+    def linked(_repo, number, state):
+        assert state == "all", "teardown must see closed PRs too (their branches can survive)"
+        return [SimpleNamespace(number=70)] if number == 7 else []
+
+    monkeypatch.setattr(cleanup, "linked_pull_requests", linked)
     ran: list[str] = []
 
     with pytest.raises(ExceptionGroup) as caught:
@@ -491,3 +492,24 @@ def test_a_missing_audit_report_from_a_live_engine_is_refused() -> None:
 
     with pytest.raises(RuntimeError, match="no gh_audit report although it did not exit"):
         _exit_observation(RunEnd.WINDOW_ELAPSED, None)
+
+
+
+def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch) -> None:
+    """Round 8 F3: a closed (e.g. partially reset) PR's branch is deleted too."""
+    from types import SimpleNamespace
+
+    from tests.e2e.exam import cleanup
+
+    adapter = _StrictFake(delete_works=True)
+    adapter.pr_state = {70: "closed"}
+    adapter.branches = {"7-exam"}
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    monkeypatch.setattr(
+        cleanup, "linked_pull_requests",
+        lambda _repo, number, state: [SimpleNamespace(number=70)] if (number, state) == (7, "all") else [],
+    )
+
+    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])
+
+    assert adapter.closed == [] and adapter.deleted == ["7-exam"] and adapter.branches == set()
