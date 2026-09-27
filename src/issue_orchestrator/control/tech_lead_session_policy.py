@@ -597,6 +597,7 @@ def prepare_tech_lead_session_data(
     ) if flavor is not TechLeadSessionFlavor.BATCH_REVIEW else ()
     rework_targets = observe_rework_targets(
         repository_host,
+        repo_slug=issue.key.scope(),
         pr_numbers=tuple(pr.number for pr in tech_lead_manifest.prs) if tech_lead_manifest else (),
         issue_numbers=rework_issue_numbers,
         expected_heads={pr.number: pr.head_sha for pr in tech_lead_manifest.prs} if tech_lead_manifest else None,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+import pytest
+
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.retry_policy import (
     OpenPullRequestIndex,
@@ -13,6 +15,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
 ISSUE = 42
+REPO = "owner/repo"
 
 
 def _label_manager() -> LabelManager:
@@ -75,7 +78,7 @@ def test_retry_keeps_pr_pending_when_the_issue_has_an_open_pr() -> None:
     reader = _reader(_pr(7, branch="other-work"), _pr(9))
 
     result = retry_label_removals(
-        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader))
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
 
     assert result == [lm.blocked_failed]
     reader.list_open_prs_complete.assert_called_once_with()
@@ -87,7 +90,7 @@ def test_retry_strips_pr_pending_when_no_open_pr_belongs_to_the_issue() -> None:
     reader = _reader(_pr(7, branch="99-other", title=f"follow-up to #{ISSUE}", body=f"see #{ISSUE}"))
 
     result = retry_label_removals(
-        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader))
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
 
     assert result == sorted([lm.blocked_failed, lm.pr_pending])
 
@@ -96,7 +99,7 @@ def test_retry_without_pr_pending_spends_no_pr_read() -> None:
     lm = _label_manager()
     reader = _reader(_pr(9))
 
-    result = retry_label_removals(ISSUE, [lm.blocked_failed], lm, OpenPullRequestIndex(reader))
+    result = retry_label_removals(ISSUE, [lm.blocked_failed], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
 
     assert result == [lm.blocked_failed]
     reader.list_open_prs_complete.assert_not_called()
@@ -107,7 +110,7 @@ def test_a_closing_reference_ties_a_pr_to_its_issue() -> None:
     reader = _reader(_pr(9, branch="feature/renamed", body=f"Closes #{ISSUE}"))
 
     result = retry_label_removals(
-        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader))
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
 
     assert result == [lm.blocked_failed]
 
@@ -115,9 +118,60 @@ def test_a_closing_reference_ties_a_pr_to_its_issue() -> None:
 def test_one_index_lists_open_prs_once_for_many_issues() -> None:
     lm = _label_manager()
     reader = _reader(_pr(9))
-    index = OpenPullRequestIndex(reader)
+    index = OpenPullRequestIndex(reader, repo_slug=REPO)
 
     for issue in range(1, 51):
         retry_label_removals(issue, [lm.blocked_failed, lm.pr_pending], lm, index)
 
     reader.list_open_prs_complete.assert_called_once_with()
+
+
+def test_every_issue_an_open_pr_links_keeps_pr_pending() -> None:
+    """#7302 round 4: an open PR closing two issues holds BOTH gates.
+
+    Only the first link names the PR's owner, but Retry's gate protects every
+    issue the open PR is still working on; indexing only the first would let
+    Retry strip #ISSUE's pr-pending and launch a second coder beside it.
+    """
+    lm = _label_manager()
+    reader = _reader(_pr(9, branch="feature/combined", body=f"Closes #100\n\nFixes #{ISSUE}"))
+
+    result = retry_label_removals(
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
+
+    assert result == [lm.blocked_failed]
+
+
+def test_an_open_partial_pr_keeps_its_issue_gated() -> None:
+    """#7288 x #7293: a partial PR links its issue with Refs, not Closes."""
+    lm = _label_manager()
+    reader = _reader(_pr(9, branch="feature/renamed", body=f"Refs #{ISSUE}"))
+
+    result = retry_label_removals(
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
+
+    assert result == [lm.blocked_failed]
+
+
+@pytest.mark.parametrize(
+    ("body", "kept"),
+    [
+        (f"Closes other/repo#{ISSUE}", False),
+        (f"Fixes other/repo#{ISSUE}", False),
+        (f"Closes {REPO}#{ISSUE}", True),
+        (f"Fixes #{ISSUE}", True),
+        (f"Resolved: #{ISSUE}", True),
+    ],
+)
+def test_only_references_to_this_repository_keep_pr_pending(body: str, kept: bool) -> None:
+    """#7302 round 5: another repository's issue #ISSUE is not ours. A PR that
+    closes ``other/repo#ISSUE`` must not keep local #ISSUE gated; one naming
+    this repository, or unqualified, must."""
+    lm = _label_manager()
+    reader = _reader(_pr(9, branch="feature/generic", body=body))
+
+    result = retry_label_removals(
+        ISSUE, [lm.blocked_failed, lm.pr_pending], lm, OpenPullRequestIndex(reader, repo_slug=REPO))
+
+    expected = [lm.blocked_failed] if kept else sorted([lm.blocked_failed, lm.pr_pending])
+    assert result == expected

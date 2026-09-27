@@ -1229,7 +1229,7 @@ class RecoveryRecordFactPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     authority: RecoveryAuthorityPayload
     escrow_retained: bool = Field(..., strict=True)
-    failure: Literal['escrow_write_failed', 'artifact_missing', 'artifact_hash_mismatch', 'artifact_untrusted_path', 'validation_sha_mismatch', 'worktree_ahead_of_validation', 'ancestor_of_pending_head', 'divergent_validated_heads', 'awaiting_lineage_predecessor', 'remote_baseline_unproven', 'authority_snapshot_stale', 'duplicate_open_pr', 'published_head_lacks_validated_work', 'workspace_integrity', 'ref_pin_lost', 'publish_target_mismatch', 'remote_diverged', 'remote_head_changed', 'remote_unreadable', 'pr_closed_or_merged', 'pr_branch_mismatch', 'issue_unreadable', 'runtime_active', 'push_failed', 'submission_lost', 'review_routing_failed'] | None
+    failure: Literal['escrow_write_failed', 'artifact_missing', 'artifact_hash_mismatch', 'artifact_untrusted_path', 'validation_sha_mismatch', 'worktree_ahead_of_validation', 'ancestor_of_pending_head', 'divergent_validated_heads', 'awaiting_lineage_predecessor', 'remote_baseline_unproven', 'authority_snapshot_stale', 'duplicate_open_pr', 'published_head_lacks_validated_work', 'workspace_integrity', 'ref_pin_lost', 'publish_target_mismatch', 'remote_diverged', 'remote_head_changed', 'remote_unreadable', 'pr_closed_or_merged', 'pr_branch_mismatch', 'pr_issue_reference_mismatch', 'issue_unreadable', 'runtime_active', 'push_failed', 'submission_lost', 'review_routing_failed'] | None
     reason: str
     state: Literal['queued', 'parked', 'publishing', 'recovered', 'failed', 'abandoned']
 

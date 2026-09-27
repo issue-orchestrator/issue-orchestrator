@@ -1091,6 +1091,7 @@ class TestEscalationReachesTheHumanThroughTheProductionGate:
 
             from issue_orchestrator.control.completion_processor import GitAdapter
             from issue_orchestrator.ports.working_copy import (
+                BranchCommitMessagesResult,
                 BranchPathsResult,
                 BranchTextFilesResult,
                 DiffResult,
@@ -1119,6 +1120,9 @@ class TestEscalationReachesTheHumanThroughTheProductionGate:
             )
             git_adapter.branch_post_image_paths_against_base = Mock(
                 return_value=BranchPathsResult(success=True, paths=())
+            )
+            git_adapter.branch_commit_messages_against_base = Mock(
+                return_value=BranchCommitMessagesResult(success=True, messages=())
             )
 
             label_adapter = Mock()

@@ -1133,7 +1133,7 @@ export interface RecoveryProcessIdentityPayload {
 export interface RecoveryRecordFactPayload {
   authority: RecoveryAuthorityPayload;
   escrow_retained: boolean;
-  failure: "escrow_write_failed" | "artifact_missing" | "artifact_hash_mismatch" | "artifact_untrusted_path" | "validation_sha_mismatch" | "worktree_ahead_of_validation" | "ancestor_of_pending_head" | "divergent_validated_heads" | "awaiting_lineage_predecessor" | "remote_baseline_unproven" | "authority_snapshot_stale" | "duplicate_open_pr" | "published_head_lacks_validated_work" | "workspace_integrity" | "ref_pin_lost" | "publish_target_mismatch" | "remote_diverged" | "remote_head_changed" | "remote_unreadable" | "pr_closed_or_merged" | "pr_branch_mismatch" | "issue_unreadable" | "runtime_active" | "push_failed" | "submission_lost" | "review_routing_failed" | null;
+  failure: "escrow_write_failed" | "artifact_missing" | "artifact_hash_mismatch" | "artifact_untrusted_path" | "validation_sha_mismatch" | "worktree_ahead_of_validation" | "ancestor_of_pending_head" | "divergent_validated_heads" | "awaiting_lineage_predecessor" | "remote_baseline_unproven" | "authority_snapshot_stale" | "duplicate_open_pr" | "published_head_lacks_validated_work" | "workspace_integrity" | "ref_pin_lost" | "publish_target_mismatch" | "remote_diverged" | "remote_head_changed" | "remote_unreadable" | "pr_closed_or_merged" | "pr_branch_mismatch" | "pr_issue_reference_mismatch" | "issue_unreadable" | "runtime_active" | "push_failed" | "submission_lost" | "review_routing_failed" | null;
   reason: string;
   state: "queued" | "parked" | "publishing" | "recovered" | "failed" | "abandoned";
 }

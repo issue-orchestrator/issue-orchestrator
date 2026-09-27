@@ -2964,43 +2964,108 @@ def test_list_open_prs_complete_refuses_a_capped_walk() -> None:
         client.list_open_prs_complete(page_cap=3)
 
 
-def _closing_refs(*nodes: dict, more: bool = False) -> dict:
-    return {"closedByPullRequestsReferences": {
-        "pageInfo": {"hasNextPage": more}, "nodes": list(nodes)}}
+def _pr_ref(number: int, *, merged: bool, cross_repo: bool = False) -> dict:
+    """A timeline cross-reference whose source is a pull request."""
+    return {"isCrossRepository": cross_repo,
+            "source": {"__typename": "PullRequest", "number": number, "merged": merged}}
 
 
-def test_merged_prs_closing_issues_batches_and_keeps_only_merged() -> None:
+def _issue_ref() -> dict:
+    """A timeline cross-reference from another issue (no PR to find)."""
+    return {"isCrossRepository": False, "source": {"__typename": "Issue"}}
+
+
+def _references(*nodes: dict, more: bool = False, cursor: str | None = None) -> dict:
+    return {"timelineItems": {
+        "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": list(nodes)}}
+
+
+def test_merged_prs_referencing_issues_batches_and_keeps_only_merged_same_repo_prs() -> None:
+    """The issue timeline sees every merged PR that names the issue.
+
+    #7288: a partial PR says "Refs #N", so the issue's closing-PR list never
+    holds it. The cross-reference timeline does. Only merged PRs from this
+    repository count; other issues' mentions, open PRs, and another
+    repository's PR numbers are dropped. 60 issues cost two requests and no
+    search call.
+    """
     queries: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/graphql"
         query = _graphql_body(request)["query"]
+        assert "timelineItems(itemTypes: [CROSS_REFERENCED_EVENT]" in query
         queries.append(query)
         repository = {}
         for n in range(1, 61):
             if f"i{n}: issue(number: {n})" in query:
                 repository[f"i{n}"] = (
                     None if n == 3 else
-                    _closing_refs({"number": 700 + n, "merged": n == 7},
-                                  {"number": 800 + n, "merged": False})
+                    _references(
+                        _pr_ref(700 + n, merged=n in (7, 8)),
+                        _pr_ref(800 + n, merged=False),
+                        _pr_ref(900 + n, merged=True, cross_repo=True),
+                        _issue_ref(),
+                    )
                 )
         return httpx.Response(200, json={"data": {"repository": repository}})
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.merged_prs_closing_issues(list(range(60, 0, -1))) == frozenset({707})
+    assert client.merged_prs_referencing_issues(list(range(60, 0, -1))) == frozenset(
+        {707, 708}
+    )
     assert len(queries) == 2
 
 
-def test_merged_prs_closing_issues_refuses_a_partial_page() -> None:
+def test_merged_prs_referencing_issues_follows_every_page_of_a_busy_issue() -> None:
+    """An issue with more than 100 references is read to its last page, not
+    refused: a busy issue must not lose its rework grant."""
+    afters: list[str | None] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"data": {"repository": {
-            "i5": _closing_refs({"number": 9, "merged": True}, more=True)}}})
+        body = _graphql_body(request)
+        after = body["variables"].get("after")
+        afters.append(after)
+        if after is None:
+            page = _references(_pr_ref(1, merged=True), more=True, cursor="c1")
+        elif after == "c1":
+            assert "after: $after" in body["query"]
+            page = _references(_issue_ref(), more=True, cursor="c2")
+        else:
+            page = _references(_pr_ref(3, merged=True))
+        return httpx.Response(200, json={"data": {"repository": {"i5": page}}})
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    with pytest.raises(GitHubScanIncompleteError, match="more than one page"):
-        client.merged_prs_closing_issues([5])
+    assert client.merged_prs_referencing_issues([5]) == frozenset({1, 3})
+    assert afters == [None, "c1", "c2"]
+
+
+def test_merged_prs_referencing_issues_refuses_a_capped_walk() -> None:
+    requests: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(1)
+        return httpx.Response(200, json={"data": {"repository": {
+            "i5": _references(_pr_ref(9, merged=True), more=True, cursor="c")}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="page cap"):
+        client.merged_prs_referencing_issues([5], page_cap=3)
+    assert len(requests) == 3
+
+
+def test_merged_prs_referencing_issues_refuses_a_next_page_without_a_cursor() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {
+            "i5": _references(_pr_ref(9, merged=True), more=True)}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="without a cursor"):
+        client.merged_prs_referencing_issues([5])
 
 
 def test_list_open_prs_complete_refuses_a_page_without_page_info() -> None:
@@ -3018,16 +3083,23 @@ def test_list_open_prs_complete_refuses_a_page_without_page_info() -> None:
     ("repository", "match"),
     [
         pytest.param({}, "omitted #5", id="alias-missing"),
-        pytest.param({"i5": _closing_refs({"number": 9})}, "malformed node", id="merged-missing"),
-        pytest.param({"i5": {"closedByPullRequestsReferences": {"nodes": []}}}, "pageInfo",
+        pytest.param({"i5": {"timelineItems": None}}, "no timeline", id="timeline-missing"),
+        pytest.param({"i5": {"timelineItems": {"nodes": []}}}, "pageInfo",
                      id="page-info-missing"),
+        pytest.param({"i5": _references({"source": {"__typename": "Issue"}})},
+                     "malformed node", id="cross-repo-flag-missing"),
+        pytest.param({"i5": _references({"isCrossRepository": False, "source": None})},
+                     "malformed node", id="source-missing"),
+        pytest.param({"i5": _references({"isCrossRepository": False, "source": {
+                         "__typename": "PullRequest", "number": 9}})},
+                     "malformed node", id="merged-missing"),
     ],
 )
-def test_merged_prs_closing_issues_refuses_a_malformed_answer(repository, match) -> None:
+def test_merged_prs_referencing_issues_refuses_a_malformed_answer(repository, match) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {"repository": repository}})
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
     with pytest.raises(GitHubScanIncompleteError, match=match):
-        client.merged_prs_closing_issues([5])
+        client.merged_prs_referencing_issues([5])
