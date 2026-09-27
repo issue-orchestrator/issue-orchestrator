@@ -182,3 +182,12 @@ class TestFingerprint:
                 ).stdout.strip()
             )
         assert len(prints) == 1
+
+
+def test_a_wait_spends_nothing_never_parks_and_is_paced() -> None:
+    row = POLICY.after(None, KEY, ActionOutcome.transient("x"), NOW)
+    for _ in range(50):
+        row = POLICY.after(row, KEY, ActionOutcome.waiting("runtime active"), NOW)
+    assert row is not None and not row.parked and row.attempts == 1
+    assert row.last_outcome is OutcomeKind.WAITING
+    assert row.next_attempt_at == NOW + POLICY.max_backoff

@@ -147,6 +147,14 @@ class InMemoryActionLivenessStore:
             key=lambda row: row.last_failed_at,
         ))
 
+    def waiting_rows(self) -> tuple[LivenessRow, ...]:
+        from issue_orchestrator.domain.action_liveness import OutcomeKind
+
+        return tuple(
+            row for row in self.rows.values()
+            if not row.parked and row.last_outcome is OutcomeKind.WAITING
+        )
+
     def rows_owing_escalation(self) -> tuple[LivenessRow, ...]:
         return tuple(row for row in self.parked_rows() if row.owes_escalation)
 

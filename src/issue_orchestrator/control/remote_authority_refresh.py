@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from functools import partial
 
 from ..domain.publication_remote import PublicationRemoteError
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_execution import RecordExecutionBusy
 from ..domain.validated_work_capture import ValidatedWorkRemoteRequest
@@ -43,10 +43,10 @@ class RemoteAuthorityRefreshOperation:
     def run(self, request: RemoteAuthorityRefreshRequest) -> RecoveryAttemptPending:
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return RecoveryAttemptPending("Remote authority refresh is already executing", contended=True)
+            return RecoveryAttemptPending("Remote authority refresh is already executing", kind=RecoveryPendingKind.CONTENDED)
         with lease as token:
             if not self._execution.relinquish(token):
-                return RecoveryAttemptPending("Record awaits its reserved stop operation", contended=True)
+                return RecoveryAttemptPending("Record awaits its reserved stop operation", kind=RecoveryPendingKind.CONTENDED)
             record = self._store.record_for_id(request.record_id)
             refusal = request.refusal(record)
             if refusal is not None:
@@ -59,7 +59,7 @@ class RemoteAuthorityRefreshOperation:
             if claim is None:
                 return RecoveryAttemptPending(
                     "Remote authority refresh belongs to another owner or changed",
-                    contended=True,
+                    kind=RecoveryPendingKind.CONTENDED,
                 )
             self._execution.remember_claim(token, claim)
             try:

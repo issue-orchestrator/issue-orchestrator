@@ -34,7 +34,7 @@ from ..domain.action_liveness import (
     LivenessKey,
     fact_fingerprint,
 )
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
@@ -55,10 +55,19 @@ def drain_outcome(
     """How one drain attempt ended; ``None`` when another owner held the record."""
     if isinstance(result, RecoveryCompleted):
         return ActionOutcome.done()
-    if result.contended:
-        return None
     failure = "" if result.failure is None else f" [{result.failure.value}]"
-    return ActionOutcome.transient(f"{result.message}{failure}")
+    reason = f"{result.message}{failure}"
+    return _OUTCOMES[result.kind](reason)
+
+
+#: One mapping from how a pending result says it should be counted to the
+#: owner's vocabulary. Every kind is named: a new one fails here, not silently.
+_OUTCOMES = {
+    RecoveryPendingKind.FAILED: ActionOutcome.transient,
+    RecoveryPendingKind.CONTENDED: lambda _reason: None,
+    RecoveryPendingKind.WAITING: ActionOutcome.waiting,
+    RecoveryPendingKind.NEEDS_HUMAN: ActionOutcome.needs_human,
+}
 
 
 @dataclass(frozen=True, slots=True)

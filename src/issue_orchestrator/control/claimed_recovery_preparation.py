@@ -6,7 +6,7 @@ from functools import partial
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.completion_processing import ProcessingResult
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.recovery_publication import PreparedRecoveryPublication
 from ..domain.validated_work import ValidatedWorkFailure
@@ -53,12 +53,26 @@ class ClaimedRecoveryPreparation:
             return RecoveryAttemptPending(str(error), ValidatedWorkFailure.ISSUE_UNREADABLE)
         issue.require_identity(self._repo, key.issue_number)
         if not issue.permits_recovery(self._pause_label):
-            return RecoveryAttemptPending("Issue is closed or paused; recovery remains retained")
+            # A paused issue waits for a person; a closed one is a question
+            # for a person too, but only after a bounded number of passes, in
+            # case it is reopened (#7350 census #7).
+            paused = self._pause_label in issue.labels
+            return RecoveryAttemptPending(
+                "Issue is paused; recovery remains retained" if paused
+                else "Issue is closed; recovery remains retained",
+                kind=RecoveryPendingKind.NEEDS_HUMAN if paused else RecoveryPendingKind.FAILED,
+            )
         if perform(lambda: self._runtime.probe(key.issue_number)).busy:
-            return RecoveryAttemptPending("Other issue runtime is active or unverifiable", ValidatedWorkFailure.RUNTIME_ACTIVE)
+            return RecoveryAttemptPending(
+                "Other issue runtime is active or unverifiable",
+                ValidatedWorkFailure.RUNTIME_ACTIVE,
+                kind=RecoveryPendingKind.WAITING,
+            )
         with self._gate.try_acquire(self._repo, key.issue_number) as acquired:
             if acquired is IssueDispositionGateStatus.BUSY:
-                return RecoveryAttemptPending("Issue disposition mutation is busy")
+                return RecoveryAttemptPending(
+                    "Issue disposition mutation is busy", kind=RecoveryPendingKind.CONTENDED
+                )
             try:
                 workspace = perform(lambda: self._workspaces.prepare(
                     record.current_evidence.admission))

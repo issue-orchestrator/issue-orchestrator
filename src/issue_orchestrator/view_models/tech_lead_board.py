@@ -119,6 +119,7 @@ class TechLeadBoardView:
     last_health_review: str  # ISO timestamp; "" when never
     held_actions: tuple[TechLeadBoardHeldAction, ...] = ()
     charter: tuple[TechLeadBoardCharterRole, ...] = ()
+    waiting_actions: tuple[TechLeadBoardHeldAction, ...] = ()
 
 
 def _proposal_age_hours(created_at: str, now: datetime) -> int:
@@ -212,23 +213,25 @@ def build_tech_lead_board_view(
             for item in ranked
         ),
         area_counts=tuple(area_counts),
-        held_actions=tuple(
-            TechLeadBoardHeldAction(
-                subject=row.key.identity.subject,
-                action=row.key.identity.action,
-                outcome=row.last_outcome.value,
-                reason=row.last_reason,
-                parked_since=row.last_failed_at.isoformat(),
-                issue_number=row.key.escalation_issue or 0,
-            )
-            for row in held_actions
-        ),
+        held_actions=tuple(_held(row) for row in held_actions if row.parked),
+        waiting_actions=tuple(_held(row) for row in held_actions if not row.parked),
         last_health_review=(
             datetime.fromtimestamp(last_health_review_at, tz=timezone.utc).isoformat()
             if last_health_review_at > 0
             else ""
         ),
         charter=tuple(charter),
+    )
+
+
+def _held(row: "LivenessRow") -> TechLeadBoardHeldAction:
+    return TechLeadBoardHeldAction(
+        subject=row.key.identity.subject,
+        action=row.key.identity.action,
+        outcome=row.last_outcome.value,
+        reason=row.last_reason,
+        parked_since=row.last_failed_at.isoformat(),
+        issue_number=row.key.escalation_issue or 0,
     )
 
 
@@ -261,6 +264,7 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
     else:
         lines.append("None.")
     lines.extend(_held_actions_section(view.held_actions))
+    lines.extend(_waiting_actions_section(view.waiting_actions))
     lines.extend(["", "## Open pattern case files", ""])
     if view.case_files:
         lines.extend(
@@ -332,6 +336,25 @@ def _charter_lines(roles: Sequence[TechLeadBoardCharterRole]) -> list[str]:
             f"| {item.role} | {item.dials} | {item.executed} | {item.proposed}"
             f" | {item.refused_destructive} | {item.advice_only} |"
             for item in roles
+        ),
+    ]
+
+
+def _waiting_actions_section(waiting: Sequence[TechLeadBoardHeldAction]) -> list[str]:
+    """Actions paced behind another owner's precondition (#7350); omitted when none."""
+    if not waiting:
+        return []
+    return [
+        "",
+        "## Waiting on another owner",
+        "",
+        "| Issue | Subject | Action | Since | Reason |",
+        "|---|---|---|---|---|",
+        *(
+            f"| {f'#{item.issue_number}' if item.issue_number else _UNKNOWN_CELL}"
+            f" | `{_markdown_cell(item.subject)}` | `{item.action}`"
+            f" | {item.parked_since} | {_markdown_cell(item.reason)} |"
+            for item in waiting
         ),
     ]
 

@@ -128,6 +128,10 @@ class ActionLivenessStore(Protocol):
         """Every parked row, oldest park first."""
         ...
 
+    def waiting_rows(self) -> tuple[LivenessRow, ...]:
+        """Every row paced by a WAITING outcome, oldest first."""
+        ...
+
     def rows_owing_escalation(self) -> tuple[LivenessRow, ...]:
         """Parked rows with an escalation issue whose block or comment has not landed."""
         ...

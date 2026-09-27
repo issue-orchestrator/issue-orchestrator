@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.domain.action_liveness import LivenessPolicy
 from issue_orchestrator.domain.models import OrchestratorState
-from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from issue_orchestrator.domain.recovery_completion import RecoveryCompleted
 from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
 from issue_orchestrator.domain.validated_work_commands import (
@@ -132,7 +132,7 @@ def test_contention_is_not_a_failure(tmp_path) -> None:
     """A record another owner holds right now spends nothing."""
     engine = _Engine(
         tmp_path,
-        RecoveryAttemptPending("Record recovery is already executing", contended=True),
+        RecoveryAttemptPending("Record recovery is already executing", kind=RecoveryPendingKind.CONTENDED),
     )
 
     engine.passes(20)
@@ -150,7 +150,7 @@ def test_a_parked_record_does_not_stall_the_round_robin(tmp_path) -> None:
         issue = engine.store.record_for_id(request.record_id).disposition.key.issue_number
         if issue == parked_issue:
             return RecoveryAttemptPending("still broken")
-        return RecoveryAttemptPending("waiting on remote", contended=True)
+        return RecoveryAttemptPending("waiting on remote", kind=RecoveryPendingKind.CONTENDED)
 
     engine = _Engine(tmp_path, result, issues=(parked_issue, healthy_issue), batch_size=1)
     engine.passes(40)
@@ -225,7 +225,7 @@ def test_record_recovery_contention_is_marked(tmp_path) -> None:
             publication=None, completion=None,
         )
         result = operation.run(_record_request(), OrchestratorState())
-        assert result.contended is True, result.message
+        assert result.kind is RecoveryPendingKind.CONTENDED, result.message
 
 
 def test_authority_refresh_contention_is_marked(tmp_path) -> None:
@@ -240,7 +240,7 @@ def test_authority_refresh_contention_is_marked(tmp_path) -> None:
         operation = RemoteAuthorityRefreshOperation(
             execution=_BusyExecution(busy=busy), effects=None, store=None, observer=None,
         )
-        assert operation.run(request).contended is True
+        assert operation.run(request).kind is RecoveryPendingKind.CONTENDED
 
 
 def test_a_rate_limited_remote_read_waits_for_its_reset(tmp_path) -> None:
@@ -265,3 +265,85 @@ def test_a_rate_limited_remote_read_waits_for_its_reset(tmp_path) -> None:
     assert len(engine.operation.called) == 2, "once, then once more after the reset"
     [row] = engine.rows.rows.values()
     assert row.attempts == 0 and not row.parked
+
+
+# --- Coordinator enumeration (#7346 fix): every pending kind is counted ------
+
+
+def test_every_pending_kind_has_an_outcome() -> None:
+    from issue_orchestrator.control.recovery_drain_liveness import drain_outcome
+
+    for kind in RecoveryPendingKind:
+        drain_outcome(RecoveryAttemptPending("x", kind=kind))  # no KeyError
+
+
+def test_a_runtime_wait_is_paced_and_visible_but_never_parks(tmp_path) -> None:
+    engine = _Engine(
+        tmp_path,
+        RecoveryAttemptPending("Other issue runtime is active", kind=RecoveryPendingKind.WAITING),
+    )
+    engine.passes(40)  # one hour per pass: well past any failure budget
+
+    assert len(engine.operation.called) == 40, "paced at max_backoff, which is under an hour"
+    assert engine.escalation.parked == []
+    [row] = engine.rows.waiting_rows()
+    assert row.attempts == 0 and "runtime is active" in row.last_reason
+
+
+def test_a_paused_issue_parks_as_needs_human_at_once(tmp_path) -> None:
+    engine = _Engine(
+        tmp_path,
+        RecoveryAttemptPending("Issue is paused", kind=RecoveryPendingKind.NEEDS_HUMAN),
+    )
+    engine.passes(10)
+
+    assert len(engine.operation.called) == 1
+    assert engine.escalation.parked[0].last_outcome.value == "needs_human"
+
+
+def test_the_preparation_names_how_each_refusal_counts() -> None:
+    """Closed: a bounded failure (census #7). Paused: needs a person. Runtime
+    active: a wait. Disposition gate busy: contention."""
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.claimed_recovery_preparation import (
+        ClaimedRecoveryPreparation,
+    )
+    from issue_orchestrator.domain.issue_disposition_gate import IssueDispositionGateStatus
+    from issue_orchestrator.domain.recovery_entry import (
+        RecoveryIssue,
+        RecoveryIssueState,
+        RecoveryRecordRequest,
+    )
+
+    def prepare(*, state=RecoveryIssueState.OPEN, labels=(), busy=False, gate_busy=False):
+        record = MagicMock()
+        record.disposition.key.repo_slug = "o/r"
+        record.disposition.key.issue_number = 5
+        store = MagicMock(record_for_id=lambda _rid: record)
+        issues = MagicMock(read=lambda repo, number: RecoveryIssue("o/r", 5, "t", state, labels))
+
+        @contextmanager
+        def try_acquire(repo, number):
+            yield IssueDispositionGateStatus.BUSY if gate_busy else MagicMock()
+
+        preparation = ClaimedRecoveryPreparation(
+            effects=MagicMock(perform=lambda token, claim, fn: fn()),
+            store=store,
+            issues=issues,
+            runtime=MagicMock(probe=lambda number: MagicMock(busy=busy)),
+            gate=MagicMock(try_acquire=try_acquire),
+            workspaces=MagicMock(),
+            preparation=MagicMock(),
+            repo_slug="o/r",
+            pause_label="io:needs-reconcile",
+        )
+        request = MagicMock(spec=RecoveryRecordRequest)
+        request.refusal.return_value = None
+        return preparation.prepare(object(), MagicMock(record_id="r1"), request)
+
+    assert prepare(state=RecoveryIssueState.CLOSED).kind is RecoveryPendingKind.FAILED
+    assert prepare(labels=("io:needs-reconcile",)).kind is RecoveryPendingKind.NEEDS_HUMAN
+    assert prepare(busy=True).kind is RecoveryPendingKind.WAITING
+    assert prepare(gate_busy=True).kind is RecoveryPendingKind.CONTENDED

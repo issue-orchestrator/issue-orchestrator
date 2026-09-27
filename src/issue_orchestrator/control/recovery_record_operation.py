@@ -1,7 +1,7 @@
 """Own the full synchronous recovery lease, claim, publication and finalization."""
 
 from ..domain.models import OrchestratorState
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work_execution import RecordExecutionBusy, RecordExecutionToken
@@ -36,10 +36,10 @@ class RecoveryRecordOperation:
         """
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return RecoveryAttemptPending("Record recovery is already executing", contended=True)
+            return RecoveryAttemptPending("Record recovery is already executing", kind=RecoveryPendingKind.CONTENDED)
         with lease as token:
             if not self._execution.relinquish(token):
-                return RecoveryAttemptPending("Record awaits its reserved stop operation", contended=True)
+                return RecoveryAttemptPending("Record awaits its reserved stop operation", kind=RecoveryPendingKind.CONTENDED)
             try:
                 return self._run_owned(token, request, state)
             finally:
@@ -54,7 +54,7 @@ class RecoveryRecordOperation:
         claim = self._store.acquire_claim(request.record_id,
             expected_states=frozenset({record.disposition.state}), evidence_id=request.evidence_id)
         if claim is None:
-            return RecoveryAttemptPending("Record belongs to another owner or its evidence changed", contended=True)
+            return RecoveryAttemptPending("Record belongs to another owner or its evidence changed", kind=RecoveryPendingKind.CONTENDED)
         self._execution.remember_claim(token, claim)
         # Before any issue read or workspace: a record recovery never owned
         # resolves here rather than failing preparation forever (#7323).

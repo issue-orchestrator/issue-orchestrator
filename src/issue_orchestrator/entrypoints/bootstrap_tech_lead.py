@@ -234,7 +234,7 @@ def create_tech_lead_board_publisher(
     return TechLeadBoardPublisher(
         board_path=tech_lead_board_path(config.repo_root),
         authority=authority,
-        held_actions=action_liveness_store(config).parked_rows,
+        held_actions=action_liveness_store(config).visible_rows,
         charter_policy=lambda: TechLeadCharterPolicy.from_config(config),
     )
 
