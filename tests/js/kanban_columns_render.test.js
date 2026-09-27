@@ -33,6 +33,15 @@ function loadModule() {
         },
     };
     vm.createContext(context);
+    // kanban_columns.js renders custody through blocked_custody.js (#7331),
+    // which the dashboard loads first.
+    vm.runInContext(
+        fs.readFileSync(
+            path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/blocked_custody.js'),
+            'utf8',
+        ),
+        context,
+    );
     vm.runInContext(
         fs.readFileSync(
             path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/kanban_columns.js'),
