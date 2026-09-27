@@ -85,7 +85,7 @@ def custody(tmp_path):
         artifacts=escrow, liveness=Liveness(), retention=escrow,
     )
     store = RankedEvidenceAdmission(store, ledger)
-    repair = EscrowReconciliation(escrow=escrow, store=store)
+    repair = EscrowReconciliation(escrow=escrow, store=store, intake=ledger)
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
@@ -403,10 +403,12 @@ def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody, scope
     review_capability = custody.ledger.submission_capability(review)
     receipt = custody.intake.submit(review_capability, command(completion(), "review-receipt"))
     custody.intake.prepare_receipt(receipt, review)
+    # A review run's completion is never recovery's work (#7323): the capture
+    # still closes exactly this run's intake, and admits nothing.
     if scope == "exact_run":
-        assert custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).unresolved
+        assert not custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).found_work
     else:
-        assert custody.lifecycle.preserve_named_terminal("review-42", "completed")[0].unresolved
+        assert not custody.lifecycle.preserve_named_terminal("review-42", "completed")[0].found_work
     with pytest.raises(IntakeClosed):
         custody.intake.submit(review_capability, command(completion(), "review-after-close"))
     submit(custody, "coder-still-open")
@@ -515,7 +517,7 @@ def test_independent_instances_reselect_after_atomic_admission_conflict(custody)
 def test_orphan_repair_and_restart_keep_trusted_receipt_order(custody):
     admissions = retained_receipt_pair(custody)
     recovered = independent_ranked_store(custody, "recovered.sqlite")
-    report = EscrowReconciliation(escrow=custody.escrow, store=recovered).reconcile_escrow_orphans()
+    report = EscrowReconciliation(escrow=custody.escrow, store=recovered, intake=custody.ledger).reconcile_escrow_orphans()
     assert not report.problems
     reopened = independent_ranked_store(custody, "recovered.sqlite")
     assert reopened.for_issue(42).dispositions[0].evidence_id == admissions[-1].evidence.evidence_id
