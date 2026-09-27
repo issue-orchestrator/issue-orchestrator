@@ -168,16 +168,18 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
 
 
 def stale_claim_paused_for_reconcile(*, needs_reconcile_label: str) -> ExamCase:
-    """Case C — porchpin#410's loop (the #7345/#7346 livelock class).
+    """Case C — a stale claim under the engine's reconcile pause (porchpin#410's labels).
 
     An issue carries ``in-progress`` with no session and the engine's own
-    ``needs-reconcile`` pause, which only a human lifts. porchpin#410 then
-    re-ran stale-claim detection, failed the reconcile expectation and
-    re-paused on EVERY tick — 130 identical events, no state change.
+    ``needs-reconcile`` pause, which only a human lifts. On porchpin#410 that
+    state re-ran the reconcile expectation and re-paused on EVERY tick (130
+    identical events) — but there it sat on top of #7346's wedged
+    validated-work record; the labels alone did NOT reproduce the loop on
+    the feature tip (72d207e passed). So this case guards the paused-claim
+    shape; the per-tick loop itself is caught in EVERY case by the livelock
+    check, and the #7346 wedge is templated as a case of its own in #7332.
 
-    Right answer: the pause stays for a human, and the engine does not
-    repeat any failure on the subject tick after tick (graded for every case
-    by the livelock check; this case plants the state that provoked it).
+    Right answer: the pause stays for a human, and nothing repeats.
     """
     return ExamCase(
         case_id=STALE_CLAIM_PAUSED_FOR_RECONCILE,
@@ -188,6 +190,6 @@ def stale_claim_paused_for_reconcile(*, needs_reconcile_label: str) -> ExamCase:
         ),
         goals=(issue_keeps_labels(SUBJECT, (needs_reconcile_label,)),),
         known_blockers=(
-            "porchpin#410: stale-claim / reconcile loop repeated 130x (#7346 class)",
+            "porchpin#410's labels (its 130x loop also needed #7346's wedged record; see #7332)",
         ),
     )
