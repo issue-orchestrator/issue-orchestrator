@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
+from tests.unit.control.liveness_doubles import drain_liveness
 from issue_orchestrator.adapters.issue_disposition_gate import FileIssueDispositionMutationGate
 from issue_orchestrator.control import validated_work_preservation
 from issue_orchestrator.control.actions import ActionResult, AddLabelAction
@@ -436,6 +437,7 @@ def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_r
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
         scope_sweep=NullValidatedWorkScopeSweep(),  # the refresh lane alone must retire it
         batch_size=5, interval_seconds=1,
+        liveness=drain_liveness(),
     )
 
     drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
@@ -484,6 +486,7 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
         scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
                                               retirement=retirement, batch_size=5),
         batch_size=5, interval_seconds=1,
+        liveness=drain_liveness(),
     )
 
     report = drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)

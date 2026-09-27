@@ -24,6 +24,7 @@ from issue_orchestrator.domain.validated_work_commands import (
     StoredEvidenceCommand,
 )
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
@@ -79,6 +80,7 @@ class _Engine:
             authority_refresh=_Operation(RecoveryAttemptPending("refresh")),
             claim_maintenance=NullRetainedClaimMaintenance(),
             block_sweep=NullRecoveryBlockSweep(),
+            scope_sweep=NullValidatedWorkScopeSweep(),
             batch_size=batch_size,
             interval_seconds=60,
             clock=lambda: self.now.value,
@@ -222,7 +224,7 @@ def test_record_recovery_contention_is_marked(tmp_path) -> None:
     for busy in (True, False):
         operation = RecoveryRecordOperation(
             execution=_BusyExecution(busy=busy), store=None, preparation=None,
-            publication=None, completion=None,
+            publication=None, completion=None, scope=None,
         )
         result = operation.run(_record_request(), OrchestratorState())
         assert result.kind is RecoveryPendingKind.CONTENDED, result.message
@@ -239,6 +241,7 @@ def test_authority_refresh_contention_is_marked(tmp_path) -> None:
     for busy in (True, False):
         operation = RemoteAuthorityRefreshOperation(
             execution=_BusyExecution(busy=busy), effects=None, store=None, observer=None,
+            scope=None,
         )
         assert operation.run(request).kind is RecoveryPendingKind.CONTENDED
 
