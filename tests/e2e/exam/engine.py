@@ -138,11 +138,12 @@ def exam_config(
     if tech_lead_model:
         config.agents[TECH_LEAD_LABEL] = AgentConfig(
             prompt_path=checkout.root / TECH_LEAD_PROMPT,
-            timeout_minutes=40,
+            timeout_minutes=45,
             model=tech_lead_model,
             provider="claude-code",
             ai_system="claude-code",
-            provider_args={"permission_mode": "bypassPermissions"},
+            # Production's tech-lead agent (the operator's io/porchpin configs).
+            provider_args={"effort": "xhigh", "permission_mode": "bypassPermissions"},
             initial_prompt=(
                 "Tech Lead review for issue #{issue_number}: {issue_title}. Follow the"
                 " instructions in {prompt}. When done, use coding-done to report completion."

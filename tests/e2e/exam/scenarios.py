@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.testing.exam import ExamCase, RunEnd, Scorecard, grade
+from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
 from issue_orchestrator.testing.exam.cases import (
     SUBJECT,
     blocked_issue_green_pr_awaiting_review,
@@ -57,6 +57,14 @@ PRODUCTION_TECH_LEAD_AUTHORITY = {
     "recover_validated_work": "execute",
     "create_issue": "execute",
 }
+
+
+@dataclass(frozen=True)
+class ExamResult:
+    """The raw observation (so a scorecard can be re-graded) and its grade."""
+
+    observation: ExamObservation
+    scorecard: Scorecard
 
 
 @dataclass
@@ -144,7 +152,7 @@ async def _finish(
     extra_prs: dict[str, list[int]],
     started: float,
     ended_by: RunEnd,
-) -> Scorecard:
+) -> ExamResult:
     watcher = engine.runtime.watcher
     report = fetch_gh_audit_report(engine.config.control_api_port)
     if report is None:
@@ -168,7 +176,7 @@ async def _finish(
         ended_by=ended_by,
         notes=tuple(run.notes),
     )
-    return grade(run.case, observation)
+    return ExamResult(observation=observation, scorecard=grade(run.case, observation))
 
 
 def _labels(config: Config) -> LabelManager:
@@ -194,7 +202,7 @@ def teardown_items(repo: str, issue_numbers: list[int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> Scorecard:
+async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
     checkout = EngineCheckout.create(
         harness_root=run.harness_root, ref=run.engine_ref, case_id=run.case.case_id
     )
@@ -253,7 +261,7 @@ async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> Scorecard:
 
 async def run_case_b(
     run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str
-) -> Scorecard:
+) -> ExamResult:
     checkout = EngineCheckout.create(
         harness_root=run.harness_root, ref=run.engine_ref, case_id=run.case.case_id
     )
@@ -324,7 +332,7 @@ async def run_case_b(
             async def concluded() -> bool:
                 return bool(terminal_tech_lead_runs(checkout.state_dir))
 
-            ended_by = await drive(engine, done=concluded, quiet_s=600, timeout_s=50 * 60)
+            ended_by = await drive(engine, done=concluded, quiet_s=600, timeout_s=60 * 60)
             if ended_by is RunEnd.GOAL_REACHED:
                 # Let the engine apply the decision it just accepted.
                 await asyncio.sleep(120)
