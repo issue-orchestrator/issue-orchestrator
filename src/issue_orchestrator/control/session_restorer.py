@@ -323,7 +323,7 @@ class SessionRestorer:
             # a restored whole-board review stops acting as the exclusive
             # barrier it is, and the dashboard misreports it (#6994 F3).
             tech_lead_scope=recover_tech_lead_launch_scope(
-                kind, self.config, issue_obj, self.tech_lead_authority
+                kind, self.config, issue_obj, self.tech_lead_authority, run_assets.identity
             ),
         )
 
