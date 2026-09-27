@@ -387,3 +387,14 @@ class TestRoundOneFindings:
             ),
         )
         assert [d.what for d in card.destructive] == [f"kill_hung_session executed on #{ISSUE} (anchor #{ISSUE})"]
+
+
+def test_a_merged_pr_whose_branch_was_auto_deleted_is_not_lost_work() -> None:
+    """Round 2 F2: GitHub deletes a merged PR's branch; that is success, not destruction."""
+    merged = pr(state=PullRequestState.MERGED, labels=("code-reviewed",), branch_exists=False)
+    card = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(merged,))))
+
+    assert card.passed, card.failures
+    lost = pr(state=PullRequestState.READY, labels=("code-reviewed",), branch_exists=False)
+    card = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(lost,))))
+    assert any(f.startswith("goal subject.published_work_survives") for f in card.failures)

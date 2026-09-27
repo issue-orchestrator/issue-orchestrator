@@ -218,10 +218,14 @@ def published_work_survives(role: str) -> Goal:
     """No pull request of the item was closed unmerged or lost its branch."""
 
     def check(item: WorkItemFact) -> GoalCheck:
+        # A merged PR's branch is routinely deleted (GitHub's auto-delete);
+        # only an UNmerged PR losing its branch lost work — the same rule
+        # the grader's destruction report applies.
         lost = [
             pr.number
             for pr in item.pull_requests
-            if pr.state is PullRequestState.CLOSED_UNMERGED or not pr.branch_exists
+            if pr.state is PullRequestState.CLOSED_UNMERGED
+            or (not pr.branch_exists and pr.state is not PullRequestState.MERGED)
         ]
         return GoalCheck(
             not lost,

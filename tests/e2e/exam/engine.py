@@ -1,13 +1,6 @@
-"""The engine under examination: a checkout of some commit, run for one case.
+"""Run an exam engine: its config, its process, and its control surfaces.
 
-Every exam run gets a FRESH standalone clone of the commit under test,
-because the engine keeps its state under ``<repo_root>/.issue-orchestrator``:
-running two commits out of one checkout would hand the older engine the newer
-one's databases, and re-running one commit would hand a case the previous
-case's run history. The checkout reuses the harness's virtualenv (symlinked),
-and ``OrchestratorProcess`` puts the checkout's ``src`` first on PYTHONPATH,
-so the engine — and every completion command its agents run — is the commit
-under test, while the harness, its shims and its grader stay this tree's.
+The checkout it runs from is :mod:`tests.e2e.exam.engine_checkout`.
 """
 
 from __future__ import annotations
@@ -15,17 +8,14 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import shutil
-import subprocess
-import time
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 
+from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.e2e.exam.agents import CODER_LABEL, REVIEWER_LABEL, TECH_LEAD_LABEL, shim_command
 from tests.e2e.fixtures import OrchestratorProcess, find_free_port
 from tests.e2e.fixtures.orchestrator_process import merge_config_overlay
@@ -33,8 +23,6 @@ from tests.e2e.fixtures.inflight_tracker import control_api_headers
 from tests.e2e.flows import OrchestratorRuntime, start_orchestrator_runtime
 
 logger = logging.getLogger(__name__)
-
-WORKTREE_PARENT = Path.home() / "dev" / "worktree" / "issue-orchestrator"
 
 TECH_LEAD_PROMPT = Path("repo-specific") / "prompts" / "tech-lead.md"
 
@@ -47,67 +35,6 @@ TECH_LEAD_PROMPT = Path("repo-specific") / "prompts" / "tech-lead.md"
 EXAM_BASE_OVERLAY: Mapping[str, Any] = {
     "execution": {"session_interactions": {"enabled": True}},
 }
-
-
-@dataclass(frozen=True)
-class EngineCheckout:
-    """A fresh, standalone checkout of the commit under test.
-
-    A standalone ``--shared`` clone, not a ``git worktree``: the engine
-    refuses to run with its repository inside a linked worktree (the
-    validated-work escrow must live outside disposable worktrees). Objects
-    are borrowed from the harness's repository, so the clone is cheap; its
-    ``origin`` is re-pointed at GitHub so the engine pushes where a real
-    engine would.
-    """
-
-    root: Path
-    commit: str
-
-    @classmethod
-    def create(cls, *, harness_root: Path, ref: str, case_id: str) -> "EngineCheckout":
-        commit = _git(harness_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
-        origin = _git(harness_root, "remote", "get-url", "origin")
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        root = WORKTREE_PARENT / f"exam-engine-{commit[:10]}-{case_id[:1].lower()}-{stamp}"
-        venv = harness_root / ".venv"
-        if not venv.is_dir():
-            raise RuntimeError(f"harness virtualenv missing at {venv}")
-        _git(harness_root, "clone", "--quiet", "--shared", "--no-checkout", str(harness_root), str(root))
-        checkout = cls(root=root, commit=commit)
-        try:
-            _git(root, "remote", "set-url", "origin", origin)
-            _git(root, "fetch", "--quiet", "origin", "main")
-            # Agent worktrees branch from local ``main`` (ORCHESTRATOR_WORKTREE_BASE_BRANCH).
-            _git(root, "branch", "--force", "main", "origin/main")
-            _git(root, "checkout", "--quiet", "--detach", commit)
-            (root / ".venv").symlink_to(venv)
-        except BaseException:
-            # A half-built clone is nobody's to clean up later (a network
-            # outage mid-fetch left one behind).
-            checkout.remove()
-            raise
-        logger.info("[EXAM] engine checkout %s at %s", root, commit)
-        return checkout
-
-    @property
-    def state_dir(self) -> Path:
-        return self.root / ".issue-orchestrator" / "state"
-
-    def remove(self) -> None:
-        link = self.root / ".venv"
-        if link.is_symlink():
-            link.unlink()
-        shutil.rmtree(self.root)
-
-
-def _git(cwd: Path, *argv: str) -> str:
-    result = subprocess.run(
-        ["git", *argv], cwd=cwd, capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(argv)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
 
 
 def exam_config(

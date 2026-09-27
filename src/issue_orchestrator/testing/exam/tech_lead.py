@@ -19,6 +19,7 @@ for destruction.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -56,11 +57,20 @@ def _event_action_type(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _matches(payload: Mapping[str, Any], action: ProposedAction) -> bool:
+def _matches(
+    payload: Mapping[str, Any], action: ProposedAction, same_type: int
+) -> bool:
+    """Whether an event is about ``action``.
+
+    By action id when the event carries one. A receipt with only a TYPE
+    identifies the action only when the decision has exactly one action of
+    that type; with several (``same_type`` > 1) it could be any of them, so
+    it matches none — fail closed rather than credit the wrong one.
+    """
     event_id = _event_action_id(payload)
     if event_id is not None:
         return event_id == action.action_id
-    return _event_action_type(payload) == action.action_type
+    return same_type == 1 and _event_action_type(payload) == action.action_type
 
 
 def resolve_dispositions(
@@ -89,15 +99,17 @@ def resolve_dispositions(
         if _payload(event).get("issue_number") == anchor_issue_number
     ]
     rejected = run_failed or any(name == REJECTED for name, _ in scoped)
+    type_counts = Counter(action.action_type for action in wanted)
     resolved: list[TechLeadActionDisposition] = []
     for action in wanted:
+        same_type = type_counts[action.action_type]
         # An observed execution wins over the run's fate: a failed run can
         # still have executed an action (e.g. a kill) before it failed.
-        if any(name == EXECUTED and _matches(p, action) for name, p in scoped):
+        if any(name == EXECUTED and _matches(p, action, same_type) for name, p in scoped):
             resolved.append(TechLeadActionDisposition.EXECUTED)
         elif rejected:
             resolved.append(TechLeadActionDisposition.REJECTED)
-        elif any(name == PROPOSED and _matches(p, action) for name, p in scoped):
+        elif any(name == PROPOSED and _matches(p, action, same_type) for name, p in scoped):
             resolved.append(TechLeadActionDisposition.PROPOSED)
         else:
             resolved.append(TechLeadActionDisposition.UNKNOWN)

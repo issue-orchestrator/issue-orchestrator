@@ -82,20 +82,33 @@ def item_events(
     ]
 
 
-def linked_pull_requests(repo: str, issue_number: int, *, state: str) -> list[PRInfo]:
-    """The item's PRs, linked the way the engine links them.
+PULLS_PAGE = 100
 
-    Read from the newest page of ``/pulls`` (core API), not the search API
-    ``get_prs_for_issue`` uses: the harness shares the engine's token, and a
-    probe a minute would otherwise spend the 30/minute search budget the
-    engine under test needs (#7298 was exactly that budget running out).
-    Exam PRs are minutes old, so they are on the newest page.
+
+def linked_pull_requests(repo: str, issue_number: int, *, state: str) -> list[PRInfo]:
+    """The item's PRs, linked the way the engine links them — or raise.
+
+    Not the search API ``get_prs_for_issue`` uses: the harness shares the
+    engine's token, and a probe a minute would spend the 30/minute search
+    budget the engine under test needs (#7298 was that budget running out).
+
+    * ``open``: the complete open-PR walk, which raises rather than truncate.
+    * otherwise: the newest page of ``/pulls``. PR numbers share the issue
+      sequence, so every PR of the item is numbered above the issue; if a
+      FULL page's oldest PR is still above it, the item's PRs may be on a
+      later page and the read raises instead of silently missing them.
     """
-    return [
-        pr
-        for pr in _github_adapter(repo).list_prs(state=state, limit=100)
-        if extract_issue_number_from_pr(pr) == issue_number
-    ]
+    adapter = _github_adapter(repo)
+    if state == "open":
+        prs = adapter.list_open_prs_complete()
+    else:
+        prs = adapter.list_prs(state=state, limit=PULLS_PAGE)
+        if len(prs) >= PULLS_PAGE and min(pr.number for pr in prs) > issue_number:
+            raise RuntimeError(
+                f"the newest {PULLS_PAGE} PRs are all newer than issue #{issue_number};"
+                " its PRs may be on a later page, so the exam cannot prove it saw them"
+            )
+    return [pr for pr in prs if extract_issue_number_from_pr(pr) == issue_number]
 
 
 def _pr_fact(repo: str, pr: PRInfo, *, read_checks: bool) -> PullRequestFact:

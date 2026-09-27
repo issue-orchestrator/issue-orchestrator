@@ -252,3 +252,108 @@ def test_branch_cleanup_closes_the_open_pr_then_deletes_the_branch(monkeypatch) 
 
     assert adapter.closed == [80]
     assert adapter.deleted == ["8-exam"]
+
+
+@pytest.mark.parametrize("failing_step", ["clone", "fetch"])
+def test_a_failed_engine_checkout_leaves_nothing_behind(monkeypatch, tmp_path, failing_step) -> None:
+    """Round 2 F4: the clone itself (not only the steps after it) is inside the cleanup."""
+    from tests.e2e.exam import engine_checkout
+
+    harness = tmp_path / "harness"
+    (harness / ".venv").mkdir(parents=True)
+    parent = tmp_path / "engines"
+    parent.mkdir()
+
+    def fake_git(cwd, *argv):
+        if argv[0] == "rev-parse":
+            return "a" * 40
+        if argv[:2] == ("remote", "get-url"):
+            return "https://example.invalid/o/r.git"
+        if argv[0] == "clone":
+            dest = Path(argv[-1])
+            (dest / ".git").mkdir(parents=True, exist_ok=True)  # git creates it, then fails
+        if argv[0] == failing_step:
+            raise RuntimeError(f"git {argv[0]} failed")
+        return ""
+
+    monkeypatch.setattr(engine_checkout, "_git", fake_git)
+
+    with pytest.raises(RuntimeError, match=f"git {failing_step} failed"):
+        engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", case_id="A", parent=parent)
+
+    assert list(parent.iterdir()) == []
+    assert (harness / ".venv").is_dir()  # the harness venv is never followed into
+
+
+def test_a_built_checkout_removes_cleanly_without_touching_the_harness_venv(monkeypatch, tmp_path) -> None:
+    from tests.e2e.exam import engine_checkout
+
+    harness = tmp_path / "harness"
+    (harness / ".venv" / "bin").mkdir(parents=True)
+    parent = tmp_path / "engines"
+    parent.mkdir()
+    monkeypatch.setattr(
+        engine_checkout, "_git", lambda cwd, *argv: "b" * 40 if argv[0] == "rev-parse" else ""
+    )
+
+    checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", case_id="B", parent=parent)
+
+    assert (checkout.root / ".venv").is_symlink()
+    checkout.remove()
+    assert list(parent.iterdir()) == []
+    assert (harness / ".venv" / "bin").is_dir()
+
+
+def _pr_info(number: int, issue: int, state: str = "open"):
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    return PRInfo(
+        number=number, title=f"#{issue}: x", url="u", branch=f"{issue}-x", body=f"Closes #{issue}",
+        state=state, labels=[],
+    )
+
+
+class _PagedPulls:
+    """``/pulls`` newest-first: one page of ``list_prs``, a complete open walk."""
+
+    def __init__(self, prs):
+        self.prs = sorted(prs, key=lambda pr: -pr.number)
+
+    def list_prs(self, state: str, limit: int):
+        return [pr for pr in self.prs if state == "all" or pr.state == state][:limit]
+
+    def list_open_prs_complete(self):
+        return [pr for pr in self.prs if pr.state == "open"]
+
+
+def test_an_item_pr_beyond_the_newest_page_fails_loudly(monkeypatch) -> None:
+    """Round 2 F3: 100+ newer PRs must not silently hide the item's PR."""
+    from tests.e2e.exam import observe
+
+    item_pr = _pr_info(1001, 1000, state="closed")
+    newer = [_pr_info(2000 + i, 1500 + i) for i in range(observe.PULLS_PAGE)]
+    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *newer]))
+
+    with pytest.raises(RuntimeError, match="may be on a later page"):
+        observe.linked_pull_requests("o/r", 1000, state="all")
+
+
+def test_the_newest_page_is_trusted_once_it_reaches_back_past_the_issue(monkeypatch) -> None:
+    from tests.e2e.exam import observe
+
+    item_pr = _pr_info(1001, 1000, state="closed")
+    older = [_pr_info(900 - i, 800 - i) for i in range(observe.PULLS_PAGE)]
+    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *older]))
+
+    assert [pr.number for pr in observe.linked_pull_requests("o/r", 1000, state="all")] == [1001]
+
+
+def test_open_prs_come_from_the_complete_walk_not_one_page(monkeypatch) -> None:
+    """Teardown must find the item's open PR however many newer PRs exist."""
+    from tests.e2e.exam import observe
+
+    item_pr = _pr_info(1001, 1000)
+    newer = [_pr_info(2000 + i, 1500 + i) for i in range(observe.PULLS_PAGE + 5)]
+    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *newer]))
+
+    assert [pr.number for pr in observe.linked_pull_requests("o/r", 1000, state="open")] == [1001]

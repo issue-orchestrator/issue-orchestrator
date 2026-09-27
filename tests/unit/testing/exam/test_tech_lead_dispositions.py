@@ -111,3 +111,19 @@ def test_every_execution_receipt_is_kept_unattributed() -> None:
     )
     with pytest.raises(ValueError, match="without anchor/action"):
         executed_receipts([{"type": "tech_lead.action_executed", "payload": {"action": "post_comment"}}])
+
+
+def test_a_type_only_receipt_credits_no_action_when_several_share_its_type() -> None:
+    """Round 2 F1: two escalations, one id-less receipt — it could be either."""
+    generic = ProposedAction("A1", "escalate_to_human")
+    release = ProposedAction("A2", "escalate_to_human")
+    events = [_event("tech_lead.action_executed", action="escalate_to_human")]
+
+    assert resolve_dispositions(
+        events, anchor_issue_number=ANCHOR, anchor_shared=False, run_failed=False, actions=[generic, release]
+    ) == (D.UNKNOWN, D.UNKNOWN)
+    # An id still identifies its action however many share the type.
+    events = [_event("tech_lead.action_executed", action="escalate_to_human", tech_lead_action_id="A2")]
+    assert resolve_dispositions(
+        events, anchor_issue_number=ANCHOR, anchor_shared=False, run_failed=False, actions=[generic, release]
+    ) == (D.UNKNOWN, D.EXECUTED)
