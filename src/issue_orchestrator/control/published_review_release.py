@@ -197,8 +197,7 @@ class PublishedReviewRelease:
         target = next(hold for hold in holds if not self.labels.get_blocking(hold.pr_labels))
         status, detail = self.writes.release(
             issue_number, target.pr_number, f"published validated work is under review: {described}")
-        return self._outcome(issue_number, status, holds,
-                             described if status is ReviewReleaseStatus.RELEASED else detail)
+        return self._outcome(issue_number, status, holds, detail)
 
     @property
     def writes(self) -> "ReviewReleaseWrites":
