@@ -36,8 +36,11 @@ class ActionLivenessStore(Protocol):
         """Create or replace the row for ``row.key``."""
         ...
 
-    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        """Delete every fingerprint's row for ``identity``; return what was deleted.
+    def clear_identity(
+        self, identity: ActionIdentity, *, keep: frozenset[str] = frozenset()
+    ) -> tuple[LivenessRow, ...]:
+        """Delete every fingerprint's row for ``identity`` but those in ``keep``;
+        return what was deleted.
 
         In the same transaction, owe a release (:meth:`request_release`) to the
         issue of every deleted row whose block had committed, so no crash can

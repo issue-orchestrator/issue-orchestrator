@@ -40,8 +40,12 @@ class InMemoryActionLivenessStore:
             del self.rows[self._id(row.key)]
         return gone
 
-    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        gone = self._pop(lambda row: row.key.identity == identity)
+    def clear_identity(
+        self, identity: ActionIdentity, *, keep: frozenset[str] = frozenset()
+    ) -> tuple[LivenessRow, ...]:
+        gone = self._pop(
+            lambda row: row.key.identity == identity and row.key.fingerprint not in keep
+        )
         for row in gone:
             if row.escalated and row.key.escalation_issue is not None:
                 self.request_release(row.key.escalation_issue)

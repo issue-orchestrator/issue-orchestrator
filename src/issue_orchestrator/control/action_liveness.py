@@ -93,8 +93,19 @@ class ActionLivenessOwner:
         row = self._store.row(key)
         return LivenessDecision(admission(row, self._clock()), row)
 
-    def record(self, key: LivenessKey, outcome: ActionOutcome) -> LivenessRow | None:
+    def record(
+        self,
+        key: LivenessKey,
+        outcome: ActionOutcome,
+        *,
+        still_planned: frozenset[str] = frozenset(),
+    ) -> LivenessRow | None:
         """Fold one attempt's outcome into the key's durable row.
+
+        Success clears every fingerprint of the identity - the operation works -
+        except ``still_planned``: fingerprints of the same identity the same
+        plan also carries, which are different operations still being asked
+        (two comments on one issue), not older facts of this one.
 
         Returns the row left behind (``None`` after success). A row that parks
         on this call is announced and its block attempted before returning;
@@ -104,7 +115,7 @@ class ActionLivenessOwner:
         now = self._clock()
         row = self._policy.after(previous, key, outcome, now)
         if row is None:
-            self._resolve(self._store.clear_identity(key.identity))
+            self._resolve(self._store.clear_identity(key.identity, keep=still_planned))
             return None
         self._store.put(row)
         if not row.parked or (previous is not None and previous.parked):

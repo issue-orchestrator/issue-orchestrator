@@ -202,7 +202,7 @@ def test_an_unchanged_failing_action_is_attempted_at_most_max_attempts_times(
     assert engine.attempts_of(action.action_type) == POLICY.max_attempts
     assert len(engine.escalation.parked) == 1
     held = plans[-1].skipped[-1]
-    assert held.item_type == f"action:{action.liveness_operation()}"
+    assert held.item_type == f"action:{action.action_type.value}"
     assert held.reason.startswith("parked after transient: 3 attempts failed")
 
 
@@ -714,3 +714,26 @@ def test_terminal_recovery_settles_every_park_on_its_issue(sample_config) -> Non
 
     assert engine.owner.parked() == ()
     assert [row.key.escalation_issue for rows in engine.escalation.released for row in rows] == [410]
+
+
+def test_two_comments_on_one_issue_keep_separate_budgets(sample_config) -> None:
+    """Two comments share the add_comment identity; the one that keeps
+    succeeding must not clear the one that keeps failing (review r7). Fixed
+    for every action type, not just comments: a success keeps the rows of
+    sibling operations the same plan still names."""
+    from issue_orchestrator.control.actions import AddCommentAction
+
+    failing = AddCommentAction(number=410, comment="first finding")
+    fine = AddCommentAction(number=410, comment="second finding")
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [failing, fine],
+        apply=lambda a: ActionResult.fail(a, "422") if a is failing else ActionResult.ok(a),
+    )
+    for _ in range(20):
+        engine.tick()
+
+    applied = [call.args[0] for call in engine.applier.apply.call_args_list]
+    assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
+    assert sum(1 for a in applied if a is fine) == 20
+    assert [row.key.identity.action for row in engine.owner.parked()] == ["add_comment"]

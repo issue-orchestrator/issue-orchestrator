@@ -140,18 +140,6 @@ class Action:
         # Validate that subclasses set the correct action_type
         pass
 
-    def liveness_operation(self) -> str:
-        """WHICH operation this is on its subject, for the liveness owner (#7350).
-
-        Stable while the facts behind it change, so a success under new facts
-        clears the old failures of the same operation. Distinct for two
-        different operations one plan can hold for one subject (two label
-        removals, say), so one's success cannot erase the other's budget.
-        The default, the action type, suits actions a plan names at most once
-        per subject; an action that can appear more than once overrides it.
-        """
-        return self.action_type.value
-
     def liveness_resolves_subject(self) -> bool:
         """Whether this action, once it succeeds, settles every park on its subject.
 

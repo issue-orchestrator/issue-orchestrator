@@ -79,7 +79,7 @@ _UPSERT = (
     " last_reason, next_attempt_at, escalated, explained, escalation_attempts,"
     " escalation_attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
-_DELETE_IDENTITY = "DELETE FROM action_liveness WHERE subject=? AND action=?"
+_DELETE_KEY = "DELETE FROM action_liveness WHERE subject=? AND action=? AND fingerprint=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
 _FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
 _OWE_RELEASE = "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)"
@@ -143,9 +143,35 @@ class SQLiteActionLivenessStore:
                 ),
             )
 
-    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        params = (identity.subject, identity.action)
-        return self._delete(_BY_IDENTITY, _DELETE_IDENTITY, params, owe_releases=True)
+    def clear_identity(
+        self, identity: ActionIdentity, *, keep: frozenset[str] = frozenset()
+    ) -> tuple[LivenessRow, ...]:
+        """Forget the identity's rows (all but ``keep``) and owe their releases, atomically.
+
+        A crash between forgetting an escalated park and recording that its
+        block must come off would leave the block on the issue with nothing
+        left to take it off.
+        """
+        with self._write() as conn:
+            rows = tuple(
+                row
+                for row in (
+                    _row(found)
+                    for found in conn.execute(_BY_IDENTITY, (identity.subject, identity.action))
+                )
+                if row.key.fingerprint not in keep
+            )
+            for row in rows:
+                conn.execute(_DELETE_KEY, (identity.subject, identity.action, row.key.fingerprint))
+            for issue in sorted(
+                {
+                    row.key.escalation_issue
+                    for row in rows
+                    if row.escalated and row.key.escalation_issue is not None
+                }
+            ):
+                conn.execute(_OWE_RELEASE, (issue,))
+        return rows
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         with self._write() as conn:
@@ -192,35 +218,6 @@ class SQLiteActionLivenessStore:
     def _select(self, query: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
         rows = self._connection().execute(query, params).fetchall()
         return tuple(_row(found) for found in rows)
-
-    def _delete(
-        self,
-        select: str,
-        delete: str,
-        params: tuple[object, ...],
-        *,
-        owe_releases: bool = False,
-    ) -> tuple[LivenessRow, ...]:
-        """Delete rows, and in the SAME transaction owe their blocks' withdrawal.
-
-        A crash between forgetting an escalated park and recording that its
-        block must come off would leave the block on the issue with nothing
-        left to take it off.
-        """
-        with self._write() as conn:
-            rows = tuple(_row(found) for found in conn.execute(select, params).fetchall())
-            conn.execute(delete, params)
-            if owe_releases:
-                for issue in sorted(
-                    {
-                        row.key.escalation_issue
-                        for row in rows
-                        if row.escalated and row.key.escalation_issue is not None
-                    }
-                ):
-                    conn.execute(_OWE_RELEASE, (issue,))
-        return rows
-
 
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()

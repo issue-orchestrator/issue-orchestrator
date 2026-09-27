@@ -245,3 +245,13 @@ def test_an_operator_release_forgets_an_owed_withdrawal_in_the_same_step(tmp_pat
     )
     restarted.reconcile_effects()
     assert after.unblocks == []
+
+
+def test_success_keeps_the_rows_of_operations_still_planned() -> None:
+    owner = liveness_owner()
+    sibling = LivenessKey(KEY.identity, "b" * 32, 229)
+    owner.record(sibling, ActionOutcome.permanent("still broken"))
+
+    owner.record(KEY, ActionOutcome.done(), still_planned=frozenset({"b" * 32}))
+
+    assert owner.admit(sibling).admission is Admission.PARKED
