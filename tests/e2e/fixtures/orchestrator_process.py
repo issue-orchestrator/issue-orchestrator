@@ -116,8 +116,9 @@ class OrchestratorProcess:
         self._config_path: Path | None = None
         self._last_log_time: float | None = None
 
-    def _write_e2e_config(self) -> Path:
-        """Write an ephemeral config file so the CLI uses the e2e config."""
+    def write_e2e_config(self) -> Path:
+        """Write the ephemeral config file the CLI starts with (generated config
+        plus ``config_overlay``); returns its path."""
         if self._config_dir is None or not self._config_dir.exists():
             self._config_dir = Path(
                 tempfile.mkdtemp(prefix=f"e2e-orchestrator-config-{os.getpid()}-")
@@ -349,7 +350,7 @@ class OrchestratorProcess:
         # UI mode is always web (subprocess backend)
         ui_mode = "web"
 
-        config_path = self._write_e2e_config()
+        config_path = self.write_e2e_config()
         label_arg = self.config.filtering.label or "test-data"
         cmd = [
             str(venv_bin), "--config", str(config_path), "start",
