@@ -1550,8 +1550,13 @@ def test_create_issue_propose_creates_gated_issue() -> None:
     assert not any(isinstance(a, SurfaceTechLeadProposalAction) for a in [planned])
 
 
-def test_reset_retry_execute_plans_typed_reset_action() -> None:
-    """Execute authority maps reset_retry to the typed executor action (#6764)."""
+def test_reset_retry_execute_is_refused_as_destructive() -> None:
+    """Reset from scratch never runs unattended, whatever the modes say (#7330).
+
+    Config loading rejects ``tech_lead.authority.reset_retry: execute``; a
+    programmatic ``execute`` must still plan the gated proposal issue, never the
+    direct typed reset.
+    """
     config = _config(reset_retry="execute")
     action = ProposedTechLeadAction(
         id="A7",
@@ -1563,16 +1568,10 @@ def test_reset_retry_execute_plans_typed_reset_action() -> None:
 
     [planned] = _plan(_decision(action), config)
 
-    assert isinstance(planned, ResetRetryIssueAction)
-    assert planned.issue_number == 13
-    assert planned.anchor_issue_number == 99  # the anchor issue
-    assert planned.proposal_id == "A7"
-    assert planned.rationale.startswith("Worktree is unrecoverable")
-    assert planned.finding_ids == ("T1",)
-    assert "A7" in planned.reason
-    assert planned.expected is EXPECTED
-    # Execute-mode means no shadow surface and no digest for this proposal.
-    assert not any(isinstance(a, SurfaceTechLeadProposalAction) for a in [planned])
+    assert not isinstance(planned, ResetRetryIssueAction)
+    assert isinstance(planned, CreateTechLeadProposalIssueAction)
+    assert planned.op.op_type == "reset_retry"
+    assert planned.op.source_action_id == "A7"
 
 
 def test_kill_hung_session_execute_plans_generation_bound_kill_action() -> None:

@@ -3294,6 +3294,11 @@ class TestClaimGateAudit:
         ActionType.RECOVER_VALIDATED_WORK,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+        # Writes only the local charter decision ledger (#7330); no GitHub call.
+        ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS,
+        # Records its decision locally, then dispatches its effect back through
+        # this applier, where the effect's own claim/guard checks run.
+        ActionType.APPLY_CHARTER_AUDITED_ACTION,
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
         # Human outcome delegates every write through guarded label/comment handlers.
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION,

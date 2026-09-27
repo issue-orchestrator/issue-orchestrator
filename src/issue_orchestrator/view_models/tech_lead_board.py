@@ -76,6 +76,22 @@ class TechLeadBoardCaseFile:
 
 
 @dataclass(frozen=True)
+class TechLeadBoardCharterRole:
+    """One charter role: its active dials and what its recent decisions were (#7330).
+
+    The counts are READ from the persisted charter decision ledger, never
+    recomputed against the current charter.
+    """
+
+    role: str
+    dials: str
+    executed: int = 0
+    proposed: int = 0
+    refused_destructive: int = 0
+    advice_only: int = 0
+
+
+@dataclass(frozen=True)
 class TechLeadBoardView:
     """Frozen board projection; input to :func:`render_tech_lead_board_md`."""
 
@@ -83,6 +99,7 @@ class TechLeadBoardView:
     case_files: tuple[TechLeadBoardCaseFile, ...]
     area_counts: tuple[tuple[str, int], ...]
     last_health_review: str  # ISO timestamp; "" when never
+    charter: tuple[TechLeadBoardCharterRole, ...] = ()
 
 
 def _proposal_age_hours(created_at: str, now: datetime) -> int:
@@ -146,6 +163,7 @@ def build_tech_lead_board_view(
     area_counts: Sequence[tuple[str, int]],
     last_health_review_at: float,
     now: datetime,
+    charter: Sequence[TechLeadBoardCharterRole] = (),
 ) -> TechLeadBoardView:
     """Project the ledgers + observed facts onto the board.
 
@@ -179,6 +197,7 @@ def build_tech_lead_board_view(
             if last_health_review_at > 0
             else ""
         ),
+        charter=tuple(charter),
     )
 
 
@@ -233,7 +252,29 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
         )
     else:
         lines.append("None.")
+    lines.extend(_charter_lines(view.charter))
     return "\n".join(lines) + "\n"
+
+
+def _charter_lines(roles: Sequence[TechLeadBoardCharterRole]) -> list[str]:
+    """The active charter and its recorded decisions per role (#7330)."""
+    if not roles:
+        return []
+    return [
+        "",
+        "## Charter",
+        "",
+        "Active `tech_lead.charter` dials, with the recorded outcome of each"
+        " role's recent decisions.",
+        "",
+        "| Role | Dials | Executed | Proposed | Refused (destructive) | Advice only |",
+        "|---|---|---|---|---|---|",
+        *(
+            f"| {item.role} | {item.dials} | {item.executed} | {item.proposed}"
+            f" | {item.refused_destructive} | {item.advice_only} |"
+            for item in roles
+        ),
+    ]
 
 
 def _proposal_row(item: TechLeadBoardProposal) -> str:

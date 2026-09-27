@@ -73,6 +73,7 @@ from . import tech_lead_pending_intents as pending_intents
 from . import tech_lead_shipped_fixes_sql as shipped_fixes
 from .sqlite_connection import open_sqlite
 from .tech_lead_authority_schema import initialize_tech_lead_authority_schema
+from .tech_lead_charter_ledger_store import SqliteTechLeadCharterLedger
 from .tech_lead_publication_lock import disposition_publication
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,14 @@ class SqliteTechLeadAuthorityStore:
         self._local = threading.local()
         self._write_lock = threading.Lock()
         self.initialize()
+        self._charter_ledger = SqliteTechLeadCharterLedger(
+            connection=self._get_connection, transaction=self._transaction
+        )
+
+    @property
+    def charter_ledger(self) -> SqliteTechLeadCharterLedger:
+        """Charter decisions (#7330), sharing this store's file, lock and transactions."""
+        return self._charter_ledger
 
     @classmethod
     def for_repo(cls, repo_root: Path) -> "SqliteTechLeadAuthorityStore":

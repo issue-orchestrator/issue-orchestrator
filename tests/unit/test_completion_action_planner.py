@@ -1403,12 +1403,16 @@ class TestDecisionTargetScope:
         """A health review CAN propose reset_retry for a cohort member.
 
         Asserted symmetrically with its negative twin: the acceptance criterion
-        is that the proposal WORKS, so this checks the typed
-        ``ResetRetryIssueAction`` is actually planned for the member — not
-        merely that the completion was not rejected.
+        is that the proposal WORKS, so this checks the gated reset proposal is
+        actually planned for the member — not merely that the completion was
+        not rejected. Reset from scratch is destructive, so it is always a
+        gated proposal (#7330).
         """
+        from issue_orchestrator.control.actions import (
+            CreateTechLeadProposalIssueAction,
+        )
+
         config = make_tech_lead_config(tmp_path)
-        config.tech_lead.authority.reset_retry = "execute"
         session = make_tech_lead_session(tmp_path)
         arm_health_review_session(config, session, problem_issue_numbers=(41, 42, 43))
         _plant_decision_with_actions(
@@ -1439,9 +1443,12 @@ class TestDecisionTargetScope:
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert _rejections(actions) == []
-        [reset] = [a for a in actions if isinstance(a, ResetRetryIssueAction)]
-        assert reset.issue_number == 42
-        assert reset.proposal_id == "A1"
+        [proposal] = [
+            a for a in actions if isinstance(a, CreateTechLeadProposalIssueAction)
+        ]
+        assert proposal.op.op_type == "reset_retry"
+        assert proposal.op.target_issue_number == 42
+        assert proposal.op.source_action_id == "A1"
 
     def test_health_reset_retry_rejects_issue_outside_snapshot_cohort(
         self, tmp_path: Path
@@ -1677,7 +1684,14 @@ class TestResetRetryExecutionPipeline:
         )
         return config, session
 
-    def test_execute_authority_plans_typed_reset_action(self, tmp_path: Path) -> None:
+    def test_execute_authority_is_refused_as_destructive(self, tmp_path: Path) -> None:
+        """Reset from scratch never runs unattended (#7330): even an ``execute``
+        mode set programmatically (config loading rejects it) plans the gated
+        proposal, never the direct reset."""
+        from issue_orchestrator.control.actions import (
+            CreateTechLeadProposalIssueAction,
+        )
+
         config, session = self._armed_investigation(tmp_path, authority_mode="execute")
 
         actions = make_planner(config).generate_completion_actions(
@@ -1685,19 +1699,12 @@ class TestResetRetryExecutionPipeline:
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
         assert _rejections(actions) == []
-        [reset] = [a for a in actions if isinstance(a, ResetRetryIssueAction)]
-        assert reset.issue_number == 1
-        assert reset.anchor_issue_number == 1
-        assert reset.proposal_id == "A2"
-        assert reset.finding_ids == ("T1",)
-        # No shadow surface for the executed proposal.
-        surfaced = [
-            a
-            for a in actions
-            if isinstance(a, SurfaceTechLeadProposalAction)
-            and a.proposal_type == "reset_retry"
+        assert not any(type(a) is ResetRetryIssueAction for a in actions)
+        [proposal] = [
+            a for a in actions if isinstance(a, CreateTechLeadProposalIssueAction)
         ]
-        assert surfaced == []
+        assert proposal.op.op_type == "reset_retry"
+        assert proposal.op.source_action_id == "A2"
 
     def test_propose_authority_plans_gated_proposal_issue(self, tmp_path: Path) -> None:
         """Propose-authority reset_retry is a gated proposal issue carrying
@@ -1729,53 +1736,61 @@ class TestResetRetryExecutionPipeline:
         assert proposal.op.source_session_name == session.run_assets.session_name
         assert PROPOSED_TECH_LEAD_LABEL in proposal.labels
 
-    def test_full_pipeline_invokes_reset_owner(self, tmp_path: Path) -> None:
-        """Completed investigation + execute authority -> the reset owner is
-        invoked through planner -> applier with the target's fresh labels."""
+
+class TestCharterDecisionsArePersisted:
+    """A completed tech-lead run records one charter decision per proposed
+    action, and the applier persists it into the SAME store the read port
+    serves (#7330)."""
+
+    def test_completion_records_and_the_applier_persists_the_charter_decisions(
+        self, tmp_path: Path
+    ) -> None:
         from unittest.mock import MagicMock
 
-        from issue_orchestrator.control.action_applier import ActionApplier
-        from issue_orchestrator.control.tech_lead_reset_retry import (
-            ResetRetryRunOutcome,
-            TechLeadResetRetryExecutor,
+        from issue_orchestrator.control.tech_lead_charter_policy import (
+            RecordTechLeadCharterDecisionsAction,
         )
-        from issue_orchestrator.domain.models import Issue as DomainIssue
+        from issue_orchestrator.domain.tech_lead_charter import (
+            CharterOutcome,
+            CharterRole,
+        )
 
-        config, session = self._armed_investigation(tmp_path, authority_mode="execute")
+        config = make_tech_lead_config(tmp_path)
+        config.tech_lead.charter.flow.authority = "propose"
+        session = make_tech_lead_session(tmp_path)
+        arm_investigation_session(config, session)
+        _plant_decision_with_actions(
+            session,
+            [
+                {"id": "A1", "action_type": "post_comment", "target_number": 1,
+                 "body": "Diagnosis.", "finding_ids": ["T1"]},
+                {"id": "A2", "action_type": "reset_retry", "target_number": 1,
+                 "body": "Scratch reset.", "finding_ids": ["T1"]},
+            ],
+        )
+
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
-        run_reset = MagicMock(
-            return_value=ResetRetryRunOutcome(
-                success=True, details={"queued_now": True}
-            )
-        )
-        executor = TechLeadResetRetryExecutor(
-            events=MagicMock(),
-            label_manager=LabelManager(config),
-            read_issue=lambda number: DomainIssue(
-                number=number,
-                title="Focus issue",
-                labels=["agent:test", "blocked-failed"],
-                repo="owner/repo",
-            ),
-            runtime_snapshot=reset_snapshot,
-            run_reset=run_reset,
-            release_review=unexpected_review_release,
-        )
+        [record] = [a for a in actions if isinstance(a, RecordTechLeadCharterDecisionsAction)]
+        store = SqliteTechLeadAuthorityStore.for_repo(config.repo_root)
         applier = make_action_applier(
-            labels=MagicMock(),
-            sessions=MagicMock(),
-            events=MagicMock(),
+            labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),
             repository_host=MagicMock(),
         )
-        applier.tech_lead_reset_retry = executor
+        applier.tech_lead_ops = store
+        [result] = applier.apply_all([record])
 
-        results = applier.apply_all(list(actions))
-
-        run_reset.assert_called_once_with(1, ["agent:test", "blocked-failed"])
-        assert all(r.result_type is not None for r in results)
+        assert result.success
+        by_action = {
+            row.action_id: row for row in store.charter_ledger.list_for_issue(1)
+        }
+        assert set(by_action) == {"A1", "A2"}
+        assert by_action["A1"].outcome is CharterOutcome.EXECUTED
+        assert by_action["A2"].outcome is CharterOutcome.REFUSED_DESTRUCTIVE
+        assert by_action["A2"].role is CharterRole.FLOW
+        assert by_action["A2"].run_id == session.run_assets.run_id
 
 
 class TestLaunchScopeTamperResistance:
@@ -2350,6 +2365,9 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     run_kill = MagicMock(return_value=KillSessionRunOutcome(success=False, stale_reason="observed generation disappeared"))
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
     applier.tech_lead_kill_session = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=run_kill)
+    # The charter decisions are recorded before the mandated gate (#7330).
+    store = InMemoryTechLeadAuthorityStore()
+    applier.tech_lead_ops = store
     results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
     assert error is None
     outcome = evaluate_required_act_level_outcome(results)
@@ -2357,6 +2375,61 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     host.add_comment.assert_not_called()
     host.close_issue.assert_not_called()
     run_kill.assert_called_once()
+    # ...so a withheld completion still leaves its decisions on the record.
+    assert {row.action_id for row in store.charter_ledger.list_for_issue(1)} == {"A1", "A2"}
+
+
+def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):
+    """A ledger write that fails is loud: nothing applies unaudited (#7330)."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    config = make_tech_lead_config(tmp_path)
+    session = make_tech_lead_session(tmp_path)
+    arm_investigation_session(config, session)
+    _plant_decision_with_actions(session, [
+        {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
+        {"id": "A2", "action_type": "escalate_to_human", "target_number": 1, "body": "Needs you.", "finding_ids": ["T1"]},
+    ])
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
+    host = MagicMock()
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_ops = None  # the ledger is not wired
+
+    results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+
+    assert error is not None
+    assert [type(r.action).__name__ for r in results] == ["RecordTechLeadCharterDecisionsAction"]
+    host.add_comment.assert_not_called()
+
+
+@pytest.mark.parametrize(("review_loop_depth", "reviewed"), [("fix", {102}), ("workaround", {101, 102})])
+def test_a_rework_the_charter_keeps_as_advice_still_marks_the_pr_reviewed(tmp_path, review_loop_depth, reviewed):
+    """Which manifest PRs are held back for rework is the planner's effective
+    outcome, not the agent's raw intent (#7330 review F1)."""
+    from issue_orchestrator.domain.scoped_rework import ReworkTarget
+    from issue_orchestrator.control.actions import CreateTechLeadProposalIssueAction
+    config = make_tech_lead_config(tmp_path)
+    config.tech_lead.charter.review_loop.depth = review_loop_depth
+    session = make_tech_lead_session(tmp_path)
+    plant_tech_lead_assignment(session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW))
+    plant_tech_lead_manifest(tmp_path, session)
+    target = ReworkTarget("test/repo", 101, 5, "a" * 40, "b1", ("code-reviewed",), ())
+    record_authority(config, session, TechLeadLaunchAuthority(
+        flavor=TechLeadSessionFlavor.BATCH_REVIEW, anchor_issue_number=session.issue.number,
+        manifest_pr_numbers=(101, 102), observed_rework_targets=(target,),
+    ))
+    plant_tech_lead_decision_pair(session)
+    path = session.run_dir / "tech-lead-data" / "tech-lead-decision.json"
+    decision = json.loads(path.read_text())
+    decision["proposed_actions"][0].update(action_type="request_rework", target_is_pr=True)
+    path.write_text(json.dumps(decision))
+
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
+
+    assert {action.issue_number for action in _tech_lead_labels(actions)} == reviewed
+    held = review_loop_depth == "fix"
+    assert any(isinstance(a, CreateTechLeadProposalIssueAction) for a in actions) is held
 
 
 @pytest.mark.parametrize(
