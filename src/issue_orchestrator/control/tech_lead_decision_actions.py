@@ -349,7 +349,7 @@ class _DecisionActionPlanner:
         # agent wrote, so no proposal can pick a more permissive role (#7329).
         verdict = self.policy.decide(proposed.action_type)
         self.charter_log.note(proposed, verdict)
-        if verdict.advice_only:
+        if verdict.advice_only and proposed.action_type != "create_issue":
             self._surface_shadow(proposed)
         elif proposed.action_type == "flag_pattern":
             self._plan_flag_pattern(proposed)
@@ -619,6 +619,11 @@ class _DecisionActionPlanner:
         # planner coalesces same-decision siblings into one case file, and the
         # sibling reason rides along in the observation so no evidence is lost.
         if self._accrue_observation(proposed, outcome, sibling=sibling):
+            return
+        # Accruing a sighting is observation, which the charter never limits;
+        # FILING is what a charter kept as advice does not do (#7330).
+        if self.charter_log.verdict_for(proposed.id).advice_only:
+            self._surface_shadow(proposed)
             return
         if sibling is not None:
             self.actions.extend(

@@ -75,7 +75,9 @@ def _finding() -> TechLeadFinding:
 
 
 def _plan(
-    config: Config, *actions: ProposedTechLeadAction
+    config: Config,
+    *actions: ProposedTechLeadAction,
+    dedup_corpus: OpenIssueCorpus | None = None,
 ) -> tuple[list, CharterDecisionLog]:
     log = CharterDecisionLog(
         run_id="run-1", anchor_issue_number=ANCHOR, decided_at="2026-09-26T10:00:00+00:00"
@@ -101,7 +103,7 @@ def _plan(
             terminal_id="term-1",
             run_id="run-7",
         ),
-        dedup_corpus=OpenIssueCorpus.disabled(),
+        dedup_corpus=dedup_corpus or OpenIssueCorpus.disabled(),
         dedup_grant=DuplicateTargetGrant.none(),
         charter_log=log,
     )
@@ -217,9 +219,10 @@ def test_reset_from_scratch_never_executes_unattended(flow: dict[str, object]) -
 def test_an_agent_claimed_role_cannot_route_through_a_more_permissive_role() -> None:
     """Role and depth come from the action TYPE (#7329 comment, point 5).
 
-    The decision claims ``flow``/``workaround`` for a ``request_rework``-shaped
-    fix and ``general``/``execute``; flow is disabled, so a claim-honouring
-    orchestrator would file the issue. The orchestrator classifies by type.
+    The decision claims the ``general`` role at ``workaround`` depth with
+    ``execute`` authority, and ``general`` is configured to execute; ``flow``
+    (the role ``create_issue`` belongs to) is disabled. An orchestrator that
+    honoured the claim would file the issue; this one classifies by type.
     """
     decision = TechLeadDecision.from_agent_payload(
         {
@@ -345,3 +348,40 @@ def test_a_rejected_decision_records_nothing() -> None:
 
     assert len(planned) == 1
     assert log.records() == ()
+
+
+def test_a_cited_duplicate_still_accrues_when_filing_is_only_advice() -> None:
+    """Accruing a sighting is observation, which the charter never limits; only
+    FILING a new issue is withheld (#7329 comment, point 1)."""
+    from issue_orchestrator.control.actions import CreateTechLeadCaseFileIssueAction
+    from issue_orchestrator.control.proposal_dedup import OpenIssueRef
+
+    config = _config(flow={"enabled": False})
+    sighting = ProposedTechLeadAction(
+        id="A1",
+        action_type="create_issue",
+        title="Search-API budget exhaustion again",
+        body="1,824 403s in three hours.",
+        duplicate_of=6928,
+    )
+    corpus = OpenIssueCorpus.ready(
+        (OpenIssueRef(number=6928, title="Search-API budget exhaustion", body="403 storm"),)
+    )
+
+    planned, log = _plan(config, sighting, dedup_corpus=corpus)
+
+    # A case file is a CreateTechLeadIssueAction subclass; no FOLLOW-UP is filed.
+    assert not any(type(a) is CreateTechLeadIssueAction for a in planned)
+    [case_file] = [a for a in planned if isinstance(a, CreateTechLeadCaseFileIssueAction)]
+    assert case_file.pattern_signature == "duplicate-of-#6928"
+    [record] = log.records()
+    assert record.outcome is CharterOutcome.ADVICE_ONLY
+
+
+def test_a_novel_issue_is_not_filed_when_filing_is_only_advice() -> None:
+    config = _config(flow={"enabled": False})
+
+    planned, _ = _plan(config, _create_issue())
+
+    assert not any(isinstance(a, CreateTechLeadIssueAction) for a in planned)
+    assert [a.mode for a in planned if isinstance(a, SurfaceTechLeadProposalAction)] == ["shadow"]

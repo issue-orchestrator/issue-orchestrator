@@ -166,6 +166,8 @@ validation artifacts from runs before the scratch boundary.
 | `control/planner.py::_plan_discovered_failures()` | Queue tech lead to investigate failures |
 | `control/tech_lead_ledger_planning.py` | One planning owner for everything the tech-lead durable ledgers drive |
 | `control/tech_lead_finding_promotion.py` | Case file → gated runnable issue → shipped fix (#6957) |
+| `control/tech_lead_charter_policy.py` | THE tech-lead authority owner: charter × per-action modes → executed / proposed / advice / refused-destructive (#7330) |
+| `domain/tech_lead_charter.py` | Action kind → (role, depth, binding) classification; a new kind needs a row |
 | `infra/orchestrator.py` | Runtime facade that delegates to the review workflow helpers |
 
 ## Finding Promotion (#6957)
