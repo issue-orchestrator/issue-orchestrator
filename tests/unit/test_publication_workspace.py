@@ -277,6 +277,23 @@ def test_only_committed_ignore_rules_grant_cleanup_of_ignored_work(
         assert (workspace.checkout / HOOK_OUTPUTS[0]).exists()
 
 
+def test_repository_nested_in_declared_output_is_preserved(prepared, tmp_path):
+    """Generated output is disposable; a Git history nested inside it is not."""
+    rig, _, escrow, owner, _ = prepared
+    admission = _capture_with_committed_ignores(rig, escrow, tmp_path / "ignores-source")
+    workspace = owner.prepare(admission)
+    _run_push_hook(workspace.checkout)
+    nested = workspace.checkout / ".build" / "vendor" / "clone"
+    nested.mkdir(parents=True)
+    rig.git.run(nested, ["init", "-q"])
+    (nested / "work").write_text("preserve")
+    for operation in (owner.prepare, owner.release):
+        with pytest.raises(ValueError, match="dirty publication checkout"):
+            operation(admission)
+        assert (nested / "work").read_text() == "preserve"
+        assert (nested / ".git").is_dir()
+
+
 @pytest.mark.parametrize("damage", ["tracked", "untracked", "ignored", "head", "branch", "artifact", "unknown-run", "unknown-root"])
 def test_modified_publication_work_is_preserved_on_prepare_and_release(prepared, damage, tmp_path):
     rig, admission, _, owner, _ = prepared

@@ -1,6 +1,7 @@
 """Exact detached workspaces reconstructed without the original coding worktree."""
 
 import json
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict
@@ -26,6 +27,23 @@ from ..ports.command_runner import OutputNewlines
 from ..ports.git import Git, GitError
 from ..ports.validated_work_escrow import ValidatedWorkEscrow
 from .publication_checkout_integrity import require_exact_checkout_content
+
+
+def _holds_repository(path: Path) -> bool:
+    """Whether generated output contains Git metadata: commits may live there.
+
+    A repository-declared output directory is disposable; a repository nested
+    inside one is not, because its history is not reproducible from the
+    validated commit. Symlinks are never followed.
+    """
+    if path.name == ".git":
+        return True
+    if path.is_symlink() or not path.is_dir():
+        return False
+    for _root, directories, files in os.walk(path, followlinks=False):
+        if ".git" in directories or ".git" in files:
+            return True
+    return False
 
 
 class EscrowPublicationWorkspaces:
@@ -282,7 +300,10 @@ class EscrowPublicationWorkspaces:
                 continue
             owned = path.rstrip("/")
             outputs[path] = builtin_cleanup_root(path) or (
-                None if Path(owned).name == ".gitignore" else owned
+                None
+                if Path(owned).name == ".gitignore"
+                or _holds_repository(checkout / owned)
+                else owned
             )
         return outputs
 

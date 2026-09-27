@@ -56,33 +56,33 @@ def _pull_request(raw: dict[str, Any]) -> PublicationPullRequest:
 def _create_rejection(exc: GitHubHttpError) -> PublicationPrCreateRejected | None:
     """Classify a definite PR-create refusal; anything else stays a remote error.
 
-    Only a 422 is a definite refusal. Its subtype is read from the validation
-    messages GitHub returns; an unrecognized or unreadable 422 body is still a
-    refusal of this exact request, never a transient read failure.
+    Only a 422 whose body is GitHub's structured validation failure is a
+    definite refusal of this exact request. A 422 without that shape (abuse or
+    spam throttling, a malformed body) proves nothing permanent and stays an
+    untyped remote error, which the attempt budget bounds.
     """
     if exc.status_code != _UNPROCESSABLE:
         return None
-    messages: list[str] = []
     try:
         payload = json.loads(exc.response_text or "")
     except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        errors = payload.get("errors")
-        for item in errors if isinstance(errors, list) else ():
-            if isinstance(item, dict) and isinstance(item.get("message"), str):
-                messages.append(item["message"])
-        if isinstance(payload.get("message"), str):
-            messages.append(payload["message"])
+        return None
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if not isinstance(errors, list) or not errors or not all(
+        isinstance(item, dict) and isinstance(item.get("code"), str) for item in errors
+    ):
+        return None
+    messages = [item["message"] for item in errors if isinstance(item.get("message"), str)]
     folded = " ".join(messages).casefold()
-    rejection = (
-        PrCreateRejection.NO_COMMITS
-        if _NO_COMMITS in folded
-        else PrCreateRejection.ALREADY_EXISTS
-        if _ALREADY_EXISTS in folded
-        else PrCreateRejection.INVALID
+    if _NO_COMMITS in folded:
+        rejection = PrCreateRejection.NO_COMMITS
+    elif _ALREADY_EXISTS in folded:
+        rejection = PrCreateRejection.ALREADY_EXISTS
+    else:
+        rejection = PrCreateRejection.INVALID
+    detail = "; ".join(
+        messages or [f"{item.get('field', '?')}: {item['code']}" for item in errors]
     )
-    detail = "; ".join(messages) or str(exc)
     return PublicationPrCreateRejected(rejection, f"PR create refused: {detail}")
 
 

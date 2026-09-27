@@ -301,7 +301,6 @@ def _unprocessable(message):
             ),
             PrCreateRejection.INVALID,
         ),
-        (httpx.Response(422, text="not json"), PrCreateRejection.INVALID),
     ],
 )
 def test_create_422_is_a_typed_definite_refusal(remote_factory, response, rejection):
@@ -311,10 +310,20 @@ def test_create_422_is_a_typed_definite_refusal(remote_factory, response, reject
     assert raised.value.rejection is rejection
 
 
-@pytest.mark.parametrize("status", [500, 502, 403])
-def test_create_non_422_failure_stays_an_untyped_remote_error(remote_factory, status):
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(500, json={"message": "no"}),
+        httpx.Response(502, json={"message": "no"}),
+        httpx.Response(403, json={"message": "no"}),
+        # A 422 without GitHub's structured validation errors proves nothing
+        # permanent: throttling and malformed bodies stay retryable.
+        httpx.Response(422, json={"message": "Your request was flagged as spam; retry later."}),
+        httpx.Response(422, text="not json"),
+        httpx.Response(422, json={"message": "Validation Failed", "errors": []}),
+    ],
+)
+def test_create_failure_without_a_definite_refusal_stays_untyped(remote_factory, response):
     with pytest.raises(PublicationRemoteError) as raised:
-        remote_factory(lambda _request: httpx.Response(status, json={"message": "no"})).create_pr(
-            COMMAND
-        )
+        remote_factory(lambda _request: response).create_pr(COMMAND)
     assert not isinstance(raised.value, PublicationPrCreateRejected)

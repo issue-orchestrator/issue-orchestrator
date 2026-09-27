@@ -2362,7 +2362,8 @@ own exactly two kinds of untracked path: process-owned runtime/dependency output
 and paths ignored by the validated commit's **committed** `.gitignore` rules. The
 second is evaluated from per-directory `.gitignore` files only, so an operator's
 own excludes (`info/exclude`, `core.excludesFile`) never grant cleanup, and an
-untracked `.gitignore` is never owned. A tracked modification, a moved HEAD, or
+untracked `.gitignore` is never owned, nor is output containing nested Git
+metadata. A tracked modification, a moved HEAD, or
 an untracked file the committed rules do not ignore is what stranded work looks
 like: the workspace is retained and the operation refuses.
 
@@ -2711,10 +2712,11 @@ response. The adapter classifies it into a typed `PrCreateRejection` (#7346):
 |---|---|
 | no commits between base and head | `PR_CREATE_NO_COMMITS` ⇒ `REJECTED` ⇒ `FAILED` (needs human) |
 | a PR already exists for the head | re-list and adopt only by this operation's marker; if the listing does not show it yet, `REMOTE_UNREADABLE` transient, bounded by the attempt budget |
-| any other validation refusal | `PR_CREATE_REJECTED` ⇒ `REJECTED` ⇒ `FAILED` (needs human) |
+| any other structured validation refusal | `PR_CREATE_REJECTED` ⇒ `REJECTED` ⇒ `FAILED` (needs human) |
 
-Only an unanswered create (transport error, 5xx, lost body) stays a transient
-`REMOTE_UNREADABLE`.
+An unanswered create (transport error, 5xx, lost body) and a 422 without
+GitHub's structured `errors[]` (throttling, malformed body) stay a transient
+`REMOTE_UNREADABLE`, bounded by the attempt budget.
 
 #### 4.4e Attempt identity and durable ordering
 
