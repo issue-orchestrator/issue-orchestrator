@@ -106,6 +106,7 @@ def test_the_real_right_answer_passes() -> None:
 
     assert card.passed, card.failures
     assert card.diagnosis is not None and card.diagnosis.missing == ()
+    assert "blocked-failed" in card.diagnosis.evidence_clause
     assert card.remedy is not None
     assert card.remedy.verdict is RemedyVerdict.ACCEPTABLE
     assert "escalate_to_human->#7316 (executed)" in card.remedy.evidence

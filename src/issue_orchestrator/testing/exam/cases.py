@@ -18,6 +18,7 @@ from .case import (
     pr_in_state,
     pr_review_approved,
     published_work_survives,
+    single_pull_request,
 )
 from .observation import PullRequestState
 
@@ -49,6 +50,7 @@ def halted_exchange_with_validated_work(
             " exchanges in a row, after the coder's work validated"
         ),
         goals=(
+            single_pull_request(SUBJECT),
             pr_in_state(SUBJECT, PullRequestState.READY, PullRequestState.MERGED),
             pr_has_label(SUBJECT, code_reviewed_label),
             pr_review_approved(SUBJECT),

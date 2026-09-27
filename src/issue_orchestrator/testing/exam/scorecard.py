@@ -32,10 +32,19 @@ class DiagnosisGrade:
     missing: tuple[str, ...]
     run_id: str
     """The run whose diagnosis this is (the best one), ``""`` if none ran."""
+    evidence_clause: str
+    """The one clause that names every root-cause concept together — the
+    evidence a human audits, since a lexical grader cannot judge polarity —
+    or ``""`` when no single clause does."""
 
     @property
     def passed(self) -> bool:
-        return self.tech_lead_ran and self.references_item and not self.missing
+        return (
+            self.tech_lead_ran
+            and self.references_item
+            and not self.missing
+            and bool(self.evidence_clause)
+        )
 
 
 class RemedyVerdict(str, Enum):
@@ -104,6 +113,8 @@ class Scorecard:
                 reasons = [f"missing {', '.join(self.diagnosis.missing)}"] if self.diagnosis.missing else []
                 if not self.diagnosis.references_item:
                     reasons.append("never cites the stuck issue/PR")
+                if not self.diagnosis.missing and not self.diagnosis.evidence_clause:
+                    reasons.append("no single clause connects the cause (concepts only named apart)")
                 failed.append(f"diagnosis: {'; '.join(reasons)}")
         if self.remedy is not None and not self.remedy.verdict.passed:
             failed.append(f"remedy {self.remedy.verdict.value}: {self.remedy.evidence}")
@@ -157,6 +168,7 @@ class Scorecard:
                 "matched": {concept: term for concept, term in self.diagnosis.matched},
                 "missing": list(self.diagnosis.missing),
                 "run_id": self.diagnosis.run_id,
+                "evidence_clause": self.diagnosis.evidence_clause,
             },
             "remedy": None
             if self.remedy is None
@@ -227,6 +239,8 @@ def _answer_lines(card: Scorecard) -> list[str]:
             f" cites item: {diagnosis.references_item}"
         )
         lines.append(f"  diagnosis [{_mark(diagnosis.passed)}]: {detail}")
+        if diagnosis.evidence_clause:
+            lines.append(f"    evidence: {diagnosis.evidence_clause!r}")
         lines.append(f"    expected: {diagnosis.expected}")
     if card.remedy is not None:
         remedy = card.remedy

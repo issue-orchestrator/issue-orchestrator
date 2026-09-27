@@ -507,3 +507,49 @@ def test_a_negation_in_an_earlier_sentence_does_not_flip_the_release() -> None:
         ),
     )
     assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE
+
+
+class TestRoundFiveFindings:
+    def _b(self, *, summary: str, advice: str):
+        return grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", advice), summary=summary),),
+            ),
+        )
+
+    def test_a_release_negated_after_the_term_is_not_advised(self) -> None:
+        card = self._b(summary=GOOD_DIAGNOSIS, advice=f"For #{ISSUE}: remove blocked-failed is not the answer; leave review gated.")
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.MISSING
+
+    def test_a_release_after_a_contrast_is_advised(self) -> None:
+        card = self._b(summary=GOOD_DIAGNOSIS, advice=f"Do not reset or retry #{ISSUE}, but remove blocked-failed.")
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE
+
+    def test_a_denied_cause_split_by_a_contrast_is_no_diagnosis(self) -> None:
+        card = self._b(
+            summary=f"Issue #{ISSUE} has blocked-failed, but that label does not prevent code review. The real cause is red CI.",
+            advice=GOOD_ESCALATION,
+        )
+        assert card.diagnosis is not None and card.diagnosis.missing == ()
+        assert card.diagnosis.evidence_clause == ""
+        assert "diagnosis: no single clause connects the cause (concepts only named apart)" in card.failures
+        assert not card.passed
+
+    def test_the_connecting_clause_is_reported_as_evidence(self) -> None:
+        card = self._b(summary=GOOD_DIAGNOSIS, advice=GOOD_ESCALATION)
+        assert card.diagnosis is not None
+        # "though" is a contrast word, so the clause ends before it.
+        assert card.diagnosis.evidence_clause == f"issue #{ISSUE} carries blocked-failed, so its pr #{PR} never gets its code review even"
+        assert "evidence: 'issue #901 carries blocked-failed" in render_summary(card)
+
+    def test_a_second_pr_strands_the_published_work(self) -> None:
+        """Round 5 F3: the newest PR reviewed and ready while the original draft is left behind."""
+        original = pr(number=PR, state=PullRequestState.DRAFT)
+        redo = pr(number=PR + 50, state=PullRequestState.READY, labels=("code-reviewed",))
+        card = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(original, redo))))
+
+        assert f"goal subject.single_pull_request: linked PRs: [{PR}, {PR + 50}]" in card.failures
+        assert not card.passed

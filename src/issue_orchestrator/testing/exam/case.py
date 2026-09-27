@@ -79,27 +79,27 @@ class TermGroup:
         folded = _plain(text)
         return next((term for term in self.any_of if _plain(term) in folded), None)
 
-    def affirmed_term(self, text: str) -> str | None:
-        """A term the text ADVISES: it appears in a clause with no negation
-        before it (for remedies: "do not remove blocked-failed" advises the
-        opposite of "remove blocked-failed")."""
-        for clause in _CLAUSE_BREAK.split(text):
-            plain = _plain(clause)
+    def advised_term(self, text: str) -> str | None:
+        """A term the text ADVISES, for remedies.
+
+        Conservative on purpose — a lexical reading of advice can always be
+        fooled, so it errs toward "not advised": the term must appear in a
+        clause with no negation ANYWHERE in it ("do not remove blocked-failed"
+        and "remove blocked-failed is not the answer" both advise against).
+        Contrast words bound clauses, so "do not reset, but remove
+        blocked-failed" still advises the removal.
+        """
+        for clause in _clauses(text):
+            if _NEGATION.search(clause):
+                continue
             for term in self.any_of:
-                at = plain.find(_plain(term))
-                if at >= 0 and not _NEGATION.search(plain[:at]):
+                if _plain(term) in clause:
                     return term
         return None
 
-
-#: Clause boundaries: sentence ends, line breaks, semicolons, dashes, and the
-#: list/heading marks tech leads write in markdown.
-_CLAUSE_BREAK = re.compile(r"[.;!?\n]|\s[-–—]\s|:\s")
-#: Negations that flip the advice of what follows them in the same clause.
-_NEGATION = re.compile(
-    r"\b(?:not|never|without|avoid|don't|dont|cannot|can't|won't|shouldn't|mustn't|instead of)\b"
-    r"|n't\b"
-)
+    def named_in(self, clause: str) -> bool:
+        """Whether a (plain) clause names the concept."""
+        return any(_plain(term) in clause for term in self.any_of)
 
 
 _MARKDOWN = str.maketrans({"`": " ", "*": " ", "_": " "})
@@ -115,14 +115,51 @@ def _plain(text: str) -> str:
     return " ".join(text.translate(_MARKDOWN).casefold().split())
 
 
+def _clauses(text: str) -> list[str]:
+    """Plain clauses: split at sentence ends, line breaks, semicolons, dashes,
+    colons and contrast words, then normalized like terms are."""
+    return [plain for part in _CLAUSE_BREAK.split(text) if (plain := _plain(part))]
+
+
+#: Clause boundaries: sentence ends, line breaks, semicolons, dashes, the
+#: list/heading marks tech leads write in markdown, and contrast words (the
+#: clause after "but" can reverse the one before it).
+_CLAUSE_BREAK = re.compile(
+    r"[.;!?\n]|\s[-–—]\s|:\s|,?\s\b(?:but|however|although|though|whereas|yet)\b",
+    re.IGNORECASE,
+)
+#: Negations that flip what they touch in the same clause.
+_NEGATION = re.compile(
+    r"\b(?:not|never|without|avoid|don't|dont|cannot|can't|won't|shouldn't|mustn't|instead of|no need)\b"
+    r"|n't\b"
+)
+
+
 @dataclass(frozen=True)
 class RootCauseSpec:
-    """The known root cause, as the concepts a correct diagnosis names."""
+    """The known root cause, as the concepts a correct diagnosis states."""
 
     summary: str
     concepts: tuple[TermGroup, ...]
     role: str
     """The work item the diagnosis must be about (it must cite its issue or PR)."""
+
+    def stating_clause(self, text: str) -> str:
+        """The first clause that names EVERY concept together, or ``""``.
+
+        One clause, not the whole text: naming the label in one place and the
+        review in another does not connect them, and contrast words split
+        clauses, so "#901 has blocked-failed, but that label does not prevent
+        code review" does not qualify. Polarity is deliberately NOT judged:
+        the withheld-review concept is itself a negation ("the PR never gets
+        its code review"), so a lexical reading cannot tell it from a denial.
+        That limit is why the clause is reported as evidence for a human to
+        audit rather than trusted silently.
+        """
+        return next(
+            (clause for clause in _clauses(text) if all(group.named_in(clause) for group in self.concepts)),
+            "",
+        )
 
 
 @dataclass(frozen=True)
@@ -255,6 +292,21 @@ def pr_review_approved(role: str) -> Goal:
         )
 
     return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
+
+
+def single_pull_request(role: str) -> Goal:
+    """The item has exactly one PR: the work was published once.
+
+    A second PR means the work was redone or republished, and the other
+    goals, which read the newest PR, could otherwise pass on it while the
+    original work sits stranded.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        numbers = sorted(pr.number for pr in item.pull_requests)
+        return GoalCheck(len(numbers) == 1, f"linked PRs: {numbers or '(none)'}")
+
+    return Goal(f"{role}.single_pull_request", role, f"the {role} work is published as exactly one PR", check)
 
 
 def published_work_survives(role: str) -> Goal:

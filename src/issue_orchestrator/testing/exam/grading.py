@@ -91,8 +91,12 @@ def _grade_diagnosis(
             matched=(),
             missing=tuple(group.concept for group in spec.concepts),
             run_id="",
+            evidence_clause="",
         )
-    return min(grades, key=lambda g: (not g.passed, len(g.missing), not g.references_item))
+    return min(
+        grades,
+        key=lambda g: (not g.passed, len(g.missing), not g.evidence_clause, not g.references_item),
+    )
 
 
 def _diagnose_run(spec: RootCauseSpec, item: WorkItemFact, run: TechLeadRunFact) -> DiagnosisGrade:
@@ -110,6 +114,7 @@ def _diagnose_run(spec: RootCauseSpec, item: WorkItemFact, run: TechLeadRunFact)
         matched=tuple(sorted(matched.items())),
         missing=tuple(group.concept for group in spec.concepts if group.concept not in matched),
         run_id=run.run_id,
+        evidence_clause=spec.stating_clause(text),
     )
 
 
@@ -158,7 +163,7 @@ def _grade_remedy(
         and a.disposition is TechLeadActionDisposition.EXECUTED
         # The rationale must ADVISE the fix, not merely mention it:
         # "do not remove blocked-failed" is the opposite remedy.
-        and all(group.affirmed_term(a.body) for group in spec.rationale)
+        and all(group.advised_term(a.body) for group in spec.rationale)
     ]
     if acceptable:
         return RemedyGrade(
