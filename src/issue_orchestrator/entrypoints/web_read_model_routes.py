@@ -20,6 +20,7 @@ from ..ports.provider_resilience import (
     NO_PROVIDER_CIRCUIT_STATUS,
     ProviderCircuitStatusReader,
 )
+from ..ports.blocked_item_custody import NO_ENGINE_CUSTODY, BlockedItemCustodyReader
 from ..ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
     TechLeadRunHistoryReader,
@@ -85,11 +86,19 @@ def _tech_lead_history_reader(orchestrator: Any) -> TechLeadRunHistoryReader:
     return orchestrator.tech_lead_run_history
 
 
+def _blocked_custody_reader(orchestrator: Any) -> BlockedItemCustodyReader:
+    """Resolve the custody owner (#7331) the same way as the readers above."""
+    if orchestrator is None:
+        return NO_ENGINE_CUSTODY
+    return orchestrator.blocked_item_custody
+
+
 def _build_dashboard_vm_sync(orchestrator: Any, queue_page: int, active_tab: str, e2e_page: int):
     return build_dashboard_view_model(
         orchestrator,
         provider_circuit=_provider_circuit_reader(orchestrator),
         tech_lead_history=_tech_lead_history_reader(orchestrator),
+        blocked_custody=_blocked_custody_reader(orchestrator),
         queue_page=queue_page,
         active_tab=active_tab,
         e2e_page=e2e_page,

@@ -57,6 +57,7 @@ from issue_orchestrator.domain.dependency_gates import (
     build_gate_report,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
 from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
 )
@@ -833,6 +834,7 @@ def test_dashboard_view_model_matches_ui_openapi() -> None:
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="active",
         e2e_page=1,
@@ -870,6 +872,7 @@ def test_dashboard_view_model_history_and_e2e_items_match_ui_openapi() -> None:
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="e2e",
         e2e_page=1,
@@ -1222,6 +1225,7 @@ def test_view_model_snapshot_payload_matches_ui_openapi() -> None:
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -2689,6 +2693,7 @@ def _stacked_view_model_dict() -> dict:
         _OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,

@@ -19,6 +19,7 @@ from issue_orchestrator.contracts.public import DashboardDataContract
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config, ProviderResilienceConfig
+from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
 from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
 )
@@ -234,6 +235,7 @@ def test_dashboard_data_surfaces_open_circuit():
         _orchestrator_stub(),
         provider_circuit=_fixed_reader(_open("anthropic", 300, error="overloaded")),
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
@@ -262,6 +264,7 @@ def test_dashboard_builder_requires_an_explicit_circuit_reader():
         build_dashboard_view_model(  # type: ignore[call-arg]
             _orchestrator_stub(),
             tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+            blocked_custody=NO_ENGINE_CUSTODY,
             e2e_status_provider=lambda _: {"enabled": False, "running": False},
         )
 
@@ -273,6 +276,7 @@ def test_dashboard_data_circuit_hidden_for_an_explicitly_empty_reader():
         _orchestrator_stub(),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
@@ -342,6 +346,7 @@ def test_dashboard_data_circuit_read_failure_surfaces_as_unavailable_not_healthy
         _orchestrator_stub(),
         provider_circuit=broken,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
