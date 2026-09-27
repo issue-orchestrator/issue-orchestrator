@@ -202,7 +202,7 @@ def test_an_unchanged_failing_action_is_attempted_at_most_max_attempts_times(
     assert engine.attempts_of(action.action_type) == POLICY.max_attempts
     assert len(engine.escalation.parked) == 1
     held = plans[-1].skipped[-1]
-    assert held.item_type == f"action:{action.action_type.value}"
+    assert held.item_type == f"action:{action.liveness_operation()}"
     assert held.reason.startswith("parked after transient: 3 attempts failed")
 
 
@@ -574,3 +574,21 @@ def test_each_planning_cycle_retries_a_block_that_did_not_land(sample_config) ->
 
     [blocked] = engine.escalation.committed_blocks
     assert blocked.key.escalation_issue == 229
+
+
+def test_one_operations_success_does_not_erase_anothers_budget(sample_config) -> None:
+    """Two label removals on one issue are two operations: the one that keeps
+    succeeding must not clear the one that keeps failing (review round 3)."""
+    failing = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    fine = RemoveLabelAction(issue_number=410, label="io:claimed", reason="stale claim")
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [failing, fine],
+        apply=lambda a: ActionResult.fail(a, "403") if a is failing else ActionResult.ok(a),
+    )
+    for _ in range(20):
+        engine.tick()
+
+    removals = [call.args[0] for call in engine.applier.apply.call_args_list]
+    assert sum(1 for a in removals if a is failing) == POLICY.max_attempts
+    assert sum(1 for a in removals if a is fine) == 20

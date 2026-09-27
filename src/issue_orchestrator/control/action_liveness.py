@@ -144,7 +144,6 @@ class ActionLivenessOwner:
         that on the timeline.
         """
         released = self._store.clear_escalation_issue(issue_number)
-        self._store.clear_release(issue_number)
         parked = tuple(row for row in released if row.parked)
         if parked:
             self._escalation.announce_released(parked)

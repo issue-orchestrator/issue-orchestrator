@@ -46,7 +46,12 @@ class ActionLivenessStore(Protocol):
         ...
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        """Delete every row whose escalation names ``issue_number``; return them."""
+        """Delete every row whose escalation names ``issue_number``; return them.
+
+        An operator settled that issue's block, so any withdrawal still owed to
+        it is forgotten in the same transaction: replayed later, it could take
+        off a block a person has since put back.
+        """
         ...
 
     def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:

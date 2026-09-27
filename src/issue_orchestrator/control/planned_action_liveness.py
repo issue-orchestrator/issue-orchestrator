@@ -97,7 +97,7 @@ def planned_action_key(
     return LivenessKey(
         identity=ActionIdentity(
             subject=ENGINE_SUBJECT if subject is None else f"{subject[0]}:{subject[1]}",
-            action=action.action_type.value,
+            action=action.liveness_operation(),
         ),
         fingerprint=fact_fingerprint(
             {

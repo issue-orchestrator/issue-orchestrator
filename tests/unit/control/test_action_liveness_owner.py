@@ -223,3 +223,25 @@ def test_the_budget_survives_an_engine_restart(tmp_path) -> None:
 
     fresh = liveness_owner(store=SQLiteActionLivenessStore(path), clock=clock, policy=POLICY)
     assert fresh.admit(KEY).admission is Admission.PARKED
+
+
+def test_an_operator_release_forgets_an_owed_withdrawal_in_the_same_step(tmp_path) -> None:
+    """Replayed after a person re-added needs-human, a stale withdrawal would
+    take their block off (review round 3)."""
+    path = tmp_path / "action_liveness.sqlite"
+    escalation = RecordingEscalation(unblock_commits=False)
+    owner = liveness_owner(store=SQLiteActionLivenessStore(path), escalation=escalation)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+    owner.record(KEY, ActionOutcome.done())  # the withdrawal is now owed
+    owner.record(KEY, ActionOutcome.permanent("stuck again"))
+
+    SQLiteActionLivenessStore(path).clear_escalation_issue(229)  # then the crash
+
+    after = RecordingEscalation()
+    clock = ManualClock()
+    clock.advance(timedelta(days=1))
+    restarted = liveness_owner(
+        store=SQLiteActionLivenessStore(path), escalation=after, clock=clock
+    )
+    restarted.reconcile_effects()
+    assert after.unblocks == []

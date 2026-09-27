@@ -97,6 +97,9 @@ class AddLabelAction(Action):
     fresh_presence: bool = False
     action_type: ActionType = field(default=ActionType.ADD_LABEL, init=False)
 
+    def liveness_operation(self) -> str:
+        return f"{self.action_type.value}:{self.label}"
+
     def liveness_facts(self) -> object | None:
         """A request for a human is never silenced by the liveness owner (#7350).
 
@@ -125,6 +128,9 @@ class RemoveLabelAction(Action):
     needs_human_cause: NeedsHumanCause | None = None
     action_type: ActionType = field(default=ActionType.REMOVE_LABEL, init=False)
 
+    def liveness_operation(self) -> str:
+        return f"{self.action_type.value}:{self.label}"
+
 
 @dataclass(frozen=True)
 class SyncLabelsAction(Action):
@@ -135,6 +141,12 @@ class SyncLabelsAction(Action):
     remove_labels: tuple[str, ...] = field(default_factory=tuple)
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.SYNC_LABELS, init=False)
+
+    def liveness_operation(self) -> str:
+        return (
+            f"{self.action_type.value}:+{','.join(sorted(self.add_labels))}"
+            f":-{','.join(sorted(self.remove_labels))}"
+        )
 
 
 @dataclass(frozen=True)

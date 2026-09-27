@@ -48,6 +48,7 @@ class InMemoryActionLivenessStore:
         return gone
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
+        self.releases.pop(issue_number, None)
         return self._pop(lambda row: row.key.escalation_issue == issue_number)
 
     def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:

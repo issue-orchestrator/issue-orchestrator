@@ -81,6 +81,7 @@ _UPSERT = (
 )
 _DELETE_IDENTITY = "DELETE FROM action_liveness WHERE subject=? AND action=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
+_FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
 _OWE_RELEASE = "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)"
 
 
@@ -147,7 +148,11 @@ class SQLiteActionLivenessStore:
         return self._delete(_BY_IDENTITY, _DELETE_IDENTITY, params, owe_releases=True)
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        return self._delete(_BY_ISSUE, _DELETE_ISSUE, (issue_number,))
+        with self._write() as conn:
+            rows = tuple(_row(found) for found in conn.execute(_BY_ISSUE, (issue_number,)))
+            conn.execute(_DELETE_ISSUE, (issue_number,))
+            conn.execute(_FORGET_RELEASE, (issue_number,))
+        return rows
 
     def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         return self._select(_ESCALATED_ON_ISSUE, (issue_number,))
@@ -182,9 +187,7 @@ class SQLiteActionLivenessStore:
 
     def clear_release(self, issue_number: int) -> None:
         with self._write() as conn:
-            conn.execute(
-                "DELETE FROM action_liveness_release WHERE issue_number=?", (issue_number,)
-            )
+            conn.execute(_FORGET_RELEASE, (issue_number,))
 
     def _select(self, query: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
         rows = self._connection().execute(query, params).fetchall()
