@@ -705,7 +705,10 @@ def test_a_retirement_the_store_keeps_refusing_is_bounded(tmp_path):
     assert "refused" in parked.last_reason
 
 
-def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp_path):
+@pytest.mark.parametrize("restart_each_pass", [False, True], ids=["one-process", "restarts"])
+def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(
+    tmp_path, restart_each_pass
+):
     """The first record's attached evidence cannot be read, by the key and by
     the proof alike. The READ is attempted exactly max_attempts times, then
     the record parks and reads stop; the second record is still judged every
@@ -731,11 +734,19 @@ def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp
     first, second = rig.record_ids
     unreadable.add(first)
     minute = timedelta(minutes=1)
-    for _ in range(30):
+
+    def one_pass(step):
         # A proof that succeeds is cached per evidence; forget it each pass so
         # the second record keeps being judged.
         rig.sweep._owned.clear()
-        rig.passes(1, step=minute)
+        if restart_each_pass:
+            # A new process: only the durable liveness rows survive.
+            live = rig.sweep._liveness
+            rig.sweep._liveness = type(live)(owner=live.owner, records=live.records)
+        rig.passes(1, step=step)
+
+    for _ in range(30):
+        one_pass(minute)
 
     assert reads.count(first) == rig.policy.max_attempts
     assert rig.proofs.count(second) == 30
@@ -744,7 +755,8 @@ def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp
     assert "evidence store unreadable" in parked.last_reason
 
     # Parked: no further reads, however long it stays unreadable.
-    rig.passes(10, step=rig.policy.max_backoff)
+    for _ in range(10):
+        one_pass(rig.policy.max_backoff)
     assert reads.count(first) == rig.policy.max_attempts
 
     # Healed, and an operator releases the park: read once more, and the
@@ -756,7 +768,7 @@ def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp
         ActionIdentity(f"validated_work:{first}", "judge_record_scope")
     )
     judged = rig.proofs.count(first)
-    rig.passes(1, step=minute)
+    one_pass(minute)
     assert rig.proofs.count(first) == judged + 1
 
 
