@@ -50,7 +50,7 @@ _PER_KIND_HANDLERS: dict[tuple[str, str], int] = {
     ("control/session_launcher.py", "SessionLauncher.launch_issue_session"): 1,
     ("control/session_launcher.py", "SessionLauncher._discard_tech_lead_authority_after_failed_launch"): 1,
     ("control/tech_lead_session_policy.py", "prepare_tech_lead_session_data"): 1,
-    ("control/tech_lead_session_policy.py", "recover_tech_lead_launch_scope"): 1,
+    ("control/tech_lead_scope_recovery.py", "recover_tech_lead_launch_scope"): 1,
     # I - tech-lead exclusivity, capacity and identity: the global barrier and
     # reserved budget count tech-lead runs; artifact holds and reaction
     # suppression name them; the launch-authority row belongs to them alone.
