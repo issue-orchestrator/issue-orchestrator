@@ -91,7 +91,7 @@ from .reconciliation import build_expected_for_mutation, without_paused_subjects
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
-from .plan_launches import PlanLaunches, first_per_subject
+from .plan_launches import PlanLaunches, first_per_subject, withhold_launching
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,
 )
@@ -1253,12 +1253,9 @@ class Planner:
         ]
 
         # Log per-issue exclusion reasons for diagnostics.
-        skip_reason_by_issue: dict[int, str] = {}
+        skip_reason_by_issue = withhold_launching(available, launching, skipped)
         for issue in available:
-            if issue.number in launching:
-                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="other work for it launches this tick"))
-                skip_reason_by_issue[issue.number] = "launching_this_tick"
-            elif issue.number in snapshot.active_issue_numbers:
+            if issue.number in snapshot.active_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
                 logger.info(issue_log(issue.number, "Skipped: reason=active_session"))
                 skip_reason_by_issue[issue.number] = "active_session"

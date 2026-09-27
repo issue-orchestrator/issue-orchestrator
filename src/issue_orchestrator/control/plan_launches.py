@@ -35,6 +35,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence, TypeVar
 
+from ..ports.issue import Issue
 from .action_base import Action
 from .actions import ActionType, LaunchSessionAction, LaunchValidationRetryAction, SessionType
 from .planner_types import SkippedItem
@@ -96,6 +97,28 @@ def first_per_subject(
     return kept
 
 
+def withhold_launching(
+    issues: Iterable[Issue], launching: frozenset[int], skipped: list[SkippedItem]
+) -> dict[int, str]:
+    """Report each candidate issue an earlier stage already launches.
+
+    The issue pipeline excludes them before the scheduler picks; this records
+    why, as the per-issue skip reason the queue decision log reads.
+    """
+    reasons: dict[int, str] = {}
+    for issue in issues:
+        if issue.number in launching:
+            skipped.append(
+                SkippedItem(
+                    item_type="issue",
+                    number=issue.number,
+                    reason="other work for this issue launches this tick",
+                )
+            )
+            reasons[issue.number] = "launching_this_tick"
+    return reasons
+
+
 @dataclass
 class PlanLaunches:
     """Every launch stage of one plan passes its actions through :meth:`admit`."""
@@ -155,4 +178,5 @@ __all__ = [
     "PlanLaunches",
     "first_per_subject",
     "launch_subject",
+    "withhold_launching",
 ]
