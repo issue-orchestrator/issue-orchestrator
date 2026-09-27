@@ -231,6 +231,36 @@ def test_an_explicit_recovery_that_raises_is_still_settled(tmp_path) -> None:
     assert row.attempts == 1 and "publisher exploded" in row.last_reason
 
 
+def test_an_explicit_recovery_that_waits_keeps_the_park_and_its_block(tmp_path) -> None:
+    """Parked and escalated; the operator's explicit recovery then meets an
+    active runtime, or a rate limit. The park stands, block and all, rather
+    than silently becoming a wait (review B r6)."""
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.domain.validated_work import ValidatedWorkFailure
+
+    engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"))
+    engine.passes(10)
+    [parked] = engine.escalation.parked
+    assert engine.escalation.committed_blocks
+
+    for result in (
+        RecoveryAttemptPending("Other issue runtime is active", kind=RecoveryPendingKind.WAITING),
+        RecoveryAttemptPending(
+            "remote unreadable", ValidatedWorkFailure.REMOTE_UNREADABLE,
+            rate_limit=HostRateLimit(
+                resets_at=engine.clock.now + timedelta(minutes=30), kind="primary"
+            ),
+        ),
+    ):
+        engine.operation.result = result
+        engine.drain.recover(_operator_retry(engine), OrchestratorState())
+
+        [row] = engine.rows.rows.values()
+        assert row.parked and row.escalated, result.message
+        assert [fact.reason for fact in engine.owner.parked_for_issue(410)] == [row.last_reason]
+    assert engine.escalation.released == [] and engine.escalation.unblocks == []
+
+
 def test_a_state_change_is_a_new_question(tmp_path) -> None:
     """Parked while queued; the record then moves to publishing with the same
     evidence. That is new facts, so the drain tries it again (review B r1)."""
