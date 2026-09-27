@@ -71,6 +71,10 @@ logger = logging.getLogger(__name__)
 ENGINE_SUBJECT = "engine"
 
 def _subject_number(action: Action) -> tuple[str, int] | None:
+    effect = getattr(action, "effect", None)
+    if isinstance(effect, Action):
+        # A wrapper (a charter-audited effect) is about its effect's subject.
+        return _subject_number(effect)
     subject = getattr(action, "reconciliation_subject", None)
     if callable(subject):
         number = subject()

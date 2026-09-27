@@ -23,7 +23,8 @@ class InMemoryActionLivenessStore:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], LivenessRow] = {}
         self.releases: dict[int, PendingRelease] = {}
-        self.announcements: dict[int, LivenessRow] = {}
+        self.announcements: dict = {}
+        self._next_announcement = 0
         self.progress: dict[ActionIdentity, datetime] = {}
 
     @staticmethod
@@ -43,10 +44,14 @@ class InMemoryActionLivenessStore:
         return gone
 
     def _forget(self, matches) -> tuple[LivenessRow, ...]:
+        from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
+
         gone = self._pop(matches)
         for row in gone:
             if row.escalated and row.key.escalation_issue is not None:
                 self.request_release(row.key.escalation_issue)
+            if row.parked:
+                self._owe(LivenessAnnouncement.RELEASED, row)
         return gone
 
     def clear_key(self, key: LivenessKey, *, done_at: datetime) -> tuple[LivenessRow, ...]:
@@ -69,14 +74,22 @@ class InMemoryActionLivenessStore:
         return True
 
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        gone = self._forget(lambda row: row.key.identity == identity)
-        for row in gone:
-            if row.parked:
-                self.announcements[len(self.announcements) + 1] = row
-        return gone
+        return self._forget(lambda row: row.key.identity == identity)
 
-    def pending_announcements(self) -> tuple[tuple[int, LivenessRow], ...]:
-        return tuple(sorted(self.announcements.items()))
+    def _owe(self, kind, row: LivenessRow) -> None:
+        self._next_announcement += 1
+        self.announcements[self._next_announcement] = (kind, row)
+
+    def put_parked(self, row: LivenessRow) -> None:
+        from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
+
+        self.put(row)
+        self._owe(LivenessAnnouncement.PARKED, row)
+
+    def pending_announcements(self):
+        return tuple(
+            (number, kind, row) for number, (kind, row) in sorted(self.announcements.items())
+        )
 
     def clear_announcement(self, announcement_id: int) -> None:
         del self.announcements[announcement_id]
@@ -101,8 +114,14 @@ class InMemoryActionLivenessStore:
             self.rows[self._id(key)] = replace(row, last_planned_at=planned_at)
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
+        from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
+
         self.releases.pop(issue_number, None)
-        return self._pop(lambda row: row.key.escalation_issue == issue_number)
+        gone = self._pop(lambda row: row.key.escalation_issue == issue_number)
+        for row in gone:
+            if row.parked:
+                self._owe(LivenessAnnouncement.RELEASED, row)
+        return gone
 
     def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         return tuple(

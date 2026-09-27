@@ -346,3 +346,37 @@ def test_a_release_during_the_block_write_cannot_resurrect_the_park(tmp_path) ->
     assert store.pending_releases() == ()
     owner.reconcile_effects()
     assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]
+
+
+def test_a_crash_before_publishing_a_park_still_announces_it(tmp_path, mock_event_sink) -> None:
+    """The park and its announcement commit together; a restarted owner
+    publishes it to the timeline (review r14)."""
+    from issue_orchestrator.control.action_liveness_escalation import ActionLivenessEscalation
+    from issue_orchestrator.events import EventName
+
+    path = tmp_path / "action_liveness.sqlite"
+    row = liveness_owner(store=SQLiteActionLivenessStore(path)).record(
+        KEY, ActionOutcome.permanent("stuck")
+    )
+    # Simulate the crash: the owed announcement is still in the outbox.
+    store = SQLiteActionLivenessStore(path)
+    store.put_parked(row)
+
+    class _Applier:
+        def apply(self, action):
+            from issue_orchestrator.control.actions import ActionResult
+
+            return ActionResult.ok(action)
+
+    restarted = liveness_owner(
+        store=SQLiteActionLivenessStore(path),
+        escalation=ActionLivenessEscalation(
+            events=mock_event_sink, applier=_Applier(), needs_human_label="needs-human"
+        ),
+    )
+    restarted.reconcile_effects()
+
+    [event] = mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)
+    assert event.data["subject"] == "issue:229"
+    restarted.reconcile_effects()
+    assert len(mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)) == 1

@@ -33,6 +33,7 @@ from ..domain.action_liveness import (
     ActionIdentity,
     ActionOutcome,
     Admission,
+    LivenessAnnouncement,
     LivenessKey,
     LivenessPolicy,
     LivenessRow,
@@ -129,9 +130,12 @@ class ActionLivenessOwner:
         if row is None:
             self._resolve(self._store.clear_key(key, done_at=self._clock()))
             return None
-        self._store.put(row)
-        if not row.parked or (previous is not None and previous.parked):
+        newly_parked = row.parked and not (previous is not None and previous.parked)
+        if not newly_parked:
+            self._store.put(row)
             return row
+        self._store.put_parked(row)
+        self._publish_announcements()
         logger.warning(
             "[LIVENESS] Parked %s on %s (fingerprint %s): %s",
             key.identity.action,
@@ -139,7 +143,6 @@ class ActionLivenessOwner:
             key.fingerprint,
             row.last_reason,
         )
-        self._escalation.announce_parked(row)
         return self._escalate(row, now)
 
     def reconcile_effects(self) -> None:
@@ -151,9 +154,7 @@ class ActionLivenessOwner:
         refusing is neither lost nor hammered. Called once per planning cycle.
         """
         now = self._clock()
-        for announcement_id, row in self._store.pending_announcements():
-            self._escalation.announce_released((row,))
-            self._store.clear_announcement(announcement_id)
+        self._publish_announcements()
         # A question nobody asks any more is not parked: its facts changed or
         # the action is no longer wanted. Retiring it owes its block's release.
         self._resolve(
@@ -180,9 +181,7 @@ class ActionLivenessOwner:
         that on the timeline.
         """
         released = self._store.clear_escalation_issue(issue_number)
-        parked = tuple(row for row in released if row.parked)
-        if parked:
-            self._escalation.announce_released(parked)
+        self._publish_announcements()
         return released
 
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
@@ -198,6 +197,15 @@ class ActionLivenessOwner:
     def parked(self) -> tuple[LivenessRow, ...]:
         """Every parked row, for the tech-lead board and diagnostics."""
         return self._store.parked_rows()
+
+    def _publish_announcements(self) -> None:
+        """Publish every owed announcement, then acknowledge it (at least once)."""
+        for announcement_id, kind, row in self._store.pending_announcements():
+            if kind is LivenessAnnouncement.PARKED:
+                self._escalation.announce_parked(row)
+            else:
+                self._escalation.announce_released((row,))
+            self._store.clear_announcement(announcement_id)
 
     def _escalate(self, row: LivenessRow, now: datetime) -> LivenessRow:
         """Land whichever escalation effect is still owed: the block, then its comment.
@@ -234,11 +242,11 @@ class ActionLivenessOwner:
         return row
 
     def _resolve(self, cleared: tuple[LivenessRow, ...]) -> None:
-        """Announce parks that ended, and owe each freed issue its release."""
+        """Announce parks that ended, and settle each freed issue's owed release."""
+        self._publish_announcements()
         parked = tuple(row for row in cleared if row.parked)
         if not parked:
             return
-        self._escalation.announce_released(parked)
         now = self._clock()
         # The store's clear already owed each freed issue its release in the
         # same transaction that forgot the parks; try to settle them now.

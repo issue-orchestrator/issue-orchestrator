@@ -156,10 +156,19 @@ def _canonical(value: object) -> object:
         return value.isoformat()
     if isinstance(value, PurePath):
         return str(value)
+    liveness_facts = getattr(value, "liveness_facts", None)
+    if callable(liveness_facts):
+        # A nested action (a wrapper's effect) contributes its own facts.
+        return _canonical(liveness_facts())
     if is_dataclass(value) and not isinstance(value, type):
+        # A field named ``*_at`` records WHEN something was sampled or decided
+        # (``assessed_at``, ``decided_at``, ``observed_at``), not what: fresh on
+        # every plan while the facts stand still, it would give each failure a
+        # new fingerprint and a fresh budget.
         return {
             item.name: _canonical(getattr(value, item.name))
             for item in fields(value)
+            if not item.name.endswith("_at")
         }
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in value.items()}
@@ -242,6 +251,13 @@ class LivenessRow:
             and self.key.escalation_issue is not None
             and not (self.escalated and self.explained)
         )
+
+
+class LivenessAnnouncement(StrEnum):
+    """A timeline announcement the owner owes durably (#7350)."""
+
+    PARKED = "parked"
+    RELEASED = "released"
 
 
 class Admission(StrEnum):
@@ -400,6 +416,7 @@ __all__ = [
     "ActionIdentity",
     "ActionOutcome",
     "Admission",
+    "LivenessAnnouncement",
     "LivenessKey",
     "LivenessPolicy",
     "LivenessRow",

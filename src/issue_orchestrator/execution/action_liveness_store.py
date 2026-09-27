@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ..domain.action_liveness import (
     ActionIdentity,
+    LivenessAnnouncement,
     LivenessKey,
     LivenessRow,
     OutcomeKind,
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS action_liveness_announcement (
     first_failed_at TEXT NOT NULL,
     last_failed_at TEXT NOT NULL,
     last_outcome TEXT NOT NULL,
-    last_reason TEXT NOT NULL
+    last_reason TEXT NOT NULL,
+    kind TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS action_liveness_progress (
     subject TEXT NOT NULL,
@@ -128,11 +130,11 @@ _FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
 _OWE_ANNOUNCEMENT = (
     "INSERT INTO action_liveness_announcement (subject, action, fingerprint,"
     " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
-    " last_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " last_reason, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _ANNOUNCEMENTS = (
     "SELECT announcement_id, subject, action, fingerprint, escalation_issue, attempts,"
-    " first_failed_at, last_failed_at, last_outcome, last_reason"
+    " first_failed_at, last_failed_at, last_outcome, last_reason, kind"
     " FROM action_liveness_announcement ORDER BY announcement_id"
 )
 _FORGET_ANNOUNCEMENT = "DELETE FROM action_liveness_announcement WHERE announcement_id=?"
@@ -175,28 +177,8 @@ class SQLiteActionLivenessStore:
         return None if found is None else _row(found)
 
     def put(self, row: LivenessRow) -> None:
-        key = row.key
         with self._write() as conn:
-            conn.execute(
-                _UPSERT,
-                (
-                    key.identity.subject,
-                    key.identity.action,
-                    key.fingerprint,
-                    key.escalation_issue,
-                    row.attempts,
-                    row.first_failed_at.isoformat(),
-                    row.last_failed_at.isoformat(),
-                    row.last_outcome.value,
-                    row.last_reason,
-                    _iso(row.next_attempt_at),
-                    int(row.escalated),
-                    int(row.explained),
-                    row.escalation_attempts,
-                    _iso(row.escalation_attempted_at),
-                    _iso(row.last_planned_at),
-                ),
-            )
+            _upsert(conn, row)
 
     def clear_key(self, key: LivenessKey, *, done_at: datetime) -> tuple[LivenessRow, ...]:
         return self._forget(
@@ -220,15 +202,20 @@ class SQLiteActionLivenessStore:
         return updated == 1
 
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        rows = self._forget(
-            _BY_IDENTITY, (identity.subject, identity.action), announce=True
-        )
-        return rows
+        return self._forget(_BY_IDENTITY, (identity.subject, identity.action))
 
-    def pending_announcements(self) -> tuple[tuple[int, LivenessRow], ...]:
+    def put_parked(self, row: LivenessRow) -> None:
+        with self._write() as conn:
+            _upsert(conn, row)
+            _owe_announcement(conn, row, LivenessAnnouncement.PARKED)
+
+    def pending_announcements(
+        self,
+    ) -> tuple[tuple[int, LivenessAnnouncement, LivenessRow], ...]:
         return tuple(
             (
                 found["announcement_id"],
+                LivenessAnnouncement(found["kind"]),
                 LivenessRow(
                     key=LivenessKey(
                         ActionIdentity(found["subject"], found["action"]),
@@ -270,7 +257,6 @@ class SQLiteActionLivenessStore:
         select: str,
         params: tuple[object, ...],
         *,
-        announce: bool = False,
         progress: tuple[str, str, str] | None = None,
     ) -> tuple[LivenessRow, ...]:
         """Delete the selected rows and owe their blocks' release, atomically.
@@ -288,16 +274,8 @@ class SQLiteActionLivenessStore:
             for row in rows:
                 identity = row.key.identity
                 conn.execute(_DELETE_KEY, (identity.subject, identity.action, row.key.fingerprint))
-                if announce and row.parked:
-                    conn.execute(
-                        _OWE_ANNOUNCEMENT,
-                        (
-                            identity.subject, identity.action, row.key.fingerprint,
-                            row.key.escalation_issue, row.attempts,
-                            row.first_failed_at.isoformat(), row.last_failed_at.isoformat(),
-                            row.last_outcome.value, row.last_reason,
-                        ),
-                    )
+                if row.parked:
+                    _owe_announcement(conn, row, LivenessAnnouncement.RELEASED)
             for issue in sorted(
                 {
                     row.key.escalation_issue
@@ -313,6 +291,9 @@ class SQLiteActionLivenessStore:
             rows = tuple(_row(found) for found in conn.execute(_BY_ISSUE, (issue_number,)))
             conn.execute(_DELETE_ISSUE, (issue_number,))
             conn.execute(_FORGET_RELEASE, (issue_number,))
+            for row in rows:
+                if row.parked:
+                    _owe_announcement(conn, row, LivenessAnnouncement.RELEASED)
         return rows
 
     def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
@@ -353,6 +334,45 @@ class SQLiteActionLivenessStore:
     def _select(self, query: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
         rows = self._connection().execute(query, params).fetchall()
         return tuple(_row(found) for found in rows)
+
+def _upsert(conn: sqlite3.Connection, row: LivenessRow) -> None:
+    key = row.key
+    conn.execute(
+        _UPSERT,
+        (
+            key.identity.subject,
+            key.identity.action,
+            key.fingerprint,
+            key.escalation_issue,
+            row.attempts,
+            row.first_failed_at.isoformat(),
+            row.last_failed_at.isoformat(),
+            row.last_outcome.value,
+            row.last_reason,
+            _iso(row.next_attempt_at),
+            int(row.escalated),
+            int(row.explained),
+            row.escalation_attempts,
+            _iso(row.escalation_attempted_at),
+            _iso(row.last_planned_at),
+        ),
+    )
+
+
+def _owe_announcement(
+    conn: sqlite3.Connection, row: LivenessRow, kind: LivenessAnnouncement
+) -> None:
+    identity = row.key.identity
+    conn.execute(
+        _OWE_ANNOUNCEMENT,
+        (
+            identity.subject, identity.action, row.key.fingerprint,
+            row.key.escalation_issue, row.attempts,
+            row.first_failed_at.isoformat(), row.last_failed_at.isoformat(),
+            row.last_outcome.value, row.last_reason, kind.value,
+        ),
+    )
+
 
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()

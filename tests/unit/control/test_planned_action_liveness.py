@@ -993,3 +993,34 @@ def test_a_question_asked_again_after_a_gap_is_not_superseded_first(sample_confi
     engine.tick()
 
     assert engine.attempts_of(stale.action_type) == before
+
+
+def test_a_decision_time_is_not_a_fact(sample_config) -> None:
+    """Charter-audited promotions carry a fresh ``decided_at`` every plan; a
+    failing record write must still be bounded (review r14)."""
+    from issue_orchestrator.control.tech_lead_charter_policy import (
+        CharterAuditedAction,
+        RecordTechLeadCharterDecisionsAction,
+    )
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+
+    ticks = iter(range(1000))
+
+    def planned():
+        at = f"2026-09-26T10:{next(ticks) % 60:02d}:00+00:00"
+        decision = _decision("A1", at=at)
+        return [
+            RecordTechLeadCharterDecisionsAction(decisions=(decision,)),
+            CharterAuditedAction(decisions=(decision,), effect=_settle()),
+        ]
+
+    engine = _Engine(sample_config, planned=planned, apply=lambda a: ActionResult.fail(a, "ledger down"))
+    for _ in range(20):
+        engine.tick()
+
+    applied = [call.args[0] for call in engine.applier.apply.call_args_list]
+    assert sum(1 for a in applied if isinstance(a, RecordTechLeadCharterDecisionsAction)) == POLICY.max_attempts
+    audited = [a for a in applied if isinstance(a, CharterAuditedAction)]
+    assert len(audited) == POLICY.max_attempts
+    audited_key = planned_action_key(audited[0], {}, escalation_label=NEEDS_HUMAN)
+    assert audited_key.identity.subject == "issue:229", "a wrapper is about its effect's subject"

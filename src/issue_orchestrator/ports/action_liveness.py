@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from ..domain.action_liveness import ActionIdentity, LivenessKey, LivenessRow
+from ..domain.action_liveness import (
+    ActionIdentity,
+    LivenessAnnouncement,
+    LivenessKey,
+    LivenessRow,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,15 +63,27 @@ class ActionLivenessStore(Protocol):
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
         """An operator's release: delete every fingerprint's row for ``identity``.
 
-        In the same transaction it owes each deleted park a durable
-        ``action.released`` announcement, published by the engine's next
-        :meth:`ActionLivenessOwner.reconcile_effects` wherever the release came
-        from (the CLI runs outside the engine and has no timeline of its own).
+        Like every deletion it owes each deleted park a durable
+        ``action.released`` announcement, published by the engine wherever the
+        release came from (the CLI runs outside the engine and has no timeline).
         """
         ...
 
-    def pending_announcements(self) -> tuple[tuple[int, LivenessRow], ...]:
-        """Owed release announcements, oldest first, each with its id."""
+    def put_parked(self, row: LivenessRow) -> None:
+        """Write a row that just parked, and owe its ``action.parked``
+        announcement, in one transaction."""
+        ...
+
+    def pending_announcements(
+        self,
+    ) -> tuple[tuple[int, LivenessAnnouncement, LivenessRow], ...]:
+        """Owed timeline announcements, oldest first, each with its id.
+
+        Every transaction that parks a row owes a PARKED announcement, and
+        every one that deletes a parked row (success, retirement, an operator's
+        release) owes a RELEASED one, so a crash can delay an announcement but
+        never lose it.
+        """
         ...
 
     def clear_announcement(self, announcement_id: int) -> None:

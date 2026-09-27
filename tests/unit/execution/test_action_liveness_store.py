@@ -74,7 +74,10 @@ def test_an_operator_release_deletes_every_fingerprint_and_owes_its_announcement
     assert set(cleared) == {a, b}
     assert store.row(a.key) is None and store.row(b.key) is None
     assert store.row(other.key) == other
-    announced = [row.key for _id, row in SQLiteActionLivenessStore(tmp_path / "l.sqlite").pending_announcements()]
+    announced = [
+        row.key
+        for _id, _kind, row in SQLiteActionLivenessStore(tmp_path / "l.sqlite").pending_announcements()
+    ]
     assert sorted(announced, key=lambda k: k.fingerprint) == [a.key, b.key]
 
 
@@ -168,3 +171,26 @@ def test_success_notes_progress_and_forgets_the_park_in_one_transaction(
     assert reopened.retire_unplanned(
         abandoned_before=NOW - timedelta(days=7), superseded_before=NOW + timedelta(days=1)
     ) == (), "no progress was noted, so the park is not superseded"
+
+
+def test_every_park_and_unpark_owes_an_announcement(tmp_path) -> None:
+    """Announcements are owed in the transactions that park and unpark, so a
+    crash before publishing delays them but never loses them (review r14)."""
+    from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
+
+    path = tmp_path / "l.sqlite"
+    store = SQLiteActionLivenessStore(path)
+    parked = _row()
+    store.put_parked(parked)
+    other = _row(subject="issue:7", issue=7)
+    store.put_parked(other)
+    store.clear_key(parked.key, done_at=NOW + timedelta(hours=1))
+    store.clear_escalation_issue(7)
+
+    owed = [(kind, row.key) for _id, kind, row in SQLiteActionLivenessStore(path).pending_announcements()]
+    assert owed == [
+        (LivenessAnnouncement.PARKED, parked.key),
+        (LivenessAnnouncement.PARKED, other.key),
+        (LivenessAnnouncement.RELEASED, parked.key),
+        (LivenessAnnouncement.RELEASED, other.key),
+    ]
