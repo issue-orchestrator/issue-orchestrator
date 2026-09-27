@@ -218,7 +218,8 @@ class PublishedReviewRelease:
         if not holds:
             return holds, (ReviewReleaseStatus.NOT_HELD, "no open PR carries published validated work")
         current = self.read_labels(issue_number)
-        if not review_releasable(current, holds, self.labels):
+        releasable = review_releasable(current, holds, self.labels)
+        if not releasable:
             return holds, (ReviewReleaseStatus.NOT_RELEASABLE,
                            f"issue blocks {self.labels.get_blocking(current)}; a held PR carries "
                            f"its own block, or the issue's block is not only blocked-failed")
