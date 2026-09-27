@@ -35,7 +35,7 @@ def test_write_e2e_config_preserves_agent_prompt_contract(tmp_path: Path) -> Non
 
     process = OrchestratorProcess(config, tmp_path)
     try:
-        config_path = process._write_e2e_config()  # noqa: SLF001
+        config_path = process.write_e2e_config()
 
         payload = yaml.safe_load(config_path.read_text())
         agent_payload = payload["agents"]["agent:backend"]
@@ -70,8 +70,8 @@ def test_write_e2e_config_uses_unique_path_per_process(tmp_path: Path) -> None:
     second = OrchestratorProcess(config, tmp_path)
 
     try:
-        first_path = first._write_e2e_config()  # noqa: SLF001
-        second_path = second._write_e2e_config()  # noqa: SLF001
+        first_path = first.write_e2e_config()
+        second_path = second.write_e2e_config()
 
         assert first_path != second_path
         assert first_path.parent != second_path.parent

@@ -11,7 +11,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.infra.config import Config
@@ -27,11 +27,8 @@ from issue_orchestrator.testing.exam.cases import (
 from tests.e2e.exam.agents import CODER_LABEL
 from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
-from tests.e2e.exam.engine import (
-    EngineCheckout,
-    ExamEngine,
-    exam_config,
-)
+from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine
+from tests.e2e.exam.engine import EngineCheckout, ExamEngine
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
@@ -54,22 +51,6 @@ logger = logging.getLogger(__name__)
 CASE_A_EXTERNAL_ID = "M0-760"
 CASE_B_EXTERNAL_ID = "M0-761"
 CASE_C_EXTERNAL_ID = "M0-762"
-
-#: Production tech-lead authority for every act-level action (the operator's
-#: io/porchpin configs), so a destructive remedy is really executed — and
-#: really graded — as it would be. Filing is proposed instead: an executed
-#: follow-up is worked by the exam's scripted coder (the first Case B run
-#: grew a second investigation that way), and a case file is a real issue
-#: other engines' case-file readers could pick up. A proposed escalation
-#: still grades as a remedy.
-EXAM_TECH_LEAD_AUTHORITY = {
-    "reset_retry": "execute",
-    "kill_hung_session": "execute",
-    "request_rework": "execute",
-    "recover_validated_work": "execute",
-    "create_issue": "propose",
-    "flag_pattern": "propose",
-}
 
 
 @dataclass(frozen=True)
@@ -195,22 +176,9 @@ async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
     try:
-        config = exam_config(
-            run.base_config,
-            checkout=checkout,
-            run_label=run.run_label,
-            reviewer_exchange_fault="exit-silently",
-        )
-        overlay = {
-            "review": {
-                "exchange": {
-                    "mode": "via-local-loop",
-                    "loop": {"max_rounds": 3, "max_no_progress": 2, "require_validation": True},
-                },
-                "max_consecutive_review_exchange_failures": 3,
-            }
-        }
-        engine = ExamEngine(config, checkout, overlay=overlay)
+        spec = case_a_engine()
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
+        engine = spec.engine(config, checkout)
         runtime = await engine.start()
         try:
             flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
@@ -254,33 +222,13 @@ async def run_case_b(
         harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
     try:
-        config = exam_config(
+        spec = case_b_engine()
+        config = spec.config(
             run.base_config,
             checkout=checkout,
             run_label=run.run_label,
-            reviewer_exchange_fault="none",
             tech_lead_model=tech_lead_model,
         )
-        overlay: dict[str, Any] = {
-            "review": {
-                "tech_lead_follow_up_agent": CODER_LABEL,
-                "tech_lead_review_on_failure": True,
-            },
-            "tech_lead": {
-                "max_concurrent": 1,
-                "explicit_labels": [E2E_DATA_LABEL],
-                "inherit_labels": [E2E_DATA_LABEL],
-                "authority": dict(EXAM_TECH_LEAD_AUTHORITY),
-                "findings": {"promote": "off"},
-                "health_review": {"interval_minutes": 0},
-                # The path porchpin took (#7293): the sweep finds the blocked
-                # issue and sends it to a tech-lead investigation. Production
-                # runs it every 240 minutes; the exam cannot wait that long.
-                # Its scan is scoped by filtering.label, so it only ever sees
-                # this run's issues.
-                "stuck_sweep": {"enabled": True, "interval_minutes": 1, "max_recovery_attempts": 3},
-            },
-        }
         labels = _labels(config)
         blocked_failed = labels.blocked_failed
         flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
@@ -312,7 +260,7 @@ async def run_case_b(
                 " case B's premise was not planted"
             )
 
-        engine = ExamEngine(config, checkout, overlay=overlay)
+        engine = spec.engine(config, checkout)
         runtime = await engine.start()
         try:
             started = time.monotonic()
@@ -379,12 +327,8 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
     try:
-        config = exam_config(
-            run.base_config,
-            checkout=checkout,
-            run_label=run.run_label,
-            reviewer_exchange_fault="none",
-        )
+        spec = case_c_engine()
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
         labels = _labels(config)
         flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
         flow_cleanup.append(flow)
@@ -397,7 +341,7 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
                 " engine's needs-reconcile label (porchpin#410's shape)."
             ),
         )
-        engine = ExamEngine(config, checkout, overlay={})
+        engine = spec.engine(config, checkout)
         await engine.start()
         try:
             started = time.monotonic()
