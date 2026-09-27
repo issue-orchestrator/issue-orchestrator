@@ -84,10 +84,14 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
             f"clearing {blocked_failed_label}",
             f"drop {blocked_failed_label}",
             f"{blocked_failed_label} removed",
-            "unblock",
+            # Not "unblock": tech leads warn "do not use Unblock & Retry", and
+            # a substring cannot tell advice from its negation.
             "release the review",
             "release its review",
             "release review",
+            "release to review",
+            "to code review",
+            "back to review",
         ),
     )
     return ExamCase(
@@ -122,8 +126,8 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
                         "waiting for code review",
                         "review is skipped",
                         "review never",
-                        "issue_blocked",
-                        "review_validity",
+                        "issue blocked",
+                        "review validity",
                     ),
                 ),
             ),

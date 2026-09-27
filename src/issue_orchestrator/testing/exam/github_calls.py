@@ -100,6 +100,18 @@ class GitHubCallCounts:
         }
 
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "GitHubCallCounts":
+        """Inverse of :meth:`to_dict` (``total`` is derived, not read)."""
+        by_class = data["by_class"]
+        return cls(
+            by_class={c: int(by_class[c.value]) for c in EndpointClass},
+            top_commands=tuple(
+                (str(entry["command"]), int(entry["calls"])) for entry in data["top_commands"]
+            ),
+        )
+
+
 def _by_command(report: Mapping[str, Any]) -> dict[str, int]:
     raw = report.get("by_command")
     if not isinstance(raw, Mapping):

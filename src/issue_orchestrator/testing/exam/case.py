@@ -73,8 +73,21 @@ class TermGroup:
             raise ValueError(f"term group {self.concept!r} needs non-empty terms")
 
     def matched_term(self, text: str) -> str | None:
-        folded = text.casefold()
-        return next((term for term in self.any_of if term.casefold() in folded), None)
+        folded = _plain(text)
+        return next((term for term in self.any_of if _plain(term) in folded), None)
+
+
+_MARKDOWN = str.maketrans({"`": " ", "*": " ", "_": " "})
+
+
+def _plain(text: str) -> str:
+    """Casefolded, markdown emphasis/code marks dropped, whitespace collapsed.
+
+    Tech leads write markdown: "remove `blocked-failed`" must match the
+    concept "remove blocked-failed". Underscores go too, so a term is written
+    with spaces ("issue blocked") and matches ``issue_blocked`` as well.
+    """
+    return " ".join(text.translate(_MARKDOWN).casefold().split())
 
 
 @dataclass(frozen=True)

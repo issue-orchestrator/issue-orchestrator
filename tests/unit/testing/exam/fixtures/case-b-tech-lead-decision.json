@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "summary": "#7316 did not fail. No coding session ever ran; the stuck sweep minted the 'timed_out' failure (observed_at equals last_stuck_sweep_at, and _recovered_failure hard-codes timed_out). The issue's work is already published as open, unmerged PR #7317 (head fa97e0b, needs-code-review). The only thing holding it is the issue's own blocked-failed label, which makes review_validity return issue_blocked, so the scanner never queues the review. Every automatic remedy would destroy or duplicate that work: reset_retry (authority=execute) discards it, operator Retry strips pr-pending and relaunches coding, request_rework has nothing to correct, and recover_validated_work/defer_to_tracker have no grant. Disposition: escalate_to_human with exact non-destructive release-to-review steps. The root cause is already tracked by open #7293. This is also a recurrence on the stuck-sweep seam after shipped fixes (#6927 case file, #7178, #7295), so this decision flags the pattern and proposes a root-cause design review. It also routes the evidence blind spot to #7294.",
+  "findings": [
+    {
+      "id": "T1",
+      "title": "The 'timed_out' failure on #7316 is fabricated by the stuck sweep; no coding session ever ran for this issue",
+      "classification": "systemic",
+      "evidence": [
+        "state/session_registry.sqlite sessions: only the issue-7316 tech-lead investigation session (started 2026-09-26T18:56:33)",
+        "state/issue_run_ledger.sqlite issue_runs: only run 20260927-005628Z-d5599e144f4c4c2d85f5ddad05385cba (completion_task=tech-lead); no completion intake entries or validation attestations",
+        "state/timeline.sqlite timeline_events seq 1-6: first event is tech_lead.run_requested trigger=automatic_failure; no session.* events for #7316",
+        "state/pending_work_claims.sqlite pending_work_claim tech_lead:7316 payload: failure_reason=timed_out, blocking_label=blocked-failed, observed_at=1790470569.416733",
+        "state/queue_cache.sqlite meta: last_stuck_sweep_at=1790470569.416733 (identical to observed_at), stuck_sweep_recovery_attempts={\"7316\": 0}",
+        "src/issue_orchestrator/control/stuck_sweep.py _recovered_failure: failure_reason is always SessionStatus.TIMED_OUT regardless of real state",
+        "state/validated_work.sqlite: no records for #7316"
+      ]
+    },
+    {
+      "id": "T2",
+      "title": "Ground truth: #7316's work is published as open, unmerged PR #7317 (head fa97e0b, needs-code-review), and the review is refused only because the issue itself carries blocked-failed",
+      "classification": "task",
+      "evidence": [
+        "evidence-map.json github.prs: #7317 state=OPEN merged=false head_ref=7316-exam-b-green-pr-awaiting-review branch_matches_focus=true",
+        "scoped-rework-targets.json: #7317 head_sha=fa97e0b94434b7f232097d4a6df3bc5baac0833c pr_labels=[needs-code-review, io-e2e-test-data, io:e2e:exam-b-1790470537] (no blocking or needs-rework label)",
+        "git ls-remote origin: refs/heads/7316-exam-b-green-pr-awaiting-review = refs/pull/7317/head = fa97e0b",
+        "git merge-base fa97e0b origin/main = d5e487e; 1 commit ahead; merge-base --is-ancestor fa97e0b origin/main and origin/tech-lead-exam both false (unmerged, not orphaned)",
+        "src/issue_orchestrator/control/review_validity.py:91-99 evaluate_review_validity returns issue_blocked whenever the linked issue carries a blocking label",
+        "src/issue_orchestrator/control/pr_scanner.py:162-176 scan_for_reviews skips any PR whose review validity is not valid",
+        "src/issue_orchestrator/infra/analysis.py:80-110 extract_issue_branches maps #7316 to 7316-exam-b-green-pr-awaiting-review, so #7317 is the active attempt once released",
+        "state/queue_cache.sqlite queue_issues #7316 body: 'carries blocked-failed while its open PR is green and waiting on code review' (CI state not independently verifiable, see T5)"
+      ]
+    },
+    {
+      "id": "T3",
+      "title": "Every automatic remedy available here would destroy or duplicate the published work; the tech-lead vocabulary has no non-destructive release-to-review action",
+      "classification": "systemic",
+      "evidence": [
+        ".issue-orchestrator/config/modes/default/main.yaml:211-215 tech_lead.authority reset_retry/request_rework/recover_validated_work = execute (any of these fires immediately)",
+        "src/issue_orchestrator/control/retry_policy.py:10-23 labels_to_remove_for_retry strips pr-pending along with blocking labels, so operator Retry / Unblock & Retry relaunches coding while #7317 is open",
+        "src/issue_orchestrator/control/stuck_sweep.py module docstring: the sweep expects the tech lead to propose reset_retry for re-injected issues",
+        "validated-work-recovery-targets.json: [] (recover_validated_work has no target)",
+        "recovery-context.json: recovery_tracker_numbers=[] (defer_to_tracker has no grant)",
+        "src/issue_orchestrator/control/needs_human_block.py:165-169 TECH_LEAD_ESCALATION is unsettleable by operator force_clear, so the release must remove the tech-lead-needs-human marker before Dismiss",
+        "src/issue_orchestrator/control/operator_unblock.py:111-119 dismiss clears blocked/needs-human/tech-lead-needs-human/blocked-failed/in-progress and keeps pr-pending",
+        "open issue #7293 (stuck sweep and reset_retry treat published validated work as stuck)"
+      ]
+    },
+    {
+      "id": "T4",
+      "title": "Recurrence on the stuck-sweep seam after shipped fixes: the sweep infers 'stuck' from the absence of an allow-listed owner and fabricates timed_out, and each newly legitimate waiting state gets its own point patch",
+      "classification": "systemic",
+      "evidence": [
+        "git c823903e (#6824): stuck sweep introduced with failure_reason always timed_out by design",
+        "state/tech_lead_authority.sqlite tech_lead_patterns: stuck-sweep-ghost-failure-reinjection -> case file #6927, fix_class=code, area=stuck-sweep, observation_count=4, disposition=shipped",
+        "open issue #6915 (stuck sweep re-injects parked needs-human issues with fabricated timed_out failures)",
+        "git 88482f2 (#7178): defer_to_tracker added so diagnosed issues stop being re-swept (another owner on the allow-list)",
+        "git c3784fe (#7295, 2026-09-26): recovery owns a halted exchange's issue, which fixes green PRs trapped behind blocked-failed only on the halt path",
+        "open issue #7293: general case still open; it explicitly defers the sweep ownership-model redesign as a separate design surface",
+        "open issue #7304: exam case B describes exactly this state, with the right answer 'release to review, no reset_retry'"
+      ]
+    },
+    {
+      "id": "T5",
+      "title": "Investigation evidence cannot see this state: the board snapshot lists no blocked issues, and the evidence map carries neither CI/check state nor the review-validity skip reason for the focus PR",
+      "classification": "infra",
+      "evidence": [
+        "board-snapshot.json: blocked_issues=[] and problem_cohort=[] while #7316 carries blocked-failed",
+        "evidence-map.json github.prs[0]: no check/CI state, draft flag, mergeability, or review-validity skip reason for #7317",
+        "evidence-map.json locations: orchestrator.log exists=false and state/logs/ is empty, so the '[SCANNER] Skipping stale review PR ... reason=issue_blocked' line cannot be confirmed from logs",
+        "open issue #7294 (board snapshot cannot see blocked issues whose PR is waiting on review)"
+      ]
+    }
+  ],
+  "proposed_actions": [
+    {
+      "id": "A1",
+      "action_type": "post_comment",
+      "target_number": 7316,
+      "target_is_pr": false,
+      "body": "## Tech Lead diagnosis: #7316 did not fail; its green PR is held out of review by the issue's own block\n\n**Verdict:** no coding session failed. The `timed_out` reason was fabricated by the stuck sweep. The issue's work is already published as PR #7317, which is waiting for code review. The one thing preventing that review is this issue's own `blocked-failed` label.\n\n**Ground truth**\n- **No run ever happened.** `session_registry.sqlite` and `issue_run_ledger.sqlite` contain only this investigation's run (`20260927-005628Z-…__coding-1`). The timeline has no `session.*` events before `tech_lead.run_requested`, and `validated_work.sqlite` is empty.\n- **The stuck sweep minted the failure fact.** Its `observed_at` (`1790470569.416733`) equals `queue_cache.last_stuck_sweep_at` exactly, and `stuck_sweep_recovery_attempts` is `{\"7316\": 0}` (first detection). `control/stuck_sweep.py::_recovered_failure` always reports `timed_out`, whatever the real state.\n- **PR #7317 is open and unmerged.** Its head is `fa97e0b` on `7316-exam-b-green-pr-awaiting-review`, one commit ahead of `origin/main` at `d5e487e`, and not reachable from `origin/main` or `origin/tech-lead-exam`. It is labelled `needs-code-review` and has no blocking or `needs-rework` label. The issue body says CI is green, but check state is not in the investigation evidence, so I could not verify it independently (T5).\n\n**Why it is stuck (T2):** `review_validity.evaluate_review_validity` returns `issue_blocked` whenever the linked issue carries a blocking label, so `PRScanner.scan_for_reviews` skips #7317 on every scan. The sweep does not treat an open PR awaiting review as ownership (`_reconciler_owns` / `_owned_issue_numbers`), so it re-injects the issue as a failure instead. The result is a deadlock: the work waits on review, and the review waits on the block.\n\n**Remedies ruled out (T3)**\n- `reset_retry`: discards published, reviewable work (#7293). Authority is `execute` in this deployment, so it would fire immediately.\n- Operator **Retry**, **Unblock & Retry**, and **Reset & Retry**: `retry_policy.labels_to_remove_for_retry` also strips `pr-pending`. That would relaunch a fresh coding session while #7317 is still open, creating duplicate work on a competing branch.\n- `request_rework`: #7317 has nothing to correct.\n- `recover_validated_work` and `defer_to_tracker`: no validated-work record and no recovery tracker were granted.\n\n**Right remedy:** release the block so #7317 enters code review, with no reset. The escalation that follows lists the exact steps. The root cause is tracked by open #7293. Related: #7294 (board snapshot blind to this state), #6915 (fabricated `timed_out` for parked issues), and #7295 (the same trap, fixed only for the halted-exchange path). Findings T1, T2, T3.",
+      "finding_ids": ["T1", "T2", "T3"]
+    },
+    {
+      "id": "A2",
+      "action_type": "escalate_to_human",
+      "target_number": 7316,
+      "body": "**Human action requested: release #7316 to code review. Do NOT reset or retry it.**\n\nPR #7317 (head `fa97e0b`) contains this issue's finished work and is waiting on code review. It is held only by the issue's `blocked-failed` label, plus the needs-human block this escalation adds. `evaluate_review_validity` rejects the review with `issue_blocked` while any blocking label is on the issue.\n\n**Release steps (do 1 and 2 together):**\n1. Remove the `tech-lead-needs-human` marker label from #7316 first. That marker is this escalation's durable cause. While it is present, the shared needs-human block refuses operator clears, and the tech-lead reconciler re-adds `needs-human`.\n2. Immediately afterwards, run the operator **Dismiss** command for #7316 (dashboard Dismiss, or `POST /api/issues/7316/dismiss`). It clears `needs-human`, `blocked-failed`, `blocked` and `in-progress`, keeps `pr-pending`, and does not touch PR #7317. Doing both at once means the stuck sweep cannot catch the issue half-released and re-inject another fabricated `timed_out`.\n3. Leave `pr-pending` on #7316 and `needs-code-review` on #7317.\n4. Do **not** use **Retry**, **Unblock & Retry** or **Reset & Retry**, and do not approve any `reset_retry`. Retry strips `pr-pending` (`retry_policy.py:21`) and relaunches coding against an issue whose PR is already open. A reset discards the published work.\n5. Check that the review launches on the next scan: look for `[SCANNER] Found orphaned PR #7317 for code review` or a `review-7317` session. The scanner maps #7316 to branch `7316-exam-b-green-pr-awaiting-review`, so #7317 is the active attempt. Normal review and merge then continue.\n\n**Why this is escalated rather than fixed automatically:** the tech-lead vocabulary has no non-destructive release-to-review action. `recover_validated_work` does not apply because no validated-work record exists. Every automatic remedy available here would discard or duplicate the work. While it waits for you, the `tech-lead-needs-human` marker also keeps the stuck sweep from re-injecting #7316. Systemic fix: #7293. Findings T2, T3.",
+      "finding_ids": ["T2", "T3"]
+    },
+    {
+      "id": "A3",
+      "action_type": "flag_pattern",
+      "title": "Stuck sweep re-injects an issue whose green PR is waiting on review as a fabricated timed_out failure",
+      "pattern_signature": "stuck-sweep-reinjects-green-pr-awaiting-review",
+      "area": "stuck-sweep",
+      "fix_class": "code",
+      "body": "**Signature:** an open issue carries a blocking label (typically `blocked-failed`) while its own open PR is labelled for code review. The review scanner refuses the PR because the issue is blocked. The stuck sweep then treats the issue as unowned and re-injects it into failure investigation as a fabricated `timed_out`, where the only automatic remedies discard or duplicate the published work.\n\n**Causal mechanism**\n1. `review_validity.evaluate_review_validity` returns `issue_blocked` for any blocking label on the linked issue, so `PRScanner.scan_for_reviews` never queues the PR.\n2. `stuck_sweep._scan_stuck_issues` counts an issue as owned only through an allow-list: active session, pending tech-lead work, tech-lead-needs-human marker, open provider circuit, or disposition ledger. An open PR awaiting review is not on it, so the issue is a candidate.\n3. `stuck_sweep._recovered_failure` hard-codes `failure_reason=timed_out`, even when no session ever ran.\n4. In the investigation, `reset_retry` (authority `execute`) discards the PR, and operator Retry strips `pr-pending` (`retry_policy.py:21`) and relaunches coding. `recover_validated_work` needs a validated-work record, which a PR published by any other route does not have.\n\n**Observations:** porchpin, 2026-09-23 (8 green PRs, fixed only for the halted-exchange path by #7295). #7316 / PR #7317, 2026-09-26: reached by a non-halt route, zero sessions, and `observed_at == last_stuck_sweep_at`.\n\n**Suggested fix (code, stuck-sweep):** treat an issue whose open PR carries the review label and no PR-level blocker as owned by a release-to-review path instead of failure investigation. That path clears the issue's blocking label and keeps `pr-pending`, so the scanner queues the review. `reset_retry` and operator Retry must refuse while such a PR exists unless the operator explicitly abandons it. Derive the re-injected failure reason from real session evidence (`no_session` here) instead of `timed_out`. Point-fix tracker: #7293. The seam-level redesign is proposed separately (stuck-sweep ownership model). Findings T1, T2, T4.",
+      "finding_ids": ["T1", "T2", "T4"]
+    },
+    {
+      "id": "A4",
+      "action_type": "create_issue",
+      "title": "Design review: stuck sweep infers 'stuck' from the absence of an allow-listed owner and fabricates timed_out; replace with evidence-derived next-action states",
+      "labels": ["bug"],
+      "area": "stuck-sweep",
+      "body": "## Seam\n`control/stuck_sweep.py` (ADR-0031 reactive backstop): its ownership model and the `DiscoveredFailure` it re-injects into reactive tech-lead.\n\n## Mechanism\nThe sweep declares an issue stuck when it carries a blocking label AND no allow-listed owner claims it (`_owned_issue_numbers`, `_reconciler_owns`, the disposition ledger). It then re-injects a failure whose `failure_reason` is hard-coded to `timed_out` (`_recovered_failure`) so the reaction model always investigates. This has two consequences:\n1. Any legitimate waiting state missing from the allow-list is misread as a failure. Examples: a published PR awaiting review, a human-parked decision, retained validated work.\n2. The fabricated `timed_out` flows into `recent_failures`, storm cohorts and the investigation prompt as if a session had timed out. The sweep's own docstring then points the tech lead at `reset_retry`, which is the destructive remedy for exactly those waiting states.\n\n## Accumulated point patches and recurrences on this seam\n- #6824 (c823903e): sweep introduced; the `timed_out` reason is always used, by design.\n- Case file #6927 `stuck-sweep-ghost-failure-reinjection`: 4 observations, disposition `shipped`.\n- #6915 (open): parked needs-human issues re-injected with a fabricated `timed_out`.\n- #7178 (88482f2): `defer_to_tracker` added so diagnosed issues stop being re-swept. This added one more owner to the allow-list.\n- #7295 (c3784fe, 2026-09-26): recovery owns a halted exchange's issue. This fixed porchpin's 8 green PRs trapped behind `blocked-failed`, but only on the halt path.\n- #7293 (open): the general case of published validated work treated as stuck. It explicitly defers the ownership-model redesign.\n- #7316 (2026-09-26, this investigation): the same trap via a non-halt route. PR #7317 is open and `needs-code-review`, but the issue carries `blocked-failed`, so `review_validity` returns `issue_blocked`. The sweep minted `timed_out` although zero sessions ever ran, and every automatic remedy would destroy or duplicate the work.\n\n## Recommendation (deep rework, not another allow-list entry)\n1. **Stuck is a positive fact.** An issue is stuck only when its latest run has a terminal failure fact, or it has none, AND no next action is owned. Compute the next required action once, as a typed projection shared with the dashboard lanes (see #7057). The states are: awaiting-review, awaiting-merge, awaiting-human, awaiting-provider, awaiting-tracker, and failed. Only `failed` enters failure investigation.\n2. **Never fabricate the failure reason.** Carry the real evidence: the last session outcome or `no_session`, the blocking label, and the open-PR/review state. Give the reaction model an explicit 'stuck without a failed run' input instead of overloading `timed_out`.\n3. **Awaiting-review goes to a release owner.** If an open PR carries the review label and the only gate is the issue's own blocking label, route it to a non-destructive release-to-review command. `reset_retry` and operator Retry must refuse while such a PR exists, unless an operator explicitly abandons it. Today Retry strips `pr-pending` (`retry_policy.py:21`).\n4. Re-scope #6915 and #7293 as slices of this redesign, so the next new waiting state cannot come back as another patch.\n\n## Acceptance\n- Exam case B (#7304) ends with the PR in review, no `reset_retry`, and no failure investigation launched.\n- A parked needs-human issue is not re-injected.\n- No `timed_out` fact is produced for an issue with no session.\n\nFindings T1, T3, T4.",
+      "finding_ids": ["T1", "T3", "T4"]
+    },
+    {
+      "id": "A5",
+      "action_type": "create_issue",
+      "title": "Tech-lead evidence is blind to a blocked issue whose open PR waits on review: board snapshot omits it, evidence map lacks the PR's CI state and review-validity skip reason",
+      "labels": ["enhancement"],
+      "duplicate_of": 7294,
+      "pattern_signature": "tech-lead-evidence-blind-to-blocked-issue-open-pr",
+      "body": "Fresh sighting for #7294, from the #7316 failure investigation (2026-09-26).\n\n- `board-snapshot.json` had `blocked_issues: []` and `problem_cohort: []` while #7316 carried `blocked-failed` and its PR #7317 sat open with `needs-code-review`. This is #7294 reproduced exactly.\n- Additional gap on a second surface: the investigation's `evidence-map.json` `github.prs[]` block for the focus PR carries state, merged, head/base and branch match, but no CI/check-run state, draft flag, mergeability, or the scanner's review-validity skip reason (`issue_blocked`). The case's central claim, that the PR is green, could therefore not be verified from supplied evidence.\n- The orchestrator log was absent (`exists=false`, `state/logs/` empty), so the scanner's `[SCANNER] Skipping stale review PR ... reason=issue_blocked` line could not corroborate the diagnosis either.\n\nSuggested scope addition to #7294: emit the review-validity skip as a structured event (pr, issue, reason, blocking labels), not only a log line, and project it together with the PR's check state into both the board snapshot and the failure-investigation evidence map for the focus issue's PRs. Finding T5.",
+      "finding_ids": ["T5"]
+    }
+  ]
+}

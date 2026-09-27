@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping
 
 from .github_calls import GitHubCallCounts
 
@@ -65,6 +65,17 @@ class PullRequestFact:
             "checks": self.checks,
         }
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "PullRequestFact":
+        return cls(
+            number=int(data["number"]),
+            state=PullRequestState(data["state"]),
+            labels=frozenset(data["labels"]),
+            branch=str(data["branch"]),
+            branch_exists=bool(data["branch_exists"]),
+            checks=str(data["checks"]),
+        )
+
 
 @dataclass(frozen=True)
 class StallFacts:
@@ -89,6 +100,16 @@ class StallFacts:
             "blocking_labels": list(self.blocking_labels),
             "unanswered_screen": self.unanswered_screen,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "StallFacts":
+        return cls(
+            last_transition=str(data["last_transition"]),
+            last_transition_at=str(data["last_transition_at"]),
+            refusing_gate=str(data["refusing_gate"]),
+            blocking_labels=tuple(data["blocking_labels"]),
+            unanswered_screen=str(data["unanswered_screen"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -126,6 +147,18 @@ class WorkItemFact:
             "events": list(self.events),
         }
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "WorkItemFact":
+        return cls(
+            role=str(data["role"]),
+            issue_number=int(data["issue_number"]),
+            issue_state=str(data["issue_state"]),
+            issue_labels=frozenset(data["issue_labels"]),
+            pull_requests=tuple(PullRequestFact.from_dict(pr) for pr in data["pull_requests"]),
+            stall=StallFacts.from_dict(data["stall"]),
+            events=tuple(data["events"]),
+        )
+
 
 class TechLeadActionDisposition(str, Enum):
     """What the engine did with one proposed tech-lead action."""
@@ -150,6 +183,16 @@ class TechLeadActionFact:
             "body": self.body,
             "disposition": self.disposition.value,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TechLeadActionFact":
+        target = data["target_number"]
+        return cls(
+            action_type=str(data["action_type"]),
+            target_number=None if target is None else int(target),
+            body=str(data["body"]),
+            disposition=TechLeadActionDisposition(data["disposition"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -181,9 +224,25 @@ class TechLeadRunFact:
             "phase": self.phase,
             "detail": self.detail,
             "summary": self.summary,
+            "findings_text": self.findings_text,
+            "report_text": self.report_text,
             "actions": [action.to_dict() for action in self.actions],
             "last_screen": self.last_screen,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TechLeadRunFact":
+        return cls(
+            run_id=str(data["run_id"]),
+            flavor=str(data["flavor"]),
+            phase=str(data["phase"]),
+            detail=str(data["detail"]),
+            summary=str(data["summary"]),
+            findings_text=str(data["findings_text"]),
+            report_text=str(data["report_text"]),
+            actions=tuple(TechLeadActionFact.from_dict(a) for a in data["actions"]),
+            last_screen=str(data["last_screen"]),
+        )
 
 
 class RunEnd(str, Enum):
@@ -227,3 +286,17 @@ class ExamObservation:
             "ended_by": self.ended_by.value,
             "notes": list(self.notes),
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ExamObservation":
+        """Rebuild a saved observation, so its scorecard can be re-graded."""
+        return cls(
+            case_id=str(data["case_id"]),
+            engine_commit=str(data["engine_commit"]),
+            items=tuple(WorkItemFact.from_dict(item) for item in data["items"]),
+            tech_lead_runs=tuple(TechLeadRunFact.from_dict(r) for r in data["tech_lead_runs"]),
+            github_calls=GitHubCallCounts.from_dict(data["github_calls"]),
+            elapsed_seconds=float(data["elapsed_seconds"]),
+            ended_by=RunEnd(data["ended_by"]),
+            notes=tuple(data["notes"]),
+        )
