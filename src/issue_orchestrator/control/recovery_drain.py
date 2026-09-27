@@ -72,6 +72,10 @@ class RecoveryDrain:
         """
         request = self._request(command)
         key = self._liveness.key(request)
+        if key is None:
+            # A fact read for the record just failed, and was settled as that
+            # read's attempt; the operator's run still goes ahead.
+            return self._operation.run(request, state)
         try:
             result = self._operation.run(request, state)
         except Exception as error:
@@ -128,6 +132,9 @@ class RecoveryDrain:
         # a record parked on unchanged facts is held, never retried every pass.
         # It still yields an item, so the round-robin cursor moves past it.
         key = self._liveness.key(request)
+        if key is None:
+            held = RecoveryAttemptPending("Held by action liveness: a fact read for the record failed")
+            return RecoveryDrainItem(request.record_id, request.evidence_id, held)
         decision = self._liveness.admit(key)
         if not decision.admitted:
             held = RecoveryAttemptPending(f"Held by action liveness: {decision.describe()}")

@@ -158,23 +158,47 @@ def test_an_operation_that_raises_every_pass_parks(tmp_path) -> None:
 
 def test_a_record_whose_disposition_cannot_be_read_is_still_bounded(tmp_path) -> None:
     """Selection returns the record but its disposition read fails every
-    pass: the key is still made (stably, with no issue), so the attempt is
-    counted and parks, and the next record keeps its turn (review B r11)."""
+    pass. Each failed READ is an attempt under a stable key; after
+    max_attempts the read stops -- across restarts too -- the next record
+    keeps its turn, and after a release the healed record runs (review B r11,
+    r16)."""
+    from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
+    from issue_orchestrator.domain.action_liveness import ActionIdentity
+
     engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"), issues=(410, 411))
     first, second = (
         request.record_id for request in engine.store.drain_requests(after_record_id="", limit=5)
     )
     engine.unreadable = frozenset({first})
+    reads: list[str] = []
+    get = engine.get
 
-    engine.passes(30)
+    def counted_get(record_id):
+        if record_id == first:
+            reads.append(record_id)
+        return get(record_id)
 
-    assert engine.operation.called.count(first) == POLICY.max_attempts
+    engine.get = counted_get  # type: ignore[method-assign]
+    for index in range(30):
+        if index % 5 == 0:  # a new process: only the durable rows survive
+            engine.drain._liveness = RecoveryDrainLiveness(owner=engine.owner, records=engine)
+        engine.passes(1)
+
+    assert len(reads) == POLICY.max_attempts
+    assert engine.operation.called.count(first) == 0
     assert engine.operation.called.count(second) == POLICY.max_attempts
     [unreadable_park] = [
         row for row in engine.escalation.parked
         if row.key.identity.subject == f"validated_work:{first}"
     ]
     assert unreadable_park.key.escalation_issue is None
+
+    engine.unreadable = frozenset()
+    engine.owner.release_identity(
+        ActionIdentity(f"validated_work:{first}", "recover_validated_work")
+    )
+    engine.passes(1)
+    assert engine.operation.called.count(first) == 1
 
 
 def test_contention_spends_nothing_but_is_shown(tmp_path) -> None:

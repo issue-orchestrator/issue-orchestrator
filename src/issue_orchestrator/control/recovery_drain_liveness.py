@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from ..domain.action_liveness import (
     ActionIdentity,
@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
 
 #: The scope facts of a record whose attached evidence could not be read.
 _UNREADABLE = "unreadable"
+
+_Fact = TypeVar("_Fact")
 
 RECOVER_ACTION = "recover_validated_work"
 REFRESH_ACTION = "refresh_remote_authority"
@@ -132,63 +134,91 @@ class RecoveryDrainLiveness:
     #: also reads, is a fact of that question.
     records: RecordFacts
 
-    def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
+    def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey | None:
+        """The key a drain request runs under; ``None`` when a fact read for it
+        just failed (that failure is already settled: nothing else to run).
+
+        The record, its current evidence and its durable state are the facts.
+        An operator's approval is authority to run, not a fact: the explicit
+        recovery of a parked selection is the same question, and its success
+        must settle that park.
+        """
         if isinstance(request, RemoteAuthorityRefreshRequest):
             return self._key(REFRESH_ACTION, request.record_id,
                              request.authority.issue_number, request)
-        # The record, its current evidence and its durable state are the facts.
-        # An operator's approval is authority to run, not a fact: the explicit
-        # recovery of a parked selection is the same question, and its success
-        # must settle that park.
-        return self._record_key(RECOVER_ACTION, request.record_id, request.evidence_id)
+        disposition = self._disposition(RECOVER_ACTION, request.record_id, request.evidence_id)
+        if disposition is None or isinstance(disposition, LivenessKey):
+            return disposition
+        return self._record_key(RECOVER_ACTION, request.record_id, request.evidence_id, disposition)
 
     def scope_key(self, request: RecoveryRecordRequest) -> LivenessKey | None:
         """The scope sweep's judgement of one record (#7323's lane), over every
-        evidence row it reads: newly attached evidence is a new question.
+        evidence row it reads: newly attached evidence is a new question."""
+        record_id, evidence_id = request.record_id, request.evidence_id
+        disposition = self._disposition(SCOPE_ACTION, record_id, evidence_id)
+        if disposition is None or isinstance(disposition, LivenessKey):
+            return disposition
+        attached = self._guarded_read(
+            self._record_key(SCOPE_ACTION, record_id, evidence_id, disposition, attached=_UNREADABLE),
+            lambda: frozenset(row.evidence_id for row in self.records.attached_evidence(record_id)),
+            f"Attached evidence of record {record_id}",
+        )
+        if attached is None or isinstance(attached, LivenessKey):
+            return attached
+        return self._record_key(SCOPE_ACTION, record_id, evidence_id, disposition, attached=attached)
 
-        Attached evidence that cannot be read is a fact of its own, under a
-        stable "unreadable" key, and each failed read is that key's attempt,
-        settled here (``None``: nothing else to run). The read is made only
-        while that durable key is admitted -- its backoff paces the reads and
-        its park stops them, across restarts, until an operator releases it.
-        A read that succeeds is a new question.
+    def _disposition(
+        self, action: str, record_id: str, evidence_id: str
+    ) -> ValidatedWorkDisposition | LivenessKey | None:
+        """The record's disposition, read under its own stable "unreadable" key
+        (with no issue to escalate on, since none could be read)."""
+        unreadable = self._key(action, record_id, None, {
+            "record_id": record_id, "evidence_id": evidence_id, "state": _UNREADABLE,
+        })
+        return self._guarded_read(
+            unreadable, lambda: self.records.get(record_id), f"Disposition of record {record_id}"
+        )
+
+    def _guarded_read(
+        self, unreadable: LivenessKey, read: Callable[[], _Fact], what: str
+    ) -> _Fact | LivenessKey | None:
+        """Read one fact of a key under the stable key of its read failing.
+
+        A failed read is a fact of its own, and each is that key's attempt,
+        settled here (``None``). The read is made only while that durable key
+        is admitted -- its backoff paces the reads and its park stops them,
+        across restarts, until an operator releases it (the held key is then
+        returned, which its caller's admission holds too). A read that
+        succeeds answers that question, so its row goes.
         """
-        record_id = request.record_id
-        unreadable = self._scope_key(request, _UNREADABLE)
         decision = self.owner.admit(unreadable)
         if not decision.admitted:
             return unreadable
         try:
-            attached = frozenset(row.evidence_id for row in self.records.attached_evidence(record_id))
+            fact = read()
         except Exception as error:
-            logger.warning("Attached evidence of record %s is unreadable", record_id, exc_info=True)
-            self.settle_error(unreadable, error)
+            logger.warning("%s is unreadable", what, exc_info=True)
+            self.owner.record(
+                unreadable,
+                transient_outcome(f"{type(error).__name__}: {error}", host_rate_limit_of(error)),
+            )
             return None
         if decision.row is not None:
-            # The read succeeded: that question is answered. Only its own row
-            # goes -- the readable question is judged under its own key.
             self.owner.record(unreadable, ActionOutcome.done())
-        return self._scope_key(request, attached)
-
-    def _scope_key(self, request: RecoveryRecordRequest, attached: object) -> LivenessKey:
-        return self._record_key(
-            SCOPE_ACTION, request.record_id, request.evidence_id, attached=attached
-        )
+        return fact
 
     def _record_key(
-        self, action: str, record_id: str, evidence_id: str, **extra: object
+        self,
+        action: str,
+        record_id: str,
+        evidence_id: str,
+        disposition: ValidatedWorkDisposition,
+        **extra: object,
     ) -> LivenessKey:
-        facts: dict[str, object] = {"record_id": record_id, "evidence_id": evidence_id, **extra}
-        try:
-            disposition = self.records.get(record_id)
-        except Exception:
-            # A record selection returned but whose disposition cannot be read:
-            # still keyed, stably, so its operation (which reads the record
-            # itself, after admission) is bounded; with no readable issue its
-            # park escalates nowhere but the board and the CLI.
-            logger.warning("Disposition of record %s is unreadable", record_id, exc_info=True)
-            return self._key(action, record_id, None, {**facts, "state": _UNREADABLE})
-        facts["state"] = disposition.state
+        facts = {
+            "record_id": record_id, "evidence_id": evidence_id,
+            "state": disposition.state, **extra,
+        }
         return self._key(action, record_id, disposition.key.issue_number, facts)
 
     @staticmethod
