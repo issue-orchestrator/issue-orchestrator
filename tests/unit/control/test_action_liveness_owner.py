@@ -251,7 +251,7 @@ def test_a_release_is_owed_durably_the_moment_the_park_is_forgotten(tmp_path) ->
     owner.record(KEY, ActionOutcome.permanent("stuck"))
 
     # The store's half of success, with no owner afterwards (the crash).
-    SQLiteActionLivenessStore(path).clear_identity(KEY.identity)
+    SQLiteActionLivenessStore(path).clear_key(KEY)
 
     escalation = RecordingEscalation()
     restarted = liveness_owner(

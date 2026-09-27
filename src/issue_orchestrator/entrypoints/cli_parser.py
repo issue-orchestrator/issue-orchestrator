@@ -648,6 +648,6 @@ def _register_utility_commands(subparsers, handlers: CLICommandHandlers) -> None
     liveness_parser.add_argument(
         "liveness_args",
         nargs=argparse.REMAINDER,
-        help="list | release --subject <subject> --action <action> [--repo-root <path>]",
+        help="list [--repo-root <path>] | release --subject S --action A [--repo-root <path>]",
     )
     liveness_parser.set_defaults(func=handlers.action_liveness)

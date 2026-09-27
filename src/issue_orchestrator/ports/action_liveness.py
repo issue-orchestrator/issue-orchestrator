@@ -46,8 +46,22 @@ class ActionLivenessStore(Protocol):
         """
         ...
 
-    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        """Delete every fingerprint's row for ``identity`` (an operator's release)."""
+    def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        """An operator's release: delete every fingerprint's row for ``identity``.
+
+        In the same transaction it owes each deleted park a durable
+        ``action.released`` announcement, published by the engine's next
+        :meth:`ActionLivenessOwner.reconcile_effects` wherever the release came
+        from (the CLI runs outside the engine and has no timeline of its own).
+        """
+        ...
+
+    def pending_announcements(self) -> tuple[tuple[int, LivenessRow], ...]:
+        """Owed release announcements, oldest first, each with its id."""
+        ...
+
+    def clear_announcement(self, announcement_id: int) -> None:
+        """The announcement was published."""
         ...
 
     def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:

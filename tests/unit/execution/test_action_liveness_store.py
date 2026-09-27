@@ -62,18 +62,20 @@ def test_put_replaces_the_row_for_its_key(tmp_path) -> None:
     assert store.row(parked.key) == parked
 
 
-def test_clear_identity_deletes_every_fingerprint_of_that_action(tmp_path) -> None:
+def test_an_operator_release_deletes_every_fingerprint_and_owes_its_announcement(tmp_path) -> None:
     store = SQLiteActionLivenessStore(tmp_path / "l.sqlite")
     a, b = _row(fingerprint="a" * 32), _row(fingerprint="b" * 32)
     other = _row(action="add_label")
     for row in (a, b, other):
         store.put(row)
 
-    cleared = store.clear_identity(a.key.identity)
+    cleared = store.release_identity(a.key.identity)
 
     assert set(cleared) == {a, b}
     assert store.row(a.key) is None and store.row(b.key) is None
     assert store.row(other.key) == other
+    announced = [row.key for _id, row in SQLiteActionLivenessStore(tmp_path / "l.sqlite").pending_announcements()]
+    assert sorted(announced, key=lambda k: k.fingerprint) == [a.key, b.key]
 
 
 def test_escalation_queries_and_release_by_issue(tmp_path) -> None:

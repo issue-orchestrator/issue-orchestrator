@@ -43,6 +43,18 @@ from ..ports.action_liveness import ActionLivenessStore, LivenessEscalation
 logger = logging.getLogger(__name__)
 
 
+def release_parked_action(
+    store: ActionLivenessStore, identity: ActionIdentity
+) -> tuple[LivenessRow, ...]:
+    """The one operator release of an action, in-process or from the CLI.
+
+    One store transaction forgets the rows, owes their blocks' release and owes
+    their ``action.released`` announcement; the engine's next
+    :meth:`ActionLivenessOwner.reconcile_effects` settles both.
+    """
+    return store.release_identity(identity)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -139,6 +151,9 @@ class ActionLivenessOwner:
         refusing is neither lost nor hammered. Called once per planning cycle.
         """
         now = self._clock()
+        for announcement_id, row in self._store.pending_announcements():
+            self._escalation.announce_released((row,))
+            self._store.clear_announcement(announcement_id)
         # A question nobody asks any more is not parked: its facts changed or
         # the action is no longer wanted. Retiring it owes its block's release.
         self._resolve(self._store.retire_unplanned(now - self._policy.stale_after))
@@ -171,11 +186,9 @@ class ActionLivenessOwner:
         The route for a park no issue carries (an ``engine`` subject), or one
         a person wants retried without touching its issue. Blocks the released
         rows escalated are owed their release, which :meth:`reconcile_effects`
-        settles.
+        settles, as it publishes the release on the timeline.
         """
-        released = self._store.clear_identity(identity)
-        self._resolve(released)
-        return released
+        return release_parked_action(self._store, identity)
 
     def parked(self) -> tuple[LivenessRow, ...]:
         """Every parked row, for the tech-lead board and diagnostics."""
@@ -215,7 +228,7 @@ class ActionLivenessOwner:
             return
         self._escalation.announce_released(parked)
         now = self._clock()
-        # ``clear_identity`` already owed each freed issue its release in the
+        # The store's clear already owed each freed issue its release in the
         # same transaction that forgot the parks; try to settle them now.
         for issue in sorted(
             {
@@ -237,4 +250,4 @@ class ActionLivenessOwner:
         self._store.record_release_attempt(issue_number, now)
 
 
-__all__ = ["ActionLivenessOwner", "LivenessDecision"]
+__all__ = ["ActionLivenessOwner", "LivenessDecision", "release_parked_action"]

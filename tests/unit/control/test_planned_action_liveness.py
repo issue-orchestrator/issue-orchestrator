@@ -763,25 +763,38 @@ def test_alternating_plans_cannot_launder_a_sibling_failure(sample_config) -> No
     assert [row.key.identity.action for row in engine.owner.parked()] == ["add_comment"]
 
 
-def test_an_engine_park_is_released_by_the_operator_cli(sample_config, tmp_path) -> None:
-    """A park no issue carries (authoring a new anchor) is released by the
-    operator command, then runs on the next tick (review r8)."""
+def test_an_engine_park_is_released_by_the_operator_cli(sample_config, tmp_path, monkeypatch) -> None:
+    """A park no issue carries (authoring a new anchor) is released through the
+    top-level CLI, announced on the timeline by the engine's next cycle, and
+    runs again (review r8/r9)."""
+    import sys
+
+    from issue_orchestrator.entrypoints import cli
     from issue_orchestrator.entrypoints.bootstrap_action_liveness import ACTION_LIVENESS_DB
-    from issue_orchestrator.entrypoints.cli_tools.action_liveness import main as cli
     from issue_orchestrator.execution.action_liveness_store import SQLiteActionLivenessStore
     from issue_orchestrator.infra.repo_identity import state_dir
 
-    store = SQLiteActionLivenessStore(state_dir(tmp_path) / ACTION_LIVENESS_DB)
-    engine = _Engine(sample_config, planned=lambda: [], apply=lambda a: ActionResult.ok(a))
-    engine.owner = liveness_owner(store=store, escalation=engine.escalation, clock=engine.clock, policy=POLICY)
+    path = state_dir(tmp_path) / ACTION_LIVENESS_DB
     key = planned_action_key(
         RemoveLabelAction(issue_number=0, label="x"), {}, escalation_label=NEEDS_HUMAN
     )
     assert key.identity.subject == "engine"
-    engine.owner.record(key, ActionOutcome.permanent("403"))
-    assert not engine.owner.admit(key).admitted
+    liveness_owner(store=SQLiteActionLivenessStore(path), policy=POLICY).record(
+        key, ActionOutcome.permanent("403")
+    )
 
-    assert cli(["--repo-root", str(tmp_path), "release", "--subject", "engine",
-                "--action", key.identity.action]) == 0
+    monkeypatch.setattr(sys, "argv", [
+        "issue-orchestrator", "action-liveness", "release", "--subject", "engine",
+        "--action", key.identity.action, "--repo-root", str(tmp_path),
+    ])
+    assert cli.main() == 0
 
-    assert engine.owner.admit(key).admitted
+    escalation = RecordingEscalation()
+    restarted = liveness_owner(
+        store=SQLiteActionLivenessStore(path), escalation=escalation, policy=POLICY
+    )
+    restarted.reconcile_effects()
+    assert [[row.key for row in rows] for rows in escalation.released] == [[key]]
+    restarted.reconcile_effects()
+    assert len(escalation.released) == 1, "announced once"
+    assert restarted.admit(key).admitted

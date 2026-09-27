@@ -48,6 +48,18 @@ CREATE TABLE IF NOT EXISTS action_liveness (
 );
 CREATE INDEX IF NOT EXISTS action_liveness_escalation_issue
     ON action_liveness (escalation_issue);
+CREATE TABLE IF NOT EXISTS action_liveness_announcement (
+    announcement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    action TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    escalation_issue INTEGER,
+    attempts INTEGER NOT NULL,
+    first_failed_at TEXT NOT NULL,
+    last_failed_at TEXT NOT NULL,
+    last_outcome TEXT NOT NULL,
+    last_reason TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS action_liveness_release (
     issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -90,6 +102,17 @@ _UNPLANNED_SINCE = _SELECT + " WHERE COALESCE(last_planned_at, last_failed_at) <
 _DELETE_KEY = "DELETE FROM action_liveness WHERE subject=? AND action=? AND fingerprint=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
 _FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
+_OWE_ANNOUNCEMENT = (
+    "INSERT INTO action_liveness_announcement (subject, action, fingerprint,"
+    " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
+    " last_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+_ANNOUNCEMENTS = (
+    "SELECT announcement_id, subject, action, fingerprint, escalation_issue, attempts,"
+    " first_failed_at, last_failed_at, last_outcome, last_reason"
+    " FROM action_liveness_announcement ORDER BY announcement_id"
+)
+_FORGET_ANNOUNCEMENT = "DELETE FROM action_liveness_announcement WHERE announcement_id=?"
 _OWE_RELEASE = "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)"
 
 
@@ -155,8 +178,36 @@ class SQLiteActionLivenessStore:
     def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
         return self._forget(_BY_KEY, (key.identity.subject, key.identity.action, key.fingerprint))
 
-    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        return self._forget(_BY_IDENTITY, (identity.subject, identity.action))
+    def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        rows = self._forget(
+            _BY_IDENTITY, (identity.subject, identity.action), announce=True
+        )
+        return rows
+
+    def pending_announcements(self) -> tuple[tuple[int, LivenessRow], ...]:
+        return tuple(
+            (
+                found["announcement_id"],
+                LivenessRow(
+                    key=LivenessKey(
+                        ActionIdentity(found["subject"], found["action"]),
+                        found["fingerprint"],
+                        found["escalation_issue"],
+                    ),
+                    attempts=found["attempts"],
+                    first_failed_at=datetime.fromisoformat(found["first_failed_at"]),
+                    last_failed_at=datetime.fromisoformat(found["last_failed_at"]),
+                    last_outcome=OutcomeKind(found["last_outcome"]),
+                    last_reason=found["last_reason"],
+                    next_attempt_at=None,
+                ),
+            )
+            for found in self._connection().execute(_ANNOUNCEMENTS).fetchall()
+        )
+
+    def clear_announcement(self, announcement_id: int) -> None:
+        with self._write() as conn:
+            conn.execute(_FORGET_ANNOUNCEMENT, (announcement_id,))
 
     def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
         return self._forget(_UNPLANNED_SINCE, (before.isoformat(),))
@@ -169,7 +220,9 @@ class SQLiteActionLivenessStore:
                  key.fingerprint),
             )
 
-    def _forget(self, select: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
+    def _forget(
+        self, select: str, params: tuple[object, ...], *, announce: bool = False
+    ) -> tuple[LivenessRow, ...]:
         """Delete the selected rows and owe their blocks' release, atomically.
 
         A crash between forgetting an escalated park and recording that its
@@ -181,6 +234,16 @@ class SQLiteActionLivenessStore:
             for row in rows:
                 identity = row.key.identity
                 conn.execute(_DELETE_KEY, (identity.subject, identity.action, row.key.fingerprint))
+                if announce and row.parked:
+                    conn.execute(
+                        _OWE_ANNOUNCEMENT,
+                        (
+                            identity.subject, identity.action, row.key.fingerprint,
+                            row.key.escalation_issue, row.attempts,
+                            row.first_failed_at.isoformat(), row.last_failed_at.isoformat(),
+                            row.last_outcome.value, row.last_reason,
+                        ),
+                    )
             for issue in sorted(
                 {
                     row.key.escalation_issue

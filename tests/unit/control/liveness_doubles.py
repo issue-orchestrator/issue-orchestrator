@@ -23,6 +23,7 @@ class InMemoryActionLivenessStore:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], LivenessRow] = {}
         self.releases: dict[int, PendingRelease] = {}
+        self.announcements: dict[int, LivenessRow] = {}
 
     @staticmethod
     def _id(key: LivenessKey) -> tuple[str, str, str]:
@@ -50,8 +51,18 @@ class InMemoryActionLivenessStore:
     def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
         return self._forget(lambda row: row.key == key)
 
-    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        return self._forget(lambda row: row.key.identity == identity)
+    def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        gone = self._forget(lambda row: row.key.identity == identity)
+        for row in gone:
+            if row.parked:
+                self.announcements[len(self.announcements) + 1] = row
+        return gone
+
+    def pending_announcements(self) -> tuple[tuple[int, LivenessRow], ...]:
+        return tuple(sorted(self.announcements.items()))
+
+    def clear_announcement(self, announcement_id: int) -> None:
+        del self.announcements[announcement_id]
 
     def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
         return self._forget(lambda row: row.planned_at < before)
