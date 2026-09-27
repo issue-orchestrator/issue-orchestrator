@@ -634,13 +634,14 @@ def _scope_rig(tmp_path, proof, *, issues=(6914,)):
                     for evidence_id in sorted(rig.attached_evidence(rid))
                 ),
             ),
+            clock=rig.clock,
         ),
     )
 
-    def passes(count):
+    def passes(count, step=timedelta(hours=1)):
         for _ in range(count):
             rig.sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
-            rig.clock.advance(timedelta(hours=1))
+            rig.clock.advance(step)
 
     rig.passes = passes
     return rig
@@ -707,13 +708,17 @@ def test_a_retirement_the_store_keeps_refusing_is_bounded(tmp_path):
 
 def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp_path):
     """The first record's attached evidence cannot be read, by the key and by
-    the proof alike. That record is judged max_attempts times and parked; the
-    second record is still judged; once readable, the first is judged again
-    (review B r5)."""
+    the proof alike. The READ is attempted exactly max_attempts times, then
+    the record parks; the second record is still judged every pass; a paced
+    re-read that succeeds is a new question (review B r5, r8)."""
+    from datetime import timedelta
+
     unreadable: set[str] = set()
+    reads: list[str] = []
 
     def attached_evidence(record_id):
         if record_id in unreadable:
+            reads.append(record_id)
             raise OSError("evidence store unreadable")
         return frozenset()
 
@@ -725,21 +730,24 @@ def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp
     rig.attached_evidence = attached_evidence
     first, second = rig.record_ids
     unreadable.add(first)
-    # A proof that succeeds is cached per evidence; forget it each pass so
-    # the second record keeps being judged.
-    for _ in range(10):
+    minute = timedelta(minutes=1)
+    for _ in range(30):
+        # A proof that succeeds is cached per evidence; forget it each pass so
+        # the second record keeps being judged.
         rig.sweep._owned.clear()
-        rig.passes(1)
+        rig.passes(1, step=minute)
 
-    assert rig.proofs.count(first) == rig.policy.max_attempts
-    assert rig.proofs.count(second) == 10
+    assert reads.count(first) == rig.policy.max_attempts
+    assert rig.proofs.count(second) == 30
     [parked] = rig.escalation.parked
     assert parked.key.identity.subject == f"validated_work:{first}"
     assert "evidence store unreadable" in parked.last_reason
 
     unreadable.clear()
-    rig.passes(1)
-    assert rig.proofs.count(first) == rig.policy.max_attempts + 1
+    rig.clock.advance(rig.policy.max_backoff)
+    judged = rig.proofs.count(first)
+    rig.passes(1, step=minute)
+    assert rig.proofs.count(first) == judged + 1
 
 
 def test_an_unreadable_record_is_judged_bounded_and_never_starves_the_sweep(tmp_path):

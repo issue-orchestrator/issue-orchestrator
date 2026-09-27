@@ -206,7 +206,7 @@ class OutOfScopeRetirementSweep:
         was retired. A judgement that fails the same way every pass is held,
         then parked, like any other replanned action."""
         key = self._liveness.scope_key(request)
-        if not self._liveness.admit(key).admitted:
+        if key is None or not self._liveness.admit(key).admitted:
             return False
         try:
             judgement = self._judge(request)
