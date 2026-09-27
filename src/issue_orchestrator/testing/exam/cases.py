@@ -16,6 +16,7 @@ from .case import (
     pr_checks_green,
     pr_has_label,
     pr_in_state,
+    pr_review_approved,
     published_work_survives,
 )
 from .observation import PullRequestState
@@ -50,6 +51,7 @@ def halted_exchange_with_validated_work(
         goals=(
             pr_in_state(SUBJECT, PullRequestState.READY, PullRequestState.MERGED),
             pr_has_label(SUBJECT, code_reviewed_label),
+            pr_review_approved(SUBJECT),
             issue_lacks_labels(SUBJECT, (blocked_failed_label, needs_human_label)),
             published_work_survives(SUBJECT),
         ),

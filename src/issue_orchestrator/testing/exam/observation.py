@@ -128,8 +128,12 @@ class WorkItemFact:
     issue_labels: frozenset[str]
     pull_requests: tuple[PullRequestFact, ...]
     stall: StallFacts
-    events: tuple[str, ...] = ()
+    events: tuple[str, ...]
     """Names of the events the engine published about this item, in order."""
+    approved_prs: frozenset[int]
+    """PRs a review SESSION approved (``review.approved`` events, emitted by
+    ``CompletionHandler._publish_review_outcome`` when a review completes) —
+    unlike a ``code-reviewed`` label, which anyone can add."""
 
     @property
     def open_pull_request(self) -> PullRequestFact | None:
@@ -150,6 +154,7 @@ class WorkItemFact:
             "pull_requests": [pr.to_dict() for pr in self.pull_requests],
             "stall": self.stall.to_dict(),
             "events": list(self.events),
+            "approved_prs": sorted(self.approved_prs),
         }
 
     @classmethod
@@ -162,6 +167,7 @@ class WorkItemFact:
             pull_requests=tuple(PullRequestFact.from_dict(pr) for pr in data["pull_requests"]),
             stall=StallFacts.from_dict(data["stall"]),
             events=tuple(data["events"]),
+            approved_prs=frozenset(int(n) for n in data["approved_prs"]),
         )
 
 

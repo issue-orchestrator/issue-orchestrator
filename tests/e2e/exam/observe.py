@@ -180,6 +180,13 @@ def observe_item(
             parked_screen=parked_screen,
         ),
         events=tuple(event.name for event in events),
+        approved_prs=frozenset(
+            number
+            for event in events
+            if event.name == "review.approved"
+            for number in (event.payload.get("pr_number"),)
+            if isinstance(number, int) and not isinstance(number, bool)
+        ),
     )
 
 

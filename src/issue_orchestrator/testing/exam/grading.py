@@ -156,7 +156,9 @@ def _grade_remedy(
         # Only an effect that reached GitHub hands the fix to a human; a
         # decision the engine never applied (or whose fate is unknown) did not.
         and a.disposition is TechLeadActionDisposition.EXECUTED
-        and all(group.matched_term(a.body) for group in spec.rationale)
+        # The rationale must ADVISE the fix, not merely mention it:
+        # "do not remove blocked-failed" is the opposite remedy.
+        and all(group.affirmed_term(a.body) for group in spec.rationale)
     ]
     if acceptable:
         return RemedyGrade(

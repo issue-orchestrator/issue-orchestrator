@@ -85,6 +85,7 @@ def _observation(runs: tuple[TechLeadRunFact, ...]) -> ExamObservation:
             parked_screen="",
         ),
         events=("tech_lead.run_requested", "tech_lead.action_executed"),
+        approved_prs=frozenset(),
     )
     return ExamObservation(
         case_id=BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,

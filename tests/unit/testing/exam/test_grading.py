@@ -69,6 +69,7 @@ class TestCaseAHaltedExchange:
         assert failed == {
             "subject.pr_merged/ready",
             "subject.pr_label.code-reviewed",
+            "subject.pr_review_approved",
             "subject.issue_free_of_blocks",
         }
         assert [(s.role, s.stall.refusing_gate) for s in card.stalls] == [
@@ -442,3 +443,67 @@ class TestRoundThreeFindings:
             ),
         )
         assert card.out_of_scope == () and card.passed, card.failures
+
+
+
+class TestRoundFourFindings:
+    def test_a_ready_labelled_pr_that_no_review_approved_fails_case_a(self) -> None:
+        """A hand-added code-reviewed label is not a review that ran."""
+        ready = pr(state=PullRequestState.READY, labels=("code-reviewed",))
+
+        unreviewed = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(ready,), approved=())))
+        assert "goal subject.pr_review_approved: PR #902: no review.approved for it" in unreviewed.failures
+
+        wrong_pr = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(ready,), approved=(777,))))
+        assert "goal subject.pr_review_approved: PR #902: approved PRs: [777]" in wrong_pr.failures
+
+        reviewed = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(ready,), approved=(PR,))))
+        assert reviewed.passed, reviewed.failures
+
+    @pytest.mark.parametrize(
+        "advice",
+        [
+            f"Do not remove blocked-failed from #{ISSUE}; leave the review gated.",
+            f"Never release the review of #{ISSUE} while CI is red.",
+            f"Keep #{ISSUE} blocked instead of releasing it to code review.",
+            f"You shouldn't clear blocked-failed on #{ISSUE}.",
+        ],
+    )
+    def test_advice_against_the_release_is_not_the_remedy(self, advice: str) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", advice), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.MISSING
+        assert not card.passed
+
+    def test_a_release_next_to_a_do_not_reset_is_still_the_remedy(self) -> None:
+        """The real tech lead's shape: affirm the release, forbid the reset."""
+        advice = f"**Human action requested: release #{ISSUE} to code review. Do NOT reset or retry it.**"
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", advice), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE
+
+
+def test_a_negation_in_an_earlier_sentence_does_not_flip_the_release() -> None:
+    """Clauses are judged apart: "Do not reset it. Release the review." advises the release."""
+    advice = f"Do not reset #{ISSUE} or close PR #{PR}. Release the review so it runs."
+    card = grade(
+        CASE_B,
+        observation(
+            BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+            item(issue_labels=("blocked-failed",), prs=(pr(),)),
+            runs=(run(action("escalate_to_human", advice), summary=GOOD_DIAGNOSIS),),
+        ),
+    )
+    assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE

@@ -62,7 +62,10 @@ def item(
     issue_labels: tuple[str, ...] = (),
     prs: tuple[PullRequestFact, ...] = (),
     gate: str = "",
+    approved: tuple[int, ...] | None = None,
 ) -> WorkItemFact:
+    """``approved`` defaults to every READY/MERGED PR (as a completed review
+    leaves it); pass ``()`` to model a PR nobody reviewed."""
     return WorkItemFact(
         role=SUBJECT,
         issue_number=ISSUE,
@@ -70,6 +73,12 @@ def item(
         issue_labels=frozenset(issue_labels),
         pull_requests=prs,
         stall=stall(gate=gate, labels=tuple(label for label in issue_labels if "block" in label)),
+        events=(),
+        approved_prs=frozenset(
+            approved
+            if approved is not None
+            else (p.number for p in prs if p.state in (PullRequestState.READY, PullRequestState.MERGED))
+        ),
     )
 
 

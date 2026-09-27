@@ -11,6 +11,7 @@ says WHICH part the system got wrong:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
@@ -73,8 +74,32 @@ class TermGroup:
             raise ValueError(f"term group {self.concept!r} needs non-empty terms")
 
     def matched_term(self, text: str) -> str | None:
+        """A term the text NAMES, whatever it says about it (for diagnoses:
+        "the review is blocked by blocked-failed" names the label)."""
         folded = _plain(text)
         return next((term for term in self.any_of if _plain(term) in folded), None)
+
+    def affirmed_term(self, text: str) -> str | None:
+        """A term the text ADVISES: it appears in a clause with no negation
+        before it (for remedies: "do not remove blocked-failed" advises the
+        opposite of "remove blocked-failed")."""
+        for clause in _CLAUSE_BREAK.split(text):
+            plain = _plain(clause)
+            for term in self.any_of:
+                at = plain.find(_plain(term))
+                if at >= 0 and not _NEGATION.search(plain[:at]):
+                    return term
+        return None
+
+
+#: Clause boundaries: sentence ends, line breaks, semicolons, dashes, and the
+#: list/heading marks tech leads write in markdown.
+_CLAUSE_BREAK = re.compile(r"[.;!?\n]|\s[-–—]\s|:\s")
+#: Negations that flip the advice of what follows them in the same clause.
+_NEGATION = re.compile(
+    r"\b(?:not|never|without|avoid|don't|dont|cannot|can't|won't|shouldn't|mustn't|instead of)\b"
+    r"|n't\b"
+)
 
 
 _MARKDOWN = str.maketrans({"`": " ", "*": " ", "_": " "})
@@ -212,6 +237,24 @@ def pr_checks_green(role: str) -> Goal:
         return GoalCheck(open_pr.checks == "SUCCESS", f"PR #{open_pr.number} checks: {open_pr.checks}")
 
     return Goal(f"{role}.pr_checks_green", role, f"the {role} PR's checks are green", check)
+
+
+def pr_review_approved(role: str) -> Goal:
+    """A review session approved the item's latest PR (not merely a label)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if not item.pull_requests:
+            return GoalCheck(False, f"issue #{item.issue_number} has no pull request")
+        latest = max(item.pull_requests, key=lambda pr: pr.number)
+        approved = latest.number in item.approved_prs
+        others = sorted(item.approved_prs - {latest.number})
+        detail = f"approved PRs: {others}" if others else "no review.approved for it"
+        return GoalCheck(
+            approved,
+            f"PR #{latest.number} review approved" if approved else f"PR #{latest.number}: {detail}",
+        )
+
+    return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
 
 
 def published_work_survives(role: str) -> Goal:
