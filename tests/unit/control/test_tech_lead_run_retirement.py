@@ -152,7 +152,7 @@ def _abandoned_by_an_operator(state, claims) -> None:
 
     retire_abandoned_queued_work(
         state=state, claims=claims, tech_lead_authority=MagicMock(),
-        issue_number=SUBJECT, stopped_sessions=(),
+        issue_number=SUBJECT, ended_sessions=(),
     )
 
 
@@ -192,7 +192,7 @@ def test_a_live_run_the_operator_stopped_is_not_readmitted_on_the_next_tick(tmp_
 
     retire_abandoned_queued_work(
         state=state, claims=harness.claims, tech_lead_authority=MagicMock(),
-        issue_number=SUBJECT, stopped_sessions=(session,),
+        issue_number=SUBJECT, ended_sessions=(session,),
     )
     state.release_issue(SUBJECT)
 

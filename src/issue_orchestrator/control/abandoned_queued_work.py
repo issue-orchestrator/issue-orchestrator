@@ -6,7 +6,7 @@ whole of that work:
 
 * a QUEUED validation retry or tech-lead run can also hold a DEFERRED row in
   the durable pending-work ledger;
-* a terminal the operator STOPPED still holds its claim as a HELD row, and
+* a terminal the operator ENDED still holds its claim as a HELD row, and
   termination drops the session record without settling it.
 
 The per-tick recovery sweep re-admits both kinds of row as soon as no live run
@@ -36,17 +36,18 @@ def retire_abandoned_queued_work(
     claims: "PendingWorkClaimStore",
     tech_lead_authority: "TechLeadAuthorityStore",
     issue_number: int,
-    stopped_sessions: Sequence["Session"],
+    ended_sessions: Sequence["Session"],
 ) -> None:
     """End this issue's queued and stopped work, durably.
 
-    ``stopped_sessions`` are the terminals the operator's command actually
-    stopped (none for a queue cancel or a reset, which run with nothing live).
-    Their claims are settled as CONSUMED: the work was attempted and then ended
-    on purpose, so nothing may hand it back to a queue.
+    ``ended_sessions`` are the terminals the operator's command ended: stopped,
+    or found already dead and cleared -- never one it failed to stop. (A queue
+    cancel and a scratch reset pass none: see their call sites.) Their claims are
+    settled as CONSUMED: the work was attempted and then ended on purpose, so
+    nothing may hand it back to a queue.
     """
     ledger = InFlightWorkLedger(state, claims)
-    for session in stopped_sessions:
+    for session in ended_sessions:
         ledger.settle(session, SettlementOutcome.CONSUMED)
     ValidationRetryRetirement(
         state=state, claims=claims, tech_lead_authority=tech_lead_authority

@@ -149,9 +149,10 @@ def terminate_issue_and_hold(
         claims=orchestrator.deps.pending_work_claims,
         tech_lead_authority=orchestrator.deps.tech_lead_authority,
         issue_number=issue_number,
-        # Every terminal this command ended; one it could not stop keeps its
-        # claim, exactly as it keeps its active-session row below.
-        stopped_sessions=tuple(
+        # Every terminal this command ended -- stopped or already dead and
+        # cleared. One it could not stop keeps its claim, exactly as it keeps
+        # its active-session row below.
+        ended_sessions=tuple(
             session for session in sessions
             if session.terminal_id not in {terminal_id for terminal_id, _ in outcome.failures}
         ),

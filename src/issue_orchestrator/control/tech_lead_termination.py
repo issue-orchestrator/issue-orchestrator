@@ -114,18 +114,24 @@ def terminate_tech_lead_session(
         ),
         "release claim",
     )
+    # Only a STOPPED run hands its run back (#7348 review r3). A terminal that
+    # would not stop may still be running, and a peer engine cannot see our
+    # local session record -- releasing the shared hold would let it start a
+    # conflicting run beside the live one. The lease is the backstop. (For an
+    # ownership LOSS the hold is already a peer's, so there is nothing to keep.)
     # NOT "did it raise?": the run-ownership owner reports an unreachable
     # coordination store as a typed refusal, so the verdict is its own.
-    run_released = attempt(
+    run_released = terminal_stopped and attempt(
         lambda: _release_run_hold(deps, session), "release the tech-lead run"
     )
     # The local record is closed on the same terminal, for the same reason the
     # hold is: no further tick runs after this, so a record left at RUNNING
     # would sit on the activity surface forever claiming work that stopped
-    # (ADR-0033 / #6858).
-    attempt(
-        _void(lambda: _close_run_record(deps, session)), "close the run record"
-    )
+    # (ADR-0033 / #6858). A run that did not stop is still RUNNING.
+    if terminal_stopped:
+        attempt(
+            _void(lambda: _close_run_record(deps, session)), "close the run record"
+        )
 
     worktrees = getattr(deps, "worktree_manager", None)
     disposable = bool(

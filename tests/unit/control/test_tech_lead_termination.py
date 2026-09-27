@@ -278,6 +278,34 @@ def test_a_timed_out_global_review_hands_its_repository_wide_hold_back():
     assert result.termination.clean is True
 
 
+def test_a_run_whose_terminal_would_not_stop_keeps_its_hold_from_a_peer():
+    """#7348 review r3: the terminal may still be running. A peer engine cannot
+    see this engine's session record, so a released hold would let it start a
+    conflicting whole-repository review beside the live one."""
+    from issue_orchestrator.domain.tech_lead_run import global_scope_for_flavor
+
+    class _StuckHost(_Host):
+        def kill_session(self, name: str) -> None:
+            raise RuntimeError("tmux refused the kill")
+
+    host = _StuckHost(flavor=TechLeadSessionFlavor.HEALTH_REVIEW)
+
+    result = run_health_review(
+        host,  # type: ignore[arg-type]
+        now=_clock([0, 10_000]),
+        sleep=_no_sleep,
+        timeout_s=1.0,
+    )
+
+    assert result.termination is not None
+    assert result.termination.terminal_stopped is False
+    assert result.termination.run_released is False
+    assert result.termination.clean is False
+    assert [s.terminal_id for s in host.state.active_sessions] == [f"tech-lead-{ANCHOR}"]
+    peer = host.shared.ownership("engine-b")
+    assert peer.begin_run(global_scope_for_flavor(TechLeadSessionFlavor.HEALTH_REVIEW)).started is False
+
+
 def test_a_timed_out_targeted_investigation_hands_its_run_back_too():
     host = _Host(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
 

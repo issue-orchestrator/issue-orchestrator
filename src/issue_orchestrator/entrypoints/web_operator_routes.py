@@ -157,7 +157,7 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
         claims=orchestrator.deps.pending_work_claims,
         tech_lead_authority=orchestrator.deps.tech_lead_authority,
         issue_number=issue_number,
-        stopped_sessions=(),  # a queued issue has no live terminal to stop
+        ended_sessions=(),  # a queued issue has no live terminal to stop
     )
     state.release_issue(issue_number)
     state.session_history.append(
