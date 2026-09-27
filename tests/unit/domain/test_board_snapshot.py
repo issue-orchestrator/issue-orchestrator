@@ -15,6 +15,7 @@ from issue_orchestrator.domain.board_snapshot import (
     BOARD_SNAPSHOT_SCHEMA_VERSION,
     BoardAreaSignal,
     BoardBlockedIssue,
+    BoardBlockedOpenPR,
     BoardCaseFile,
     BoardE2EChronicFailure,
     BoardE2EHealth,
@@ -61,6 +62,21 @@ def _sample_snapshot() -> BoardSnapshot:
                 issue_title="Blocked feature",
                 summary="Blocked by 1 open dependency",
                 blocked_by=[(99, "Dependency issue", "open")],
+            ),
+        ],
+        blocked_open_prs=[
+            BoardBlockedOpenPR(
+                issue_number=320,
+                issue_title="Halted exchange",
+                pr_number=376,
+                pr_url="https://github.com/o/r/pull/376",
+                draft=None,
+                lane="review",
+                skip_reason="issue_blocked",
+                blocking_labels=["blocked-failed"],
+                skip_count=18,
+                first_skipped_at="2026-09-23T05:53:00+00:00",
+                last_skipped_at="2026-09-23T06:48:00+00:00",
             ),
         ],
         recent_failures=[
@@ -358,3 +374,44 @@ class TestSchemaSixSnapshotsStillLoad:
 
         with pytest.raises(ValueError, match="Unsupported board snapshot"):
             BoardSnapshot.from_dict(cast(Any, stale))
+
+
+class TestBlockedOpenPRsAcrossSchemaVersions:
+    """``blocked_open_prs`` (#7294) arrived in schema 9 and is not derivable."""
+
+    @staticmethod
+    def _stored(version: int) -> dict[str, Any]:
+        data = cast(dict[str, Any], _sample_snapshot().to_dict())
+        data["schema_version"] = version
+        return data
+
+    def test_it_crosses_the_file_boundary(self, tmp_path: Path) -> None:
+        path = tmp_path / "board-snapshot.json"
+        _sample_snapshot().write(path)
+
+        (entry,) = BoardSnapshot.read(path).blocked_open_prs or []
+        assert (entry.pr_number, entry.skip_count, entry.draft) == (376, 18, None)
+        assert entry.blocking_labels == ["blocked-failed"]
+
+    @pytest.mark.parametrize("version", [6, 7, 8])
+    def test_an_older_snapshot_reads_as_not_recorded_rather_than_none_blocked(
+        self, version: int
+    ) -> None:
+        data = self._stored(version)
+        del data["blocked_open_prs"]
+
+        assert BoardSnapshot.from_dict(cast(Any, data)).blocked_open_prs is None
+
+    def test_a_schema_nine_snapshot_without_the_field_is_rejected(self) -> None:
+        data = self._stored(9)
+        del data["blocked_open_prs"]
+
+        with pytest.raises(KeyError, match="blocked_open_prs"):
+            BoardSnapshot.from_dict(cast(Any, data))
+
+    def test_a_schema_nine_snapshot_with_a_null_field_is_rejected(self) -> None:
+        data = self._stored(9)
+        data["blocked_open_prs"] = None
+
+        with pytest.raises(ValueError, match="null blocked_open_prs"):
+            BoardSnapshot.from_dict(cast(Any, data))

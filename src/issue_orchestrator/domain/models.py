@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from .blocked_open_pr import BlockedOpenPRLedger
 from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
@@ -2011,6 +2012,9 @@ class OrchestratorState:
     # In-memory like ``priority_queue`` (GitHub labels stay the crash-safe
     # truth); a restart simply re-establishes the baseline on the next scan.
     previously_blocked_issue_numbers: set[int] = field(default_factory=set)
+    # #7294: open PRs the PR scanner keeps skipping because the issue or PR
+    # carries a blocking label. Owned by the ledger; read by the board snapshot.
+    blocked_open_prs: BlockedOpenPRLedger = field(default_factory=BlockedOpenPRLedger)
     dependency_gate_snapshot: DependencyGateSnapshot = field(default_factory=DependencyGateSnapshot)  # Producer-evaluated stack gate reports + successor edges for the UI (#6597)
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans

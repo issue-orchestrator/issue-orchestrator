@@ -26,12 +26,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
+from .blocked_open_pr import BlockedOpenPR
 from .tech_lead_write_health import TechLeadWriteHealth
 from .timeline_actor import TIMELINE_ACTOR_FIELD, read_timeline_actor
 
 logger = logging.getLogger(__name__)
 
-BOARD_SNAPSHOT_SCHEMA_VERSION = 8
+BOARD_SNAPSHOT_SCHEMA_VERSION = 9
 
 #: Versions this reader accepts. A tech-lead run writes its board snapshot at
 #: LAUNCH and reads it back at COMPLETION, and a health review survives a
@@ -41,8 +42,10 @@ BOARD_SNAPSHOT_SCHEMA_VERSION = 8
 #:
 #: 6 predates both the write-health signal and the timeline actor; 7 carries the
 #: write-health signal only. Both upgrade LOSSLESSLY, because every field this
-#: reader adds is derived from records the older snapshot already holds.
-READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({6, 7, 8})
+#: reader adds is derived from records the older snapshot already holds. 6-8
+#: predate ``blocked_open_prs`` (#7294), which is NOT derivable, so it reads
+#: back as ``None`` ("not recorded"), never as an empty list ("none blocked").
+READABLE_BOARD_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({6, 7, 8, 9})
 
 # --- Hung-session evidence projection ---------------------------------------
 # The health review must judge a session HUNG from EVIDENCE (idle with no
@@ -139,6 +142,22 @@ class BoardBlockedIssueDict(TypedDict):
     issue_title: str
     summary: str
     blocked_by: list[BoardBlockedByDict]
+
+
+class BoardBlockedOpenPRDict(TypedDict):
+    """Serialized form of BoardBlockedOpenPR."""
+
+    issue_number: int
+    issue_title: str | None
+    pr_number: int
+    pr_url: str
+    draft: bool | None
+    lane: str
+    skip_reason: str
+    blocking_labels: list[str]
+    skip_count: int
+    first_skipped_at: str
+    last_skipped_at: str
 
 
 class BoardFailureDict(TypedDict):
@@ -242,6 +261,8 @@ class BoardSnapshotDict(TypedDict):
     sessions: list[BoardSessionInfoDict]
     queues: list[BoardQueueEntryDict]
     blocked_issues: list[BoardBlockedIssueDict]
+    # NotRequired: schema 6-8 snapshots predate it (#7294).
+    blocked_open_prs: NotRequired[list[BoardBlockedOpenPRDict] | None]
     recent_failures: list[BoardFailureDict]
     problem_cohort: list[int]
     case_files: list[BoardCaseFileDict]
@@ -343,6 +364,88 @@ class BoardBlockedIssue:
     issue_title: str
     summary: str
     blocked_by: list[tuple[int, str, str]]
+
+
+@dataclass
+class BoardBlockedOpenPR:
+    """An open PR the orchestrator keeps skipping for a blocking label (#7294).
+
+    ``blocked_issues`` lists only dependency-gated issues, so before this an
+    issue labelled ``blocked-failed``/``needs-human`` whose finished PR sat
+    waiting on a review io would never run was on no list at all. Each entry is
+    one PR in one scan lane (``review``: listed by the code-review label,
+    ``rework``: listed by the needs-rework label) that the scanner skipped
+    because the issue (``skip_reason`` ``issue_blocked``) or the PR itself
+    (``pr_blocked``) carries ``blocking_labels``.
+
+    ``skip_count`` is the number of consecutive scans that skipped it, since
+    this orchestrator process first saw it; ``first_skipped_at`` and
+    ``last_skipped_at`` bound them. ``draft`` is ``None`` when the PR listing
+    did not report it; ``issue_title`` is ``None`` when the scan did not read
+    the issue. The scanner only sees PRs carrying one of those two labels, so an
+    open PR with neither label is not here.
+    """
+
+    issue_number: int
+    issue_title: str | None
+    pr_number: int
+    pr_url: str
+    draft: bool | None
+    lane: str
+    skip_reason: str
+    blocking_labels: list[str]
+    skip_count: int
+    first_skipped_at: str
+    last_skipped_at: str
+
+    @classmethod
+    def project(cls, entry: BlockedOpenPR) -> "BoardBlockedOpenPR":
+        """Project one ledger entry onto the board."""
+        observation = entry.observation
+        return cls(
+            issue_number=observation.issue_number,
+            issue_title=observation.issue_title,
+            pr_number=observation.pr_number,
+            pr_url=observation.pr_url,
+            draft=observation.draft,
+            lane=observation.lane.value,
+            skip_reason=observation.skip_reason.value,
+            blocking_labels=list(observation.blocking_labels),
+            skip_count=entry.skip_count,
+            first_skipped_at=entry.first_skipped_at,
+            last_skipped_at=entry.last_skipped_at,
+        )
+
+    def to_dict(self) -> BoardBlockedOpenPRDict:
+        return {
+            "issue_number": self.issue_number,
+            "issue_title": self.issue_title,
+            "pr_number": self.pr_number,
+            "pr_url": self.pr_url,
+            "draft": self.draft,
+            "lane": self.lane,
+            "skip_reason": self.skip_reason,
+            "blocking_labels": list(self.blocking_labels),
+            "skip_count": self.skip_count,
+            "first_skipped_at": self.first_skipped_at,
+            "last_skipped_at": self.last_skipped_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: BoardBlockedOpenPRDict) -> "BoardBlockedOpenPR":
+        return cls(
+            issue_number=data["issue_number"],
+            issue_title=data["issue_title"],
+            pr_number=data["pr_number"],
+            pr_url=data["pr_url"],
+            draft=data["draft"],
+            lane=data["lane"],
+            skip_reason=data["skip_reason"],
+            blocking_labels=list(data["blocking_labels"]),
+            skip_count=data["skip_count"],
+            first_skipped_at=data["first_skipped_at"],
+            last_skipped_at=data["last_skipped_at"],
+        )
 
 
 @dataclass
@@ -807,6 +910,31 @@ def _project_e2e_chronic(
     )
 
 
+#: The first schema whose snapshots carry ``blocked_open_prs`` (#7294).
+BLOCKED_OPEN_PRS_SINCE_SCHEMA = 9
+
+
+def _read_blocked_open_prs(
+    data: BoardSnapshotDict, schema_version: int
+) -> list[BoardBlockedOpenPR] | None:
+    """``None`` for a snapshot that predates the field; required from schema 9.
+
+    An older snapshot cannot say which PRs were blocked, so it reads as "not
+    recorded" rather than "none". A schema-9 snapshot always wrote a list, so a
+    missing key or a ``null`` there is a malformed payload and fails.
+    """
+    if schema_version < BLOCKED_OPEN_PRS_SINCE_SCHEMA:
+        return None
+    if "blocked_open_prs" not in data:
+        raise KeyError("blocked_open_prs")
+    stored = data["blocked_open_prs"]
+    if stored is None:
+        raise ValueError(
+            f"schema_version {schema_version} board snapshot has null blocked_open_prs"
+        )
+    return [BoardBlockedOpenPR.from_dict(item) for item in stored]
+
+
 @dataclass
 class BoardSnapshot:
     """Point-in-time bundle of orchestrator-state facts for an agent session.
@@ -823,6 +951,8 @@ class BoardSnapshot:
     sessions: list[BoardSessionInfo] = field(default_factory=list)
     queues: list[BoardQueueEntry] = field(default_factory=list)
     blocked_issues: list[BoardBlockedIssue] = field(default_factory=list)
+    # ``None`` only when read back from a schema 6-8 snapshot, which predates it.
+    blocked_open_prs: list[BoardBlockedOpenPR] | None = field(default_factory=list)
     recent_failures: list[BoardFailure] = field(default_factory=list)
     problem_cohort: list[int] = field(default_factory=list)
     case_files: list[BoardCaseFile] = field(default_factory=list)
@@ -897,6 +1027,11 @@ class BoardSnapshot:
                 }
                 for b in self.blocked_issues
             ],
+            "blocked_open_prs": (
+                [item.to_dict() for item in self.blocked_open_prs]
+                if self.blocked_open_prs is not None
+                else None
+            ),
             "recent_failures": [
                 {
                     "issue_number": f.issue_number,
@@ -1020,6 +1155,7 @@ class BoardSnapshot:
                 )
                 for b in data["blocked_issues"]
             ],
+            blocked_open_prs=_read_blocked_open_prs(data, schema_version),
             recent_failures=[
                 BoardFailure(
                     issue_number=f["issue_number"],

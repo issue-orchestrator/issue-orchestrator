@@ -5,6 +5,7 @@ import pytest
 
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
+from issue_orchestrator.control.pr_scanner import ReviewScan, ReworkScan
 from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciliationResult
 from issue_orchestrator.domain.models import DiscoveredRework, OrchestratorState
 from issue_orchestrator.events import EventContext
@@ -15,8 +16,10 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
     pr_scanner = MagicMock()
     issue_branches = {42: "42-scratch-1774101016"}
     pr_scanner.load_issue_branches.return_value = issue_branches
-    pr_scanner.scan_for_reviews.return_value = []
-    pr_scanner.scan_for_reworks.return_value = ([], [])
+    pr_scanner.scan_for_reviews.return_value = ReviewScan(reviews=[], blocked=[])
+    pr_scanner.scan_for_reworks.return_value = ReworkScan(
+        reworks=[], escalations=[], blocked=[]
+    )
 
     workflow = GitHubWorkflow(
         config=Config(),
@@ -36,19 +39,23 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
         [],
         [],
         issue_branches=issue_branches,
+        known_issues={},
     )
     pr_scanner.scan_for_reworks.assert_called_once_with(
         [],
         [],
         issue_branches=issue_branches,
+        known_issues={},
     )
 
 
 def test_scan_pending_pr_work_appends_post_publish_validation_reworks() -> None:
     pr_scanner = MagicMock()
     pr_scanner.load_issue_branches.return_value = {}
-    pr_scanner.scan_for_reviews.return_value = []
-    pr_scanner.scan_for_reworks.return_value = ([], [])
+    pr_scanner.scan_for_reviews.return_value = ReviewScan(reviews=[], blocked=[])
+    pr_scanner.scan_for_reworks.return_value = ReworkScan(
+        reworks=[], escalations=[], blocked=[]
+    )
 
     workflow = GitHubWorkflow(
         config=Config(),
