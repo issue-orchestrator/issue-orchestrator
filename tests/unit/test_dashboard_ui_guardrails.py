@@ -4292,8 +4292,6 @@ CONTRACT_READER_BINDINGS = frozenset(
         ("dashboard/core.js", "/api/issue-rows"),
         ("dashboard/core.js", "/api/view-model"),
         ("dashboard/core.js", "/api/view-model-snapshot"),
-        # The expanded kanban column's own refresh (#7331).
-        ("dashboard/kanban_columns.js", "/api/view-model"),
         ("dashboard/e2e_run_view.js", "/api/e2e-run-detail/{run_id}"),
         ("dashboard/e2e_runs_list.js", "/api/e2e-runs/recent"),
         # The URL reaches this reader through ``data-cvv-output-url``
@@ -4329,6 +4327,7 @@ PENDING_CONTRACT_READER_MIGRATION_JS = frozenset(
         "dashboard/issue_detail_drawer.js",
         "dashboard/issue_detail_modals.js",
         "dashboard/issue_metadata.js",
+        "dashboard/kanban_columns.js",
         "dashboard/plugins/agent_context.js",
         "dashboard/session_dialogs.js",
         "dashboard/shell_actions.js",

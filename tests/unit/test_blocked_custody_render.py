@@ -276,3 +276,23 @@ def test_the_client_never_derives_a_custody_state() -> None:
     for derived in ("needs_human", "orchestrator_labels", "blocked_summary", "stale_after_minutes"):
         assert derived not in code
     assert re.search(r"custody\.state\s*===", code) is None
+
+
+def _kanban_source() -> str:
+    return (STATIC / "js" / "dashboard" / "kanban_columns.js").read_text()
+
+
+def test_a_reused_compact_card_syncs_its_custody_age_in_place() -> None:
+    """The fingerprint leaves the age out, so the reuse path must refresh it."""
+    source = _kanban_source()
+    reuse = source.split("syncCompactCardPhaseAge(existing, card);", 1)[1].split("}", 1)[0]
+
+    assert "syncCustodyAge(existing, card);" in reuse
+
+
+def test_the_expanded_column_refresh_is_contract_validated() -> None:
+    source = _kanban_source()
+    body = source.split("async function loadExpandedColumn", 1)[1].split("\nfunction ", 1)[0]
+
+    assert "uiContractJson.fromResponse(resp, 'DashboardViewModelPayload', endpoint)" in body
+    assert "resp.json()" not in body
