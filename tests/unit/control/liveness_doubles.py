@@ -80,11 +80,20 @@ class InMemoryActionLivenessStore:
         self._next_announcement += 1
         self.announcements[self._next_announcement] = (kind, row)
 
-    def put_parked(self, row: LivenessRow) -> None:
+    def settle(self, expected, row: LivenessRow, *, announce_parked: bool) -> bool:
         from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
 
+        current = self.row(row.key)
+        if expected is not None and (
+            current is None
+            or current.first_failed_at != expected.first_failed_at
+            or current.attempts != expected.attempts
+        ):
+            return False
         self.put(row)
-        self._owe(LivenessAnnouncement.PARKED, row)
+        if announce_parked:
+            self._owe(LivenessAnnouncement.PARKED, row)
+        return True
 
     def pending_announcements(self):
         return tuple(

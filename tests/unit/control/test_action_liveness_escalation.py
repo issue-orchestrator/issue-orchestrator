@@ -164,3 +164,26 @@ def test_a_replayed_liveness_release_leaves_a_persons_new_block_alone(tmp_path) 
 
     assert block.release(request) is BlockOutcome.HELD_BY_ANOTHER_CAUSE
     assert "needs-human" in labels.live[410]
+
+
+def test_a_second_parks_failed_block_keeps_the_first_parks_cause(tmp_path) -> None:
+    """Two parks share the ACTION_LIVENESS cause on one issue. The second's
+    label write fails; the first's recorded cause must survive, so a later
+    release can still take the label off (review r18)."""
+    from issue_orchestrator.domain.human_block import BlockOutcome, HumanBlockRequest
+
+    labels, block = _shared_block(tmp_path)
+    request = HumanBlockRequest(410, NeedsHumanCause.ACTION_LIVENESS, "parked")
+    assert block.acquire(request) is BlockOutcome.HELD
+
+    real_add = labels.add_label
+
+    def failing_add(issue_number, label):
+        raise RuntimeError("GitHub 502")
+
+    labels.add_label = failing_add
+    assert block.acquire(request) is BlockOutcome.FAILED
+    labels.add_label = real_add
+
+    assert block.release(request) is BlockOutcome.CLEARED
+    assert "needs-human" not in labels.live[410]

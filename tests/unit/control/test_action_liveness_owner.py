@@ -363,7 +363,7 @@ def test_a_crash_before_publishing_a_park_still_announces_it(tmp_path, mock_even
     )
     # Simulate the crash: the owed announcement is still in the outbox.
     store = SQLiteActionLivenessStore(path)
-    store.put_parked(row)
+    store.settle(None, row, announce_parked=True)
 
     class _Applier:
         def apply(self, action):
@@ -435,3 +435,39 @@ def test_the_block_stays_while_a_park_whose_own_block_has_not_landed_stands(tmp_
     clock.advance(POLICY.max_backoff)
     owner.reconcile_effects()
     assert "needs-human" not in labels.live[229]
+
+
+def test_a_release_during_an_attempt_is_not_undone_by_its_settlement(tmp_path) -> None:
+    """The operator releases a key between the attempt's admission and its
+    settlement (a second connection). The stale settlement is discarded: no
+    resurrected row, no park, no block (review r18)."""
+    from issue_orchestrator.control.action_liveness import release_parked_action
+
+    path = tmp_path / "action_liveness.sqlite"
+    escalation = RecordingEscalation()
+    policy = LivenessPolicy(max_attempts=5)
+    clock = ManualClock()
+    engine_store = SQLiteActionLivenessStore(path)
+    owner = liveness_owner(
+        store=engine_store, escalation=escalation, clock=clock, policy=policy
+    )
+    for _ in range(4):
+        clock.advance(timedelta(hours=1))
+        owner.admit(KEY)
+        owner.record(KEY, ActionOutcome.transient("boom"))
+
+    clock.advance(timedelta(hours=1))
+    assert owner.admit(KEY).admitted
+    read = engine_store.row
+
+    def read_then_operator_releases(key):
+        found = read(key)
+        release_parked_action(SQLiteActionLivenessStore(path), KEY.identity)
+        return found
+
+    engine_store.row = read_then_operator_releases  # type: ignore[method-assign]
+    assert owner.record(KEY, ActionOutcome.transient("boom")) is None
+
+    store = SQLiteActionLivenessStore(path)
+    assert store.row(KEY) is None
+    assert escalation.parked == [] and escalation.blocks == []

@@ -260,6 +260,10 @@ class NeedsHumanBlock:
         # nothing is asserting, and releasing the new cause would then find the
         # ghost and keep the block forever. Relying on some later read to prune
         # it first is not a fix; it is a race this owner happened to win.
+        # Whether this exact cause already stood on the label before this call:
+        # a failed write must withdraw only what THIS call recorded, never a
+        # row an earlier acquisition of the same cause still owns (#7350).
+        already = self._cause_already_recorded(request)
         if not self._recorded(request):
             return BlockOutcome.FAILED
         try:
@@ -272,7 +276,8 @@ class NeedsHumanBlock:
                 request.target,
                 request.cause.value,
             )
-            self._withdraw(request)
+            if not already:
+                self._withdraw(request)
             return BlockOutcome.FAILED
         return BlockOutcome.HELD
 
@@ -459,6 +464,16 @@ class NeedsHumanBlock:
             return BlockOutcome.FAILED
         self._forget(target)
         return BlockOutcome.CLEARED
+
+    def _cause_already_recorded(self, request: HumanBlockRequest) -> bool:
+        """This cause's row already stands (fail closed: unreadable counts as yes)."""
+        try:
+            return request.cause_key in self.causes.needs_human_causes(request.target)
+        except Exception:
+            logger.exception(
+                "[BLOCK] Could not read needs-human causes for #%d", request.target
+            )
+            return True
 
     def _recorded(self, request: HumanBlockRequest) -> bool:
         """Record this cause against the CURRENT generation of the label.

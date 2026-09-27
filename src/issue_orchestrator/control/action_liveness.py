@@ -131,10 +131,12 @@ class ActionLivenessOwner:
             self._resolve(self._store.clear_key(key, done_at=self._clock()))
             return None
         newly_parked = row.parked and not (previous is not None and previous.parked)
+        if not self._store.settle(previous, row, announce_parked=newly_parked):
+            # An operator released this key while the attempt ran: the
+            # release stands and this stale settlement is discarded.
+            return None
         if not newly_parked:
-            self._store.put(row)
             return row
-        self._store.put_parked(row)
         self._publish_announcements()
         logger.warning(
             "[LIVENESS] Parked %s on %s (fingerprint %s): %s",

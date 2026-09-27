@@ -181,9 +181,9 @@ def test_every_park_and_unpark_owes_an_announcement(tmp_path) -> None:
     path = tmp_path / "l.sqlite"
     store = SQLiteActionLivenessStore(path)
     parked = _row()
-    store.put_parked(parked)
+    store.settle(None, parked, announce_parked=True)
     other = _row(subject="issue:7", issue=7)
-    store.put_parked(other)
+    store.settle(None, other, announce_parked=True)
     store.clear_key(parked.key, done_at=NOW + timedelta(hours=1))
     store.clear_escalation_issue(7)
 

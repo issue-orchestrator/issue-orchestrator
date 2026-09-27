@@ -69,9 +69,17 @@ class ActionLivenessStore(Protocol):
         """
         ...
 
-    def put_parked(self, row: LivenessRow) -> None:
-        """Write a row that just parked, and owe its ``action.parked``
-        announcement, in one transaction."""
+    def settle(
+        self, expected: LivenessRow | None, row: LivenessRow, *, announce_parked: bool
+    ) -> bool:
+        """Write the row an attempt leaves behind, conditionally and atomically.
+
+        Only if the key's row is still ``expected`` (the one the attempt was
+        admitted under; ``None`` for a first failure): an operator's release in
+        between must not be undone by a stale settlement, which is discarded
+        (False). ``announce_parked`` owes the row's ``action.parked`` in the
+        same transaction.
+        """
         ...
 
     def pending_announcements(

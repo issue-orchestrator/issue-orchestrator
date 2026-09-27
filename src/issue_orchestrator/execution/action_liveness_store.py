@@ -204,10 +204,24 @@ class SQLiteActionLivenessStore:
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
         return self._forget(_BY_IDENTITY, (identity.subject, identity.action))
 
-    def put_parked(self, row: LivenessRow) -> None:
+    def settle(
+        self, expected: LivenessRow | None, row: LivenessRow, *, announce_parked: bool
+    ) -> bool:
+        key = row.key
         with self._write() as conn:
+            current = conn.execute(
+                _BY_KEY, (key.identity.subject, key.identity.action, key.fingerprint)
+            ).fetchone()
+            if expected is not None and (
+                current is None
+                or current["first_failed_at"] != expected.first_failed_at.isoformat()
+                or current["attempts"] != expected.attempts
+            ):
+                return False
             _upsert(conn, row)
-            _owe_announcement(conn, row, LivenessAnnouncement.PARKED)
+            if announce_parked:
+                _owe_announcement(conn, row, LivenessAnnouncement.PARKED)
+        return True
 
     def pending_announcements(
         self,
