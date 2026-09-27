@@ -346,6 +346,10 @@ class EscalateToHumanAction(Action):
     comment_override: Optional[str] = None
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
+    def liveness_facts(self) -> object | None:
+        """A request for a human is never silenced by the liveness owner (#7350)."""
+        return None
+
 
 @dataclass(frozen=True)
 class AddCommentAction(Action):

@@ -329,7 +329,13 @@ class LivenessPolicy:
             )
         if outcome.kind is not OutcomeKind.TRANSIENT:
             return replace(row, attempts=spent + 1)
-        declared = outcome.retry_at is not None and now - first < self.declared_wait_bound
+        # A declared wait spends nothing only while it is still ahead: a
+        # reset already past would otherwise re-admit the action every tick.
+        declared = (
+            outcome.retry_at is not None
+            and outcome.retry_at > now
+            and now - first < self.declared_wait_bound
+        )
         if declared:
             assert outcome.retry_at is not None
             return _backing_off(row, next_attempt_at=outcome.retry_at)

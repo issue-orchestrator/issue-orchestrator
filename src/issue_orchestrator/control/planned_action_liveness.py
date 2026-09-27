@@ -197,6 +197,7 @@ class PlannedActionLiveness:
         labels = observed_labels(snapshot)
         admitted: list[Action] = []
         keys: list[LivenessKey | None] = []
+        admitted_keys: set[LivenessKey] = set()
         held: list[SkippedItem] = []
         for action in plan.actions:
             key = planned_action_key(
@@ -207,9 +208,21 @@ class PlannedActionLiveness:
                 keys.append(None)
                 continue
             decision = self.owner.admit(key)
-            if decision.admitted:
+            if decision.admitted and key not in admitted_keys:
                 admitted.append(action)
                 keys.append(key)
+                admitted_keys.add(key)
+                continue
+            if decision.admitted:
+                # The same question twice in one plan: it is asked once, so
+                # one plan cannot spend more than one attempt of a budget.
+                held.append(
+                    SkippedItem(
+                        item_type=f"action:{key.identity.action}",
+                        number=key.escalation_issue or 0,
+                        reason="duplicate of an action already in this plan",
+                    )
+                )
                 continue
             logger.debug(
                 "[LIVENESS] Holding %s on %s: %s",

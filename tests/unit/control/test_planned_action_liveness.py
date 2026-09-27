@@ -451,26 +451,18 @@ def test_every_planned_action_type_can_be_fingerprinted() -> None:
         _check_type(cls, cls.__name__, seen)
 
 
-def test_a_plan_naming_the_same_action_twice_escalates_it_once(sample_config) -> None:
-    """Both copies are admitted before either is attempted, so the second
-    outcome lands on a row the first already parked: one park, one escalation."""
-    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+def test_a_plan_cannot_spend_more_than_one_attempt_of_a_budget(sample_config) -> None:
+    """Identical actions in one plan are one question, asked once (review r4)."""
     engine = _Engine(
         sample_config,
-        planned=lambda: [stale, stale],
-        apply=_refused_for_pause,
-        labels={410: ("in-progress", PAUSE)},
+        planned=lambda: [_settle()] * (POLICY.max_attempts + 1),
+        apply=lambda a: ActionResult.fail(a, "boom"),
     )
-    with pytest.MonkeyPatch.context() as patch:
-        # A refusal halts the rest of the plan; make it return instead so both
-        # copies are attempted in the same tick.
-        patch.setattr(
-            engine.support, "_handle_reconciliation_error",
-            lambda rr, cb: types.SimpleNamespace(success=False, halt=False),
-        )
+    engine.tick()
+    assert engine.attempts_of(_settle().action_type) == 1
+    for _ in range(10):
         engine.tick()
-
-    assert engine.attempts_of(stale.action_type) == 2
+    assert engine.attempts_of(_settle().action_type) == POLICY.max_attempts
     assert len(engine.escalation.parked) == 1
 
 
@@ -641,3 +633,44 @@ def test_a_github_rate_limit_that_never_lifts_still_parks(sample_config) -> None
         engine.tick(advance=timedelta(hours=1))
 
     assert len(engine.escalation.parked) == 1
+
+
+def test_escalate_to_human_is_never_parked(sample_config) -> None:
+    """A PR escalation refused for longer than any budget still lands (r4)."""
+    from issue_orchestrator.control.actions import EscalateToHumanAction
+
+    escalate = EscalateToHumanAction(issue_number=100, pr_number=200, escalation_reason="ci")
+    refusing = {"on": True}
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [escalate],
+        apply=lambda a: ActionResult.fail(a, "502") if refusing["on"] else ActionResult.ok(a),
+    )
+    for _ in range(POLICY.max_attempts * 2):
+        engine.tick()
+    refusing["on"] = False
+    engine.tick()
+
+    assert engine.attempts_of(escalate.action_type) == POLICY.max_attempts * 2 + 1
+    assert engine.store.rows == {}
+
+
+def test_a_rate_limit_whose_reset_has_passed_spends_like_any_failure(sample_config) -> None:
+    """A past-due reset must not re-admit the action on every tick (r4)."""
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    engine = _Engine(sample_config, planned=lambda: [_settle()], apply=lambda a: None)
+
+    def stale_limit(action):
+        error = RepositoryHostRateLimitedError("API rate limit exceeded")
+        error.rate_limit = HostRateLimit(
+            resets_at=engine.clock.now - timedelta(seconds=1), kind="primary"
+        )
+        return ActionResult.fail_from(action, error)
+
+    engine.applier.apply.side_effect = stale_limit
+    for _ in range(30):
+        engine.tick(advance=timedelta(minutes=1))
+
+    assert engine.attempts_of(_settle().action_type) == POLICY.max_attempts
