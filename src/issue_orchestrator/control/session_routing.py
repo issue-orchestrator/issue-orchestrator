@@ -472,6 +472,16 @@ def restore_running_sessions(
     from .claim_quarantine import QuarantineSubject
 
     ledger = InFlightWorkLedger(state, claims)
+    # A registry row whose run predates run-role recording cannot be a live
+    # session (agents do not survive an engine stop): it is treated as dead,
+    # never quarantined, and its claim is requeued by the sweep below.
+    stale = [info for info in running if session_restorer.predates_run_roles(info)]
+    for info in stale:
+        logger.warning(
+            "[ORPHAN] Registry entry %s predates run-role recording; treating its "
+            "run as ended, its queued work is requeued", info.get("session_name"),
+        )
+    running = [info for info in running if info not in stale]
     restored = session_restorer.restore_sessions(running, state.active_sessions)
     restoration = ledger.rehydrate(restored)
     for quarantined in restoration.quarantined:
