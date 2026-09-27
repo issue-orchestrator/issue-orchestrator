@@ -69,15 +69,16 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
 def _without_path(data: Any, path: str) -> Any:
     """``data`` minus the value at dotted ``path`` (a copy; absent paths no-op).
 
-    A map left empty by the removal goes too: a section that holds only
-    live-applied settings binds nothing, whether or not the operator wrote it.
+    An empty map on the path goes too, whether the removal emptied it or the
+    operator wrote it empty: a section that holds only live-applied settings
+    binds nothing, whether or not it is written.
     """
     head, _, rest = path.partition(".")
     if not isinstance(data, dict) or head not in data:
         return data
     trimmed = dict(data)
     child = _without_path(data[head], rest) if rest else None
-    if not rest or (child == {} and data[head] != {}):
+    if not rest or child == {}:
         del trimmed[head]
     else:
         trimmed[head] = child

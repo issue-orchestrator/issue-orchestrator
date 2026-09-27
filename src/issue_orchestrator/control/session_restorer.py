@@ -227,18 +227,19 @@ class SessionRestorer:
         # session launched before that stamp existed recorded only the old
         # whole-dataclass hash, which no later code can recompute: for it,
         # only mode and config name are verifiable (a one-way legacy read).
+        legacy = "session_binding_fingerprint" not in identity
         binding = identity.get("session_binding_fingerprint")
-        if binding is not None and not isinstance(binding, str):
+        if not legacy and not isinstance(binding, str):
             raise SessionConfigurationIdentityVerificationError(
                 f"Cannot verify configuration identity for live session {session_name}: "
                 f"{identity_path} has a malformed session binding fingerprint"
             )
-        if binding is None:
+        if legacy:
             logger.warning(
                 "Live session %s predates session binding fingerprints; verifying "
                 "its configuration mode and name only", session_name,
             )
-        bound_mismatch = binding is not None and binding != self.config.session_binding_fingerprint
+        bound_mismatch = not legacy and binding != self.config.session_binding_fingerprint
         if recorded_identity[:2] != (self.config.configuration_mode, self.config.config_name) or bound_mismatch:
             recorded_mode, recorded_config, recorded_fingerprint = recorded_identity
             raise SessionConfigurationModeMismatchError(

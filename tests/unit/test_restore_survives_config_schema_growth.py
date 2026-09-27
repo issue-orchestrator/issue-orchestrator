@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.control.session_restorer import (
+    SessionConfigurationIdentityVerificationError,
     SessionConfigurationModeMismatchError,
 )
 from issue_orchestrator.domain.models import Issue
@@ -217,3 +218,21 @@ def test_adding_a_section_of_only_live_settings_still_restores(tmp_path: Path) -
 
     assert edited.session_binding_fingerprint == stamp["session_binding_fingerprint"]
     assert [s.terminal_id for s in _restore(tmp_path, edited, stamp)] == ["issue-123"]
+
+
+def test_an_empty_section_the_operator_wrote_binds_nothing(tmp_path: Path) -> None:
+    """Review r2: ``tech_lead: {}`` then a live setting under it still restores."""
+    without = _YAML.replace("tech_lead:\n  max_expedited: 3\n", "")
+    stamp = _launch_stamp(Config.load(_config_path(tmp_path, without + "tech_lead: {}\n")))
+    edited = Config.load(_config_path(tmp_path, without + "tech_lead:\n  max_expedited: 5\n"))
+
+    assert [s.terminal_id for s in _restore(tmp_path, edited, stamp)] == ["issue-123"]
+
+
+def test_a_present_but_malformed_binding_stamp_is_not_read_as_legacy(tmp_path: Path) -> None:
+    """Review r2: only an ABSENT key is the legacy (pre-binding) stamp."""
+    stamp = {**_launch_stamp(Config.load(_config_path(tmp_path))), "session_binding_fingerprint": None}
+    edited = Config.load(_config_path(tmp_path, _YAML.replace("model: sonnet", "model: opus")))
+
+    with pytest.raises(SessionConfigurationIdentityVerificationError, match="malformed"):
+        _restore(tmp_path, edited, stamp)
