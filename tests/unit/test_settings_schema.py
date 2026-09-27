@@ -186,7 +186,7 @@ class TestModelDefaults:
 
     def test_advanced_defaults(self):
         m = AdvancedSettings()
-        assert m.session_interactions_enabled is False
+        assert m.session_interactions_enabled is True
         assert m.web_port == 0
         assert m.control_api_port == 0
         assert m.worktree_seed_ref is None

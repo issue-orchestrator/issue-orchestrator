@@ -9,6 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.config_sections import load_execution_section
+
 from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     DetectedState,
     FileCollector,
@@ -238,7 +241,8 @@ def test_prompt_claude_session_interactions_enables_rule() -> None:
 
 
 def test_prompt_claude_session_interactions_can_be_declined() -> None:
-    """Declining startup interactions should leave the default disabled state."""
+    """Declining persists an explicit opt-out: interactions default on (#7343),
+    so omitting the answer would load as enabled and reverse the choice."""
     config = {
         "agents": {
             "agent:backend": {
@@ -253,7 +257,27 @@ def test_prompt_claude_session_interactions_can_be_declined() -> None:
         config, prompter
     )
 
-    assert "session_interactions" not in config["execution"]
+    assert config["execution"]["session_interactions"] == {"enabled": False}
+    loaded = Config()
+    load_execution_section(loaded, config["execution"], Path("wizard.yaml"))
+    assert loaded.session_interactions.enabled is False
+    assert (
+        setup_wizard_module._claude_session_interactions_enabled(config)  # noqa: SLF001
+        is False
+    )
+
+
+def test_wizard_reports_the_loaders_default_when_interactions_are_unset() -> None:
+    """The next-steps note must describe the state the saved config loads as."""
+    config: dict = {"execution": {"concurrency": {"max_concurrent_sessions": 3}}}
+    loaded = Config()
+    load_execution_section(loaded, config["execution"], Path("wizard.yaml"))
+
+    assert (
+        setup_wizard_module._claude_session_interactions_enabled(config)  # noqa: SLF001
+        is loaded.session_interactions.enabled
+        is True
+    )
 
 
 class TestCreateStarterPrompt:
