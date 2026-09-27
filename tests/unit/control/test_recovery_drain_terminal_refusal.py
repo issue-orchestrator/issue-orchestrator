@@ -16,6 +16,10 @@ from types import SimpleNamespace
 import pytest
 
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
+from issue_orchestrator.control.validated_work_scope_retirement import (
+    OutOfScopeRecordRetirement,
+    OutOfScopeRetirementSweep,
+)
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.publication_remote import (
     PrCreateRejection,
@@ -29,6 +33,7 @@ from issue_orchestrator.domain.validated_work import (
     ValidatedWorkFailure,
     ValidatedWorkState,
 )
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
 from issue_orchestrator.ports.retained_claim_maintenance import NullRetainedClaimMaintenance
 from tests.unit.control.test_recovery_publication_attempt import publication as publication
@@ -102,6 +107,18 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
     assert rig.store.get(op.request.record_id).state is ValidatedWorkState.PUBLISHING
     assert all((checkout / path).exists() for path in HOOK_OUTPUTS)
 
+    scope = OutOfScopeRecordRetirement(
+        intake=rig.custody.ledger,
+        store=rig.store,
+        effects=rig.effects,
+        blocks=completion.aggregate,
+        events=InMemoryEventSink(),
+    )
+    # Which rule wins: a tech-lead record is retired as outside recovery scope
+    # before any publication (tests/unit/test_validated_work_scope.py). This
+    # record is a coding run's, so the scope rule keeps it and the 422 path
+    # must end it.
+    assert scope.recovery_owns_record(rig.store.record_for_id(op.request.record_id))
     now = SimpleNamespace(value=0.0)
     drain = RecoveryDrain(
         queue=rig.store,
@@ -109,6 +126,16 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
         authority_refresh=None,
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        # Wired as bootstrap wires it (#7323): recovery's scope rule runs
+        # first. This record comes from a CODING run, so the rule keeps it
+        # and the publication path below is what ends it.
+        scope_sweep=OutOfScopeRetirementSweep(
+            source=rig.store,
+            store=rig.store,
+            execution=rig.execution,
+            retirement=scope,
+            batch_size=5,
+        ),
         batch_size=5,
         interval_seconds=10,
         clock=lambda: now.value,
@@ -118,6 +145,7 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
         return RecoveryDrainMode.ACTIVE
 
     report = drain.tick(OrchestratorState(), active)
+    assert report.scope_sweep.retired == ()
     assert [item.record_id for item in report.items] == [op.request.record_id]
     outcome = report.items[0].outcome
     assert isinstance(outcome, RecoveryAttemptPending)
@@ -138,5 +166,10 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
 
     for tick in range(1, 4):
         now.value = 10.0 * tick
-        assert drain.tick(OrchestratorState(), active).items == ()
+        later = drain.tick(OrchestratorState(), active)
+        assert later.items == ()
+        # A coding run's FAILED record is a human's decision, never retired
+        # as out of recovery scope.
+        assert later.scope_sweep.retired == ()
+    assert rig.store.get(op.request.record_id).state is ValidatedWorkState.FAILED
     assert creates == ["feature", "feature"]
