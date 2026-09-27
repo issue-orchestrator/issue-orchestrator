@@ -475,6 +475,30 @@ def case_file_blocks_promotion(
     return disposition in TERMINAL_CASE_FILE_DISPOSITIONS or retirement_pending
 
 
+def promotion_state_for_retirement(disposition: str) -> PromotionState:
+    """THE projection of a case file's terminal disposition onto its promotion.
+
+    A settled promotion's ledger state follows what shared authority RECORDED
+    for the signature, not what the settling read observed: when another writer
+    already retired the case file, its disposition is adopted (#7345). Only a
+    ``shipped`` retirement means the fix shipped; every other terminal
+    disposition (``declined``, ``superseded``, ``invalid``) ends the promotion
+    without one, which the promotion ledger calls ``declined`` — all three
+    block refiling identically.
+
+    A non-terminal disposition cannot settle a promotion; asking is a caller
+    error.
+    """
+    if disposition not in TERMINAL_CASE_FILE_DISPOSITIONS:
+        raise ValueError(
+            f"case-file disposition {disposition!r} is not terminal and cannot"
+            " settle a promotion"
+        )
+    if disposition == CASE_FILE_SHIPPED:
+        return PROMOTION_STATE_SHIPPED
+    return PROMOTION_STATE_DECLINED
+
+
 @dataclass(frozen=True)
 class PatternEvidence:
     """Accrued evidence for ONE pattern signature (the promotion input).

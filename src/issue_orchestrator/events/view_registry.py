@@ -202,6 +202,16 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
             "orchestrator",
         ),
     ],
+    # User-visible on purpose (#7297): "waiting for the GitHub rate limit to
+    # reset" must read differently from "failing", or the operator cannot tell
+    # a transient token limit from broken work.
+    "session.launch_deferred_rate_limit": [
+        _user(
+            "session.launch_deferred_rate_limit",
+            "GitHub rate limit — launch deferred until reset",
+            "orchestrator",
+        ),
+    ],
     # The live-session counterpart. Worded for what actually happened: work was
     # already running and was stopped, which is a different story from a launch
     # that never started (#6999 F5).

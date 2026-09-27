@@ -9,6 +9,8 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from .host_rate_limit import HostRateLimit
+
 if TYPE_CHECKING:
     pass
 
@@ -99,6 +101,9 @@ class ClaimResult:
     state: ClaimState
     competing_claims: list[Claim] = field(default_factory=list)
     error: str | None = None
+    #: Set when the claim store refused on a host rate limit (#7297), so the
+    #: launch defers until the reset instead of counting a failure.
+    host_rate_limit: HostRateLimit | None = None
 
     @classmethod
     def claimed(cls, lease_id: str) -> "ClaimResult":
@@ -132,11 +137,14 @@ class ClaimResult:
         )
 
     @classmethod
-    def failed(cls, error: str) -> "ClaimResult":
+    def failed(
+        cls, error: str, *, host_rate_limit: HostRateLimit | None = None
+    ) -> "ClaimResult":
         """Create a failed claim result."""
         return cls(
             success=False,
             lease_id=None,
             state=ClaimState.UNCLAIMED,
             error=error,
+            host_rate_limit=host_rate_limit,
         )
