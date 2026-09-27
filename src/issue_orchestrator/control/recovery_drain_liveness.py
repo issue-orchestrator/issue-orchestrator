@@ -174,15 +174,21 @@ class RecoveryDrainLiveness:
     def _record_key(
         self, action: str, record_id: str, evidence_id: str, **extra: object
     ) -> LivenessKey:
-        disposition = self.records.get(record_id)
-        facts = {
-            "record_id": record_id, "evidence_id": evidence_id,
-            "state": disposition.state, **extra,
-        }
+        facts: dict[str, object] = {"record_id": record_id, "evidence_id": evidence_id, **extra}
+        try:
+            disposition = self.records.get(record_id)
+        except Exception:
+            # A record selection returned but whose disposition cannot be read:
+            # still keyed, stably, so its operation (which reads the record
+            # itself, after admission) is bounded; with no readable issue its
+            # park escalates nowhere but the board and the CLI.
+            logger.warning("Disposition of record %s is unreadable", record_id, exc_info=True)
+            return self._key(action, record_id, None, {**facts, "state": _UNREADABLE})
+        facts["state"] = disposition.state
         return self._key(action, record_id, disposition.key.issue_number, facts)
 
     @staticmethod
-    def _key(action: str, record_id: str, issue: int, facts: object) -> LivenessKey:
+    def _key(action: str, record_id: str, issue: int | None, facts: object) -> LivenessKey:
         return LivenessKey(
             identity=ActionIdentity(drain_subject(record_id), action),
             fingerprint=fact_fingerprint(facts),

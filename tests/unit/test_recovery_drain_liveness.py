@@ -97,7 +97,12 @@ class _Engine:
 
     # The record facts the drain's keys read: the real store, with the state
     # optionally moved on by "another path".
+    #: Records whose disposition read fails, though selection returns them.
+    unreadable: frozenset[str] = frozenset()
+
     def get(self, record_id: str):
+        if record_id in self.unreadable:
+            raise OSError("disposition row does not decode")
         disposition = self.store.get(record_id)
         if self.moved_to is None:
             return disposition
@@ -142,6 +147,27 @@ def test_an_operation_that_raises_every_pass_parks(tmp_path) -> None:
 
     assert len(engine.operation.called) == POLICY.max_attempts
     assert "missing_authority" in engine.escalation.parked[0].last_reason
+
+
+def test_a_record_whose_disposition_cannot_be_read_is_still_bounded(tmp_path) -> None:
+    """Selection returns the record but its disposition read fails every
+    pass: the key is still made (stably, with no issue), so the attempt is
+    counted and parks, and the next record keeps its turn (review B r11)."""
+    engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"), issues=(410, 411))
+    first, second = (
+        request.record_id for request in engine.store.drain_requests(after_record_id="", limit=5)
+    )
+    engine.unreadable = frozenset({first})
+
+    engine.passes(30)
+
+    assert engine.operation.called.count(first) == POLICY.max_attempts
+    assert engine.operation.called.count(second) == POLICY.max_attempts
+    [unreadable_park] = [
+        row for row in engine.escalation.parked
+        if row.key.identity.subject == f"validated_work:{first}"
+    ]
+    assert unreadable_park.key.escalation_issue is None
 
 
 def test_contention_spends_nothing_but_is_shown(tmp_path) -> None:
