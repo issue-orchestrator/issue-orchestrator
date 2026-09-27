@@ -109,19 +109,17 @@ def test_provider_availability_names_the_open_lanes_for_an_agent(sample_config) 
     assert policy.circuit_is_open_for_issue(issue)
 
 
-def test_the_rate_limit_window_reports_its_oldest_waiting_item() -> None:
+def test_the_rate_limit_window_dates_each_item_by_its_own_episode() -> None:
     window = HostRateLimitWindow()
-    assert window.holding_at(NOW) is None
+    assert window.waiting_since("a") is None
 
     limit = HostRateLimit(resets_at=NOW + HOUR, kind="primary")
     window.observe(limit, NOW - 2 * HOUR, "a", live=frozenset({"a"}))
     window.observe(limit, NOW - HOUR, "b", live=frozenset({"a", "b"}))
 
-    episode = window.holding_at(NOW)
-    assert episode is not None
-    assert episode.limited_since == NOW - 2 * HOUR
-    assert episode.limit.resets_at == NOW + HOUR
-    assert window.holding_at(NOW + 2 * HOUR) is None  # the limit reset
+    assert window.waiting_since("a") == NOW - 2 * HOUR
+    assert window.waiting_since("b") == NOW - HOUR
+    assert window.waiting_since("c") is None
 
 
 def test_the_engine_facade_derives_custody_from_its_own_state(

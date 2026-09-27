@@ -160,6 +160,10 @@ class ValidatedWorkFailure(StrEnum):
     REMOTE_UNREADABLE = "remote_unreadable"  # read failed != "absent"
     PR_CLOSED_OR_MERGED = "pr_closed_or_merged"
     PR_BRANCH_MISMATCH = "pr_branch_mismatch"
+    # The host definitely refused PR creation (#7346). Permanent for this exact
+    # head: the record fails for a human instead of retrying forever.
+    PR_CREATE_NO_COMMITS = "pr_create_no_commits"  # head adds nothing to base
+    PR_CREATE_REJECTED = "pr_create_rejected"  # any other validation refusal
     # The PR closes an issue the publication declared only partly delivered (#7288).
     PR_ISSUE_REFERENCE_MISMATCH = "pr_issue_reference_mismatch"
     ISSUE_UNREADABLE = "issue_unreadable"

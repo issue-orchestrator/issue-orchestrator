@@ -14,6 +14,8 @@ from issue_orchestrator.adapters.github.publication_remote import (
     GitHubPublicationRemote, GitHubValidatedWorkCaptureObserver,
 )
 from issue_orchestrator.domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPrState,
     PublicationRemoteError,
 )
@@ -268,3 +270,87 @@ def test_create_preserves_prepared_content_and_adds_attribution(remote_factory, 
     observed = remote_factory(handle).create_pr(candidate)
     assert observed.number == 2
     assert len(requests) == 1
+
+
+def _unprocessable(message):
+    return httpx.Response(
+        422,
+        json={
+            "message": "Validation Failed",
+            "errors": [{"resource": "PullRequest", "code": "custom", "message": message}],
+            "documentation_url": "https://docs.github.com/rest/pulls/pulls#create-a-pull-request",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "rejection"),
+    [
+        (_unprocessable("No commits between main and feature"), PrCreateRejection.NO_COMMITS),
+        (
+            _unprocessable("A pull request already exists for owner:feature."),
+            PrCreateRejection.ALREADY_EXISTS,
+        ),
+        (
+            httpx.Response(
+                422,
+                json={
+                    "message": "Validation Failed",
+                    "errors": [{"resource": "PullRequest", "field": "base", "code": "invalid"}],
+                },
+            ),
+            PrCreateRejection.INVALID,
+        ),
+    ],
+)
+def test_create_422_is_a_typed_definite_refusal(remote_factory, response, rejection):
+    """#7346: a 422 is an answer, not a lost response, so it is never transient."""
+    with pytest.raises(PublicationPrCreateRejected) as raised:
+        remote_factory(lambda _request: response).create_pr(COMMAND)
+    assert raised.value.rejection is rejection
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(500, json={"message": "no"}),
+        httpx.Response(502, json={"message": "no"}),
+        httpx.Response(403, json={"message": "no"}),
+        # A 422 without GitHub's structured validation errors proves nothing
+        # permanent: throttling and malformed bodies stay retryable.
+        httpx.Response(422, json={"message": "Your request was flagged as spam; retry later."}),
+        httpx.Response(422, text="not json"),
+        httpx.Response(422, json={"message": "Validation Failed", "errors": []}),
+        # Structured, but a throttle rather than a refusal of this request.
+        httpx.Response(
+            422,
+            headers={"Retry-After": "60"},
+            json={
+                "message": "Validation Failed",
+                "errors": [{"resource": "PullRequest", "code": "custom",
+                            "message": "Please wait before trying again"}],
+            },
+        ),
+    ],
+)
+def test_create_failure_without_a_definite_refusal_stays_untyped(remote_factory, response):
+    with pytest.raises(PublicationRemoteError) as raised:
+        remote_factory(lambda _request: response).create_pr(COMMAND)
+    assert not isinstance(raised.value, PublicationPrCreateRejected)
+
+
+def test_rate_limited_create_is_never_a_definite_refusal():
+    """A rate limit says when the host will answer, not what the answer is."""
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+    from issue_orchestrator.adapters.github.publication_remote import _create_rejection
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+
+    exc = GitHubRateLimitedError(
+        "rate limited",
+        rate_limit=HostRateLimit(datetime(2026, 9, 27, tzinfo=timezone.utc), "secondary"),
+        status_code=422,
+        response_text=_unprocessable("No commits between main and feature").text,
+    )
+    assert _create_rejection(exc) is None
