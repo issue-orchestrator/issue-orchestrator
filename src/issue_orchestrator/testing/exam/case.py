@@ -79,7 +79,7 @@ class TermGroup:
         folded = _plain(text)
         return next((term for term in self.any_of if _plain(term) in folded), None)
 
-    def advised_term(self, text: str) -> str | None:
+    def advised_term(self, text: str, *, item_numbers: frozenset[int]) -> str | None:
         """A term the text ADVISES, for remedies.
 
         Conservative on purpose — a lexical reading of advice can always be
@@ -90,7 +90,9 @@ class TermGroup:
         blocked-failed" still advises the removal.
         """
         for clause in _clauses(text):
-            if _NEGATION.search(clause):
+            # Advice about another issue ("remove blocked-failed from #999")
+            # is not advice about this item, whoever it was delivered to.
+            if _NEGATION.search(clause) or not _about_item(clause, item_numbers):
                 continue
             for term in self.any_of:
                 if _plain(term) in clause:

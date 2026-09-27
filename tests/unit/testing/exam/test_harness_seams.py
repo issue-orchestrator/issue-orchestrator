@@ -553,3 +553,22 @@ def test_a_malformed_repository_is_refused(bad: str) -> None:
 
     with pytest.raises(ValueError, match="owner/name"):
         github_remote(bad)
+
+
+def test_only_this_runs_log_tailers_are_selected(tmp_path) -> None:
+    """Round 13 F2: a production engine's tmux pipe-pane tailer writes to the
+    same .issue-orchestrator/sessions/ layout; it must never be signalled."""
+    from tests.e2e.fixtures.orchestrator_process import owned_log_tailers
+
+    exam_base = tmp_path / "e2e-abc-worktrees"
+    engine_root = tmp_path / "exam-engine-x"
+    ps_lines = [
+        f"101 cat >> {exam_base}/issue-7/wt/.issue-orchestrator/sessions/run/session.log",
+        f"102 cat >> '{engine_root}/.issue-orchestrator/session.log'",
+        "103 cat >> /Users/someone/dev/issue-orchestrator/.issue-orchestrator/sessions/run/session.log",
+        f"104 cat >> {tmp_path}/other-engine/.issue-orchestrator/sessions/run/session.log",
+        f"105 tail -f {exam_base}/issue-7/wt/.issue-orchestrator/sessions/run/session.log",
+        "not-a-pid cat >> x/.issue-orchestrator/sessions/y",
+    ]
+
+    assert owned_log_tailers(ps_lines, [exam_base, engine_root, None]) == [101, 102]

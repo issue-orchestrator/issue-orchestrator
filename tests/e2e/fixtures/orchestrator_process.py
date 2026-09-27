@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import yaml
 
@@ -49,6 +49,31 @@ def merge_config_overlay(
         else:
             merged[key] = value
     return merged
+
+
+_SESSION_LOG_MARKERS = (".issue-orchestrator/sessions/", ".issue-orchestrator/session.log")
+
+
+def owned_log_tailers(ps_lines: Iterable[str], roots: Iterable[Path | None]) -> list[int]:
+    """PIDs of ``cat >> <session log>`` tailers whose log lies under ``roots``.
+
+    ``ps_lines`` are ``pid command`` lines. A tailer writing anywhere else —
+    another engine's worktree — is never selected.
+    """
+    resolved = [Path(root).resolve() for root in roots if root is not None]
+    owned: list[int] = []
+    for line in ps_lines:
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        command = parts[1]
+        if "cat >>" not in command or not any(m in command for m in _SESSION_LOG_MARKERS):
+            continue
+        target = command.split("cat >>", 1)[1].strip().split()[0].strip("'\"")
+        log_path = Path(target).resolve()
+        if any(log_path.is_relative_to(root) for root in resolved):
+            owned.append(int(parts[0]))
+    return owned
 
 
 def keep_artifacts() -> bool:
@@ -523,7 +548,14 @@ class OrchestratorProcess:
                 pass
 
     def _cleanup_log_tailers(self) -> None:
-        """Stop lingering session.log tail processes from tmux pipe-pane."""
+        """Stop lingering session.log tail processes from tmux pipe-pane.
+
+        Only THIS run's tailers: a machine-wide match on the log path pattern
+        would also SIGTERM a production engine's tailers (they write to the
+        same ``.issue-orchestrator/sessions/`` layout under ~/dev). tmux
+        pipe-pane tailers are children of the tmux server, not of this
+        process group, so ownership is decided by the file they write to.
+        """
         if keep_artifacts():
             return
         try:
@@ -536,18 +568,8 @@ class OrchestratorProcess:
             )
         except OSError:
             return
-        for line in result.stdout.splitlines():
-            if "cat >>" not in line:
-                continue
-            if ".issue-orchestrator/sessions/" not in line and ".issue-orchestrator/session.log" not in line:
-                continue
-            parts = line.strip().split(None, 1)
-            if not parts:
-                continue
-            try:
-                pid = int(parts[0])
-            except ValueError:
-                continue
+        roots = [self.config.worktree_base, self.project_root]
+        for pid in owned_log_tailers(result.stdout.splitlines(), roots):
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:

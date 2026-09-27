@@ -628,3 +628,24 @@ class TestRoundTenFindings:
             ),
         )
         assert card.diagnosis is not None and card.diagnosis.passed, card.failures
+
+
+class TestRoundThirteenFindings:
+    def _b(self, advice: str):
+        return grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", advice), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+
+    def test_advice_about_another_issue_is_not_the_subjects_remedy(self) -> None:
+        card = self._b("remove blocked-failed from #999 to release the review of #999.")
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.MISSING
+        assert not card.passed
+
+    def test_the_same_advice_about_the_subject_is_acceptable(self) -> None:
+        card = self._b(f"remove blocked-failed from #{ISSUE} to release the review of PR #{PR}.")
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE

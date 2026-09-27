@@ -66,6 +66,10 @@ def grade(case: ExamCase, observation: ExamObservation) -> Scorecard:
     )
 
 
+def _item_numbers(item: WorkItemFact) -> frozenset[int]:
+    return frozenset({item.issue_number, *(pr.number for pr in item.pull_requests)})
+
+
 def _references_item(text: str, item: WorkItemFact) -> bool:
     numbers = {item.issue_number, *(pr.number for pr in item.pull_requests)}
     return any(re.search(rf"#{number}(?!\d)", text) for number in numbers)
@@ -115,9 +119,7 @@ def _diagnose_run(spec: RootCauseSpec, item: WorkItemFact, run: TechLeadRunFact)
         matched=tuple(sorted(matched.items())),
         missing=tuple(group.concept for group in spec.concepts if group.concept not in matched),
         run_id=run.run_id,
-        evidence_clause=spec.stating_clause(
-            text, item_numbers=frozenset({item.issue_number, *(pr.number for pr in item.pull_requests)})
-        ),
+        evidence_clause=spec.stating_clause(text, item_numbers=_item_numbers(item)),
     )
 
 
@@ -166,7 +168,7 @@ def _grade_remedy(
         and a.disposition is TechLeadActionDisposition.EXECUTED
         # The rationale must ADVISE the fix, not merely mention it:
         # "do not remove blocked-failed" is the opposite remedy.
-        and all(group.advised_term(a.body) for group in spec.rationale)
+        and all(group.advised_term(a.body, item_numbers=_item_numbers(item)) for group in spec.rationale)
     ]
     if acceptable:
         return RemedyGrade(
