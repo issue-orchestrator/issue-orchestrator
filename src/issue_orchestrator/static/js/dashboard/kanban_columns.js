@@ -246,6 +246,7 @@ function renderCompactCardHtml(card) {
         <div class="card-line">${phaseLineHtml}</div>
         ${queueWaitLine}
         ${detailLine}
+        ${renderCustodyHtml(card)}
         ${renderProviderBadgeHtml(card)}
         ${renderStackChipHtml(card)}
         ${badgesDiv}
@@ -330,6 +331,8 @@ function renderCompactCards(container, items) {
             // phase-age string (excluded from the fingerprint by design)
             // needs an in-place sync.
             syncCompactCardPhaseAge(existing, card);
+            // Same rule for the custody line's age (#7331, blocked_custody.js).
+            syncCustodyAge(existing, card);
         }
 
         if (!node) continue;
@@ -495,6 +498,7 @@ function renderExpandedCardHtml(item, columnId, isViewed) {
                             ${itemLabelHtml} ${escapeHtml(String(item.title || ''))}
                         </button>
                         ${detailDiv}
+                        ${renderCustodyHtml(item)}
                         ${renderProviderBadgeHtml(item)}
                         ${badgesDiv}
                     </div>
@@ -528,9 +532,13 @@ async function loadExpandedColumn(columnId, options = {}) {
 
     try {
         if (!vm) {
-            const resp = await fetch(`/api/view-model?tab=${columnId}`);
+            const endpoint = `/api/view-model?tab=${columnId}`;
+            const resp = await fetch(endpoint);
             if (!resp.ok) return;
-            vm = await resp.json();
+            // Contract-validated like the main refresh: a malformed payload
+            // leaves the list as it is instead of half-rendering it.
+            vm = await uiContractJson.fromResponse(resp, 'DashboardViewModelPayload', endpoint);
+            if (!vm) return;
         }
         const items = filterSuppressedItems(expandedColumnState.getExpandedItemsFromViewModel(vm, columnId), columnId);
         const nextFingerprint = expandedColumnState.computeExpandedItemsFingerprint(items, {
@@ -545,6 +553,7 @@ async function loadExpandedColumn(columnId, options = {}) {
             expandedList.innerHTML = items
                 .map(item => renderExpandedCardHtml(item, columnId, viewed.has(item.issue_number)))
                 .join('');
+            formatDashboardTimestamps(expandedList);
             expandedColumnFingerprints.set(columnId, nextFingerprint);
             const reconciledSelection = new Set(
                 expandedColumnState.reconcileSelectedIssues([...previousSelection], items),

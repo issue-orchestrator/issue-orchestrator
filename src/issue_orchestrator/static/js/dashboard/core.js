@@ -614,6 +614,8 @@ async function _refreshViewModelImpl({ reloadOnListChange = true } = {}) {
                     );
                 }
                 syncColumnOverflowFooter(colEl, col);
+                // #7331: the Blocked column's "is it under control?" line.
+                syncBlockedCustodySummary(colEl, col);
 
                 // Rebuild compact cards (skip if column is expanded — it has its own refresh)
                 if (colEl.dataset.expanded !== 'true') {
