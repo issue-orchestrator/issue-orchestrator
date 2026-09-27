@@ -21,6 +21,7 @@ from ..ports.validated_work_drain import (
     ValidatedWorkScopeSweep,
 )
 from ..ports.recovery_block import RecoveryBlockSweep
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.retained_claim_maintenance import RetainedClaimMaintenanceOwner
 from .recovery_drain_liveness import RecoveryDrainLiveness
 
@@ -147,7 +148,9 @@ class RecoveryDrain:
             # boundary observes an error. Custody and unknown attempts survive.
             logger.exception("Recovery drain operation failed for record %s", request.record_id)
             self._liveness.settle_error(key, error)
-            result = RecoveryAttemptPending(f"Recovery drain operation failed: {error}")
+            result = RecoveryAttemptPending(
+                f"Recovery drain operation failed: {error}", rate_limit=host_rate_limit_of(error)
+            )
             return RecoveryDrainItem(request.record_id, request.evidence_id, result)
         self._liveness.settle(key, result)
         return RecoveryDrainItem(request.record_id, request.evidence_id, result)

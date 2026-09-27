@@ -714,3 +714,31 @@ def test_a_refused_pr_create_parks_at_once(tmp_path) -> None:
 
     assert len(engine.operation.called) == 1
     assert engine.escalation.parked[0].last_outcome.value == "permanent"
+
+
+def test_a_raised_rate_limit_is_carried_on_the_drain_items_result(tmp_path) -> None:
+    """The drain boundary's pending result names the limit, not just the owner row.
+
+    Readers of the drain report (and anything that re-settles its result)
+    must see the same typed wait the liveness owner recorded.
+    """
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    raised: list[HostRateLimit] = []
+
+    def refused(request):
+        error = RepositoryHostRateLimitedError("API rate limit exceeded")
+        error.rate_limit = HostRateLimit(
+            resets_at=engine.clock.now + timedelta(minutes=30), kind="primary"
+        )
+        raised.append(error.rate_limit)
+        raise error
+
+    engine = _Engine(tmp_path, refused)
+
+    report = engine.drain.tick(OrchestratorState(), ACTIVE)
+
+    [item] = report.items
+    assert isinstance(item.outcome, RecoveryAttemptPending)
+    assert item.outcome.rate_limit == raised[0]
