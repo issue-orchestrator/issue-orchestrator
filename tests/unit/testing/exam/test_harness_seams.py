@@ -217,7 +217,11 @@ def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_pat
     adapter = _FakeAdapter(fail_create=True)
     pushed: list[str] = []
 
+    remotes: list[str] = []
+
     def fake_git(_cwd, *argv, env=None, stdin=None):
+        if argv[0] in ("fetch", "push"):
+            remotes.extend(arg for arg in argv if arg.startswith(("https://", "origin")))
         if argv[0] == "push":
             branch = argv[-1].split("refs/heads/")[1]
             pushed.append(branch)
@@ -235,6 +239,8 @@ def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_pat
         )
 
     assert registered == pushed == ["7-exam"]
+    # Round 9 F1: fetch and push address the RUN's repository, never an origin.
+    assert remotes == ["https://github.com/o/r.git", "https://github.com/o/r.git"]
     from tests.e2e.exam import cleanup
 
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
@@ -283,7 +289,7 @@ def test_a_failed_engine_checkout_leaves_nothing_behind(monkeypatch, tmp_path, f
     monkeypatch.setattr(engine_checkout, "_git", fake_git)
 
     with pytest.raises(RuntimeError, match=f"git {failing_step} failed"):
-        engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("A"), parent=parent)
+        engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("A"), repo="o/r", parent=parent)
 
     assert list(parent.iterdir()) == []
     assert (harness / ".venv").is_dir()  # the harness venv is never followed into
@@ -300,7 +306,7 @@ def test_a_built_checkout_removes_cleanly_without_touching_the_harness_venv(monk
         engine_checkout, "_git", lambda cwd, *argv: "b" * 40 if argv[0] == "rev-parse" else ""
     )
 
-    checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("B"), parent=parent)
+    checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("B"), repo="o/r", parent=parent)
 
     assert (checkout.root / ".venv").is_symlink()
     checkout.remove()
@@ -513,3 +519,37 @@ def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch) -> None:
     cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])
 
     assert adapter.closed == [] and adapter.deleted == ["7-exam"] and adapter.branches == set()
+
+
+
+def test_the_engine_clone_pushes_to_the_runs_repository(monkeypatch, tmp_path) -> None:
+    """Round 9 F1: with E2E_TEST_REPO pointing at a fork, the engine clone's
+    origin is the fork — not whatever the harness checkout's origin is."""
+    from tests.e2e.exam import engine_checkout
+
+    harness = tmp_path / "harness"
+    (harness / ".venv").mkdir(parents=True)
+    parent = tmp_path / "engines"
+    parent.mkdir()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(cwd, *argv):
+        calls.append(argv)
+        return "b" * 40 if argv[0] == "rev-parse" else ""
+
+    monkeypatch.setattr(engine_checkout, "_git", fake_git)
+    checkout = engine_checkout.EngineCheckout.create(
+        harness_root=harness, ref="HEAD", identity=RunIdentity.new("A"), repo="me/fork", parent=parent
+    )
+
+    assert ("remote", "set-url", "origin", "https://github.com/me/fork.git") in calls
+    assert not any(argv[:2] == ("remote", "get-url") for argv in calls)
+    checkout.remove()
+
+
+@pytest.mark.parametrize("bad", ["", "owner", "owner/", "/name", "a/b/c"])
+def test_a_malformed_repository_is_refused(bad: str) -> None:
+    from tests.e2e.exam.run_identity import github_remote
+
+    with pytest.raises(ValueError, match="owner/name"):
+        github_remote(bad)

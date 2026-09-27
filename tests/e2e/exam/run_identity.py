@@ -32,3 +32,16 @@ class RunIdentity:
 
     def checkout_name(self, commit: str) -> str:
         return f"exam-engine-{commit[:10]}-{self.case_id[:1].lower()}-{self.run_id}"
+
+
+def github_remote(repo: str) -> str:
+    """The ONE remote every exam git operation uses: the run's repository.
+
+    Never the harness checkout's ``origin`` — with ``E2E_TEST_REPO`` set to a
+    fork, that would push seed branches (and let the engine push) to a
+    repository the run's PRs, observation and cleanup never look at.
+    """
+    owner, _, name = repo.partition("/")
+    if not owner or not name or "/" in name:
+        raise ValueError(f"repository must be 'owner/name', got {repo!r}")
+    return f"https://github.com/{repo}.git"

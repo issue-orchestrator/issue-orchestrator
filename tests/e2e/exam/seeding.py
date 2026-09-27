@@ -22,6 +22,7 @@ from pathlib import Path
 from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER
 from issue_orchestrator.ports.pull_request_tracker import StatusCheckRollupRead
 
+from tests.e2e.exam.run_identity import github_remote
 from tests.e2e.fixtures import _github_adapter
 
 logger = logging.getLogger(__name__)
@@ -61,14 +62,15 @@ def seed_pull_request(
     draft: bool,
     register_branch: Callable[[str], None],
 ) -> SeededPullRequest:
-    """Push a one-file commit on top of origin/main and open a PR for it.
+    """Push a one-file commit on top of ``repo``'s main and open a PR for it.
 
     Built with plumbing in a private index so no checkout is touched. The file
     is outside ``src/`` so CI's change filter skips the heavy lanes and the PR
     goes green in seconds, like the porchpin PRs it stands for.
     """
-    _git(repo_root, "fetch", "--quiet", "origin", "main")
-    base = _git(repo_root, "rev-parse", "origin/main")
+    remote = github_remote(repo)
+    _git(repo_root, "fetch", "--quiet", remote, "main")
+    base = _git(repo_root, "rev-parse", "FETCH_HEAD")
     branch = f"{issue_number}-{slug}"
     content = f"tech-lead exam seed for #{issue_number} at {time.ctime()}\n"
     blob = _git(repo_root, "hash-object", "-w", "--stdin", stdin=content)
@@ -92,7 +94,7 @@ def seed_pull_request(
     # Register BEFORE pushing: a push that lands but reports failure, or a
     # create_pr that fails after it, must still leave cleanup the branch.
     register_branch(branch)
-    _git(repo_root, "push", "--no-verify", "--quiet", "origin", f"{commit}:refs/heads/{branch}")
+    _git(repo_root, "push", "--no-verify", "--quiet", remote, f"{commit}:refs/heads/{branch}")
     adapter = _github_adapter(repo)
     pr = adapter.create_pr(
         title=f"#{issue_number}: exam seed",

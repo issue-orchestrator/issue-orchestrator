@@ -230,7 +230,7 @@ def _labels(config: Config) -> LabelManager:
 
 async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
     checkout = EngineCheckout.create(
-        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
     try:
         config = exam_config(
@@ -289,7 +289,7 @@ async def run_case_b(
     run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str
 ) -> ExamResult:
     checkout = EngineCheckout.create(
-        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
     try:
         config = exam_config(
@@ -402,7 +402,7 @@ CASE_C_WINDOW_S = 6 * 60
 
 async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
     checkout = EngineCheckout.create(
-        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
     try:
         config = exam_config(

@@ -20,7 +20,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.e2e.exam.run_identity import RunIdentity
+from tests.e2e.exam.run_identity import RunIdentity, github_remote
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +58,13 @@ class EngineCheckout:
         harness_root: Path,
         ref: str,
         identity: RunIdentity,
+        repo: str,
         parent: Path = WORKTREE_PARENT,
     ) -> "EngineCheckout":
+        """``repo`` is the run's repository: the clone's ``origin`` points at
+        it (``github_remote``), so the engine pushes where the exam looks."""
         commit = _git(harness_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
-        origin = _git(harness_root, "remote", "get-url", "origin")
+        origin = github_remote(repo)
         venv = harness_root / ".venv"
         if not venv.is_dir():
             raise RuntimeError(f"harness virtualenv missing at {venv}")
