@@ -17,6 +17,10 @@ from __future__ import annotations
 
 from ..domain.scoped_rework import ReworkReceipt
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
+from .tech_lead_charter_ledger import (
+    InMemoryTechLeadCharterLedger,
+    TechLeadCharterLedger,
+)
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from threading import Lock
@@ -520,6 +524,13 @@ class TechLeadAuthorityStore(Protocol):
         """Newest persisted fixes, bounded for the agent-read board snapshot."""
         ...
 
+    # -- Charter decision ledger (#7330) ------------------------------------
+
+    @property
+    def charter_ledger(self) -> "TechLeadCharterLedger":
+        """The per-action charter decision ledger, beside the op ledger it links to."""
+        ...
+
 
 class InMemoryTechLeadAuthorityStore:
     """In-memory store for tests."""
@@ -540,6 +551,11 @@ class InMemoryTechLeadAuthorityStore:
         self._storm_cohorts: dict[int, tuple["DiscoveredFailure", ...]] = {}
         self._dispositions: dict[int, "TechLeadDisposition"] = {}
         self._disposition_publication_locks: dict[int, Lock] = {}
+        self._charter_ledger = InMemoryTechLeadCharterLedger()
+
+    @property
+    def charter_ledger(self) -> "InMemoryTechLeadCharterLedger":
+        return self._charter_ledger
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"

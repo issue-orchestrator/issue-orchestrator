@@ -30,12 +30,14 @@ from typing import TYPE_CHECKING, Callable, Optional
 from ..infra.repo_identity import state_dir
 from ..view_models.tech_lead_board import build_tech_lead_board_view, render_tech_lead_board_md
 from .tech_lead_case_files import case_file_area_counts
+from .tech_lead_charter_board import charter_board_rows
 
 if TYPE_CHECKING:
     from ..domain.action_liveness import LivenessRow
     from ..domain.models import TechLeadFacts
     from ..domain.tech_lead_session import TechLeadCaseFileSummary, TechLeadShippedFixSummary
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .tech_lead_charter_policy import TechLeadCharterPolicy
     from ..view_models.tech_lead_board import TechLeadBoardView
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class TechLeadBoardPublisher:
         board_path: Path,
         authority: "Optional[TechLeadAuthorityStore]",
         held_actions: "Callable[[], tuple[LivenessRow, ...]]",
+        charter_policy: "Callable[[], TechLeadCharterPolicy] | None" = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._board_path = board_path
@@ -64,6 +67,7 @@ class TechLeadBoardPublisher:
         # Parked actions from the action liveness owner (#7350): the board is
         # where a person sees what the orchestrator stopped retrying.
         self._held_actions = held_actions
+        self._charter_policy = charter_policy
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._last_rendered: str | None = None
         self._case_files: tuple[TechLeadCaseFileSummary, ...] = ()
@@ -134,4 +138,9 @@ class TechLeadBoardPublisher:
             last_health_review_at=last_health_review_at,
             now=self._clock(),
             held_actions=self._held_actions(),
+            # Built per publish: settings edits mutate the live config (#7330).
+            charter=charter_board_rows(
+                self._charter_policy() if self._charter_policy else None,
+                self._authority,
+            ),
         )

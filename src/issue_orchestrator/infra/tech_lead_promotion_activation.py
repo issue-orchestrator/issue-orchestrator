@@ -35,6 +35,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .config_models_tech_lead_charter import promotion_can_file
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -50,6 +52,11 @@ class PromotionLaneReadiness:
     # inactive lane's missing dependencies are irrelevant, so switching the lane
     # off is always a way out of a misconfiguration.
     problems: tuple[str, ...] = ()
+    # Whether the charter lets this lane FILE anything (#7330). An active lane
+    # that cannot file still runs, to record why each candidate was not filed,
+    # but needs no filing dependency, no filing probe and no in-flight cap.
+    # This is the ONE filing decision readiness, selection and doctor share.
+    can_file: bool = False
     # NOTE: what doctor must PROVE about each foreign target is deliberately not
     # here. A repo-name list is a weaker statement than the filing command makes
     # (it also provisions labels), and having a second owner state it is what let
@@ -97,7 +104,11 @@ def promotion_lane_readiness(config: "Config") -> PromotionLaneReadiness:
         for area, target in findings.route.items()
         if target.is_self or target.agent_label is None
     )
-    if inherits_source_agent and not config.tech_lead_follow_up_agent:
+    # Only a lane that can FILE needs the filing dependency: when the charter
+    # keeps every promotion as advice, the lane still runs (to record why) but
+    # never stamps a worker agent on anything (#7330 review r4 F1).
+    can_file = promotion_can_file(config.tech_lead)
+    if inherits_source_agent and not config.tech_lead_follow_up_agent and can_file:
         problems.append(
             "review.tech_lead_follow_up_agent is required by"
             f" tech_lead.findings.route[{', '.join(repr(a) for a in inherits_source_agent)}]:"
@@ -107,4 +118,4 @@ def promotion_lane_readiness(config: "Config") -> PromotionLaneReadiness:
             " each foreign route its own agent_label, or set"
             " tech_lead.findings.promote: off"
         )
-    return PromotionLaneReadiness(active=True, problems=tuple(problems))
+    return PromotionLaneReadiness(active=True, problems=tuple(problems), can_file=can_file)

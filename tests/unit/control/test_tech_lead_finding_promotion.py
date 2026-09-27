@@ -2010,11 +2010,17 @@ class TestFactGatheringAndPlanning:
             ),
         )
 
+        from issue_orchestrator.control.tech_lead_charter_policy import (
+            CharterAuditedAction,
+        )
+
+        # The filing carries the charter decision it was made under (#7330).
         assert [type(action) for action in actions] == [
-            PromoteTechLeadFindingAction,
+            CharterAuditedAction,
             ReportPromotedFindingEvidenceAction,
             SettleTechLeadPromotionAction,
         ]
+        assert isinstance(actions[0].effect, PromoteTechLeadFindingAction)
 
     def test_later_evidence_arms_facts_without_other_tech_lead_triggers(self):
         config = _config()
