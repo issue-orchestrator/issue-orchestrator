@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from .github_calls import GitHubCallCounts
 from .livelock import RepeatingFailure
+from .upgrade import UpgradeFacts
 
 
 class PullRequestState(str, Enum):
@@ -326,6 +327,8 @@ class ExamObservation:
     elapsed_seconds: float
     ended_by: RunEnd
     notes: tuple[str, ...] = field(default_factory=tuple)
+    upgrade: UpgradeFacts | None = None
+    """What the harness saw across an upgrade case's stop and restart."""
 
     def item(self, role: str) -> WorkItemFact:
         matches = [item for item in self.items if item.role == role]
@@ -349,6 +352,7 @@ class ExamObservation:
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "ended_by": self.ended_by.value,
             "notes": list(self.notes),
+            "upgrade": None if self.upgrade is None else self.upgrade.to_dict(),
         }
 
     @classmethod
@@ -372,4 +376,5 @@ class ExamObservation:
             elapsed_seconds=float(data["elapsed_seconds"]),
             ended_by=RunEnd(data["ended_by"]),
             notes=tuple(data["notes"]),
+            upgrade=None if data["upgrade"] is None else UpgradeFacts.from_dict(data["upgrade"]),
         )

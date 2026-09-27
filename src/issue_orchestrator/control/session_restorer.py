@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
 from ..infra.repo_scope import require_repo
-from ..domain.issue_run_evidence import ReworkTarget
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, ReworkTarget
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.session_key import SessionKey
 from ..domain.session_kind import SessionKind
@@ -139,6 +139,27 @@ class SessionRestorer:
                 print(f"  Warning: Failed to restore session for #{issue_number}: {e}")
 
         return restored
+
+    def predates_run_roles(self, session_info: DiscoveredSession) -> bool:
+        """Whether this registry entry's run was allocated before roles were recorded.
+
+        Such a run has a ledger row whose role is NULL (#7189 added the role
+        columns). Agents are PTY children that do not survive an engine stop,
+        so an entry like this at startup is a stale registry row, not a live
+        session: the caller treats it as dead - no restore, no quarantine,
+        its claim requeued by the dead-run sweep. Anything else, including an
+        entry whose run cannot be read at all, is left to normal restoration.
+        """
+        run_dir = session_info.get("run_dir")
+        if type(run_dir) is not str or not run_dir:
+            return False
+        try:
+            run_assets = self._required_run_assets(
+                session_info, self.canonical_terminal_id(session_info)
+            )
+            return self._run_ledger.recorded_run(run_assets).agent_label is None
+        except (SessionConfigurationIdentityVerificationError, IssueRunEvidenceUnavailable):
+            return False  # unreadable: the normal restore path decides (and reports) it
 
     def canonical_terminal_id(self, session_info: DiscoveredSession) -> str:
         """Return the canonical terminal id for a discovered or known terminal."""

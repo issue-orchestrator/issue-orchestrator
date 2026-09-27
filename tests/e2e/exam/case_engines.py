@@ -13,6 +13,7 @@ found; this keeps that class of drift in the unit gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from issue_orchestrator.infra.config import Config
@@ -54,6 +55,8 @@ class CaseEngine:
     reviewer_exchange_fault: str
     overlay: Mapping[str, Any]
     tech_lead: bool = False
+    release_file: Path | None = None
+    """Hold work mid-flight until this file exists (``exam_config``)."""
 
     def config(
         self,
@@ -73,6 +76,7 @@ class CaseEngine:
             run_label=run_label,
             reviewer_exchange_fault=self.reviewer_exchange_fault,
             tech_lead_model=tech_lead_model,
+            release_file=self.release_file,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -126,3 +130,17 @@ def case_b_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> Ca
 def case_c_engine() -> CaseEngine:
     """The default engine: Case C plants its fault in labels, not config."""
     return CaseEngine(reviewer_exchange_fault="none", overlay={})
+
+
+def case_u_engine(release_file: Path) -> CaseEngine:
+    """Work held mid-flight until ``release_file`` exists, reviewed AFTER it
+    is published (``via-draft-pr``) so the review is its own session.
+
+    The overlay is YAML both the base and the candidate accept; the same file
+    starts both engines (an upgrade does not change the operator's config).
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        overlay={"review": {"exchange": {"mode": "via-draft-pr"}}},
+        release_file=release_file,
+    )

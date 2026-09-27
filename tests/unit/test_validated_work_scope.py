@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from tests.unit.control.liveness_doubles import drain_liveness
+from tests.unit.control.liveness_doubles import TICK, drain_liveness
 from issue_orchestrator.adapters.issue_disposition_gate import FileIssueDispositionMutationGate
 from issue_orchestrator.control import validated_work_preservation
 from issue_orchestrator.control.actions import ActionResult, AddLabelAction
@@ -832,7 +832,7 @@ def test_retiring_a_record_releases_every_lanes_park(tmp_path):
     assert rig.store.get(rig.record_id).state is ValidatedWorkState.ABANDONED
     assert rig.rows.rows == {}
     rig.clock.advance(rig.policy.max_backoff)
-    liveness.owner.reconcile_effects()
+    liveness.owner.reconcile_effects(TICK)
     assert recover_key in [row.key for batch in rig.escalation.released for row in batch]
     assert rig.escalation.unblocks == [(recover_key.escalation_issue, True)]
 
@@ -862,7 +862,7 @@ def test_a_retirement_that_committed_before_a_later_step_raised_still_resolves(t
     assert report.retired == (rig.record_id,)
     assert rig.rows.rows == {}
     rig.clock.advance(rig.policy.max_backoff)
-    liveness.owner.reconcile_effects()
+    liveness.owner.reconcile_effects(TICK)
     assert rig.escalation.unblocks == [(recover_key.escalation_issue, True)]
 
 

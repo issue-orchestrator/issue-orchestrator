@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch, PropertyMock
 from typing import Optional
 
-from tests.unit.control.liveness_doubles import PASSTHROUGH_LIVENESS, gated
+from tests.unit.control.liveness_doubles import PASSTHROUGH_LIVENESS, applier_owner, gated
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.control.orchestrator_support import (
     OrchestratorSupport,
@@ -1082,7 +1082,7 @@ class TestPauseIssueForReconciliation:
         """Reconciliation failure adds pause label to issue."""
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=42,
             reason="Labels changed externally",
@@ -1102,7 +1102,7 @@ class TestPauseIssueForReconciliation:
         """Reconciliation pause emits ISSUE_PAUSED_RECONCILE event."""
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=99,
             reason="State drift detected",
@@ -1127,7 +1127,7 @@ class TestPauseIssueForReconciliation:
         # Should not raise
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=42,
             reason="Test failure",
@@ -1147,7 +1147,7 @@ class TestPauseIssueForReconciliation:
 
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=42,
             reason="drift",
@@ -1587,8 +1587,9 @@ class TestOrchestratorSupportApplyPlan:
             labels=labels, sessions=MagicMock(), events=support.events,
             fresh_issue_reader=_FreshReader(), reconcile=True, **applier_ports,
         )
+        pauses = applier_owner(support.action_applier, support.events)
         pause = lambda number, reason: pause_issue_for_reconciliation(  # noqa: E731
-            support.events, support.action_applier, support.event_context, number, reason)
+            support.events, pauses, support.event_context, number, reason)
         return labels, pause
 
     def test_paused_subject_is_withheld_without_aborting_other_subjects(self, support, mock_event_sink):

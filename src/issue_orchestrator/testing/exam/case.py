@@ -17,6 +17,7 @@ from typing import Callable, Iterable
 
 from ...domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION_TYPES
 from .observation import ExamObservation, PullRequestState, WorkItemFact
+from .upgrade import UpgradeSpec
 
 
 def require_tech_lead_action_types(types: frozenset[str], *, what: str) -> frozenset[str]:
@@ -232,6 +233,8 @@ class ExamCase:
     expects_destructive: bool = False
     known_blockers: tuple[str, ...] = field(default_factory=tuple)
     """Issues/PRs whose fix this case exercises, for the report."""
+    upgrade: UpgradeSpec | None = None
+    """Set for an upgrade case: the restart onto the candidate is graded too."""
 
     def __post_init__(self) -> None:
         if not self.goals:

@@ -39,6 +39,7 @@ from .observation import (
     WorkItemFact,
 )
 from .scorecard import Scorecard, render_summary
+from .upgrade import LabelChange, UpgradeFacts, UpgradeGrade, UpgradeSpec, WriteKind
 
 __all__ = [
     "EndpointClass",
@@ -47,6 +48,7 @@ __all__ = [
     "GitHubCallCounts",
     "Goal",
     "GoalCheck",
+    "LabelChange",
     "PullRequestFact",
     "PullRequestState",
     "RemedySpec",
@@ -59,7 +61,11 @@ __all__ = [
     "TechLeadReceipt",
     "TechLeadRunFact",
     "TermGroup",
+    "UpgradeFacts",
+    "UpgradeGrade",
+    "UpgradeSpec",
     "WorkItemFact",
+    "WriteKind",
     "classify_command",
     "grade",
     "render_summary",

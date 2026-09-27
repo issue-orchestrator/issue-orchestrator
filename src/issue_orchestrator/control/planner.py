@@ -53,7 +53,6 @@ from .workflows import (
 )
 from .actions import (
     Action,
-    ActionType,
     AddCommentAction,
     AddLabelAction,
     RemoveLabelAction,
@@ -92,21 +91,13 @@ from .reconciliation import build_expected_for_mutation, without_paused_subjects
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
+from .plan_launches import PlanLaunches, first_per_subject, withhold_launching
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,
 )
 from .needs_human_block import NeedsHumanCause
 
 logger = logging.getLogger(__name__)
-
-# Launch action kinds that occupy a worker slot when planned — the single source
-# of truth the capacity counter uses so a new launch kind can't silently escape
-# the worker budget (#6892 review F1/F2). A provider-skip label action is
-# deliberately absent (it launches nothing).
-_CAPACITY_CONSUMING_LAUNCH_TYPES: frozenset[ActionType] = frozenset(
-    {ActionType.LAUNCH_SESSION, ActionType.LAUNCH_VALIDATION_RETRY}
-)
-
 
 class Planner:
     """Pure policy decisions - no side effects.
@@ -362,17 +353,6 @@ class Planner:
             worker_capacity -= 1
         return worker_capacity
 
-    @staticmethod
-    def _launch_count(actions: list[Action]) -> int:
-        """Count capacity-consuming launches only — a provider-skip label action
-        is not a launch. Every launch KIND is registered in
-        ``_CAPACITY_CONSUMING_LAUNCH_TYPES`` (not a per-call concrete-class
-        check), so a new launch kind can't silently escape the budget the way
-        validation retries did (#6892 review F1/F2)."""
-        return sum(
-            1 for a in actions if a.action_type in _CAPACITY_CONSUMING_LAUNCH_TYPES
-        )
-
     def _defer_pending_tech_lead(
         self, snapshot: OrchestratorSnapshot, slot: TechLeadSlotAvailability
     ) -> None:
@@ -412,6 +392,9 @@ class Planner:
         """Plan capacity-consuming session launches in priority order."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
+        # Every stage's launches pass through one owner: it counts their slots
+        # and refuses a second launch of the same issue/PR in this plan (#7454).
+        launches = PlanLaunches(skipped)
         capacity = self._worker_capacity(snapshot)
         # Worker-only active count for the review/rework worker gate (includes the
         # E2E charge, exactly as before). Tech-lead slot accounting does NOT reuse
@@ -461,9 +444,8 @@ class Planner:
             review_actions, review_skipped = self._plan_reviews(
                 snapshot, capacity, worker_active_count, plan_context
             )
-            actions.extend(review_actions)
             skipped.extend(review_skipped)
-            review_launch_count = self._launch_count(review_actions)
+            review_launch_count = launches.admit(review_actions, into=actions)
             capacity -= review_launch_count
 
         # 2b. Plan retrospective review launches
@@ -474,9 +456,8 @@ class Planner:
                 worker_active_count,
                 plan_context,
             )
-            actions.extend(retrospective_actions)
             skipped.extend(retrospective_skipped)
-            retrospective_review_launch_count = self._launch_count(retrospective_actions)
+            retrospective_review_launch_count = launches.admit(retrospective_actions, into=actions)
             capacity -= retrospective_review_launch_count
 
         # 3. Plan rework launches
@@ -484,9 +465,8 @@ class Planner:
             rework_actions, rework_skipped = self._plan_reworks(
                 snapshot, capacity, worker_active_count, plan_context
             )
-            actions.extend(rework_actions)
             skipped.extend(rework_skipped)
-            rework_launch_count = self._launch_count(rework_actions)
+            rework_launch_count = launches.admit(rework_actions, into=actions)
             capacity -= rework_launch_count
 
         # 4. Plan validation retry launches. These are continuations of
@@ -496,10 +476,10 @@ class Planner:
                 snapshot,
                 capacity,
                 plan_context,
+                coder_launching=launches.coder_subjects(),
             )
-            actions.extend(validation_retry_actions)
             skipped.extend(validation_retry_skipped)
-            validation_retry_launch_count = self._launch_count(validation_retry_actions)
+            validation_retry_launch_count = launches.admit(validation_retry_actions, into=actions)
             capacity -= validation_retry_launch_count
 
         # 5. Plan tech_lead launches. Recompute the slot now that higher-priority
@@ -536,9 +516,8 @@ class Planner:
                 reserved=self.config.tech_lead.max_concurrent is not None,
                 pending_tech_lead=list(tech_lead_plan.launchable),
             )
-            actions.extend(tech_lead_actions)
             skipped.extend(tech_lead_skipped)
-            tech_lead_launch_count = self._launch_count(tech_lead_actions)
+            tech_lead_launch_count = launches.admit(tech_lead_actions, into=actions)
             if self.config.tech_lead.max_concurrent is None:
                 capacity -= tech_lead_launch_count
         else:
@@ -573,10 +552,11 @@ class Planner:
                     tech_lead_launch_count, capacity,
                 )
             issue_actions, issue_skipped, _ = self._plan_issues(
-                snapshot, capacity, worker_active_count, plan_context
+                snapshot, capacity, worker_active_count, plan_context,
+                launching=launches.subjects(),
             )
-            actions.extend(issue_actions)
             skipped.extend(issue_skipped)
+            launches.admit(issue_actions, into=actions)
 
         return actions, skipped
 
@@ -1155,8 +1135,14 @@ class Planner:
         capacity: int,
         worker_active_count: int,
         plan_context: PlanContext,
+        *,
+        launching: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem], int]:
         """Plan which issues to launch.
+
+        ``launching`` holds the issues/PRs earlier stages of this plan already
+        launch (a queued tech-lead run of an anchor, a validation retry): they
+        are excluded before the scheduler picks, so they cost no slot (#7454).
 
         ``worker_active_count`` is the active-session count charged against the
         worker budget for the scheduler's own slot gate. It equals
@@ -1255,6 +1241,7 @@ class Planner:
         )
         excluded_issues = (
             snapshot.active_issue_numbers |
+            launching |
             issues_with_reviews |
             issues_with_retrospective_reviews |
             issues_with_reworks |
@@ -1267,7 +1254,9 @@ class Planner:
         ]
 
         # Log per-issue exclusion reasons for diagnostics.
-        skip_reason_by_issue: dict[int, str] = {}
+        _, skip_reason_by_issue = withhold_launching(
+            available, launching, skipped, item_type="issue", subject=lambda i: i.number
+        )
         for issue in available:
             if issue.number in snapshot.active_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
@@ -1372,7 +1361,7 @@ class Planner:
             return actions, skipped
 
         decision: ReviewDecision = self.review_workflow.should_launch_reviews(
-            pending_reviews=list(snapshot.pending_reviews),
+            pending_reviews=first_per_subject(snapshot.pending_reviews, lambda r: r.pr_number),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
@@ -1433,7 +1422,7 @@ class Planner:
             return actions, skipped
 
         decision: RetrospectiveReviewDecision = workflow.should_launch_reviews(
-            pending_reviews=list(snapshot.pending_retrospective_reviews),
+            pending_reviews=first_per_subject(snapshot.pending_retrospective_reviews, lambda r: r.issue_number),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
@@ -1491,7 +1480,7 @@ class Planner:
             return actions, skipped
 
         decision: ReworkDecision = self.rework_workflow.should_launch_reworks(
-            pending_reworks=list(snapshot.pending_reworks),
+            pending_reworks=first_per_subject(snapshot.pending_reworks, lambda r: r.resolve_issue_number()),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
@@ -1569,13 +1558,23 @@ class Planner:
         snapshot: OrchestratorSnapshot,
         capacity: int,
         plan_context: PlanContext,
+        *,
+        coder_launching: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
-        """Plan launch actions for coding sessions that need validation retry."""
+        """Plan launch actions for coding sessions that need validation retry.
+
+        An issue an earlier stage already starts a coder session for (a rework)
+        is withheld before capacity is spent (#7454).
+        """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         seen_issue_numbers: set[int] = set()
+        retries, _ = withhold_launching(
+            snapshot.pending_validation_retries, coder_launching, skipped,
+            item_type="validation_retry", subject=lambda r: r.issue_number,
+        )
 
-        for retry in snapshot.pending_validation_retries:
+        for retry in retries:
             if len(actions) >= capacity:
                 break
             issue_number = retry.issue_number

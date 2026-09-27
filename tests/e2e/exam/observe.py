@@ -35,6 +35,7 @@ from issue_orchestrator.domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIR
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
+from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 from issue_orchestrator.testing.exam import (
     ExamObservation,
     GitHubCallCounts,
@@ -372,6 +373,7 @@ def build_observation(
     elapsed_seconds: float,
     ended_by: RunEnd,
     notes: tuple[str, ...],
+    upgrade: UpgradeFacts | None = None,
 ) -> ExamObservation:
     return ExamObservation(
         case_id=case_id,
@@ -386,4 +388,5 @@ def build_observation(
         elapsed_seconds=elapsed_seconds,
         ended_by=ended_by,
         notes=notes,
+        upgrade=upgrade,
     )

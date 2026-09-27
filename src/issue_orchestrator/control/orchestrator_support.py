@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
     from types import FrameType
+    from .action_liveness import ActionLivenessOwner
     from ..domain.models import OrchestratorState
     from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 
 from ..events import EventName, EventContext
 from ..ports import EventSink, make_trace_event, RepositoryHost
-from .actions import AddLabelAction
 from .stale_detection import _detect_stale_claims, _detect_stale_in_progress
 from .queue_cache import (
     QueueCache,
@@ -49,7 +49,7 @@ from .tech_lead_run_ownership import TechLeadRunOwnership, single_instance_run_o
 from .tech_lead_run_wiring import tech_lead_state_handlers
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
-from .reconciliation import ReconciliationRequired, ReconciliationResponse, get_pause_label, response_to
+from .reconciliation import ReconciliationRequired, ReconciliationResponse, response_to
 from .planned_action_liveness import PlannedActionLiveness, outcome_of_error, outcome_of_result
 from ..domain.action_liveness import ActionOutcome
 from .tick_telemetry import report_slow_tick
@@ -446,15 +446,14 @@ class OrchestratorSupport:
     def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReviewAction
         a = cast(QueueReviewAction, action)
-        if any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
-            return
-        self.state.pending_reviews.append(
+        if not self.state.queue_pending_review(
             PendingReview(
                 issue_key=self.repository_host.create_issue_key(a.issue_number),
                 pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
                 _issue_number=a.issue_number, agent_label=a.agent_label, issue_labels=a.issue_labels,
             )
-        )
+        ):
+            return
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
         self.get_review_machine(a.pr_number, a.issue_number)
 
@@ -463,7 +462,7 @@ class OrchestratorSupport:
         a = cast(QueueRetrospectiveReviewAction, action)
         if self.state.has_pending_or_active_retrospective_review(a.issue_number):
             return
-        self.state.pending_retrospective_reviews.append(
+        if not self.state.queue_pending_retrospective_review(
             PendingRetrospectiveReview(
                 issue_key=self.repository_host.create_issue_key(a.issue_number),
                 issue_number=a.issue_number,
@@ -473,7 +472,8 @@ class OrchestratorSupport:
                 prior_pr_number=a.prior_pr_number,
                 prior_pr_url=a.prior_pr_url, issue_labels=a.issue_labels,
             )
-        )
+        ):
+            return
         log_transition(
             "retrospective-review",
             a.issue_number,
@@ -485,10 +485,8 @@ class OrchestratorSupport:
     def _handle_queue_rework(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReworkAction
         a = cast(QueueReworkAction, action)
-        if any(r.resolve_issue_number() == a.issue_number for r in self.state.pending_reworks):
-            return
         agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
-        self.state.pending_reworks.append(
+        if not self.state.queue_pending_rework(
             PendingRework(
                 self.repository_host.create_issue_key(a.issue_number),
                 agent,
@@ -498,7 +496,8 @@ class OrchestratorSupport:
                 source=a.source,
                 feedback=a.feedback, scoped_request_keys=a.scoped_request_keys,
             )
-        )
+        ):
+            return
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 
     def update_queue_cache(self) -> None:
@@ -519,36 +518,27 @@ class OrchestratorSupport:
 
 def pause_issue_for_reconciliation(
     events: EventSink,
-    action_applier: "ActionApplier",
+    pauses: "ActionLivenessOwner",
     event_context: EventContext,
     issue_number: int,
     reason: str,
 ) -> None:
-    """Pause an issue due to reconciliation failure (state drift)."""
-    pause_label = get_pause_label()
+    """Pause an issue due to reconciliation failure (state drift).
+
+    The pause is owed to the liveness owner, the one owner of every GitHub
+    write the orchestrator owes: a refusal (a rate limit, a 502) is retried
+    there each cycle until the label lands, rather than being reported once
+    and forgotten while the action that found the drift parks. The owner
+    announces a pause that lands; one that did not land now is a visible
+    failed step.
+    """
     try:
-        result = action_applier.apply(AddLabelAction(
-            issue_number=issue_number,
-            label=pause_label,
-            reason="reconciliation drift detected",
-        ))
-        if not result.success:
-            _report_pause_not_applied(events, event_context, issue_number, result.error or "unknown error")
-            return
-        logger.warning(
-            "[RECONCILIATION] Paused issue #%d with label '%s': %s",
-            issue_number, pause_label, reason
-        )
-        events.publish(make_trace_event(
-            EventName.ISSUE_PAUSED_RECONCILE,
-            event_context.enrich({
-                "issue_number": issue_number,
-                "pause_label": pause_label,
-                "reason": reason,
-            }),
-        ))
+        result = pauses.owe_pause(issue_number, reason, event_context)
     except Exception as e:
         _report_pause_not_applied(events, event_context, issue_number, str(e))
+        return
+    if not result.committed:
+        _report_pause_not_applied(events, event_context, issue_number, result.error)
 
 
 def _report_pause_not_applied(
@@ -698,7 +688,7 @@ def run_planning_cycle(
     # The planner re-derives actions from facts; the liveness owner decides
     # which of them may run now (#7350). Parked and backing-off actions leave
     # the plan with the owner's reason in ``skipped``.
-    plan = action_liveness.admit(planner.plan(snapshot), snapshot)
+    plan = action_liveness.admit(planner.plan(snapshot), snapshot, event_context)
     _emit_plan_computed(events, event_context, plan)
 
     if plan.action_count > 0:

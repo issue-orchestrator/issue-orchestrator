@@ -711,9 +711,15 @@ class StartupManager:
                     _issue_number=issue_number,
                     issue_labels=validity.issue_labels,
                 )
-                if review not in state.pending_reviews:
-                    state.pending_reviews.append(review)
+                # Through the queue's own admission rule (one entry per PR),
+                # never whole-object equality: a review the in-flight ledger
+                # already returned to this queue carries its reviewer label and
+                # differs field-by-field from this label-derived copy, and the
+                # copy became a second queue entry for the same PR (#7454).
+                if state.queue_pending_review(review):
                     print(f"  PR #{pr_number}: Queued for code review")
+                else:
+                    print(f"  PR #{pr_number}: Already queued for code review")
             else:
                 print(f"  PR #{pr_number}: Review already in progress")
 
@@ -747,7 +753,7 @@ class StartupManager:
             already_issue_numbers=state.retrospective_review_in_flight_issue_numbers(),
         )
         for review in discovered:
-            state.pending_retrospective_reviews.append(
+            state.queue_pending_retrospective_review(
                 PendingRetrospectiveReview(
                     issue_key=self.repository_host.create_issue_key(review.issue_number),
                     issue_number=review.issue_number,

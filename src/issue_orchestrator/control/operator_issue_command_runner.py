@@ -74,23 +74,36 @@ class OperatorIssueCommandRunner:
     liveness: "ActionLivenessOwner"
 
     def retry(self, issue_number: int) -> OperatorCommandOutcome:
-        """Clear the retry-gating labels, then make the issue eligible again."""
-        observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
-        return self._settle(
-            issue_number,
-            OperatorCommandIntent.RETRY,
-            self.unblocker.retry(issue_number, observed, self.open_prs),
-            lambda settled: self._make_retryable(issue_number, observed, settled),
-        )
+        """Clear the retry-gating labels, then make the issue eligible again.
+
+        Retry and dismiss each run their WHOLE transition -- the fresh read, the
+        GitHub label writes and the local commit -- under the facade's state
+        lock, as the tick runs its planning cycle: no tick observes the issue
+        mid-command and owes it a pause off labels the person is still
+        changing, and no owed pause (#7350) is written while the command runs.
+        A command that commits settles the issue in the liveness owner, owed
+        pause included; one that does not leaves it owed. Lock order matches
+        the tick: state lock, then the owner's effects lock.
+        """
+        def settle() -> OperatorCommandOutcome:
+            observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
+            return self._settle(
+                issue_number,
+                OperatorCommandIntent.RETRY,
+                self.unblocker.retry(issue_number, observed, self.open_prs),
+                lambda settled: self._make_retryable(issue_number, observed, settled),
+            )
+
+        return self.run_locked(settle)
 
     def dismiss(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear everything holding the issue, then take it off the board."""
-        return self._settle(
+        return self.run_locked(lambda: self._settle(
             issue_number,
             OperatorCommandIntent.DISMISS,
             self.unblocker.dismiss(issue_number),
             lambda settled: self._remove_from_board(issue_number),
-        )
+        ))
 
     # -- internals ---------------------------------------------------------
 
@@ -139,7 +152,7 @@ class OperatorIssueCommandRunner:
             return self._outcome(
                 issue_number, intent, OperatorCommandStatus.INCOMPLETE, labels
             )
-        self.run_locked(lambda: self._commit_locally(issue_number, commit, labels))
+        self._commit_locally(issue_number, commit, labels)
         logger.info(
             "[%s] Issue #%d settled, removed labels: %s",
             intent.value,

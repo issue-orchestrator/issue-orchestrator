@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
@@ -41,8 +41,16 @@ from ..domain.action_liveness import (
     admission,
 )
 from ..domain.host_rate_limit import HostRateLimit
-from ..ports.action_liveness import ActionLivenessStore, LivenessEscalation
+from ..domain.owed_write import NO_DEBT, EffectResult
+from ..events import EventContext
+from ..ports.action_liveness import (
+    ActionLivenessStore,
+    LivenessEscalation,
+    PendingRelease,
+)
 from ..ports.blocked_item_custody import ParkedActionFact
+
+from .reconciliation import get_pause_label
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +186,7 @@ class ActionLivenessOwner:
         )
         return self._escalate(row, now)
 
-    def reconcile_effects(self) -> None:
+    def reconcile_effects(self, context: EventContext) -> None:
         """Retry every escalation effect that has not committed yet.
 
         A park whose block did not land, and a release owed to an issue whose
@@ -197,11 +205,62 @@ class ActionLivenessOwner:
             )
         )
         for row in self._store.rows_owing_escalation():
-            if self._policy.effect_due(row.escalation_attempts, row.escalation_attempted_at, now):
+            if self._policy.effect_due(row.escalation, now):
                 self._escalate(row, now)
         for pending in self._store.pending_releases():
-            if self._policy.effect_due(pending.attempts, pending.attempted_at, now):
+            if self._policy.effect_due(pending.debt, now):
                 self._unblock(pending.issue_number, now)
+        for pause in self._store.pending_pauses():
+            if self._policy.effect_due(pause.debt, now):
+                self._pause(pause.issue_number, now, context)
+
+    def owe_pause(self, issue_number: int, reason: str, context: EventContext) -> EffectResult:
+        """Observed drift calls for the reconciliation pause on ``issue_number``.
+
+        The pause is owed durably before it is attempted, so a refusal is not
+        forgotten: :meth:`reconcile_effects` retries it every cycle it is due --
+        at a rate limit's reset, else ``max_backoff`` after a refusal --
+        independently of the action whose refusal found the drift, until it
+        lands, is observed on the issue (:meth:`settle_observed_pauses`), or the
+        issue is settled (:meth:`release_issue`: an operator's Retry or Dismiss,
+        or terminal recovery). A pause already owed and not yet due is not
+        written again; its result says so.
+        """
+        now = self._clock()
+        with self._effects:
+            pending = self._store.request_pause(issue_number, reason)
+            if not self._policy.effect_due(pending.debt, now):
+                return EffectResult.refused(
+                    f"pause already owed; next attempt at {pending.debt.retry_at}"
+                )
+            return self._pause_serialized(issue_number, now, context)
+
+    def settle_observed_pauses(self, labels: Mapping[int, Iterable[str]]) -> None:
+        """Forget an owed pause this tick observed on its issue: it is there."""
+        pause_label = get_pause_label()
+        for pause in self._store.pending_pauses():
+            if pause_label in labels.get(pause.issue_number, ()):
+                self._store.clear_pause(pause.issue_number)
+
+    def _pause(self, issue_number: int, now: datetime, context: EventContext) -> None:
+        with self._effects:
+            self._pause_serialized(issue_number, now, context)
+
+    def _pause_serialized(
+        self, issue_number: int, now: datetime, context: EventContext
+    ) -> EffectResult:
+        # Read under the lock: the issue may have been settled (its pause
+        # forgotten) since the caller last read the ledger.
+        pause = self._store.pending_pause(issue_number)
+        if pause is None:
+            return EffectResult.refused("pause no longer owed: the issue was settled")
+        result = self._escalation.pause(pause.issue_number, pause.reason, context)
+        debt = self._policy.effect_after(pause.debt, result, now)
+        if debt is None:
+            self._store.clear_pause(pause.issue_number)
+        else:
+            self._store.set_pause_debt(pause.issue_number, debt)
+        return result
 
     def release_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         """``issue_number`` was settled by a person or by terminal recovery:
@@ -269,27 +328,28 @@ class ActionLivenessOwner:
         if issue is None:
             return row
         if not row.escalated:
-            if not self._escalation.block(row):
-                return self._put_attempt(row, now)
-            row = replace(row, escalated=True, escalation_attempts=0, escalation_attempted_at=None)
+            result = self._escalation.block(row)
+            if not result.committed:
+                return self._put_attempt(row, result, now)
+            row = replace(row, escalated=True, escalation=NO_DEBT)
             if not self._store.update_escalation(row):
                 # Released while the block was being written: the park is gone,
                 # so the block that just landed is owed its withdrawal.
                 self._store.request_release(issue)
                 self._unblock(issue, now)
                 return row
-        if not self._escalation.explain(row):
-            return self._put_attempt(row, now)
-        row = replace(row, explained=True, escalation_attempts=0, escalation_attempted_at=None)
+        result = self._escalation.explain(row)
+        if not result.committed:
+            return self._put_attempt(row, result, now)
+        row = replace(row, explained=True, escalation=NO_DEBT)
         self._store.update_escalation(row)
         return row
 
-    def _put_attempt(self, row: LivenessRow, now: datetime) -> LivenessRow:
-        row = replace(
-            row,
-            escalation_attempts=row.escalation_attempts + 1,
-            escalation_attempted_at=now,
-        )
+    def _put_attempt(self, row: LivenessRow, result: EffectResult, now: datetime) -> LivenessRow:
+        debt = self._policy.effect_after(row.escalation, result, now)
+        if debt is None:
+            raise ValueError("only a refused write leaves a debt")
+        row = replace(row, escalation=debt)
         self._store.update_escalation(row)
         return row
 
@@ -324,10 +384,15 @@ class ActionLivenessOwner:
             # the issue is its block too. Keep the debt; it settles once that
             # park lands its block (above) or is itself gone (below).
             return
-        if self._escalation.unblock(issue_number):
+        pending = next(
+            (p for p in self._store.pending_releases() if p.issue_number == issue_number),
+            PendingRelease(issue_number),
+        )
+        debt = self._policy.effect_after(pending.debt, self._escalation.unblock(issue_number), now)
+        if debt is None:
             self._store.clear_release(issue_number)
             return
-        self._store.record_release_attempt(issue_number, now)
+        self._store.set_release_debt(issue_number, debt)
 
 
 __all__ = ["ActionLivenessOwner", "LivenessDecision", "release_parked_action", "transient_outcome"]
