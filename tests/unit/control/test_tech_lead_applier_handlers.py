@@ -244,7 +244,70 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
             DiscardTerminalTechLeadProposalOpsAction(candidate_issue_numbers=(1,)),
             0,
         ),
+        # No managed-repo subject: it writes only the orchestrator-owned
+        # charter decision ledger (#7330).
+        ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS: (
+            _charter_record_action(),
+            0,
+        ),
+        # The wrapper writes only the charter ledger; its effect is dispatched
+        # back through the applier and guarded on its own subject there.
+        ActionType.APPLY_CHARTER_AUDITED_ACTION: (
+            _charter_audited_action(),
+            0,
+        ),
     }
+
+
+def _charter_audited_action() -> Action:
+    from issue_orchestrator.control.tech_lead_charter_policy import CharterAuditedAction
+
+    from issue_orchestrator.control.tech_lead_charter_policy import (
+        RecordTechLeadCharterDecisionsAction,
+    )
+
+    record = _charter_record_action()
+    assert isinstance(record, RecordTechLeadCharterDecisionsAction)
+    return CharterAuditedAction(
+        decisions=record.decisions,
+        effect=DiscardTerminalTechLeadProposalOpsAction(candidate_issue_numbers=(1,)),
+    )
+
+
+def _charter_record_action() -> Action:
+    from issue_orchestrator.control.tech_lead_charter_policy import (
+        RecordTechLeadCharterDecisionsAction,
+        TechLeadCharterPolicy,
+    )
+    from issue_orchestrator.domain.tech_lead_charter_decisions import (
+        CharterDecisionSource,
+        TechLeadCharterDecision,
+        decision_key,
+    )
+    from issue_orchestrator.infra.config_models import TechLeadConfig
+
+    tech_lead = TechLeadConfig()
+    policy = TechLeadCharterPolicy(
+        charter=tech_lead.charter.to_charter(),
+        authority=tech_lead.authority,
+        findings=tech_lead.findings,
+    )
+    return RecordTechLeadCharterDecisionsAction(
+        decisions=(
+            TechLeadCharterDecision.from_verdict(
+                policy.decide("post_comment"),
+                decision_id=decision_key("run-1", "A1"),
+                source=CharterDecisionSource.DECISION,
+                run_id="run-1",
+                action_id="A1",
+                anchor_issue_number=ANCHOR,
+                target_number=7,
+                target_is_pr=False,
+                decided_at="2026-09-26T00:00:00+00:00",
+                tracks_proposal=False,
+            ),
+        )
+    )
 
 
 class _Registry:

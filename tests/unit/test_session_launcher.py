@@ -4419,6 +4419,30 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert assignment["flavor"] == "batch_review"
         assert assignment["focus_issue_number"] is None
 
+    def test_launch_writes_the_charter_generated_from_config(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """The agent's charter is generated from the LIVE config at launch
+        (#7330): the file the prompt points at states what will be enforced."""
+        config = launcher_bundle.launcher.config
+        self.enable_tech_lead_agent(config, tmp_path)
+        config.tech_lead.charter.flow.authority = "propose"
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
+        issue = Issue(
+            number=901, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True
+        run_dir = self.started_run_dir(mock_events)
+        charter_path = run_dir / "tech-lead-data" / "tech-lead-charter.md"
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["tech_lead_charter"] == str(charter_path)
+        charter = charter_path.read_text()
+        assert "## flow (depth: restructure, authority: propose)" in charter
+        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `create_issue`" in charter
+
     def test_failure_investigation_skips_manifest_and_records_focus(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):

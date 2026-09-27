@@ -52,6 +52,7 @@ work under all of its existing gates.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterable, Sequence
 
 from ..domain.tech_lead_findings import (
@@ -73,9 +74,12 @@ from .actions import (
     ReportPromotedFindingEvidenceAction,
     SettleTechLeadPromotionAction,
 )
+from ..infra.config_models_tech_lead_charter import promotion_can_file
 from ..infra.tech_lead_promotion_activation import promotion_lane_readiness
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_issue_policy import tech_lead_follow_up_agent_label
+from .tech_lead_charter_policy import TechLeadCharterPolicy
+from .tech_lead_charter_records import audit_promotions
 # The lane's cross-tick read budget lives in its own module (it is the only
 # MUTABLE state here); re-exported so callers keep one import site.
 from .tech_lead_promotion_read_budget import (
@@ -97,6 +101,23 @@ if TYPE_CHECKING:
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
 logger = logging.getLogger(__name__)
+
+
+def promotion_target_repo(config: "Config", *, area: str) -> str:
+    """The repo a finding's area routes to, WITHOUT its scheduling labels.
+
+    Selection only needs the target to apply the per-target cap; resolving the
+    labels would demand the filing dependencies (the follow-up worker agent)
+    even for a candidate the charter keeps as advice and never files (#7330).
+    """
+    target = config.tech_lead.findings.route_for(area)
+    if not target.is_self:
+        return target.repo
+    if not config.repo:
+        raise ValueError(
+            "tech_lead.findings routes to 'self' but no repository is configured"
+        )
+    return config.repo
 
 
 def resolve_promotion_route(config: "Config", *, area: str) -> PromotionRoute:
@@ -158,7 +179,9 @@ def promotion_issue_labels(config: "Config", *, area: str) -> tuple[str, ...]:
     return resolve_promotion_route(config, area=area).issue_labels(
         area=area,
         gate_label=(
-            PROPOSED_TECH_LEAD_LABEL if config.tech_lead.findings.gated else ""
+            PROPOSED_TECH_LEAD_LABEL
+            if TechLeadCharterPolicy.from_config(config).promotion_gated()
+            else ""
         ),
     )
 
@@ -229,6 +252,9 @@ def select_promotable_findings(
     # finalized as well as a settled one — and survives restart, resync, and a
     # cold second client exactly as the promotion ledger does (#7248 rounds 7
     # and 8, F9/F11).
+    # The charter's filing decision itself, not lane activation: selection is
+    # pure ledger policy and is also used where the lane is not yet armed.
+    can_file = promotion_can_file(config.tech_lead)
     in_flight: dict[str, int] = {}
     for row in promotions:
         if row.is_open:
@@ -248,9 +274,11 @@ def select_promotable_findings(
     )
     selected: list[PromotableFinding] = []
     for row in candidates:
-        target = resolve_promotion_route(config, area=row.area).target_repo
+        target = promotion_target_repo(config, area=row.area)
         target_key = target.casefold()
-        if in_flight.get(target_key, 0) >= findings.max_open_promoted:
+        # The cap bounds FILED work in flight; a lane the charter keeps as
+        # advice files nothing, so every candidate is selected to be recorded.
+        if can_file and in_flight.get(target_key, 0) >= findings.max_open_promoted:
             logger.info(
                 "[tech_lead] Promotion of %r deferred: %s already has %d in-flight"
                 " promoted issue(s) (tech_lead.findings.max_open_promoted=%d)",
@@ -394,9 +422,17 @@ def plan_finding_promotions(
     *,
     promotable: Sequence[PromotableFinding],
 ) -> list[Action]:
-    """Turn eligible findings into typed filing actions (read-free planning)."""
+    """Turn eligible findings into typed filing actions (read-free planning).
+
+    The charter decides first (#7330): a promotion the ``learning`` role may
+    not take is advice only and files nothing (the case file already carries
+    the diagnosis); otherwise it is filed gated or ungated per the verdict.
+    """
     source_repo = config.repo or ""  # cache/display value, not work identity; identity uses require_repo (#7255)
-    gated = config.tech_lead.findings.gated
+    policy = TechLeadCharterPolicy.from_config(config)
+    if promotable and policy.promotion().advice_only:
+        return []
+    gated = policy.promotion_gated()
     actions: list[Action] = []
     for finding in promotable:
         marker = promotion_issue_marker(
@@ -518,7 +554,14 @@ def plan_finding_promotion_actions(
     """
     if facts is None:
         return []
-    actions = plan_finding_promotions(config, promotable=facts.promotable_findings)
+    # Each filing carries the charter decision it was made under, and an
+    # unfiled candidate is recorded as advice (#7330).
+    actions = audit_promotions(
+        TechLeadCharterPolicy.from_config(config),
+        facts.promotable_findings,
+        plan_finding_promotions(config, promotable=facts.promotable_findings),
+        decided_at=datetime.now(timezone.utc).isoformat(),
+    )
     actions.extend(plan_promotion_updates(config, updates=facts.promotion_updates))
     actions.extend(plan_promotion_settlements(facts.settled_promotions))
     return actions

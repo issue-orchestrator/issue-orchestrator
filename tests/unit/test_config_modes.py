@@ -389,7 +389,8 @@ def test_shipped_main_modes_enable_bounded_tech_lead_autonomy() -> None:
         findings = config["tech_lead"]["findings"]
 
         assert config["review"]["internal"]["enabled"] is False
-        assert authority["reset_retry"] == "execute"
+        # Reset from scratch is destructive and always needs approval (#7330).
+        assert "reset_retry" not in authority
         assert authority["kill_hung_session"] == "execute"
         assert authority["request_rework"] == "execute"
         assert authority["recover_validated_work"] == "execute"

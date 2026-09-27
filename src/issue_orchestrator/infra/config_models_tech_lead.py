@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..domain.tech_lead_artifacts import UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS
+from .config_models_tech_lead_charter import (
+    TechLeadCharterConfig,
+    destructive_execute_error,
+)
 from .config_models_promotion_auth import (
     PromotionTargetGitHubAuthConfig,
     parse_promotion_target_auth,
@@ -70,13 +74,16 @@ class TechLeadAuthorityConfig:
 
     ``escalate_to_human`` and ``defer_to_tracker`` are intentionally not
     fields: they are the non-configurable floor and always execute
-    (``TECH_LEAD_AUTHORITY_FLOOR_ACTIONS``). Act-level actions
-    (``reset_retry``, ``kill_hung_session``) default to ``propose``.
-    Both act-level actions honor ``execute`` with execution-time
-    re-validation: ``reset_retry`` uses the reset+retry-from-scratch owner;
-    ``kill_hung_session`` terminates only the exact session generation that
-    was active when the decision was planned. Under ``propose`` they ship as
-    gated proposal issues (#6778).
+    (``TECH_LEAD_AUTHORITY_FLOOR_ACTIONS``). Act-level actions default to
+    ``propose`` and ship as gated proposal issues (#6778).
+    ``kill_hung_session`` honors ``execute``, terminating only the exact session
+    generation that was active when the decision was planned. ``reset_retry``
+    is destructive (reset from scratch) and always needs approval (#7330):
+    ``execute`` is rejected.
+
+    These modes are per-action CEILINGS that the ``tech_lead.charter`` role
+    dials compose with; ``control.tech_lead_charter_policy`` is the one owner
+    that reads them.
     """
 
     post_comment: str = "execute"
@@ -99,6 +106,9 @@ class TechLeadAuthorityConfig:
                     f"tech_lead.authority.{key} must be one of"
                     f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {value!r}"
                 )
+            destructive = destructive_execute_error(key, value)
+            if destructive:
+                raise ValueError(destructive)
             values[key] = value
         return cls(**values)
 
@@ -138,6 +148,9 @@ class TechLeadAuthorityConfig:
                     f"tech_lead.authority.{key} must be one of"
                     f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {mode!r}"
                 )
+            destructive = destructive_execute_error(key, mode)
+            if destructive:
+                errors.append(destructive)
         for key in sorted(UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS):
             if getattr(self, key) == "execute":
                 errors.append(
@@ -626,6 +639,9 @@ class TechLeadConfig:
     # Per-action-type graduated authority for tech_lead decision proposals
     authority: TechLeadAuthorityConfig = field(default_factory=TechLeadAuthorityConfig)
 
+    # Per-role depth x authority dials (#7330); composes with ``authority``
+    charter: TechLeadCharterConfig = field(default_factory=TechLeadCharterConfig)
+
     # Trusted open-issue corpus and lexical backstop for create_issue proposals
     dedup: TechLeadDedupConfig = field(default_factory=TechLeadDedupConfig)
 
@@ -662,6 +678,7 @@ class TechLeadConfig:
             "max_concurrent": self.max_concurrent,
             "max_expedited": self.max_expedited,
             "authority": self.authority.to_event_dict(),
+            "charter": self.charter.to_event_dict(),
             "dedup": {
                 "enabled": self.dedup.enabled,
                 "similarity_threshold": self.dedup.similarity_threshold,
@@ -711,6 +728,7 @@ class TechLeadConfig:
             )
         errors.extend(self.dedup.startup_errors())
         errors.extend(self.findings.startup_errors())
+        errors.extend(self.charter.startup_errors())
         return errors
 
 
