@@ -689,3 +689,28 @@ def test_an_applied_action_whose_state_handler_fails_is_a_failure(sample_config)
 
     assert engine.attempts_of(queue.action_type) == POLICY.max_attempts
     assert len(engine.escalation.parked) == 1
+
+
+def test_terminal_recovery_settles_every_park_on_its_issue(sample_config) -> None:
+    """Terminal recovery ends the issue's work and force-clears its block; its
+    parks must leave the board with it (review r6)."""
+    from issue_orchestrator.control.actions import RecoverTerminalIssueAction
+
+    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    recover = RecoverTerminalIssueAction(
+        issue_number=410, pr_number=9, pr_url="u", status="merged", source="pull_request",
+    )
+    plans = {"now": [stale]}
+    engine = _Engine(
+        sample_config, planned=lambda: plans["now"],
+        apply=lambda a: ActionResult.ok(a) if a is recover else _refused_for_pause(a),
+        labels={410: ("in-progress", PAUSE)},
+    )
+    engine.tick()
+    assert [row.key.escalation_issue for row in engine.owner.parked()] == [410]
+
+    plans["now"] = [recover]
+    engine.tick()
+
+    assert engine.owner.parked() == ()
+    assert [row.key.escalation_issue for rows in engine.escalation.released for row in rows] == [410]

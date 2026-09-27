@@ -47,6 +47,17 @@ class NeedsHumanCause(Enum):
     #: succeeding - and that release must not erase any other lifecycle's block.
     ACTION_LIVENESS = "action_liveness"
 
+    @property
+    def releases_only_its_recorded_block(self) -> bool:
+        """A withdrawal of this cause may take the label off ONLY while its row is recorded.
+
+        The liveness owner's releases are durable debts replayed later (#7350).
+        By then a force-clear may have ended the block, and a person may have
+        put a new one on: a replayed withdrawal whose cause is no longer
+        recorded must leave that label alone.
+        """
+        return self is NeedsHumanCause.ACTION_LIVENESS
+
     def matches_key(self, key: str) -> bool:
         if self is NeedsHumanCause.VALIDATED_WORK_DISPOSITION:
             return key.startswith(f"{self.value}:")

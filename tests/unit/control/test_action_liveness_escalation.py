@@ -107,3 +107,60 @@ def test_unblock_withdraws_only_this_cause(mock_event_sink) -> None:
     assert isinstance(release, RemoveLabelAction)
     assert release.issue_number == 410
     assert release.needs_human_cause is NeedsHumanCause.ACTION_LIVENESS
+
+
+# --- The shared block owner, for a replayed liveness release (review r6) ----
+
+
+class _Labels:
+    def __init__(self) -> None:
+        self.live: dict[int, set[str]] = {}
+
+    def add_label(self, issue_number: int, label: str) -> None:
+        self.live.setdefault(issue_number, set()).add(label)
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        self.live.setdefault(issue_number, set()).discard(label)
+
+    def read(self, issue_number: int):
+        return tuple(self.live.get(issue_number, ()))
+
+
+def _shared_block(tmp_path):
+    from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
+    from issue_orchestrator.execution.pending_work_claim_store import (
+        SqlitePendingWorkClaimStore,
+    )
+
+    labels = _Labels()
+    block = NeedsHumanBlock(
+        "needs-human", "tech-lead-needs-human", labels, labels.read, frozenset,
+        SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"),
+    )
+    return labels, block
+
+
+def test_a_liveness_release_takes_off_the_block_it_recorded(tmp_path) -> None:
+    from issue_orchestrator.domain.human_block import BlockOutcome, HumanBlockRequest
+
+    labels, block = _shared_block(tmp_path)
+    request = HumanBlockRequest(410, NeedsHumanCause.ACTION_LIVENESS, "parked")
+    assert block.acquire(request) is BlockOutcome.HELD
+
+    assert block.release(request) is BlockOutcome.CLEARED
+    assert "needs-human" not in labels.live[410]
+
+
+def test_a_replayed_liveness_release_leaves_a_persons_new_block_alone(tmp_path) -> None:
+    """The owed release outlived a force-clear, and a person put the label
+    back. The replay must not take it off."""
+    from issue_orchestrator.domain.human_block import BlockOutcome, HumanBlockRequest
+
+    labels, block = _shared_block(tmp_path)
+    request = HumanBlockRequest(410, NeedsHumanCause.ACTION_LIVENESS, "parked")
+    block.acquire(request)
+    assert block.force_clear(410, "terminal recovery").committed
+    labels.add_label(410, "needs-human")  # a person, with no recorded cause
+
+    assert block.release(request) is BlockOutcome.HELD_BY_ANOTHER_CAUSE
+    assert "needs-human" in labels.live[410]

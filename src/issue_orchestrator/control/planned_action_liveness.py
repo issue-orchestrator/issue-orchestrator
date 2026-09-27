@@ -41,6 +41,7 @@ from ..domain.action_liveness import (
     ActionIdentity,
     ActionOutcome,
     LivenessKey,
+    OutcomeKind,
     fact_fingerprint,
 )
 from ..domain.host_rate_limit import HostRateLimit
@@ -111,6 +112,15 @@ def planned_action_key(
     )
 
 
+def _resolved_issue(action: Action) -> int | None:
+    if not action.liveness_resolves_subject():
+        return None
+    subject = _subject_number(action)
+    if subject is None:
+        raise ValueError(f"{type(action).__name__} resolves a subject it does not name")
+    return subject[1]
+
+
 def observed_labels(snapshot: "OrchestratorSnapshot") -> dict[int, tuple[str, ...]]:
     """Every issue's labels this tick observed, across the snapshot's issue views."""
     views: Iterable[Iterable["Issue"]] = (
@@ -173,11 +183,21 @@ class PlanLiveness:
     owner: ActionLivenessOwner
     #: ``None`` for a self-governed action: its own owner settles it.
     keys: tuple[LivenessKey | None, ...]
+    #: The issue each action settles every park on when it succeeds
+    #: (:meth:`~.action_base.Action.liveness_resolves_subject`), else ``None``.
+    resolves: tuple[int | None, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.resolves) != len(self.keys):
+            raise ValueError("a gated plan needs one resolution entry per action")
 
     def settle(self, index: int, outcome: ActionOutcome) -> None:
         key = self.keys[index]
         if key is not None:
             self.owner.record(key, outcome)
+        resolved = self.resolves[index]
+        if resolved is not None and outcome.kind is OutcomeKind.DONE:
+            self.owner.release_issue(resolved)
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +217,7 @@ class PlannedActionLiveness:
         labels = observed_labels(snapshot)
         admitted: list[Action] = []
         keys: list[LivenessKey | None] = []
+        resolves: list[int | None] = []
         admitted_keys: set[LivenessKey] = set()
         held: list[SkippedItem] = []
         for action in plan.actions:
@@ -206,11 +227,13 @@ class PlannedActionLiveness:
             if key is None:
                 admitted.append(action)
                 keys.append(None)
+                resolves.append(_resolved_issue(action))
                 continue
             decision = self.owner.admit(key)
             if decision.admitted and key not in admitted_keys:
                 admitted.append(action)
                 keys.append(key)
+                resolves.append(_resolved_issue(action))
                 admitted_keys.add(key)
                 continue
             if decision.admitted:
@@ -240,7 +263,7 @@ class PlannedActionLiveness:
         return Plan(
             actions=tuple(admitted),
             skipped=plan.skipped + tuple(held),
-            liveness=PlanLiveness(self.owner, tuple(keys)),
+            liveness=PlanLiveness(self.owner, tuple(keys), tuple(resolves)),
         )
 
 

@@ -475,6 +475,11 @@ class RecoverTerminalIssueAction(Action):
         default=ActionType.RECOVER_TERMINAL_ISSUE, init=False
     )
 
+    def liveness_resolves_subject(self) -> bool:
+        """Terminal recovery ends the issue's work and force-clears its block,
+        so nothing parked against the issue is still a question (#7350)."""
+        return True
+
 
 @dataclass(frozen=True)
 class EnqueueToMergeQueueAction(Action):

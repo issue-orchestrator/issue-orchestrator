@@ -294,6 +294,11 @@ class NeedsHumanBlock:
             refusal = self._scoped_release_refusal(request)
             if refusal is not None:
                 return refusal
+        if request.cause.releases_only_its_recorded_block and not self._recorded_cause_holds(
+            request.cause, request.target
+        ):
+            # Nothing of this cause stands on the label: it is not ours to remove.
+            return BlockOutcome.HELD_BY_ANOTHER_CAUSE
         if self._held_by_another_cause(request.target, excluding=request.cause) or (
             request.source is not None
             and self._recorded_cause_holds(

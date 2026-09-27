@@ -136,9 +136,11 @@ class ActionLivenessOwner:
                 self._unblock(pending.issue_number, now)
 
     def release_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        """An operator acted on ``issue_number``: every key it escalates gets a fresh budget.
+        """``issue_number`` was settled by a person or by terminal recovery:
+        every key it escalates gets a fresh budget.
 
-        The operator command already settled the needs-human block itself, so
+        An operator's Retry or Dismiss, or a terminal recovery, already settled
+        the needs-human block itself, so
         this withdraws nothing from GitHub and forgets any withdrawal still
         owed - it only lets the planner and the drain try again, and announces
         that on the timeline.

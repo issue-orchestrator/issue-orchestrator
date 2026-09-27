@@ -152,6 +152,14 @@ class Action:
         """
         return self.action_type.value
 
+    def liveness_resolves_subject(self) -> bool:
+        """Whether this action, once it succeeds, settles every park on its subject.
+
+        True only for an action that ends the subject's work and clears its
+        needs-human block itself, as an operator's Retry or Dismiss does.
+        """
+        return False
+
     def liveness_facts(self) -> object | None:
         """The facts this action was derived from, for the action liveness owner (#7350).
 
