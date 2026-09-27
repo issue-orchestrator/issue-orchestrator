@@ -62,9 +62,15 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
     """Case B — the porchpin#382/#392 shape (#7293, #7294).
 
     An issue carries ``blocked-failed`` while its open, CI-green PR waits on a
-    code review that the block vetoes. Right answer: the tech lead's health
-    review diagnoses the veto and proposes releasing the review (removing the
-    block), NOT ``reset_retry``, and nothing destroys the PR.
+    code review that the block vetoes. Right answer: the tech lead diagnoses
+    the veto and proposes releasing the review (removing the block), NOT
+    ``reset_retry``, and nothing destroys the PR.
+
+    The answer does not depend on which tech-lead run is asked. The live
+    driver uses the investigation the stuck sweep starts — the path porchpin
+    took, where ``reset_retry`` was in scope and destroyed a PR (#392) —
+    because a health review can neither see this issue (#7294) nor be
+    requested from a CLI-started engine's dashboard.
     """
     release = TermGroup(
         "release the review",

@@ -276,7 +276,7 @@ async def run_case_b(
         overlay: dict[str, Any] = {
             "review": {
                 "tech_lead_follow_up_agent": CODER_LABEL,
-                "tech_lead_review_on_failure": False,
+                "tech_lead_review_on_failure": True,
             },
             "tech_lead": {
                 "max_concurrent": 1,
@@ -285,7 +285,12 @@ async def run_case_b(
                 "authority": dict(PRODUCTION_TECH_LEAD_AUTHORITY),
                 "findings": {"promote": "off"},
                 "health_review": {"interval_minutes": 0},
-                "stuck_sweep": {"enabled": False},
+                # The path porchpin took (#7293): the sweep finds the blocked
+                # issue and sends it to a tech-lead investigation. Production
+                # runs it every 240 minutes; the exam cannot wait that long.
+                # Its scan is scoped by filtering.label, so it only ever sees
+                # this run's issues.
+                "stuck_sweep": {"enabled": True, "interval_minutes": 1, "max_recovery_attempts": 3},
             },
         }
         labels = _labels(config)
@@ -325,9 +330,6 @@ async def run_case_b(
                 run.notes.append(
                     f"subject #{number} never appeared in the engine's snapshot within 180s"
                 )
-            admission = engine.request_health_review()
-            run.notes.append(f"health review request: {admission}")
-            logger.info("[EXAM] health review admission: %s", admission)
 
             async def concluded() -> bool:
                 return bool(terminal_tech_lead_runs(checkout.state_dir))

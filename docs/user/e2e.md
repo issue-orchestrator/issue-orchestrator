@@ -87,7 +87,7 @@ inside `make validate-pr`; its grader, case answers and fault shim have unit tes
 | Case | Planted fault | Right answer |
 |------|---------------|--------------|
 | A | the review-exchange reviewer exits without answering, three exchanges in a row, after the work validated | recovery publishes the PR, code review runs, the PR leaves draft, no `blocked-failed`/`needs-human` remains |
-| B | the issue carries `blocked-failed` while its open, green PR waits on code review | a health review names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
+| B | the issue carries `blocked-failed` while its open, green PR waits on code review | the tech-lead investigation the stuck sweep starts names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
 
 Run the live agent-guided onboarding acceptance explicitly:
 

@@ -18,7 +18,6 @@ import logging
 import shutil
 import subprocess
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,31 +204,9 @@ class ExamEngine:
             raise RuntimeError(f"/api/status active_sessions is not an int: {status!r}")
         return value
 
-    def request_health_review(self) -> dict[str, Any]:
-        """Ask the engine's dashboard for an on-demand global health review."""
-        return self._post_json(
-            self.config.web_port,
-            "/api/tech-lead/runs",
-            {"scope": {"kind": "global_health_review"}},
-        )
-
     def _get_json(self, port: int, path: str) -> dict[str, Any]:
         request = urllib.request.Request(
             f"http://localhost:{port}{path}", headers=control_api_headers()
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
-
-    def _post_json(self, port: int, path: str, body: Mapping[str, Any]) -> dict[str, Any]:
-        request = urllib.request.Request(
-            f"http://localhost:{port}{path}",
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json", **control_api_headers()},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return {"status": response.status, **json.loads(response.read().decode("utf-8"))}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            return {"status": exc.code, "error": detail}
