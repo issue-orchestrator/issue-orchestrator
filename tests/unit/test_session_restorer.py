@@ -604,6 +604,7 @@ class TestErrorRecovery:
         ("recorded_config", "recorded_fingerprint"),
         [
             ("other.yaml", "current-fingerprint"),
+            # A setting the session is bound to changed since it launched.
             ("main.yaml", "previous-fingerprint"),
         ],
     )
@@ -621,6 +622,7 @@ class TestErrorRecovery:
             config_name="main.yaml",
         )
         config.config_fingerprint = "current-fingerprint"
+        config.session_binding_fingerprint = "current-fingerprint"
         run_assets = make_session_run_assets(worktree, session_name="issue-123")
         (run_assets.run_dir / "session-identity.json").write_text(
             json.dumps(
@@ -628,6 +630,7 @@ class TestErrorRecovery:
                     "configuration_mode": "codex",
                     "config_name": recorded_config,
                     "config_fingerprint": recorded_fingerprint,
+                    "session_binding_fingerprint": recorded_fingerprint,
                 }
             ),
             encoding="utf-8",

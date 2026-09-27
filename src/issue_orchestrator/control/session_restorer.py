@@ -211,16 +211,9 @@ class SessionRestorer:
                 )
             identity = loaded
 
-        identity_keys = (
-            "configuration_mode",
-            "config_name",
-            "config_fingerprint",
-        )
-        recorded_values = tuple(identity.get(key) for key in identity_keys)
-        current_values = (
-            self.config.configuration_mode,
-            self.config.config_name,
-            self.config.config_fingerprint,
+        recorded_values = tuple(
+            identity.get(key)
+            for key in ("configuration_mode", "config_name", "config_fingerprint")
         )
         if not all(isinstance(value, str) for value in recorded_values):
             raise SessionConfigurationIdentityVerificationError(
@@ -228,7 +221,26 @@ class SessionRestorer:
                 f"{identity_path} lacks mode, config name, or effective fingerprint"
             )
         recorded_identity = cast(tuple[str, str, str], recorded_values)
-        if recorded_identity != current_values:
+        # The session is bound to the settings a running engine does NOT apply
+        # live (``session_binding_fingerprint``, hashed from the operator's
+        # input, so schema growth and default changes never move it). A
+        # session launched before that stamp existed recorded only the old
+        # whole-dataclass hash, which no later code can recompute: for it,
+        # only mode and config name are verifiable (a one-way legacy read).
+        legacy = "session_binding_fingerprint" not in identity
+        binding = identity.get("session_binding_fingerprint")
+        if not legacy and not isinstance(binding, str):
+            raise SessionConfigurationIdentityVerificationError(
+                f"Cannot verify configuration identity for live session {session_name}: "
+                f"{identity_path} has a malformed session binding fingerprint"
+            )
+        if legacy:
+            logger.warning(
+                "Live session %s predates session binding fingerprints; verifying "
+                "its configuration mode and name only", session_name,
+            )
+        bound_mismatch = not legacy and binding != self.config.session_binding_fingerprint
+        if recorded_identity[:2] != (self.config.configuration_mode, self.config.config_name) or bound_mismatch:
             recorded_mode, recorded_config, recorded_fingerprint = recorded_identity
             raise SessionConfigurationModeMismatchError(
                 "Cannot start Repository Engine with configuration "
@@ -236,7 +248,7 @@ class SessionRestorer:
                 f"({self.config.config_fingerprint[:12]}): live session {session_name!r} "
                 f"was launched with {recorded_mode!r}/{recorded_config!r} "
                 f"({recorded_fingerprint[:12]}). Drain or terminate live sessions before "
-                "switching or editing configuration."
+                "switching configuration or editing a setting that requires a restart."
             )
 
     def _restore_single_session(

@@ -372,6 +372,36 @@ def collect_restart_fields(tab_definitions: list[dict[str, Any]]) -> set[str]:
     return fields
 
 
+@dataclass(frozen=True)
+class LiveAppliedSettings:
+    """The settings a RUNNING engine applies without a restart (#7347 follow-up).
+
+    Every settings field not marked ``restart_required`` is applied to the live
+    configuration in place, under whatever sessions are running. So a change to
+    one cannot make a live session wrong, and a restart need not refuse to
+    restore a session over it. ``yaml_paths`` address the operator's YAML;
+    ``config_attrs`` the loaded configuration.
+    """
+
+    yaml_paths: frozenset[str]
+    config_attrs: frozenset[str]
+
+
+def collect_live_applied_settings(tab_definitions: list[dict[str, Any]]) -> LiveAppliedSettings:
+    """Every settings field applied live: those not marked ``restart_required``."""
+    yaml_paths: set[str] = set()
+    config_attrs: set[str] = set()
+    for tab in tab_definitions:
+        for field_name, field_info in tab["model"].model_fields.items():
+            extra = field_info.json_schema_extra
+            assert isinstance(extra, dict), f"Missing json_schema_extra on {field_name}"
+            if extra.get("restart_required"):
+                continue
+            yaml_paths.add(extra["yaml_path"])
+            config_attrs.add(extra["config_attr"])
+    return LiveAppliedSettings(frozenset(yaml_paths), frozenset(config_attrs))
+
+
 def build_settings_json_schema(tab_definitions: list[dict[str, Any]]) -> dict[str, Any]:
     """Generate per-tab JSON schemas for template rendering.
 
