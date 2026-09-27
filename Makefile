@@ -43,7 +43,7 @@ help:
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
-	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C, EXAM_ENGINE_REF=<commit or branch>)"
+	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude-dev    Test dev agent: Claude execution -> PR created"
@@ -737,7 +737,7 @@ test-e2e-heavy: sync-deps
 EXAM_CASE ?=
 EXAM_ENGINE_REF ?= HEAD
 test-tech-lead-exam: sync-deps
-	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
+	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
 test-e2e-onboarding-live: sync-deps
 	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)

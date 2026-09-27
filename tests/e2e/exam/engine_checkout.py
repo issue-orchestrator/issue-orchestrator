@@ -88,6 +88,19 @@ class EngineCheckout:
         logger.info("[EXAM] engine checkout %s at %s", root, commit)
         return checkout
 
+    def switch_to(self, *, harness_root: Path, ref: str) -> "EngineCheckout":
+        """The same checkout, moved to ``ref``: an in-place upgrade.
+
+        Everything the engine keeps beside its code survives the move,
+        because it lives outside git's tracked files: the state directory,
+        the sqlite stores, and the agent worktrees. The move is refused if
+        the base engine left a tracked file dirty.
+        """
+        commit = _git(harness_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+        _git(self.root, "checkout", "--quiet", "--detach", commit)
+        logger.info("[EXAM] engine checkout %s upgraded %s -> %s", self.root, self.commit, commit)
+        return EngineCheckout(root=self.root, commit=commit)
+
     @property
     def state_dir(self) -> Path:
         return self.root / ".issue-orchestrator" / "state"

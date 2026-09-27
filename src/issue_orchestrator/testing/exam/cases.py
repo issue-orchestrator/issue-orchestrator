@@ -25,12 +25,21 @@ from .case import (
     single_pull_request,
 )
 from .observation import PullRequestState
+from .upgrade import UpgradeSpec
 
 SUBJECT = "subject"
 
 HALTED_EXCHANGE_WITH_VALIDATED_WORK = "A-halted-exchange-validated-work"
 STALE_CLAIM_PAUSED_FOR_RECONCILE = "C-stale-claim-paused-for-reconcile"
 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-review"
+UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
+
+#: Case U's two in-flight items.
+CODING = "coding"
+REVIEW = "review"
+
+#: Candidate ticks Case U's quiet window covers after the restart.
+UPGRADE_EARLY_TICKS = 5
 
 
 def halted_exchange_with_validated_work(
@@ -205,4 +214,47 @@ def stale_claim_paused_for_reconcile(*, needs_reconcile_label: str) -> ExamCase:
         known_blockers=(
             "porchpin#410's labels (its 130x loop also needed #7346's wedged record; see #7332)",
         ),
+    )
+
+
+def upgrade_with_work_in_flight(
+    *, code_reviewed_label: str, hold_labels: frozenset[str]
+) -> ExamCase:
+    """Case U — restart onto new code over the old code's in-flight state (#7432).
+
+    The base engine (``origin/main`` by default) holds a coding session and a
+    code review mid-flight; it is stopped without draining, and the candidate
+    starts from the SAME checkout and state directory with the same YAML. No
+    session survives the stop (every agent is a PTY child of the engine), so
+    the candidate inherits state, not sessions: run-ledger rows, pending-work
+    claims, labels and every sqlite store's schema.
+
+    Right answer: the candidate starts, quarantines nothing, pages nobody in
+    its first ticks, and then finishes both pieces of work — the coding issue
+    publishes a PR that is reviewed and approved, and the review in flight is
+    completed and approved — with no hold label left on either issue.
+    """
+    goals = []
+    for role in (CODING, REVIEW):
+        goals += [
+            single_pull_request(role),
+            pr_in_state(role, PullRequestState.READY, PullRequestState.MERGED),
+            pr_has_label(role, code_reviewed_label),
+            pr_review_approved(role),
+            issue_lacks_labels(role, sorted(hold_labels)),
+            published_work_survives(role),
+        ]
+    return ExamCase(
+        case_id=UPGRADE_WITH_WORK_IN_FLIGHT,
+        title="Upgrade with work in flight",
+        fault=(
+            "the base engine is stopped without draining while a coding session and a code"
+            " review are mid-flight, and the candidate restarts from the same state"
+        ),
+        goals=tuple(goals),
+        known_blockers=(
+            "#7428 (restore fingerprint moved on schema growth)",
+            "#7432 (the upgrade case; grades inherited state, not session survival)",
+        ),
+        upgrade=UpgradeSpec(early_ticks=UPGRADE_EARLY_TICKS, hold_labels=hold_labels),
     )

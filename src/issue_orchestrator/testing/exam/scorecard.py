@@ -10,6 +10,7 @@ from typing import Any
 from .github_calls import EndpointClass, GitHubCallCounts
 from .livelock import RepeatingFailure
 from .observation import RunEnd, StallFacts, TechLeadRunFact
+from .upgrade import UpgradeGrade, WriteKind
 
 SCORECARD_SCHEMA_VERSION = 1
 
@@ -103,6 +104,7 @@ class Scorecard:
     stalls: tuple[ItemStall, ...]
     tech_lead_runs: tuple[TechLeadRunFact, ...]
     notes: tuple[str, ...]
+    upgrade: UpgradeGrade | None = None
 
     @property
     def failures(self) -> tuple[str, ...]:
@@ -139,6 +141,8 @@ class Scorecard:
             for stall in self.stalls
             if stall.stall.parked_screen
         )
+        if self.upgrade is not None:
+            failed.extend(f"upgrade: {failure}" for failure in self.upgrade.failures)
         return tuple(failed)
 
     @property
@@ -201,6 +205,7 @@ class Scorecard:
             ],
             "tech_lead_runs": [run.to_dict() for run in self.tech_lead_runs],
             "notes": list(self.notes),
+            "upgrade": None if self.upgrade is None else self.upgrade.to_dict(),
         }
 
     def to_json(self) -> str:
@@ -226,6 +231,7 @@ def render_summary(card: Scorecard) -> str:
         f"    [{_mark(goal.passed)}] {goal.description} — {goal.evidence}" for goal in card.goals
     )
     lines.extend(_answer_lines(card))
+    lines.extend(_upgrade_lines(card))
     lines.extend(_effect_lines(card))
     for stall in card.stalls:
         lines.extend(_stall_lines(stall))
@@ -259,6 +265,25 @@ def _answer_lines(card: Scorecard) -> list[str]:
             f"  remedy [{_mark(remedy.verdict.passed)}] {remedy.verdict.value}{gap}: {remedy.evidence}"
         )
         lines.append(f"    expected: {remedy.expected}")
+    return lines
+
+
+def _upgrade_lines(card: Scorecard) -> list[str]:
+    """The restart onto the candidate: what it inherited and how it took over."""
+    if card.upgrade is None:
+        return []
+    facts = card.upgrade.facts
+    writes = ", ".join(f"{kind.value} {facts.early_writes.get(kind, 0)}" for kind in WriteKind)
+    lines = [
+        f"  upgrade [{_mark(card.upgrade.passed)}]: {facts.base_commit[:10]} -> {facts.candidate_commit[:10]},"
+        f" sessions live at stop: {', '.join(f'#{n}' for n in facts.sessions_at_stop) or 'none'}",
+        f"    first {facts.early_ticks} ticks: writes {writes}",
+        "    label changes: " + ("; ".join(c.describe() for c in facts.early_label_changes) or "none"),
+        "    restore hazards: " + ("; ".join(facts.hazards) or "none"),
+    ]
+    if facts.startup_error:
+        lines.append(f"    startup error: {facts.startup_error}")
+    lines.extend(f"    FAIL: {failure}" for failure in card.upgrade.failures)
     return lines
 
 

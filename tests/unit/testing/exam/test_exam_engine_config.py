@@ -32,7 +32,10 @@ from tests.e2e.exam.case_engines import (
     case_a_engine,
     case_b_engine,
     case_c_engine,
+    case_u_engine,
 )
+from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
+from tests.e2e.exam.engine import HELD_SESSION_TIMEOUT_MINUTES
 from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.unit.testing.exam.builders import action, item, observation, pr, run
 from tests.unit.testing.exam.test_grading import CASE_B, GOOD_DIAGNOSIS
@@ -89,8 +92,8 @@ def _load_case_config(
 
 @pytest.mark.parametrize(
     "spec",
-    [case_a_engine(), case_b_engine(), case_c_engine()],
-    ids=["A", "B", "C"],
+    [case_a_engine(), case_b_engine(), case_c_engine(), case_u_engine(Path("/tmp/exam-u-release"))],
+    ids=["A", "B", "C", "U"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -164,3 +167,18 @@ class TestProposedResetRetryGrading:
         assert [d.what for d in card.destructive] == [
             "reset_retry executed on #901 (anchor #901)"
         ]
+
+
+def test_case_u_holds_work_until_released(tmp_path: Path, written: list[Path]) -> None:
+    """Both held roles wait on the release file, and every limit outlives the restart."""
+    release = tmp_path / "release"
+    loaded = _load_case_config(case_u_engine(release), tmp_path, written)
+
+    assert loaded.review_exchange_mode == "via-draft-pr"
+    held_coder = loaded.agents[HELD_CODER_LABEL]
+    reviewer = loaded.agents[REVIEWER_LABEL]
+    assert f"--hold-until {release}" in held_coder.command
+    assert f"--hold-until {release}" in reviewer.command
+    assert "--hold-until" not in loaded.agents[CODER_LABEL].command
+    assert held_coder.timeout_minutes == reviewer.timeout_minutes == HELD_SESSION_TIMEOUT_MINUTES
+    assert loaded.session_timeout_minutes == HELD_SESSION_TIMEOUT_MINUTES

@@ -76,7 +76,17 @@ make test-tech-lead-exam                                   # every case, engine 
 make test-tech-lead-exam EXAM_CASE=A                       # one case
 make test-tech-lead-exam EXAM_CASE=A EXAM_ENGINE_REF=c3784fe^   # engine at an older commit
 make test-tech-lead-exam EXAM_ENGINE_REF=origin/tech-lead-reliability   # engine at a branch tip (fetch first)
+make test-tech-lead-exam EXAM_CASE=U EXAM_ENGINE_REF=origin/tech-lead-reliability   # upgrade origin/main -> candidate
+make test-tech-lead-exam EXAM_CASE=U EXAM_ENGINE_REF=<candidate> EXAM_BASE_REF=<running commit>   # upgrade from a given commit
 ```
+
+Case U is the upgrade check to run before merging a feature branch into `main`. The engine
+starts at `EXAM_BASE_REF` (default `origin/main`), puts a coding session and a code review
+mid-flight (the scripted agents hold until released), and is stopped without a drain. The
+SAME checkout is then moved to `EXAM_ENGINE_REF` and started with the same YAML and state
+directory. No agent session survives an engine stop (every agent is a PTY child of the
+engine), so the case grades what an upgrade really inherits: run-ledger rows, pending-work
+claims, labels and every sqlite store's schema.
 
 `EXAM_ENGINE_REF` runs the engine from a fresh standalone clone of that commit, while the
 harness, its fault shims and the grader stay the current tree's, so the same exam can
@@ -91,6 +101,7 @@ inside `make validate-pr`; its grader, case answers and fault shim have unit tes
 | A | the review-exchange reviewer exits without answering, three exchanges in a row, after the work validated | recovery publishes the PR, code review runs, the PR leaves draft, no `blocked-failed`/`needs-human` remains |
 | B | the issue carries `blocked-failed` while its open, green PR waits on code review | the tech-lead investigation the stuck sweep starts names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
 | C | the issue carries `in-progress` with no session plus the engine's `needs-reconcile` pause (porchpin#410's labels) | the engine handles the issue (it publishes events about it), the pause stays for a human, and the engine repeats nothing tick after tick (every case also fails on any livelock) |
+| U | the base engine is stopped without a drain while a coding session and a code review are mid-flight; the candidate restarts from the same checkout and state | the candidate starts, publishes no restore hazard (`session.run_unrestorable` / `session.claim_unreadable`), posts no comment and adds no hold label in its first 5 ticks (every write is reported by kind), and then both pieces of work finish reviewed and approved |
 
 Run the live agent-guided onboarding acceptance explicitly:
 

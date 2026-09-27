@@ -16,8 +16,14 @@ from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.engine_checkout import EngineCheckout
-from tests.e2e.exam.agents import CODER_LABEL, REVIEWER_LABEL, TECH_LEAD_LABEL, shim_command
-from tests.e2e.fixtures import OrchestratorProcess, find_free_port
+from tests.e2e.exam.agents import (
+    CODER_LABEL,
+    HELD_CODER_LABEL,
+    REVIEWER_LABEL,
+    TECH_LEAD_LABEL,
+    shim_command,
+)
+from tests.e2e.fixtures import OrchestratorProcess, fetch_gh_audit_report, find_free_port
 from tests.e2e.fixtures.orchestrator_process import merge_config_overlay
 from tests.e2e.fixtures.inflight_tracker import control_api_headers
 from tests.e2e.flows import OrchestratorRuntime, start_orchestrator_runtime
@@ -25,6 +31,10 @@ from tests.e2e.flows import OrchestratorRuntime, start_orchestrator_runtime
 logger = logging.getLogger(__name__)
 
 TECH_LEAD_PROMPT = Path("repo-specific") / "prompts" / "tech-lead.md"
+
+#: Agent and session limit for work held mid-flight (Case U): past the base
+#: engine's run-up, its stop and the candidate's restart window.
+HELD_SESSION_TIMEOUT_MINUTES = 45
 
 #: Settings every exam engine runs with, under each case's own overlay.
 #: Session interactions answer the startup screens real agents open on — the
@@ -44,8 +54,15 @@ def exam_config(
     run_label: str,
     reviewer_exchange_fault: str,
     tech_lead_model: str | None = None,
+    release_file: Path | None = None,
 ) -> Config:
-    """The e2e session config, pointed at the checkout, with exam agents."""
+    """The e2e session config, pointed at the checkout, with exam agents.
+
+    With ``release_file``, work is held mid-flight until the file exists:
+    every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
+    committing (``CODER_LABEL`` still codes at once, so its PR can reach a
+    held review).
+    """
     config = copy.deepcopy(base)
     config.repo_root = checkout.root
     config.control_api_port = find_free_port()
@@ -54,7 +71,10 @@ def exam_config(
     config.e2e_pr_labels = [run_label, "io-e2e-test-data"]
     config.max_concurrent_sessions = 2
     config.queue_refresh_seconds = 30
-    config.session_timeout_minutes = 10
+    # A held session must outlive the base engine's stop and the candidate's
+    # restart window; nothing else in the exam needs more than ten minutes.
+    held_minutes = HELD_SESSION_TIMEOUT_MINUTES if release_file is not None else None
+    config.session_timeout_minutes = held_minutes or 10
     config.code_review_agent = REVIEWER_LABEL
     config.tech_lead_review_agent = TECH_LEAD_LABEL if tech_lead_model else None
     prompt = checkout.root / "tests" / "e2e" / "fixtures" / "prompts" / "simple_task.md"
@@ -71,14 +91,27 @@ def exam_config(
         ),
         REVIEWER_LABEL: AgentConfig(
             prompt_path=prompt,
-            timeout_minutes=1,
+            timeout_minutes=held_minutes or 1,
             model="sonnet",
-            command=shim_command("reviewer", exchange_fault=reviewer_exchange_fault),
+            command=shim_command(
+                "reviewer", exchange_fault=reviewer_exchange_fault, hold_until=release_file
+            ),
             meta_agent="claude-code",
             ai_system="claude-code",
             provider_args={"permission_mode": "bypassPermissions"},
         ),
     }
+    if release_file is not None:
+        config.agents[HELD_CODER_LABEL] = AgentConfig(
+            prompt_path=prompt,
+            timeout_minutes=HELD_SESSION_TIMEOUT_MINUTES,
+            model="sonnet",
+            command=shim_command("coder", hold_until=release_file),
+            meta_agent="claude-code",
+            ai_system="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+            reviewer=REVIEWER_LABEL,
+        )
     if tech_lead_model:
         config.agents[TECH_LEAD_LABEL] = AgentConfig(
             prompt_path=checkout.root / TECH_LEAD_PROMPT,
@@ -164,6 +197,19 @@ class ExamEngine:
         """Events about some work item. Tick, plan and fetch events carry no
         ``issue_key`` and fire every tick, so they never count as progress."""
         return sum(1 for event in self.runtime.watcher.view.global_events if event.get("issue_key"))
+
+    def ticks_completed(self) -> int:
+        """Ticks this process has completed, from its own event stream."""
+        return sum(
+            1 for event in self.runtime.watcher.view.global_events if event.get("type") == "tick.completed"
+        )
+
+    def gh_audit_report(self) -> dict[str, Any]:
+        """This process's GitHub calls so far, by command."""
+        report = fetch_gh_audit_report(self.config.control_api_port)
+        if report is None:
+            raise RuntimeError("the engine returned no gh_audit report")
+        return report
 
     def pending_work(self) -> int:
         """Reviews and reworks the engine has queued but not launched."""

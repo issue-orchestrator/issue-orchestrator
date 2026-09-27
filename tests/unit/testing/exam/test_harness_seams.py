@@ -612,3 +612,96 @@ def test_issue_branches_match_the_engines_naming_exactly() -> None:
         ]
     )
     assert parse_issue_branches(ls_remote, {"7", "8"}) == ["7-exam-work", "8-second"]
+
+
+# ---------------------------------------------------------------------------
+# Case U (#7432): held work and the in-place upgrade
+# ---------------------------------------------------------------------------
+
+
+def test_a_held_session_waits_for_its_release_and_then_does_its_work(
+    sandbox: dict[str, Path], tmp_path: Path
+) -> None:
+    release = tmp_path / "release"
+    env = {**os.environ, "PATH": f"{sandbox['bin']}{os.pathsep}{os.environ['PATH']}"}
+    env.pop("ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE", None)
+    held = subprocess.Popen(
+        [sys.executable, str(SHIM), "--role", "reviewer", "--hold-until", str(release)],
+        cwd=sandbox["repo"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            held.wait(timeout=5)
+        assert _calls(sandbox) == []  # mid-flight: nothing done yet
+
+        release.touch()
+        assert held.wait(timeout=30) == 0
+    finally:
+        if held.poll() is None:
+            held.kill()
+    assert _calls(sandbox) == ["reviewer-done approved --summary Exam reviewer: approved --risk low"]
+
+
+def test_the_shim_command_carries_the_hold(tmp_path: Path) -> None:
+    command = shim_command("coder", hold_until=tmp_path / "release")
+    assert f"--hold-until {tmp_path / 'release'}" in command
+    assert "--hold-until" not in shim_command("coder")
+
+
+def _git_repo_with_two_commits(root: Path) -> tuple[str, str]:
+    root.mkdir()
+    for argv in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "exam@example.com"],
+        ["git", "config", "user.name", "Exam"],
+    ):
+        subprocess.run(argv, cwd=root, check=True)
+    commits = []
+    for version in ("base", "candidate"):
+        (root / "engine.txt").write_text(version, encoding="utf-8")
+        subprocess.run(["git", "add", "engine.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", version], cwd=root, check=True)
+        commits.append(
+            subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        )
+    return commits[0], commits[1]
+
+
+def test_an_upgrade_moves_the_code_and_keeps_the_state(tmp_path: Path) -> None:
+    from tests.e2e.exam.engine_checkout import EngineCheckout
+
+    harness = tmp_path / "harness"
+    base, candidate = _git_repo_with_two_commits(harness)
+    engine_root = tmp_path / "engine"
+    subprocess.run(["git", "clone", "-q", "--shared", str(harness), str(engine_root)], check=True)
+    subprocess.run(["git", "checkout", "-q", "--detach", base], cwd=engine_root, check=True)
+    state = engine_root / ".issue-orchestrator" / "state" / "issue_run_ledger.sqlite"
+    state.parent.mkdir(parents=True)
+    state.write_text("rows the base engine wrote", encoding="utf-8")
+
+    upgraded = EngineCheckout(root=engine_root, commit=base).switch_to(
+        harness_root=harness, ref=candidate
+    )
+
+    assert upgraded == EngineCheckout(root=engine_root, commit=candidate)
+    assert (engine_root / "engine.txt").read_text(encoding="utf-8") == "candidate"
+    assert upgraded.state_dir == state.parent
+    assert state.read_text(encoding="utf-8") == "rows the base engine wrote"
+
+
+def test_an_upgrade_refuses_a_checkout_the_base_engine_dirtied(tmp_path: Path) -> None:
+    from tests.e2e.exam.engine_checkout import EngineCheckout
+
+    harness = tmp_path / "harness"
+    base, candidate = _git_repo_with_two_commits(harness)
+    engine_root = tmp_path / "engine"
+    subprocess.run(["git", "clone", "-q", "--shared", str(harness), str(engine_root)], check=True)
+    subprocess.run(["git", "checkout", "-q", "--detach", base], cwd=engine_root, check=True)
+    (engine_root / "engine.txt").write_text("edited by the base engine", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="checkout"):
+        EngineCheckout(root=engine_root, commit=base).switch_to(harness_root=harness, ref=candidate)

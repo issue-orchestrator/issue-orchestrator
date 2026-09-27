@@ -15,9 +15,13 @@ SHIM = Path(__file__).resolve().parent / "shims" / "exam_agent.py"
 CODER_LABEL = "agent:exam-coder"
 REVIEWER_LABEL = "agent:exam-reviewer"
 TECH_LEAD_LABEL = "agent:exam-tech-lead"
+HELD_CODER_LABEL = "agent:exam-coder-held"
+"""A coder that holds mid-flight until released (the upgrade case)."""
 
 
-def shim_command(role: str, *, exchange_fault: str = "none") -> str:
+def shim_command(
+    role: str, *, exchange_fault: str = "none", hold_until: Path | None = None
+) -> str:
     """Agent command running the shim; no ``{}`` placeholders on purpose.
 
     The engine renders agent commands with ``str.format``; any brace here
@@ -33,5 +37,6 @@ def shim_command(role: str, *, exchange_fault: str = "none") -> str:
             role,
             "--exchange-fault",
             exchange_fault,
+            *(("--hold-until", str(hold_until)) if hold_until is not None else ()),
         )
     )
