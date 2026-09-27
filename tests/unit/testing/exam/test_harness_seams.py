@@ -147,3 +147,34 @@ def test_unplanned_exchange_review_fails_loudly(sandbox: dict[str, Path]) -> Non
     assert result.returncode != 0
     assert "without a planted fault" in result.stderr
     assert _calls(sandbox) == []
+
+
+def test_cleanup_runs_every_step_then_raises_every_failure() -> None:
+    from tests.e2e.exam.cleanup_steps import run_all_steps
+
+    ran: list[str] = []
+
+    def fail(name: str) -> None:
+        ran.append(name)
+        raise RuntimeError(f"{name} failed")
+
+    with pytest.raises(ExceptionGroup) as caught:
+        run_all_steps(
+            "exam cleanup",
+            [
+                ("close PRs", lambda: fail("close PRs")),
+                ("close issues", lambda: ran.append("close issues")),
+                ("close labelled", lambda: fail("close labelled")),
+            ],
+        )
+
+    assert ran == ["close PRs", "close issues", "close labelled"]
+    assert [str(e) for e in caught.value.exceptions] == ["close PRs failed", "close labelled failed"]
+
+
+def test_cleanup_that_succeeds_raises_nothing() -> None:
+    from tests.e2e.exam.cleanup_steps import run_all_steps
+
+    ran: list[str] = []
+    run_all_steps("exam cleanup", [("a", lambda: ran.append("a")), ("b", lambda: ran.append("b"))])
+    assert ran == ["a", "b"]

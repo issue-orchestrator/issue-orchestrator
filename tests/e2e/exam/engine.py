@@ -70,18 +70,25 @@ class EngineCheckout:
         origin = _git(harness_root, "remote", "get-url", "origin")
         stamp = time.strftime("%Y%m%d-%H%M%S")
         root = WORKTREE_PARENT / f"exam-engine-{commit[:10]}-{case_id[:1].lower()}-{stamp}"
-        _git(harness_root, "clone", "--quiet", "--shared", "--no-checkout", str(harness_root), str(root))
-        _git(root, "remote", "set-url", "origin", origin)
-        _git(root, "fetch", "--quiet", "origin", "main")
-        # Agent worktrees branch from local ``main`` (ORCHESTRATOR_WORKTREE_BASE_BRANCH).
-        _git(root, "branch", "--force", "main", "origin/main")
-        _git(root, "checkout", "--quiet", "--detach", commit)
         venv = harness_root / ".venv"
         if not venv.is_dir():
             raise RuntimeError(f"harness virtualenv missing at {venv}")
-        (root / ".venv").symlink_to(venv)
+        _git(harness_root, "clone", "--quiet", "--shared", "--no-checkout", str(harness_root), str(root))
+        checkout = cls(root=root, commit=commit)
+        try:
+            _git(root, "remote", "set-url", "origin", origin)
+            _git(root, "fetch", "--quiet", "origin", "main")
+            # Agent worktrees branch from local ``main`` (ORCHESTRATOR_WORKTREE_BASE_BRANCH).
+            _git(root, "branch", "--force", "main", "origin/main")
+            _git(root, "checkout", "--quiet", "--detach", commit)
+            (root / ".venv").symlink_to(venv)
+        except BaseException:
+            # A half-built clone is nobody's to clean up later (a network
+            # outage mid-fetch left one behind).
+            checkout.remove()
+            raise
         logger.info("[EXAM] engine checkout %s at %s", root, commit)
-        return cls(root=root, commit=commit)
+        return checkout
 
     @property
     def state_dir(self) -> Path:

@@ -23,6 +23,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -35,6 +36,7 @@ from issue_orchestrator.testing.exam.cases import (
 from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
 from tests.e2e.conftest import e2e_label
+from tests.e2e.exam.cleanup_steps import run_all_steps
 from tests.e2e.exam.scenarios import (
     ExamResult,
     ExamRun,
@@ -66,6 +68,21 @@ def _write(result: ExamResult) -> Path:
         json.dumps(result.observation.to_dict(), indent=2), encoding="utf-8"
     )
     return json_path
+
+
+def _cleanup(repo: str, run_label: str, flows: list[E2EFlow]) -> None:
+    """Close everything the run touched; see :func:`run_all_steps`."""
+    created = [number for flow in flows for number in flow.created_issue_numbers]
+    steps: list[tuple[str, Callable[[], object]]] = [
+        ("close the run's PRs", lambda: teardown_run(repo, run_label, created)),
+        *(
+            (f"close flow issues {flow.created_issue_numbers}", flow.cleanup_created_issues)
+            for flow in flows
+        ),
+        # Anchors and follow-ups the engine filed carry the run label.
+        ("close run-labelled issues", lambda: cleanup_issues_by_label(repo, run_label)),
+    ]
+    run_all_steps(f"exam cleanup left artifacts for {run_label}", steps)
 
 
 def _run_label(case_id: str) -> str:
@@ -115,12 +132,7 @@ async def test_tech_lead_exam(
                 tech_lead_model=os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus"),
             )
     finally:
-        created = [number for flow in flows for number in flow.created_issue_numbers]
-        teardown_run(repo_name, run_label, created)
-        for flow in flows:
-            flow.cleanup_created_issues()
-        # Anchors and follow-ups the engine filed carry the run label.
-        cleanup_issues_by_label(repo_name, run_label)
+        _cleanup(repo_name, run_label, flows)
     path = _write(result)
     card = result.scorecard
     summary = render_summary(card)
