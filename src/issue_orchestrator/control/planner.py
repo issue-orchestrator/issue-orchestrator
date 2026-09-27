@@ -88,7 +88,7 @@ from .worker_budget import (
     worker_slot_availability,
 )
 from .reactive_tech_lead_planning import TechLeadLaunchPlan, plan_tech_lead_launch_queue
-from .reconciliation import build_expected_for_mutation
+from .reconciliation import build_expected_for_mutation, without_paused_subjects
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
@@ -1094,7 +1094,7 @@ class Planner:
         if not snapshot.stale_in_progress_issues:
             return actions
 
-        for issue in snapshot.stale_in_progress_issues:
+        for issue in without_paused_subjects(snapshot.stale_in_progress_issues):
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
                 label=self._lm.in_progress,
@@ -1127,7 +1127,7 @@ class Planner:
         if not snapshot.stale_claim_issues:
             return actions
 
-        for issue in snapshot.stale_claim_issues:
+        for issue in without_paused_subjects(snapshot.stale_claim_issues):
             # Remove the io:claimed label
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,

@@ -16,7 +16,7 @@ and partial or contradictory state updates.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, FrozenSet
+from typing import FrozenSet, Iterable, Optional, Protocol, Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -294,30 +294,56 @@ def require_reconciliation(
 # Pause Label (needs-reconcile)
 # =============================================================================
 
-# Default namespace prefix for orchestrator labels
-DEFAULT_LABEL_PREFIX = "io"
+# The ONE declaration of the reconciliation pause label (#7349). Every writer
+# (the pause itself), every guard (the mutation gate's forbidden set), every
+# planner path that decides whether to plan a write, and the label registry
+# (``LabelManager.needs_reconcile``) read it from here. It is a fixed,
+# namespaced label -- it never takes the configured ``label_prefix`` -- because
+# it is the label actually written on every repository; a second, prefix-
+# resolved spelling let guards test for a label that never exists (the label
+# registry resolved ``needs-reconcile`` on unprefixed repos while the pause
+# wrote ``io:needs-reconcile``).
+RECONCILE_PAUSE_LABEL = "io:needs-reconcile"
 
-# Base key for the pause label (rendered as {prefix}:needs-reconcile)
-PAUSE_LABEL_KEY = "needs-reconcile"
+
+def get_pause_label() -> str:
+    """The reconciliation pause label (``io:needs-reconcile``)."""
+    return RECONCILE_PAUSE_LABEL
 
 
-def get_pause_label(prefix: str = DEFAULT_LABEL_PREFIX) -> str:
-    """Get the fully-rendered pause label.
+def is_paused_for_reconciliation(labels: Iterable[str]) -> bool:
+    """Whether a subject carrying *labels* is paused for reconciliation.
 
-    Args:
-        prefix: Label namespace prefix (default: "io")
-
-    Returns:
-        The pause label (e.g., "io:needs-reconcile")
+    A paused subject is one the orchestrator must not write to until a human
+    lifts the pause: the mutation gate refuses every gated write against it
+    (``build_expected_for_mutation`` forbids the label). Planning paths ask
+    this same question so they do not plan writes the gate is bound to refuse.
     """
-    return f"{prefix}:{PAUSE_LABEL_KEY}"
+    return RECONCILE_PAUSE_LABEL in labels
+
+
+class _Labelled(Protocol):
+    @property
+    def labels(self) -> Sequence[str]: ...
+
+
+_Subject = TypeVar("_Subject", bound=_Labelled)
+
+
+def without_paused_subjects(subjects: Iterable[_Subject]) -> list[_Subject]:
+    """The subjects whose labels the orchestrator may write this tick (#7349).
+
+    A subject paused for reconciliation keeps its labels until a human lifts
+    the pause -- the mutation gate refuses every gated write against it -- so
+    a cleanup planned for it could only ever be refused, every tick.
+    """
+    return [s for s in subjects if not is_paused_for_reconciliation(s.labels)]
 
 
 def build_expected_for_mutation(
     *,
     required: set[str] | None = None,
     forbidden: set[str] | None = None,
-    prefix: str = DEFAULT_LABEL_PREFIX,
 ) -> ExpectedState:
     """Build ExpectedState for a mutating action.
 
@@ -326,13 +352,11 @@ def build_expected_for_mutation(
     Args:
         required: Labels that must be present
         forbidden: Additional labels that must not be present
-        prefix: Label namespace prefix
 
     Returns:
         ExpectedState with pause label in forbidden set
     """
-    pause_label = get_pause_label(prefix)
-    all_forbidden = {pause_label}
+    all_forbidden = {RECONCILE_PAUSE_LABEL}
     if forbidden:
         all_forbidden.update(forbidden)
 
