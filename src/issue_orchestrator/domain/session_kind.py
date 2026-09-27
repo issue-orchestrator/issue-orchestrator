@@ -1,6 +1,6 @@
 """SessionKind - the ONE authoritative answer to "what kind of session is this?".
 
-Before #7347 the answer was spread over six vocabularies - ``TaskKind`` on the
+Before #7347 the answer was spread over six vocabularies - ``SessionKind`` on the
 slot key, ``SessionType`` on terminal refs, the terminal-name prefix, the
 run-directory phase label, the agent label, and the run ledger's
 ``completion_task`` - and they disagreed. A tech-lead run launched stamped

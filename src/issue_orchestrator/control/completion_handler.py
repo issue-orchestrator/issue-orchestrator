@@ -551,7 +551,7 @@ class CompletionHandler:
         return SessionHistoryEntry(
             issue_number=session.issue.number,
             title=session.issue.title,
-            agent_type=session.issue.agent_type or "unknown",
+            agent_type=session.agent_label or "unknown",
             status=session_history_status_from_session_status(status),
             runtime_minutes=session.runtime_minutes,
             pr_url=pr_url,

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.recovery_block import RecoveryMutationBusy
+from ..domain.validated_work import ResolutionKind
 from ..domain.validated_work_execution import RecordExecutionBusy
 from ..domain.validated_work_commands import (
     AbandonStatus,
@@ -66,6 +67,7 @@ class OperatorValidatedWorkAbandonment:
                         "evidence_id": authority.evidence_id,
                         "actor": command.actor,
                         "reason": command.reason,
+                        "resolution_kind": ResolutionKind.OPERATOR_ABANDONED.value,
                     },
                 )
             )

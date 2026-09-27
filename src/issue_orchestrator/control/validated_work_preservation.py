@@ -17,6 +17,7 @@ from ..domain.validated_work_capture import (
     candidate_evidence, candidate_key, newest_per_work,
 )
 from ..domain.validated_work_remote_authority import classify_remote_pr
+from ..domain.validated_work_scope import outside_scope_reason, recovery_owns
 from ..domain.validated_work_escrow import EscrowArtifacts
 from ..domain.validated_work_store import AncestryRelation
 from ..ports.completion_intake import CompletionIntakeRuntime
@@ -83,11 +84,10 @@ class ValidatedWorkPreservationService:
         contains is nothing to preserve, and a PR of it is refused by the host.
         """
         role = candidate.role
-        if not role.kind.capabilities.capturable:
+        if not recovery_owns(role):
             logger.info(
-                "[VALIDATED_WORK] Not capturing issue #%d run %s: a %s run's "
-                "completion is not the issue's deliverable",
-                role.issue_number, candidate.run.run.run_id, role.kind.value,
+                "[VALIDATED_WORK] Not capturing issue #%d run %s: %s",
+                role.issue_number, candidate.run.run.run_id, outside_scope_reason(role),
             )
             return False
         base = self._base_ref()

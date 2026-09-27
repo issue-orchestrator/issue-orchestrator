@@ -163,6 +163,7 @@ def _make_session(
         branch_name=f"{issue_number}-test",
         run_assets=run_assets,
         started_at=started_at,
+        agent_label="agent:test",  # the launch-recorded role (#7347)
     )
 
 

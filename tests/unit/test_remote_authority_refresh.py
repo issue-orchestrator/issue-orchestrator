@@ -35,7 +35,13 @@ from issue_orchestrator.domain.validated_work_remote_authority import (
 from issue_orchestrator.execution.validated_work_execution import (
     LocalValidatedWorkExecutionOwner,
 )
+from unittest.mock import Mock
+
+from issue_orchestrator.control.validated_work_scope_retirement import OutOfScopeRecordRetirement
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
+from issue_orchestrator.ports.recovery_block import RecoveryBlockIssueReconciler
 from tests.unit.validated_work_support import (
+    owned_intake,
     AT,
     V,
     Rig,
@@ -73,13 +79,19 @@ def matching_pr(number: int = 91) -> PublicationPullRequest:
     )
 
 
-def operation(store, observer) -> RemoteAuthorityRefreshOperation:
+def operation(store, observer, *, blocks=None, events=None, task=None) -> RemoteAuthorityRefreshOperation:
     execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
     return RemoteAuthorityRefreshOperation(
         execution=execution,
-        effects=FencedValidatedWorkEffects(execution=execution, fence=store),
+        effects=effects,
         store=store,
         observer=observer,
+        scope=OutOfScopeRecordRetirement(
+            intake=owned_intake(task), store=store, effects=effects,
+            blocks=blocks if blocks is not None else Mock(spec=RecoveryBlockIssueReconciler),
+            events=events if events is not None else InMemoryEventSink(),
+        ),
         clock=lambda: datetime.fromisoformat(AT),
     )
 
