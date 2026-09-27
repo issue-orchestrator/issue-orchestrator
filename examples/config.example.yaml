@@ -450,8 +450,8 @@ tech_lead:
   # create_issue "propose" is NOT shadow: it files a REAL gated proposal issue
   # carrying the proposed-tech-lead label, inert until an operator removes it
   # (per-instance approval, #6778). "execute" files the follow-up issue directly.
-  # reset_retry "execute" runs the reset+retry-from-scratch owner with
-  # execution-time re-validation (stale proposals are surfaced, not run).
+  # reset_retry is destructive (reset from scratch): it is always "propose"
+  # (a gated proposal issue) and "execute" is rejected at startup (#7330).
   # kill_hung_session "execute" terminates only the exact session generation
   # observed by the tech lead, after re-validating that it is still active.
   # A create_issue follow-up routes its new issue to review.tech_lead_follow_up_agent
@@ -460,10 +460,30 @@ tech_lead:
   #   post_comment: "execute"       # execute | propose
   #   create_issue: "execute"       # execute | propose (propose = gated issue)
   #   flag_pattern: "execute"       # execute | propose
-  #   reset_retry: "propose"        # execute | propose
+  #   reset_retry: "propose"        # propose only (destructive)
   #   kill_hung_session: "propose"  # execute | propose
   #   request_rework: "propose"     # Gated scoped rework; preserves the PR branch
   #   recover_validated_work: "propose" # Recover one exact retained validated head
+  # Charter (#7330): per-role dials for what the tech lead may do UNATTENDED.
+  # The orchestrator classifies every action by its type into a role and a
+  # required depth (the agent cannot choose them), then decides:
+  #   role disabled or action deeper than the role's depth -> advice only
+  #   destructive (reset from scratch)                     -> always approval
+  #   role authority propose, or the action's mode above   -> approval gate
+  #   otherwise                                            -> executes
+  # depth: workaround < fix < restructure; authority: propose | execute.
+  # The per-action authority modes above stay a ceiling. Diagnosis comments,
+  # pattern observations and escalation are never restricted by the charter.
+  # Omitted roles keep their defaults (shown); disable one with enabled: false.
+  # The defaults reproduce the pre-charter behaviour exactly.
+  # charter:
+  #   flow:        { depth: restructure, authority: execute }  # unblock, keep work moving
+  #   review_loop: { depth: restructure, authority: execute }  # scoped rework on PRs
+  #   abstraction: { depth: restructure, authority: execute }
+  #   platform:    { depth: restructure, authority: execute }
+  #   intake:      { depth: restructure, authority: execute }
+  #   learning:    { depth: restructure, authority: execute }  # finding promotion
+  #   general:     { depth: workaround,  authority: propose }  # catch-all role
   # Health reviews (ADR-0031 §4 + reaction-model amendment): the interval is
   # the periodic floor. A storm of K recent blocked/failed problem issues
   # creates one immediate health review instead of K investigations. The

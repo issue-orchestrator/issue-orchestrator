@@ -52,6 +52,7 @@ work under all of its existing gates.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterable, Sequence
 
 from ..domain.tech_lead_findings import (
@@ -76,6 +77,8 @@ from .actions import (
 from ..infra.tech_lead_promotion_activation import promotion_lane_readiness
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_issue_policy import tech_lead_follow_up_agent_label
+from .tech_lead_charter_policy import TechLeadCharterPolicy
+from .tech_lead_charter_records import promotion_charter_record
 # The lane's cross-tick read budget lives in its own module (it is the only
 # MUTABLE state here); re-exported so callers keep one import site.
 from .tech_lead_promotion_read_budget import (
@@ -158,7 +161,9 @@ def promotion_issue_labels(config: "Config", *, area: str) -> tuple[str, ...]:
     return resolve_promotion_route(config, area=area).issue_labels(
         area=area,
         gate_label=(
-            PROPOSED_TECH_LEAD_LABEL if config.tech_lead.findings.gated else ""
+            PROPOSED_TECH_LEAD_LABEL
+            if TechLeadCharterPolicy.from_config(config).promotion_gated()
+            else ""
         ),
     )
 
@@ -394,9 +399,17 @@ def plan_finding_promotions(
     *,
     promotable: Sequence[PromotableFinding],
 ) -> list[Action]:
-    """Turn eligible findings into typed filing actions (read-free planning)."""
+    """Turn eligible findings into typed filing actions (read-free planning).
+
+    The charter decides first (#7330): a promotion the ``learning`` role may
+    not take is advice only and files nothing (the case file already carries
+    the diagnosis); otherwise it is filed gated or ungated per the verdict.
+    """
     source_repo = config.repo or ""  # cache/display value, not work identity; identity uses require_repo (#7255)
-    gated = config.tech_lead.findings.gated
+    policy = TechLeadCharterPolicy.from_config(config)
+    if promotable and policy.promotion().advice_only:
+        return []
+    gated = policy.promotion_gated()
     actions: list[Action] = []
     for finding in promotable:
         marker = promotion_issue_marker(
@@ -521,6 +534,14 @@ def plan_finding_promotion_actions(
     actions = plan_finding_promotions(config, promotable=facts.promotable_findings)
     actions.extend(plan_promotion_updates(config, updates=facts.promotion_updates))
     actions.extend(plan_promotion_settlements(facts.settled_promotions))
+    # Why each candidate was (or was not) filed, per the charter (#7330).
+    actions.extend(
+        promotion_charter_record(
+            TechLeadCharterPolicy.from_config(config),
+            facts.promotable_findings,
+            decided_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
     return actions
 
 

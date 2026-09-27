@@ -95,6 +95,9 @@ class ActionType(Enum):
     RECORD_TECH_LEAD_DISPOSITION = "record_tech_lead_disposition"
     ESCALATE_TECH_LEAD_DISPOSITION = "escalate_tech_lead_disposition"
 
+    # Per-action tech-lead charter decisions (#7330): persisted for explanation.
+    RECORD_TECH_LEAD_CHARTER_DECISIONS = "record_tech_lead_charter_decisions"
+
     # Finding promotion (#6957): file a case file's diagnosis as a gated
     # runnable issue in the routed repo, report later evidence onto that one
     # issue, and settle it when it goes terminal.

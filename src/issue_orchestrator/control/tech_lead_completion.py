@@ -56,6 +56,8 @@ Policy summary:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -79,6 +81,7 @@ from .completion_types import (
 from .label_manager import LabelManager
 from .publish_recovery import is_publish_failure
 from .proposal_dedup_gate import DuplicateTargetGrant
+from .tech_lead_charter_records import CharterDecisionLog
 from .tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
     plan_tech_lead_rejection_action,
@@ -493,6 +496,11 @@ def generate_tech_lead_completion_actions(
         obligation = (build_investigation_obligation(load_result.decision,
             focus_issue_number=authority.focus_issue_number)
             if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION else None)
+        charter_log = CharterDecisionLog(
+            run_id=session.run_assets.run_id,
+            anchor_issue_number=session.issue.number,
+            decided_at=datetime.now(timezone.utc).isoformat(),
+        )
         decision_actions = plan_tech_lead_decision_actions(
                 load_result.decision,
                 config,
@@ -512,12 +520,14 @@ def generate_tech_lead_completion_actions(
                 report_text=load_result.report_text,
                 dedup_corpus=open_issue_corpus.load(),
                 dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
+                charter_log=charter_log,
             )
         if obligation is not None:
             from .tech_lead_reset_retry import require_investigation_terminal_effect
             decision_actions = require_investigation_terminal_effect(decision_actions,
                 obligation=obligation)
         actions.extend(decision_actions)
+        actions.extend(charter_log.record_action())
     else:
         # Belt-and-braces: the processing path (finding 3) should already have
         # classified this session FAILED before the planner sees it; still

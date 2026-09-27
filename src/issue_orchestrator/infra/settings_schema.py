@@ -21,6 +21,7 @@ from pydantic import (
     AllowInfNan,
     BaseModel,
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -30,6 +31,13 @@ from ..domain.tech_lead_findings import (
     VALID_FINDING_PROMOTION_MODES,
 )
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
+from ..domain.tech_lead_charter import CharterRole
+from .config_models_tech_lead_charter import (
+    TECH_LEAD_CHARTER_AUTHORITIES,
+    TECH_LEAD_CHARTER_DEPTHS,
+    RoleCharterConfig,
+    destructive_execute_error,
+)
 from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
     MERGE_QUEUE_PROVIDERS,
@@ -38,6 +46,65 @@ from .config_models import (
 )
 
 _TECH_LEAD_SECTION = f"{TECH_LEAD_DISPLAY_NAME} Review"
+
+
+_CHARTER_ROLE_JOBS = {
+    CharterRole.FLOW: "keep work moving and unblock it",
+    CharterRole.REVIEW_LOOP: "cut wasteful code/review back-and-forth",
+    CharterRole.ABSTRACTION: "find missing deep modules and duplicated knowledge",
+    CharterRole.PLATFORM: "catch environment and tooling drift",
+    CharterRole.INTAKE: "fix the inputs: split, sharpen, sequence issues",
+    CharterRole.LEARNING: "turn incidents and case files into lasting fixes",
+    CharterRole.GENERAL: "catch-all for actions that fit no named role",
+}
+
+
+def _charter_field(role: CharterRole, dial: str) -> Any:
+    """One ``tech_lead.charter.<role>.<dial>`` settings field (#7330)."""
+    default = RoleCharterConfig.default_for(role)
+    path = f"tech_lead.charter.{role.value}.{dial}"
+    title = f"{TECH_LEAD_DISPLAY_NAME} Charter: {role.value} {dial}"
+    extra: dict[str, Any] = {
+        "section": _TECH_LEAD_SECTION,
+        "config_attr": path,
+        "yaml_path": path,
+    }
+    if dial == "enabled":
+        return Field(
+            default.enabled,
+            title=title,
+            description=f"Whether the {role.value} role ({_CHARTER_ROLE_JOBS[role]}) may act",
+            json_schema_extra={
+                **extra,
+                "doc_examples": ["true", "false"],
+                "doc_notes": (
+                    "false makes every action of this role advice only. Noticing and"
+                    " advising (diagnosis comments, pattern observations) and the"
+                    " escalation floor are never restricted by the charter."
+                ),
+            },
+        )
+    values = TECH_LEAD_CHARTER_DEPTHS if dial == "depth" else TECH_LEAD_CHARTER_AUTHORITIES
+    notes = (
+        "How deep a remedy the role may drive: workaround < fix < restructure. An"
+        " action deeper than this is recorded as advice only."
+        if dial == "depth"
+        else "execute acts unattended inside the role's depth; propose files each"
+        " action through the per-instance approval gate. Destructive actions"
+        " (reset from scratch) always need approval, and the per-action"
+        " tech_lead.authority modes remain a ceiling."
+    )
+    return Field(
+        getattr(default, dial),
+        title=title,
+        description=f"{dial.capitalize()} for the {role.value} role ({_CHARTER_ROLE_JOBS[role]})",
+        json_schema_extra={
+            **extra,
+            "enum": list(values),
+            "doc_examples": list(values),
+            "doc_notes": f"{notes} Allowed values: {', '.join(values)}.",
+        },
+    )
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -1321,16 +1388,16 @@ class ReviewSettings(BaseModel):
         title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Reset & Retry",
         description="Act-level: reset-and-retry an issue from scratch",
         json_schema_extra={
-            "enum": list(TECH_LEAD_AUTHORITY_MODES),
-            "doc_examples": ["propose", "execute"],
+            "enum": ["propose"],
+            "doc_examples": ["propose"],
             "doc_notes": (
-                "execute runs the reset+retry-from-scratch owner after "
-                "re-validating the proposal's preconditions at execution time; "
-                "stale proposals downgrade to a surfaced record (#6764). "
-                "propose (default) files each proposal as a gated GitHub issue "
-                "carrying the proposed-tech-lead label; removing the label is "
-                "per-instance approval and triggers the same re-validated "
-                "execution (#6778). Allowed values: execute, propose."
+                "Reset from scratch is destructive, so it always needs operator "
+                "approval (#7330): each proposal is filed as a gated GitHub issue "
+                "carrying the proposed-tech-lead label, and removing the label is "
+                "per-instance approval that runs the reset+retry-from-scratch "
+                "owner after re-validating the proposal's preconditions; stale "
+                "proposals downgrade to a surfaced record (#6764, #6778). "
+                "execute is rejected. Allowed values: propose."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.authority.reset_retry",
@@ -1391,6 +1458,28 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.recover_validated_work",
         },
     )
+    # Per-role charter dials (#7330): one enabled/depth/authority triple per role.
+    tech_lead_charter_flow_enabled: bool = _charter_field(CharterRole.FLOW, "enabled")
+    tech_lead_charter_flow_depth: str = _charter_field(CharterRole.FLOW, "depth")
+    tech_lead_charter_flow_authority: str = _charter_field(CharterRole.FLOW, "authority")
+    tech_lead_charter_review_loop_enabled: bool = _charter_field(CharterRole.REVIEW_LOOP, "enabled")
+    tech_lead_charter_review_loop_depth: str = _charter_field(CharterRole.REVIEW_LOOP, "depth")
+    tech_lead_charter_review_loop_authority: str = _charter_field(CharterRole.REVIEW_LOOP, "authority")
+    tech_lead_charter_abstraction_enabled: bool = _charter_field(CharterRole.ABSTRACTION, "enabled")
+    tech_lead_charter_abstraction_depth: str = _charter_field(CharterRole.ABSTRACTION, "depth")
+    tech_lead_charter_abstraction_authority: str = _charter_field(CharterRole.ABSTRACTION, "authority")
+    tech_lead_charter_platform_enabled: bool = _charter_field(CharterRole.PLATFORM, "enabled")
+    tech_lead_charter_platform_depth: str = _charter_field(CharterRole.PLATFORM, "depth")
+    tech_lead_charter_platform_authority: str = _charter_field(CharterRole.PLATFORM, "authority")
+    tech_lead_charter_intake_enabled: bool = _charter_field(CharterRole.INTAKE, "enabled")
+    tech_lead_charter_intake_depth: str = _charter_field(CharterRole.INTAKE, "depth")
+    tech_lead_charter_intake_authority: str = _charter_field(CharterRole.INTAKE, "authority")
+    tech_lead_charter_learning_enabled: bool = _charter_field(CharterRole.LEARNING, "enabled")
+    tech_lead_charter_learning_depth: str = _charter_field(CharterRole.LEARNING, "depth")
+    tech_lead_charter_learning_authority: str = _charter_field(CharterRole.LEARNING, "authority")
+    tech_lead_charter_general_enabled: bool = _charter_field(CharterRole.GENERAL, "enabled")
+    tech_lead_charter_general_depth: str = _charter_field(CharterRole.GENERAL, "depth")
+    tech_lead_charter_general_authority: str = _charter_field(CharterRole.GENERAL, "authority")
     tech_lead_findings_promote: str = Field(
         FINDING_PROMOTION_GATED,
         title=f"{TECH_LEAD_DISPLAY_NAME} Finding Promotion",
@@ -1684,11 +1773,36 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_recover_validated_work",
     )
     @classmethod
-    def _validate_tech_lead_authority_mode(cls, value: str) -> str:
+    def _validate_tech_lead_authority_mode(cls, value: str, info: ValidationInfo) -> str:
         if value not in TECH_LEAD_AUTHORITY_MODES:
             raise ValueError(
                 f"tech lead authority mode must be one of"
                 f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {value!r}"
+            )
+        action_type = str(info.field_name).removeprefix("tech_lead_authority_")
+        destructive = destructive_execute_error(action_type, value)
+        if destructive:
+            raise ValueError(destructive)
+        return value
+
+    @field_validator(
+        *(
+            f"tech_lead_charter_{role.value}_{dial}"
+            for role in CharterRole
+            for dial in ("depth", "authority")
+        )
+    )
+    @classmethod
+    def _validate_tech_lead_charter_dial(cls, value: str, info: ValidationInfo) -> str:
+        """Close the charter vocabulary at the schema boundary, like the modes above."""
+        allowed = (
+            TECH_LEAD_CHARTER_DEPTHS
+            if str(info.field_name).endswith("_depth")
+            else TECH_LEAD_CHARTER_AUTHORITIES
+        )
+        if value not in allowed:
+            raise ValueError(
+                f"{info.field_name} must be one of {list(allowed)}, got {value!r}"
             )
         return value
 

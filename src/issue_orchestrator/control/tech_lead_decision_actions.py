@@ -116,6 +116,9 @@ from .tech_lead_gate_notes import (
     outcome_gate_note,
 )
 from .tech_lead_case_files import CaseFileIntake, PatternCaseFilePlanner
+from .tech_lead_charter_policy import TechLeadCharterPolicy
+from .tech_lead_charter_records import CharterDecisionLog
+from .tech_lead_shadow_digest import shadow_digest_comment
 from .tech_lead_observation_routing import accrual_for, case_file_sighting
 from .tech_lead_proposals import (
     build_duplicate_proposal_comment,
@@ -200,8 +203,15 @@ def plan_tech_lead_decision_actions(
     ] = _no_validated_work_authority,
     rework_targets: tuple[ReworkTarget, ...] = (),
     report_text: str = "",
+    charter_log: CharterDecisionLog | None = None,
 ) -> list[Action]:
     """Plan orchestrator actions for a validated tech_lead decision.
+
+    Authority is the charter policy's (#7330): each proposed action gets one
+    :class:`~..domain.tech_lead_charter.CharterVerdict`, the planner translates
+    it, and every verdict is noted on ``charter_log``, whose
+    :meth:`~.tech_lead_charter_records.CharterDecisionLog.record_action` the
+    caller applies to persist them. A caller that persists nothing may omit it.
 
     ``op_ledger`` maps (op_type, target_issue_number) of every currently
     recorded gated-proposal op to its proposal issue number (the authority
@@ -234,6 +244,12 @@ def plan_tech_lead_decision_actions(
         dedup_grant=dedup_grant,
         rework_targets=rework_targets,
         report_text=report_text,
+        policy=TechLeadCharterPolicy.from_config(config),
+        charter_log=charter_log or CharterDecisionLog(
+            run_id=source_run_id,
+            anchor_issue_number=anchor_issue.number,
+            decided_at=observed_at,
+        ),
     )
     try:
         for proposed in decision.proposed_actions:
@@ -244,6 +260,7 @@ def plan_tech_lead_decision_actions(
         # promotable at all and which repo it routes to, so the orchestrator
         # refuses to pick a winner: the whole decision is rejected as a contract
         # violation and nothing partially planned is applied (#6957 review F3).
+        planner.charter_log.discard()
         return [
             plan_tech_lead_rejection_action(
                 anchor_issue_number=anchor_issue.number,
@@ -253,10 +270,11 @@ def plan_tech_lead_decision_actions(
         ]
     if planner.shadow:
         planner.actions.append(
-            _shadow_digest_comment(
+            shadow_digest_comment(
                 planner.shadow,
                 anchor_issue_number=anchor_issue.number,
                 expected=expected,
+                charter_log=planner.charter_log,
             )
         )
     return planner.actions
@@ -289,6 +307,9 @@ class _DecisionActionPlanner:
     # dedup redirect may target.
     dedup_corpus: OpenIssueCorpus
     dedup_grant: DuplicateTargetGrant
+    # The ONE authority owner (#7330) and where its verdicts are noted.
+    policy: TechLeadCharterPolicy
+    charter_log: CharterDecisionLog
     rework_targets: tuple[ReworkTarget, ...] = ()
     report_text: str = ""
     actions: list[Action] = field(default_factory=list)
@@ -324,7 +345,13 @@ class _DecisionActionPlanner:
         return self.anchor_issue.number
 
     def plan(self, proposed: ProposedTechLeadAction) -> None:
-        if proposed.action_type == "flag_pattern":
+        # The role and depth come from the action TYPE, never from anything the
+        # agent wrote, so no proposal can pick a more permissive role (#7329).
+        verdict = self.policy.decide(proposed.action_type)
+        self.charter_log.note(proposed, verdict)
+        if verdict.advice_only:
+            self._surface_shadow(proposed)
+        elif proposed.action_type == "flag_pattern":
             self._plan_flag_pattern(proposed)
         elif proposed.is_act_level:
             self._plan_act_level(proposed)
@@ -339,16 +366,13 @@ class _DecisionActionPlanner:
         self.actions.append(surfaced)
 
     def _executes(self, action_type: str) -> bool:
-        """True when configured authority is ``execute`` for this action type."""
-        return self.config.tech_lead.authority.mode_for(action_type) == "execute"
+        """True when the charter policy lets this action type run unattended."""
+        return self.policy.executes(action_type)
 
     def _plan_flag_pattern(self, proposed: ProposedTechLeadAction) -> None:
         # Authority-aware (#6761 finding 5): execute records the pattern —
         # the trace event (mode="pattern") plus the durable case-file
-        # ledger (#6781). Propose stays a shadow record (unchanged).
-        if not self._executes("flag_pattern"):
-            self._surface_shadow(proposed)
-            return
+        # ledger (#6781). Propose is a shadow record, surfaced by plan().
         self.actions.append(
             _surface(
                 proposed,
@@ -388,6 +412,7 @@ class _DecisionActionPlanner:
         key = (proposed.action_type, request.key if request else proposed.target_number)
         existing = self.op_ledger.get(key)
         if existing is not None:
+            self.charter_log.note_reused_proposal(proposed.id, existing)
             from .required_issue_comment import ReuseTechLeadProposalAction
             from .tech_lead_proposals import build_stored_tech_lead_op
             self.actions.append(
@@ -444,7 +469,7 @@ class _DecisionActionPlanner:
         # Execute authority plans typed commands whose owners revalidate their
         # operation-specific preconditions at apply time. Propose authority
         # remains the per-instance gated issue path (#6778).
-        if not self._executes(proposed.action_type):
+        if not self.charter_log.verdict_for(proposed.id).executes:
             self._plan_gated_op(proposed)
             return
 
@@ -685,62 +710,9 @@ class _DecisionActionPlanner:
         # (#6778): per-instance approval is removing the label, after which the
         # issue flows into normal scheduling. Everything else propose -> shadow
         # record. create_issue additionally routes through the dedup gate.
-        execute = self._executes(proposed.action_type)
-        if not execute and proposed.action_type != "create_issue":
-            self._surface_shadow(proposed)
-            return
+        execute = self.charter_log.verdict_for(proposed.id).executes
         if proposed.action_type == "create_issue":
             self._plan_create_issue(proposed, execute=execute)
             return
         self.actions.extend(self._concrete_decision(proposed, gate_reason=None))
 
-
-def _shadow_digest_comment(
-    shadow: list[SurfaceTechLeadProposalAction],
-    *,
-    anchor_issue_number: int,
-    expected: "ExpectedState",
-) -> AddCommentAction:
-    """Durable would-have-done record for shadow proposals (#6761 finding 6).
-
-    Trace events are ephemeral; the operator-facing escalation surface is the
-    crash-safe GitHub comment/label channel. One digest comment per completion
-    keeps the record bounded while listing every proposal the configured
-    authority did not execute.
-    """
-    lines = [
-        "## 🔍 Tech Lead proposals recorded, not executed (shadow mode)",
-        "",
-        "The tech_lead decision proposed the following actions. Configured"
-        " authority is `propose` for them, so the orchestrator recorded"
-        " them as *would-have-done* instead of executing (ADR-0031):",
-        "",
-    ]
-    for item in shadow:
-        target = f"#{item.target_number}" if item.target_number else "n/a"
-        title = f" — {item.title}" if item.title else ""
-        lines.append(
-            f"- **{item.action_id}** `{item.proposal_type}` (target: {target}){title}"
-        )
-        if item.body_preview:
-            lines.append(f"  > {item.body_preview}")
-        if item.finding_ids:
-            lines.append(f"  findings: {', '.join(item.finding_ids)}")
-    # Only immediate/report-tier types reach the shadow digest (#6778):
-    # create_issue proposals become gated issues, and act-level proposals
-    # become gated proposal issues — the anchor gets a per-proposal link
-    # comment from the creation applier instead of a digest entry. Every
-    # remaining shadow type is a real, flip-able authority knob.
-    knob_types = sorted({item.proposal_type for item in shadow})
-    lines.append("")
-    knobs = ", ".join(f"`tech_lead.authority.{name}`" for name in knob_types)
-    lines.append(
-        f"*Flip {knobs} to `execute` to let the orchestrator perform these next time.*"
-    )
-    return AddCommentAction(
-        number=anchor_issue_number,
-        comment="\n".join(lines),
-        is_pr=False,
-        reason="tech_lead decision: durable shadow-proposal record (would-have-done)",
-        expected=expected,
-    )

@@ -104,6 +104,21 @@ CREATE TABLE IF NOT EXISTS tech_lead_dispositions (
     disposition TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tech_lead_charter_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    anchor_issue_number INTEGER NOT NULL,
+    target_number INTEGER,
+    proposal_issue_number INTEGER,
+    role TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_role
+    ON tech_lead_charter_decisions (role, decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_decided
+    ON tech_lead_charter_decisions (decided_at);
 """
 
 # (table, column, DDL) added after that table first shipped. ``CREATE TABLE IF

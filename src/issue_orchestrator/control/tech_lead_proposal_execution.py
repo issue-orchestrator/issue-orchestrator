@@ -15,6 +15,7 @@ from .actions import (
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
+from .tech_lead_charter_lifecycle import link_approved_proposal
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
 if TYPE_CHECKING:
@@ -91,6 +92,7 @@ def finalize_tech_lead_op_execution(
         if before_finalize_write is not None:
             before_finalize_write()
         repository_host.update_issue_state(proposal_issue, "closed")
+        link_approved_proposal(ops, proposal_issue, applied=result.success)
         ops.discard_op(issue_number=proposal_issue)
     except (ClaimLostError, ReconciliationRequired):
         raise

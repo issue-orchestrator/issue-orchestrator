@@ -1,0 +1,158 @@
+"""Charter bookkeeping for one planned tech-lead decision (#7330).
+
+The decision planner asks :class:`~.tech_lead_charter_policy.TechLeadCharterPolicy`
+for a verdict per proposed action and hands each one here. This module turns the
+verdicts into the persisted :class:`TechLeadCharterDecision` records and renders
+the operator text for actions the charter kept as advice, so the planner stays a
+translation from verdict to action and does not grow the record format.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, ProposedTechLeadAction
+from ..domain.tech_lead_charter import CharterReason, CharterVerdict
+from ..domain.tech_lead_charter_decisions import (
+    CharterDecisionSource,
+    TechLeadCharterDecision,
+    decision_key,
+    promotion_decision_key,
+)
+from ..domain.tech_lead_findings import PromotableFinding
+from .action_base import Action
+from .tech_lead_charter_policy import (
+    RecordTechLeadCharterDecisionsAction,
+    TechLeadCharterPolicy,
+)
+
+#: Advice produced by the per-action ``tech_lead.authority.*`` mode alone. It
+#: keeps the pre-charter would-have-done wording; every other advice reason is
+#: the charter's own and is explained with the charter's reason text.
+_LEGACY_SHADOW_REASONS = frozenset({CharterReason.ADVISORY_ACTION_AUTHORITY_PROPOSE})
+
+
+def is_charter_advice(verdict: CharterVerdict) -> bool:
+    """True when the CHARTER (not the per-action mode) kept this as advice."""
+    return verdict.advice_only and verdict.reason_code not in _LEGACY_SHADOW_REASONS
+
+
+@dataclass
+class CharterDecisionLog:
+    """Verdicts of one decision, in proposal order, keyed by action id."""
+
+    run_id: str
+    anchor_issue_number: int
+    decided_at: str
+    _verdicts: dict[str, tuple[ProposedTechLeadAction, CharterVerdict]] = field(
+        default_factory=dict
+    )
+    _reused_proposals: dict[str, int] = field(default_factory=dict)
+
+    def discard(self) -> None:
+        """Forget every verdict: the whole decision was rejected, nothing applies."""
+        self._verdicts.clear()
+        self._reused_proposals.clear()
+
+    def note(self, proposed: ProposedTechLeadAction, verdict: CharterVerdict) -> None:
+        self._verdicts[proposed.id] = (proposed, verdict)
+
+    def verdict_for(self, action_id: str) -> CharterVerdict:
+        return self._verdicts[action_id][1]
+
+    def note_reused_proposal(self, action_id: str, proposal_issue_number: int) -> None:
+        """A re-proposal commented onto an existing gated proposal issue."""
+        self._reused_proposals[action_id] = proposal_issue_number
+
+    def records(self) -> tuple[TechLeadCharterDecision, ...]:
+        return tuple(
+            TechLeadCharterDecision.from_verdict(
+                verdict,
+                decision_id=decision_key(self.run_id, proposed.id),
+                source=CharterDecisionSource.DECISION,
+                run_id=self.run_id,
+                action_id=proposed.id,
+                anchor_issue_number=self.anchor_issue_number,
+                target_number=proposed.target_number,
+                target_is_pr=proposed.target_is_pr,
+                decided_at=self.decided_at,
+                # Only act-level proposals are backed by the stored-op ledger
+                # whose approval and decline link back to this record.
+                tracks_proposal=proposed.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS,
+                proposal_issue_number=self._reused_proposals.get(proposed.id),
+            )
+            for proposed, verdict in self._verdicts.values()
+        )
+
+    def record_action(self) -> list[Action]:
+        records = self.records()
+        if not records:
+            return []
+        return [
+            RecordTechLeadCharterDecisionsAction(
+                decisions=records,
+                reason=(
+                    f"tech_lead charter: record {len(records)} decision(s) for"
+                    f" run {self.run_id}"
+                ),
+            )
+        ]
+
+
+def charter_advice_digest_lines(
+    items: list[tuple[str, str, int, str]],
+) -> list[str]:
+    """Digest lines for actions the charter kept as advice.
+
+    Each item is ``(action_id, action_type, target_number, reason)``.
+    """
+    lines = [
+        "",
+        "### Advice only (outside the tech-lead charter)",
+        "",
+        "These proposals fall outside what `tech_lead.charter` lets the tech lead"
+        " do, so the orchestrator recorded them for you instead of acting:",
+        "",
+    ]
+    for action_id, action_type, target, reason in items:
+        where = f"#{target}" if target else "n/a"
+        lines.append(f"- **{action_id}** `{action_type}` (target: {where}) — {reason}")
+    return lines
+
+
+def promotion_charter_record(
+    policy: TechLeadCharterPolicy,
+    promotable: "tuple[PromotableFinding, ...] | list[PromotableFinding]",
+    *,
+    decided_at: str,
+) -> list[Action]:
+    """The charter decision behind this tick's promotion candidates.
+
+    One record per signature (upserted, so an unchanged verdict is not
+    re-dated). A candidate the charter keeps as advice stays promotable, so its
+    record is what explains why no promotion issue appears.
+    """
+    if not promotable or not policy.promotion_lane_enabled:
+        return []
+    verdict = policy.promotion()
+    records = tuple(
+        TechLeadCharterDecision.from_verdict(
+            verdict,
+            decision_id=promotion_decision_key(finding.evidence.signature),
+            source=CharterDecisionSource.PROMOTION,
+            run_id="",
+            action_id=finding.evidence.signature,
+            anchor_issue_number=finding.evidence.case_file_issue_number,
+            target_number=finding.evidence.case_file_issue_number,
+            target_is_pr=False,
+            decided_at=decided_at,
+            tracks_proposal=False,
+        )
+        for finding in promotable
+    )
+    return [
+        RecordTechLeadCharterDecisionsAction(
+            decisions=records,
+            reason=f"tech_lead charter: record {len(records)} promotion decision(s)",
+        )
+    ]
