@@ -129,7 +129,6 @@ class InMemoryActionLivenessStore:
         from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
 
         self.releases.pop(issue_number, None)
-        self.pauses.pop(issue_number, None)
         gone = self._pop(lambda row: row.key.escalation_issue == issue_number)
         for row in gone:
             if row.parked:
@@ -175,6 +174,9 @@ class InMemoryActionLivenessStore:
 
     def pending_pauses(self) -> tuple[PendingPause, ...]:
         return tuple(self.pauses[number] for number in sorted(self.pauses))
+
+    def pending_pause(self, issue_number: int) -> PendingPause | None:
+        return self.pauses.get(issue_number)
 
     def set_pause_debt(self, issue_number: int, debt: EffectDebt) -> None:
         if issue_number in self.pauses:

@@ -125,9 +125,7 @@ class ActionLivenessStore(Protocol):
 
         An operator settled that issue's block, so any withdrawal still owed to
         it is forgotten in the same transaction: replayed later, it could take
-        off a block a person has since put back. So is an owed reconciliation
-        pause: the person reconciled the issue, and a pause landing afterwards
-        would undo their Retry.
+        off a block a person has since put back.
         """
         ...
 
@@ -166,6 +164,10 @@ class ActionLivenessStore(Protocol):
 
     def pending_pauses(self) -> tuple[PendingPause, ...]:
         """Every owed pause, with its pacing."""
+        ...
+
+    def pending_pause(self, issue_number: int) -> PendingPause | None:
+        """The pause owed to ``issue_number``, if any."""
         ...
 
     def set_pause_debt(self, issue_number: int, debt: EffectDebt) -> None:

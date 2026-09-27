@@ -75,24 +75,47 @@ class OperatorIssueCommandRunner:
 
     def retry(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear the retry-gating labels, then make the issue eligible again."""
-        observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
-        return self._settle(
-            issue_number,
-            OperatorCommandIntent.RETRY,
-            self.unblocker.retry(issue_number, observed, self.open_prs),
-            lambda settled: self._make_retryable(issue_number, observed, settled),
-        )
+        def settle() -> OperatorCommandOutcome:
+            observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
+            return self._settle(
+                issue_number,
+                OperatorCommandIntent.RETRY,
+                self.unblocker.retry(issue_number, observed, self.open_prs),
+                lambda settled: self._make_retryable(issue_number, observed, settled),
+            )
+
+        return self._withholding_owed_pause(issue_number, settle)
 
     def dismiss(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear everything holding the issue, then take it off the board."""
-        return self._settle(
+        return self._withholding_owed_pause(
             issue_number,
-            OperatorCommandIntent.DISMISS,
-            self.unblocker.dismiss(issue_number),
-            lambda settled: self._remove_from_board(issue_number),
+            lambda: self._settle(
+                issue_number,
+                OperatorCommandIntent.DISMISS,
+                self.unblocker.dismiss(issue_number),
+                lambda settled: self._remove_from_board(issue_number),
+            ),
         )
 
     # -- internals ---------------------------------------------------------
+
+    def _withholding_owed_pause(
+        self, issue_number: int, command: Callable[[], OperatorCommandOutcome]
+    ) -> OperatorCommandOutcome:
+        """Run a person's command on the issue with its owed reconciliation
+        pause (#7350) withheld first, so the pause cannot land behind their
+        label writes; handed back if the command did not commit."""
+        withheld = self.liveness.withhold_pause(issue_number)
+        try:
+            outcome = command()
+        except BaseException:
+            if withheld is not None:
+                self.liveness.restore_pause(withheld)
+            raise
+        if withheld is not None and not outcome.committed:
+            self.liveness.restore_pause(withheld)
+        return outcome
 
     def _settle(
         self,

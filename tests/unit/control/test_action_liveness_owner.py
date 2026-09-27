@@ -81,19 +81,26 @@ def test_a_block_github_refused_is_retried_until_it_lands() -> None:
     assert len(escalation.parked) == 1, "announced once, however often the block is retried"
 
 
-def test_a_block_github_never_accepts_stops_being_retried() -> None:
+def test_a_block_github_keeps_refusing_is_retried_at_a_bounded_pace() -> None:
+    """An owed write is never abandoned (dropping it is the failure it exists
+    to prevent), but costs at most one attempt per max_backoff (#7350)."""
     clock = ManualClock()
     escalation = RecordingEscalation(commits=False)
     owner = liveness_owner(escalation=escalation, clock=clock, policy=POLICY)
 
     owner.record(KEY, ActionOutcome.permanent("422"))
     for _ in range(20):
-        clock.advance(POLICY.max_backoff)
+        clock.advance(POLICY.max_backoff / 2)
         owner.admit(KEY)  # still planned
         owner.reconcile_effects()
 
-    assert len(escalation.blocks) == POLICY.max_attempts
+    assert len(escalation.blocks) == 1 + 10, "the first, then one per max_backoff"
     assert [row.key for row in owner.parked()] == [KEY], "still held and on the board"
+
+    escalation.commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+    assert escalation.committed_blocks
 
 
 def test_a_comment_github_refused_is_retried_without_relabelling() -> None:
@@ -230,6 +237,27 @@ def test_a_release_github_refused_is_retried_until_it_lands() -> None:
     owner.reconcile_effects()
 
     assert escalation.unblocks == [(229, False), (229, True)]
+    assert store.releases == {}
+
+
+def test_a_withdrawal_refused_many_times_still_lands_once_github_recovers() -> None:
+    """Five ordinary refusals (502s) do not end an owed withdrawal: the block
+    would stay on an issue nobody will take it off (#7350)."""
+    clock = ManualClock()
+    escalation = RecordingEscalation(unblock_commits=False)
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock, policy=POLICY)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+    owner.record(KEY, ActionOutcome.done())
+    for _ in range(2 * POLICY.max_attempts):
+        clock.advance(POLICY.max_backoff)
+        owner.reconcile_effects()
+
+    escalation.unblock_commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+
+    assert escalation.unblocks[-1] == (229, True)
     assert store.releases == {}
 
 

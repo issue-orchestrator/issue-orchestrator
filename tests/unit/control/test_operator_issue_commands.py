@@ -787,3 +787,97 @@ class TestPublishedWorkKeepsTheSchedulerGate:
         assert live[ISSUE] == {"agent:web"}
 
     _pr = staticmethod(TestRetryKeepsAnOpenPrsReviewGate._pr)
+
+
+class TestAnOwedPauseNeverLandsBehindAPerson:
+    """#7350: the reconciliation pause observed drift owes an issue is withheld
+    while a person's Retry or Dismiss runs, so it cannot land behind their
+    label writes -- and is owed again if their command did not commit."""
+
+    @staticmethod
+    def _owner(live):
+        from issue_orchestrator.control.reconciliation import get_pause_label
+        from issue_orchestrator.domain.owed_write import EffectResult
+        from tests.unit.control.liveness_doubles import (
+            InMemoryActionLivenessStore,
+            ManualClock,
+            RecordingEscalation,
+        )
+
+        class _Escalation(RecordingEscalation):
+            """GitHub refuses the pause until ``accepting``; then it lands on
+            the issue's live labels."""
+
+            accepting = False
+
+            def pause(self, issue_number, reason):
+                if not self.accepting:
+                    return EffectResult.refused("GitHub 502")
+                live.setdefault(issue_number, set()).add(get_pause_label())
+                return EffectResult.landed()
+
+        store, clock, escalation = InMemoryActionLivenessStore(), ManualClock(), _Escalation()
+        owner = liveness_owner(store=store, escalation=escalation, clock=clock)
+        return owner, store, clock, escalation
+
+    def test_a_retry_racing_a_due_pause_wins(self, sample_config, state):
+        """Reconciliation has read the ledger (the pause is due) when the
+        operator's Retry runs to completion; the resumed reconciliation must
+        not put the pause on the issue."""
+        from issue_orchestrator.control.reconciliation import get_pause_label
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked}}
+        import threading
+
+        owner, store, clock, escalation = self._owner(live)
+        owner.owe_pause(ISSUE, "drift")  # refused: owed
+        _labels, runner = _runner(sample_config, state, live, liveness=owner)
+        clock.advance(owner.policy.max_backoff)
+        escalation.accepting = True
+
+        read, resume = threading.Event(), threading.Event()
+        ledger = store.pending_pauses
+
+        def read_then_hold():
+            pauses = ledger()
+            if not read.is_set():
+                read.set()
+                resume.wait(timeout=10)
+            return pauses
+
+        store.pending_pauses = read_then_hold  # type: ignore[method-assign]
+        reconciling = threading.Thread(target=owner.reconcile_effects)
+        reconciling.start()
+        assert read.wait(timeout=10)
+        assert runner.retry(ISSUE).committed
+        resume.set()
+        reconciling.join(timeout=10)
+
+        assert get_pause_label() not in live[ISSUE]
+        assert store.pauses == {}
+
+    def test_a_retry_that_did_not_commit_owes_the_pause_again(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner, store, _clock, _escalation = self._owner(live)
+        owner.owe_pause(ISSUE, "drift")
+        owed = store.pauses[ISSUE]
+        _labels, runner = _runner(
+            sample_config, state, live, refuse=frozenset({labels.blocked}), liveness=owner
+        )
+
+        assert not runner.retry(ISSUE).committed
+
+        assert store.pauses == {ISSUE: owed}
+
+    def test_dismiss_withholds_the_pause_too(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner, store, _clock, _escalation = self._owner(live)
+        owner.owe_pause(ISSUE, "drift")
+        _labels, runner = _runner(sample_config, state, live, liveness=owner)
+
+        assert runner.dismiss(ISSUE).committed
+
+        assert store.pauses == {}

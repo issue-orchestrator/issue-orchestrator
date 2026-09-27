@@ -322,5 +322,6 @@ def test_an_owed_pause_keeps_its_pacing_when_owed_again(tmp_path) -> None:
     again = store.request_pause(410, "drift seen again")
 
     assert (again.reason, again.debt) == ("drift", debt)
-    store.clear_escalation_issue(410)
-    assert store.pending_pauses() == ()
+    assert store.pending_pause(410) == again
+    store.clear_pause(410)
+    assert store.pending_pauses() == () and store.pending_pause(410) is None

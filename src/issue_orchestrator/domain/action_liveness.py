@@ -314,19 +314,17 @@ class LivenessPolicy:
         if self.declared_wait_bound < timedelta(0):
             raise ValueError("declared_wait_bound cannot be negative")
 
-    def effect_due(self, debt: EffectDebt, now: datetime, *, capped: bool = True) -> bool:
+    def effect_due(self, debt: EffectDebt, now: datetime) -> bool:
         """May the owner try an owed write (a block, a comment, a withdrawal,
         a pause) again?
 
         Not before its ``retry_at`` -- a rate limit's reset, or ``max_backoff``
-        after a refusal. A ``capped`` debt stops after ``max_attempts`` spent
-        refusals: a person is still shown the park on the timeline and the
-        board. An uncapped one (a pause observed drift calls for) is retried at
-        that pace until it lands: dropping it is the failure it prevents.
+        after a refusal -- and then always: an owed write is never abandoned,
+        because dropping it is the failure it exists to prevent (a block left on
+        an issue nobody will take off, a drifted issue never paused). The pace
+        bounds its cost to one write per ``max_backoff``.
         """
-        if debt.retry_at is not None and now < debt.retry_at:
-            return False
-        return not (capped and debt.attempts >= self.max_attempts)
+        return debt.retry_at is None or now >= debt.retry_at
 
     def effect_after(
         self, debt: EffectDebt, result: EffectResult, now: datetime

@@ -240,19 +240,6 @@ def test_an_owed_pause_seen_on_its_issue_is_settled(tmp_path) -> None:
     assert SQLiteActionLivenessStore(tmp_path / "l.sqlite").pending_pauses() == ()
 
 
-def test_an_operator_settling_the_issue_forgets_its_owed_pause(tmp_path) -> None:
-    """A person reconciled and retried the issue: a pause landing afterwards
-    would undo their Retry."""
-    clock = ManualClock()
-    applier = _RateLimitedApplier(clock, clock() + LIMITED_FOR)
-    owner = _owner(tmp_path, applier, clock)
-    owner.owe_pause(SUBJECT, "drift")
-
-    owner.release_issue(SUBJECT)
-
-    assert SQLiteActionLivenessStore(tmp_path / "l.sqlite").pending_pauses() == ()
-
-
 def test_the_escalation_adapter_keeps_the_hosts_rate_limit() -> None:
     """The adapter hands the owner the typed limit behind a refused write,
     whether the applier returned it or raised it."""
