@@ -525,12 +525,17 @@ def test_an_executed_decision_links_what_its_applier_did(store) -> None:
 
     applied = CharterExecutionLink(executed.decision_id, CharterExecutionResult.APPLIED)
     ledger.link_execution_outcomes([applied], at="2026-09-26T10:05:00+00:00")
-    # A replayed plan re-records the same verdict: the link and date stand.
-    ledger.record_decisions([replace(executed, decided_at="2026-09-26T11:00:00+00:00")])
     [row] = [r for r in ledger.list_for_issue(40) if r.action_id == "A1"]
     assert row.took_effect and row.execution_reason is None
     assert row.effect_at == "2026-09-26T10:05:00+00:00"
+    # A replayed plan re-records the same verdict right before its effects run
+    # again: the decision keeps its date, but the earlier attempt's "applied"
+    # is not carried onto the new attempt, whose own link may never land.
+    ledger.record_decisions([replace(executed, decided_at="2026-09-26T11:00:00+00:00")])
+    [row] = [r for r in ledger.list_for_issue(40) if r.action_id == "A1"]
+    assert row.execution is None and not row.took_effect
     assert row.decided_at == "2026-09-26T10:00:00+00:00"
+    assert ledger.list_remedies_on_issue(40) == ()
 
     with pytest.raises(ValueError, match="not executed"):
         ledger.link_execution_outcomes(

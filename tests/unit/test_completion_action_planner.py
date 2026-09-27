@@ -2549,6 +2549,38 @@ def test_a_batch_that_raises_after_every_result_landed_still_links_them():
     assert row.execution is CharterExecutionResult.APPLIED and row.took_effect
 
 
+def test_a_replayed_decision_whose_new_link_fails_never_keeps_its_old_applied(tmp_path):
+    """#7362 review r3: an earlier attempt linked APPLIED; the replay's effect
+    is refused and its link write fails. The record must not still say the
+    remedy took effect."""
+    from unittest.mock import MagicMock, patch
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.tech_lead_charter_policy import RecordTechLeadCharterDecisionsAction
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import (
+        CharterExecutionLink, CharterExecutionResult)
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decision = _decision("A5", "post_comment", target=5)
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions([decision])
+    store.charter_ledger.link_execution_outcomes(
+        [CharterExecutionLink(decision.decision_id, CharterExecutionResult.APPLIED)], at="t1")
+    host = MagicMock()
+    host.add_comment.side_effect = RuntimeError("403")
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_ops = store
+    replay = [RecordTechLeadCharterDecisionsAction(decisions=(decision,)),
+              AddCommentAction(number=5, comment="again", charter_decisions=(decision.decision_id,))]
+
+    with patch.object(type(store.charter_ledger), "link_execution_outcomes",
+                      side_effect=RuntimeError("ledger locked")):
+        apply_completion_actions_gated(applier, replay, issue_number=1)
+
+    [row] = store.charter_ledger.list_recent()
+    assert not row.took_effect and row.execution is None
+    assert store.charter_ledger.list_remedies_on_issue(5) == ()
+
+
 def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):
     """A ledger write that fails is loud: nothing applies unaudited (#7330)."""
     from unittest.mock import MagicMock

@@ -97,7 +97,9 @@ class TechLeadCharterLedger(TechLeadCharterDecisionReader, Protocol):
 
         A completion can be planned again after a crash. The replay's verdict
         replaces the earlier one (it is what the replayed plan applies), but a
-        lifecycle already linked to the record is kept.
+        lifecycle already linked to the record is kept. An executed decision's
+        applier result is not: recording it starts the attempt whose result
+        is linked next (#7362).
         """
         ...
 
@@ -142,9 +144,10 @@ def keep_linked_lifecycle(
     """The upsert rule shared by every implementation (see ``record_decisions``).
 
     An unchanged decision keeps its original ``decided_at`` — a lane that
-    re-states the same verdict every tick must not keep re-dating it — and
-    neither a lifecycle the proposal lifecycle already linked nor an executed
-    decision's linked result is regressed.
+    re-states the same verdict every tick must not keep re-dating it — and a
+    lifecycle the proposal lifecycle already linked is never regressed. An
+    executed decision's linked result belongs to the attempt it came from, so a
+    re-record (the start of the next attempt) clears it.
     """
     if existing is None:
         return incoming
@@ -162,20 +165,10 @@ def keep_linked_lifecycle(
                 else incoming.lifecycle_updated_at
             ),
         )
-    if (
-        existing.execution is not None
-        and incoming.execution is None
-        and incoming.outcome is CharterOutcome.EXECUTED
-    ):
-        # A replayed plan re-records the decision before its effect runs
-        # again; the linked result stands until that attempt links its own
-        # (#7362). A verdict that no longer executes carries none.
-        incoming = replace(
-            incoming,
-            execution=existing.execution,
-            execution_reason=existing.execution_reason,
-            execution_at=existing.execution_at,
-        )
+    # An executed decision is (re-)recorded right before its effects run, so a
+    # record starts a new attempt: an earlier attempt's result is not carried
+    # onto it. Until this attempt links its own, the record says "no result",
+    # never an old "applied" that this attempt may not repeat (#7362).
     if (
         existing.lifecycle in (None, CharterProposalLifecycle.AWAITING_APPROVAL)
         # A verdict that is no longer gated has no approval to keep (#7362).
