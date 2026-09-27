@@ -74,6 +74,18 @@ def _config() -> Config:
     return config
 
 
+def _ended_blocked(number: int, at: datetime) -> SessionHistoryEntry:
+    """This engine saw the item's last session end blocked at *at*."""
+    return SessionHistoryEntry(
+        issue_number=number,
+        title="t",
+        agent_type="agent:web",
+        status="failed",
+        runtime_minutes=3,
+        completed_at=at,
+    )
+
+
 def _blocked(number: int, *labels: str, updated_at: str = "2026-09-27T09:00:00Z") -> Issue:
     return Issue(
         number=number,
@@ -316,7 +328,8 @@ def test_only_decisions_about_the_item_explain_it() -> None:
         [_decision("recover_validated_work", target=51, anchor=50)]
     )
     state = OrchestratorState(
-        cached_scope_issues=[_blocked(50, "blocked-failed"), _blocked(51, "blocked-failed")]
+        cached_scope_issues=[_blocked(50, "blocked-failed"), _blocked(51, "blocked-failed")],
+        session_history=[_ended_blocked(50, NOW - 3 * HOUR), _ended_blocked(51, NOW - 3 * HOUR)],
     )
 
     board = _reader(state, authority=authority).read([50, 51])
@@ -339,7 +352,10 @@ def test_a_busy_anchored_run_cannot_crowd_out_the_item_s_own_remedy() -> None:
         for i in range(DECISIONS_PER_ITEM + 5)
     ]
     authority.charter_ledger.record_decisions([remedy, *others])
-    state = OrchestratorState(cached_scope_issues=[_blocked(53, "blocked-failed")])
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(53, "blocked-failed")],
+        session_history=[_ended_blocked(53, NOW - 3 * HOUR)],
+    )
 
     custody = _reader(state, authority=authority).read([53]).for_issue(53)
 
@@ -347,14 +363,20 @@ def test_a_busy_anchored_run_cannot_crowd_out_the_item_s_own_remedy() -> None:
     assert custody.charter is not None and custody.charter.decision_id == remedy.decision_id
 
 
-def test_an_untargeted_decision_of_a_run_anchored_on_the_item_explains_it() -> None:
+def test_a_follow_up_filed_by_a_run_anchored_on_the_item_is_not_its_remedy() -> None:
+    """The ledger returns it as ABOUT the item; the policy knows it is no remedy."""
     authority = InMemoryTechLeadAuthorityStore()
-    authority.charter_ledger.record_decisions([_decision("create_issue", target=None, anchor=52)])
-    state = OrchestratorState(cached_scope_issues=[_blocked(52, "blocked-failed")])
+    follow_up = _decision("create_issue", target=None, anchor=52)
+    authority.charter_ledger.record_decisions([follow_up])
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(52, "blocked-failed")],
+        session_history=[_ended_blocked(52, NOW - 3 * HOUR)],
+    )
 
+    assert authority.charter_ledger.list_about_issue(52) == (follow_up,)
     assert (
         _reader(state, authority=authority).read([52]).for_issue(52).state
-        is CustodyState.VERIFY
+        is CustodyState.UNOWNED
     )
 
 
@@ -483,7 +505,7 @@ def test_the_stuck_sweep_budget_decides_queued_versus_held() -> None:
     state = OrchestratorState(
         cached_scope_issues=[
             _blocked(100, "blocked-failed"),
-            _blocked(101, "blocked-failed"),
+            _blocked(101, "blocked-failed", "needs-human"),
             _blocked(102, "blocked-failed"),
         ],
         recovery_attempts={100: 1, 101: 3},
@@ -494,8 +516,8 @@ def test_the_stuck_sweep_budget_decides_queued_versus_held() -> None:
     board = _reader(state).read([100, 101, 102])
 
     assert board.for_issue(100).state is CustodyState.QUEUED_FOR_TECH_LEAD
-    assert board.for_issue(101).state is CustodyState.HELD
-    assert board.for_issue(102).state is CustodyState.HELD
+    assert board.for_issue(101).state is CustodyState.HELD  # escalation landed
+    assert board.for_issue(102).state is CustodyState.QUEUED_FOR_TECH_LEAD  # still retrying it
 
 
 def test_unowned_says_when_the_next_sweep_is_due() -> None:
@@ -508,6 +530,24 @@ def test_unowned_says_when_the_next_sweep_is_due() -> None:
 
     assert custody.state is CustodyState.UNOWNED
     assert "next stuck sweep is due at 2026-09-27T15:00" in custody.reason  # 240 min cadence
+
+
+def test_unowned_names_the_sweep_s_own_retry_deadline_after_a_failed_sweep() -> None:
+    """One deadline rule: the board says exactly when stuck_sweep_due turns true."""
+    from issue_orchestrator.control.stuck_sweep import stuck_sweep_due
+
+    config = _config()
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(104, "blocked-failed")],
+        last_stuck_sweep_at=(NOW - 4 * HOUR - 5 * timedelta(minutes=1)).timestamp(),
+        last_stuck_sweep_failure_at=(NOW - 5 * timedelta(minutes=1)).timestamp(),
+    )
+
+    custody = _reader(state, config=config).read([104]).for_issue(104)
+
+    assert "next stuck sweep is due at 2026-09-27T12:10" in custody.reason
+    assert not stuck_sweep_due(config, state, NOW.timestamp())
+    assert stuck_sweep_due(config, state, (NOW + 10 * timedelta(minutes=1)).timestamp())
 
 
 def test_an_action_the_liveness_owner_parked_holds_its_item() -> None:

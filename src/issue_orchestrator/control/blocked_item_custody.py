@@ -372,7 +372,11 @@ def _held(
             f" ({parked.outcome}): {parked.reason}",
             CustodyClock(since=parked.parked_since, basis="action parked"),
         )
+    if not labels.needs_human:
+        return None
     swept = item.sweep_attempts
+    # Only a LANDED escalation is a hold: until needs-human is observed, the
+    # sweep is still retrying the label (see _queued_for_tech_lead).
     if item.sweep_escalation_pending or (
         swept is not None and swept >= board.sweep.max_attempts
     ):
@@ -382,8 +386,6 @@ def _held(
             " attempt(s) without unblocking it and escalated it for a person.",
             _clock(board.sweep.last_swept_at, "last stuck sweep"),
         )
-    if not labels.needs_human:
-        return None
     if NeedsHumanCause.SESSION_LIFECYCLE in item.needs_human_causes:
         return _Claim(
             CustodyState.HELD,
@@ -496,6 +498,15 @@ def _queued_for_tech_lead(
             item.tech_lead_queue.since,
             board,
         )
+    if item.sweep_escalation_pending:
+        # Exhausted, and the needs-human escalation has not landed yet (the
+        # hold above claims it once it has): the sweep re-asserts it each run.
+        return _Claim(
+            CustodyState.QUEUED_FOR_TECH_LEAD,
+            "The stuck sweep exhausted its recovery attempts; its escalation to"
+            " a person has not landed yet and is retried on every sweep.",
+            _clock(board.sweep.last_swept_at, "last stuck sweep"),
+        )
     attempts = item.sweep_attempts
     # A recorded budget is only a queue while a sweep will run again: with the
     # sweep off, nothing re-checks the item, and saying so would be a promise.
@@ -543,6 +554,9 @@ def _latest_remedy(
             record
             for record in item.decisions
             if record.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
+            # Aimed AT this item: a follow-up filed for it (an untargeted
+            # create_issue) is not a remedy of its block.
+            and record.target_number == item.issue_number
         ),
         None,
     )
@@ -567,9 +581,11 @@ def _latest_remedy(
             (decision.lifecycle_updated_at if decision.lifecycle else None)
             or decision.decided_at
         )
-        if applied is not None and item.blocked_at is not None and applied < item.blocked_at:
-            # The remedy ran before this block began: it was for an earlier
-            # incident, and says nothing about who owns this one.
+        if applied is None or item.blocked_at is None or applied < item.blocked_at:
+            # Only a remedy provably applied to THIS block is verifiable. One
+            # that ran before the block began was for an earlier incident, and
+            # without a block time nothing ties it to this one: the item falls
+            # through to Unowned, whose reason names the remedy it saw.
             return None
         return _Claim(
             CustodyState.VERIFY,
@@ -590,15 +606,38 @@ def _nobody_reason(
         what = f"Its last session ended {item.history_status.replace('_', ' ')}"
     else:
         what = "Blocked"
-    return f"{what}; nothing has picked it up. {_sweep_hint(board)}"
+    return f"{what}; nothing has picked it up. {_untied_remedy(item)}{_sweep_hint(board)}"
+
+
+def _untied_remedy(item: ItemCustodyFacts) -> str:
+    """Name a remedy the tech lead applied that nothing ties to this block."""
+    decision = next(
+        (
+            record
+            for record in item.decisions
+            if record.target_number == item.issue_number
+            and (
+                record.outcome is CharterOutcome.EXECUTED
+                or record.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
+            )
+            and record.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
+        ),
+        None,
+    )
+    if decision is None:
+        return ""
+    return (
+        f"The tech lead last applied {decision.action_kind.replace('_', ' ')} at"
+        f" {decision.decided_at}, but nothing ties that remedy to this block. "
+    )
 
 
 def _sweep_hint(board: BoardCustodyFacts) -> str:
     sweep = board.sweep
     if not sweep.enabled:
         return "The stuck sweep is off, so nothing will pick it up on its own."
-    if sweep.next_due_at is None:
-        return "The stuck sweep has not run yet."
+    if sweep.next_due_at is None or sweep.next_due_at <= board.now:
+        return "The stuck sweep is due now and re-examines blocked items on its next tick."
     return (
         "The next stuck sweep is due at"
         f" {sweep.next_due_at.isoformat(timespec='minutes')}."

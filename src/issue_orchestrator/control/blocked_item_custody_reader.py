@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
@@ -48,6 +48,7 @@ from .blocked_item_custody import (
     TrackedFix,
     derive_item_custody,
 )
+from .stuck_sweep import stuck_sweep_next_due_at
 from .tech_lead_session_policy import is_tech_lead_session
 
 if TYPE_CHECKING:
@@ -247,19 +248,13 @@ class StateBlockedItemCustodyReader:
         )
 
     def _sweep_schedule(self, state: "OrchestratorState") -> StuckSweepSchedule:
-        sweep = self._config.tech_lead.stuck_sweep
-        enabled = bool(
-            sweep.enabled
-            and self._config.tech_lead_enabled
-            and self._config.tech_lead_review_on_failure
-        )
-        last = _epoch(state.last_stuck_sweep_at)
-        interval = timedelta(minutes=sweep.interval_minutes)
+        """The sweep's budget and its next run, from the sweep's own deadline rule."""
+        due = stuck_sweep_next_due_at(self._config, state)
         return StuckSweepSchedule(
-            enabled=enabled,
-            max_attempts=sweep.max_recovery_attempts,
-            last_swept_at=last,
-            next_due_at=(last + interval) if (enabled and last is not None) else None,
+            enabled=due is not None,
+            max_attempts=self._config.tech_lead.stuck_sweep.max_recovery_attempts,
+            last_swept_at=_epoch(state.last_stuck_sweep_at),
+            next_due_at=_epoch(due),
         )
 
     def _shared_facts(
