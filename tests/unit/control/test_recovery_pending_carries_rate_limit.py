@@ -409,7 +409,7 @@ def test_a_successful_result_cannot_carry_a_rate_limit() -> None:
     )
 
     limit = HostRateLimit(datetime(2026, 9, 27, 15, 5, tzinfo=timezone.utc), "primary")
-    with pytest.raises(ValueError, match="only a failed branch stage"):
+    with pytest.raises(ValueError, match="only a retryable failed branch stage"):
         BranchWriteOutcome(
             BranchWriteStatus.PUSHED, "a" * 40, ExactPushOutcome.PUSHED, None, "pushed",
             rate_limit=limit,

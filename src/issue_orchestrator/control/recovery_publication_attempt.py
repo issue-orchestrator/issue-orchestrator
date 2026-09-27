@@ -62,10 +62,11 @@ class RecoveryPublicationAttempt:
             return RecoveryAttemptPending(outcome.message, rate_limit=outcome.rate_limit)
         recorded = perform(lambda: self._store.record_attempt_outcome(
             claim, attempt, outcome=outcome.status, failure=outcome.failure,
-            finished_at=self._clock().isoformat(),
+            finished_at=self._clock().isoformat(), rate_limit=outcome.rate_limit,
         ))
         if not recorded:
-            return RecoveryAttemptPending("Publication outcome awaits durable reconciliation")
+            return RecoveryAttemptPending("Publication outcome awaits durable reconciliation",
+                                          rate_limit=outcome.rate_limit)
         if not publication_can_finalize(outcome):
             return RecoveryAttemptPending(outcome.message, outcome.failure, rate_limit=outcome.rate_limit)
         return self._confirm(token, claim, prepared, plan.command)

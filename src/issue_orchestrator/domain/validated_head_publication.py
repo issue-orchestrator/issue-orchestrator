@@ -113,7 +113,9 @@ class BranchWriteOutcome:
         if type(self.status) is not BranchWriteStatus:
             raise ValueError("branch status must be typed")
         require_limit_only_on_failure(
-            self.rate_limit, failed=not self.at_target, result="branch stage"
+            self.rate_limit,
+            failed=self.status is BranchWriteStatus.TRANSIENT_FAILURE,
+            result="branch stage",
         )
         if (
             self.push_outcome is not None
@@ -201,7 +203,7 @@ class PrEnsureOutcome:
             raise ValueError("PR attribution must be typed")
         require_limit_only_on_failure(
             self.rate_limit,
-            failed=self.status in {PrEnsureStatus.REFUSED, PrEnsureStatus.TRANSIENT_FAILURE},
+            failed=self.status is PrEnsureStatus.TRANSIENT_FAILURE,
             result="PR stage",
         )
         self._validate_observed_metadata()
@@ -274,7 +276,9 @@ class PublishValidatedHeadOutcome:
         if type(self.pr_attribution) is not PullRequestAttribution:
             raise ValueError("PR attribution must be typed")
         require_limit_only_on_failure(
-            self.rate_limit, failed=self.failure is not None, result="publication"
+            self.rate_limit,
+            failed=self.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE,
+            result="publication",
         )
         if self.pr_number is None and self.pr_attribution is not PullRequestAttribution.NONE:
             raise ValueError("PR attribution requires observed PR metadata")

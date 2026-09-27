@@ -218,7 +218,7 @@ class FinalizationRig:
         assert self.store.record_attempt_outcome(
             self.claim,
             attempt,
-            outcome=PublishValidatedHeadStatus.PUBLISHED,
+            rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
             failure=None,
             finished_at=LATER,
         )

@@ -34,6 +34,18 @@ def migrate_evidence_base_gate(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_attempt_rate_limit(conn: sqlite3.Connection) -> None:
+    """Add the rate-limited attempt bit; existing attempts spent their budget."""
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(validated_work_publish_attempts)")
+    }
+    if "rate_limited" not in columns:
+        conn.execute(
+            "ALTER TABLE validated_work_publish_attempts "
+            "ADD COLUMN rate_limited INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def migrate_remote_baseline_authority(conn: sqlite3.Connection) -> None:
     """Remove authority that predates the observed/unobserved provenance bit.
 

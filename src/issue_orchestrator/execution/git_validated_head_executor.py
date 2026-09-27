@@ -123,14 +123,7 @@ class GitValidatedHeadExecutor:
                 rate_limit=host_rate_limit_of(exc),
             )
         except ValueError as exc:
-            return BranchWriteOutcome(
-                BranchWriteStatus.REJECTED,
-                observed,
-                None,
-                ValidatedWorkFailure.WORKSPACE_INTEGRITY,
-                str(exc),
-                rate_limit=host_rate_limit_of(exc),
-            )
+            return self._rejected_push(observed, str(exc), rate_limit=host_rate_limit_of(exc))
         if result.outcome is ExactPushOutcome.PUSHED:
             return BranchWriteOutcome(
                 BranchWriteStatus.PUSHED,
@@ -156,9 +149,36 @@ class GitValidatedHeadExecutor:
         )
 
     @staticmethod
+    def _rejected_push(
+        observed: str | None, message: str, *, rate_limit: HostRateLimit | None
+    ) -> BranchWriteOutcome:
+        """A refused push is definite, unless the host only refused to answer yet."""
+        return BranchWriteOutcome(
+            BranchWriteStatus.REJECTED
+            if rate_limit is None
+            else BranchWriteStatus.TRANSIENT_FAILURE,
+            observed,
+            None,
+            ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+            message,
+            rate_limit=rate_limit,
+        )
+
+    @staticmethod
     def _destination_failure(
         exc: Exception, *, rate_limit: HostRateLimit | None
     ) -> BranchWriteOutcome:
+        if rate_limit is not None:
+            # The host refused to answer until its reset: nothing about the
+            # destination is known yet, so this is a wait, not a rejection.
+            return BranchWriteOutcome(
+                BranchWriteStatus.TRANSIENT_FAILURE,
+                None,
+                None,
+                ValidatedWorkFailure.REMOTE_UNREADABLE,
+                str(exc),
+                rate_limit=rate_limit,
+            )
         auth_failure = isinstance(exc, ExactPushAuthenticationError)
         return BranchWriteOutcome(
             BranchWriteStatus.TRANSIENT_FAILURE
@@ -170,7 +190,6 @@ class GitValidatedHeadExecutor:
             if auth_failure
             else ValidatedWorkFailure.WORKSPACE_INTEGRITY,
             str(exc),
-            rate_limit=rate_limit,
         )
 
     def _branch_refusal(
@@ -425,8 +444,11 @@ class GitValidatedHeadExecutor:
         attribution: PullRequestAttribution = PullRequestAttribution.NONE,
         rate_limit: HostRateLimit | None = None,
     ) -> PrEnsureOutcome:
+        # A rate limit is always a wait for the host's reset, never a refusal.
         return PrEnsureOutcome(
-            PrEnsureStatus.TRANSIENT_FAILURE if transient else PrEnsureStatus.REFUSED,
+            PrEnsureStatus.TRANSIENT_FAILURE
+            if transient or rate_limit is not None
+            else PrEnsureStatus.REFUSED,
             observed.number if observed else None,
             observed.url if observed else None,
             observed.head_sha if observed else None,

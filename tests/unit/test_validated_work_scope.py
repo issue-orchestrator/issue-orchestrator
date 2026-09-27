@@ -287,7 +287,7 @@ def _strand_publishing(rig, disposition):
         target_head_sha=disposition.key.validated_head_sha, expected_remote_head="",
         phase=DispositionPhase.PRE_SUBMISSION, started_at="2026-09-26T04:26:28+00:00")
     assert attempt is not None
-    assert rig.store.record_attempt_outcome(claim, attempt, outcome=PublishValidatedHeadStatus.TRANSIENT_FAILURE,
+    assert rig.store.record_attempt_outcome(claim, attempt, rate_limit=None, outcome=PublishValidatedHeadStatus.TRANSIENT_FAILURE,
         failure=ValidatedWorkFailure.REMOTE_UNREADABLE, finished_at="2026-09-26T04:30:23+00:00")
     assert rig.store.relinquish_claim(claim)
     assert rig.store.get(disposition.record_id).state is ValidatedWorkState.PUBLISHING

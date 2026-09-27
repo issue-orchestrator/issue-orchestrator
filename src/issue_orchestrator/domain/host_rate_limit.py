@@ -58,7 +58,7 @@ class HostRateLimit:
 def require_limit_only_on_failure(
     limit: HostRateLimit | None, *, failed: bool, result: str
 ) -> None:
-    """A rate limit explains why a result did not succeed; a success has none.
+    """A rate limit explains why a result must be retried later; nothing else has one.
 
     Every typed result that can be built from a caught host error carries the
     limit behind it, so the action liveness owner waits for the reset instead
@@ -69,7 +69,7 @@ def require_limit_only_on_failure(
     if type(limit) is not HostRateLimit:
         raise ValueError(f"{result} rate limit must be a HostRateLimit")
     if not failed:
-        raise ValueError(f"only a failed {result} may carry a host rate limit")
+        raise ValueError(f"only a retryable failed {result} may carry a host rate limit")
 
 
 class HostRateLimitReported(Exception):

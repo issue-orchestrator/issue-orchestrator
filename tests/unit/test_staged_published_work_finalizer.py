@@ -215,6 +215,24 @@ def test_a_rate_limit_is_a_transient_wait_never_a_durable_failure(tmp_path, mode
     assert rig.store.get(rig.claim.record_id).state is State.PUBLISHING
 
 
+def test_a_rate_limited_failure_read_back_carries_its_reset(tmp_path):
+    """An ordinary routing failure, a lost failure write, then a limited
+    read-back: the latest word from the host sets the wait (#7350)."""
+    rig = FinalizationRig(tmp_path / "work.sqlite")
+    rig.remote.write_success = False
+    limited = rate_limited()
+
+    def lose_failure_write():
+        rig.points.at, rig.points.error = "before:admit", limited
+        raise RuntimeError("store unavailable")
+
+    rig.points.callbacks["before:fail"] = lose_failure_write
+    result = rig.invoke()
+    assert result.status is Status.TRANSIENT
+    assert result.rate_limit == limited.rate_limit
+    assert rig.store.get(rig.claim.record_id).state is State.PUBLISHING
+
+
 @pytest.mark.parametrize("mode", ["refused", "exception"])
 def test_failure_persistence_failure_does_not_claim_failed(tmp_path, mode):
     rig = FinalizationRig(tmp_path / "work.sqlite")

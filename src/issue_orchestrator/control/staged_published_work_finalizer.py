@@ -314,14 +314,17 @@ class StagedPublishedWorkFinalizer:
         *,
         rate_limit: HostRateLimit | None,
     ) -> FinalizationOutcome:
+        read_limit: HostRateLimit | None = None
         try:
             checkpoint = self._read_checkpoint(request)
         except (
             ValidatedWorkClaimLost,
             ValidatedWorkAuthorityUnavailable,
             _RetryFinalization,
-        ):
+        ) as read_error:
             checkpoint = None
+            # The read-back is the latest word from the host: its reset wins.
+            read_limit = host_rate_limit_of(read_error)
         if checkpoint is not None:
             progress.phase = checkpoint.phase
             if checkpoint.failure is not None:
@@ -332,5 +335,5 @@ class StagedPublishedWorkFinalizer:
             request,
             Status.TRANSIENT,
             f"failure write unavailable: {error}",
-            rate_limit=rate_limit,
+            rate_limit=read_limit if read_limit is not None else rate_limit,
         )
