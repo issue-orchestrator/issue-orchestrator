@@ -273,16 +273,17 @@ class InMemoryTechLeadCharterLedger:
         self, links: Sequence[CharterExecutionLink], *, at: str
     ) -> int:
         with self._lock:
-            # Every link is checked before any is written: one transaction.
-            linked = [
-                row
-                for link in links
-                if (row := linked_execution(self._rows.get(link.decision_id), link, at=at))
-                is not None
-            ]
-            for row in linked:
-                self._rows[row.decision_id] = row
-        return len(linked)
+            # Applied in order onto a staged copy, committed only once every
+            # link validated: one transaction, like the SQLite ledger.
+            staged = dict(self._rows)
+            updated = 0
+            for link in links:
+                row = linked_execution(staged.get(link.decision_id), link, at=at)
+                if row is not None:
+                    staged[link.decision_id] = row
+                    updated += 1
+            self._rows = staged
+        return updated
 
     def list_for_issue(
         self, issue_number: int, *, limit: int = 100

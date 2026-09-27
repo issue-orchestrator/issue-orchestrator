@@ -551,6 +551,25 @@ def test_an_executed_decision_links_what_its_applier_did(store) -> None:
     assert row.execution is None and not row.took_effect
 
 
+def test_links_in_one_call_apply_in_order_on_both_ledgers(store) -> None:
+    """#7362 review r6: the ledgers agree - a park linked after an applied
+    result in the same call keeps the applied result."""
+    ledger = _ledger(store)
+    executed = replace(_decision("A1", "recover_validated_work", target=40),
+                       outcome=CharterOutcome.EXECUTED, lifecycle=None, lifecycle_updated_at=None)
+    ledger.record_decisions([executed])
+
+    assert ledger.link_execution_outcomes(
+        [CharterExecutionLink(executed.decision_id, CharterExecutionResult.APPLIED),
+         CharterExecutionLink(executed.decision_id, CharterExecutionResult.PARKED, "stopped")],
+        at="2026-09-26T10:05:00+00:00",
+    ) == 2
+
+    [row] = ledger.list_recent()
+    assert row.execution is CharterExecutionResult.APPLIED and row.took_effect
+    assert [r.decision_id for r in ledger.list_remedies_on_issue(40)] == [executed.decision_id]
+
+
 def test_an_approval_never_vouches_for_a_replay_that_executed_directly(store) -> None:
     """#7362 review r2: a decision approved and applied, replayed under a
     charter that now executes it directly, then refused at apply time, did not
