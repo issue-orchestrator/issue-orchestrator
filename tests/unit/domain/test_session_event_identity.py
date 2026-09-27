@@ -13,7 +13,8 @@ from issue_orchestrator.domain.session_event_identity import (
     SessionEventIdentity,
     timeline_actor_for_session,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     new_scratch_token,
     scratch_branch_name,
@@ -45,7 +46,7 @@ def _session(
 ) -> Session:
     worktree = tmp_path / worktree_name
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=SessionKind.CODE),
         issue=Issue(number=issue_number, title="Subject", labels=["agent:test"]),
         agent_config=AgentConfig(prompt_path=prompt_path, model="sonnet"),
         terminal_id=f"issue-{issue_number}",

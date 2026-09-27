@@ -25,7 +25,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, cast
 
-from .session_key import TaskKind
+from .session_kind import SessionKind
 from .session_run import SessionRunIdentity, canonical_run_dir_name
 from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
 from .scoped_rework import ReworkRequest, ReworkTarget
@@ -438,7 +438,7 @@ class TechLeadSessionGeneration:
     """
 
     issue_number: int
-    task_kind: TaskKind
+    task_kind: SessionKind
     terminal_id: str
     run_id: str
 
@@ -451,13 +451,13 @@ class TechLeadSessionGeneration:
         ):
             raise ValueError("session generation issue_number must be a positive int")
         task_kind = cast(object, self.task_kind)
-        if not isinstance(task_kind, TaskKind) or task_kind not in {
-            TaskKind.CODE,
-            TaskKind.REWORK,
-        }:
+        if (
+            not isinstance(task_kind, SessionKind)
+            or not task_kind.capabilities.killable_generation
+        ):
             raise ValueError(
-                "session generation task_kind must be code or rework, got "
-                f"{task_kind!r}"
+                "session generation task_kind must be a killable generation "
+                f"(code or rework), got {task_kind!r}"
             )
         terminal_id = cast(object, self.terminal_id)
         if not isinstance(terminal_id, str) or not terminal_id.strip():
@@ -488,7 +488,7 @@ class TechLeadSessionGeneration:
         raw_issue = data.get("issue_number")
         raw_task = data.get("task_kind")
         try:
-            task_kind = TaskKind(raw_task)
+            task_kind = SessionKind(raw_task)
         except (TypeError, ValueError):
             raise ValueError(
                 f"unknown session generation task_kind: {raw_task!r}"
@@ -593,6 +593,17 @@ class TechLeadLaunchAuthority:
                 "TechLeadLaunchAuthority observed_session_generations must be "
                 "sorted and unique"
             )
+
+    def launch_scope(self) -> TechLeadLaunchScope:
+        """The grant this run was launched under, from its create-once record.
+
+        Recorded, never re-inferred: a restored or retried run keeps the
+        flavor and owned cohort it was launched with even if its anchor's
+        marker label or title has changed since (#7347 review r9).
+        """
+        return TechLeadLaunchScope(
+            flavor=self.flavor, problem_issue_numbers=self.problem_issue_numbers
+        )
 
     def allowed_targets(self) -> frozenset[int]:
         """Issue/PR numbers a decision from this session may target.

@@ -22,7 +22,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
 )
 from issue_orchestrator.entrypoints.bootstrap_tech_lead import (
     _make_session_activity_reader,
@@ -59,7 +59,7 @@ def _commit(sha: str = "abc123") -> CommitInfo:
 def _make_session(base: Path) -> Session:
     run_assets = make_session_run_assets(base)
     return Session(
-        key=SessionKey(issue=FakeIssueKey("101"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("101"), kind=SessionKind.CODE),
         issue=Issue(number=101, title="Test issue", labels=["agent:test"]),
         agent_config=AgentConfig(prompt_path=base / "prompt.md", model="sonnet"),
         terminal_id="issue-101",

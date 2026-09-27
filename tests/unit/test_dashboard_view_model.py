@@ -24,7 +24,8 @@ from issue_orchestrator.domain.models import (
     Session,
     SessionHistoryEntry,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.blocked_item_custody import (
     NO_ENGINE_CUSTODY,
@@ -99,7 +100,7 @@ def test_view_model_active_session_and_dashboard_data():
     config.agents = {"agent:web": agent_config}
 
     issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
-    session_key = SessionKey(issue=FakeIssueKey("12"), task=TaskKind.REVIEW)
+    session_key = SessionKey(issue=FakeIssueKey("12"), kind=SessionKind.REVIEW)
     session = Session(
         key=session_key,
         issue=issue,
@@ -227,7 +228,7 @@ def test_running_flow_card_uses_latest_timeline_snapshot():
 
     issue = Issue(number=409, title="Running flow item", labels=["agent:web", "in-progress"])
     session = Session(
-        key=SessionKey(issue=FakeIssueKey("409"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("409"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=agent_config,
         terminal_id="issue-409",
@@ -302,7 +303,7 @@ def test_active_item_prefers_canonical_issue_title_over_rework_title():
     config.agents = {"agent:web": agent_config}
 
     issue = Issue(number=4057, title="Rework #4124", labels=["agent:web", "in-progress"])
-    session_key = SessionKey(issue=FakeIssueKey("4057"), task=TaskKind.REWORK)
+    session_key = SessionKey(issue=FakeIssueKey("4057"), kind=SessionKind.REWORK)
     session = Session(
         key=session_key,
         issue=issue,
@@ -1127,7 +1128,7 @@ def test_pending_validation_retry_card_retains_stack_gate_payload():
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -1361,7 +1362,7 @@ def test_pending_validation_retry_routes_to_blocked_lane_and_suppresses_queue_du
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -1416,7 +1417,7 @@ def test_pending_validation_retry_takes_precedence_over_validation_failed_histor
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -2154,7 +2155,7 @@ def test_completed_excludes_issues_visible_in_running_lane():
     config.agents = {"agent:web": agent_config}
     issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
     active_session = Session(
-        key=SessionKey(issue=FakeIssueKey("12"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("12"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=agent_config,
         terminal_id="issue-12",

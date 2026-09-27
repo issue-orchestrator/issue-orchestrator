@@ -34,7 +34,8 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
@@ -379,14 +380,17 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     orchestrator.state.active_sessions = [
         SimpleNamespace(
             terminal_id="issue-77",
+            key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
             terminal_id="rework-77",
+            key=SimpleNamespace(kind=SessionKind.REWORK),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
             terminal_id="issue-88",
+            key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=88),
         ),
     ]
@@ -450,6 +454,7 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     tech_lead = SimpleNamespace(
         run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        key=SimpleNamespace(kind=SessionKind.TECH_LEAD),
         scratch_worktree=True, worktree_path=scratch,
         tech_lead_scope=TechLeadLaunchScope(
             flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
@@ -457,6 +462,7 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     )
     other = SimpleNamespace(
         terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None,
+        key=SimpleNamespace(kind=SessionKind.CODE),
         scratch_worktree=False, worktree_path=None, tech_lead_scope=None,
     )
     orchestrator.state.active_sessions[:] = [tech_lead, other]
@@ -500,6 +506,7 @@ def _terminate_fixture(sample_config, tmp_path):
     tech_lead = SimpleNamespace(
         run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        key=SimpleNamespace(kind=SessionKind.TECH_LEAD),
         scratch_worktree=True, worktree_path=scratch,
     )
     orchestrator.state.active_sessions[:] = [tech_lead]
@@ -587,7 +594,7 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
         # one; without it the stop failed and termination kept the record.
         run_assets=make_session_run_assets(scratch, session_name="tech-lead-77"),
         terminal_id="tech-lead-77",
-        key=SimpleNamespace(stable_id=lambda: "tech_lead:77"),
+        key=SimpleNamespace(stable_id=lambda: "tech_lead:77", kind=SessionKind.TECH_LEAD),
         issue=SimpleNamespace(number=77),
         lease_id="lease-1",
         scratch_worktree=True,
@@ -725,7 +732,7 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
     )
 
 
-def create_session(issue, worktree_path=None, branch_name="feature/test", task=TaskKind.CODE):
+def create_session(issue, worktree_path=None, branch_name="feature/test", task=SessionKind.CODE):
     """Helper to create Session objects for testing."""
     if worktree_path is None:
         worktree_path = tempfile.mkdtemp(prefix="io-worktree-")
@@ -735,7 +742,7 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
         timeout_minutes=45,
     )
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     from tests.unit.session_run_helpers import make_session_run_assets
 
     return Session(
@@ -1299,7 +1306,7 @@ class TestLaunchSession:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         from tests.unit.session_run_helpers import make_session_run_assets
 
-        existing = create_session(create_issue(100), sample_config.repo_root, task=TaskKind.REVIEW)
+        existing = create_session(create_issue(100), sample_config.repo_root, task=SessionKind.REVIEW)
         existing.terminal_id = "review-456"
         # An active session always carries typed run assets; the ledger sweep
         # that now runs on every reconcile reads its run key (#6999 F8).
@@ -1447,7 +1454,7 @@ class TestHandleSessionCompletion:
             orchestrator.config,
             session_output=orchestrator.deps.session_output,
             pending_work_claims=orchestrator.deps.pending_work_claims,
-            processing_policy=unprocessed_session_policy(session, orchestrator.config),
+            processing_policy=unprocessed_session_policy(session),
             review_exchange_halted=True,
         )
 
@@ -4653,7 +4660,10 @@ class TestAQueuedValidationRetryNamesTheRunItCameFrom:
 
     def _queue_a_retry(self, config, worktree_manager, agent_label: str):
         issue = create_issue(6410, labels=[agent_label])
-        session = create_session(issue)
+        # The kind is the launch stamp for the label (#7347).
+        session = create_session(
+            issue, task=SessionKind.for_issue_launch(agent_label, config.tech_lead_review_agent)
+        )
         session.agent_label = agent_label
         orchestrator = create_test_orchestrator(
             config, worktree_manager=worktree_manager
@@ -4697,3 +4707,24 @@ class TestAQueuedValidationRetryNamesTheRunItCameFrom:
         assert retry.authority_run is None, (
             "a coder retry named an authority row that was never recorded"
         )
+
+
+def test_a_reworks_validation_retry_is_queued_with_its_pr_and_cycle(sample_config, tmp_path):
+    """The producer side of #7347 review round 1 finding 1: the retry of a rework
+    carries the PR it is fixing and its cycle, so the relaunch is that rework."""
+    manager = MagicMock()
+    manager.worktree_path = tmp_path / "worktree"
+    manager.worktree_path.mkdir(parents=True)
+    issue = create_issue(6410, labels=["agent:coder"])
+    session = create_session(issue, task=SessionKind.REWORK)
+    session.agent_label = "agent:coder"
+    session.pr_number = 456
+    session.rework_cycle = 2
+    orchestrator = create_test_orchestrator(sample_config, worktree_manager=manager)
+    track_session(orchestrator, session)
+
+    orchestrator.handle_session_completion(session, SessionStatus.NEEDS_VALIDATION_RETRY)
+
+    [retry] = orchestrator.state.pending_validation_retries
+    assert retry.source_kind is SessionKind.REWORK
+    assert (retry.pr_number, retry.rework_cycle) == (456, 2)

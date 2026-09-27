@@ -13,7 +13,8 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.events import EventName
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
@@ -104,7 +105,7 @@ def _make_session(worktree: Path, timeout_minutes: int = 1) -> Session:
         timeout_minutes=timeout_minutes,
     )
     issue_key = FakeIssueKey(name="1")
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     terminal_id = "issue-1"
     return Session(
         key=session_key,

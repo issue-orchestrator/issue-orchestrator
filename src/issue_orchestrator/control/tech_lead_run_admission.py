@@ -76,7 +76,7 @@ from .tech_lead_run_ownership import (
     RunRelease,
     TechLeadRunOwnership,
 )
-from .tech_lead_session_policy import is_tech_lead_session
+from ..domain.session_kind import SessionKind
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, Session
@@ -140,7 +140,7 @@ def live_run_scopes(
     scopes: dict[str, TechLeadRunScope] = {
         run_key_of_pending(item): scope_of_pending(item) for item in pending
     }
-    for session in active_tech_lead_sessions(config, active_sessions):
+    for session in active_tech_lead_sessions(active_sessions):
         scope = scope_of_session(session)
         if scope is not None:
             scopes.setdefault(scope.run_key, scope)
@@ -148,19 +148,17 @@ def live_run_scopes(
 
 
 def active_tech_lead_sessions(
-    config: "Config", active_sessions: "Sequence[Session]"
+    active_sessions: "Sequence[Session]",
 ) -> tuple["Session", ...]:
-    """The active sessions that ARE tech-lead runs (ADR-0031 identity rule)."""
+    """The active sessions that ARE tech-lead runs: their stamped kind (#7347)."""
     return tuple(
         session
         for session in active_sessions
-        if is_tech_lead_session(config.tech_lead_review_agent, session.agent_label)
+        if session.key.kind is SessionKind.TECH_LEAD
     )
 
 
-def has_active_global_run(
-    config: "Config", active_sessions: "Sequence[Session]"
-) -> bool:
+def has_active_global_run(active_sessions: "Sequence[Session]") -> bool:
     """True when a whole-repository tech-lead run is executing right now.
 
     Read from the launch scope stamped onto the session. That stamp is present
@@ -178,7 +176,7 @@ def has_active_global_run(
         session.tech_lead_scope is None
         or session.tech_lead_scope.flavor
         is not TechLeadSessionFlavor.FAILURE_INVESTIGATION
-        for session in active_tech_lead_sessions(config, active_sessions)
+        for session in active_tech_lead_sessions(active_sessions)
     )
 
 
@@ -517,7 +515,7 @@ class TechLeadRunCoordinator:
             for item in self._pending()
         ):
             return BARRIER_GLOBAL_RUN_QUEUED
-        if has_active_global_run(self._config, self._state.active_sessions):
+        if has_active_global_run(self._state.active_sessions):
             return BARRIER_GLOBAL_RUN_ACTIVE
         return None
 
@@ -535,9 +533,7 @@ class TechLeadRunCoordinator:
 
     def _active_session_for_run(self, run_key: str) -> "Optional[Session]":
         """The active tech-lead session executing this logical run, if any."""
-        for session in active_tech_lead_sessions(
-            self._config, self._state.active_sessions
-        ):
+        for session in active_tech_lead_sessions(self._state.active_sessions):
             scope = scope_of_session(session)
             if scope is not None and scope.run_key == run_key:
                 return session

@@ -32,7 +32,7 @@ from issue_orchestrator.control.tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
 )
 from issue_orchestrator.domain.models import Issue
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_artifacts import (
     ProposedTechLeadAction,
     TechLeadDecision,
@@ -99,7 +99,7 @@ def _plan(
         observed_at="2026-09-26T09:00:00+00:00",
         observed_session_generation=lambda number: TechLeadSessionGeneration(
             issue_number=number,
-            task_kind=TaskKind.CODE,
+            task_kind=SessionKind.CODE,
             terminal_id="term-1",
             run_id="run-7",
         ),

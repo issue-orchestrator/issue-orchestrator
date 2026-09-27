@@ -33,11 +33,13 @@ from unittest.mock import MagicMock
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.issue_run_evidence import (
     IssueRunRecord,
+    ReworkTarget,
     RunTerminalBinding,
 )
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
 from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunAssets, SessionRunIdentity
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchAuthority,
@@ -107,7 +109,7 @@ def _retry(checkout: Path) -> PendingValidationRetry:
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_kind=SessionKind.TECH_LEAD,
         validation_cmd="make test",
         authority_run=SessionRunIdentity(
             session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
@@ -206,18 +208,21 @@ def _run_assets(checkout: Path) -> SessionRunAssets:
     )
 
 
-def _ledger(checkout: Path, *, agent_label: str, completion_task: TaskKind):
+def _ledger(
+    checkout: Path, *, agent_label: str, kind: SessionKind,
+    rework_target: ReworkTarget | None = None,
+):
     """A durable issue-run ledger holding this retry's exact allocation."""
     ledger = MagicMock()
     ledger.recorded_runs.return_value = (
         IssueRunRecord(
-            session_key=SessionKey(FakeIssueKey("6410"), TaskKind.CODE),
+            session_key=SessionKey(FakeIssueKey("6410"), kind),
             run=_run_assets(checkout),
             recorded_at="2026-09-18T12:00:00+00:00",
             branch_name=f"tech-lead-investigation-6410-{TOKEN}",
             terminal_binding=RunTerminalBinding("issue-6410"),
             agent_label=agent_label,
-            completion_task=completion_task,
+            rework_target=rework_target,
         ),
     )
     return ledger
@@ -244,7 +249,7 @@ def _recover(
     state: OrchestratorState,
     *,
     agent_label: str = "agent:tech-lead",
-    completion_task: TaskKind = TaskKind.TECH_LEAD,
+    kind: SessionKind = SessionKind.TECH_LEAD,
     authority: "InMemoryTechLeadAuthorityStore | None" = None,
 ) -> int:
     """Run the startup recovery pass with no issue branches to lean on."""
@@ -252,7 +257,7 @@ def _recover(
         _Config(repo, checkout.parent),
         _reconciler(repo, checkout.parent, _Config),
         lambda _name: False,
-        _ledger(checkout, agent_label=agent_label, completion_task=completion_task),
+        _ledger(checkout, agent_label=agent_label, kind=kind),
         authority if authority is not None else _authority_store(),
     ).recover(state, {})
 
@@ -318,6 +323,8 @@ def test_a_schema_v1_claim_is_reconciled_with_its_original_authority(
     assert isinstance(request_payload, dict)
     request_payload.pop("authority_run")
     request_payload.pop("recovery_error")
+    # A schema-v1 build stamped every tech-lead run (and so its retry) "code".
+    request_payload["source_task"] = "code"
 
     legacy_retry = decode_claim(legacy_payload).request
     assert isinstance(legacy_retry, PendingValidationRetry)
@@ -338,6 +345,8 @@ def test_a_schema_v1_claim_is_reconciled_with_its_original_authority(
     ), "the upgraded retry carries no grant, so its completion is refused"
     assert retry.agent_label == "agent:tech-lead"
     assert retry.recovery_error is None
+    # The ledger row, not the legacy "code" stamp, says what the retry is (#7347).
+    assert retry.source_kind is SessionKind.TECH_LEAD
 
 
 def test_a_pre_recovered_ordinary_claim_does_not_hide_an_investigation(
@@ -362,7 +371,7 @@ def test_a_pre_recovered_ordinary_claim_does_not_hide_an_investigation(
                 validation_error="boom",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="make test",
             )
         ]
@@ -418,7 +427,7 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
         _Config(repo, investigation.parent),
         _reconciler(repo, investigation.parent, _Config),
         lambda _name: False,
-        _ledger(investigation, agent_label="agent:tech-lead", completion_task=TaskKind.TECH_LEAD),
+        _ledger(investigation, agent_label="agent:tech-lead", kind=SessionKind.TECH_LEAD),
         _authority_store(),
     ).recover(state, {6410: "6410-ordinary"})
 
@@ -452,7 +461,7 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
         _Config(repo, investigation.parent),
         _reconciler(repo, investigation.parent, _Config),
         lambda _name: False,
-        _ledger(ordinary, agent_label="agent:coder", completion_task=TaskKind.CODE),
+        _ledger(ordinary, agent_label="agent:coder", kind=SessionKind.CODE),
         _authority_store(grant=False),
     ).recover(later_state, {})
 
@@ -496,7 +505,7 @@ def test_a_running_ordinary_session_does_not_hide_an_investigation_retry(
         _ledger(
             investigation,
             agent_label="agent:tech-lead",
-            completion_task=TaskKind.TECH_LEAD,
+            kind=SessionKind.TECH_LEAD,
         ),
         _authority_store(),
     ).recover(state, {})
@@ -525,7 +534,7 @@ def test_an_unrestored_live_terminal_keeps_the_retry_queued_but_unlaunchable(
         _ledger(
             investigation,
             agent_label="agent:tech-lead",
-            completion_task=TaskKind.TECH_LEAD,
+            kind=SessionKind.TECH_LEAD,
         ),
         _authority_store(),
     ).recover(state, {})
@@ -563,7 +572,7 @@ def test_a_scratch_like_checkout_without_an_ownership_marker_is_not_recovered(
         _ledger(
             checkout,
             agent_label="agent:tech-lead",
-            completion_task=TaskKind.TECH_LEAD,
+            kind=SessionKind.TECH_LEAD,
         ),
         _authority_store(),
     ).recover(state, {})
@@ -636,7 +645,7 @@ def test_an_ordinary_coder_retry_names_no_authority_run(
             investigation,
             state,
             agent_label="agent:coder",
-            completion_task=TaskKind.CODE,
+            kind=SessionKind.CODE,
             authority=_authority_store(grant=False),
         )
         == 1
@@ -768,7 +777,7 @@ def test_the_join_is_exact_not_merely_the_first_run_of_the_issue(
     other_recording = other_dir / "terminal-recording.jsonl"
     other_recording.write_text("")
     other = IssueRunRecord(
-        session_key=SessionKey(FakeIssueKey("6410"), TaskKind.CODE),
+        session_key=SessionKey(FakeIssueKey("6410"), SessionKind.CODE),
         run=SessionRunAssets.from_paths(
             session_name=SESSION_NAME,
             run_id="20260101T000000000000Z",
@@ -782,10 +791,9 @@ def test_the_join_is_exact_not_merely_the_first_run_of_the_issue(
         branch_name=f"tech-lead-investigation-6410-{TOKEN}",
         terminal_binding=RunTerminalBinding("issue-6410"),
         agent_label="agent:coder",
-        completion_task=TaskKind.CODE,
     )
     ledger = _ledger(
-        investigation, agent_label="agent:tech-lead", completion_task=TaskKind.TECH_LEAD
+        investigation, agent_label="agent:tech-lead", kind=SessionKind.TECH_LEAD
     )
     # The OTHER run first, so a loose match would take it.
     ledger.recorded_runs.return_value = (other,) + ledger.recorded_runs.return_value
@@ -807,3 +815,125 @@ def test_the_join_is_exact_not_merely_the_first_run_of_the_issue(
     )
     assert retry.authority_run is not None
     assert retry.authority_run.run_id == RUN_ID
+
+
+@pytest.mark.parametrize("terminal", ["tech-lead-6410", "rework-6410", "issue-6410"])
+def test_a_retry_live_under_its_own_kinds_name_is_not_requeued(
+    repo: Path, investigation: Path, terminal: str
+) -> None:
+    """A retry relaunches AS its source kind (#7347), so its live terminal can be
+    ``tech-lead-N`` or ``rework-N`` as well as ``issue-N``. Looking only for
+    ``issue-N`` re-queued a retry that was already running."""
+    _leave_retry_artifacts(investigation)
+    active = MagicMock()
+    active.terminal_id = terminal
+    active.issue.number = 6410
+    active.worktree_path = investigation
+    state = OrchestratorState()
+    state.active_sessions.append(active)
+
+    recovered = ValidationRetryRecovery(
+        _Config(repo, investigation.parent),
+        _reconciler(repo, investigation.parent, _Config),
+        lambda name: name == terminal,
+        _ledger(investigation, agent_label="agent:tech-lead", kind=SessionKind.TECH_LEAD),
+        _authority_store(),
+    ).recover(state, {})
+
+    assert recovered == 0
+    assert state.pending_validation_retries == []
+
+
+def _recover_rework(repo, checkout, state, *, rework_target):
+    _leave_retry_artifacts(checkout, agent_label="agent:coder")
+    return ValidationRetryRecovery(
+        _Config(repo, checkout.parent),
+        _reconciler(repo, checkout.parent, _Config),
+        lambda _name: False,
+        _ledger(
+            checkout, agent_label="agent:coder", kind=SessionKind.REWORK,
+            rework_target=rework_target,
+        ),
+        _authority_store(grant=False),
+    ).recover(state, {})
+
+
+def _published_hold_on(pr_number: int):
+    """An action applier whose custody owner says PR ``pr_number`` holds #6410."""
+    from issue_orchestrator.domain.validated_work import ValidatedWorkState
+    from tests.unit.control.published_review_support import (
+        DispositionStore, PullRequests, custody, disposition, pr,
+    )
+
+    applier = MagicMock()
+    applier.runtime_lifecycle.published_review = custody(
+        DispositionStore(
+            {6410: (disposition(6410, ValidatedWorkState.RECOVERED, pr_number=pr_number),)}
+        ),
+        PullRequests({6410: [pr(6410, pr_number)]}),
+    )
+    applier.apply.return_value = MagicMock(success=True)
+    return applier
+
+
+def test_a_recovered_reworks_retry_resumes_on_its_own_pr(
+    repo: Path, investigation: Path
+) -> None:
+    """#7347 review r4: a restart rebuilds a rework's retry from artifacts. Its
+    PR and cycle come from the run's own ledger row, so the published-review
+    gate still lets it resume on the PR that holds the published work."""
+    from issue_orchestrator.control.published_review_launch_gate import (
+        refuse_launch_over_published_review,
+    )
+
+    state = OrchestratorState()
+    assert _recover_rework(repo, investigation, state, rework_target=ReworkTarget(500, 2)) == 1
+
+    [retry] = state.pending_validation_retries
+    assert (retry.source_kind, retry.pr_number, retry.rework_cycle) == (
+        SessionKind.REWORK, 500, 2,
+    )
+    assert refuse_launch_over_published_review(
+        _published_hold_on(500), MagicMock(), 6410,
+        kind=retry.source_kind, pr_number=retry.pr_number,
+    ) is None
+
+
+def test_a_legacy_reworks_retry_keeps_the_pr_its_durable_claim_recorded(
+    repo: Path, investigation: Path
+) -> None:
+    """A rework run allocated before #7347 has no target on its ledger row; the
+    orchestrator-owned claim for the same checkout still has it, and the
+    artifact rebuild must not drop it."""
+    from dataclasses import replace
+
+    state = OrchestratorState()
+    claimed = replace(
+        _retry(investigation), source_kind=SessionKind.REWORK, agent_label="agent:coder",
+        pr_number=500, rework_cycle=2, authority_run=None,
+    )
+    state.replace_pending_validation_retry(claimed)
+
+    _recover_rework(repo, investigation, state, rework_target=None)
+
+    [retry] = state.pending_validation_retries
+    assert (retry.pr_number, retry.rework_cycle) == (500, 2)
+
+
+def test_a_rework_retry_with_no_recorded_pr_anywhere_is_still_held(
+    repo: Path, investigation: Path
+) -> None:
+    """Unknown is not guessed: with no PR recorded, the hold refuses it."""
+    from issue_orchestrator.control.published_review_launch_gate import (
+        refuse_launch_over_published_review,
+    )
+
+    state = OrchestratorState()
+    _recover_rework(repo, investigation, state, rework_target=None)
+
+    [retry] = state.pending_validation_retries
+    assert retry.pr_number is None
+    assert refuse_launch_over_published_review(
+        _published_hold_on(500), MagicMock(), 6410,
+        kind=retry.source_kind, pr_number=retry.pr_number,
+    ) is not None

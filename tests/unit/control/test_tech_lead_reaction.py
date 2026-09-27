@@ -23,7 +23,8 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
@@ -384,10 +385,10 @@ def test_legacy_pending_timestamp_cannot_make_storm_unbounded() -> None:
 
 
 def _worker_session(
-    task: TaskKind, tmp_path: Path, *, agent_label: str = "agent:backend"
+    task: SessionKind, tmp_path: Path, *, agent_label: str = "agent:backend"
 ):
     return Session(
-        key=SessionKey(issue=FakeIssueKey("42"), task=task),
+        key=SessionKey(issue=FakeIssueKey("42"), kind=task),
         issue=Issue(
             number=42,
             title="Issue 42",
@@ -414,7 +415,6 @@ def _record(session, status: SessionStatus) -> list[DiscoveredFailure]:
     record_completed_session_problem(
         status=status,
         session=session,
-        tech_lead_agent="agent:tech-lead",
         blocking_label="blocked",
         artifact_hints=lambda: ("hint",),
         record=recorded.append,
@@ -425,7 +425,7 @@ def _record(session, status: SessionStatus) -> list[DiscoveredFailure]:
 
 @pytest.mark.parametrize(
     "task",
-    [TaskKind.CODE, TaskKind.REWORK, TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW],
+    [SessionKind.CODE, SessionKind.REWORK, SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW],
 )
 @pytest.mark.parametrize(
     "status", [SessionStatus.FAILED, SessionStatus.TIMED_OUT, SessionStatus.BLOCKED]
@@ -448,7 +448,7 @@ def test_every_worker_task_kind_records_its_problem(task, status, tmp_path) -> N
 
 def test_tech_lead_sessions_never_record_their_own_problems(tmp_path) -> None:
     """The LAUNCH-OWNED role prevents recursion, not mutable issue labels."""
-    session = _worker_session(TaskKind.CODE, tmp_path, agent_label="agent:tech-lead")
+    session = _worker_session(SessionKind.TECH_LEAD, tmp_path, agent_label="agent:tech-lead")
     # A failure investigation runs against the original worker issue, whose
     # tracker labels still identify its CODER. Classification must use the role
     # settled at launch rather than re-reading this label -- and giving both the
@@ -460,7 +460,7 @@ def test_tech_lead_sessions_never_record_their_own_problems(tmp_path) -> None:
 
 
 def test_successful_sessions_record_nothing(tmp_path) -> None:
-    session = _worker_session(TaskKind.CODE, tmp_path)
+    session = _worker_session(SessionKind.CODE, tmp_path)
 
     assert _record(session, SessionStatus.COMPLETED) == []
 

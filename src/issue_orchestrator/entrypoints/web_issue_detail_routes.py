@@ -987,7 +987,7 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
     for session in state.active_sessions:
         if session.issue.number == issue_number:
             active_runtime = session.runtime_minutes
-            active_task_kind = session.key.task.value
+            active_task_kind = session.key.kind.value
             break
 
     labels: tuple[str, ...] = ()

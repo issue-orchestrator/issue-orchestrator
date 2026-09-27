@@ -1193,7 +1193,8 @@ def _make_test_session(issue_number: int) -> "Session":
     """Helper to create a test session for scheduler tests."""
     from issue_orchestrator.domain.models import Session, SessionStatus
     from issue_orchestrator.domain.issue_key import FakeIssueKey
-    from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+    from issue_orchestrator.domain.session_key import SessionKey
+    from issue_orchestrator.domain.session_kind import SessionKind
     from datetime import datetime
     from tests.unit.session_run_helpers import make_session_run_assets
 
@@ -1202,7 +1203,7 @@ def _make_test_session(issue_number: int) -> "Session":
     mock_issue.title = f"Test issue #{issue_number}"
 
     issue_key = FakeIssueKey(name=str(issue_number))
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     agent_config = AgentConfig(prompt_path=Path("/tmp/prompt.txt"))
 
     return Session(

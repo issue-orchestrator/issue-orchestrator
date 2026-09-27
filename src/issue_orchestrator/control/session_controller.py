@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from ..domain.models import CompletionRecord
     from ..domain.attempt import AttemptKey
     from ..domain.issue_key import IssueKey
-    from ..domain.session_key import TaskKind
+    from ..domain.session_kind import SessionKind
     from ..ports.attempt_store import AttemptStore
     from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
 
@@ -207,14 +207,19 @@ class SessionController:
     def _load_terminal_completion(
         self,
         run: SessionRunAssets,
-        task_kind: "TaskKind | None",
+        task_kind: "SessionKind | None",
         worktree: Path,
         completion_path: str | None,
     ) -> tuple[CompletionRecordLoadResult, CompletionIntakeReceipt | None]:
         """Coding completion is selected by the run owner before decision policy."""
-        from ..domain.session_key import TaskKind
+        from ..domain.session_kind import CompletionProtocol
 
-        if task_kind not in (TaskKind.CODE, TaskKind.REWORK, TaskKind.TECH_LEAD):
+        # Every kind that completes with coding-done registers its completion
+        # through intake; reviewer-done kinds are read from their record file.
+        if (
+            task_kind is None
+            or task_kind.capabilities.completion_protocol is not CompletionProtocol.CODING_DONE
+        ):
             return self.completion_processor.read_completion_record_result(
                 worktree, completion_path
             ), None
@@ -243,7 +248,7 @@ class SessionController:
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
-        task_kind: "TaskKind | None" = None,
+        task_kind: "SessionKind | None" = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -841,7 +846,7 @@ class SessionController:
         retry_prompt_template: str | None,
         repo_root: Path | None,
         issue_key: "IssueKey | None",
-        task_kind: "TaskKind | None" = None,
+        task_kind: "SessionKind | None" = None,
     ) -> ValidationGateDecision | None:
         if not (
             status == SessionStatus.COMPLETED
@@ -853,7 +858,7 @@ class SessionController:
         # and publish nothing, so the code validation-retry gate does not apply.
         # Running it relaunches the work as a coder retry that ultimately tries
         # to open a PR on an empty branch (see issue #6426).
-        if task_kind is not None and task_kind.is_review_only:
+        if task_kind is not None and not task_kind.capabilities.produces_commits:
             logger.debug(issue_log(issue_number, "Skipping code validation gate: review-only session"))
             return None
         return self._run_validation_gate(

@@ -710,3 +710,30 @@ def test_build_phase_dialog_specific_match():
 
     assert dialog["title"] == "Tech Lead"
     assert dialog["phase"]["name"] == "tech_lead"
+
+
+def test_build_phase_dialog_tech_lead_shows_its_own_run_phase():
+    """A tech-lead run's phase is ``tech-lead-N`` since #7347, not ``coding-N``.
+
+    The tech-lead stage dialog shows that run rather than an unrelated review
+    phase; an issue the tech lead reviewed from elsewhere still shows its last
+    review.
+    """
+    own_run = build_phase_dialog(
+        {
+            "phases": [
+                {"name": "review-1", "display_name": "Review 1"},
+                {"name": "tech-lead-1", "display_name": "Tech Lead 1"},
+            ]
+        },
+        issue_number=7,
+        phase_key="tech_lead",
+    )
+    assert own_run["phase"]["name"] == "tech-lead-1"
+
+    reviewed = build_phase_dialog(
+        {"phases": [{"name": "review-1", "display_name": "Review 1"}]},
+        issue_number=7,
+        phase_key="tech_lead",
+    )
+    assert reviewed["phase"]["name"] == "review-1"

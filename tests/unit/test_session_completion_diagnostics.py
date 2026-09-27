@@ -5,7 +5,8 @@ from pathlib import Path
 from issue_orchestrator.control.session_completion_diagnostics import surface_failure_context
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -14,7 +15,7 @@ def _session(tmp_path: Path, *, permission_mode: str = "bypassPermissions") -> S
         {"permission_mode": permission_mode} if permission_mode != "default" else {}
     )
     return Session(
-        key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
         issue=Issue(123, "Test issue", ["agent:test"], repo="owner/repo"),
         agent_config=AgentConfig(
             prompt_path=tmp_path / "prompt.md",

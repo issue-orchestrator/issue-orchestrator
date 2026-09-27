@@ -11,7 +11,7 @@ Architecture reminder:
 """
 
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.ports.completion_intake import CompletionIntakeRuntime
 from issue_orchestrator.domain.registered_completion import CompletionRolePolicy
 from tests.run_allocation_helpers import make_completion_processor
@@ -2601,7 +2601,8 @@ class TestReviewExchangeExecution:
         from issue_orchestrator.domain.issue_run_allocation import (
             IssueExchangeRunAllocation,
         )
-        from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+        from issue_orchestrator.domain.session_key import SessionKey
+        from issue_orchestrator.domain.session_kind import SessionKind
         from issue_orchestrator.domain.issue_key import FakeIssueKey
 
         output = FileSystemSessionOutput()
@@ -2625,7 +2626,7 @@ class TestReviewExchangeExecution:
             IssueExchangeRunAllocation(
                 worktree_path=tmp_path,
                 issue_number=1,
-                session_key=SessionKey(FakeIssueKey("1", "test/repo"), TaskKind.REWORK),
+                session_key=SessionKey(FakeIssueKey("1", "test/repo"), SessionKind.REWORK),
                 parent_session_name="session-1",
                 agent_label="agent:coder",
             )
@@ -3841,7 +3842,7 @@ class TestTechLeadCompletionEffects:
             carry_launch_authority_forward,
         )
         from issue_orchestrator.domain.models import PendingValidationRetry
-        from issue_orchestrator.domain.session_key import TaskKind
+        from issue_orchestrator.domain.session_kind import SessionKind
 
         processor = self._make_processor(
             tmp_path,
@@ -3868,7 +3869,7 @@ class TestTechLeadCompletionEffects:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.TECH_LEAD,
             authority_run=source.identity,
         )
         resumed = make_session_run_assets(
@@ -6513,7 +6514,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     prepared = PreparedManualPublication(
         command=command, receipt=receipt, run=run,
         completion_artifact=RunContainedFile(run.run_dir, run.run_dir / "owned.json"),
-        record=record, issue_title="Test Issue", processing_policy=CompletionProcessingPolicy("agent:coder", TaskKind.CODE), label_target=123,
+        record=record, issue_title="Test Issue", processing_policy=CompletionProcessingPolicy("agent:coder", SessionKind.CODE), label_target=123,
         actions_taken=(), remaining_actions=(RequestedAction.REMOVE_NEEDS_REWORK_LABEL,),
         exchange_mode=None, exchange_result=None, review_exchange_completed=False,
         review_exchange_halted=False,

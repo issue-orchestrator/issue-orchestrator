@@ -52,16 +52,25 @@ def get_completion_instructions(task_kind: str) -> str:
     """Load task-specific completion instructions.
 
     Args:
-        task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead",
-                  "review_exchange_coder", "review_exchange_reviewer").
+        task_kind: The session kind value (``SessionKind.value``: "code",
+                  "rework", "tech-lead", "review", "retrospective-review") or a
+                  review-exchange role ("review_exchange_coder",
+                  "review_exchange_reviewer").
 
     Returns:
         Markdown instructions for the appropriate completion command.
     """
-    if task_kind in ("code", "rework"):
-        return get_coding_done_instructions()
     if task_kind == "review_exchange_coder":
         return get_review_exchange_coder_instructions()
     if task_kind == "review_exchange_reviewer":
         return get_review_exchange_reviewer_instructions()
-    return get_reviewer_done_instructions()
+    # A session kind's completion protocol is its capability row's (#7347): a
+    # tech-lead run completes with coding-done like the kinds that commit.
+    from ..domain.session_kind import CompletionProtocol, SessionKind
+
+    protocol = SessionKind(task_kind).capabilities.completion_protocol
+    if protocol is CompletionProtocol.CODING_DONE:
+        return get_coding_done_instructions()
+    if protocol is CompletionProtocol.REVIEWER_DONE:
+        return get_reviewer_done_instructions()
+    raise ValueError(f"a {task_kind} run has no agent completion protocol")

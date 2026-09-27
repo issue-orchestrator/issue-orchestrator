@@ -18,21 +18,22 @@ existed.
 """
 
 from .registered_completion import CompletionRunRole
-from .session_key import TaskKind
-
-RECOVERABLE_TASKS: frozenset[TaskKind] = frozenset({TaskKind.CODE, TaskKind.REWORK})
 
 
 def recovery_owns(role: CompletionRunRole) -> bool:
-    """Whether this run's validated completion is work recovery may publish."""
-    return role.task in RECOVERABLE_TASKS
+    """Whether this run's validated completion is work recovery may publish.
+
+    The kind's ``capturable`` capability answers (#7347): coding, rework and an
+    operator's historical import; never a tech-lead or review run.
+    """
+    return role.kind.capabilities.capturable
 
 
 def outside_scope_reason(role: CompletionRunRole) -> str:
     """Why recovery does not own this run's completion. Refuses an owned role."""
     if recovery_owns(role):
-        raise ValueError(f"a {role.task.value} run's completion is recoverable work")
+        raise ValueError(f"a {role.kind.value} run's completion is recoverable work")
     return (
-        f"a {role.task.value} run ({role.agent_label}) produces no validated work "
+        f"a {role.kind.value} run ({role.agent_label}) produces no validated work "
         "for recovery to publish; its own completion owns its branch (#7323)"
     )

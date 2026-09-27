@@ -53,14 +53,15 @@ from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
 from issue_orchestrator.domain.registered_completion import (
     CompletionProcessingPolicy, CompletionRunRole,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import HISTORICAL_AGENT_LABEL, SessionKind
 from issue_orchestrator.domain.validated_work import (
     DispositionPhase, PublishValidatedHeadStatus, RemoteBaselineStatus, ResolutionKind,
     ValidatedWorkFailure, ValidatedWorkState,
 )
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_scope import (
-    RECOVERABLE_TASKS, outside_scope_reason, recovery_owns,
+    outside_scope_reason, recovery_owns,
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
@@ -138,7 +139,9 @@ def _rig(tmp_path, agent_label):
     ledger = SqliteIssueRunLedger(state / "runs.sqlite", repo_slug="owner/repo")
     run = IssueRunAllocationService(FileSystemSessionOutput(), ledger, wc, configuration=config).allocate(
         IssueRunAllocation(worktree, "coding-1", ISSUE,
-            SessionKey(GitHubIssueKey("owner/repo", str(ISSUE)), TaskKind.CODE), agent_label, "test",
+            # The launch stamps the kind from the agent role (#7347).
+            SessionKey(GitHubIssueKey("owner/repo", str(ISSUE)),
+                       SessionKind.for_issue_launch(agent_label, TECH_LEAD)), agent_label, "test",
             terminal_id=f"issue-{ISSUE}"))
     validator = ConfiguredCompletionEvidenceValidator(wc, LocalCommandRunner(),
         IsolatedCompletionValidationWorkspace(state, git, lambda _path: None), command="true", timeout_seconds=30)
@@ -159,7 +162,10 @@ def _rig(tmp_path, agent_label):
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
-        working_copy=wc, observer=observer)
+        working_copy=wc, observer=observer,
+        # No remote in this rig: the base is unreadable, so the kind alone
+        # decides here (the ahead-of-base rule has its own tests).
+        base_branch=lambda _issue, _worktree: "main")
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
@@ -219,17 +225,23 @@ def _complete(rig, make_session):
 # -- the rule ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("task", list(TaskKind))
-def test_only_coding_and_rework_runs_produce_recoverable_work(task):
-    label = TECH_LEAD if task is TaskKind.TECH_LEAD else CODER
+@pytest.mark.parametrize("task", list(SessionKind))
+def test_only_coding_rework_and_historical_runs_produce_recoverable_work(task):
+    label = (
+        TECH_LEAD if task is SessionKind.TECH_LEAD
+        else HISTORICAL_AGENT_LABEL if task is SessionKind.HISTORICAL
+        else CODER
+    )
     role = CompletionRunRole(ISSUE, task, label)
-    assert recovery_owns(role) is (task in {TaskKind.CODE, TaskKind.REWORK})
+    recoverable = {SessionKind.CODE, SessionKind.REWORK, SessionKind.HISTORICAL}
+    assert recovery_owns(role) is (task in recoverable)
     if recovery_owns(role):
         with pytest.raises(ValueError):
             outside_scope_reason(role)
     else:
         assert task.value in outside_scope_reason(role)
-    assert RECOVERABLE_TASKS == frozenset({TaskKind.CODE, TaskKind.REWORK})
+    # The capability table is the rule's single source (#7347).
+    assert recovery_owns(role) is task.capabilities.capturable
 
 
 # -- capture: new completions ------------------------------------------------
@@ -408,7 +420,7 @@ class _UnreadableRemote:
         raise PublicationRemoteError("remote unreadable")
 
 
-@pytest.mark.parametrize("task", [TaskKind.TECH_LEAD, TaskKind.CODE])
+@pytest.mark.parametrize("task", [SessionKind.TECH_LEAD, SessionKind.CODE])
 def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_read(tmp_path, task):
     """The remote-authority refresh lane reaches retirement too (PARKED, remote_unreadable)."""
     store = Rig(tmp_path / "work.sqlite").open()
@@ -441,7 +453,7 @@ def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_r
     drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
 
     record = store.record_for_id(admission.evidence.record_id)
-    if task is TaskKind.TECH_LEAD:
+    if task is SessionKind.TECH_LEAD:
         assert record.disposition.state is ValidatedWorkState.ABANDONED
         assert record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE
         assert remote.reads == 0
@@ -452,7 +464,7 @@ def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_r
         assert labels.labels == {RECOVERY_PENDING}
 
 
-@pytest.mark.parametrize("task", [TaskKind.TECH_LEAD, TaskKind.CODE])
+@pytest.mark.parametrize("task", [SessionKind.TECH_LEAD, SessionKind.CODE])
 @pytest.mark.parametrize("state, failure", [
     (ValidatedWorkState.PARKED, ValidatedWorkFailure.PR_BRANCH_MISMATCH),
     (ValidatedWorkState.FAILED, ValidatedWorkFailure.ARTIFACT_MISSING),
@@ -490,7 +502,7 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
 
     record = store.record_for_id(admission.evidence.record_id)
     assert store.owner_of(admission.evidence.record_id) is None
-    if task is TaskKind.TECH_LEAD:
+    if task is SessionKind.TECH_LEAD:
         assert report.scope_sweep.retired == (admission.evidence.record_id,)
         assert record.disposition.state is ValidatedWorkState.ABANDONED
         assert record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE
@@ -514,7 +526,7 @@ def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tm
     execution = LocalValidatedWorkExecutionOwner(store)
     effects = FencedValidatedWorkEffects(execution=execution, fence=store)
     labels = Labels(issue=6914)
-    intake = owned_intake(TaskKind.TECH_LEAD)
+    intake = owned_intake(SessionKind.TECH_LEAD)
     aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
         admission=RankedEvidenceAdmission(store, intake), phases=store, authority=effects,
         gate=FileIssueDispositionMutationGate(tmp_path), labels=LabelManager(Config(repo="owner/repo")),

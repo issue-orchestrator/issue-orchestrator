@@ -15,7 +15,6 @@ from issue_orchestrator.control.tech_lead_evidence import EVIDENCE_MAP_FILENAME
 from issue_orchestrator.control.tech_lead_session_policy import (
     _stage_evidence_map,
     is_benign_tech_lead_no_commits,
-    is_tech_lead_session,
     read_tech_lead_assignment,
     shape_requested_actions_for_tech_lead,
 )
@@ -25,25 +24,6 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadAssignment,
     TechLeadSessionFlavor,
 )
-
-
-class TestIsTechLeadSession:
-    @pytest.mark.parametrize(
-        ("tech_lead_agent", "agent_type", "expected"),
-        [
-            ("agent:tech-lead", "agent:tech-lead", True),
-            ("agent:tech-lead", "agent:web", False),
-            ("agent:tech-lead", None, False),
-            (None, "agent:tech-lead", False),
-            (None, None, False),
-            ("", "agent:tech-lead", False),
-            ("", "", False),
-        ],
-    )
-    def test_matrix(
-        self, tech_lead_agent: str | None, agent_type: str | None, expected: bool
-    ) -> None:
-        assert is_tech_lead_session(tech_lead_agent, agent_type) is expected
 
 
 class TestShapeRequestedActionsForTechLead:

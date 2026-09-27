@@ -63,7 +63,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
 )
 from issue_orchestrator.events import EventName
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -147,7 +147,7 @@ class _RecordingApplier:
 def _session(issue_number: int, tmp_path: Path) -> Session:
     """A real active-session shape; reconcile only reads ``issue.number``."""
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=SessionKind.CODE),
         issue=Issue(
             number=issue_number,
             title=f"Issue {issue_number}",

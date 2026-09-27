@@ -18,21 +18,22 @@ from issue_orchestrator.control.completion_pr_lookup import (
 from issue_orchestrator.domain.completion_processing import CompletionPublication
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def make_session(
     tmp_path: Path,
     *,
-    task: TaskKind = TaskKind.CODE,
+    task: SessionKind = SessionKind.CODE,
     pr_number: int | None = None,
 ) -> Session:
     worktree = tmp_path / "worktree"
     worktree.mkdir(exist_ok=True)
     issue = Issue(number=7, title="Test issue", labels=["agent:test"], repo="owner/repo")
     return Session(
-        key=SessionKey(issue=FakeIssueKey("7"), task=task),
+        key=SessionKey(issue=FakeIssueKey("7"), kind=task),
         issue=issue,
         agent_config=AgentConfig(prompt_path=tmp_path / "prompt.txt", timeout_minutes=45),
         terminal_id="issue-7",
@@ -92,7 +93,7 @@ def test_retrospective_review_produces_no_pr_and_asks_github_nothing(tmp_path):
     host = make_host(prs_for_branch=[pr_record(11, "https://gh/pull/11")])
     lookup = CompletionPrLookup(host)
 
-    session = make_session(tmp_path, task=TaskKind.RETROSPECTIVE_REVIEW)
+    session = make_session(tmp_path, task=SessionKind.RETROSPECTIVE_REVIEW)
     result = lookup.for_session(session, SessionStatus.COMPLETED)
 
     assert result == NO_COMPLETION_PR
@@ -170,7 +171,7 @@ def test_review_session_falls_back_to_its_own_pr_when_the_branch_has_none(tmp_pa
     host = make_host(prs_for_branch=[], pr=pr_record(99, "https://gh/pull/99"))
     lookup = CompletionPrLookup(host)
 
-    session = make_session(tmp_path, task=TaskKind.REVIEW, pr_number=99)
+    session = make_session(tmp_path, task=SessionKind.REVIEW, pr_number=99)
     result = lookup.for_session(session, SessionStatus.COMPLETED)
 
     assert (result.url, result.number) == ("https://gh/pull/99", 99)
@@ -182,7 +183,7 @@ def test_review_fallback_that_raises_produces_no_pr(tmp_path):
     host = make_host(prs_for_branch=[], get_pr_raises=True)
     lookup = CompletionPrLookup(host)
 
-    session = make_session(tmp_path, task=TaskKind.REVIEW, pr_number=99)
+    session = make_session(tmp_path, task=SessionKind.REVIEW, pr_number=99)
 
     assert lookup.for_session(session, SessionStatus.COMPLETED) == NO_COMPLETION_PR
 
@@ -191,7 +192,7 @@ def test_review_fallback_that_finds_nothing_produces_no_pr(tmp_path):
     host = make_host(prs_for_branch=[], pr=None)
     lookup = CompletionPrLookup(host)
 
-    session = make_session(tmp_path, task=TaskKind.REVIEW, pr_number=99)
+    session = make_session(tmp_path, task=SessionKind.REVIEW, pr_number=99)
 
     assert lookup.for_session(session, SessionStatus.COMPLETED) == NO_COMPLETION_PR
 

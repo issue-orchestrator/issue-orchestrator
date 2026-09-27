@@ -41,7 +41,8 @@ from issue_orchestrator.control.actions import (
     ActionType,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.board_snapshot import BoardTimelineExtract
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     new_scratch_token,
@@ -127,12 +128,18 @@ def create_test_session(
     agent_config: AgentConfig,
     worktree_path: Path,
     terminal_id: str = "issue-1",
-    task_kind: TaskKind = TaskKind.CODE,
+    task_kind: SessionKind | None = None,
     run_assets: SessionRunAssets | None = None,
 ) -> Session:
-    """Create a test session."""
+    """Create a test session.
+
+    Without an explicit kind, the kind is the one the launcher that names a
+    terminal this way stamps (#7347): policy reads the kind, never the name.
+    """
+    if task_kind is None:
+        task_kind = SessionKind.from_phase_label(terminal_id) or SessionKind.CODE
     issue_key = FakeIssueKey(str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task_kind)
+    session_key = SessionKey(issue=issue_key, kind=task_kind)
     pr_number: int | None = None
     if terminal_id.startswith(("review-", "rework-")):
         try:
@@ -652,7 +659,7 @@ class TestStateMachineTransitions:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
 
         repository_host = make_repository_host(
@@ -775,7 +782,7 @@ class TestReviewMachineTransitions:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         review_machine = ReviewStateMachine(
             pr_number=42,
@@ -813,7 +820,7 @@ class TestReviewMachineTransitions:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         review_machine = ReviewStateMachine(
             pr_number=42,
@@ -848,7 +855,7 @@ class TestReviewMachineTransitions:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
 
         pr_info = SimpleNamespace(branch="published-branch", number=42, labels=["code-reviewed"], url="http://pr")
@@ -1124,7 +1131,7 @@ class TestCleanupStrategy:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
 
         repository_host = make_repository_host(
@@ -1137,6 +1144,31 @@ class TestCleanupStrategy:
         assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
         assert result.cleanup.pending_cleanup is None
 
+    def test_tech_lead_session_does_not_defer_cleanup(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Only a session whose own PR is its output waits for that PR's review
+        (``open_pr_means_done``); a tech-lead run's branch is not the issue's
+        deliverable (#7347), so its worktree is not held for a review."""
+        config.tech_lead_review_agent = "agent:tech-lead"
+        issue = make_issue()
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="tech-lead-42",
+            task_kind=SessionKind.TECH_LEAD,
+        )
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
+
+        assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
+
     def test_rework_session_does_not_defer_cleanup(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
@@ -1148,7 +1180,7 @@ class TestCleanupStrategy:
             agent_config,
             tmp_worktree,
             terminal_id="rework-42",
-            task_kind=TaskKind.REWORK,
+            task_kind=SessionKind.REWORK,
         )
 
         repository_host = make_repository_host(
@@ -1299,7 +1331,7 @@ class TestReviewQueueDecision:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
 
         repository_host = make_repository_host(
@@ -1486,7 +1518,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="retrospective-review-365",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
         config.retrospective_review_trigger_label = "lack-of-review-redo"
         config.retrospective_reviewed_label = "retrospective-reviewed"
@@ -1518,7 +1550,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="retrospective-review-365",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
         config.retrospective_review_trigger_label = "lack-of-review-redo"
         config.retrospective_reviewed_label = "retrospective-reviewed"
@@ -1556,7 +1588,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="retrospective-review-365",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
         session.agent_label = "agent:reviewer"
         config.retrospective_review_trigger_label = "lack-of-review-redo"
@@ -1606,7 +1638,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="retrospective-review-365",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
         config.retrospective_review_trigger_label = "lack-of-review-redo"
         config.retrospective_reviewed_label = "retrospective-reviewed"
@@ -1638,7 +1670,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="retrospective-review-365",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
         config.retrospective_review_trigger_label = "lack-of-review-redo"
         config.retrospective_reviewed_label = "retrospective-reviewed"
@@ -1678,7 +1710,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="retrospective-review-365",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
         session.agent_label = "agent:reviewer"
         config.retrospective_review_trigger_label = "lack-of-review-redo"
@@ -2376,7 +2408,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="review-123",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         handler = make_handler(config)
 
@@ -2459,7 +2491,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="review-123",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         repository_host = make_repository_host(
             issue_info=SimpleNamespace(labels=["agent:test"])
@@ -2582,7 +2614,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="review-456",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         handler = make_handler(config)
 
@@ -2608,7 +2640,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="rework-789",
-            task_kind=TaskKind.REWORK,
+            task_kind=SessionKind.REWORK,
         )
         handler = make_handler(config)
 
@@ -2657,7 +2689,7 @@ class TestLabelActionGeneration:
             agent_config,
             tmp_worktree,
             terminal_id="review-123",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         handler = make_handler(config)
 
@@ -2702,34 +2734,25 @@ class TestStatusSessionTypeMatrix:
         assert isinstance(result.actions[0], RemoveLabelAction)
         assert result.actions[0].label == config.get_label_in_progress()
 
-    def test_completed_review_session_removes_in_progress(
-        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    @pytest.mark.parametrize("terminal_id", ["review-1", "rework-1"])
+    def test_completed_session_that_never_held_the_claim_leaves_it_alone(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path, terminal_id: str
     ) -> None:
-        """COMPLETED review session: removes in-progress, no labels added."""
+        """A review or rework never takes the issue's in-progress claim, so its
+        completion does not release one: custody is the kind's capability on
+        every outcome (#7347 C7; a failing reviewer already left it alone)."""
         session = create_test_session(
-            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+            make_issue(), agent_config, tmp_worktree, terminal_id=terminal_id
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.COMPLETED
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
-        # Review sessions don't have in-progress to remove, but the action is still generated
-        assert len(result.actions) == 1
-        assert isinstance(result.actions[0], RemoveLabelAction)
-
-    def test_completed_rework_session_removes_in_progress(
-        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
-    ) -> None:
-        """COMPLETED rework session: removes in-progress, no labels added."""
-        session = create_test_session(
-            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        assert not any(
+            isinstance(action, RemoveLabelAction)
+            and action.label == config.get_label_in_progress()
+            for action in result.actions
         )
-        result = make_handler(config).process_completion(
-            session, SessionStatus.COMPLETED
-        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
-
-        assert len(result.actions) == 1
-        assert isinstance(result.actions[0], RemoveLabelAction)
 
     # --- BLOCKED Status ---
 
@@ -2964,7 +2987,7 @@ class TestEdgeCases:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
 
         def failing_get_pr(_: int) -> None:
@@ -3142,7 +3165,7 @@ class TestReworkCyclePropagation:
             agent_config,
             tmp_worktree,
             terminal_id="rework-1",
-            task_kind=TaskKind.REWORK,
+            task_kind=SessionKind.REWORK,
         )
         session.rework_cycle = 2
         session.agent_label = "agent:backend"
@@ -3280,7 +3303,7 @@ class TestReviewOutcomeEventEmission:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         session.agent_label = "agent:reviewer"
         session.pr_number = 42
@@ -3328,7 +3351,7 @@ class TestReviewOutcomeEventEmission:
             agent_config,
             tmp_worktree,
             terminal_id="review-42",
-            task_kind=TaskKind.REVIEW,
+            task_kind=SessionKind.REVIEW,
         )
         session.agent_label = "agent:reviewer"
         session.pr_number = 42
@@ -3691,7 +3714,7 @@ class TestTimelineActorOnEmittedEvents:
         )
         worktree.mkdir(parents=True, exist_ok=True)
         return Session(
-            key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=SessionKind.CODE),
             issue=issue,
             agent_config=agent_config,
             terminal_id=f"issue-{issue.number}",

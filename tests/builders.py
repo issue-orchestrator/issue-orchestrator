@@ -23,7 +23,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
     PendingReview,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
@@ -103,7 +103,7 @@ class SessionBuilder:
     """
 
     _issue: Optional[Issue] = None
-    _task: TaskKind = TaskKind.CODE
+    _task: SessionKind = SessionKind.CODE
     _terminal_id: Optional[str] = None
     _worktree_path: Path = field(default_factory=lambda: Path("/tmp/test-worktree"))
     _branch_name: str = "test-branch"
@@ -119,7 +119,7 @@ class SessionBuilder:
             self._agent_label = issue.agent_type
         return self
 
-    def with_task(self, task: TaskKind) -> "SessionBuilder":
+    def with_task(self, task: SessionKind) -> "SessionBuilder":
         """Set the task type (CODE, REVIEW, REWORK, TECH_LEAD)."""
         self._task = task
         return self
@@ -152,7 +152,7 @@ class SessionBuilder:
             self._issue = IssueBuilder().with_agent("agent:test").build()
 
         issue_key = GitHubIssueKey(repo="test/repo", external_id=str(self._issue.number))
-        session_key = SessionKey(issue=issue_key, task=self._task)
+        session_key = SessionKey(issue=issue_key, kind=self._task)
 
         # Create a minimal mock agent config
         agent_config = MagicMock()

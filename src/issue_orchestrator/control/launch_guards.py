@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
-from .session_launch_types import LaunchDisposition, LaunchResult
+from .session_launch_types import LaunchResult
 from .transition_log import log_transition
 
 if TYPE_CHECKING:
@@ -65,10 +65,5 @@ def retrospective_session_conflict(
             "retrospective-review", issue_number, "QUEUED", "SKIP",
             "terminal session already running",
         )
-        return LaunchResult(
-            None,
-            False,
-            "Terminal session already running",
-            disposition=LaunchDisposition.EXISTING_TERMINAL,
-        )
+        return LaunchResult.terminal_already_running(session_name)
     return None

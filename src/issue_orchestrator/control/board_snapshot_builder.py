@@ -306,8 +306,8 @@ class BoardSnapshotBuilder:
         return BoardSessionInfo(
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            agent_type=session.issue.agent_type or "",
-            session_type=session.key.task.value,
+            agent_type=session.agent_label or "",
+            session_type=session.key.kind.value,
             status=session.status.value,
             started_at=session.started_at.isoformat(),
             age_minutes=age_minutes,

@@ -165,6 +165,15 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
+    def fetch_remote_branch_head(self, worktree: Path, branch: str) -> str | None:
+        """The remote's current head of ``branch``, fetched now.
+
+        Fetches that one branch before answering, so a stale remote-tracking
+        ref is never the answer. Returns ``None`` when the remote cannot be
+        read or has no such branch - never a guess.
+        """
+        ...
+
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch.
 
