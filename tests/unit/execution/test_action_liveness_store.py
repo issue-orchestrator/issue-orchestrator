@@ -120,3 +120,51 @@ def test_retirement_supersedes_only_after_progress_and_abandons_only_after_long(
     assert store.retire_unplanned(
         abandoned_before=later, superseded_before=NOW - timedelta(days=7)
     ) == (other_operation,)
+
+
+def test_success_notes_progress_and_forgets_the_park_in_one_transaction(
+    tmp_path, monkeypatch
+) -> None:
+    """A crash inside a success leaves both or neither (review r12)."""
+    path = tmp_path / "l.sqlite"
+    store = SQLiteActionLivenessStore(path)
+    parked = _row()
+    store.put(parked)
+
+    class _Crash(Exception):
+        pass
+
+    class _CrashOnDelete:
+        """The engine's connection, dying between noting progress and deleting."""
+
+        def __init__(self, conn) -> None:
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            if sql.startswith("DELETE FROM action_liveness WHERE"):
+                raise _Crash()
+            return self._conn.execute(sql, *args)
+
+        def commit(self):
+            self._conn.commit()
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._conn.__exit__(*exc)
+
+    crashing = SQLiteActionLivenessStore(path)
+    connection = _CrashOnDelete(crashing._connection())
+    monkeypatch.setattr(crashing, "_connection", lambda: connection)
+    try:
+        crashing.clear_key(parked.key, done_at=NOW + timedelta(hours=3))
+    except _Crash:
+        pass
+
+    reopened = SQLiteActionLivenessStore(path)
+    assert reopened.row(parked.key) == parked
+    assert reopened.retire_unplanned(
+        abandoned_before=NOW - timedelta(days=7), superseded_before=NOW + timedelta(days=1)
+    ) == (), "no progress was noted, so the park is not superseded"

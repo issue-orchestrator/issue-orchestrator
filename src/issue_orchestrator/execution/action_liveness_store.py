@@ -199,12 +199,11 @@ class SQLiteActionLivenessStore:
             )
 
     def clear_key(self, key: LivenessKey, *, done_at: datetime) -> tuple[LivenessRow, ...]:
-        with self._write() as conn:
-            conn.execute(
-                _NOTE_PROGRESS,
-                (key.identity.subject, key.identity.action, done_at.isoformat()),
-            )
-        return self._forget(_BY_KEY, (key.identity.subject, key.identity.action, key.fingerprint))
+        return self._forget(
+            _BY_KEY,
+            (key.identity.subject, key.identity.action, key.fingerprint),
+            progress=(key.identity.subject, key.identity.action, done_at.isoformat()),
+        )
 
     def update_escalation(self, row: LivenessRow) -> bool:
         key = row.key
@@ -267,7 +266,12 @@ class SQLiteActionLivenessStore:
             )
 
     def _forget(
-        self, select: str, params: tuple[object, ...], *, announce: bool = False
+        self,
+        select: str,
+        params: tuple[object, ...],
+        *,
+        announce: bool = False,
+        progress: tuple[str, str, str] | None = None,
     ) -> tuple[LivenessRow, ...]:
         """Delete the selected rows and owe their blocks' release, atomically.
 
@@ -276,6 +280,10 @@ class SQLiteActionLivenessStore:
         left to take it off.
         """
         with self._write() as conn:
+            if progress is not None:
+                # A success notes its progress in the SAME transaction that
+                # forgets its park: neither can land without the other.
+                conn.execute(_NOTE_PROGRESS, progress)
             rows = tuple(_row(found) for found in conn.execute(select, params))
             for row in rows:
                 identity = row.key.identity
