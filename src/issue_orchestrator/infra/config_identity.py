@@ -67,20 +67,34 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
 
 
 def _without_path(data: Any, path: str) -> Any:
-    """``data`` minus the value at dotted ``path`` (a copy; absent paths no-op)."""
+    """``data`` minus the value at dotted ``path`` (a copy; absent paths no-op).
+
+    A map left empty by the removal goes too: a section that holds only
+    live-applied settings binds nothing, whether or not the operator wrote it.
+    """
     head, _, rest = path.partition(".")
     if not isinstance(data, dict) or head not in data:
         return data
     trimmed = dict(data)
-    if rest:
-        trimmed[head] = _without_path(data[head], rest)
-    else:
+    child = _without_path(data[head], rest) if rest else None
+    if not rest or (child == {} and data[head] != {}):
         del trimmed[head]
+    else:
+        trimmed[head] = child
     return trimmed
 
 
 def _under(path: str, roots: frozenset[str]) -> bool:
     return any(path == root or path.startswith(root + ".") for root in roots)
+
+
+def _runtime_state(config: Any) -> dict[str, Any]:
+    """The configuration's runtime state, flattened and JSON-normalized."""
+    state = {
+        key: value for key, value in asdict(config).items()
+        if key not in _NOT_RUNTIME_STATE
+    }
+    return _flatten(json.loads(json.dumps(state, sort_keys=True, default=str)))
 
 
 @dataclass
@@ -131,7 +145,7 @@ class ConfigLaunchIdentity:
 
     def record_loaded_state(self) -> None:
         """Mark the just-loaded state as the baseline runtime overrides differ from."""
-        self.loaded_effective_state = self._runtime_state()
+        self.loaded_effective_state = _runtime_state(self)
 
     def refresh_config_fingerprint(self) -> str:
         """Recompute both fingerprints from the operator's input (see class doc)."""
@@ -156,17 +170,10 @@ class ConfigLaunchIdentity:
         })
         return self.config_fingerprint
 
-    def _runtime_state(self) -> dict[str, Any]:
-        state = {
-            key: value for key, value in asdict(self).items()
-            if key not in _NOT_RUNTIME_STATE
-        }
-        return _flatten(json.loads(json.dumps(state, sort_keys=True, default=str)))
-
     def _runtime_overrides(self) -> dict[str, Any]:
         """Every runtime value changed since load (or from the code's defaults)."""
-        baseline = self.loaded_effective_state or type(self)()._runtime_state()
-        current = self._runtime_state()
+        baseline = self.loaded_effective_state or _runtime_state(type(self)())
+        current = _runtime_state(self)
         changed: dict[str, Any] = {
             path: value for path, value in current.items()
             if path not in baseline or baseline[path] != value

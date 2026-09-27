@@ -207,3 +207,13 @@ def test_a_pre_upgrade_session_under_another_mode_is_still_refused(tmp_path: Pat
 
     with pytest.raises(SessionConfigurationModeMismatchError):
         _restore(tmp_path, config, stamp)
+
+
+def test_adding_a_section_of_only_live_settings_still_restores(tmp_path: Path) -> None:
+    """Review r1: the section the edit introduces holds nothing binding."""
+    without_tech_lead = _YAML.replace("tech_lead:\n  max_expedited: 3\n", "")
+    stamp = _launch_stamp(Config.load(_config_path(tmp_path, without_tech_lead)))
+    edited = Config.load(_config_path(tmp_path, without_tech_lead + "tech_lead:\n  max_expedited: 5\n"))
+
+    assert edited.session_binding_fingerprint == stamp["session_binding_fingerprint"]
+    assert [s.terminal_id for s in _restore(tmp_path, edited, stamp)] == ["issue-123"]
