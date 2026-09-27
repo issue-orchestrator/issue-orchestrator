@@ -15,8 +15,8 @@ failed step naming the subject.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterable
+from dataclasses import dataclass, field, fields, is_dataclass
+from typing import TYPE_CHECKING, Iterable, Iterator
 
 from .tech_lead_mutation import TechLeadMutation
 
@@ -30,8 +30,18 @@ _SUBJECT_ATTRIBUTES = ("issue_number", "number", "pr_number")
 
 
 def action_subjects(action: "Action") -> frozenset[int]:
-    """Every issue/PR number *action* would read or write."""
-    subjects: set[int] = set()
+    """Every issue/PR number *action* would read or write -- its own AND those
+    of every action it carries.
+
+    A wrapper (today ``CharterAuditedAction``, whose ``effect`` is the real
+    write) names no subject of its own, yet it writes a charter decision and
+    then dispatches its effect. Seen only as itself, a wrapper around a write
+    to a subject refused earlier in the tick was admitted, recorded its
+    decision, and only then had the effect refused (#7356 whole-branch review).
+    So every Action held in a field -- directly or in a tuple -- contributes
+    its subjects, recursively, whatever the wrapper type.
+    """
+    subjects: set[int] = set(_carried_subjects(action))
     for attribute in _SUBJECT_ATTRIBUTES:
         value = getattr(action, attribute, None)
         # bool is an int subclass; a flag is never a subject number.
@@ -43,6 +53,19 @@ def action_subjects(action: "Action") -> frozenset[int]:
         if subject > 0:
             subjects.add(subject)
     return frozenset(subjects)
+
+
+def _carried_subjects(action: "Action") -> Iterator[int]:
+    from .action_base import Action
+
+    if not is_dataclass(action):
+        return
+    for spec in fields(action):
+        value = getattr(action, spec.name, None)
+        carried = value if isinstance(value, tuple) else (value,)
+        for inner in carried:
+            if isinstance(inner, Action):
+                yield from action_subjects(inner)
 
 
 @dataclass
