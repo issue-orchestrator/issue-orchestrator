@@ -37,6 +37,7 @@ from issue_orchestrator.testing.exam.cases import (
 from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
 from tests.e2e.exam.cleanup_steps import run_all_steps
+from tests.e2e.exam.recording import run_recorded
 from tests.e2e.exam.cleanup import delete_registered_branches, teardown_run
 from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.scenarios import (
@@ -129,20 +130,25 @@ async def test_tech_lead_exam(
         identity=identity,
     )
     flows: list[E2EFlow] = []
-    try:
+
+    async def run_case() -> ExamResult:
         if case_id == HALTED_EXCHANGE_WITH_VALIDATED_WORK:
-            result = await run_case_a(run, flows)
-        elif case_id == STALE_CLAIM_PAUSED_FOR_RECONCILE:
-            result = await run_case_c(run, flows)
-        else:
-            result = await run_case_b(
-                run,
-                flows,
-                tech_lead_model=os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus"),
-            )
-    finally:
-        _cleanup(repo_name, run_label, flows, run.branches)
-    path = _write(result)
+            return await run_case_a(run, flows)
+        if case_id == STALE_CLAIM_PAUSED_FOR_RECONCILE:
+            return await run_case_c(run, flows)
+        return await run_case_b(
+            run,
+            flows,
+            tech_lead_model=os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus"),
+        )
+
+    # The scorecard is written before cleanup, so a GitHub hiccup in cleanup
+    # cannot cost the result of an hour-long run (run_recorded).
+    result, path = await run_recorded(
+        run_case,
+        record=_write,
+        cleanup=lambda: _cleanup(repo_name, run_label, flows, run.branches),
+    )
     card = result.scorecard
     summary = render_summary(card)
     logger.info("[EXAM] scorecard %s\n%s", path, summary)
