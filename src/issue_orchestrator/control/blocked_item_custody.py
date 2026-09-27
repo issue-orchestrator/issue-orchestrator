@@ -164,6 +164,9 @@ class ItemCustodyFacts:
     #: The stuck sweep's remedy for this item is releasing the review of the
     #: open PR that carries its published validated work (#7293).
     review_release_pending: bool = False
+    #: The last stuck sweep saw the item's published validated work under an
+    #: open PR that owns it, behind a block the sweep may not lift (#7293).
+    held_for_review: bool = False
     unreadable: tuple[str, ...] = ()
 
 
@@ -374,6 +377,13 @@ def _held(
             f"The orchestrator stopped retrying {parked.action.replace('_', ' ')}"
             f" ({parked.outcome}): {parked.reason}",
             CustodyClock(since=parked.parked_since, basis="action parked"),
+        )
+    if item.held_for_review:
+        return _Claim(
+            CustodyState.HELD,
+            "Its published validated work sits under an open PR whose review owns"
+            " it, behind a block the stuck sweep may not lift; clear that block"
+            " to let the review proceed.",
         )
     if not labels.needs_human:
         return None

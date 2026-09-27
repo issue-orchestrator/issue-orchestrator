@@ -218,6 +218,7 @@ class StateBlockedItemCustodyReader:
             dependency_summary=problem.summary if problem is not None else None,
             sweep_attempts=sweep,
             sweep_escalation_pending=number in state.pending_stuck_sweep_escalations,
+            held_for_review=number in state.stuck_sweep_held_for_review,
             review_release_pending=(
                 number in state.review_release_budgets
                 or number in state.stuck_sweep_review_releases

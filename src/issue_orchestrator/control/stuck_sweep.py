@@ -793,6 +793,7 @@ def run_stuck_sweep_cycle(
     # One-shot: consumed by the next snapshot (a failed apply is simply the
     # next sweep's failed cycle, never a blind per-tick re-send).
     state.stuck_sweep_review_releases = list(result.released_for_review)
+    state.stuck_sweep_held_for_review = frozenset(result.held_for_review)
     state.last_stuck_sweep_at = now
     state.last_stuck_sweep_failure_at = 0.0
     persist_stuck_sweep_state(state, queue_cache_store)
