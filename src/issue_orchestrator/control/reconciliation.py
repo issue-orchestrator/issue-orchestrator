@@ -16,7 +16,7 @@ and partial or contradictory state updates.
 
 import logging
 from dataclasses import dataclass, field
-from typing import FrozenSet, Iterable, Optional
+from typing import FrozenSet, Iterable, Optional, Protocol, Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +320,24 @@ def is_paused_for_reconciliation(labels: Iterable[str]) -> bool:
     this same question so they do not plan writes the gate is bound to refuse.
     """
     return RECONCILE_PAUSE_LABEL in labels
+
+
+class _Labelled(Protocol):
+    @property
+    def labels(self) -> Sequence[str]: ...
+
+
+_Subject = TypeVar("_Subject", bound=_Labelled)
+
+
+def without_paused_subjects(subjects: Iterable[_Subject]) -> list[_Subject]:
+    """The subjects whose labels the orchestrator may write this tick (#7349).
+
+    A subject paused for reconciliation keeps its labels until a human lifts
+    the pause -- the mutation gate refuses every gated write against it -- so
+    a cleanup planned for it could only ever be refused, every tick.
+    """
+    return [s for s in subjects if not is_paused_for_reconciliation(s.labels)]
 
 
 def build_expected_for_mutation(

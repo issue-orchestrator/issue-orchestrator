@@ -23,7 +23,7 @@ Usage:
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional
 
 from .budgeted_validation_reporting import ReportBudgetedValidationAction
 from ..infra.config import Config
@@ -88,7 +88,7 @@ from .worker_budget import (
     worker_slot_availability,
 )
 from .reactive_tech_lead_planning import TechLeadLaunchPlan, plan_tech_lead_launch_queue
-from .reconciliation import build_expected_for_mutation, is_paused_for_reconciliation
+from .reconciliation import build_expected_for_mutation, without_paused_subjects
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
@@ -106,16 +106,6 @@ logger = logging.getLogger(__name__)
 _CAPACITY_CONSUMING_LAUNCH_TYPES: frozenset[ActionType] = frozenset(
     {ActionType.LAUNCH_SESSION, ActionType.LAUNCH_VALIDATION_RETRY}
 )
-
-
-def _writable(issues: Sequence[Issue]) -> list[Issue]:
-    """The issues whose labels the orchestrator may write this tick (#7349).
-
-    A subject paused for reconciliation keeps its labels until a human lifts
-    the pause -- the mutation gate refuses every gated write against it -- so
-    a cleanup planned for it could only ever be refused, every tick.
-    """
-    return [issue for issue in issues if not is_paused_for_reconciliation(issue.labels)]
 
 
 class Planner:
@@ -1104,7 +1094,7 @@ class Planner:
         if not snapshot.stale_in_progress_issues:
             return actions
 
-        for issue in _writable(snapshot.stale_in_progress_issues):
+        for issue in without_paused_subjects(snapshot.stale_in_progress_issues):
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
                 label=self._lm.in_progress,
@@ -1137,7 +1127,7 @@ class Planner:
         if not snapshot.stale_claim_issues:
             return actions
 
-        for issue in _writable(snapshot.stale_claim_issues):
+        for issue in without_paused_subjects(snapshot.stale_claim_issues):
             # Remove the io:claimed label
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
