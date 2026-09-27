@@ -57,6 +57,17 @@ def _decode(rows: Iterable[sqlite3.Row]) -> tuple[TechLeadCharterDecision, ...]:
     return tuple(TechLeadCharterDecision.from_dict(json.loads(row["record"])) for row in rows)
 
 
+#: Decisions ABOUT one issue (#7331). Mirrors
+#: ``TechLeadCharterDecision.is_about_issue`` and filters BEFORE the limit; both
+#: halves of the OR are index searches (``tech_lead_charter_decisions_target`` /
+#: ``_anchor``), because the board runs it once per blocked card.
+ABOUT_ISSUE_QUERY = (
+    "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+    " OR (target_number IS NULL AND anchor_issue_number = ?)"
+    " ORDER BY decided_at DESC, decision_id DESC LIMIT ?"
+)
+
+
 class SqliteTechLeadCharterLedger:
     """Durable charter decisions over the authority store's connection."""
 
@@ -134,13 +145,9 @@ class SqliteTechLeadCharterLedger:
     def list_about_issue(
         self, issue_number: int, *, limit: int = 100
     ) -> tuple[TechLeadCharterDecision, ...]:
-        # Mirrors TechLeadCharterDecision.is_about_issue; filtered BEFORE the limit.
         return _decode(
             self._connection().execute(
-                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
-                " OR (target_number IS NULL AND anchor_issue_number = ?)"
-                " ORDER BY decided_at DESC, decision_id DESC LIMIT ?",
-                (issue_number, issue_number, check_read_limit(limit)),
+                ABOUT_ISSUE_QUERY, (issue_number, issue_number, check_read_limit(limit))
             )
         )
 

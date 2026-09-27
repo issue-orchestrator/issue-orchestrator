@@ -586,3 +586,23 @@ def test_list_about_issue_filters_before_its_limit(store) -> None:
     assert [d.decision_id for d in about] == [untargeted.decision_id, own.decision_id]
     assert all(d.is_about_issue(99) for d in about)
     assert not others[0].is_about_issue(99)
+
+
+def test_list_about_issue_is_an_index_search_not_a_ledger_scan(tmp_path: Path) -> None:
+    """#7331: the board runs this once per blocked card."""
+    from issue_orchestrator.infra.tech_lead_charter_ledger_store import ABOUT_ISSUE_QUERY
+
+    import sqlite3
+
+    path = tmp_path / "tech_lead_authority.sqlite"
+    store = SqliteTechLeadAuthorityStore(path)
+    store.charter_ledger.list_about_issue(1, limit=5)  # the store has built its schema
+    with sqlite3.connect(path) as connection:
+        plan = [
+            str(row[3])
+            for row in connection.execute(f"EXPLAIN QUERY PLAN {ABOUT_ISSUE_QUERY}", (1, 1, 5))
+        ]
+
+    assert any("USING INDEX tech_lead_charter_decisions_target" in step for step in plan), plan
+    assert any("USING INDEX tech_lead_charter_decisions_anchor" in step for step in plan), plan
+    assert not any(step.startswith("SCAN tech_lead_charter_decisions") for step in plan), plan

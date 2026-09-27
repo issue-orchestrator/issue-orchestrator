@@ -233,12 +233,26 @@ def test_a_sweep_budget_is_no_queue_once_the_sweep_is_off() -> None:
     assert "stuck sweep is off" in custody.reason
 
 
-def test_an_exhausted_stuck_sweep_is_held() -> None:
-    custody = _derive(_item(sweep_attempts=3))
+def test_an_exhausted_stuck_sweep_is_held_once_its_escalation_landed() -> None:
+    custody = _derive(_item(labels=NEEDS_HUMAN, sweep_attempts=3))
 
     assert custody.state is CustodyState.HELD
     assert "spent its 3 recovery attempt(s)" in custody.reason
     assert custody.clock is not None and custody.clock.since == NOW - HOUR
+
+
+def test_an_unlanded_escalation_is_still_the_sweep_s_to_retry() -> None:
+    custody = _derive(_item(sweep_attempts=3, sweep_escalation_pending=True))
+
+    assert custody.state is CustodyState.QUEUED_FOR_TECH_LEAD
+    assert "has not landed yet" in custody.reason
+    assert "escalated it for a person" not in custody.reason
+    landed = _derive(_item(labels=NEEDS_HUMAN, sweep_attempts=3, sweep_escalation_pending=True))
+    assert landed.state is CustodyState.HELD
+
+
+def test_an_exhausted_budget_with_nothing_in_flight_is_unowned() -> None:
+    assert _derive(_item(sweep_attempts=3)).state is CustodyState.UNOWNED
 
 
 def test_a_parked_action_is_held_with_the_liveness_owner_s_reason() -> None:
@@ -338,11 +352,30 @@ def test_a_rate_limit_turns_a_queued_launch_into_waiting_on_world() -> None:
 def test_an_executed_remedy_is_verify_with_its_decision() -> None:
     executed = _decision("recover_validated_work")
 
-    custody = _derive(_item(decisions=(executed,)))
+    custody = _derive(_item(decisions=(executed,), blocked_at=NOW - 2 * HOUR))
 
     assert custody.state is CustodyState.VERIFY
     assert custody.charter is not None and custody.charter.outcome == "executed"
     assert "recover validated work" in custody.reason
+
+
+def test_a_remedy_nothing_ties_to_this_block_is_named_but_not_verified() -> None:
+    executed = _decision("recover_validated_work")
+
+    custody = _derive(_item(decisions=(executed,)))
+
+    assert custody.state is CustodyState.UNOWNED
+    assert "last applied recover validated work" in custody.reason
+    assert "nothing ties that remedy to this block" in custody.reason
+
+
+def test_a_follow_up_filed_for_the_item_is_not_a_remedy_of_its_block() -> None:
+    follow_up = _decision("create_issue", target=None)
+
+    custody = _derive(_item(decisions=(follow_up,), blocked_at=NOW - 2 * HOUR))
+
+    assert custody.state is CustodyState.UNOWNED
+    assert "last applied" not in custody.reason
 
 
 def test_a_remedy_older_than_the_block_is_not_this_block_s_owner() -> None:
