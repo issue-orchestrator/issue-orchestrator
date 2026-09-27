@@ -155,7 +155,8 @@ class RecoveryDrainLiveness:
         """
         record_id = request.record_id
         unreadable = self._scope_key(request, _UNREADABLE)
-        if not self.owner.admit(unreadable).admitted:
+        decision = self.owner.admit(unreadable)
+        if not decision.admitted:
             return unreadable
         try:
             attached = frozenset(row.evidence_id for row in self.records.attached_evidence(record_id))
@@ -163,6 +164,10 @@ class RecoveryDrainLiveness:
             logger.warning("Attached evidence of record %s is unreadable", record_id, exc_info=True)
             self.settle_error(unreadable, error)
             return None
+        if decision.row is not None:
+            # The read succeeded: that question is answered. Only its own row
+            # goes -- the readable question is judged under its own key.
+            self.owner.record(unreadable, ActionOutcome.done())
         return self._scope_key(request, attached)
 
     def _scope_key(self, request: RecoveryRecordRequest, attached: object) -> LivenessKey:

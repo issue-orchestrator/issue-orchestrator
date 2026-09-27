@@ -866,6 +866,34 @@ def test_a_retirement_that_committed_before_a_later_step_raised_still_resolves(t
     assert rig.escalation.unblocks == [(recover_key.escalation_issue, True)]
 
 
+def test_intermittently_unreadable_evidence_never_parks_a_readable_record(tmp_path):
+    """Reads alternate between failing and succeeding while another owner
+    holds the record. Each success answers the "unreadable" question, so
+    intermittent failures never add up to a park, and the record is judged
+    once it is free (review B r14)."""
+    calls: list[int] = []
+
+    def attached_evidence(record_id):
+        calls.append(1)
+        if flaky and len(calls) % 2 == 1:
+            raise OSError("evidence store hiccup")
+        return frozenset()
+
+    flaky = True
+    rig = _scope_rig(tmp_path, proof=lambda record: True)
+    rig.attached_evidence = attached_evidence
+    rig.execution.busy = True
+
+    rig.passes(4 * rig.policy.max_attempts, step=rig.policy.max_backoff)
+
+    assert rig.escalation.parked == []
+    assert rig.proofs == []
+    flaky = False
+    rig.execution.busy = False
+    rig.passes(1, step=rig.policy.max_backoff)
+    assert rig.proofs == [rig.record_id]
+
+
 def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
     """The scope sweep re-selects an unchanged record each interval. A proof
     that raises every time is held, then parked on the record's issue, and the
