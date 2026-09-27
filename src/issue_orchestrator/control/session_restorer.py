@@ -30,7 +30,7 @@ from ..domain.models import Issue, RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
 from ..domain.session_run import SessionRunAssets
 from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
-from .tech_lead_session_policy import recover_tech_lead_launch_scope
+from .tech_lead_scope_recovery import recover_tech_lead_launch_scope
 
 logger = logging.getLogger(__name__)
 
