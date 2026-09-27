@@ -15,14 +15,22 @@ capacity each stage's launches consume, and it refuses two kinds of second
 launch - refused, reported in ``Plan.skipped`` with the reason, never applied:
 
 * the SAME launch again: the same kind of session for the same issue or PR;
-* a new ISSUE session for an issue the plan already launches other work for.
-  The issue pipeline is planned last and already skips issues that have a
-  review, rework or retrospective review pending; this closes the kinds it
-  does not see (a queued tech-lead run, a validation retry) in the one plan
-  where both would otherwise start.
+* a second CODER session for one issue: a new issue session, a rework and a
+  validation retry all drive the issue's branch, so at most one of them starts
+  per plan;
+* a new ISSUE session for an issue the plan already launches any other work
+  for. The issue pipeline already skips issues with a review, rework or
+  retrospective review pending; this closes the kinds it does not see (a
+  queued tech-lead run of its anchor, a validation retry).
 
 Other combinations - a rework and a tech-lead investigation of one issue -
 are separate sessions by design and are left to the stages that plan them.
+
+Refusing after a stage has sliced its queue to the free capacity would still
+waste the slot, so stages also consult this owner BEFORE they pick:
+:func:`first_per_subject` for a queue, and :meth:`PlanLaunches.subjects` /
+:meth:`PlanLaunches.coder_subjects` with :func:`withhold_launching` for the
+validation-retry and issue stages.
 
 The subject is the GitHub number the launch acts on - the issue for an issue,
 rework, retrospective-review, tech-lead or validation-retry launch, the PR for
@@ -35,7 +43,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence, TypeVar
 
-from ..ports.issue import Issue
 from .action_base import Action
 from .actions import ActionType, LaunchSessionAction, LaunchValidationRetryAction, SessionType
 from .planner_types import SkippedItem
@@ -64,6 +71,16 @@ def launch_subject(action: Action) -> int | None:
         # duplicate-launch rule; fail loudly instead.
         raise TypeError(f"launch action {type(action).__name__} names no subject")
     return None
+
+
+#: Session kinds that drive an issue's branch; one per issue per plan.
+_CODER_KINDS = frozenset(
+    {
+        SessionType.ISSUE.value,
+        SessionType.REWORK.value,
+        ActionType.LAUNCH_VALIDATION_RETRY.value,
+    }
+)
 
 
 def _kind(action: Action) -> str:
@@ -98,25 +115,35 @@ def first_per_subject(
 
 
 def withhold_launching(
-    issues: Iterable[Issue], launching: frozenset[int], skipped: list[SkippedItem]
-) -> dict[int, str]:
-    """Report each candidate issue an earlier stage already launches.
+    candidates: Iterable[_Request],
+    launching: frozenset[int],
+    skipped: list[SkippedItem],
+    *,
+    item_type: str,
+    subject: Callable[[_Request], int],
+) -> tuple[list[_Request], dict[int, str]]:
+    """Split off the candidates an earlier stage of this plan already launches.
 
-    The issue pipeline excludes them before the scheduler picks; this records
-    why, as the per-issue skip reason the queue decision log reads.
+    Returns the candidates a stage may still pick from, and the skip reason
+    per withheld subject (the issue pipeline's queue decision log reads it).
+    Each withheld candidate is reported in ``skipped``.
     """
+    kept: list[_Request] = []
     reasons: dict[int, str] = {}
-    for issue in issues:
-        if issue.number in launching:
+    for candidate in candidates:
+        number = subject(candidate)
+        if number in launching:
             skipped.append(
                 SkippedItem(
-                    item_type="issue",
-                    number=issue.number,
+                    item_type=item_type,
+                    number=number,
                     reason="other work for this issue launches this tick",
                 )
             )
-            reasons[issue.number] = "launching_this_tick"
-    return reasons
+            reasons[number] = "launching_this_tick"
+            continue
+        kept.append(candidate)
+    return kept, reasons
 
 
 @dataclass
@@ -158,17 +185,27 @@ class PlanLaunches:
 
     def subjects(self) -> frozenset[int]:
         """Every issue/PR this plan already launches a session for."""
-        return frozenset(self._by_subject)
+        return frozenset(n for n, admitted in self._by_subject.items() if admitted)
+
+    def coder_subjects(self) -> frozenset[int]:
+        """Every issue this plan already launches a coder session for."""
+        return frozenset(
+            n
+            for n, admitted in self._by_subject.items()
+            if any(_kind(a) in _CODER_KINDS for a in admitted)
+        )
 
     @staticmethod
     def _conflict(action: Action, earlier: list[Action]) -> Action | None:
         """The admitted launch ``action`` would duplicate, if any."""
-        new_issue_work = (
-            isinstance(action, LaunchSessionAction)
-            and action.session_type is SessionType.ISSUE
-        )
+        kind = _kind(action)
         for admitted in earlier:
-            if new_issue_work or _kind(admitted) == _kind(action):
+            earlier_kind = _kind(admitted)
+            if (
+                kind == SessionType.ISSUE.value
+                or earlier_kind == kind
+                or (kind in _CODER_KINDS and earlier_kind in _CODER_KINDS)
+            ):
                 return admitted
         return None
 

@@ -214,3 +214,49 @@ def test_a_queue_holding_one_pr_twice_does_not_crowd_out_the_next_review() -> No
     )
 
     assert _launched(plan) == [("review", 70), ("review", 71)]
+
+
+def test_one_coder_session_per_issue_per_plan_and_the_slot_goes_to_the_next_retry() -> None:
+    """A rework and a validation retry of #7 both drive #7's branch.
+
+    The rework stage plans first; the retry of #7 is withheld before the
+    validation-retry stage spends capacity, so retry #8 takes the slot.
+    """
+    from issue_orchestrator.control.planner import Planner
+    from issue_orchestrator.control.scheduler import Scheduler
+    from issue_orchestrator.control.workflows import ReworkWorkflow
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.models import PendingRework
+    from tests.unit.test_planner import make_config, make_snapshot
+
+    config = make_config(max_concurrent_sessions=2)
+    planner = Planner(
+        config=config,
+        scheduler=Scheduler(config),
+        rework_workflow=ReworkWorkflow(config=config, events=MagicMock()),
+    )
+
+    plan = planner.plan(
+        make_snapshot(
+            pending_reworks=[
+                PendingRework(
+                    issue_key=FakeIssueKey(name="7"), agent_type="agent:developer", issue_number=7
+                )
+            ],
+            pending_validation_retries=[_retry(7), _retry(8)],
+        )
+    )
+
+    assert _launched(plan) == [("rework", 7), ("launch_validation_retry", 8)]
+
+
+def test_a_validation_retry_after_a_rework_of_its_issue_is_refused() -> None:
+    skipped: list[SkippedItem] = []
+    launches = PlanLaunches(skipped)
+    actions: list[Action] = []
+    rework = LaunchSessionAction(session_type=SessionType.REWORK, number=7)
+    retry = LaunchValidationRetryAction(issue_number=7, retry_count=1)
+
+    assert launches.admit([rework, retry], into=actions) == 1
+    assert actions == [rework]
+    assert launches.coder_subjects() == frozenset({7})

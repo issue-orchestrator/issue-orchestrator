@@ -476,6 +476,7 @@ class Planner:
                 snapshot,
                 capacity,
                 plan_context,
+                coder_launching=launches.coder_subjects(),
             )
             skipped.extend(validation_retry_skipped)
             validation_retry_launch_count = launches.admit(validation_retry_actions, into=actions)
@@ -1253,7 +1254,9 @@ class Planner:
         ]
 
         # Log per-issue exclusion reasons for diagnostics.
-        skip_reason_by_issue = withhold_launching(available, launching, skipped)
+        _, skip_reason_by_issue = withhold_launching(
+            available, launching, skipped, item_type="issue", subject=lambda i: i.number
+        )
         for issue in available:
             if issue.number in snapshot.active_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
@@ -1555,13 +1558,23 @@ class Planner:
         snapshot: OrchestratorSnapshot,
         capacity: int,
         plan_context: PlanContext,
+        *,
+        coder_launching: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
-        """Plan launch actions for coding sessions that need validation retry."""
+        """Plan launch actions for coding sessions that need validation retry.
+
+        An issue an earlier stage already starts a coder session for (a rework)
+        is withheld before capacity is spent (#7454).
+        """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         seen_issue_numbers: set[int] = set()
+        retries, _ = withhold_launching(
+            snapshot.pending_validation_retries, coder_launching, skipped,
+            item_type="validation_retry", subject=lambda r: r.issue_number,
+        )
 
-        for retry in snapshot.pending_validation_retries:
+        for retry in retries:
             if len(actions) >= capacity:
                 break
             issue_number = retry.issue_number
