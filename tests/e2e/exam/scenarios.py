@@ -8,10 +8,12 @@ tests pin it.
 from __future__ import annotations
 
 import logging
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.infra.config import Config
@@ -20,17 +22,23 @@ from issue_orchestrator.testing.exam.case import REVIEW_STARTED_EVENT
 from issue_orchestrator.testing.exam.observation import TechLeadActionDisposition
 from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
+    CODING,
+    REVIEW,
     SUBJECT,
+    UPGRADE_EARLY_TICKS,
     blocked_issue_green_pr_awaiting_review,
     halted_exchange_with_validated_work,
     stale_claim_paused_for_reconcile,
+    upgrade_with_work_in_flight,
 )
+from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
-from tests.e2e.exam.agents import CODER_LABEL
+from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL
 from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
-from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine
+from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine, case_u_engine
 from tests.e2e.exam.engine import EngineCheckout, ExamEngine
+from tests.e2e.exam.upgrade_window import capture_restart_window, quiesce, upgrade_facts
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
@@ -54,6 +62,8 @@ logger = logging.getLogger(__name__)
 CASE_A_EXTERNAL_ID = "M0-760"
 CASE_B_EXTERNAL_ID = "M0-761"
 CASE_C_EXTERNAL_ID = "M0-762"
+CASE_U_CODING_EXTERNAL_ID = "M0-763"
+CASE_U_REVIEW_EXTERNAL_ID = "M0-764"
 
 
 @dataclass(frozen=True)
@@ -85,7 +95,7 @@ class ExamRun:
 
 
 def goals_met_probe(
-    run: ExamRun, engine: ExamEngine, item: TrackedItem, *, every_s: float = 60.0
+    run: ExamRun, engine: ExamEngine, *items: TrackedItem, every_s: float = 60.0
 ) -> Callable[[], Awaitable[bool]]:
     """``done`` for :func:`drive`: the case's own goals, on GitHub's state.
 
@@ -102,15 +112,18 @@ def goals_met_probe(
         if now - last < every_s:
             return False
         last = now
-        fact = observe_item(
-            repo=run.repo,
-            config=engine.config,
-            item=item,
-            watcher=engine.runtime.watcher,
-            parked_screen="",
-            read_checks=False,
-        )
-        return all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role)
+        for item in items:
+            fact = observe_item(
+                repo=run.repo,
+                config=engine.config,
+                item=item,
+                watcher=engine.runtime.watcher,
+                parked_screen="",
+                read_checks=False,
+            )
+            if not all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role):
+                return False
+        return True
 
     return done
 
@@ -123,6 +136,7 @@ async def _finish(
     extra_prs: dict[str, list[int]],
     started: float,
     ended_by: RunEnd,
+    upgrade: UpgradeFacts | None = None,
 ) -> ExamResult:
     watcher = engine.runtime.watcher
     alive = engine.is_running()
@@ -160,6 +174,7 @@ async def _finish(
         elapsed_seconds=time.monotonic() - started,
         ended_by=ended_by,
         notes=tuple(run.notes),
+        upgrade=upgrade,
     )
     return ExamResult(observation=observation, scorecard=grade(run.case, observation))
 
@@ -413,6 +428,172 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
             await engine.close()
     finally:
         checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Case U
+# ---------------------------------------------------------------------------
+
+#: How long the base engine gets to put both pieces of work mid-flight.
+CASE_U_PLANT_S = 15 * 60
+#: Backstop for the candidate's first ticks (a healthy engine ticks in seconds).
+CASE_U_WINDOW_S = 10 * 60
+
+
+class _SessionReader(Protocol):
+    def active_session_issues(self) -> tuple[tuple[str, int], ...]: ...
+
+
+def _in_flight(
+    engine: _SessionReader, repo: str, *, coding: TrackedItem, review: TrackedItem
+) -> bool:
+    """Both pieces of work are mid-flight: the held coder is running, and the
+    review of the other issue's published PR is running."""
+    active = engine.active_session_issues()
+    coding_live = any(
+        number == coding.issue_number and not name.startswith("review-") for name, number in active
+    )
+    review_names = {name for name, _ in active if name.startswith("review-")}
+    if not coding_live or not review_names:
+        return False
+    prs = linked_pull_requests(repo, review.issue_number, state="open")
+    return any(f"review-{pr.number}" in review_names for pr in prs)
+
+
+def in_flight_at_stop(
+    engine: _SessionReader, repo: str, *, coding: TrackedItem, review: TrackedItem
+) -> tuple[int, int]:
+    """The premise, checked again at the stop itself: a session that ended
+    since it was first seen is not work in flight, and the case must not
+    grade an upgrade that inherited less than it claims."""
+    if not _in_flight(engine, repo, coding=coding, review=review):
+        raise RuntimeError(
+            "case U's premise did not hold at the stop: both pieces of work were in flight,"
+            f" but not any more (active: {engine.active_session_issues()})"
+        )
+    return (coding.issue_number, review.issue_number)
+
+
+async def run_case_u(
+    run: ExamRun, flow_cleanup: list[E2EFlow], *, base_ref: str
+) -> ExamResult:
+    """The base engine (``base_ref``) with work in flight, stopped without a
+    drain; the engine under test (``run.engine_ref``, the candidate) then
+    starts from the same checkout and state."""
+    hold_dir = Path(tempfile.mkdtemp(prefix=f"exam-u-{run.identity.run_id}-"))
+    release = hold_dir / "release"
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=base_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_u_engine(release)
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
+        base = spec.engine(config, checkout)
+        runtime = await base.start()
+        try:
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            _, review_number = flow.create_issue(
+                f"[{CASE_U_REVIEW_EXTERNAL_ID}] [EXAM-U] Review in flight across an upgrade",
+                [CODER_LABEL, E2E_DATA_LABEL],
+                body="Tech-lead exam case U: its PR's code review is mid-flight at the upgrade.",
+            )
+            _, coding_number = flow.create_issue(
+                f"[{CASE_U_CODING_EXTERNAL_ID}] [EXAM-U] Coding in flight across an upgrade",
+                [HELD_CODER_LABEL, E2E_DATA_LABEL],
+                body="Tech-lead exam case U: its coding session is mid-flight at the upgrade.",
+            )
+            coding = TrackedItem(CODING, coding_number, external_id=CASE_U_CODING_EXTERNAL_ID)
+            review = TrackedItem(REVIEW, review_number, external_id=CASE_U_REVIEW_EXTERNAL_ID)
+            planted = await settle(
+                lambda: _in_flight(base, run.repo, coding=coding, review=review),
+                timeout_s=CASE_U_PLANT_S,
+            )
+            if not planted:
+                raise RuntimeError(
+                    f"case U's premise was not planted: within {CASE_U_PLANT_S // 60} min the"
+                    f" base engine never ran both #{coding_number}'s held coder and"
+                    f" #{review_number}'s PR review at once (active: {base.active_session_issues()})"
+                )
+            sessions_at_stop = in_flight_at_stop(base, run.repo, coding=coding, review=review)
+        finally:
+            # A graceful stop is how an operator restarts an engine; it does
+            # not drain, so the work above is cut off mid-flight.
+            await base.close()
+
+        base_commit = checkout.commit
+        checkout = checkout.switch_to(harness_root=run.harness_root, ref=run.engine_ref)
+        candidate = spec.engine(config, checkout)
+        started = time.monotonic()
+        runtime = await candidate.start()
+        try:
+            flow.watcher = runtime.watcher
+            # Closed (paused) BEFORE the release: everything in it happened
+            # while all the work was still held (upgrade_window).
+            window = await capture_restart_window(
+                candidate, min_ticks=UPGRADE_EARLY_TICKS, timeout_s=CASE_U_WINDOW_S
+            )
+            release.touch()
+            if window.engine_alive:
+                candidate.resume()
+            ended_by = await drive(
+                candidate,
+                done=goals_met_probe(run, candidate, coding, review),
+                quiet_s=420,
+                timeout_s=45 * 60,
+            )
+            # Quiesce before the last read, and stay paused through the
+            # observation: nothing can be published after the history that
+            # is graded. The watcher may lag, so the engine's own history is
+            # the record.
+            alive = candidate.is_running()
+            whole_run: list[Mapping[str, Any]] = list(runtime.watcher.view.global_events)
+            if alive:
+                whole_run += await quiesce(
+                    candidate,
+                    deadline=time.monotonic() + CASE_U_WINDOW_S,
+                    after=runtime.watcher.view.last_event_id,
+                )
+            facts = upgrade_facts(
+                window,
+                whole_run=whole_run,
+                complete=alive,
+                base_commit=base_commit,
+                candidate_commit=checkout.commit,
+                sessions_at_stop=sessions_at_stop,
+            )
+            return await _finish(
+                run,
+                candidate,
+                items=[coding, review],
+                extra_prs={},
+                started=started,
+                ended_by=ended_by,
+                upgrade=facts,
+            )
+        finally:
+            await candidate.close()
+    finally:
+        checkout.remove()
+        shutil.rmtree(hold_dir, ignore_errors=True)
+
+
+def case_u(config: Config) -> ExamCase:
+    labels = _labels(config)
+    return upgrade_with_work_in_flight(
+        code_reviewed_label=labels.code_reviewed,
+        hold_labels=frozenset(
+            {
+                labels.needs_human,
+                labels.blocked,
+                labels.blocked_failed,
+                labels.blocked_claim_lost,
+                labels.blocked_stale_claim,
+                labels.blocked_pr_closed,
+                labels.needs_reconcile,
+            }
+        ),
+    )
 
 
 def case_c(config: Config) -> ExamCase:

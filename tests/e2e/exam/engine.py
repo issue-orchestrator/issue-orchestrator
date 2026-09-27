@@ -16,8 +16,14 @@ from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.engine_checkout import EngineCheckout
-from tests.e2e.exam.agents import CODER_LABEL, REVIEWER_LABEL, TECH_LEAD_LABEL, shim_command
-from tests.e2e.fixtures import OrchestratorProcess, find_free_port
+from tests.e2e.exam.agents import (
+    CODER_LABEL,
+    HELD_CODER_LABEL,
+    REVIEWER_LABEL,
+    TECH_LEAD_LABEL,
+    shim_command,
+)
+from tests.e2e.fixtures import OrchestratorProcess, fetch_gh_audit_report, find_free_port
 from tests.e2e.fixtures.orchestrator_process import merge_config_overlay
 from tests.e2e.fixtures.inflight_tracker import control_api_headers
 from tests.e2e.flows import OrchestratorRuntime, start_orchestrator_runtime
@@ -25,6 +31,10 @@ from tests.e2e.flows import OrchestratorRuntime, start_orchestrator_runtime
 logger = logging.getLogger(__name__)
 
 TECH_LEAD_PROMPT = Path("repo-specific") / "prompts" / "tech-lead.md"
+
+#: Agent and session limit for work held mid-flight (Case U): past the base
+#: engine's run-up, its stop and the candidate's restart window.
+HELD_SESSION_TIMEOUT_MINUTES = 45
 
 #: Settings every exam engine runs with, under each case's own overlay.
 #: Session interactions answer the startup screens real agents open on — the
@@ -44,8 +54,15 @@ def exam_config(
     run_label: str,
     reviewer_exchange_fault: str,
     tech_lead_model: str | None = None,
+    release_file: Path | None = None,
 ) -> Config:
-    """The e2e session config, pointed at the checkout, with exam agents."""
+    """The e2e session config, pointed at the checkout, with exam agents.
+
+    With ``release_file``, work is held mid-flight until the file exists:
+    every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
+    committing (``CODER_LABEL`` still codes at once, so its PR can reach a
+    held review).
+    """
     config = copy.deepcopy(base)
     config.repo_root = checkout.root
     config.control_api_port = find_free_port()
@@ -54,7 +71,10 @@ def exam_config(
     config.e2e_pr_labels = [run_label, "io-e2e-test-data"]
     config.max_concurrent_sessions = 2
     config.queue_refresh_seconds = 30
-    config.session_timeout_minutes = 10
+    # A held session must outlive the base engine's stop and the candidate's
+    # restart window; nothing else in the exam needs more than ten minutes.
+    held_minutes = HELD_SESSION_TIMEOUT_MINUTES if release_file is not None else None
+    config.session_timeout_minutes = held_minutes or 10
     config.code_review_agent = REVIEWER_LABEL
     config.tech_lead_review_agent = TECH_LEAD_LABEL if tech_lead_model else None
     prompt = checkout.root / "tests" / "e2e" / "fixtures" / "prompts" / "simple_task.md"
@@ -71,14 +91,27 @@ def exam_config(
         ),
         REVIEWER_LABEL: AgentConfig(
             prompt_path=prompt,
-            timeout_minutes=1,
+            timeout_minutes=held_minutes or 1,
             model="sonnet",
-            command=shim_command("reviewer", exchange_fault=reviewer_exchange_fault),
+            command=shim_command(
+                "reviewer", exchange_fault=reviewer_exchange_fault, hold_until=release_file
+            ),
             meta_agent="claude-code",
             ai_system="claude-code",
             provider_args={"permission_mode": "bypassPermissions"},
         ),
     }
+    if release_file is not None:
+        config.agents[HELD_CODER_LABEL] = AgentConfig(
+            prompt_path=prompt,
+            timeout_minutes=HELD_SESSION_TIMEOUT_MINUTES,
+            model="sonnet",
+            command=shim_command("coder", hold_until=release_file),
+            meta_agent="claude-code",
+            ai_system="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+            reviewer=REVIEWER_LABEL,
+        )
     if tech_lead_model:
         config.agents[TECH_LEAD_LABEL] = AgentConfig(
             prompt_path=checkout.root / TECH_LEAD_PROMPT,
@@ -131,12 +164,19 @@ class ExamEngine:
         if not run_label:
             # Without its run label the engine would work every open issue.
             raise RuntimeError("exam engine config has no filtering.label (the run label)")
-        self._runtime = await start_orchestrator_runtime(
-            self.process,
-            self.config.control_api_port,
-            max_issues=10,
-            extra_args=["--label", run_label],
-        )
+        try:
+            self._runtime = await start_orchestrator_runtime(
+                self.process,
+                self.config.control_api_port,
+                max_issues=10,
+                extra_args=["--label", run_label],
+            )
+        except BaseException:
+            # The process may be up even though startup failed (e.g. the
+            # control API never became ready). It is ours: stop it before the
+            # caller removes the checkout it runs from.
+            self.process.stop()
+            raise
         # Keep every event for the report, not the watcher's default 200.
         self._runtime.watcher.view.set_diag_limits(100_000)
         return self._runtime
@@ -165,6 +205,33 @@ class ExamEngine:
         ``issue_key`` and fire every tick, so they never count as progress."""
         return sum(1 for event in self.runtime.watcher.view.global_events if event.get("issue_key"))
 
+    def event_history(self, *, after: int = 0) -> list[dict[str, Any]]:
+        """Every event this process has buffered with an id above ``after``
+        (from its first by default).
+
+        The watcher only sees events published after it connects; a
+        restart's startup work happens before that.
+        """
+        payload = self._get_json(self.config.control_api_port, f"/api/events_since?after={after}")
+        events = payload.get("events")
+        if not isinstance(events, list):
+            raise RuntimeError(f"/api/events_since has no events list: {payload!r}")
+        return events
+
+    def pause(self) -> None:
+        """Stop the engine applying actions (an operator pause)."""
+        self._post(self.config.control_api_port, "/api/pause")
+
+    def resume(self) -> None:
+        self._post(self.config.control_api_port, "/api/resume")
+
+    def gh_audit_report(self) -> dict[str, Any]:
+        """This process's GitHub calls so far, by command."""
+        report = fetch_gh_audit_report(self.config.control_api_port)
+        if report is None:
+            raise RuntimeError("the engine returned no gh_audit report")
+        return report
+
     def pending_work(self) -> int:
         """Reviews and reworks the engine has queued but not launched."""
         status = self._get_json(self.config.control_api_port, "/api/status")
@@ -182,6 +249,14 @@ class ExamEngine:
         if isinstance(value, bool) or not isinstance(value, int):
             raise RuntimeError(f"/api/status active_sessions is not an int: {status!r}")
         return value
+
+    def _post(self, port: int, path: str) -> None:
+        request = urllib.request.Request(
+            f"http://localhost:{port}{path}", data=b"{}", method="POST", headers=control_api_headers()
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"POST {path} returned {response.status}")
 
     def _get_json(self, port: int, path: str) -> dict[str, Any]:
         request = urllib.request.Request(

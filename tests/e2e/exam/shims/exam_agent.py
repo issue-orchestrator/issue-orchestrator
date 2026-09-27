@@ -13,6 +13,11 @@ misbehaves and how:
   ``exit-silently`` exits without answering, which the engine records as a
   reviewer no-completion (the porchpin 09-23 shape, minus the dialog).
 
+``--hold-until PATH`` makes a session wait, before doing anything, until
+PATH exists. The upgrade case (Case U) uses it to keep work mid-flight across
+an engine stop: the harness creates PATH only after the candidate engine has
+taken over.
+
 Completion commands come from the ENGINE's ``scripts/`` directory, which the
 engine prepends to every agent's PATH, so a run against an older engine uses
 that engine's own completion contract.
@@ -93,13 +98,24 @@ def approve_review() -> None:
     )
 
 
+def hold_until(release: Path) -> None:
+    """Stay mid-flight until the harness releases the work."""
+    log(f"holding until {release} exists")
+    while not release.exists():
+        time.sleep(2)
+    log("released")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--role", choices=("coder", "reviewer"), required=True)
     parser.add_argument("--exchange-fault", choices=EXCHANGE_FAULTS, default="none")
+    parser.add_argument("--hold-until", type=Path, default=None)
     args = parser.parse_args()
     in_exchange = bool(os.environ.get(RESPONSE_FILE_ENV))
     log(f"role={args.role} in_exchange={in_exchange} fault={args.exchange_fault}")
+    if args.hold_until is not None:
+        hold_until(args.hold_until)
 
     if args.role == "coder":
         if in_exchange:
