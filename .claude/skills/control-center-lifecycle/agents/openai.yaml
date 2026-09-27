@@ -1,4 +1,0 @@
-interface:
-  display_name: "Control Center Lifecycle"
-  short_description: "Keep engine lifecycle UI scoped correctly"
-  default_prompt: "Use $control-center-lifecycle to keep Control Center, repository engine, and job scopes explicit and consistent."
