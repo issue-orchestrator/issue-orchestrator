@@ -38,7 +38,8 @@ from ..domain.recovery_attempt import RecoveryAttemptPending
 from ..domain.recovery_completion import RecoveryCompleted
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
-from .action_liveness import ActionLivenessOwner, LivenessDecision
+from ..ports.repository_host import host_rate_limit_of
+from .action_liveness import ActionLivenessOwner, LivenessDecision, transient_outcome
 
 RECOVER_ACTION = "recover_validated_work"
 REFRESH_ACTION = "refresh_remote_authority"
@@ -90,7 +91,10 @@ class RecoveryDrainLiveness:
             self.owner.record(key, outcome)
 
     def settle_error(self, key: LivenessKey, error: Exception) -> None:
-        self.owner.record(key, ActionOutcome.transient(f"{type(error).__name__}: {error}"))
+        self.owner.record(
+            key,
+            transient_outcome(f"{type(error).__name__}: {error}", host_rate_limit_of(error)),
+        )
 
 
 __all__ = [

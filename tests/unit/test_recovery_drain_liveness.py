@@ -241,3 +241,27 @@ def test_authority_refresh_contention_is_marked(tmp_path) -> None:
             execution=_BusyExecution(busy=busy), effects=None, store=None, observer=None,
         )
         assert operation.run(request).contended is True
+
+
+def test_a_rate_limited_remote_read_waits_for_its_reset(tmp_path) -> None:
+    """#7303's typed limit behind a drain failure spends nothing until reset."""
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    def refused(request):
+        error = RepositoryHostRateLimitedError("API rate limit exceeded")
+        error.rate_limit = HostRateLimit(
+            resets_at=engine.clock.now + timedelta(minutes=30), kind="primary"
+        )
+        raise error
+
+    engine = _Engine(tmp_path, refused)
+
+    for _ in range(40):  # 40 minutes: past the 30-minute reset, once
+        engine.drain.tick(OrchestratorState(), ACTIVE)
+        engine.now.value += 60
+        engine.clock.advance(timedelta(minutes=1))
+
+    assert len(engine.operation.called) == 2, "once, then once more after the reset"
+    [row] = engine.rows.rows.values()
+    assert row.attempts == 0 and not row.parked
