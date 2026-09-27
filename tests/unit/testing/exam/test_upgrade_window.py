@@ -20,14 +20,27 @@ def tick(event_id: int) -> dict[str, Any]:
 
 
 class FakeCandidate:
-    """An engine whose history grows by one tick per history read, up to ``ticks``."""
+    """A live engine on a fake clock: a tick completes every
+    ``reads_per_tick`` history reads, publishing its actions' events
+    (``pending``) before its own ``tick.completed``, as the engine does."""
 
-    def __init__(self, startup: list[dict[str, Any]], ticks: int, audit: dict[str, int]) -> None:
+    def __init__(
+        self, startup: list[dict[str, Any]], audit: dict[str, int], *, reads_per_tick: int = 1
+    ) -> None:
+        self.reads_per_tick = reads_per_tick
+        self.history_reads = 0
         self.history: list[dict[str, Any]] = list(startup)
-        self.ticks_left = ticks
+        self.pending: list[tuple[str, dict[str, Any]]] = []
         self.audit = audit
         self.reads: list[str] = []
         self.alive = True
+        self.now = 0.0
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
     def publish(self, event_type: str, payload: dict[str, Any]) -> None:
         self.history.append({"event_id": len(self.history) + 1, "type": event_type, "payload": payload})
@@ -38,8 +51,11 @@ class FakeCandidate:
     def event_history(self) -> list[dict[str, Any]]:
         self.reads.append("history")
         snapshot = list(self.history)
-        if self.ticks_left:
-            self.ticks_left -= 1
+        self.history_reads += 1
+        if self.history_reads % self.reads_per_tick == 0:
+            for event_type, payload in self.pending:
+                self.publish(event_type, payload)
+            self.pending = []
             self.publish("tick.completed", {})
         return snapshot
 
@@ -48,13 +64,15 @@ class FakeCandidate:
         return {"by_command": dict(self.audit)}
 
 
-async def _no_sleep(_: float) -> None:
-    return None
-
-
 def _capture(engine: FakeCandidate):
     return asyncio.run(
-        capture_restart_window(engine, min_ticks=UPGRADE_EARLY_TICKS, timeout_s=60, sleep=_no_sleep)
+        capture_restart_window(
+            engine,
+            min_ticks=UPGRADE_EARLY_TICKS,
+            timeout_s=600,
+            clock=engine.clock,
+            sleep=engine.sleep,
+        )
     )
 
 
@@ -66,7 +84,7 @@ def test_startup_hazards_and_pages_before_any_watcher_fail_the_case() -> None:
         {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "RUN_UNRESTORABLE"}},
         {"event_id": 2, "type": "issue.labels_changed", "payload": {"issue_number": 921, "added": ["io:needs-human"], "removed": []}},
     ]
-    engine = FakeCandidate(startup, ticks=6, audit={"POST /repos/o/r/issues/921/comments": 1})
+    engine = FakeCandidate(startup, audit={"POST /repos/o/r/issues/921/comments": 1})
     window = _capture(engine)
     later = [{"event_id": 40, "type": "issue.labels_changed", "payload": {"issue_number": 921, "added": [], "removed": ["io:needs-human"]}}]
 
@@ -85,17 +103,20 @@ def test_the_window_closes_audit_first_then_history_and_reads_nothing_after() ->
     """Finding 2: the window is closed by the reads themselves (the cumulative
     audit, then the history), before the harness releases the work, so no
     tick boundary has to be timed."""
-    engine = FakeCandidate([], ticks=UPGRADE_EARLY_TICKS + 3, audit={"POST /repos/o/r/issues/5/comments": 2})
+    engine = FakeCandidate([], audit={"POST /repos/o/r/issues/5/comments": 2})
     window = _capture(engine)
 
-    assert engine.reads[-2:] == ["audit", "history"]
+    # One audit read, then history reads only: the one that notes the
+    # barrier and the one that finds a tick completed after it.
+    audit_at = engine.reads.index("audit")
     assert engine.reads.count("audit") == 1
+    assert engine.reads[audit_at + 1 :] == ["history", "history"]
     assert window.ticks >= UPGRADE_EARLY_TICKS
     assert window.writes[WriteKind.COMMENT] == 2
 
 
 def test_a_candidate_that_dies_in_the_window_fails_on_ticks() -> None:
-    engine = FakeCandidate([], ticks=10, audit={})
+    engine = FakeCandidate([], audit={})
     engine.alive = False
     window = _capture(engine)
 
@@ -137,18 +158,23 @@ def test_a_failed_start_stops_the_engine_it_launched(monkeypatch, tmp_path: Path
 
 
 class LateLabelCandidate(FakeCandidate):
-    """Adds a hold label while the harness is reading its audit report."""
+    """Its hold-label write is on GitHub (audited) before its event is
+    published; the event lands with the tick in progress at the audit read."""
 
     def gh_audit_report(self) -> dict[str, Any]:
         report = super().gh_audit_report()
-        self.publish("issue.labels_changed", {"issue_number": 921, "added": ["io:needs-human"], "removed": []})
+        self.pending.append(
+            ("issue.labels_changed", {"issue_number": 921, "added": ["io:needs-human"], "removed": []})
+        )
         return report
 
 
-def test_a_label_added_during_the_audit_read_is_still_seen() -> None:
-    """Round 2 F1: the audit is read first and the history after it, so a
-    write the audit may count always has its event in the history read."""
-    engine = LateLabelCandidate([], ticks=UPGRADE_EARLY_TICKS, audit={"POST /repos/o/r/issues/921/labels": 1})
+def test_an_audited_label_whose_event_is_still_unpublished_is_waited_for() -> None:
+    """Round 3 F1: the window closes only at a tick boundary after the audit
+    read, so an audited write's late event is in the history graded."""
+    # A tick spans several reads: the label lands only when the tick that
+    # was in progress at the audit read completes.
+    engine = LateLabelCandidate([], audit={"POST /repos/o/r/issues/921/labels": 1}, reads_per_tick=4)
     window = _capture(engine)
 
     facts = upgrade_facts(window, whole_run=[], base_commit="b" * 40, candidate_commit="c" * 40, sessions_at_stop=(911, 921))
@@ -156,21 +182,45 @@ def test_a_label_added_during_the_audit_read_is_still_seen() -> None:
     assert "upgrade: hold label added in the restart window: #921 +io:needs-human" in card.failures
 
 
-def test_a_complete_history_buffered_out_of_order_is_graded() -> None:
-    """Round 2 F3: concurrent publishers can buffer ids out of order."""
+class HoleyHistory(FakeCandidate):
+    """From the audit read on, returns its history with id 2 missing for
+    ``holey_reads`` reads (a publisher still in flight)."""
 
-    class OutOfOrder(FakeCandidate):
-        def event_history(self) -> list[dict[str, Any]]:
-            history = super().event_history()
-            return [history[1], history[0], *history[2:]]
+    def __init__(self, *args: Any, holey_reads: int, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.holey_reads = holey_reads
+        self.audited = False
 
-    startup = [
-        {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "X"}},
-        {"event_id": 2, "type": "tick.completed", "payload": {}},
-    ]
-    engine = OutOfOrder(startup, ticks=UPGRADE_EARLY_TICKS, audit={})
+    def gh_audit_report(self) -> dict[str, Any]:
+        self.audited = True
+        return super().gh_audit_report()
+
+    def event_history(self) -> list[dict[str, Any]]:
+        history = super().event_history()
+        if self.audited and self.holey_reads:
+            self.holey_reads -= 1
+            return [event for event in history if event["event_id"] != 2]
+        return list(reversed(history))  # complete, but buffered out of order
+
+
+STARTUP = [
+    {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "X"}},
+    {"event_id": 2, "type": "issue.labels_changed", "payload": {"issue_number": 911, "added": [], "removed": ["stale"]}},
+]
+
+
+def test_a_briefly_holey_history_is_retried_and_graded_in_id_order() -> None:
+    """Round 2 F3 / round 3 F2: a hole a concurrent publisher leaves for a
+    moment is waited out; the complete history is graded in id order."""
+    engine = HoleyHistory(STARTUP, audit={}, holey_reads=3)
     window = _capture(engine)
 
     assert [event["event_id"] for event in window.events] == list(range(1, len(window.events) + 1))
     facts = upgrade_facts(window, whole_run=[], base_commit="b" * 40, candidate_commit="c" * 40, sessions_at_stop=(911, 921))
     assert facts.hazards == ("session.run_unrestorable on #921 (X)",)
+
+
+def test_a_persistent_hole_is_refused() -> None:
+    engine = HoleyHistory(STARTUP, audit={}, holey_reads=10_000)
+    with pytest.raises(ValueError, match="incomplete"):
+        _capture(engine)

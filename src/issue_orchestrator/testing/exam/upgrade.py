@@ -138,17 +138,17 @@ def complete_history(events: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[st
     Ids are allotted before publication, so concurrent publishers can buffer
     them out of order; completeness is the id SET 1..N, not the sequence.
     """
-    ids = [_event_id(event) for event in events]
+    ids = [event_id_of(event) for event in events]
     if not ids or sorted(ids) != list(range(1, len(ids) + 1)):
         raise ValueError(
             f"engine event history is incomplete ({len(ids)} events, lowest ids"
             f" {sorted(set(ids))[:3]}); a restart window cannot be graded from a"
             " truncated buffer"
         )
-    return sorted(events, key=_event_id)
+    return sorted(events, key=event_id_of)
 
 
-def _event_id(event: Mapping[str, Any]) -> int:
+def event_id_of(event: Mapping[str, Any]) -> int:
     event_id = event.get("event_id")
     if not isinstance(event_id, int) or isinstance(event_id, bool):
         raise ValueError(f"engine event without an integer event_id: {event!r}")
@@ -161,7 +161,7 @@ def merged_by_id(*streams: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any
     seen: dict[int, Mapping[str, Any]] = {}
     for stream in streams:
         for event in stream:
-            seen.setdefault(_event_id(event), event)
+            seen.setdefault(event_id_of(event), event)
     return [seen[event_id] for event_id in sorted(seen)]
 
 

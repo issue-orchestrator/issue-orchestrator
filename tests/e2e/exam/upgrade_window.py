@@ -6,15 +6,21 @@ agent is still holding. So any comment it posts or hold label it adds is the
 restart's own doing, whenever in the window it happens. It spans at least
 ``min_ticks`` ticks, so the engine had time to act.
 
-The window is closed by what the harness reads, in order:
-1. the engine's cumulative GitHub audit report;
-2. its complete event history from its first event (startup restore
-   publishes before any watcher connects).
-Only then is the work released. The order makes the two coherent: every
-write the audit counted has its event in the later history. A write after
-the audit shows up as an event only, and it is still inside the window.
-Everything read belongs to the window by construction; no timing boundary
-has to be guessed.
+The window is closed at a tick boundary the harness can see:
+1. read the engine's cumulative GitHub audit report;
+2. read its complete event history and note its newest event id;
+3. read the complete history again (from its first event: startup restore
+   publishes before any watcher connects) until it holds a
+   ``tick.completed`` newer than the id noted in step 2. That tick
+   completed after the audit read.
+Only then is the work released.
+
+A write the audit counted was made by a tick that was in progress (or
+already over) at the audit read, and a tick publishes the events of its
+actions before its own ``tick.completed``. An off-tick writer publishes
+right after its write, well within a tick. So every audited write has its
+event in the history. Events after the audit are still inside the window,
+because the work is still held.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from issue_orchestrator.testing.exam.upgrade import (
     UpgradeFacts,
     WriteKind,
+    event_id_of,
     complete_history,
     hazard_events,
     label_changes,
@@ -75,10 +82,34 @@ async def capture_restart_window(
         # with it, and the grade fails on the tick shortfall and the exit.
         return RestartWindow(events=(), writes={}, engine_alive=False)
     report = engine.gh_audit_report()
-    events = complete_history(engine.event_history())
+    after_audit = await _settled_history(engine, deadline, poll_s, clock, sleep)
+    noted = max(event_id_of(event) for event in after_audit)
+    while True:
+        events = await _settled_history(engine, deadline, poll_s, clock, sleep)
+        if any(
+            event.get("type") == "tick.completed" and event_id_of(event) > noted for event in events
+        ):
+            break
+        if clock() >= deadline:
+            raise RuntimeError(
+                "no tick completed after the audit read; the restart window cannot be closed"
+            )
+        await sleep(poll_s)
     return RestartWindow(
         events=tuple(events), writes=writes_by_kind(report["by_command"]), engine_alive=True
     )
+
+
+async def _settled_history(engine: WindowEngine, deadline: float, poll_s: float, clock, sleep):
+    """The complete history, retried while a concurrent publisher briefly
+    leaves a hole; a hole or a dropped prefix that persists is refused."""
+    while True:
+        try:
+            return complete_history(engine.event_history())
+        except ValueError:
+            if clock() >= deadline:
+                raise
+        await sleep(poll_s)
 
 
 def upgrade_facts(
