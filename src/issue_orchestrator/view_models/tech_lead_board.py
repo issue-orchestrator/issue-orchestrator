@@ -103,7 +103,11 @@ class TechLeadBoardCharterRole:
 
     role: str
     dials: str
+    #: Executed decisions whose applier committed the effect (#7362).
     executed: int = 0
+    #: Executed decisions refused, failed, withheld or parked when applied, or
+    #: whose result is not linked yet: allowed to run, but not shown to work.
+    executed_not_applied: int = 0
     proposed: int = 0
     refused_destructive: int = 0
     advice_only: int = 0
@@ -330,10 +334,12 @@ def _charter_lines(roles: Sequence[TechLeadBoardCharterRole]) -> list[str]:
         "Active `tech_lead.charter` dials, with the recorded outcome of each"
         " role's recent decisions.",
         "",
-        "| Role | Dials | Executed | Proposed | Refused (destructive) | Advice only |",
-        "|---|---|---|---|---|---|",
+        "| Role | Dials | Executed (applied) | Executed, not applied | Proposed"
+        " | Refused (destructive) | Advice only |",
+        "|---|---|---|---|---|---|---|",
         *(
-            f"| {item.role} | {item.dials} | {item.executed} | {item.proposed}"
+            f"| {item.role} | {item.dials} | {item.executed}"
+            f" | {item.executed_not_applied} | {item.proposed}"
             f" | {item.refused_destructive} | {item.advice_only} |"
             for item in roles
         ),

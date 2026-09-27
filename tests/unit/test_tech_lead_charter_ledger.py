@@ -26,6 +26,8 @@ from issue_orchestrator.control.tech_lead_proposals import (
 from issue_orchestrator.domain.tech_lead_charter import CharterOutcome, CharterRole
 from issue_orchestrator.domain.tech_lead_charter_decisions import (
     CharterDecisionSource,
+    CharterExecutionLink,
+    CharterExecutionResult,
     CharterProposalLifecycle,
     TechLeadCharterDecision,
     decision_key,
@@ -292,7 +294,18 @@ def test_board_shows_active_dials_and_counts_read_from_the_ledger(store) -> None
             _decision("A1", "kill_hung_session"),
             _decision("A2", "reset_retry"),
             _decision("A3", "post_comment"),
+            _decision("A4", "post_comment"),
         ]
+    )
+    # #7362: an executed verdict only allowed it; the applier's result decides.
+    store.charter_ledger.link_execution_outcomes(
+        [
+            CharterExecutionLink(decision_key("run-1", "A3"), CharterExecutionResult.APPLIED),
+            CharterExecutionLink(
+                decision_key("run-1", "A4"), CharterExecutionResult.FAILED, "comment refused"
+            ),
+        ],
+        at="2026-09-26T10:00:00+00:00",
     )
 
     rows = charter_board_rows(TechLeadCharterPolicy.from_config(config), store)
@@ -305,11 +318,12 @@ def test_board_shows_active_dials_and_counts_read_from_the_ledger(store) -> None
     )
 
     assert "## Charter" in markdown
-    # flow: A3 executed; A1 proposed (default kill mode); A2 refused (destructive).
-    assert "| flow | restructure / execute | 1 | 1 | 1 | 0 |" in markdown
-    assert "| review_loop | fix / propose | 0 | 0 | 0 | 0 |" in markdown
-    assert "| intake | disabled | 0 | 0 | 0 | 0 |" in markdown
-    assert "| general | workaround / propose | 0 | 0 | 0 | 0 |" in markdown
+    # flow: A3 executed and applied, A4 executed but failed; A1 proposed
+    # (default kill mode); A2 refused (destructive).
+    assert "| flow | restructure / execute | 1 | 1 | 1 | 1 | 0 |" in markdown
+    assert "| review_loop | fix / propose | 0 | 0 | 0 | 0 | 0 |" in markdown
+    assert "| intake | disabled | 0 | 0 | 0 | 0 | 0 |" in markdown
+    assert "| general | workaround / propose | 0 | 0 | 0 | 0 | 0 |" in markdown
 
 
 def test_board_omits_the_charter_section_without_a_policy() -> None:
@@ -425,6 +439,111 @@ def test_a_promotion_filing_never_runs_without_its_recorded_decision() -> None:
     assert effects == [audited.effect]
     [row] = store.charter_ledger.list_recent()
     assert (row.action_id, row.outcome) == ("sig-a", CharterOutcome.PROPOSED)
+
+
+def _executed_promotion():
+    from issue_orchestrator.control.tech_lead_charter_records import audit_promotions
+    from issue_orchestrator.control.tech_lead_finding_promotion import plan_finding_promotions
+
+    config = Config()
+    config.repo = "o/r"
+    config.agents = {"agent:web": MagicMock()}
+    config.tech_lead_follow_up_agent = "agent:web"
+    config.tech_lead.findings.promote = "auto"
+    promotable = _promotion_facts()
+    [audited] = audit_promotions(
+        TechLeadCharterPolicy.from_config(config), promotable,
+        plan_finding_promotions(config, promotable=promotable), decided_at="t0",
+    )
+    assert audited.decisions[0].outcome is CharterOutcome.EXECUTED
+    return audited
+
+
+@pytest.mark.parametrize(
+    ("apply_effect", "expected", "reason"),
+    [
+        (lambda action: ActionResult.ok(action), CharterExecutionResult.APPLIED, None),
+        (lambda action: ActionResult.fail(action, "403 from o/r"), CharterExecutionResult.FAILED,
+         "403 from o/r"),
+        (lambda action: ActionResult.skip(action, "stale precondition: already filed"),
+         CharterExecutionResult.REFUSED, "stale precondition: already filed"),
+    ],
+    ids=["applied", "failed", "refused"],
+)
+def test_an_executed_promotion_links_its_filing_s_real_result(apply_effect, expected, reason) -> None:
+    """#7362: an ungated promotion is recorded ``executed`` before it files;
+    what the filing then did is linked back, so a failed filing never reads
+    as a remedy that took effect."""
+    from issue_orchestrator.control.tech_lead_charter_policy import apply_charter_audited_action
+
+    audited = _executed_promotion()
+    store = InMemoryTechLeadAuthorityStore()
+
+    apply_charter_audited_action(audited, authority=store, apply_action=apply_effect)
+
+    [row] = store.charter_ledger.list_recent()
+    assert row.outcome is CharterOutcome.EXECUTED
+    assert (row.execution, row.execution_reason) == (expected, reason)
+    assert row.took_effect is (expected is CharterExecutionResult.APPLIED)
+
+
+def test_an_executed_promotion_that_raises_is_linked_failed_and_still_raises() -> None:
+    from issue_orchestrator.control.tech_lead_charter_policy import apply_charter_audited_action
+
+    audited = _executed_promotion()
+    store = InMemoryTechLeadAuthorityStore()
+
+    def boom(action):
+        raise RuntimeError("host exploded")
+
+    with pytest.raises(RuntimeError, match="host exploded"):
+        apply_charter_audited_action(audited, authority=store, apply_action=boom)
+
+    [row] = store.charter_ledger.list_recent()
+    assert row.execution is CharterExecutionResult.FAILED
+    assert row.execution_reason == "RuntimeError: host exploded"
+    assert not row.took_effect
+
+
+def test_an_executed_decision_links_what_its_applier_did(store) -> None:
+    """#7362, the port: the verdict is kept as decided, the applier's latest
+    result is linked beside it, a replay keeps it, and nothing but an executed
+    decision can be linked."""
+    ledger = _ledger(store)
+    executed = _decision("A1", "post_comment", target=40, at="2026-09-26T10:00:00+00:00")
+    proposed = _decision("A2", "kill_hung_session", target=40)
+    assert executed.outcome is CharterOutcome.EXECUTED
+    ledger.record_decisions([executed, proposed])
+
+    refused = CharterExecutionLink(
+        executed.decision_id, CharterExecutionResult.REFUSED, "stale precondition: gone"
+    )
+    assert ledger.link_execution_outcomes([refused], at="2026-09-26T10:01:00+00:00") == 1
+    [row] = [r for r in ledger.list_for_issue(40) if r.action_id == "A1"]
+    assert (row.outcome, row.execution) == (CharterOutcome.EXECUTED, CharterExecutionResult.REFUSED)
+    assert row.execution_reason == "stale precondition: gone" and not row.took_effect
+
+    applied = CharterExecutionLink(executed.decision_id, CharterExecutionResult.APPLIED)
+    ledger.link_execution_outcomes([applied], at="2026-09-26T10:05:00+00:00")
+    # A replayed plan re-records the same verdict: the link and date stand.
+    ledger.record_decisions([replace(executed, decided_at="2026-09-26T11:00:00+00:00")])
+    [row] = [r for r in ledger.list_for_issue(40) if r.action_id == "A1"]
+    assert row.took_effect and row.execution_reason is None
+    assert row.effect_at == "2026-09-26T10:05:00+00:00"
+    assert row.decided_at == "2026-09-26T10:00:00+00:00"
+
+    with pytest.raises(ValueError, match="not executed"):
+        ledger.link_execution_outcomes(
+            [CharterExecutionLink(proposed.decision_id, CharterExecutionResult.APPLIED)], at="t"
+        )
+    unknown = CharterExecutionLink(decision_key("run-9", "A9"), CharterExecutionResult.APPLIED)
+    assert ledger.link_execution_outcomes([unknown], at="t") == 0
+
+    # A verdict that no longer executes carries no execution result.
+    advice = replace(executed, outcome=CharterOutcome.ADVICE_ONLY)
+    ledger.record_decisions([advice])
+    [row] = [r for r in ledger.list_for_issue(40) if r.action_id == "A1"]
+    assert row.execution is None and not row.took_effect
 
 
 def test_an_advice_only_promotion_files_nothing_but_is_recorded() -> None:
@@ -628,7 +747,27 @@ def test_effects_on_an_issue_come_newest_effect_first(store) -> None:
     ]
     proposed = _decision("A3", "kill_hung_session", target=40, at="2026-09-26T11:30:00+00:00")
     elsewhere = _decision("A4", "recover_validated_work", target=41)
-    _ledger(store).record_decisions([approved, executed, *comments, proposed, elsewhere])
+    # #7362: executed, but its applier refused it; and executed with no result yet.
+    refused, pending = (
+        replace(
+            _decision(action_id, "recover_validated_work", target=40, at=at),
+            outcome=CharterOutcome.EXECUTED,
+            lifecycle=None,
+        )
+        for action_id, at in (("A5", "2026-09-26T11:45:00+00:00"), ("A6", "2026-09-26T11:50:00+00:00"))
+    )
+    _ledger(store).record_decisions(
+        [approved, executed, *comments, proposed, elsewhere, refused, pending]
+    )
+    _ledger(store).link_execution_outcomes(
+        [
+            CharterExecutionLink(executed.decision_id, CharterExecutionResult.APPLIED),
+            CharterExecutionLink(
+                refused.decision_id, CharterExecutionResult.REFUSED, "stale precondition: claimed"
+            ),
+        ],
+        at="2026-09-26T10:00:00+00:00",
+    )
 
     effects = _ledger(store).list_remedies_on_issue(40, limit=5)
 

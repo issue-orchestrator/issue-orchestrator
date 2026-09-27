@@ -9,11 +9,11 @@ translation from verdict to action and does not grow the record format.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, ProposedTechLeadAction
-from ..domain.tech_lead_charter import CharterReason, CharterVerdict
+from ..domain.tech_lead_charter import CharterOutcome, CharterReason, CharterVerdict
 from ..domain.tech_lead_charter_decisions import (
     CharterDecisionSource,
     TechLeadCharterDecision,
@@ -83,6 +83,27 @@ class CharterDecisionLog:
             and proposed.target_number is not None
             and not verdict.advice_only
         )
+
+    def link_effects(
+        self, action_id: str, actions: list[Action], before: Sequence[Action]
+    ) -> None:
+        """Stamp the effects planning *action_id* added or changed with its decision.
+
+        Only a decision the charter let EXECUTE is linked (#7362): its record
+        then learns what the applier really did with those effects. An effect
+        folded into an earlier one (a coalesced case file) carries both
+        decisions. Edits *actions* in place, since planners hold the list.
+        """
+        if self.verdict_for(action_id).outcome is not CharterOutcome.EXECUTED:
+            return
+        key = decision_key(self.run_id, action_id)
+        for index, action in enumerate(actions):
+            if index < len(before) and action is before[index]:
+                continue
+            if key not in action.charter_decisions:
+                actions[index] = replace(
+                    action, charter_decisions=(*action.charter_decisions, key)
+                )
 
     def note_coalesced(self, action_id: str, origin_action_id: str) -> None:
         """A same-(op, target) sibling folded into *origin_action_id*'s proposal."""

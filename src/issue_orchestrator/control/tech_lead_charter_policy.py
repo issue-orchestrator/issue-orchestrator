@@ -188,7 +188,25 @@ def apply_charter_audited_action(
         return ActionResult.fail(
             action, f"charter decision not recorded; effect withheld: {recorded.error}"
         )
-    return apply_action(action.effect)
+    assert authority is not None  # the record above needs it
+    from .tech_lead_charter_lifecycle import link_audited_effect, link_or_log
+
+    effect = action.effect
+    try:
+        result = apply_action(effect)
+    except Exception as error:
+        # What the attempt did is linked whatever it did (#7362), then the
+        # error keeps its meaning for the caller (a gate refusal, a lost claim).
+        link_or_log(
+            lambda: link_audited_effect(authority, action.decisions, error),
+            f"{effect.action_type.value}'s raised attempt",
+        )
+        raise
+    link_or_log(
+        lambda: link_audited_effect(authority, action.decisions, result),
+        f"{effect.action_type.value}'s result",
+    )
+    return result
 
 
 def apply_record_tech_lead_charter_decisions(

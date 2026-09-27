@@ -33,6 +33,11 @@ def charter_board_rows(
         else ()
     )
     counts = Counter((row.role, row.outcome) for row in recent)
+    # An executed verdict only ALLOWED the action; whether it took effect is
+    # the applier's linked result (#7362).
+    applied = Counter(
+        row.role for row in recent if row.outcome is CharterOutcome.EXECUTED and row.took_effect
+    )
     rows: list[TechLeadBoardCharterRole] = []
     for role in CharterRole:
         charter = policy.charter.for_role(role)
@@ -45,7 +50,8 @@ def charter_board_rows(
             TechLeadBoardCharterRole(
                 role=role.value,
                 dials=dials,
-                executed=counts[(role, CharterOutcome.EXECUTED)],
+                executed=applied[role],
+                executed_not_applied=counts[(role, CharterOutcome.EXECUTED)] - applied[role],
                 proposed=counts[(role, CharterOutcome.PROPOSED)],
                 refused_destructive=counts[(role, CharterOutcome.REFUSED_DESTRUCTIVE)],
                 advice_only=counts[(role, CharterOutcome.ADVICE_ONLY)],

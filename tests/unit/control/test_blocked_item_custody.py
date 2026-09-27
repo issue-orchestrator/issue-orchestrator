@@ -43,6 +43,8 @@ from issue_orchestrator.domain.tech_lead_charter import (
 )
 from issue_orchestrator.domain.tech_lead_charter_decisions import (
     CharterDecisionSource,
+    CharterExecutionLink,
+    CharterExecutionResult,
     CharterProposalLifecycle,
     TechLeadCharterDecision,
     decision_key,
@@ -102,6 +104,17 @@ def _decision(
         decided_at=at.isoformat(),
         tracks_proposal=tracks_proposal,
         proposal_issue_number=proposal_issue_number,
+    )
+
+
+def _linked(
+    decision: TechLeadCharterDecision,
+    result: CharterExecutionResult = CharterExecutionResult.APPLIED,
+    reason: str | None = None,
+) -> TechLeadCharterDecision:
+    """An executed decision with its applier's result linked back (#7362)."""
+    return decision.with_execution(
+        CharterExecutionLink(decision.decision_id, result, reason), at=decision.decided_at
     )
 
 
@@ -396,7 +409,7 @@ def test_a_rate_limit_turns_a_queued_launch_into_waiting_on_world() -> None:
     ],
 )
 def test_an_executed_remedy_is_verify_with_its_decision(kind: str, words: str) -> None:
-    executed = _decision(kind)
+    executed = _linked(_decision(kind))
 
     custody = _derive(_item(decisions=(executed,), blocked_at=NOW - 2 * HOUR))
 
@@ -405,8 +418,60 @@ def test_an_executed_remedy_is_verify_with_its_decision(kind: str, words: str) -
     assert words in custody.reason
 
 
+@pytest.mark.parametrize(
+    ("result", "reason", "words"),
+    [
+        (CharterExecutionResult.REFUSED, "stale precondition: work_claimed",
+         "(release withheld review) did not take effect: refused, stale precondition: work_claimed"),
+        (CharterExecutionResult.FAILED, "review release failed (label_write)",
+         "did not take effect: failed, review release failed (label_write)"),
+        (CharterExecutionResult.WITHHELD, "withheld: a mandated tech-lead action did not commit",
+         "did not take effect: withheld"),
+        (None, None, "no result of it is recorded, so nothing shows it took effect"),
+    ],
+)
+def test_an_executed_remedy_that_did_not_take_effect_is_never_verify(
+    result: CharterExecutionResult | None, reason: str | None, words: str
+) -> None:
+    """#7362: the charter let it execute, but what the applier did decides."""
+    decided = _decision("release_withheld_review")
+    executed = decided if result is None else _linked(decided, result, reason)
+
+    custody = _derive(_item(decisions=(executed,), blocked_at=NOW - 2 * HOUR))
+
+    assert custody.state is CustodyState.UNOWNED
+    assert "applied" not in custody.reason
+    assert words in custody.reason
+
+
+def test_a_parked_executed_remedy_is_held_with_its_decision() -> None:
+    parked = _linked(
+        _decision("release_withheld_review"), CharterExecutionResult.PARKED,
+        "the orchestrator stopped retrying it (transient): 403",
+    )
+
+    custody = _derive(_item(decisions=(parked,), blocked_at=NOW - 2 * HOUR))
+
+    assert custody.state is CustodyState.HELD
+    assert "was parked: the orchestrator stopped retrying it (transient): 403" in custody.reason
+    assert custody.charter is not None and custody.charter.execution == "parked"
+
+
+def test_a_later_applied_remedy_speaks_for_the_item_over_an_earlier_refusal() -> None:
+    refused = _linked(
+        _decision("release_withheld_review", action_id="A1", at=NOW - 3 * HOUR),
+        CharterExecutionResult.REFUSED, "stale precondition: work_claimed",
+    )
+    applied = _linked(_decision("release_withheld_review", action_id="A2", at=NOW - HOUR))
+
+    custody = _derive(_item(decisions=(applied, refused), blocked_at=NOW - 4 * HOUR))
+
+    assert custody.state is CustodyState.VERIFY
+    assert custody.charter is not None and custody.charter.decision_id == applied.decision_id
+
+
 def test_a_remedy_nothing_ties_to_this_block_is_named_but_not_verified() -> None:
-    executed = _decision("recover_validated_work")
+    executed = _linked(_decision("recover_validated_work"))
 
     custody = _derive(_item(decisions=(executed,)))
 
@@ -444,7 +509,7 @@ def test_charter_advice_older_than_the_block_does_not_hold_it() -> None:
 
 
 def test_a_remedy_older_than_the_block_is_not_this_block_s_owner() -> None:
-    executed = _decision("recover_validated_work", at=NOW - 5 * HOUR)
+    executed = _linked(_decision("recover_validated_work", at=NOW - 5 * HOUR))
 
     custody = _derive(_item(decisions=(executed,), blocked_at=NOW - HOUR))
 
@@ -633,7 +698,7 @@ def test_the_latest_effect_decides_verify_not_the_latest_decision() -> None:
     ).with_lifecycle(
         CharterProposalLifecycle.APPROVED_APPLIED, at=(NOW - HOUR).isoformat(), proposal_issue_number=700
     )
-    executed = _decision("recover_validated_work", at=NOW - 3 * HOUR, action_id="A2")
+    executed = _linked(_decision("recover_validated_work", at=NOW - 3 * HOUR, action_id="A2"))
 
     custody = _derive(_item(decisions=(executed, approved), blocked_at=NOW - 5 * HOUR))
 

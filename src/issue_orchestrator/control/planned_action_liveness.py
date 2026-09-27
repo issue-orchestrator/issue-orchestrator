@@ -56,6 +56,8 @@ from .actions import (
 )
 from .provider_impact import ApplyProviderImpactAction
 from .action_results import ActionResult, ActionResultType
+from .tech_lead_charter_lifecycle import executed_decisions, link_or_log, link_parked
+from .tech_lead_charter_policy import CharterAuditedAction
 from .action_liveness import ActionLivenessOwner, transient_outcome
 from .reconciliation import (
     ReconciliationRequired,
@@ -66,6 +68,7 @@ from .reconciliation import (
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
+    from ..ports.tech_lead_charter_ledger import TechLeadCharterLedger
     from .planner_types import OrchestratorSnapshot, Plan
 
 logger = logging.getLogger(__name__)
@@ -235,6 +238,13 @@ def outcome_of_error(error: Exception) -> ActionOutcome:
     return transient_outcome(f"{type(error).__name__}: {error}", host_rate_limit_of(error))
 
 
+def executed_charter_decisions(action: Action) -> tuple[str, ...]:
+    """The executed tech-lead charter decisions ``action`` is an effect of (#7362)."""
+    if isinstance(action, CharterAuditedAction):
+        return executed_decisions(action.decisions)
+    return action.charter_decisions
+
+
 @dataclass(frozen=True, slots=True)
 class PlanLiveness:
     """The keys an admitted plan's actions were admitted under, and their owner."""
@@ -245,15 +255,34 @@ class PlanLiveness:
     #: The issue each action settles every park on when it succeeds
     #: (:meth:`~.action_base.Action.liveness_resolves_subject`), else ``None``.
     resolves: tuple[int | None, ...]
+    #: The executed charter decisions each action is an effect of: a park is
+    #: linked back to them (#7362).
+    decisions: tuple[tuple[str, ...], ...] = ()
+    charter: "TechLeadCharterLedger | None" = None
 
     def __post_init__(self) -> None:
         if len(self.resolves) != len(self.keys):
             raise ValueError("a gated plan needs one resolution entry per action")
+        if self.decisions and len(self.decisions) != len(self.keys):
+            raise ValueError("a gated plan needs one charter entry per action")
+        if any(self.decisions) and self.charter is None:
+            raise ValueError(
+                "a plan with executed charter decisions needs the charter ledger"
+                " to link a park back to them (#7362)"
+            )
 
     def settle(self, index: int, outcome: ActionOutcome) -> None:
         key = self.keys[index]
         if key is not None:
-            self.owner.record(key, outcome)
+            row = self.owner.record(key, outcome)
+            decisions = self.decisions[index] if self.decisions else ()
+            if row is not None and row.parked and decisions:
+                charter = self.charter
+                assert charter is not None  # checked at construction
+                link_or_log(
+                    lambda: link_parked(charter, decisions, row),
+                    f"the park of {key.identity.action} on {key.identity.subject}",
+                )
         resolved = self.resolves[index]
         if resolved is not None and outcome.kind is OutcomeKind.DONE:
             self.owner.release_issue(resolved)
@@ -266,6 +295,9 @@ class PlannedActionLiveness:
     owner: ActionLivenessOwner
     #: The label the owner's escalation puts on an issue; never a fact.
     escalation_label: str
+    #: Where a park of an executed tech-lead decision's effect is linked back
+    #: (#7362); required once a plan carries one.
+    charter: "TechLeadCharterLedger | None" = None
 
     def admit(self, plan: "Plan", snapshot: "OrchestratorSnapshot") -> "Plan":
         from .planner_types import Plan, SkippedItem
@@ -322,12 +354,19 @@ class PlannedActionLiveness:
         return Plan(
             actions=tuple(admitted),
             skipped=plan.skipped + tuple(held),
-            liveness=PlanLiveness(self.owner, tuple(keys), tuple(resolves)),
+            liveness=PlanLiveness(
+                self.owner,
+                tuple(keys),
+                tuple(resolves),
+                tuple(executed_charter_decisions(action) for action in admitted),
+                self.charter,
+            ),
         )
 
 
 __all__ = [
     "ENGINE_SUBJECT",
+    "executed_charter_decisions",
     "PlanLiveness",
     "PlannedActionLiveness",
     "observed_labels",

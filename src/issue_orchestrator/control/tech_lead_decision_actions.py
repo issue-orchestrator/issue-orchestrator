@@ -352,6 +352,7 @@ class _DecisionActionPlanner:
         # agent wrote, so no proposal can pick a more permissive role (#7329).
         verdict = self.policy.decide(proposed.action_type)
         self.charter_log.note(proposed, verdict)
+        before = list(self.actions)
         if verdict.advice_only and proposed.action_type != "create_issue":
             self._surface_shadow(proposed)
         elif proposed.action_type == "flag_pattern":
@@ -360,6 +361,7 @@ class _DecisionActionPlanner:
             self._plan_act_level(proposed)
         else:
             self._plan_decision_tier(proposed)
+        self.charter_log.link_effects(proposed.id, self.actions, before)
 
     def _surface_shadow(self, proposed: ProposedTechLeadAction) -> None:
         surfaced = _surface(

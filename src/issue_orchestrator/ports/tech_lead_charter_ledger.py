@@ -6,8 +6,9 @@ Two seams:
   (#7331): by issue, by role, and most recent. It returns the records exactly
   as decided; nothing here recomputes a charter.
 * :class:`TechLeadCharterLedger` — the orchestrator's write side: record the
-  decisions of a planned completion (idempotent per decision id), and link a
-  gated proposal's approval or decline back to the decision that filed it.
+  decisions of a planned completion (idempotent per decision id), link a
+  gated proposal's approval or decline back to the decision that filed it, and
+  link what the applier actually did with a directly executed action (#7362).
 
 The durable implementation lives in ``infra/tech_lead_charter_ledger_store.py``;
 :class:`InMemoryTechLeadCharterLedger` is the test double.
@@ -17,10 +18,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from threading import Lock
-from typing import Iterable, Protocol
+from typing import Iterable, Protocol, Sequence
 
-from ..domain.tech_lead_charter import CharterRole
+from ..domain.tech_lead_charter import CharterOutcome, CharterRole
 from ..domain.tech_lead_charter_decisions import (
+    CharterExecutionLink,
     CharterProposalLifecycle,
     TechLeadCharterDecision,
 )
@@ -115,6 +117,17 @@ class TechLeadCharterLedger(TechLeadCharterDecisionReader, Protocol):
         """
         ...
 
+    def link_execution_outcomes(
+        self, links: Sequence[CharterExecutionLink], *, at: str
+    ) -> int:
+        """Record what the applier did with directly executed decisions (#7362).
+
+        In one transaction; the latest attempt's result replaces an earlier
+        one. Returns the rows updated. A link naming a decision that is not an
+        executed one on the record raises: nothing else may be linked here.
+        """
+        ...
+
 
 def _newest_first(
     rows: Iterable[TechLeadCharterDecision], limit: int
@@ -129,14 +142,17 @@ def keep_linked_lifecycle(
     """The upsert rule shared by every implementation (see ``record_decisions``).
 
     An unchanged decision keeps its original ``decided_at`` — a lane that
-    re-states the same verdict every tick must not keep re-dating it — and a
-    lifecycle the proposal lifecycle already linked is never regressed.
+    re-states the same verdict every tick must not keep re-dating it — and
+    neither a lifecycle the proposal lifecycle already linked nor an executed
+    decision's linked result is regressed.
     """
     if existing is None:
         return incoming
     if replace(existing, decided_at=incoming.decided_at, lifecycle=incoming.lifecycle,
                lifecycle_updated_at=incoming.lifecycle_updated_at,
-               proposal_issue_number=incoming.proposal_issue_number) == incoming:
+               proposal_issue_number=incoming.proposal_issue_number,
+               execution=incoming.execution, execution_reason=incoming.execution_reason,
+               execution_at=incoming.execution_at) == incoming:
         incoming = replace(
             incoming,
             decided_at=existing.decided_at,
@@ -145,6 +161,20 @@ def keep_linked_lifecycle(
                 if existing.lifecycle == incoming.lifecycle
                 else incoming.lifecycle_updated_at
             ),
+        )
+    if (
+        existing.execution is not None
+        and incoming.execution is None
+        and incoming.outcome is CharterOutcome.EXECUTED
+    ):
+        # A replayed plan re-records the decision before its effect runs
+        # again; the linked result stands until that attempt links its own
+        # (#7362). A verdict that no longer executes carries none.
+        incoming = replace(
+            incoming,
+            execution=existing.execution,
+            execution_reason=existing.execution_reason,
+            execution_at=existing.execution_at,
         )
     if existing.lifecycle in (None, CharterProposalLifecycle.AWAITING_APPROVAL):
         return incoming
@@ -175,6 +205,24 @@ def links_to_proposal(
     return (same_run and action_id in (row.action_id, row.proposal_origin_action_id)) or (
         row.proposal_issue_number == proposal_issue_number
     )
+
+
+def linked_execution(
+    row: TechLeadCharterDecision | None, link: CharterExecutionLink, *, at: str
+) -> TechLeadCharterDecision | None:
+    """The record *link* updates, shared by every implementation.
+
+    ``None`` when no such decision is recorded; a decision the charter did
+    not let execute is a caller bug and raises.
+    """
+    if row is None:
+        return None
+    if row.outcome is not CharterOutcome.EXECUTED:
+        raise ValueError(
+            f"charter decision {row.decision_id} was {row.outcome.value}, not executed;"
+            " only an executed decision links an applier result"
+        )
+    return row.with_execution(link, at=at)
 
 
 class InMemoryTechLeadCharterLedger:
@@ -214,6 +262,21 @@ class InMemoryTechLeadCharterLedger:
                     )
                     updated += 1
         return updated
+
+    def link_execution_outcomes(
+        self, links: Sequence[CharterExecutionLink], *, at: str
+    ) -> int:
+        with self._lock:
+            # Every link is checked before any is written: one transaction.
+            linked = [
+                row
+                for link in links
+                if (row := linked_execution(self._rows.get(link.decision_id), link, at=at))
+                is not None
+            ]
+            for row in linked:
+                self._rows[row.decision_id] = row
+        return len(linked)
 
     def list_for_issue(
         self, issue_number: int, *, limit: int = 100

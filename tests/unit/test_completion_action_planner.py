@@ -2357,6 +2357,8 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     _plant_decision_with_actions(session, [
         {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
         {"id": "A2", "action_type": "kill_hung_session", "target_number": 1, "body": "Hung worker.", "finding_ids": ["T1"]},
+        {"id": "A3", "action_type": "create_issue", "title": "Harden the worker watchdog",
+         "body": "Follow-up for the hung worker.", "finding_ids": ["T1"]},
     ])
     actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
     [kill] = [action for action in actions if isinstance(action, KillHungSessionAction)]
@@ -2376,7 +2378,97 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     host.close_issue.assert_not_called()
     run_kill.assert_called_once()
     # ...so a withheld completion still leaves its decisions on the record.
-    assert {row.action_id for row in store.charter_ledger.list_for_issue(1)} == {"A1", "A2"}
+    records = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert set(records) == {"A1", "A2", "A3"}
+    # #7362: and each record says what really happened: the kill was refused
+    # at apply time, the follow-up it gated was never filed, the diagnosis ran.
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    assert {action_id: row.execution for action_id, row in records.items()} == {
+        "A1": CharterExecutionResult.APPLIED,
+        "A2": CharterExecutionResult.REFUSED,
+        "A3": CharterExecutionResult.WITHHELD,
+    }
+    assert not records["A2"].took_effect and not records["A3"].took_effect
+
+
+def _refusing_release_executor(claimed_by: str):
+    """The real release owner, whose re-verification finds another run's claim."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.issue_work_claims import IssueWorkClaim
+    from issue_orchestrator.control.review_exchange_lifecycle import IssueRuntimeActivity
+    from issue_orchestrator.control.tech_lead_review_release import TechLeadReviewReleaseExecutor
+    claim = IssueWorkClaim(issue_number=1, session_name=claimed_by,
+                           started_at="2026-09-27T13:00:00+00:00", readable=True, work="rework")
+    writes = MagicMock()
+    executor = TechLeadReviewReleaseExecutor(
+        events=MagicMock(), config=Config(), labels=MagicMock(), read_issue=MagicMock(),
+        list_open_prs=MagicMock(), read_pr=MagicMock(), issue_branches=MagicMock(),
+        review_admission=MagicMock(), read_checks=MagicMock(),
+        runtime_activity=lambda _n: IssueRuntimeActivity(frozenset(), frozenset()),
+        claims_on_issue=lambda _n: (claim,), failures_not_before=lambda _n, _at: (),
+        custody=MagicMock(), reviews_discoverable=lambda: True, writes=writes, repo_slug="owner/repo",
+    )
+    return executor, writes
+
+
+def test_an_executed_release_refused_at_apply_time_never_reads_as_a_remedy(tmp_path):
+    """#7362: the charter let the release execute, and the verdict is recorded
+    as such; but the release owner refused it at apply time (a new claim), so
+    its record must not say it took effect and custody must not say Verify."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.actions import ReleaseWithheldReviewAction
+    from issue_orchestrator.control.blocked_item_custody import (
+        BoardCustodyFacts, ItemCustodyFacts, ObservedLabels, StuckSweepSchedule, derive_item_custody)
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.blocked_item_custody import (
+        OWNED_CUSTODY_STATES, CustodyStaleThresholds, CustodyState)
+    from issue_orchestrator.domain.tech_lead_charter import CharterOutcome
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    config = make_tech_lead_config(tmp_path)
+    assert config.tech_lead.authority.release_withheld_review == "execute"
+    session = make_tech_lead_session(tmp_path)
+    arm_investigation_session(config, session)
+    _plant_decision_with_actions(session, [
+        {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
+        {"id": "A2", "action_type": "release_withheld_review", "target_number": 1,
+         "body": "Green PR withheld only by the block.", "finding_ids": ["T1"]},
+    ])
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
+    [release] = [action for action in actions if isinstance(action, ReleaseWithheldReviewAction)]
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
+    applier.release_withheld_review, writes = _refusing_release_executor("rework-1")
+    store = InMemoryTechLeadAuthorityStore()
+    applier.tech_lead_ops = store
+
+    results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+
+    assert error is None
+    [released] = [r for r in results if r.action is release]
+    assert released.details["refusal"] == "work_claimed"
+    writes.release.assert_not_called()
+    records = {row.action_id: row for row in store.charter_ledger.list_for_issue(1)}
+    # The verdict stands as decided: the charter DID let it execute...
+    assert records["A2"].outcome is CharterOutcome.EXECUTED
+    # ...but the record says what the applier did, and that is no effect.
+    assert records["A2"].execution is CharterExecutionResult.REFUSED
+    assert "work_claimed" in (records["A2"].execution_reason or "")
+    assert not records["A2"].took_effect
+    assert store.charter_ledger.list_remedies_on_issue(1) == ()
+    # The diagnosis sibling did apply, and says so.
+    assert records["A1"].execution is CharterExecutionResult.APPLIED and records["A1"].took_effect
+    now = datetime.now(timezone.utc)
+    custody = derive_item_custody(
+        ItemCustodyFacts(issue_number=1, labels=ObservedLabels(blocking=("blocked-failed",)),
+                         blocked_at=now - timedelta(hours=1),
+                         decisions=store.charter_ledger.list_about_issue(1)),
+        BoardCustodyFacts(now=now, sweep=StuckSweepSchedule(enabled=True, max_attempts=3, next_due_at=None)),
+        CustodyStaleThresholds(by_state={state: timedelta(hours=2) for state in OWNED_CUSTODY_STATES}),
+    )
+    assert custody.state is not CustodyState.VERIFY
+    assert "applied a remedy" not in custody.reason
+    assert "release withheld review) did not take effect: refused" in custody.reason
 
 
 def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):

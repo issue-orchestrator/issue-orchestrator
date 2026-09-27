@@ -158,6 +158,9 @@ class CustodyCharterBasis:
     decided_at: str
     lifecycle: str | None
     proposal_issue_number: int | None
+    #: What the applier did with an executed decision (#7362); None until linked.
+    execution: str | None = None
+    execution_reason: str | None = None
 
     @classmethod
     def from_decision(cls, decision: "TechLeadCharterDecision") -> "CustodyCharterBasis":
@@ -178,6 +181,8 @@ class CustodyCharterBasis:
             decided_at=decision.decided_at,
             lifecycle=decision.lifecycle.value if decision.lifecycle else None,
             proposal_issue_number=decision.proposal_issue_number,
+            execution=decision.execution.value if decision.execution else None,
+            execution_reason=decision.execution_reason,
         )
 
 
