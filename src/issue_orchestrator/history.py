@@ -1,7 +1,10 @@
 """Helpers for session history views."""
 
 from collections.abc import Sequence
-from typing import Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
+
+if TYPE_CHECKING:
+    from .domain.models import SessionHistoryEntry
 
 
 class _HasIssueNumber(Protocol):
@@ -27,3 +30,21 @@ def latest_history_entries_by_issue(
         if len(latest) >= limit:
             break
     return latest
+
+
+def issues_held_by_session_history(
+    session_history: Sequence["SessionHistoryEntry"],
+) -> frozenset[int]:
+    """Issues this run must not launch again because a session already ran.
+
+    Every issue with a history entry is held, except one whose latest entry
+    is a merged partial PR: that issue has remaining work, and its next slice
+    may launch (#7288). The planner and the queue cache both ask this, so the
+    two cannot disagree about which issues are schedulable.
+    """
+    latest: dict[int, "SessionHistoryEntry"] = {}
+    for entry in session_history:
+        latest[int(entry.issue_number)] = entry
+    return frozenset(
+        number for number, entry in latest.items() if not entry.partial_pr_merged
+    )

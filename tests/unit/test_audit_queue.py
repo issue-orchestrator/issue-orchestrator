@@ -254,3 +254,30 @@ class TestQueuedIssue:
         )
 
         assert entry.status == SkipReason.QUEUED
+
+
+def test_audit_queue_does_not_hold_an_issue_released_by_a_partial_merge(sample_config):
+    """#7288: the queue audit explains the planner's decision, so it asks the
+    same session-history owner. An issue whose latest entry is a merged
+    partial PR is not "already processed this run"."""
+    from issue_orchestrator.domain.models import OrchestratorState, SessionHistoryEntry
+    from issue_orchestrator.infra.audit import audit_queue
+
+    def entry(number: int, *, partial: bool) -> SessionHistoryEntry:
+        return SessionHistoryEntry(
+            issue_number=number, title="t", agent_type="agent:backend",
+            status="merged", runtime_minutes=1,
+            pr_url=f"https://github.com/owner/repo/pull/{900 + number}",
+            partial_pr_merged=partial,
+        )
+
+    state = OrchestratorState(session_history=[entry(1, partial=True), entry(2, partial=False)])
+    issues = [Issue(number=n, title=f"Issue {n}", labels=["agent:backend"], body="") for n in (1, 2)]
+
+    statuses = {
+        audited.issue.number: audited.status
+        for audited in audit_queue(sample_config, state=state, preloaded_issues=issues)
+    }
+
+    assert statuses[2] == SkipReason.IN_HISTORY
+    assert statuses[1] != SkipReason.IN_HISTORY

@@ -13,8 +13,8 @@ from issue_orchestrator.control.awaiting_merge_reconciler import (
     POST_PUBLISH_VALIDATION_SOURCE,
     AwaitingMergeReconciler,
     classify_post_approval_state,
-    classify_pr_set_drift,
 )
+from issue_orchestrator.control.awaiting_merge_drift_policy import classify_pr_set_drift
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.domain.models import (
@@ -36,6 +36,12 @@ from issue_orchestrator.ports.repository_host import (
     DependencyIssueSnapshot,
     RepositoryHostError,
 )
+
+
+def _reconciler(*args, **kwargs) -> AwaitingMergeReconciler:
+    """A reconciler for this test repository; the slug scopes issue links (#7288)."""
+    kwargs.setdefault("repo", "owner/repo")
+    return AwaitingMergeReconciler(*args, **kwargs)
 
 
 def _wire_pr(
@@ -160,7 +166,7 @@ def test_stacked_successor_held_from_merge_while_predecessor_open() -> None:
     repository_host.get_issue.return_value = _stack_successor_issue()
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -187,7 +193,7 @@ def test_stacked_successor_released_once_predecessor_merges() -> None:
     repository_host.get_issue.return_value = _stack_successor_issue()
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -212,7 +218,7 @@ def test_non_stack_issue_is_never_held() -> None:
     repository_host.issue_comment_marker_present.return_value = False
     evaluator = _stack_evaluator("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -229,7 +235,7 @@ def test_recovered_awaiting_merge_entry_reconciles_when_pr_is_merged() -> None:
     repository_host.get_pr.return_value = _pr("merged")
     repository_host.get_issue.return_value = _issue("closed")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -269,7 +275,7 @@ def test_merged_pr_with_open_issue_flags_close_on_merge_fallback() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_closed_on_or_after.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -280,6 +286,63 @@ def test_merged_pr_with_open_issue_flags_close_on_merge_fallback() -> None:
     repository_host.issue_closed_on_or_after.assert_called_once_with(
         228, _MERGED_AT,
     )
+
+
+def test_merged_partial_pr_leaves_its_issue_open_without_a_close_check() -> None:
+    """#7288: a merged "Refs #N" PR delivered one slice of a multi-PR issue.
+
+    Its issue is open because the work is not finished, not because an
+    auto-close failed. So the reconciler must not flag the close-on-merge
+    fallback, and it does not even read the issue to decide. The fact carries
+    ``partial_pr`` so the apply side releases the issue for its next slice.
+    Without the partial rule this PR would be closed by the fallback, as the
+    first merged slice of porchpin #320 was.
+    """
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = replace(
+        _pr("merged"), body="Refs #228\n\nPartial delivery."
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_closed_on_or_after.return_value = False
+
+    result = _reconciler(
+        repository_host,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.discovered == 1
+    [fact] = result.reconciliations
+    assert fact.status == "merged"
+    assert fact.partial_pr is True
+    assert fact.issue_open is False
+    assert fact.status_reason == (
+        "Partial PR merged; issue stays open for its remaining work"
+    )
+    repository_host.issue_closed_on_or_after.assert_not_called()
+
+
+def test_merged_pr_that_refs_and_closes_its_issue_is_not_partial() -> None:
+    """GitHub closes an issue that any closing keyword names, so "Refs #N"
+    beside "Fixes #N" is a whole delivery and keeps the close check."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = replace(
+        _pr("merged"), body="Refs #228\nFixes #228"
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_closed_on_or_after.return_value = False
+
+    result = _reconciler(
+        repository_host,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    [fact] = result.reconciliations
+    assert fact.partial_pr is False
+    assert fact.issue_open is True
 
 
 def test_merged_then_reopened_issue_is_never_reclosed() -> None:
@@ -294,7 +357,7 @@ def test_merged_then_reopened_issue_is_never_reclosed() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_closed_on_or_after.return_value = True
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -316,7 +379,7 @@ def test_merged_pr_events_read_error_leaves_entry_reconcilable() -> None:
         "boom"
     )
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -334,7 +397,7 @@ def test_merged_pr_without_merged_at_never_closes() -> None:
     repository_host.get_pr.return_value = replace(_pr("merged"), merged_at=None)
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -354,7 +417,7 @@ def test_merged_pr_issue_fetch_error_leaves_entry_reconcilable() -> None:
     repository_host.get_pr.return_value = _pr("merged")
     repository_host.get_issue.side_effect = RepositoryHostError("boom")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -373,7 +436,7 @@ def test_merged_pr_with_missing_issue_reconciles_without_close() -> None:
     repository_host.get_pr.return_value = _pr("merged")
     repository_host.get_issue.return_value = None
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -390,7 +453,7 @@ def test_recovered_entry_reconciles_when_linked_issue_is_closed() -> None:
     repository_host.get_pr.return_value = _pr("open")
     repository_host.get_issue.return_value = _issue("closed")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -413,7 +476,7 @@ def test_recovered_entry_reconciles_when_pr_is_closed() -> None:
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("closed")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -437,7 +500,7 @@ def test_closed_pr_with_open_pr_pending_issue_discovers_label_drift() -> None:
     repository_host.get_pr.return_value = _pr("closed")
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -462,7 +525,7 @@ def test_closed_pr_with_closed_issue_does_not_discover_label_drift() -> None:
     repository_host.get_pr.return_value = _pr("closed")
     repository_host.get_issue.return_value = _issue("closed")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -483,7 +546,7 @@ def test_merged_pr_does_not_discover_blocked_pr_closed_drift() -> None:
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("merged")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -502,7 +565,7 @@ def test_label_only_pr_pending_issue_with_closed_pr_discovers_drift() -> None:
     repository_host = MagicMock()
     repository_host.get_prs_for_issue.return_value = [_pr("closed")]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
     ).discover(state)
@@ -528,7 +591,7 @@ def test_open_latest_pr_with_older_merged_pr_does_not_discover_drift() -> None:
         _pr("open", number=437),
     ]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -546,7 +609,7 @@ def test_only_merged_pr_does_not_discover_drift() -> None:
     repository_host = MagicMock()
     repository_host.get_prs_for_issue.return_value = [_pr("merged", number=428)]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -554,6 +617,36 @@ def test_only_merged_pr_does_not_discover_drift() -> None:
 
     assert result.drift_discovered == 0
     assert result.drifts == ()
+
+
+def test_pr_pending_issue_whose_latest_pr_merged_partially_is_released() -> None:
+    """#7288: an untracked pr-pending issue (for example after a restart)
+    whose latest PR merged as a partial slice has no PR awaiting merge. The
+    label is stale, and the issue has work left. The scan must produce a
+    terminal recovery that sheds the label, not blocked:pr-closed drift and
+    not nothing. Nothing, the pre-#7288 answer for every merged PR, leaves
+    the issue stuck on pr-pending forever."""
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [
+        _pr("merged", number=401),
+        replace(_pr("merged", number=428), body="Refs #228"),
+    ]
+
+    result = _reconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drifts == ()
+    assert result.discovered == 1
+    [fact] = result.reconciliations
+    assert (fact.issue_number, fact.pr_number, fact.status) == (228, 428, "merged")
+    assert fact.partial_pr is True
+    assert fact.issue_open is False
+    assert fact.merged_at == _MERGED_AT
 
 
 def test_closed_unmerged_latest_pr_flags_despite_older_merged_pr() -> None:
@@ -567,7 +660,7 @@ def test_closed_unmerged_latest_pr_flags_despite_older_merged_pr() -> None:
         _pr("closed", number=437),
     ]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -591,7 +684,7 @@ def test_older_closed_pr_with_newer_merged_pr_does_not_discover_drift() -> None:
         _pr("merged", number=437),
     ]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -621,7 +714,7 @@ def test_merged_reconciliation_excludes_issue_from_label_drift_scan() -> None:
         _pr("merged", number=318),
     ]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -641,7 +734,7 @@ def test_label_only_pr_pending_issue_without_pr_discovers_missing_pr_drift() -> 
     repository_host = MagicMock()
     repository_host.get_prs_for_issue.return_value = []
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
     ).discover(state)
@@ -664,7 +757,7 @@ def test_recent_label_only_pr_pending_issue_scan_is_throttled() -> None:
     )
     repository_host = MagicMock()
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1200.0,
@@ -685,7 +778,7 @@ def test_stale_label_only_pr_pending_issue_scan_runs_and_updates_timestamp() -> 
     repository_host = MagicMock()
     repository_host.get_prs_for_issue.return_value = [_pr("closed")]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1400.0,
@@ -710,7 +803,7 @@ def test_label_only_pr_scan_error_skips_issue_and_continues() -> None:
         [_pr("closed", number=319)],
     ]
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -728,7 +821,7 @@ def test_failed_label_only_pr_scan_is_throttled() -> None:
     state = OrchestratorState(cached_queue_issues=[issue])
     repository_host = MagicMock()
     repository_host.get_prs_for_issue.side_effect = RepositoryHostError("github unavailable")
-    reconciler = AwaitingMergeReconciler(
+    reconciler = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -755,7 +848,7 @@ def test_open_pr_and_failed_issue_refresh_propagates_without_freshness() -> None
     repository_host.get_issue.side_effect = RepositoryHostError("github unavailable")
 
     with pytest.raises(RepositoryHostError, match="github unavailable"):
-        AwaitingMergeReconciler(
+        _reconciler(
             repository_host,
             clock=lambda: 1234.5,
         ).discover(state)
@@ -773,7 +866,7 @@ def test_unexpected_issue_refresh_bug_propagates() -> None:
     repository_host.get_issue.side_effect = TypeError("programming bug")
 
     with pytest.raises(TypeError, match="programming bug"):
-        AwaitingMergeReconciler(repository_host).discover(state)
+        _reconciler(repository_host).discover(state)
 
 
 def test_pr_fetch_failure_propagates_without_issue_fallback() -> None:
@@ -784,7 +877,7 @@ def test_pr_fetch_failure_propagates_without_issue_fallback() -> None:
     repository_host.get_issue.return_value = _issue("closed")
 
     with pytest.raises(RepositoryHostError, match="github unavailable"):
-        AwaitingMergeReconciler(
+        _reconciler(
             repository_host,
             clock=lambda: 1234.5,
         ).discover(state)
@@ -807,7 +900,7 @@ def test_missing_pr_clears_stale_rollup_bookkeeping() -> None:
     repository_host.get_pr.return_value = None
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(repository_host).discover(state)
+    result = _reconciler(repository_host).discover(state)
 
     assert result.skipped == 1
     assert state.awaiting_merge_rollup_scan_timestamps == {}
@@ -820,7 +913,7 @@ def test_invalid_pr_url_is_skipped_without_repository_fetches() -> None:
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
 
-    result = AwaitingMergeReconciler(repository_host).discover(state)
+    result = _reconciler(repository_host).discover(state)
 
     assert result.checked == 1
     assert result.skipped == 1
@@ -836,7 +929,7 @@ def test_non_completed_history_entry_is_ignored() -> None:
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
 
-    result = AwaitingMergeReconciler(repository_host).discover(state)
+    result = _reconciler(repository_host).discover(state)
 
     assert result.checked == 0
     assert result.discovered == 0
@@ -850,7 +943,7 @@ def test_second_reconcile_pass_on_terminal_entry_is_noop() -> None:
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("merged")
-    reconciler = AwaitingMergeReconciler(repository_host)
+    reconciler = _reconciler(repository_host)
 
     first_result = reconciler.discover(state)
     action = ReconcileHistoryEntryAction(
@@ -891,7 +984,7 @@ def test_open_pr_and_open_issue_remain_awaiting_merge_with_freshness_updated() -
     repository_host.get_pr.return_value = _pr("open")
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1234.5,
     ).discover(state)
@@ -921,7 +1014,7 @@ def test_merge_conflict_after_review_discovers_post_publish_validation_rework() 
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -963,7 +1056,7 @@ def test_post_publish_rework_flags_existing_marker_comment_for_dedupe() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = True
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1000,7 +1093,7 @@ def test_post_publish_rework_comment_read_failure_propagates() -> None:
     )
 
     with pytest.raises(RepositoryHostError):
-        AwaitingMergeReconciler(
+        _reconciler(
             repository_host,
             label_manager=_label_manager(),
             clock=lambda: 1234.5,
@@ -1025,7 +1118,7 @@ def test_recent_rollup_poll_suppresses_post_publish_rework_until_interval_expire
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1100.0,
@@ -1059,7 +1152,7 @@ def test_rollup_poll_after_interval_discovers_post_publish_rework() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1400.0,
@@ -1081,7 +1174,7 @@ def test_terminal_pr_detection_bypasses_recent_rollup_throttle() -> None:
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("merged")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         clock=lambda: 1100.0,
         rollup_scan_interval_seconds=300.0,
@@ -1113,7 +1206,7 @@ def test_post_publish_validation_rework_is_suppressed_when_rework_already_pendin
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1183,6 +1276,8 @@ def test_classify_post_approval_state(
         # Single terminal PR: the leaf predicate decides.
         ([("closed", 318)], True, 318),
         ([("merged", 318)], False, None),
+        # A merged partial PR suppresses drift too; it reports partial_merge.
+        ([("merged-partial", 318)], False, None),
         # Any open PR suppresses drift regardless of older terminal PRs.
         ([("merged", 428), ("open", 437)], False, None),
         ([("closed", 428), ("open", 437)], False, None),
@@ -1200,7 +1295,18 @@ def test_classify_pr_set_drift(
     expected_pr_number: int | None,
 ) -> None:
     decision = classify_pr_set_drift(
-        [_pr(state, number=number) for state, number in prs]
+        [
+            replace(_pr("merged", number=number), body="Refs #228")
+            if state == "merged-partial"
+            else _pr(state, number=number)
+            for state, number in prs
+        ],
+        issue_number=228,
+        repo_slug="owner/repo",
+    )
+    partial = [number for state, number in prs if state == "merged-partial"]
+    assert (decision.partial_merge.number if decision.partial_merge else None) == (
+        partial[0] if partial else None
     )
     assert decision.drifting is expected_drifting
     if expected_pr_number is None:
@@ -1236,7 +1342,7 @@ def test_unstable_pr_with_checks_pending_does_not_trigger_rework() -> None:
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1263,7 +1369,7 @@ def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1297,7 +1403,7 @@ def test_blocked_pr_with_all_checks_passing_escalates_immediately() -> None:
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1329,7 +1435,7 @@ def test_post_publish_escalation_is_suppressed_when_pr_already_needs_human() -> 
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=label_manager,
         clock=lambda: 1234.5,
@@ -1356,7 +1462,7 @@ def test_needs_human_pr_with_now_readable_failure_recovers_to_rework() -> None:
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=label_manager,
         clock=lambda: 1234.5,
@@ -1384,7 +1490,7 @@ def test_dirty_pr_feedback_uses_conflict_copy() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1410,7 +1516,7 @@ def test_behind_pr_feedback_uses_rebase_copy() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1445,7 +1551,7 @@ def test_wait_for_checks_first_seen_records_timestamp_and_does_not_escalate() ->
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         _wait_for_checks_repo(),
         label_manager=_label_manager(),
         clock=lambda: 1000.0,
@@ -1465,7 +1571,7 @@ def test_wait_for_checks_within_timeout_holds_steady() -> None:
     )
 
     # 5 minutes after first-seen, well below the 30-minute default.
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         _wait_for_checks_repo(),
         label_manager=_label_manager(),
         clock=lambda: 1300.0,
@@ -1484,7 +1590,7 @@ def test_wait_for_checks_past_timeout_escalates_with_explanation() -> None:
     )
 
     # 31 minutes after first-seen — past the 30-minute default.
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         _wait_for_checks_repo(),
         label_manager=_label_manager(),
         clock=lambda: 1000.0 + 31 * 60,
@@ -1521,7 +1627,7 @@ def test_wait_for_checks_resolved_clears_pending_since() -> None:
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    AwaitingMergeReconciler(
+    _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 2000.0,
@@ -1558,7 +1664,7 @@ def test_wait_for_checks_then_label_dropped_then_reapproval_does_not_immediately
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    AwaitingMergeReconciler(
+    _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1000.0 + 60 * 60,  # an hour later
@@ -1581,7 +1687,7 @@ def test_wait_for_checks_then_label_dropped_then_reapproval_does_not_immediately
         ),
     )
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1000.0 + 60 * 60 + 60,  # one minute after tick 1
@@ -1605,7 +1711,7 @@ def test_terminal_pr_clears_pending_checks_bookkeeping() -> None:
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("merged")
 
-    AwaitingMergeReconciler(
+    _reconciler(
         repository_host,
         clock=lambda: 5000.0,
     ).discover(state)
@@ -1634,7 +1740,7 @@ def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> N
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1500.0,
@@ -1658,7 +1764,7 @@ def test_terminal_pr_is_never_status_rollup_polled_across_repeated_ticks() -> No
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
     repository_host.get_pr.return_value = _pr("closed")
-    reconciler = AwaitingMergeReconciler(repository_host, clock=lambda: 1.0)
+    reconciler = _reconciler(repository_host, clock=lambda: 1.0)
 
     # The history entry stays "completed" here (no action applier), so the
     # entry is re-examined on every tick — exactly the revisit pattern the
@@ -1684,7 +1790,7 @@ def test_non_decisive_open_pr_is_not_status_rollup_polled(mergeable_state: str) 
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    AwaitingMergeReconciler(
+    _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1710,7 +1816,7 @@ def test_decisive_unstable_pr_reads_rollup_exactly_once() -> None:
     )
     repository_host.get_issue.return_value = _issue("open")
 
-    AwaitingMergeReconciler(
+    _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -1744,7 +1850,7 @@ def test_decisive_pr_with_rollup_permission_denied_escalates_loudly() -> None:
     state = OrchestratorState(session_history=[entry])
     repository_host = _permission_denied_repo()
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1000.0,
@@ -1773,7 +1879,7 @@ def test_rollup_permission_denial_bounds_graphql_but_keeps_fallback() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = _permission_denied_repo()
-    reconciler = AwaitingMergeReconciler(
+    reconciler = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1000.0,
@@ -1818,7 +1924,7 @@ def test_needs_human_pr_recovers_to_rework_during_graphql_backoff() -> None:
         state="FAILURE", capability="ok", primary_source_denied=True
     )
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=label_manager,
         clock=lambda: 1500.0,  # within the 3600s window
@@ -1855,7 +1961,7 @@ def test_decisive_pr_reworks_via_rest_fallback_during_graphql_backoff() -> None:
         state="FAILURE", capability="ok", primary_source_denied=True
     )
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host,
         label_manager=label_manager,
         clock=lambda: 1500.0,
@@ -1882,7 +1988,7 @@ def test_rollup_permission_backoff_expires_and_re_probes() -> None:
     repository_host = _permission_denied_repo()
     now = {"t": 1000.0}
 
-    reconciler = AwaitingMergeReconciler(
+    reconciler = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: now["t"],
@@ -1912,7 +2018,7 @@ def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
         state=None, capability="transient_error"
     )
     now = {"t": 1000.0}
-    reconciler = AwaitingMergeReconciler(
+    reconciler = _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: now["t"],
@@ -1960,7 +2066,7 @@ def _merge_queue(repository_host: MagicMock, *, failure_action: str = "rework"):
 def _reconciler_with_merge_queue(
     repository_host: MagicMock, *, failure_action: str = "rework"
 ) -> AwaitingMergeReconciler:
-    return AwaitingMergeReconciler(
+    return _reconciler(
         repository_host,
         label_manager=_label_manager(),
         clock=lambda: 1234.5,
@@ -2000,7 +2106,7 @@ def test_merge_queue_disabled_still_reworks_behind_base_pr() -> None:
     repository_host.get_issue.return_value = _issue("open")
     repository_host.issue_comment_marker_present.return_value = False
 
-    result = AwaitingMergeReconciler(
+    result = _reconciler(
         repository_host, label_manager=_label_manager(), clock=lambda: 1234.5,
     ).discover(state)
 

@@ -115,6 +115,7 @@ class CompletionRecord:
     pr_labels: list[str] | None = None
     validation_record_path: str | None = None
     follow_up_issues: list[ProposedFollowUpIssue] | None = None
+    partial_pr: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,4 +145,5 @@ class CompletionRecord:
             "follow_up_issues": [
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
+            "partial_pr": self.partial_pr,
         }

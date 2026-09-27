@@ -119,7 +119,7 @@ def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store
         queue_cache_store=store if store is not None else MagicMock(),
         state=lambda: state,
         run_locked=lambda fn: fn(),
-        open_prs=OpenPullRequestIndex(host),
+        open_prs=OpenPullRequestIndex(host, repo_slug="owner/repo"),
     )
 
 

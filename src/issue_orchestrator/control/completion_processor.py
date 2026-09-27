@@ -24,6 +24,7 @@ from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.review_validation import ReviewValidationEvidence
 from ..domain.publication_remote import attributed_publication_body
+from ..infra.repo_scope import require_repo
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
 from .retained_completion_policy import prepare_retained_completion
@@ -125,6 +126,7 @@ from .review_exchange_pr_comment import (
     GITHUB_COMMENT_BODY_LIMIT,
     build_review_exchange_pr_comment_body,
 )
+from .partial_delivery_guard import PartialDeliveryGuard
 from .publication_source_guards import PublicationSourceGuards
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
 from .tech_lead_completion import tech_lead_decision_processing_error
@@ -306,6 +308,10 @@ class CompletionProcessor:
         # so the catch-all ceiling matches the in-loop bound.
         self._validation_reroute_counts: dict[tuple[str, str], int] = {}
         self._publication_source_guards = PublicationSourceGuards(git_adapter, self._base_branch)
+        self._partial_delivery = PartialDeliveryGuard(
+            source=self._publication_source_guards, prs=pr_adapter,
+            repo_slug=self._partial_claim_repo_slug,
+        )
         self._record_validator = CompletionRecordValidator(
             config=config,
             git_adapter=git_adapter,
@@ -1955,6 +1961,8 @@ class CompletionProcessor:
     ) -> "_ActionResult":
         """Execute push branch action."""
         skip_hooks = skip_hooks or os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
+        if self._refuse_partial_delivery_before_push(worktree, issue_number, record, errors):
+            return self._ActionResult(halt=True)
         # Resolved here rather than passed in: a rebase retry moves HEAD, and a
         # signal bound to the old commit must not authorize the new one.
         result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
@@ -2084,6 +2092,8 @@ class CompletionProcessor:
         )
         if rebase_result.success:
             actions_taken.append(f"Rebased onto origin/{rebase_base}")
+            if self._refuse_partial_delivery_before_push(worktree, issue_number, record, errors):
+                return None
             return self.git_adapter.push(worktree, skip_hooks=skip_hooks)
 
         errors.append(f"{ERROR_PREFIX_PUSH}: Rebase failed: {rebase_result.message}")
@@ -2166,6 +2176,11 @@ class CompletionProcessor:
             runtime_identity=self._runtime_identity,
         )
         pr_body = attributed_publication_body(pr_body, issue_number, branch)
+        if self._refuse_partial_delivery_break(
+            record=record, worktree=worktree, issue_number=issue_number,
+            branch=branch, errors=errors,
+        ):
+            return None
         exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
             exchange_mode=exchange_mode,
             agent_label=agent_label,
@@ -2179,7 +2194,49 @@ class CompletionProcessor:
             )
             return None
 
-        return PreparedPullRequest(pr_title, pr_body, expected_base, stack_decision, exchange_mode)
+        return PreparedPullRequest(
+            pr_title, pr_body, expected_base, stack_decision, exchange_mode, record.partial_pr
+        )
+
+    def _partial_claim_repo_slug(self) -> str:
+        """The repository a partial claim's issue links are judged by (#7288)."""
+        if self._config is None:
+            raise ValueError("a partial completion needs the configured repository")
+        return require_repo(self._config)
+
+    def _refuse_partial_delivery_before_push(
+        self, worktree: Path, issue_number: int, record: CompletionRecord, errors: list[str],
+    ) -> bool:
+        branch = self.git_adapter.get_current_branch(worktree)
+        if branch is None:
+            raise ValueError(f"cannot push #{issue_number}: worktree {worktree} has no branch")
+        return self._refuse_partial_delivery_break(
+            record=record, worktree=worktree, issue_number=issue_number,
+            branch=branch, errors=errors,
+        )
+
+    def _refuse_partial_delivery_break(
+        self, *, record: CompletionRecord, worktree: Path, issue_number: int,
+        branch: str, errors: list[str],
+    ) -> bool:
+        """Run the partial-delivery guard before a branch write; record a refusal.
+
+        Not retryable: the agent's words, or the existing PR's reference line,
+        have to change first (#7288).
+        """
+        refusal = self._partial_delivery.refusal(
+            worktree, issue_number=issue_number, branch=branch,
+            claimed=record.partial_pr, claim_body=build_pr_body(record, issue_number),
+        )
+        if refusal is None:
+            return False
+        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {refusal}")
+        logger.error("Partial publication refused for #%d: %s", issue_number, refusal)
+        self._emit_publish_failed(
+            issue_number=issue_number, stage=ERROR_PREFIX_CREATE_PR,
+            error=refusal, retryable=False, branch=branch,
+        )
+        return True
 
     def _execute_create_pr_action(
         self,
@@ -2538,6 +2595,9 @@ class CompletionProcessor:
           issue-scoped reuse preflight missed it (#6596 F2);
         * its LABELS, because the record that produced it is agent-authored and
           may have asked for the shared human block (#6999 F2).
+
+        (An earlier "Closes #N" PR for a partial completion is refused before
+        any write by the partial-delivery guard in ``prepare_pull_request``.)
         """
         base_failure = self._enforce_created_pr_base(
             pr=pr,

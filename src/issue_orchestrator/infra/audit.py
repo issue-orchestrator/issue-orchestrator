@@ -17,6 +17,7 @@ from .config import Config
 from ..domain.dependencies import parse_dependencies
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
+from ..history import issues_held_by_session_history
 from ..control.scheduler import Scheduler
 
 
@@ -122,7 +123,7 @@ def get_queue_issues(
     history_numbers = set()
     active_numbers = set()
     if state:
-        history_numbers = {e.issue_number for e in state.session_history}
+        history_numbers = set(issues_held_by_session_history(state.session_history))
         active_numbers = {s.issue.number for s in state.active_sessions}
 
     # Use scheduler's filtering (same as run_loop uses)
@@ -170,7 +171,7 @@ def audit_queue(
     history_numbers = set()
     active_numbers = set()
     if state:
-        history_numbers = {e.issue_number for e in state.session_history}
+        history_numbers = set(issues_held_by_session_history(state.session_history))
         active_numbers = {s.issue.number for s in state.active_sessions}
 
     if issue_branches is None:

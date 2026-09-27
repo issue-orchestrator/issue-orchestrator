@@ -35,7 +35,7 @@ def rig(tmp_path):
                                    "completion.json", run, intake_receipt=receipt)
     command = PublishValidatedHeadCommand(1, "owner/repo", "feature", "c" * 40,
         RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
-        PublicationContent("Title", "Body", True))
+        PublicationContent("Title", "Body", True, False))
     record = CompletionRecord("session", "2026-09-07T00:00:00Z", CompletionOutcome.COMPLETED,
                               "Summary", [])
     prepared = PreparedManualPublication(command, receipt, run, RunContainedFile(run.run_dir, run.run_dir / "owned.json"), record, "Title", CompletionProcessingPolicy("agent:coder", TaskKind.CODE), 1,

@@ -26,6 +26,7 @@ from ..domain.issue_key import IssueKey
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .review_validity import ReviewValidity, evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
+from ..infra.repo_scope import require_repo
 from ..ports import EventSink,  make_trace_event
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
@@ -175,7 +176,7 @@ class PRScanner:
             if session_name in active_review_sessions:
                 continue
 
-            issue_number = extract_issue_number_from_pr(pr)
+            issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
 
             # Skip PRs whose linked issue is outside configured scope
             scope = self._review_scope.check_issue_number(issue_number, pr.number)
@@ -382,7 +383,7 @@ class PRScanner:
         facts io already holds), and a PR whose issue is not among them is
         skipped exactly as before. The caller scopes it to the current attempt.
         """
-        issue_number = extract_issue_number_from_pr(pr)
+        issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
         issue = known_issues.get(issue_number)
         if issue is None:
             return None

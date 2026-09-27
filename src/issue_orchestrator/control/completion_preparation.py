@@ -44,6 +44,7 @@ class PreparedPullRequest:
     base_branch: str
     stack_decision: StackBaseDecision | None
     exchange_mode: str | None
+    partial_pr: bool
 
 
 def record_from_prepared_evidence(
