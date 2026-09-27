@@ -187,3 +187,24 @@ def test_a_second_parks_failed_block_keeps_the_first_parks_cause(tmp_path) -> No
 
     assert block.release(request) is BlockOutcome.CLEARED
     assert "needs-human" not in labels.live[410]
+
+
+def test_a_failed_acquire_over_a_cleared_label_withdraws_its_restarted_cause(tmp_path) -> None:
+    """A person cleared the label, leaving a stale cause row. The next acquire
+    restarts the generation and its write fails: that row is this call's and
+    goes, so a later replayed release cannot remove a person's new label (r20)."""
+    from issue_orchestrator.domain.human_block import BlockOutcome, HumanBlockRequest
+
+    labels, block = _shared_block(tmp_path)
+    request = HumanBlockRequest(410, NeedsHumanCause.ACTION_LIVENESS, "parked")
+    assert block.acquire(request) is BlockOutcome.HELD
+    labels.live[410].discard("needs-human")  # a person clears it
+
+    real_add = labels.add_label
+    labels.add_label = lambda issue_number, label: (_ for _ in ()).throw(RuntimeError("502"))
+    assert block.acquire(request) is BlockOutcome.FAILED
+    labels.add_label = real_add
+
+    labels.add_label(410, "needs-human")  # a person asks for help again
+    block.release(request)
+    assert "needs-human" in labels.live[410]

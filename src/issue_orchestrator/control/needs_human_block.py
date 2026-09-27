@@ -466,7 +466,17 @@ class NeedsHumanBlock:
         return BlockOutcome.CLEARED
 
     def _cause_already_recorded(self, request: HumanBlockRequest) -> bool:
-        """This cause's row already stands (fail closed: unreadable counts as yes)."""
+        """This cause's row already stands on the LIVE label generation.
+
+        A row under an absent label is stale (a person cleared the label); the
+        acquisition restarts the generation, so it is this call's row after
+        all. Fail closed: an unreadable label or cause store counts as yes.
+        """
+        present = self._label_present_now(request.target)
+        if present is None:
+            return True
+        if not present:
+            return False
         try:
             return request.cause_key in self.causes.needs_human_causes(request.target)
         except Exception:
