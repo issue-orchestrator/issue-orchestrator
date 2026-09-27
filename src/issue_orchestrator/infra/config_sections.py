@@ -562,7 +562,7 @@ def load_execution_section(config: "Config", execution_section: dict, config_pat
     config.terminal_adapter = execution_section.get("terminal_adapter")
     session_interactions = get_section(execution_section, "session_interactions", config_path)
     config.session_interactions = SessionInteractionsConfig(
-        enabled=bool(session_interactions.get("enabled", True))
+        enabled=bool(session_interactions.get("enabled", SessionInteractionsConfig().enabled))
     )
 
     # Isolation
