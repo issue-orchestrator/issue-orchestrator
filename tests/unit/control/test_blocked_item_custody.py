@@ -56,7 +56,7 @@ THRESHOLDS = CustodyStaleThresholds(
     by_state={state: timedelta(hours=2) for state in OWNED_CUSTODY_STATES}
 )
 SWEEP_ON = StuckSweepSchedule(
-    enabled=True, max_attempts=3, last_swept_at=NOW - HOUR, next_due_at=NOW + 3 * HOUR
+    enabled=True, max_attempts=3, next_due_at=NOW + 3 * HOUR
 )
 BOARD = BoardCustodyFacts(now=NOW, sweep=SWEEP_ON)
 
@@ -234,11 +234,28 @@ def test_a_sweep_budget_is_no_queue_once_the_sweep_is_off() -> None:
 
 
 def test_an_exhausted_stuck_sweep_is_held_once_its_escalation_landed() -> None:
-    custody = _derive(_item(labels=NEEDS_HUMAN, sweep_attempts=3))
+    custody = _derive(
+        _item(labels=NEEDS_HUMAN, sweep_attempts=3, last_activity_at=NOW - 5 * HOUR)
+    )
 
     assert custody.state is CustodyState.HELD
     assert "spent its 3 recovery attempt(s)" in custody.reason
-    assert custody.clock is not None and custody.clock.since == NOW - HOUR
+    assert custody.clock is not None and custody.clock.since == NOW - 5 * HOUR
+    assert custody.clock.lower_bound
+    assert custody.stale  # a board-wide sweep time would have restarted it
+
+
+def test_a_later_sweep_does_not_restart_a_held_or_queued_clock() -> None:
+    """The item's clock is its own, not the board-wide sweep time."""
+    for facts in (
+        {"labels": NEEDS_HUMAN, "sweep_attempts": 3},
+        {"sweep_attempts": 1},
+    ):
+        item = _item(last_activity_at=NOW - 5 * HOUR, **facts)
+        before = _derive(item)
+        after_sweep = _derive(item, replace(BOARD, now=NOW + HOUR))
+        assert before.clock == after_sweep.clock
+        assert after_sweep.stale
 
 
 def test_an_unlanded_escalation_is_still_the_sweep_s_to_retry() -> None:
@@ -338,10 +355,14 @@ def test_a_sweep_recovery_in_progress_is_queued_for_tech_lead() -> None:
 
 
 def test_a_rate_limit_turns_a_queued_launch_into_waiting_on_world() -> None:
-    board = replace(BOARD, rate_limit=RateLimitWait(resets_at=NOW + HOUR, since=NOW - 3 * HOUR))
+    wait = RateLimitWait(resets_at=NOW + HOUR, since=NOW - 3 * HOUR)
 
     custody = _derive(
-        _item(tech_lead_queue=ActiveWork("tech-lead failure investigation", NOW)), board
+        _item(
+            tech_lead_queue=ActiveWork(
+                "tech-lead failure investigation", NOW, rate_limited=wait
+            )
+        )
     )
 
     assert custody.state is CustodyState.WAITING_ON_WORLD
@@ -378,6 +399,25 @@ def test_a_follow_up_filed_for_the_item_is_not_a_remedy_of_its_block() -> None:
     assert "last applied" not in custody.reason
 
 
+def test_charter_advice_older_than_the_block_does_not_hold_it() -> None:
+    narrow = TechLeadCharter(
+        roles={
+            **TechLeadCharter.default().roles,
+            CharterRole.FLOW: RoleCharter(
+                depth=CharterDepth.WORKAROUND, authority=CharterAuthority.EXECUTE
+            ),
+        }
+    )
+    advice = _decision("create_issue", charter=narrow, at=NOW - 5 * HOUR)
+
+    custody = _derive(_item(decisions=(advice,), blocked_at=NOW - HOUR))
+
+    assert custody.state is CustodyState.UNOWNED
+    assert custody.charter is None
+    undated_block = _derive(_item(decisions=(advice,)))
+    assert undated_block.state is CustodyState.UNOWNED
+
+
 def test_a_remedy_older_than_the_block_is_not_this_block_s_owner() -> None:
     executed = _decision("recover_validated_work", at=NOW - 5 * HOUR)
 
@@ -398,7 +438,7 @@ def test_charter_advice_beyond_depth_is_held_by_the_charter() -> None:
     advice = _decision("create_issue", charter=narrow)
     assert advice.outcome.value == "advice_only"
 
-    custody = _derive(_item(decisions=(advice,)))
+    custody = _derive(_item(decisions=(advice,), blocked_at=NOW - 2 * HOUR))
 
     assert custody.state is CustodyState.HELD
     assert custody.charter is not None

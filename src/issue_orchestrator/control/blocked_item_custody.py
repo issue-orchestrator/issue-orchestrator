@@ -69,10 +69,15 @@ class ObservedLabels:
 
 @dataclass(frozen=True)
 class ActiveWork:
-    """Work in flight on the item: what it is, and since when (if known)."""
+    """Work in flight on the item: what it is, and since when (if known).
+
+    ``rate_limited`` is set on QUEUED work the host's rate limit is holding
+    back, dated by that work's own episode (#7297).
+    """
 
     what: str
     since: datetime | None = None
+    rate_limited: "RateLimitWait | None" = None
 
 
 @dataclass(frozen=True)
@@ -104,10 +109,14 @@ class ProviderWait:
 
 @dataclass(frozen=True)
 class RateLimitWait:
-    """The repository host's rate-limit window is holding launches back (#7297)."""
+    """The host's rate-limit window is holding one queued launch back (#7297).
+
+    ``since`` is that launch's OWN episode (None when it has not been refused
+    yet, only held behind the window): the age is never another item's.
+    """
 
     resets_at: datetime
-    since: datetime
+    since: datetime | None
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,6 @@ class StuckSweepSchedule:
 
     enabled: bool
     max_attempts: int
-    last_swept_at: datetime | None
     next_due_at: datetime | None
 
 
@@ -163,7 +171,6 @@ class BoardCustodyFacts:
 
     now: datetime
     sweep: StuckSweepSchedule
-    rate_limit: RateLimitWait | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +391,8 @@ def _held(
             CustodyState.HELD,
             f"The stuck sweep spent its {board.sweep.max_attempts} recovery"
             " attempt(s) without unblocking it and escalated it for a person.",
-            _clock(board.sweep.last_swept_at, "last stuck sweep"),
+            # Not the board-wide sweep time: every sweep would restart it.
+            _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
     if NeedsHumanCause.SESSION_LIFECYCLE in item.needs_human_causes:
         return _Claim(
@@ -427,10 +435,7 @@ def _fix_pending(
 ) -> _Claim | None:
     if item.queued_fix is not None:
         return _launch_claim(
-            CustodyState.BEING_FIXED,
-            f"A {item.queued_fix.what} is queued.",
-            item.queued_fix.since,
-            board,
+            CustodyState.BEING_FIXED, f"A {item.queued_fix.what} is queued.", item.queued_fix
         )
     if item.tracked_fix is not None:
         fix = item.tracked_fix
@@ -495,8 +500,7 @@ def _queued_for_tech_lead(
         return _launch_claim(
             CustodyState.QUEUED_FOR_TECH_LEAD,
             f"Queued for a {item.tech_lead_queue.what}.",
-            item.tech_lead_queue.since,
-            board,
+            item.tech_lead_queue,
         )
     if item.sweep_escalation_pending:
         # Exhausted, and the needs-human escalation has not landed yet (the
@@ -505,7 +509,7 @@ def _queued_for_tech_lead(
             CustodyState.QUEUED_FOR_TECH_LEAD,
             "The stuck sweep exhausted its recovery attempts; its escalation to"
             " a person has not landed yet and is retried on every sweep.",
-            _clock(board.sweep.last_swept_at, "last stuck sweep"),
+            _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
     attempts = item.sweep_attempts
     # A recorded budget is only a queue while a sweep will run again: with the
@@ -516,24 +520,22 @@ def _queued_for_tech_lead(
             "The stuck sweep is tracking its recovery (failed cycles"
             f" {attempts} of {board.sweep.max_attempts}); the next sweep"
             " re-checks it.",
-            _clock(board.sweep.last_swept_at, "last stuck sweep"),
+            _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
     return None
 
 
-def _launch_claim(
-    state: CustodyState, reason: str, since: datetime | None, board: BoardCustodyFacts
-) -> _Claim:
-    """A queued launch, unless the host's rate limit is holding launches back."""
-    limit = board.rate_limit
+def _launch_claim(state: CustodyState, reason: str, work: ActiveWork) -> _Claim:
+    """A queued launch, unless the host's rate limit is holding it back."""
+    limit = work.rate_limited
     if limit is not None:
         return _Claim(
             CustodyState.WAITING_ON_WORLD,
             f"{reason} Launches are deferred by a GitHub rate limit until"
             f" {limit.resets_at.isoformat(timespec='minutes')}.",
-            CustodyClock(since=limit.since, basis="rate limit hit"),
+            _clock(limit.since, "its launch was first refused by the rate limit"),
         )
-    return _Claim(state, reason, _clock(since, "queued"))
+    return _Claim(state, reason, _clock(work.since, "queued"))
 
 
 # -- 7. what the tech lead last decided ------------------------------------------------------
@@ -567,11 +569,14 @@ def _latest_remedy(
         CharterReason.ROLE_DISABLED,
         CharterReason.BEYOND_DEPTH,
     ):
+        decided = _parse(decision.decided_at)
+        if not _about_this_block(decided, item):
+            return None
         return _Claim(
             CustodyState.HELD,
             f"The charter kept the tech lead from acting ({action}); it recorded"
             " advice only.",
-            _clock(_parse(decision.decided_at), "charter decision recorded"),
+            _clock(decided, "charter decision recorded"),
             _basis(decision),
         )
     if decision.outcome is CharterOutcome.EXECUTED or (
@@ -581,11 +586,7 @@ def _latest_remedy(
             (decision.lifecycle_updated_at if decision.lifecycle else None)
             or decision.decided_at
         )
-        if applied is None or item.blocked_at is None or applied < item.blocked_at:
-            # Only a remedy provably applied to THIS block is verifiable. One
-            # that ran before the block began was for an earlier incident, and
-            # without a block time nothing ties it to this one: the item falls
-            # through to Unowned, whose reason names the remedy it saw.
+        if not _about_this_block(applied, item):
             return None
         return _Claim(
             CustodyState.VERIFY,
@@ -595,6 +596,17 @@ def _latest_remedy(
             _basis(decision),
         )
     return None
+
+
+def _about_this_block(at: datetime | None, item: ItemCustodyFacts) -> bool:
+    """Whether a decision at *at* provably concerns the item's CURRENT block.
+
+    Only when both times are known and the decision came after the block
+    began. One from before was for an earlier incident, and one nothing dates
+    cannot be tied to this block: the item falls through to Unowned, whose
+    reason names any remedy it saw.
+    """
+    return at is not None and item.blocked_at is not None and at >= item.blocked_at
 
 
 def _nobody_reason(

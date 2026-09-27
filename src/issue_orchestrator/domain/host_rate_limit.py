@@ -124,13 +124,13 @@ class HostRateLimitWindow:
             since = episodes.get(key, now)
         return RateLimitEpisode(limit=limit, limited_since=since, observed_at=now)
 
-    def holding_at(self, now: datetime) -> RateLimitEpisode | None:
-        """The window as the board sees it: holding since its oldest live episode.
+    def waiting_since(self, key: str) -> datetime | None:
+        """When ``key``'s own episode began, or None if it has none (#7331).
 
-        A read for display (#7331), never a launch decision: it measures every
-        item still waiting, so the age shown is how long launches have waited.
+        A read for display: the board dates an item's rate-limit wait by its
+        OWN episode, never by another item's older one.
         """
-        return self.open_at(now, live=frozenset(self._since))
+        return self._since.get(key)
 
     def observe(
         self,

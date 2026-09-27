@@ -266,21 +266,102 @@ def test_a_queued_validation_retry_is_being_fixed(tmp_path: Path) -> None:
     assert custody.reason == "A validation retry (attempt 2) is queued."
 
 
-def test_a_github_rate_limit_holds_queued_launches_on_the_world() -> None:
+def _queued_investigation(number: int) -> PendingTechLeadReview:
+    return PendingTechLeadReview(
+        issue_number=number,
+        title="t",
+        flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+        failure=DiscoveredFailure(issue_number=number, issue_title="t", failure_reason="failed"),
+    )
+
+
+def test_a_rate_limit_dates_each_queued_launch_by_its_own_episode() -> None:
+    """One item's old refusal must not age another item's fresh wait (#7297)."""
+    state = OrchestratorState(
+        pending_tech_lead_reviews=[_queued_investigation(23), _queued_investigation(24)],
+        cached_scope_issues=[_blocked(23, "blocked-failed"), _blocked(24, "blocked-failed")],
+    )
+    limit = HostRateLimit(resets_at=NOW + HOUR, kind="primary")
+    live = frozenset({"tech_lead:23", "tech_lead:24"})
+    state.host_rate_limit.observe(limit, NOW - 3 * HOUR, "tech_lead:23", live=live)
+    state.host_rate_limit.observe(limit, NOW - 10 * timedelta(minutes=1), "tech_lead:24", live=live)
+
+    config = _config()
+    config.tech_lead.custody.stale_after_minutes.waiting_on_world = 120
+    board = _reader(state, config=config).read([23, 24])
+
+    old, fresh = board.for_issue(23), board.for_issue(24)
+    assert old.state is fresh.state is CustodyState.WAITING_ON_WORLD
+    assert old.clock is not None and old.clock.since == NOW - 3 * HOUR and old.stale
+    assert fresh.clock is not None and fresh.clock.since == NOW - 10 * timedelta(minutes=1)
+    assert not fresh.stale
+
+
+def test_a_just_discovered_failure_is_not_held_by_the_rate_limit() -> None:
+    """It is not a launch candidate yet; only queued launches wait on the window."""
     state = OrchestratorState(
         discovered_failures=[
-            DiscoveredFailure(issue_number=23, issue_title="t", failure_reason="failed")
+            DiscoveredFailure(issue_number=25, issue_title="t", failure_reason="failed")
         ],
-        cached_scope_issues=[_blocked(23, "blocked-failed")],
+        cached_scope_issues=[_blocked(25, "blocked-failed")],
     )
     state.host_rate_limit.observe(
-        HostRateLimit(resets_at=NOW + HOUR, kind="primary"), NOW - 3 * HOUR, "k", live=frozenset({"k"})
+        HostRateLimit(resets_at=NOW + HOUR, kind="primary"),
+        NOW - HOUR,
+        "issue:25",
+        live=frozenset({"issue:25"}),
     )
 
-    custody = _reader(state).read([23]).for_issue(23)
+    assert _reader(state).read([25]).for_issue(25).state is CustodyState.QUEUED_FOR_TECH_LEAD
 
-    assert custody.state is CustodyState.WAITING_ON_WORLD
-    assert custody.clock is not None and custody.clock.since == NOW - 3 * HOUR
+
+def test_a_differently_cased_needs_human_is_the_same_label() -> None:
+    state = OrchestratorState(cached_scope_issues=[_blocked(26, "Needs-Human")])
+    causes = {26: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
+
+    assert _reader(state, causes=causes).read([26]).for_issue(26).state is (
+        CustodyState.WAITING_ON_YOU
+    )
+
+
+def test_advice_recorded_before_a_later_block_does_not_explain_it() -> None:
+    from issue_orchestrator.domain.tech_lead_charter import CharterDepth, CharterRole, RoleCharter
+
+    narrow = TechLeadCharter(
+        roles={
+            **TechLeadCharter.default().roles,
+            CharterRole.FLOW: RoleCharter(
+                depth=CharterDepth.WORKAROUND, authority=CharterAuthority.EXECUTE
+            ),
+        }
+    )
+    verdict = decide_charter(
+        "create_issue", narrow, action_ceiling=CharterAuthority.EXECUTE,
+        ceiling_source="tech_lead.authority.create_issue",
+    )
+    advice = TechLeadCharterDecision.from_verdict(
+        verdict,
+        decision_id=decision_key("run-1", "A9"),
+        source=CharterDecisionSource.DECISION,
+        run_id="run-1",
+        action_id="A9",
+        anchor_issue_number=27,
+        target_number=27,
+        target_is_pr=False,
+        decided_at=(NOW - 5 * HOUR).isoformat(),
+        tracks_proposal=False,
+    )
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.charter_ledger.record_decisions([advice])
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(27, "blocked-failed")],
+        session_history=[_ended_blocked(27, NOW - HOUR)],
+    )
+
+    custody = _reader(state, authority=authority).read([27]).for_issue(27)
+
+    assert custody.state is CustodyState.UNOWNED
+    assert custody.charter is None
 
 
 # -- the approval backlog and the charter ledger --------------------------------------

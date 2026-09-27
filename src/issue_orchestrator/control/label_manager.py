@@ -535,8 +535,10 @@ class LabelManager:
         return self.pr_pending in labels
 
     def requires_human(self, label: str) -> bool:
+        # GitHub folds label names, so a differently cased needs-human is the
+        # same label - the same rule is_blocking already applies (#7331).
         base = self._strip_prefix(label)
-        return base == self._entries["blocked_needs_human"].base_name
+        return base.casefold() == self._entries["blocked_needs_human"].base_name.casefold()
 
     def requires_human_any(self, labels: Sequence[str]) -> bool:
         return any(self.requires_human(l) for l in labels)

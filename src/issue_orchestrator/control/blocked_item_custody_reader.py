@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
+from ..domain.host_rate_limit import episode_key
 from ..domain.session_key import TaskKind
 from .blocked_item_custody import (
     ActiveWork,
@@ -48,6 +49,7 @@ from .blocked_item_custody import (
     TrackedFix,
     derive_item_custody,
 )
+from .host_rate_limit_launch_gate import live_episode_keys
 from .stuck_sweep import stuck_sweep_next_due_at
 from .tech_lead_session_policy import is_tech_lead_session
 
@@ -146,11 +148,7 @@ class StateBlockedItemCustodyReader:
     def read(self, issue_numbers: Sequence[int]) -> BlockedCustodyBoard:
         now = self._clock()
         state = self._state()
-        board = BoardCustodyFacts(
-            now=now,
-            sweep=self._sweep_schedule(state),
-            rate_limit=_rate_limit(state, now),
-        )
+        board = BoardCustodyFacts(now=now, sweep=self._sweep_schedule(state))
         shared = self._shared_facts(state, issue_numbers)
         return BlockedCustodyBoard(
             items=tuple(
@@ -253,7 +251,6 @@ class StateBlockedItemCustodyReader:
         return StuckSweepSchedule(
             enabled=due is not None,
             max_attempts=self._config.tech_lead.stuck_sweep.max_recovery_attempts,
-            last_swept_at=_epoch(state.last_stuck_sweep_at),
             next_due_at=_epoch(due),
         )
 
@@ -284,13 +281,14 @@ class StateBlockedItemCustodyReader:
             lambda: _tracked_fixes(self._authority, self._clock()),
             {},
         )
+        waits = _rate_limit_waits(state, self._clock())
         return _SharedFacts(
             issues={issue.number: issue for issue in _scope_issues(state)},
             history={entry.issue_number: entry for entry in state.session_history},
             investigations=investigations,
             fixes=fixes,
-            queued_fixes=_queued_fixes(state),
-            tech_lead_queue=_tech_lead_queue(state),
+            queued_fixes=_queued_fixes(state, waits),
+            tech_lead_queue=_tech_lead_queue(state, waits),
             proposals=proposals,
             tracked_fixes=tracked,
             needs_human_causes=causes,
@@ -329,34 +327,76 @@ def _scope_issues(state: "OrchestratorState") -> Sequence["Issue"]:
     return state.cached_scope_issues or state.cached_queue_issues
 
 
-def _queued_fixes(state: "OrchestratorState") -> dict[int, ActiveWork]:
+_Waits = Callable[[str, int], "RateLimitWait | None"]
+
+
+def _rate_limit_waits(state: "OrchestratorState", now: datetime) -> _Waits:
+    """Each queued launch's rate-limit wait, keyed exactly as the launch gate keys it.
+
+    The hold is shared (one token, one reset); the AGE is the launch's own
+    episode (#7297), so one item's old refusal never ages another.
+    """
+    window = state.host_rate_limit
+    held = window.open_at(now, live=live_episode_keys(state))
+    if held is None:
+        return lambda _work, _number: None
+    resets_at = held.limit.resets_at
+    return lambda work, number: RateLimitWait(
+        resets_at=resets_at, since=window.waiting_since(episode_key(work, number))
+    )
+
+
+def _queued_fixes(state: "OrchestratorState", waits: _Waits) -> dict[int, ActiveWork]:
     queued: dict[int, ActiveWork] = {}
     for retry in state.pending_validation_retries:
         queued.setdefault(
             retry.issue_number,
-            ActiveWork(f"validation retry (attempt {retry.retry_count + 1})"),
+            ActiveWork(
+                f"validation retry (attempt {retry.retry_count + 1})",
+                rate_limited=waits("validation_retry", retry.issue_number),
+            ),
         )
     for rework in state.pending_reworks:
-        if rework.issue_number is not None:
-            queued.setdefault(rework.issue_number, ActiveWork("rework of its PR"))
+        number = rework.resolve_issue_number()
+        if number is not None:
+            queued.setdefault(
+                number, ActiveWork("rework of its PR", rate_limited=waits("rework", number))
+            )
     for review in state.pending_reviews:
-        queued.setdefault(review.issue_number, ActiveWork("code review of its PR"))
+        queued.setdefault(
+            review.issue_number,
+            ActiveWork(
+                "code review of its PR", rate_limited=waits("review", review.issue_number)
+            ),
+        )
     return queued
 
 
-def _tech_lead_queue(state: "OrchestratorState") -> dict[int, ActiveWork]:
-    """Every issue a queued tech-lead review or a just-discovered failure covers."""
+def _tech_lead_queue(state: "OrchestratorState", waits: _Waits) -> dict[int, ActiveWork]:
+    """Every issue a queued tech-lead review or a just-discovered failure covers.
+
+    A queued review launches under its own queue item's key, so a cohort's
+    problems share their review's wait. A just-discovered failure is not a
+    launch candidate yet, so no rate limit holds it.
+    """
     queue: dict[int, ActiveWork] = {}
     for item in state.pending_tech_lead_reviews:
+        wait = waits("tech_lead", item.issue_number)
         if item.failure is not None:
             queue.setdefault(
                 item.failure.issue_number,
-                ActiveWork("tech-lead failure investigation", _epoch(item.failure.observed_at)),
+                ActiveWork(
+                    "tech-lead failure investigation",
+                    _epoch(item.failure.observed_at),
+                    rate_limited=wait,
+                ),
             )
         for problem in item.problem_cohort:
             queue.setdefault(
                 problem.issue_number,
-                ActiveWork("tech-lead health review", _epoch(problem.observed_at)),
+                ActiveWork(
+                    "tech-lead health review", _epoch(problem.observed_at), rate_limited=wait
+                ),
             )
     for failure in state.discovered_failures:
         queue.setdefault(
@@ -390,13 +430,6 @@ def _tracked_fixes(authority: "TechLeadAuthorityStore", now: datetime) -> dict[i
         for row in authority.list_dispositions()
         if row.phase in {"prepared", "waiting"} and now < row.reassess_at
     }
-
-
-def _rate_limit(state: "OrchestratorState", now: datetime) -> RateLimitWait | None:
-    episode = state.host_rate_limit.holding_at(now)
-    if episode is None:
-        return None
-    return RateLimitWait(resets_at=episode.limit.resets_at, since=episode.limited_since)
 
 
 def _aware(value: datetime) -> datetime:
