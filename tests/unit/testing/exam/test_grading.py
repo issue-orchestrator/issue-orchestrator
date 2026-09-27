@@ -259,3 +259,27 @@ def test_scorecard_json_is_machine_readable() -> None:
 def test_grading_refuses_an_observation_of_another_case() -> None:
     with pytest.raises(ValueError, match="not"):
         grade(CASE_A, observation(BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW, item()))
+
+
+def test_a_remedy_naming_an_action_the_engine_lacks_is_refused() -> None:
+    """A forbidden misspelling would forbid nothing and pass silently."""
+    from issue_orchestrator.testing.exam import RemedySpec
+
+    with pytest.raises(ValueError, match="unknown tech-lead action types \\['reset_retyr'\\]"):
+        RemedySpec(
+            summary="s",
+            role="subject",
+            right_action_types=frozenset(),
+            acceptable_action_types=frozenset({"escalate_to_human"}),
+            rationale=(),
+            forbidden_action_types=frozenset({"reset_retyr"}),
+        )
+    with pytest.raises(ValueError, match="both allow and forbid"):
+        RemedySpec(
+            summary="s",
+            role="subject",
+            right_action_types=frozenset(),
+            acceptable_action_types=frozenset({"reset_retry"}),
+            rationale=(),
+            forbidden_action_types=frozenset({"reset_retry"}),
+        )

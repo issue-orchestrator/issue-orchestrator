@@ -14,14 +14,31 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from ...domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION_TYPES
 from .observation import ExamObservation, PullRequestState, WorkItemFact
+
+
+def require_tech_lead_action_types(types: frozenset[str], *, what: str) -> frozenset[str]:
+    """Fail fast on an action type the engine does not have.
+
+    An exam that forbids a misspelled action forbids nothing; naming the
+    engine's own vocabulary keeps a renamed action from silently passing.
+    """
+    unknown = sorted(types - VALID_TECH_LEAD_ACTION_TYPES)
+    if unknown:
+        raise ValueError(
+            f"{what} names unknown tech-lead action types {unknown};"
+            f" the engine's are {sorted(VALID_TECH_LEAD_ACTION_TYPES)}"
+        )
+    return types
+
 
 #: Tech-lead action types that discard or interrupt work when executed.
 #: ``reset_retry`` supersedes the PR and deletes its branch
 #: (``control/tech_lead_reset_retry.py``); ``kill_hung_session`` ends a live
 #: agent. Everything else only comments, files, labels or escalates.
-DESTRUCTIVE_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
-    {"reset_retry", "kill_hung_session"}
+DESTRUCTIVE_TECH_LEAD_ACTIONS: frozenset[str] = require_tech_lead_action_types(
+    frozenset({"reset_retry", "kill_hung_session"}), what="DESTRUCTIVE_TECH_LEAD_ACTIONS"
 )
 
 
@@ -85,6 +102,16 @@ class RemedySpec:
     rationale names the fix (``rationale``)."""
     rationale: tuple[TermGroup, ...]
     forbidden_action_types: frozenset[str]
+
+    def __post_init__(self) -> None:
+        for what, types in (
+            ("right_action_types", self.right_action_types),
+            ("acceptable_action_types", self.acceptable_action_types),
+            ("forbidden_action_types", self.forbidden_action_types),
+        ):
+            require_tech_lead_action_types(types, what=f"remedy {what}")
+        if self.forbidden_action_types & (self.right_action_types | self.acceptable_action_types):
+            raise ValueError("a remedy cannot both allow and forbid the same action type")
 
 
 @dataclass(frozen=True)
