@@ -541,3 +541,75 @@ def test_a_release_racing_the_withdrawal_decision_keeps_its_debt(tmp_path) -> No
     clock.advance(POLICY.max_backoff)
     owner.reconcile_effects()
     assert "needs-human" not in labels.live[229]
+
+
+def test_a_withdrawal_never_takes_off_a_block_landed_while_it_decided(tmp_path) -> None:
+    """Clearing the last park reads "no park" and is about to withdraw the
+    block; another thread (the drain's worker) parks and escalates a second
+    action on the same issue meanwhile. The second park's block must stand
+    (review r25)."""
+    import threading
+
+    from issue_orchestrator.control.action_liveness_escalation import ActionLivenessEscalation
+    from issue_orchestrator.control.actions import (
+        ActionResult,
+        AddCommentAction,
+        AddLabelAction,
+        RemoveLabelAction,
+    )
+    from issue_orchestrator.domain.human_block import HumanBlockRequest
+    from tests.unit.control.test_action_liveness_escalation import _shared_block
+
+    labels, block = _shared_block(tmp_path)
+
+    class _Applier:
+        def apply(self, action):
+            if isinstance(action, AddCommentAction):
+                return ActionResult.ok(action)
+            request = HumanBlockRequest(action.issue_number, action.needs_human_cause, "r")
+            if isinstance(action, AddLabelAction):
+                committed = block.acquire(request).committed
+                return ActionResult.ok(action) if committed else ActionResult.fail(action, "x")
+            assert isinstance(action, RemoveLabelAction)
+            block.release(request)
+            return ActionResult.ok(action)
+
+    engine_store = SQLiteActionLivenessStore(tmp_path / "action_liveness.sqlite")
+    owner = liveness_owner(
+        store=engine_store,
+        escalation=ActionLivenessEscalation(
+            events=MagicMock(), applier=_Applier(), needs_human_label="needs-human",
+        ),
+        clock=ManualClock(), policy=POLICY,
+    )
+    first = KEY
+    second = LivenessKey(ActionIdentity("issue:229", "add_comment#x"), "e" * 32, 229)
+    owner.record(first, ActionOutcome.permanent("stuck"))
+    assert "needs-human" in labels.live[229]
+
+    decided, resume = threading.Event(), threading.Event()
+    read = engine_store.parked_rows_for_issue
+
+    def read_then_pause(issue_number):
+        rows = read(issue_number)
+        if not decided.is_set():
+            decided.set()
+            resume.wait(timeout=10)
+        return rows
+
+    engine_store.parked_rows_for_issue = read_then_pause  # type: ignore[method-assign]
+    clearing = threading.Thread(target=lambda: owner.record(first, ActionOutcome.done()))
+    clearing.start()
+    assert decided.wait(timeout=10)
+    parking = threading.Thread(
+        target=lambda: owner.record(second, ActionOutcome.permanent("also stuck"))
+    )
+    parking.start()
+    parking.join(timeout=1.0)  # an unserialized escalation lands here
+    resume.set()
+    clearing.join(timeout=10)
+    parking.join(timeout=10)
+
+    assert "needs-human" in labels.live[229], "the second park's block stands"
+    row = SQLiteActionLivenessStore(tmp_path / "action_liveness.sqlite").row(second)
+    assert row is not None and row.parked and row.escalated
