@@ -233,7 +233,7 @@ class TechLeadCharterDecision:
         if link.decision_id != self.decision_id:
             raise ValueError(f"link for {link.decision_id} applied to {self.decision_id}")
         return replace(
-            self, execution=link.result, execution_reason=link.reason, execution_at=at
+            self, execution=link.result, execution_reason=link.reason, execution_at=link.at or at
         )
 
     def with_lifecycle(
@@ -327,6 +327,9 @@ class CharterExecutionLink:
     result: CharterExecutionResult
     #: The applier's words for a result that did not apply; None when it applied.
     reason: str | None = None
+    #: When the result landed, if the linker knows it more precisely than the
+    #: link's own time (a completion links a whole batch at once, in order).
+    at: str | None = None
 
     def __post_init__(self) -> None:
         if not self.decision_id:

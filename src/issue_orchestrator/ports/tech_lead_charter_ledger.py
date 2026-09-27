@@ -125,7 +125,7 @@ class TechLeadCharterLedger(TechLeadCharterDecisionReader, Protocol):
     ) -> int:
         """Record what the applier did with directly executed decisions (#7362).
 
-        In one transaction; the latest attempt's result replaces an earlier
+        ``at`` dates every link that carries no time of its own. In one transaction; the latest attempt's result replaces an earlier
         one. Returns the rows updated. A link naming a decision that is not an
         executed one on the record raises: nothing else may be linked here.
         """

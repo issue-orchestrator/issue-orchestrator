@@ -40,7 +40,6 @@ from ..domain.blocked_item_custody import (
 )
 from ..domain.human_block import NeedsHumanCause
 from ..domain.tech_lead_charter import CharterOutcome, CharterReason
-from ..domain.tech_lead_charter_decisions import CharterExecutionResult
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
@@ -610,18 +609,11 @@ def _latest_remedy(
             _clock(applied, "remedy applied"),
             _basis(decision),
         )
-    if decision.execution is CharterExecutionResult.PARKED:
-        parked = _effect_time(decision)
-        if not _about_this_block(parked, item):
-            return None
-        return _Claim(
-            CustodyState.HELD,
-            f"The tech lead's remedy ({action}) was parked: {decision.execution_reason}",
-            _clock(parked, "remedy parked"),
-            _basis(decision),
-        )
-    # Executed but refused, failed, withheld or not yet applied (#7362): it
-    # owns nothing, and the Unowned reason names it.
+    # Executed but refused, failed, withheld, parked or not yet applied
+    # (#7362): it owns nothing, and the Unowned reason names it. A park that
+    # still stands holds the item through the liveness owner's own fact
+    # (``_held``), which a person's release takes away; the record's PARKED
+    # is only the history of why that remedy never took effect.
     return None
 
 

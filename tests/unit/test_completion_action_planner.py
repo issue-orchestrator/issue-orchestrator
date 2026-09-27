@@ -64,6 +64,8 @@ from issue_orchestrator.ports.open_issue_corpus_store import (
 )
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.domain.tech_lead_charter import CharterOutcome
+from dataclasses import replace
 from issue_orchestrator.ports import RepositoryHost
 from tests.unit.session_run_helpers import make_session_run_assets
 
@@ -2576,6 +2578,50 @@ def test_a_replayed_decision_whose_new_link_fails_never_keeps_its_old_applied(tm
     [row] = store.charter_ledger.list_recent()
     assert not row.took_effect and row.execution is None
     assert store.charter_ledger.list_remedies_on_issue(5) == ()
+
+
+def test_a_remedy_refused_later_in_the_batch_is_the_newest_result():
+    """#7362 review r5: A9 applies, then A10 (same item) is refused in the same
+    batch. A10's result landed later, so it speaks for the item, whatever the
+    decision ids sort as."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.blocked_item_custody import (
+        BoardCustodyFacts, ItemCustodyFacts, ObservedLabels, StuckSweepSchedule, derive_item_custody)
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.blocked_item_custody import (
+        OWNED_CUSTODY_STATES, CustodyStaleThresholds, CustodyState)
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    applied, refused = (_decision(a, "recover_validated_work", target=5, at="2026-09-26T10:00:00+00:00")
+                        for a in ("A9", "A10"))
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions([replace(d, outcome=CharterOutcome.EXECUTED, lifecycle=None,
+                                                   lifecycle_updated_at=None) for d in (applied, refused)])
+    host = MagicMock()
+    host.add_comment.side_effect = [None, RuntimeError("403")]
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_ops = store
+    batch = [AddCommentAction(number=5, comment=f"c{d.action_id}", charter_decisions=(d.decision_id,))
+             for d in (applied, refused)]
+
+    apply_completion_actions_gated(applier, batch, issue_number=1)
+
+    rows = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert rows["A9"].execution is CharterExecutionResult.APPLIED
+    assert rows["A10"].execution is CharterExecutionResult.FAILED
+    assert rows["A10"].effect_at > rows["A9"].effect_at
+    now = datetime.now(timezone.utc)
+    custody = derive_item_custody(
+        ItemCustodyFacts(issue_number=5, labels=ObservedLabels(blocking=("blocked-failed",)),
+                         blocked_at=now - timedelta(days=400),
+                         decisions=store.charter_ledger.list_about_issue(5)),
+        BoardCustodyFacts(now=now, sweep=StuckSweepSchedule(enabled=True, max_attempts=3, next_due_at=None)),
+        CustodyStaleThresholds(by_state={state: timedelta(hours=2) for state in OWNED_CUSTODY_STATES}),
+    )
+    assert custody.state is not CustodyState.VERIFY
+    assert "did not take effect: failed" in custody.reason
 
 
 def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):

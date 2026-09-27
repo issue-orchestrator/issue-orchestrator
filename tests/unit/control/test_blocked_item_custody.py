@@ -444,17 +444,24 @@ def test_an_executed_remedy_that_did_not_take_effect_is_never_verify(
     assert words in custody.reason
 
 
-def test_a_parked_executed_remedy_is_held_with_its_decision() -> None:
+def test_a_parked_remedy_is_held_only_while_its_park_stands() -> None:
+    """#7362 review r5: the liveness owner's live park holds the item; once a
+    person releases it, the record's PARKED is only why the remedy never took
+    effect, and the item is unowned again."""
     parked = _linked(
         _decision("release_withheld_review"), CharterExecutionResult.PARKED,
         "the orchestrator stopped retrying it (transient): 403",
     )
+    fact = ParkedActionFact(action="release_withheld_review", outcome="transient",
+                            reason="403", parked_since=NOW - HOUR)
+    item = _item(decisions=(parked,), blocked_at=NOW - 2 * HOUR)
 
-    custody = _derive(_item(decisions=(parked,), blocked_at=NOW - 2 * HOUR))
+    held = _derive(replace(item, parked=(fact,)))
+    released = _derive(item)
 
-    assert custody.state is CustodyState.HELD
-    assert "was parked: the orchestrator stopped retrying it (transient): 403" in custody.reason
-    assert custody.charter is not None and custody.charter.execution == "parked"
+    assert held.state is CustodyState.HELD
+    assert released.state is CustodyState.UNOWNED
+    assert "did not take effect: parked, the orchestrator stopped retrying it" in released.reason
 
 
 def test_a_later_applied_remedy_speaks_for_the_item_over_an_earlier_refusal() -> None:

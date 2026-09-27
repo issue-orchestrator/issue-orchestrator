@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.tech_lead_charter import CharterOutcome
@@ -131,22 +131,23 @@ _SEVERITY = (
 )
 
 
-def _worst(
-    results: Sequence[tuple[CharterExecutionResult, str | None]],
-) -> tuple[CharterExecutionResult, str | None]:
-    return max(results, key=lambda item: _SEVERITY.index(item[0]))
+#: One effect's result: what, why, and when it landed (None: at link time).
+_Found = tuple[CharterExecutionResult, "str | None", "str | None"]
+
+
+def _fold(decision_id: str, found: Sequence[_Found]) -> CharterExecutionLink:
+    """The worst result speaks for the decision, dated by its LAST effect, so a
+    decision whose effect landed later in a batch reads as the later one."""
+    result, reason, _ = max(found, key=lambda item: _SEVERITY.index(item[0]))
+    times = [at for _, _, at in found if at is not None]
+    return CharterExecutionLink(decision_id, result, reason, max(times) if times else None)
 
 
 def link_execution_results(
-    ledger: "TechLeadCharterLedger",
-    results: "dict[str, list[tuple[CharterExecutionResult, str | None]]]",
+    ledger: "TechLeadCharterLedger", results: "dict[str, list[_Found]]"
 ) -> None:
     """Link each decision's folded result; a decision missing from the record raises."""
-    links = [
-        CharterExecutionLink(decision_id, *_worst(found))
-        for decision_id, found in results.items()
-        if found
-    ]
+    links = [_fold(decision_id, found) for decision_id, found in results.items() if found]
     if not links:
         return
     updated = ledger.link_execution_outcomes(links, at=_now())
@@ -183,13 +184,20 @@ class CompletionEffectLinks:
     """
 
     planned: Sequence["Action"]
-    _found: dict[int, tuple[CharterExecutionResult, str | None]] = field(
-        default_factory=dict, init=False
-    )
+    _found: dict[int, _Found] = field(default_factory=dict, init=False)
+    _last: datetime | None = field(default=None, init=False)
+
+    def _landed_at(self) -> str:
+        """Strictly increasing, so results keep the order they landed in."""
+        now = datetime.now(timezone.utc)
+        if self._last is not None and now <= self._last:
+            now = self._last + timedelta(microseconds=1)
+        self._last = now
+        return now.isoformat()
 
     def applied(self, batch: Sequence["Action"], results: Sequence[ActionResult]) -> None:
         for action, result in zip(batch, results):
-            self._found[id(action)] = result_of(result)
+            self._found[id(action)] = (*result_of(result), self._landed_at())
 
     def raised(self, action: "Action", error: BaseException) -> None:
         """*action*'s apply raised: its result is unknown, so it did not take
@@ -197,12 +205,13 @@ class CompletionEffectLinks:
         self._found[id(action)] = (
             CharterExecutionResult.FAILED,
             f"its apply raised before a result was known: {type(error).__name__}: {error}",
+            self._landed_at(),
         )
 
     def link(self, authority: "Callable[[], TechLeadAuthorityStore | None]") -> None:
         """Link every executed decision's folded result; *authority* is read only
         when a planned effect carries one."""
-        results: dict[str, list[tuple[CharterExecutionResult, str | None]]] = {}
+        results: dict[str, list[_Found]] = {}
         for action in self.planned:
             outcome = self._found.get(
                 id(action),
@@ -210,6 +219,7 @@ class CompletionEffectLinks:
                     CharterExecutionResult.WITHHELD,
                     "withheld: a mandated tech-lead action in the same completion"
                     " did not commit",
+                    None,
                 ),
             )
             for decision_id in action.charter_decisions:
@@ -231,10 +241,10 @@ def link_audited_effect(
     outcome: "ActionResult | BaseException",
 ) -> None:
     """Link a charter-audited effect's attempt to its executed decisions."""
-    found = (
-        result_of(outcome)
+    found: _Found = (
+        (*result_of(outcome), None)
         if isinstance(outcome, ActionResult)
-        else (CharterExecutionResult.FAILED, f"{type(outcome).__name__}: {outcome}")
+        else (CharterExecutionResult.FAILED, f"{type(outcome).__name__}: {outcome}", None)
     )
     link_execution_results(
         authority.charter_ledger,
@@ -252,5 +262,5 @@ def link_parked(
     )
     link_execution_results(
         ledger,
-        {decision_id: [(CharterExecutionResult.PARKED, reason)] for decision_id in decision_ids},
+        {decision_id: [(CharterExecutionResult.PARKED, reason, None)] for decision_id in decision_ids},
     )
