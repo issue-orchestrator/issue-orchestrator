@@ -325,7 +325,6 @@ def build_publish_recovery(
 ) -> "PublishRecoveryService":
     """Wire the retry-publish owner with durable locators and its own runner."""
     from ..control.publish_recovery import PublishRecoveryService
-    from ..control.stack_publish_gate import StackBaseGate
     from ..execution.json_publish_retry_locator_store import (
         JsonPublishRetryLocatorStore,
     )
