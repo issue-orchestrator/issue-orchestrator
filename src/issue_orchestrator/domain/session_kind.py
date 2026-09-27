@@ -136,6 +136,16 @@ class SessionCapabilities:
         """Its completion is a reviewer's verdict (reviewer-done), never a PR."""
         return self.completion_protocol is CompletionProtocol.REVIEWER_DONE
 
+    @property
+    def pushes_to_an_open_pr(self) -> bool:
+        """Its commits are the deliverable, pushed to a PR that is already open.
+
+        A capturable, committing kind whose open PR does not mean it is done:
+        the PR predates it (a rework). A hold on that same PR is its own review
+        cycle, not a second author on the PR's branch (#7347 review r3).
+        """
+        return self.produces_commits and self.capturable and not self.open_pr_means_done
+
 
 class SessionKind(Enum):
     """The kind of work a session (or recorded run) performs.

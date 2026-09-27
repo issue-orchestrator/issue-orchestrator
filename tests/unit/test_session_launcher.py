@@ -9955,8 +9955,50 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         applier = MagicMock()
         applier.runtime_lifecycle.published_review = self._custody()
 
-        assert refuse_launch_over_published_review(applier, MagicMock(), 123, kind=SessionKind.TECH_LEAD) is None
+        assert refuse_launch_over_published_review(
+            applier, MagicMock(), 123, kind=SessionKind.TECH_LEAD, pr_number=None
+        ) is None
         applier.apply.assert_not_called()
+
+    def test_a_reworks_retry_resumes_on_the_pr_it_is_fixing(
+        self, launcher_bundle, mock_worktree_manager
+    ):
+        """#7347 review r3: the retry now relaunches AS the rework on PR #500.
+        Pushing to the PR that holds the published work is that PR's own review
+        cycle; the hold must not strand it."""
+        from dataclasses import replace
+
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
+        retry = replace(
+            TestTheLaunchStampsOneKind._retry(SessionKind.REWORK), pr_number=500, rework_cycle=1
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        assert [call["name"] for call in launcher_bundle.create_session_calls] == ["rework-123"]
+        assert result.session is not None and result.session.pr_number == 500
+
+    @pytest.mark.parametrize(
+        ("kind", "pr_number"),
+        [(SessionKind.CODE, 500), (SessionKind.REWORK, 501), (SessionKind.REWORK, None)],
+        ids=["coding-retry", "rework-of-another-pr", "rework-naming-no-pr"],
+    )
+    def test_any_other_retry_is_still_refused_by_the_hold(
+        self, launcher_bundle, mock_worktree_manager, kind, pr_number
+    ):
+        from dataclasses import replace
+
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
+        retry = replace(TestTheLaunchStampsOneKind._retry(kind), pr_number=pr_number)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert "PR #500" in result.reason
+        assert launcher_bundle.create_session_calls == []
 
     def test_a_validation_retry_never_starts_a_second_coder_on_the_pr(
         self, launcher_bundle, mock_worktree_manager

@@ -69,6 +69,8 @@ def test_only_coding_and_rework_runs_are_killable_generations() -> None:
 
 def test_reviewers_report_a_verdict() -> None:
     assert {k for k in SessionKind if k.capabilities.reports_verdict} == {R, RR}
+    # Only a rework pushes to a PR that predates it (the published-review gate).
+    assert {k for k in SessionKind if k.capabilities.pushes_to_an_open_pr} == {SessionKind.REWORK}
 
 
 # ---------------------------------------------------------------------------
