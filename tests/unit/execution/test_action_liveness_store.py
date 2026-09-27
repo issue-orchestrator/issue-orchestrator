@@ -194,3 +194,14 @@ def test_every_park_and_unpark_owes_an_announcement(tmp_path) -> None:
         (LivenessAnnouncement.RELEASED, parked.key),
         (LivenessAnnouncement.RELEASED, other.key),
     ]
+
+
+def test_settlement_is_conditional_on_the_row_it_read(tmp_path) -> None:
+    store = SQLiteActionLivenessStore(tmp_path / "l.sqlite")
+    first = _row(parked=False)
+    assert store.settle(None, first, announce_parked=False)
+    # Expected "no row" but one exists: a stale first-failure settlement.
+    assert not store.settle(None, _row(parked=True), announce_parked=True)
+    assert store.row(first.key) == first
+    # Expected the row that is there: applied.
+    assert store.settle(first, _row(parked=True), announce_parked=True)

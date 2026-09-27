@@ -74,10 +74,11 @@ class ActionLivenessStore(Protocol):
     ) -> bool:
         """Write the row an attempt leaves behind, conditionally and atomically.
 
-        Only if the key's row is still ``expected`` (the one the attempt was
-        admitted under; ``None`` for a first failure): an operator's release in
+        Only if the key's row is still ``expected`` (the one the attempt read;
+        ``None`` - no row - for a first failure): an operator's release in
         between must not be undone by a stale settlement, which is discarded
-        (False). ``announce_parked`` owes the row's ``action.parked`` in the
+        (False). A FIRST failure recorded after a release is new evidence from
+        an attempt that really ran, so it counts against the fresh budget. ``announce_parked`` owes the row's ``action.parked`` in the
         same transaction.
         """
         ...

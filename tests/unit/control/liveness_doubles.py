@@ -84,6 +84,8 @@ class InMemoryActionLivenessStore:
         from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
 
         current = self.row(row.key)
+        if expected is None and current is not None:
+            return False
         if expected is not None and (
             current is None
             or current.first_failed_at != expected.first_failed_at

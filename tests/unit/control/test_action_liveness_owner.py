@@ -363,7 +363,7 @@ def test_a_crash_before_publishing_a_park_still_announces_it(tmp_path, mock_even
     )
     # Simulate the crash: the owed announcement is still in the outbox.
     store = SQLiteActionLivenessStore(path)
-    store.settle(None, row, announce_parked=True)
+    assert store.settle(row, row, announce_parked=True)
 
     class _Applier:
         def apply(self, action):
