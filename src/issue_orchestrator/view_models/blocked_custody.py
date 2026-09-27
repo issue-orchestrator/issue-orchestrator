@@ -97,8 +97,14 @@ def custody_signal(custody: "BlockedItemCustody") -> str:
     it ticks every minute, and a changed clock alone must not rebuild a card.
     """
     charter = custody.charter.decision_id if custody.charter else ""
+    clock = custody.clock
+    # The clock's ENTRY point is part of what the card says (a new
+    # investigation on the same issue restarts it); only its age ticks.
+    entered = (
+        f"{clock.since.isoformat()}~{clock.basis}~{int(clock.lower_bound)}" if clock else ""
+    )
     return "|".join(
-        (custody.state.value, "stale" if custody.stale else "", custody.reason, charter)
+        (custody.state.value, "stale" if custody.stale else "", custody.reason, charter, entered)
     )
 
 

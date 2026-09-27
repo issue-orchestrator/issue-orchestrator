@@ -502,14 +502,15 @@ def _queued_for_tech_lead(
             f"Queued for a {item.tech_lead_queue.what}.",
             item.tech_lead_queue,
         )
-    if item.sweep_escalation_pending:
+    if board.sweep.enabled and item.sweep_escalation_pending:
         # Exhausted, and the needs-human escalation has not landed yet (the
         # hold above claims it once it has): the sweep re-asserts it each run.
+        # Undated: nothing the sweep records dates when it got here, and the
+        # issue's last activity predates it (the sweep writes nothing).
         return _Claim(
             CustodyState.QUEUED_FOR_TECH_LEAD,
             "The stuck sweep exhausted its recovery attempts; its escalation to"
             " a person has not landed yet and is retried on every sweep.",
-            _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
     attempts = item.sweep_attempts
     # A recorded budget is only a queue while a sweep will run again: with the
@@ -520,7 +521,6 @@ def _queued_for_tech_lead(
             "The stuck sweep is tracking its recovery (failed cycles"
             f" {attempts} of {board.sweep.max_attempts}); the next sweep"
             " re-checks it.",
-            _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
     return None
 

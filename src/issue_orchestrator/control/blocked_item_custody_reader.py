@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
 from ..domain.host_rate_limit import episode_key
+from ..domain.models import BLOCKED_HISTORY_STATUSES
 from ..domain.session_key import TaskKind
 from .blocked_item_custody import (
     ActiveWork,
@@ -191,7 +192,7 @@ class StateBlockedItemCustodyReader:
             issue_number=number,
             labels=labels,
             last_activity_at=_parse_iso(issue.updated_at) if issue is not None else None,
-            blocked_at=_aware(history.completed_at) if history and history.completed_at else None,
+            blocked_at=_blocked_at(history),
             history_status=history.status if history else None,
             tech_lead_session=shared.investigations.get(number),
             active_fix=shared.fixes.get(number),
@@ -322,6 +323,19 @@ class _SharedFacts:
     unreadable: tuple[str, ...]
 
 
+def _blocked_at(history: "SessionHistoryEntry | None") -> datetime | None:
+    """When the item's current block began, if this engine saw it begin.
+
+    Only a latest session that ended in a BLOCKING status dates the block; a
+    session that completed says nothing about a block that came later.
+    """
+    if history is None or history.completed_at is None:
+        return None
+    if history.status not in BLOCKED_HISTORY_STATUSES:
+        return None
+    return _aware(history.completed_at)
+
+
 def _scope_issues(state: "OrchestratorState") -> Sequence["Issue"]:
     """The same issue snapshot the dashboard's blocked lane is built from."""
     return state.cached_scope_issues or state.cached_queue_issues
@@ -331,19 +345,24 @@ _Waits = Callable[[str, int], "RateLimitWait | None"]
 
 
 def _rate_limit_waits(state: "OrchestratorState", now: datetime) -> _Waits:
-    """Each queued launch's rate-limit wait, keyed exactly as the launch gate keys it.
+    """Each queued launch's rate-limit wait, decided by the window's own hold rule.
 
-    The hold is shared (one token, one reset); the AGE is the launch's own
-    episode (#7297), so one item's old refusal never ages another.
+    ``HostRateLimitWindow.holding`` is the rule the launch gate applies, keyed
+    exactly as it keys the launch: a launch whose own episode is past the
+    deferral bound is attempted, so it is not waiting (#7297). The age is the
+    launch's OWN episode, never another item's older one.
     """
     window = state.host_rate_limit
-    held = window.open_at(now, live=live_episode_keys(state))
-    if held is None:
-        return lambda _work, _number: None
-    resets_at = held.limit.resets_at
-    return lambda work, number: RateLimitWait(
-        resets_at=resets_at, since=window.waiting_since(episode_key(work, number))
-    )
+    live = live_episode_keys(state)
+
+    def wait(work: str, number: int) -> RateLimitWait | None:
+        key = episode_key(work, number)
+        held = window.holding(now, key, live=live)
+        if held is None:
+            return None
+        return RateLimitWait(resets_at=held.limit.resets_at, since=window.waiting_since(key))
+
+    return wait
 
 
 def _queued_fixes(state: "OrchestratorState", waits: _Waits) -> dict[int, ActiveWork]:

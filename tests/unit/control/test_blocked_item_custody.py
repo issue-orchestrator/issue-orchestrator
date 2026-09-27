@@ -245,17 +245,34 @@ def test_an_exhausted_stuck_sweep_is_held_once_its_escalation_landed() -> None:
     assert custody.stale  # a board-wide sweep time would have restarted it
 
 
-def test_a_later_sweep_does_not_restart_a_held_or_queued_clock() -> None:
-    """The item's clock is its own, not the board-wide sweep time."""
-    for facts in (
-        {"labels": NEEDS_HUMAN, "sweep_attempts": 3},
-        {"sweep_attempts": 1},
-    ):
-        item = _item(last_activity_at=NOW - 5 * HOUR, **facts)
-        before = _derive(item)
-        after_sweep = _derive(item, replace(BOARD, now=NOW + HOUR))
-        assert before.clock == after_sweep.clock
-        assert after_sweep.stale
+def test_a_later_sweep_does_not_restart_a_held_clock() -> None:
+    """The landed hold is dated by the item's own activity, not the sweep time."""
+    item = _item(labels=NEEDS_HUMAN, sweep_attempts=3, last_activity_at=NOW - 5 * HOUR)
+
+    before = _derive(item)
+    after_sweep = _derive(item, replace(BOARD, now=NOW + HOUR))
+
+    assert before.clock == after_sweep.clock
+    assert after_sweep.stale
+
+
+def test_a_sweep_queue_is_undated_rather_than_dated_by_older_activity() -> None:
+    """The sweep writes nothing on the issue, so old activity predates the queue."""
+    for facts in ({"sweep_attempts": 1}, {"sweep_attempts": 3, "sweep_escalation_pending": True}):
+        custody = _derive(_item(last_activity_at=NOW - 5 * 24 * HOUR, **facts))
+        assert custody.state is CustodyState.QUEUED_FOR_TECH_LEAD
+        assert custody.clock is None
+        assert not custody.stale
+
+
+def test_a_pending_escalation_is_no_queue_once_the_sweep_is_off() -> None:
+    board = replace(BOARD, sweep=replace(SWEEP_ON, enabled=False, next_due_at=None))
+
+    custody = _derive(_item(sweep_attempts=3, sweep_escalation_pending=True), board)
+
+    assert custody.state is CustodyState.UNOWNED
+    assert custody.needs_attention
+    assert "stuck sweep is off" in custody.reason
 
 
 def test_an_unlanded_escalation_is_still_the_sweep_s_to_retry() -> None:

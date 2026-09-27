@@ -283,18 +283,60 @@ def test_a_rate_limit_dates_each_queued_launch_by_its_own_episode() -> None:
     )
     limit = HostRateLimit(resets_at=NOW + HOUR, kind="primary")
     live = frozenset({"tech_lead:23", "tech_lead:24"})
-    state.host_rate_limit.observe(limit, NOW - 3 * HOUR, "tech_lead:23", live=live)
+    state.host_rate_limit.observe(limit, NOW - 100 * timedelta(minutes=1), "tech_lead:23", live=live)
     state.host_rate_limit.observe(limit, NOW - 10 * timedelta(minutes=1), "tech_lead:24", live=live)
 
     config = _config()
-    config.tech_lead.custody.stale_after_minutes.waiting_on_world = 120
+    config.tech_lead.custody.stale_after_minutes.waiting_on_world = 60
     board = _reader(state, config=config).read([23, 24])
 
     old, fresh = board.for_issue(23), board.for_issue(24)
     assert old.state is fresh.state is CustodyState.WAITING_ON_WORLD
-    assert old.clock is not None and old.clock.since == NOW - 3 * HOUR and old.stale
+    assert old.clock is not None and old.clock.since == NOW - 100 * timedelta(minutes=1)
+    assert old.stale
     assert fresh.clock is not None and fresh.clock.since == NOW - 10 * timedelta(minutes=1)
     assert not fresh.stale
+
+
+def test_a_launch_past_the_deferral_bound_is_no_longer_waiting_on_the_world() -> None:
+    """The window's one hold rule: past the bound the gate attempts the launch."""
+    from issue_orchestrator.domain.host_rate_limit import RATE_LIMIT_DEFERRAL_BOUND
+
+    state = OrchestratorState(
+        pending_tech_lead_reviews=[_queued_investigation(28)],
+        cached_scope_issues=[_blocked(28, "blocked-failed")],
+    )
+    live = frozenset({"tech_lead:28"})
+    state.host_rate_limit.observe(
+        HostRateLimit(resets_at=NOW + HOUR, kind="primary"),
+        NOW - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead:28",
+        live=live,
+    )
+
+    assert state.host_rate_limit.holding(NOW, "tech_lead:28", live=live) is None
+    assert state.host_rate_limit.open_at(NOW, "tech_lead:28", live=live) is not None
+    custody = _reader(state).read([28]).for_issue(28)
+    assert custody.state is CustodyState.QUEUED_FOR_TECH_LEAD
+    assert "rate limit" not in custody.reason
+
+
+def test_a_completed_session_does_not_date_a_later_block() -> None:
+    """Only a session that ENDED blocked dates the current block."""
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.charter_ledger.record_decisions(
+        [_decision("recover_validated_work", target=29, anchor=29)]  # decided NOW - 1h
+    )
+    completed = replace(_ended_blocked(29, NOW - 3 * HOUR), status="completed", pr_url="u")
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(29, "blocked-failed", updated_at="2026-09-27T11:30:00Z")],
+        session_history=[completed],
+    )
+
+    custody = _reader(state, authority=authority).read([29]).for_issue(29)
+
+    assert custody.state is CustodyState.UNOWNED
+    assert custody.charter is None
 
 
 def test_a_just_discovered_failure_is_not_held_by_the_rate_limit() -> None:

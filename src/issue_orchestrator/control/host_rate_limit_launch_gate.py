@@ -93,13 +93,13 @@ class HostRateLimitLaunchGate:
         GitHub read.
         """
         key = episode_key(work, issue_number)
-        holding = self.window.open_at(self.clock(), key, live=self.live())
         # Past the bound the window no longer holds the launch back: it is
         # attempted, so a refusal lands AFTER the launch holds its durable
         # pending-work claim. That is the only kind of failure the queue's
         # budget can count ("no durable spend, no spend"), so refusing on the
         # open window here would defer forever, never escalating.
-        if holding is not None and not holding.bound_exceeded:
+        holding = self.window.holding(self.clock(), key, live=self.live())
+        if holding is not None:
             # Not attempted, so not an observation: the episode and its bound
             # advance only when the host actually refuses again.
             self._publish(
