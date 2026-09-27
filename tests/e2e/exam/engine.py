@@ -28,6 +28,7 @@ from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.agents import CODER_LABEL, REVIEWER_LABEL, TECH_LEAD_LABEL, shim_command
 from tests.e2e.fixtures import OrchestratorProcess, find_free_port
+from tests.e2e.fixtures.orchestrator_process import merge_config_overlay
 from tests.e2e.fixtures.inflight_tracker import control_api_headers
 from tests.e2e.flows import OrchestratorRuntime, start_orchestrator_runtime
 
@@ -36,6 +37,16 @@ logger = logging.getLogger(__name__)
 WORKTREE_PARENT = Path.home() / "dev" / "worktree" / "issue-orchestrator"
 
 TECH_LEAD_PROMPT = Path("repo-specific") / "prompts" / "tech-lead.md"
+
+#: Settings every exam engine runs with, under each case's own overlay.
+#: Session interactions answer the startup screens real agents open on — the
+#: rules #7299 fixed (Claude Code's "Quick safety check" with "No, exit"
+#: highlighted, Codex's "Folder access"). They are off by default; with them
+#: off, the exam's first real tech lead sat 35 minutes on the trust dialog of
+#: its fresh /tmp worktree with no event and no log line.
+EXAM_BASE_OVERLAY: Mapping[str, Any] = {
+    "execution": {"session_interactions": {"enabled": True}},
+}
 
 
 @dataclass(frozen=True)
@@ -167,7 +178,7 @@ class ExamEngine:
             config,
             checkout.root,
             source_root=checkout.root,
-            config_overlay=overlay,
+            config_overlay=merge_config_overlay(EXAM_BASE_OVERLAY, overlay),
         )
         self._runtime: OrchestratorRuntime | None = None
 
@@ -196,6 +207,16 @@ class ExamEngine:
 
     def is_running(self) -> bool:
         return self.process.is_running()
+
+    def active_session_issues(self) -> tuple[tuple[str, int], ...]:
+        """``(session_name, issue_number)`` of every session the engine runs now."""
+        status = self._get_json(self.config.control_api_port, "/api/status")
+        sessions = status.get("sessions")
+        if not isinstance(sessions, list):
+            raise RuntimeError(f"/api/status has no sessions list: {status!r}")
+        return tuple(
+            (str(entry["session_name"]), int(entry["issue_number"])) for entry in sessions
+        )
 
     def active_sessions(self) -> int:
         status = self._get_json(self.config.control_api_port, "/api/status")

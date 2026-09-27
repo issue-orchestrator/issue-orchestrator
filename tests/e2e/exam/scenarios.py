@@ -35,6 +35,7 @@ from tests.e2e.exam.observe import (
     linked_pull_requests,
     observe_item,
     observe_tech_lead_runs,
+    parked_screen,
     terminal_tech_lead_runs,
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
@@ -110,6 +111,7 @@ def goals_met_probe(
             config=engine.config,
             item=item,
             watcher=engine.runtime.watcher,
+            parked_screen="",
             read_checks=False,
         )
         return all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role)
@@ -160,6 +162,7 @@ async def _finish(
     ended_by: RunEnd,
 ) -> ExamResult:
     watcher = engine.runtime.watcher
+    active = engine.active_session_issues()
     report = fetch_gh_audit_report(engine.config.control_api_port)
     if report is None:
         raise RuntimeError("engine returned no gh_audit report; GitHub calls cannot be graded")
@@ -172,11 +175,18 @@ async def _finish(
                 config=engine.config,
                 item=item,
                 watcher=watcher,
+                parked_screen=parked_screen(
+                    worktree_base=engine.config.worktree_base,
+                    active_sessions=active,
+                    issue_number=item.issue_number,
+                ),
                 extra_pr_numbers=extra_prs.get(item.role, ()),
             )
             for item in items
         ),
-        tech_lead_runs=observe_tech_lead_runs(engine.checkout.state_dir, watcher),
+        tech_lead_runs=observe_tech_lead_runs(
+            engine.checkout.state_dir, watcher, worktree_base=engine.config.worktree_base
+        ),
         gh_audit_report=report,
         elapsed_seconds=time.monotonic() - started,
         ended_by=ended_by,

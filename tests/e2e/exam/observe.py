@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -44,6 +45,7 @@ from issue_orchestrator.testing.exam import (
     TechLeadRunFact,
     WorkItemFact,
 )
+from issue_orchestrator.testing.exam.screens import SCREEN_QUOTE_CHARS, render_recording, silent_screen
 from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
 from issue_orchestrator.testing.exam.tech_lead import ProposedAction, resolve_dispositions
 
@@ -130,6 +132,7 @@ def observe_item(
     config: Config,
     item: TrackedItem,
     watcher: OrchestratorWatcher,
+    parked_screen: str,
     extra_pr_numbers: Iterable[int] = (),
     read_checks: bool = True,
 ) -> WorkItemFact:
@@ -163,9 +166,51 @@ def observe_item(
             events,
             refusing_gate=_refusing_gate(config, labels, issue, open_prs[-1] if open_prs else None),
             blocking_labels=labels.get_blocking(list(issue.labels)),
+            parked_screen=parked_screen,
         ),
         events=tuple(event.name for event in events),
     )
+
+
+# ---------------------------------------------------------------------------
+# Screens a session is parked on
+# ---------------------------------------------------------------------------
+
+
+def newest_recording(root: Path) -> Path | None:
+    """The newest ``terminal-recording.jsonl`` under ``root``, if any."""
+    found = [p for p in root.glob("**/terminal-recording.jsonl") if p.is_file()]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def parked_screen(
+    *, worktree_base: Path, active_sessions: Iterable[tuple[str, int]], issue_number: int
+) -> str:
+    """A LIVE session of the item sitting silent on a screen, or ``""``.
+
+    Only sessions the engine still reports active are considered: a finished
+    session's recording is silent too, and reporting it would invent a stall.
+    Silence is the time since the recording was last written.
+    """
+    for session_name, number in active_sessions:
+        if number != issue_number:
+            continue
+        recording = newest_recording(worktree_base / session_name)
+        if recording is None:
+            continue
+        screen = render_recording(recording.read_text(encoding="utf-8").splitlines())
+        silent = time.time() - recording.stat().st_mtime
+        line = silent_screen(session_name, screen, silent_seconds=silent)
+        if line:
+            return line
+    return ""
+
+
+def _last_screen(recording: Path | None) -> str:
+    if recording is None:
+        return ""
+    screen = render_recording(recording.read_text(encoding="utf-8").splitlines())
+    return screen.text[-SCREEN_QUOTE_CHARS:]
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +246,7 @@ def _anchor(row: Mapping[str, Any]) -> int:
 
 
 def observe_tech_lead_runs(
-    state_dir: Path, watcher: OrchestratorWatcher
+    state_dir: Path, watcher: OrchestratorWatcher, *, worktree_base: Path
 ) -> tuple[TechLeadRunFact, ...]:
     events = list(watcher.view.global_events)
     runs: list[TechLeadRunFact] = []
@@ -238,6 +283,18 @@ def observe_tech_lead_runs(
             for f in decision.get("findings", [])
             if isinstance(f, dict)
         )
+        last_screen = ""
+        if not decision:
+            # No decision: what the session last showed is the explanation.
+            # The archive keeps the recording of a finished run; a live one
+            # is still in its worktree, under the engine's ``issue-<N>``
+            # session directory for the run's anchor.
+            archived = Path(str(row.get("artifact_dir") or "")) / "terminal-recording.jsonl"
+            last_screen = _last_screen(
+                archived
+                if row.get("artifact_dir") and archived.is_file()
+                else newest_recording(worktree_base / f"issue-{_anchor(row)}")
+            )
         runs.append(
             TechLeadRunFact(
                 run_id=str(row["run_id"]),
@@ -248,6 +305,7 @@ def observe_tech_lead_runs(
                 findings_text=findings,
                 report_text=report,
                 actions=actions,
+                last_screen=last_screen,
             )
         )
     return tuple(runs)

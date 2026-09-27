@@ -102,6 +102,7 @@ def test_stall_names_the_last_transition_ignoring_housekeeping() -> None:
         events,
         refusing_gate="review_validity:issue_blocked (blocked-failed)",
         blocking_labels=["blocked-failed", "recovery-pending"],
+        parked_screen="",
     )
 
     assert facts.last_transition == "review_exchange.completed"

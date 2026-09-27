@@ -164,6 +164,8 @@ class TechLeadRunFact:
     findings_text: str
     report_text: str
     actions: tuple[TechLeadActionFact, ...]
+    last_screen: str = ""
+    """For a run that left no decision: the last screen its session showed."""
 
     @property
     def diagnosis_text(self) -> str:
@@ -180,6 +182,7 @@ class TechLeadRunFact:
             "detail": self.detail,
             "summary": self.summary,
             "actions": [action.to_dict() for action in self.actions],
+            "last_screen": self.last_screen,
         }
 
 

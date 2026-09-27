@@ -226,6 +226,10 @@ def render_summary(card: Scorecard) -> str:
         lines.append(f"    blocking labels: {', '.join(facts.blocking_labels) or '(none)'}")
         if facts.unanswered_screen:
             lines.append(f"    unanswered screen: {facts.unanswered_screen}")
+    for run in card.tech_lead_runs:
+        if run.last_screen:
+            lines.append(f"  tech-lead run {run.run_id} ({run.phase}) left no decision; last screen:")
+            lines.append(f"    {run.last_screen}")
     for note in card.notes:
         lines.append(f"  note: {note}")
     return "\n".join(lines)
