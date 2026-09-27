@@ -215,12 +215,23 @@ def test_a_rate_limit_is_a_transient_wait_never_a_durable_failure(tmp_path, mode
     assert rig.store.get(rig.claim.record_id).state is State.PUBLISHING
 
 
-def test_a_rate_limited_phase_write_keeps_its_reset_when_the_read_back_fails(tmp_path):
+@pytest.mark.parametrize("read_back", ["ordinary", "authority", "claim"])
+def test_a_rate_limited_phase_write_keeps_its_reset_when_the_read_back_fails(tmp_path, read_back):
+    from issue_orchestrator.domain.validated_work_execution import (
+        ValidatedWorkAuthorityUnavailable,
+        ValidatedWorkClaimLost,
+    )
+
     rig = FinalizationRig(tmp_path / "work.sqlite")
     limited = rate_limited()
+    error = {
+        "ordinary": lambda: RuntimeError("store unavailable"),
+        "authority": lambda: ValidatedWorkAuthorityUnavailable("authority unreadable"),
+        "claim": lambda: ValidatedWorkClaimLost("claim lost"),
+    }[read_back]()
 
     def lose_phase_write():
-        rig.points.at, rig.points.error = "before:admit", RuntimeError("store unavailable")
+        rig.points.at, rig.points.error = "before:admit", error
         raise limited
 
     rig.points.callbacks["before:review_routed"] = lose_phase_write

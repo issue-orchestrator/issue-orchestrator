@@ -233,7 +233,12 @@ class StagedPublishedWorkFinalizer:
             # during this interrupted invocation.
             try:
                 durable = self._read_checkpoint(request)
-            except _RetryFinalization as read_error:
+            except (
+                ValidatedWorkClaimLost,
+                ValidatedWorkAuthorityUnavailable,
+                _RetryFinalization,
+            ) as read_error:
+                # finalize() reports all three as TRANSIENT; only the limit differs.
                 # The read-back is the host's latest word; the write's limit
                 # stands when the read-back failed for another reason.
                 limit = host_rate_limit_of(read_error) or host_rate_limit_of(error)
