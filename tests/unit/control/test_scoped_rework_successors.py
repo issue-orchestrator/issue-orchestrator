@@ -68,7 +68,7 @@ def test_deferred_successor_proof_governs_reuse_projection_and_launch(
     )
     claims_db = tmp_path / "claims.sqlite"
     claims = SqlitePendingWorkClaimStore(claims_db)
-    ScopedReworkLaunch(store, host, applier.apply_all).bind(
+    ScopedReworkLaunch(store, host, applier.apply).bind(
         (request.key,), session.run_assets.identity
     )
     note_scoped_rework_started(store, session.run_assets.identity)

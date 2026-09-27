@@ -34,6 +34,7 @@ from ...ports.pattern_registry import (
     require_resumable_retirement,
     require_reviewed_population,
     require_reviewed_revision,
+    TerminalRetirementPolicy,
 )
 from .ref_store import GitRefCasStore, GitRefSnapshot
 from .pattern_registry_codec import format_entries, parse_entries
@@ -397,6 +398,7 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         issue_number: int,
         expected_revision: str | None = None,
         expected_signatures: frozenset[str] | None = None,
+        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
     ) -> PatternReservation:
         if not transition.terminal:
             raise ValueError("retirement requires a terminal disposition")
@@ -406,11 +408,15 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
             require_reviewed_population(entries, expected_signatures)
             current = self._committed(entries, signature)
             require_canonical_case_file(current, issue_number)
-            if admit_lifecycle_transition(current, transition):
+            if admit_lifecycle_transition(
+                current, transition, already_terminal=already_terminal
+            ):
                 return PatternReservation(PatternReservationState.COMMITTED, current)
             pending = current.pending_retirement
             if pending is not None:
-                return self._existing_retirement(current, desired)
+                return self._existing_retirement(
+                    current, desired, already_terminal=already_terminal
+                )
             if current.pending_observation is not None:
                 return PatternReservation(PatternReservationState.HELD, current)
             require_reviewed_revision(current, expected_revision)
@@ -432,8 +438,12 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         self,
         current: PatternRegistryEntry,
         desired: PendingPatternRetirement,
+        *,
+        already_terminal: TerminalRetirementPolicy,
     ) -> PatternReservation:
-        pending = require_resumable_retirement(current, desired)
+        pending = require_resumable_retirement(
+            current, desired, already_terminal=already_terminal
+        )
         if pending.phase is PatternRetirementPhase.CLOSE:
             return PatternReservation(PatternReservationState.RECOVERABLE, current)
         if current.publication_started_at is not None:

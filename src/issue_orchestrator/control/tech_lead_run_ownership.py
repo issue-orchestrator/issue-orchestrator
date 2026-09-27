@@ -48,6 +48,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Callable, Collection, Optional
 
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.run_ledger import (
     RunLedgerOutcome,
     RunLedgerRequest,
@@ -81,6 +82,7 @@ class RunOwnership:
     run_key: str
     holder: str = ""
     detail: str = ""
+    host_rate_limit: HostRateLimit | None = None
 
     @property
     def owned(self) -> bool:
@@ -110,6 +112,8 @@ class RunExecutionAdmission:
     barrier_reason: str = ""
     holder: str = ""
     detail: str = ""
+    #: The host rate limit behind an UNAVAILABLE store, if that was the cause.
+    host_rate_limit: HostRateLimit | None = None
 
     @property
     def started(self) -> bool:
@@ -372,6 +376,7 @@ class TechLeadRunOwnership:
                 run_key,
                 holder=outcome.holder,
                 detail=_ownership_detail(outcome),
+                host_rate_limit=outcome.host_rate_limit,
             )
 
     def owns(self, run_key: str) -> bool:
@@ -440,6 +445,7 @@ class TechLeadRunOwnership:
                         run_key,
                         holder=ownership.holder,
                         detail=ownership.detail,
+                        host_rate_limit=ownership.host_rate_limit,
                     )
             outcome = self._submit(
                 RunLedgerRequestKind.PROMOTE, scope, lease_id=lease.lease_id
@@ -451,6 +457,7 @@ class TechLeadRunOwnership:
                 barrier_reason=outcome.barrier_reason,
                 holder=outcome.holder,
                 detail=outcome.detail,
+                host_rate_limit=outcome.host_rate_limit,
             )
 
     def end_run(self, run_key: str) -> RunRelease:

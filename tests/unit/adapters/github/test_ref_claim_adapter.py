@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import httpx
+import pytest
+
 from issue_orchestrator.adapters.github.claim_parser import format_claim_comment
 from issue_orchestrator.adapters.github.ref_claim_adapter import (
     CLAIM_REF_PREFIX,
     GitHubRefClaimAdapter,
 )
-from issue_orchestrator.domain.claim import Claim, ClaimState
+from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+from issue_orchestrator.domain.claim import Claim, ClaimFetchError, ClaimState
+from issue_orchestrator.ports.repository_host import host_rate_limit_of
 from issue_orchestrator.domain.lease_config import LeaseConfig
 
 from .fake_git_data import FakeGitHubRefClient
@@ -184,3 +189,59 @@ def test_expired_claim_is_not_current() -> None:
     seed_claim_ref(client, 42, expired_claim)
 
     assert adapter.get_current_claim(42) is None
+
+
+class RateLimitedRefClient(FakeGitHubRefClient):
+    """GitHub refuses ref reads on a spent rate limit while ``limited`` is set.
+
+    ``limit_next`` refuses only that many further reads, then answers again.
+    """
+
+    def __init__(self, *, limited: bool = True) -> None:
+        super().__init__()
+        self.limited = limited
+        self.limit_next = 0
+        self.limited_reads = 0
+
+    def get_git_ref(self, ref: str) -> dict | None:
+        if self.limited or self.limit_next:
+            self.limit_next = max(0, self.limit_next - 1)
+            self.limited_reads += 1
+            raise github_http_failure(
+                f"GitHub GET /git/{ref} failed: 403",
+                status_code=403,
+                headers=httpx.Headers({
+                    "x-ratelimit-remaining": "0",
+                    "x-ratelimit-reset": str(int(datetime.now().timestamp()) + 60),
+                }),
+                response_text='{"message": "API rate limit exceeded"}',
+                method="GET",
+                url=f"/git/{ref}",
+            )
+        return super().get_git_ref(ref)
+
+
+def test_rate_limited_claim_read_reports_its_typed_limit() -> None:
+    """#7297: the launch must be able to defer instead of counting a failure."""
+    adapter = _adapter(RateLimitedRefClient(), FakeLabels(), "orchestrator-a")
+
+    result = adapter.attempt_claim(issue_number=42)
+
+    assert result.success is False
+    assert result.host_rate_limit is not None
+    assert result.host_rate_limit.kind == "primary"
+
+
+def test_rate_limited_convergence_raises_instead_of_reporting_lost() -> None:
+    """"Could not ask" must not read as "a peer won", which drops the work."""
+    client = RateLimitedRefClient(limited=False)
+    adapter = _adapter(client, FakeLabels(), "orchestrator-a")
+    claimed = adapter.attempt_claim(issue_number=42)
+    assert claimed.success and claimed.lease_id is not None
+    client.limited = True
+
+    with pytest.raises(ClaimFetchError) as caught:
+        adapter.run_convergence(42, claimed.lease_id)
+
+    assert host_rate_limit_of(caught.value) is not None
+    assert client.limited_reads == 1, "no polling against a rate-limited host"
