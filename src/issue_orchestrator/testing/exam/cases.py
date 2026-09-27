@@ -12,6 +12,7 @@ from .case import (
     RemedySpec,
     RootCauseSpec,
     TermGroup,
+    engine_saw_item,
     issue_is_open,
     issue_keeps_labels,
     issue_lacks_labels,
@@ -190,6 +191,7 @@ def stale_claim_paused_for_reconcile(*, needs_reconcile_label: str) -> ExamCase:
             " pause only a human lifts"
         ),
         goals=(
+            engine_saw_item(SUBJECT),
             issue_is_open(SUBJECT),
             issue_keeps_labels(SUBJECT, (needs_reconcile_label,)),
         ),

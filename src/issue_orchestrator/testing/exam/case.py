@@ -327,6 +327,26 @@ def pr_review_approved(role: str) -> Goal:
     return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
 
 
+def engine_saw_item(role: str) -> Goal:
+    """The engine published at least one event about the item.
+
+    A case whose other goals are "nothing bad happened" (the pause held, the
+    issue stayed open) passes vacuously against an engine that never looked
+    at the planted item; this makes "the engine handled it" part of the
+    answer, from the engine's own event stream.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        return GoalCheck(
+            bool(item.events),
+            f"the engine published {len(item.events)} event(s) about issue #{item.issue_number}"
+            if item.events
+            else f"the engine never published an event about issue #{item.issue_number}",
+        )
+
+    return Goal(f"{role}.engine_saw_item", role, f"the engine handles the {role} issue", check)
+
+
 def issue_is_open(role: str) -> Goal:
     """The issue is still open (e.g. held for a human, not closed away)."""
 

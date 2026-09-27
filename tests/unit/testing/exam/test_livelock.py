@@ -129,7 +129,7 @@ def test_case_c_passes_only_when_the_pause_stays_and_nothing_loops() -> None:
     )
 
     case = stale_claim_paused_for_reconcile(needs_reconcile_label="io:needs-reconcile")
-    paused = item(issue_labels=("in-progress", "io:needs-reconcile"))
+    paused = item(issue_labels=("in-progress", "io:needs-reconcile"), events=("issue.paused_reconcile",))
 
     quiet = grade(case, observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, paused))
     assert quiet.passed, quiet.failures
@@ -138,7 +138,7 @@ def test_case_c_passes_only_when_the_pause_stays_and_nothing_loops() -> None:
     loop = grade(case, observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, paused, repeating=looping))
     assert not loop.passed and all(f.startswith("livelock: ") for f in loop.failures)
 
-    unpaused = grade(case, observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, item(issue_labels=("in-progress",))))
+    unpaused = grade(case, observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, item(issue_labels=("in-progress",), events=("issue.paused_reconcile",))))
     assert "goal subject.keeps_labels: issue #901 lost ['io:needs-reconcile']" in unpaused.failures
 
 
@@ -161,7 +161,7 @@ def test_a_paused_claim_the_engine_only_notices_is_not_a_livelock() -> None:
         case,
         observation(
             STALE_CLAIM_PAUSED_FOR_RECONCILE,
-            item(issue_labels=("in-progress", "io:needs-reconcile")),
+            item(issue_labels=("in-progress", "io:needs-reconcile"), events=("stale.in_progress_detected",)),
             repeating=find_repeating_failures(noticing),
         ),
     )

@@ -692,3 +692,29 @@ class TestRoundFourteenFindings:
             ),
         )
         assert card.remedy is not None and card.remedy.verdict is verdict
+
+
+class TestRoundFifteenFindings:
+    def test_case_c_fails_when_the_engine_never_handled_the_item(self) -> None:
+        """An unchanged, still-paused issue is a pass only if the engine looked at it."""
+        from issue_orchestrator.testing.exam.cases import (
+            STALE_CLAIM_PAUSED_FOR_RECONCILE,
+            stale_claim_paused_for_reconcile,
+        )
+
+        case = stale_claim_paused_for_reconcile(needs_reconcile_label="io:needs-reconcile")
+        labels = ("in-progress", "io:needs-reconcile")
+
+        unseen = grade(case, observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, item(issue_labels=labels)))
+        assert unseen.failures == (
+            "goal subject.engine_saw_item: the engine never published an event about issue #901",
+        )
+
+        seen = grade(
+            case,
+            observation(
+                STALE_CLAIM_PAUSED_FOR_RECONCILE,
+                item(issue_labels=labels, events=("stale.in_progress_detected",)),
+            ),
+        )
+        assert seen.passed, seen.failures

@@ -90,7 +90,7 @@ inside `make validate-pr`; its grader, case answers and fault shim have unit tes
 |------|---------------|--------------|
 | A | the review-exchange reviewer exits without answering, three exchanges in a row, after the work validated | recovery publishes the PR, code review runs, the PR leaves draft, no `blocked-failed`/`needs-human` remains |
 | B | the issue carries `blocked-failed` while its open, green PR waits on code review | the tech-lead investigation the stuck sweep starts names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
-| C | the issue carries `in-progress` with no session plus the engine's `needs-reconcile` pause (porchpin#410's labels) | the pause stays for a human, and the engine repeats nothing tick after tick (every case also fails on any livelock) |
+| C | the issue carries `in-progress` with no session plus the engine's `needs-reconcile` pause (porchpin#410's labels) | the engine handles the issue (it publishes events about it), the pause stays for a human, and the engine repeats nothing tick after tick (every case also fails on any livelock) |
 
 Run the live agent-guided onboarding acceptance explicitly:
 
