@@ -50,7 +50,6 @@ from .blocked_item_custody import (
     TrackedFix,
     derive_item_custody,
 )
-from ..ports.tech_lead_charter_ledger import MAX_CHARTER_DECISION_READ
 from .host_rate_limit_launch_gate import live_episode_keys
 from .stuck_sweep import stuck_sweep_next_due_at
 from .tech_lead_session_policy import is_tech_lead_session
@@ -71,10 +70,14 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-#: How many recorded decisions ABOUT one item the policy may consult: the
-#: ledger's own read cap. Filtered to the item by an index search before the
-#: limit, so reaching it takes that many decisions about a single issue.
-DECISIONS_PER_ITEM = MAX_CHARTER_DECISION_READ
+#: How many of an item's most recent decisions the policy may consult. The
+#: decisions that decide custody - its latest effects and its open proposals'
+#: filings - are read directly as well, so this only bounds ordinary history.
+DECISIONS_PER_ITEM = 50
+
+#: The newest effects (and each proposal's filings) read directly. Custody
+#: consults the latest; a few more keep ties deterministic.
+EFFECTS_PER_ITEM = 5
 
 #: What a live session is doing, in the words a card shows. Keyed on the task
 #: kind the session was launched as; tech-lead sessions are recognised
@@ -215,28 +218,31 @@ class StateBlockedItemCustodyReader:
             dependency_summary=problem.summary if problem is not None else None,
             sweep_attempts=sweep,
             sweep_escalation_pending=number in state.pending_stuck_sweep_escalations,
+            review_release_pending=(
+                number in state.review_release_budgets
+                or number in state.stuck_sweep_review_releases
+            ),
             unreadable=tuple(unreadable),
         )
 
     def _decisions(
         self, number: int, proposals: Sequence[OpenProposal]
     ) -> tuple["TechLeadCharterDecision", ...]:
-        """Decisions ABOUT this item, newest first, plus those that filed its open proposals.
+        """The decisions custody may consult about this item, newest first.
 
-        The window is the ledger's read cap, filtered to the item before the
-        limit, so ordinary history cannot crowd out an older decision whose
-        EFFECT (an approval applied later) is recent. A decision linked to an
-        open proposal is read by that proposal's number, whatever its age.
+        Three ledger relationships, each asked directly so no amount of other
+        history can crowd one out: the item's recent decisions, the ones that
+        remedies that took effect on it (newest EFFECT first), and the ones that filed its
+        open proposals.
         """
         ledger = self._authority.charter_ledger
-        found = {
-            decision.decision_id: decision
-            for decision in ledger.list_about_issue(number, limit=DECISIONS_PER_ITEM)
-        }
+        found = {d.decision_id: d for d in ledger.list_about_issue(number, limit=DECISIONS_PER_ITEM)}
+        for decision in ledger.list_remedies_on_issue(number, limit=EFFECTS_PER_ITEM):
+            found.setdefault(decision.decision_id, decision)
         for proposal in proposals:
-            for decision in ledger.list_for_issue(proposal.proposal_issue_number, limit=10):
-                if decision.proposal_issue_number == proposal.proposal_issue_number:
-                    found.setdefault(decision.decision_id, decision)
+            filed = ledger.list_filed_as_proposal(proposal.proposal_issue_number, limit=EFFECTS_PER_ITEM)
+            for decision in filed:
+                found.setdefault(decision.decision_id, decision)
         return tuple(
             sorted(found.values(), key=lambda d: (d.decided_at, d.decision_id), reverse=True)
         )

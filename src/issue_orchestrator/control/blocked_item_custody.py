@@ -39,8 +39,7 @@ from ..domain.blocked_item_custody import (
     age_of,
 )
 from ..domain.human_block import NeedsHumanCause
-from ..domain.tech_lead_charter import CharterBinding, CharterOutcome, CharterReason
-from ..domain.tech_lead_charter_decisions import CharterProposalLifecycle
+from ..domain.tech_lead_charter import CharterOutcome, CharterReason
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
@@ -162,6 +161,9 @@ class ItemCustodyFacts:
     #: The stuck sweep's recorded failed-cycle count; None when it holds none.
     sweep_attempts: int | None = None
     sweep_escalation_pending: bool = False
+    #: The stuck sweep's remedy for this item is releasing the review of the
+    #: open PR that carries its published validated work (#7293).
+    review_release_pending: bool = False
     unreadable: tuple[str, ...] = ()
 
 
@@ -436,6 +438,12 @@ def _fix_pending(
         return _launch_claim(
             CustodyState.BEING_FIXED, f"A {item.queued_fix.what} is queued.", item.queued_fix
         )
+    if item.review_release_pending:
+        return _Claim(
+            CustodyState.BEING_FIXED,
+            "Its published validated work sits under an open PR; the stuck sweep"
+            " is releasing that PR's review.",
+        )
     if item.tracked_fix is not None:
         fix = item.tracked_fix
         return _Claim(
@@ -555,7 +563,7 @@ def _latest_remedy(
     remedial = [
         record
         for record in item.decisions
-        if record.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
+        if record.is_remedy
         # Aimed AT this item: a follow-up filed for it (an untargeted
         # create_issue) is not a remedy of its block.
         and record.target_number == item.issue_number
@@ -580,9 +588,7 @@ def _latest_remedy(
             _clock(decided, "charter decision recorded"),
             _basis(decision),
         )
-    if decision.outcome is CharterOutcome.EXECUTED or (
-        decision.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
-    ):
+    if decision.took_effect:
         applied = _effect_time(decision)
         if not _about_this_block(applied, item):
             return None
@@ -597,10 +603,8 @@ def _latest_remedy(
 
 
 def _effect_time(decision: "TechLeadCharterDecision") -> datetime | None:
-    """When the decision took effect: its approval's application, else its decision."""
-    if decision.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED:
-        return _parse(decision.lifecycle_updated_at or decision.decided_at)
-    return _parse(decision.decided_at)
+    """When the decision took effect, as recorded (``effect_at``)."""
+    return _parse(decision.effect_at)
 
 
 def _effect_order(decision: "TechLeadCharterDecision") -> tuple[float, str]:
@@ -638,11 +642,8 @@ def _untied_remedy(item: ItemCustodyFacts) -> str:
             record
             for record in item.decisions
             if record.target_number == item.issue_number
-            and (
-                record.outcome is CharterOutcome.EXECUTED
-                or record.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
-            )
-            and record.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
+            and record.took_effect
+            and record.is_remedy
         ),
         None,
     )
