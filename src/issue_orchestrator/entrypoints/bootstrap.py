@@ -55,7 +55,7 @@ from .bootstrap_run_services import (
     build_issue_run_services,
     build_completion_intake,
 )
-from .bootstrap_issue_runtime import build_issue_runtime, remote_base_ref
+from .bootstrap_issue_runtime import build_issue_runtime, pull_request_base_branch
 from . import bootstrap_validated_work as validated_work_bootstrap
 from ..domain.models import OrchestratorState
 from .bootstrap_operator_commands import build_operator_issue_command_factory
@@ -800,7 +800,7 @@ def build_orchestrator(
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer,
-        base_ref=remote_base_ref(config, working_copy.default_branch, stack_gate))
+        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
@@ -1251,7 +1251,7 @@ def build_orchestrator_for_testing(
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer,
-        base_ref=remote_base_ref(config, working_copy.default_branch, stack_gate))
+        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,

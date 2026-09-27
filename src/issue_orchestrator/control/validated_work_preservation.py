@@ -35,7 +35,7 @@ class ValidatedWorkPreservationService:
     def __init__(self, *, intake: CompletionIntakeRuntime, store: ValidatedWorkAdmissionStore,
                  custody: ValidatedWorkCustody, repair: EscrowReconciliation,
                  working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver,
-                 base_ref: Callable[[int, Path], str | None]) -> None:
+                 base_branch: Callable[[int, Path], str | None]) -> None:
         self._intake = intake
         self._store = store
         self._custody = custody
@@ -43,7 +43,7 @@ class ValidatedWorkPreservationService:
         self._working_copy = working_copy
         self._observer = observer
         # The ref a head must be ahead of to be work: the base its PR targets.
-        self._base_ref = base_ref
+        self._base_branch = base_branch
 
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._store.has_unresolved_work(issue_number)
@@ -92,9 +92,11 @@ class ValidatedWorkPreservationService:
             )
             return False
         worktree = candidate.entry.run.worktree_path
-        base = self._base_ref(role.issue_number, worktree)
-        base_sha = None if base is None else self._working_copy.resolve_commit(worktree, base)
-        # A base that cannot be read proves nothing: the head is preserved.
+        base = self._base_branch(role.issue_number, worktree)
+        # Read fresh from the remote: a cached tracking ref of a base that has
+        # since been force-pushed would drop real work. A base that cannot be
+        # read or established proves nothing: the head is preserved.
+        base_sha = None if base is None else self._working_copy.fetch_remote_branch_head(worktree, base)
         relation = None if base_sha is None else self._working_copy.compare_commits(
             worktree, left=candidate.validation.head_sha, right=base_sha,
         )

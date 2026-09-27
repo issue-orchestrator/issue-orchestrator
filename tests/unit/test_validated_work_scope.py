@@ -165,7 +165,7 @@ def _rig(tmp_path, agent_label):
         working_copy=wc, observer=observer,
         # No remote in this rig: the base is unreadable, so the kind alone
         # decides here (the ahead-of-base rule has its own tests).
-        base_ref=lambda _issue, _worktree: "origin/main")
+        base_branch=lambda _issue, _worktree: "main")
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()

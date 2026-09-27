@@ -40,7 +40,7 @@ from issue_orchestrator.domain.validated_work import (
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
 from issue_orchestrator.control.stack_base import StackBaseDecision
-from issue_orchestrator.control.validated_head_base import PullRequestBaseRef
+from issue_orchestrator.control.validated_head_base import PullRequestBaseBranch
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.git_tools import create_git
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -96,11 +96,13 @@ def custody(tmp_path):
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     # The base each capture compares against; a test may swap in the
-    # production resolver (the stack-aware PullRequestBaseRef).
+    # production resolver (the stack-aware PullRequestBaseBranch). With no
+    # ``origin`` the base cannot be fetched and every head is preserved; a
+    # test that judges the base serves the repository as its own origin.
     base = {"ref": lambda _issue, _worktree: "main"}
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
         custody=ValidatedWorkCustody(escrow, store), repair=repair, working_copy=wc,
-        observer=observer, base_ref=lambda issue, worktree: base["ref"](issue, worktree))
+        observer=observer, base_branch=lambda issue, worktree: base["ref"](issue, worktree))
     source = IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-07T00:00:00Z")
     sessions = Mock()
     sessions.exists.return_value = False
@@ -113,6 +115,11 @@ def custody(tmp_path):
         capability=ledger.submission_capability(run), intake=intake, escrow=escrow,
         store=store, lifecycle=lifecycle, state=state, wc=wc, repair=repair,
         pair=pair, jobs=jobs, retry=retry, sessions=sessions, observer=observer, base=base)
+
+
+def serve_as_its_own_origin(rig):
+    """The base is fetched from ``origin`` as in production (#7347)."""
+    rig.git.run(rig.repo, ["remote", "add", "origin", str(rig.repo)])
 
 
 def submit(rig, key):
@@ -634,6 +641,7 @@ def test_a_head_the_base_already_contains_is_not_captured(custody, ahead, captur
     """#7346 (enrollment) / #7347: a validated head with no commits ahead of the
     base its PR targets is nothing to preserve - and a PR of it is refused by
     the host, which is how a zero-commit head wedged the recovery drain."""
+    serve_as_its_own_origin(custody)
     if not ahead:
         custody.git.run(custody.worktree, ["reset", "--hard", "main"])
     submit(custody, "validated")
@@ -664,8 +672,7 @@ def _stacked_on_a_predecessor(custody):
     custody.git.run(custody.worktree, ["add", "pred"])
     custody.git.run(custody.worktree, ["commit", "-m", "predecessor work"])
     custody.git.run(custody.repo, ["branch", "-f", "41-pred", custody.git.head_sha(custody.worktree)])
-    custody.git.run(custody.repo, ["remote", "add", "origin", str(custody.repo)])
-    custody.git.run(custody.repo, ["fetch", "-q", "origin"])
+    serve_as_its_own_origin(custody)
 
 
 @pytest.mark.parametrize(
@@ -685,7 +692,7 @@ def test_a_stack_successor_is_compared_with_its_predecessor(custody, decision, c
     head is preserved."""
     _stacked_on_a_predecessor(custody)
     gate = _StackGate(decision)
-    custody.base["ref"] = PullRequestBaseRef(lambda: "main", gate)
+    custody.base["ref"] = PullRequestBaseBranch(lambda: "main", gate)
     submit(custody, "validated")
 
     batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
@@ -699,11 +706,43 @@ def test_a_base_the_stack_gate_cannot_establish_proves_nothing(custody):
     """Fail-safe: when the gate cannot say which base the PR targets, even a
     head the default branch contains is preserved rather than dropped."""
     custody.git.run(custody.worktree, ["reset", "--hard", "main"])
-    custody.git.run(custody.repo, ["remote", "add", "origin", str(custody.repo)])
-    custody.git.run(custody.repo, ["fetch", "-q", "origin"])
-    custody.base["ref"] = PullRequestBaseRef(
+    serve_as_its_own_origin(custody)
+    custody.base["ref"] = PullRequestBaseBranch(
         lambda: "main", _StackGate(StackBaseDecision.blocked("unreadable", retryable=True))
     )
+    submit(custody, "validated")
+
+    batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
+
+    assert batch.unresolved
+
+
+def test_a_base_force_pushed_since_the_last_fetch_is_read_fresh(custody):
+    """#7347 PR 2 review r2: the cached tracking ref still contains the head,
+    but the remote base was force-pushed back since. The capture decision
+    reads the remote's current base, so the head - ahead of it again - is
+    preserved instead of dropped."""
+    serve_as_its_own_origin(custody)
+    head = custody.git.head_sha(custody.worktree)
+    base_before = custody.git.run(custody.repo, ["rev-parse", "main"]).stdout.strip()
+    custody.git.run(custody.repo, ["update-ref", "refs/heads/main", head])
+    custody.git.run(custody.repo, ["fetch", "-q", "origin"])  # tracking ref now contains the head
+    custody.git.run(custody.repo, ["update-ref", "refs/heads/main", base_before])  # force-pushed back
+    submit(custody, "validated")
+
+    batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
+
+    assert batch.unresolved
+
+
+def test_an_unreadable_remote_base_preserves_the_head(custody):
+    """The cached tracking ref contains the head, but the remote cannot be
+    read now: that proves nothing, so the head is preserved."""
+    serve_as_its_own_origin(custody)
+    head = custody.git.head_sha(custody.worktree)
+    custody.git.run(custody.repo, ["update-ref", "refs/heads/main", head])
+    custody.git.run(custody.repo, ["fetch", "-q", "origin"])
+    custody.git.run(custody.repo, ["remote", "set-url", "origin", str(custody.repo / "gone")])
     submit(custody, "validated")
 
     batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)

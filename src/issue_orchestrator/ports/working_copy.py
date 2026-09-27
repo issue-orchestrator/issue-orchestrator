@@ -165,11 +165,12 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
-    def resolve_commit(self, worktree: Path, ref: str) -> str | None:
-        """The full SHA of the commit ``ref`` names in the worktree's repository.
+    def fetch_remote_branch_head(self, worktree: Path, branch: str) -> str | None:
+        """The remote's current head of ``branch``, fetched now.
 
-        Returns ``None`` when the ref names no commit there (absent remote
-        branch, unfetched ref) - never a guess.
+        Fetches that one branch before answering, so a stale remote-tracking
+        ref is never the answer. Returns ``None`` when the remote cannot be
+        read or has no such branch - never a guess.
         """
         ...
 
