@@ -123,11 +123,15 @@ class ExamEngine:
         return self._runtime
 
     async def start(self) -> OrchestratorRuntime:
+        run_label = self.config.filtering.label
+        if not run_label:
+            # Without its run label the engine would work every open issue.
+            raise RuntimeError("exam engine config has no filtering.label (the run label)")
         self._runtime = await start_orchestrator_runtime(
             self.process,
             self.config.control_api_port,
             max_issues=10,
-            extra_args=["--label", self.config.filtering.label],
+            extra_args=["--label", run_label],
         )
         # Keep every event for the report, not the watcher's default 200.
         self._runtime.watcher.view.set_diag_limits(100_000)
