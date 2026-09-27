@@ -11,7 +11,10 @@ from issue_orchestrator.control.validated_work_effects import FencedValidatedWor
 from issue_orchestrator.domain.published_work_finalization import PublishedWorkTarget
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
 from issue_orchestrator.domain.validated_work import ValidatedWorkState, PublishValidatedHeadStatus
-from issue_orchestrator.domain.publication_remote import PublicationPullRequest, PublicationPrState
+from issue_orchestrator.domain.publication_remote import (
+    PublicationPullRequest, PublicationPrState, PublicationRemoteError,
+)
+from issue_orchestrator.domain.validated_work import ValidatedWorkFailure
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
 from issue_orchestrator.execution.git_validated_head_executor import GitValidatedHeadExecutor
@@ -22,6 +25,7 @@ from issue_orchestrator.infra.validated_work_store import SqliteValidatedWorkSto
 from tests.unit.control.test_retained_completion_preparation import retained as retained, prepare
 from tests.unit.test_git_validated_head_executor import Remote
 from tests.unit.validated_work_support import Liveness
+from tests.unit.control.liveness_doubles import rate_limited
 from tests.unit.test_validated_work_preservation import custody as custody
 
 
@@ -152,3 +156,21 @@ def test_completed_attempt_never_republishes_a_branch_that_moved(publication):
         assert rig.store.publish_attempts(claim.record_id) == before
         assert rig.remote.read_branch(rig.prepared.command) == base
         assert rig.remote.created == 1
+
+
+def test_a_rate_limited_publication_read_reaches_the_pending_result(publication):
+    """The executor catches the host error into its outcome; the attempt must
+    hand that limit on, or liveness spends an attempt before the reset (#7350)."""
+    rig = publication
+    limited = rate_limited()
+
+    def create_pr(command):
+        raise PublicationRemoteError("API rate limit exceeded") from limited
+
+    rig.remote.create_pr = create_pr
+    with held(rig) as (token, claim):
+        result = rig.worker.advance(token, claim, rig.prepared, approved=rig.authority)
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert result.rate_limit == limited.rate_limit

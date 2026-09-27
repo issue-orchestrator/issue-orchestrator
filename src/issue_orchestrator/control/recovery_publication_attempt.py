@@ -59,7 +59,7 @@ class RecoveryPublicationAttempt:
             return RecoveryAttemptPending("Store refused publication attempt")
         outcome = self._publisher.publish(token, claim, plan.command)
         if outcome.status is PublishValidatedHeadStatus.SUPERSEDED:
-            return RecoveryAttemptPending(outcome.message)
+            return RecoveryAttemptPending(outcome.message, rate_limit=outcome.rate_limit)
         recorded = perform(lambda: self._store.record_attempt_outcome(
             claim, attempt, outcome=outcome.status, failure=outcome.failure,
             finished_at=self._clock().isoformat(),
@@ -67,7 +67,7 @@ class RecoveryPublicationAttempt:
         if not recorded:
             return RecoveryAttemptPending("Publication outcome awaits durable reconciliation")
         if not publication_can_finalize(outcome):
-            return RecoveryAttemptPending(outcome.message, outcome.failure)
+            return RecoveryAttemptPending(outcome.message, outcome.failure, rate_limit=outcome.rate_limit)
         return self._confirm(token, claim, prepared, plan.command)
 
     def _confirm(self, token: RecordExecutionToken, claim: ValidatedWorkClaim,

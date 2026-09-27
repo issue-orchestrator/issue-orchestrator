@@ -14,6 +14,7 @@ from datetime import datetime
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable
 
+from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.dependencies import parse_dependency_edges
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 from .action_results import ActionResult, ActionResultType
@@ -230,7 +231,9 @@ class _DispositionPublisher:
             result = self.apply_action(AddCommentAction(number=disposition.issue_number,
                 comment=body, reason=action.reason, expected=action.expected))
             if result.result_type is not ActionResultType.SUCCESS:
-                raise ValueError(result.error or "disposition explanation did not commit")
+                raise ValueError(result.error or "disposition explanation did not commit") from (
+                    rate_limit_cause(result.host_rate_limit)
+                )
             if self.host.find_issue_comment_receipt(disposition.issue_number, body=body) is None:
                 raise ValueError("disposition explanation has no verified publication receipt")
         self._revalidate(action, disposition)

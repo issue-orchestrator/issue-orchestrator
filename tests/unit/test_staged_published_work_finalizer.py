@@ -17,6 +17,7 @@ from issue_orchestrator.domain.validated_work import (
 )
 from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
 from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReadError
+from tests.unit.control.liveness_doubles import rate_limited
 from tests.unit.staged_finalization_support import Crash, FinalizationRig
 from tests.unit.validated_work_support import OTHER, OWNER, Liveness, capture, claim
 
@@ -189,6 +190,29 @@ def test_routing_failure_is_typed_only_after_durable_failure_write(tmp_path, mod
     assert row.state is State.FAILED and row.failure is Failure.REVIEW_ROUTING_FAILED
     assert "recovery-pending" in rig.remote.labels
     assert not rig.aggregate.requests
+
+
+@pytest.mark.parametrize("mode", ["write-result", "write-exception", "fresh-read", "release"])
+def test_a_rate_limit_is_a_transient_wait_never_a_durable_failure(tmp_path, mode):
+    """The host named when it answers again: the outcome carries that reset to
+    the liveness owner and nothing is recorded as a routing failure (#7350)."""
+    rig = FinalizationRig(tmp_path / "work.sqlite")
+    limited = rate_limited()
+    if mode == "write-result":
+        rig.remote.write_limit = limited.rate_limit
+    elif mode == "write-exception":
+        rig.points.at, rig.points.error = ("before:write", limited)
+    elif mode == "fresh-read":
+        error = FreshIssueReadError("fresh read unavailable", transient=True)
+        error.__cause__ = limited
+        rig.points.at, rig.points.error = ("before:observe", error)
+    else:
+        rig.aggregate.refuse, rig.aggregate.refuse_limit = True, limited.rate_limit
+    result = rig.invoke()
+    assert result.status is Status.TRANSIENT
+    assert result.failure is None
+    assert result.rate_limit == limited.rate_limit
+    assert rig.store.get(rig.claim.record_id).state is State.PUBLISHING
 
 
 @pytest.mark.parametrize("mode", ["refused", "exception"])

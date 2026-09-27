@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
+from ..domain.host_rate_limit import HostRateLimit, rate_limit_cause
 from ..domain.published_work_finalization import (
     FinalizationOutcome,
     FinalizationCheckpoint,
@@ -23,6 +24,7 @@ from ..domain.validated_work_execution import (
     ValidatedWorkAuthorityUnavailable,
 )
 from ..ports.fresh_issue_reader import FreshIssueReader, FreshIssueReadError
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.published_work_finalization import (
     AggregateRecoveryBlockOwner,
     FinalizationPhaseRecorder,
@@ -57,6 +59,8 @@ class _Progress:
         status: Status,
         message: str,
         failure: ValidatedWorkFailure | None = None,
+        *,
+        rate_limit: HostRateLimit | None = None,
     ) -> FinalizationOutcome:
         return FinalizationOutcome(
             status,
@@ -66,6 +70,7 @@ class _Progress:
             tuple(self.removed),
             failure,
             message,
+            rate_limit,
         )
 
 
@@ -126,14 +131,18 @@ class StagedPublishedWorkFinalizer:
                 ),
             )
         except _RoutingFailed as error:
-            return self._fail_routing(request, progress, str(error))
+            return self._fail_routing(
+                request, progress, str(error), rate_limit=host_rate_limit_of(error)
+            )
         except (
             FreshIssueReadError,
             ValidatedWorkClaimLost,
             ValidatedWorkAuthorityUnavailable,
             _RetryFinalization,
         ) as error:
-            return progress.outcome(request, Status.TRANSIENT, str(error))
+            return progress.outcome(
+                request, Status.TRANSIENT, str(error), rate_limit=host_rate_limit_of(error)
+            )
 
     def _read_checkpoint(
         self, request: PublishedWorkFinalizationRequest
@@ -176,7 +185,9 @@ class StagedPublishedWorkFinalizer:
         except Exception as error:
             raise _RoutingFailed(str(error) or type(error).__name__) from error
         if not result.success:
-            raise _RoutingFailed(result.error or "review routing label write failed")
+            raise _RoutingFailed(result.error or "review routing label write failed") from (
+                rate_limit_cause(result.host_rate_limit)
+            )
         progress.added.append(self._routing_label)
 
     def _replay(self, request: PublishedWorkFinalizationRequest) -> None:
@@ -261,14 +272,20 @@ class StagedPublishedWorkFinalizer:
             raise _RetryFinalization("aggregate release outcome names another record")
         progress.removed.extend(result.labels_removed)
         if result.status is RecoveryBlockReleaseStatus.REFUSED:
-            raise _RetryFinalization(result.message)
+            raise _RetryFinalization(result.message) from rate_limit_cause(result.rate_limit)
 
     def _fail_routing(
         self,
         request: PublishedWorkFinalizationRequest,
         progress: _Progress,
         message: str,
+        *,
+        rate_limit: HostRateLimit | None,
     ) -> FinalizationOutcome:
+        if rate_limit is not None:
+            # The host refused the routing write until a named reset: nothing
+            # is wrong with the routing, so it is retried, never failed.
+            return progress.outcome(request, Status.TRANSIENT, message, rate_limit=rate_limit)
         failure = ValidatedWorkFailure.REVIEW_ROUTING_FAILED
         try:
             recorded = self._effects.perform(
@@ -282,7 +299,9 @@ class StagedPublishedWorkFinalizer:
                 ),
             )
         except Exception as error:
-            return self._reconcile_failure(request, progress, error)
+            return self._reconcile_failure(
+                request, progress, error, rate_limit=host_rate_limit_of(error)
+            )
         if not recorded:
             return progress.outcome(request, Status.TRANSIENT, "failure write refused")
         return progress.outcome(request, Status.FAILED, message, failure)
@@ -292,6 +311,8 @@ class StagedPublishedWorkFinalizer:
         request: PublishedWorkFinalizationRequest,
         progress: _Progress,
         error: Exception,
+        *,
+        rate_limit: HostRateLimit | None,
     ) -> FinalizationOutcome:
         try:
             checkpoint = self._read_checkpoint(request)
@@ -308,5 +329,8 @@ class StagedPublishedWorkFinalizer:
                     request, Status.FAILED, checkpoint.message, checkpoint.failure
                 )
         return progress.outcome(
-            request, Status.TRANSIENT, f"failure write unavailable: {error}"
+            request,
+            Status.TRANSIENT,
+            f"failure write unavailable: {error}",
+            rate_limit=rate_limit,
         )

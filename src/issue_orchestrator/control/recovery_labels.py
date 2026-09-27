@@ -1,6 +1,7 @@
 """Apply and observe one desired label state under the supplied effect scope."""
 
 from typing import Protocol
+from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.recovery_block import require_cleanup_absence
 
 from ..ports.fresh_issue_reader import FreshIssueReader
@@ -43,7 +44,9 @@ class RecoveryLabels:
         )
         result = effects.perform(lambda: self._applier.apply(action))
         if not result.success:
-            raise RuntimeError(result.error or "recovery label write refused")
+            raise RuntimeError(result.error or "recovery label write refused") from (
+                rate_limit_cause(result.host_rate_limit)
+            )
         observed = effects.perform(lambda: self._reader.read_issue_labels(issue))
         if (label in observed) != present:
             raise RuntimeError("recovery label write not observed")

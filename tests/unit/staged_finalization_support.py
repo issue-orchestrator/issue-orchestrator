@@ -60,9 +60,13 @@ class Remote:
     removed: list[str] = field(default_factory=list)
     observe_written: bool = True
     write_success: bool = True
+    #: A typed host rate limit the label write reports instead of writing.
+    write_limit: object = None
 
     def apply(self, action):
         self.points.hit("before:write")
+        if self.write_limit is not None:
+            return ActionResult.fail_limited(action, "API rate limit exceeded", self.write_limit)
         if not self.write_success:
             return ActionResult.fail(action, "routing rejected")
         self.labels.add(action.label)
@@ -120,6 +124,8 @@ class Aggregate:
     effects: object
     points: Interruptions
     refuse: bool = False
+    #: The typed host rate limit behind a refusal, if any.
+    refuse_limit: object = None
     requests: list = field(default_factory=list)
 
     def release_published_record(self, request):
@@ -136,6 +142,7 @@ class Aggregate:
                 RecoveryBlockReleaseStatus.REFUSED,
                 (),
                 "sibling projection refused",
+                rate_limit=self.refuse_limit,
             )
         siblings = [
             row

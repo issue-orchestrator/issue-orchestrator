@@ -35,7 +35,7 @@ class RecoveryPublicationCleanup:
         # decides whether remaining interests keep recovery labels.
         projection = perform(lambda: self._blocks.reconcile_issue_block(target.key.issue_number))
         if projection.status is not RecoveryBlockReconcileStatus.RECONCILED:
-            return RecoveryAttemptPending(projection.message)
+            return RecoveryAttemptPending(projection.message, rate_limit=projection.rate_limit)
         with self._gate.try_acquire(target.key.repo_slug, target.key.issue_number) as acquired:
             if acquired is IssueDispositionGateStatus.BUSY:
                 return RecoveryAttemptPending("Recovered publication awaits workspace cleanup")

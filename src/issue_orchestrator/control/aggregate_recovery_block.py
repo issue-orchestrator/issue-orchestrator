@@ -36,6 +36,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.issue_disposition_gate import IssueDispositionMutationGate
 from ..ports.published_work_finalization import FinalizationPhaseRecorder
 from ..ports.recovery_block import RecoveryBlockStore
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
 from ..ports.synchronous_effects import SynchronousEffectScope
@@ -130,9 +131,13 @@ class AggregateRecoveryBlocks:
                 )
                 return self._project(snapshot.plan(), effects)
         except RecoveryMutationBusy as error:
-            return RecoveryBlockReconcileOutcome(Status.BUSY, (), str(error))
+            return RecoveryBlockReconcileOutcome(
+                Status.BUSY, (), str(error), rate_limit=host_rate_limit_of(error)
+            )
         except Exception as error:
-            return RecoveryBlockReconcileOutcome(Status.RETRY, (), str(error))
+            return RecoveryBlockReconcileOutcome(
+                Status.RETRY, (), str(error), rate_limit=host_rate_limit_of(error)
+            )
 
     def release_published_record(
         self, request: RecoveryBlockReleaseRequest
@@ -149,12 +154,17 @@ class AggregateRecoveryBlocks:
                     RecoveryBlockReleaseStatus.RELEASED,
                     result.labels_removed,
                     result.message,
+                    rate_limit=result.rate_limit,
                 )
         except (ValidatedWorkClaimLost, ValidatedWorkAuthorityUnavailable):
             raise
         except Exception as error:
             return RecoveryBlockReleaseOutcome(
-                record_id, RecoveryBlockReleaseStatus.REFUSED, (), str(error)
+                record_id,
+                RecoveryBlockReleaseStatus.REFUSED,
+                (),
+                str(error),
+                rate_limit=host_rate_limit_of(error),
             )
 
     def _admit_release(
