@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from .blocked_open_pr import BlockedOpenPRLedger
 from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
@@ -264,6 +265,17 @@ def _check_validation_record_path(value: Any) -> str | None:
     return value
 
 
+def _check_partial_pr(value: Any, outcome: "CompletionOutcome") -> bool:
+    """A partial-delivery claim is a strict bool, and only a completion makes it."""
+    if type(value) is not bool:
+        raise ValueError("partial_pr must be a boolean")
+    if value and outcome is not CompletionOutcome.COMPLETED:
+        raise ValueError(
+            f"partial_pr is only valid for a completed outcome, not {outcome.value}"
+        )
+    return value
+
+
 def _check_pr_labels(value: Any) -> list[str] | None:
     if value is None:
         return None
@@ -461,6 +473,11 @@ class CompletionRecord:
     validation_record_path: Optional[str] = None  # Path to validation record JSON
     follow_up_issues: Optional[list["ProposedFollowUpIssue"]] = None
 
+    # The PR delivers only part of the issue (``coding-done completed
+    # --partial``): its body says "Refs #N", not "Closes #N", so merging it
+    # leaves the issue open for the next PR (#7288). COMPLETED only.
+    partial_pr: bool = False
+
     @property
     def requests_publication(self) -> bool:
         """Whether this intent requires publication prerequisites, before shaping."""
@@ -498,6 +515,7 @@ class CompletionRecord:
             "follow_up_issues": [
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
+            "partial_pr": self.partial_pr,
         }
 
     @classmethod
@@ -602,6 +620,7 @@ class CompletionRecord:
                 ProposedFollowUpIssue.from_dict(item)
                 for item in follow_up_raw
             ] if follow_up_raw is not None else None,
+            partial_pr=_check_partial_pr(data.get("partial_pr", False), outcome),
         )
 
 
@@ -1324,6 +1343,9 @@ class SessionHistoryEntry:
     worktree_path: Optional[Path] = None
     completed_at: Optional[datetime] = None  # When the session completed (for sequence visibility)
     issue_labels: tuple[str, ...] = ()  # Snapshot retained for area/seam facts
+    # Set when this entry's PR merged as a partial delivery ("Refs #N", #7288).
+    # The issue still has work, so this entry does not hold it out of the run.
+    partial_pr_merged: bool = False
 
 
     @property
@@ -1451,6 +1473,17 @@ class DiscoveredAwaitingMergeReconciliation:
     # destructive precondition against live state, not this discovery-time bit.
     issue_open: bool = False
     merged_at: str | None = None
+    # True when the merged PR declared partial delivery ("Refs #N", #7288):
+    # the issue stays open for its remaining work, so nothing closes it and
+    # the run may launch its next slice.
+    partial_pr: bool = False
+
+    def __post_init__(self) -> None:
+        if self.partial_pr and self.issue_open:
+            raise ValueError(
+                f"issue #{self.issue_number}: a partial PR's merge must never "
+                "request the close-on-merge fallback"
+            )
 
 
 @dataclass(frozen=True)
@@ -2015,6 +2048,9 @@ class OrchestratorState:
     # In-memory like ``priority_queue`` (GitHub labels stay the crash-safe
     # truth); a restart simply re-establishes the baseline on the next scan.
     previously_blocked_issue_numbers: set[int] = field(default_factory=set)
+    # #7294: open PRs the PR scanner keeps skipping because the issue or PR
+    # carries a blocking label. Owned by the ledger; read by the board snapshot.
+    blocked_open_prs: BlockedOpenPRLedger = field(default_factory=BlockedOpenPRLedger)
     dependency_gate_snapshot: DependencyGateSnapshot = field(default_factory=DependencyGateSnapshot)  # Producer-evaluated stack gate reports + successor edges for the UI (#6597)
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
@@ -2094,10 +2130,17 @@ class OrchestratorState:
     # present) — persisted like ``recovery_attempts`` so an escalation survives a
     # crash or an apply failure and is retried until it lands (#6824 R1).
     pending_stuck_sweep_escalations: set[int] = field(default_factory=set)
+    # DURABLE: issues whose ``recovery_attempts`` counter budgets published-PR
+    # review releases rather than investigations (#7293). A counter measures
+    # ONE remedy; switching remedy restarts it.
+    review_release_budgets: set[int] = field(default_factory=set)
     # Tick-scoped buffer seeded from the durable set each sweep: every unacked
     # escalation gets an idempotent, retry-safe needs-human label (the
     # authoritative, label-only escalation, #6824 R1).
     stuck_sweep_escalations: list[int] = field(default_factory=list)
+    # One-shot buffer of issues whose published PR's review the sweep releases
+    # (#7293); the next snapshot consumes it.
+    stuck_sweep_review_releases: list[int] = field(default_factory=list)
 
     @property
     def paused(self) -> bool:

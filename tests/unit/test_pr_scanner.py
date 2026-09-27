@@ -10,7 +10,7 @@ Follows the testing patterns in tests/unit/CLAUDE.md:
 import pytest
 from unittest.mock import MagicMock
 
-from issue_orchestrator.control.pr_scanner import PRScanner, ScanResult
+from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import PendingReview, PendingRework
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -145,7 +145,7 @@ class TestScanForReviewsBasic:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert result == []
 
@@ -159,7 +159,7 @@ class TestScanForReviewsBasic:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert result == []
 
@@ -172,7 +172,7 @@ class TestScanForReviewsBasic:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(result) == 1
         assert result[0].pr_number == 100
@@ -192,7 +192,7 @@ class TestScanForReviewsBasic:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(result) == 1
         assert result[0].issue_number == 123
@@ -210,7 +210,7 @@ class TestScanForReviewsBasic:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(result) == 1
         assert result[0].issue_number == 456
@@ -228,7 +228,7 @@ class TestScanForReviewsBasic:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(result) == 1
         assert result[0].issue_number == 100  # Falls back to PR number
@@ -248,7 +248,7 @@ class TestScanForReviewsFiltering:
         result = scanner.scan_for_reviews(
             already_queued=already_queued,
             active_sessions=[],
-        )
+        ).reviews
 
         assert result == []
 
@@ -263,7 +263,7 @@ class TestScanForReviewsFiltering:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=active_sessions,
-        )
+        ).reviews
 
         assert result == []
 
@@ -278,7 +278,7 @@ class TestScanForReviewsFiltering:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=active_sessions,
-        )
+        ).reviews
 
         assert len(result) == 1
         assert result[0].pr_number == 100
@@ -295,7 +295,7 @@ class TestScanForReviewsFiltering:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(result) == 3
         pr_numbers = {r.pr_number for r in result}
@@ -317,7 +317,7 @@ class TestScanForReviewsFiltering:
         result = scanner.scan_for_reviews(
             already_queued=already_queued,
             active_sessions=active_sessions,
-        )
+        ).reviews
 
         # Only PR 102 should be returned
         assert len(result) == 1
@@ -337,7 +337,7 @@ class TestScanForReviewsFiltering:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert result == []
 
@@ -362,7 +362,7 @@ class TestScanForReviewsFiltering:
             result = scanner.scan_for_reviews(
                 already_queued=[],
                 active_sessions=[],
-            )
+            ).reviews
 
         assert result == []
         assert "Skipping stale review PR: pr=100 issue=42 reason=issue_blocked" in caplog.text
@@ -391,7 +391,7 @@ class TestScanForReviewsEvents:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert result == []
         events = mock_events.get_events_by_name(EventName.SCANNER_REVIEWS_FOUND)
@@ -408,7 +408,7 @@ class TestScanForReviewsEvents:
         result = scanner.scan_for_reviews(
             already_queued=already_queued,
             active_sessions=[],
-        )
+        ).reviews
 
         assert result == []
         events = mock_events.get_events_by_name(EventName.SCANNER_REVIEWS_FOUND)
@@ -429,10 +429,11 @@ class TestScanForReworksBasic:
         config.code_review_agent = None  # Not configured
         scanner = PRScanner(config=config, repository=mock_repository, events=mock_events)
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -450,10 +451,11 @@ class TestScanForReworksBasic:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         assert result[0].issue_key.stable_id() == "42"
@@ -477,10 +479,11 @@ class TestScanForReworksBasic:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         # rework-cycle-2 means this was the 2nd attempt, so next is cycle 3
@@ -505,10 +508,11 @@ class TestScanForReworksBasic:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -524,10 +528,11 @@ class TestScanForReworksBasic:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -551,10 +556,11 @@ class TestScanForReworksFiltering:
         # Already queued
         already_queued = [make_pending_rework(42)]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=already_queued,
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -574,10 +580,11 @@ class TestScanForReworksFiltering:
         # Issue 42 is being actively worked on
         active_sessions = [42]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=active_sessions,
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -603,10 +610,11 @@ class TestScanForReworksFiltering:
         mock_repository.prs["1-feature"] = [pr1]
         mock_repository.prs["2-feature"] = [pr2]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 2
         assert escalations == []
@@ -631,10 +639,11 @@ class TestScanForReworksFiltering:
             issue_branches_fn=lambda: {42: "42-fresh-branch"},
         )
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -659,10 +668,11 @@ class TestScanForReworksEscalation:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         # Should escalate instead of queueing
         assert result == []
@@ -692,10 +702,11 @@ class TestScanForReworksEscalation:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == [], "Should skip rework when issue is blocked"
         assert escalations == []
@@ -716,10 +727,11 @@ class TestScanForReworksEscalation:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         # Should queue for rework, not escalate
         assert len(result) == 1
@@ -760,10 +772,11 @@ class TestScanForReworksEscalation:
         mock_repository.prs["2-feature"] = [pr2]
         mock_repository.prs["3-feature"] = [pr3]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         # PR1 and PR3 should be queued for rework
         assert len(result) == 2
@@ -828,10 +841,11 @@ class TestScanForReworksEvents:
 
     def test_no_event_when_no_reworks_found(self, scanner, mock_events):
         """Does not emit event when no reworks are found."""
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert result == []
         assert escalations == []
@@ -855,7 +869,7 @@ class TestEdgeCases:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=[],
-        )
+        ).reviews
 
         assert len(result) == 1
         # Falls back to PR number
@@ -873,10 +887,11 @@ class TestEdgeCases:
         )
         mock_repository.prs[""] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         assert result[0].issue_key.stable_id() == "42"
@@ -892,7 +907,7 @@ class TestEdgeCases:
         )
         mock_repository.prs["feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
 
         assert len(result) == 1
         assert result[0].issue_number == 100  # Uses first Closes pattern
@@ -907,21 +922,21 @@ class TestEdgeCases:
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=["review-100"],
-        )
+        ).reviews
         assert len(result) == 0
 
         # "review-99" should NOT block PR 100
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=["review-99"],
-        )
+        ).reviews
         assert len(result) == 1
 
         # "issue-100" is not a review session
         result = scanner.scan_for_reviews(
             already_queued=[],
             active_sessions=["issue-100"],
-        )
+        ).reviews
         assert len(result) == 1
 
     def test_high_rework_cycle_numbers(self, scanner, mock_repository, mock_config):
@@ -938,10 +953,11 @@ class TestEdgeCases:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         # rework-cycle-99 means next is 100, which is at max (not exceeding)
         assert len(result) == 1
@@ -962,46 +978,15 @@ class TestEdgeCases:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         # First rework (cycle 1) exceeds max of 0
         assert result == []
         assert len(escalations) == 1
-
-
-class TestScanResult:
-    """Tests for ScanResult dataclass."""
-
-    def test_scan_result_creation(self):
-        """ScanResult can be created with all fields."""
-        reviews = [make_pending_review(1, 100)]
-        reworks = [make_pending_rework(2)]
-        escalations = [(101, 3, 5)]
-
-        result = ScanResult(
-            reviews_to_queue=reviews,
-            reworks_to_queue=reworks,
-            escalations=escalations,
-        )
-
-        assert len(result.reviews_to_queue) == 1
-        assert len(result.reworks_to_queue) == 1
-        assert len(result.escalations) == 1
-
-    def test_scan_result_empty(self):
-        """ScanResult can be created with empty lists."""
-        result = ScanResult(
-            reviews_to_queue=[],
-            reworks_to_queue=[],
-            escalations=[],
-        )
-
-        assert result.reviews_to_queue == []
-        assert result.reworks_to_queue == []
-        assert result.escalations == []
 
 
 # =============================================================================
@@ -1031,7 +1016,7 @@ class TestScannerIntegration:
         result = scanner.scan_for_reviews(
             already_queued=already_queued,
             active_sessions=active_sessions,
-        )
+        ).reviews
 
         # Only PR 102 should be discovered
         assert len(result) == 1
@@ -1065,10 +1050,11 @@ class TestScannerIntegration:
         mock_repository.prs["2-feat"] = [prs[1]]
         mock_repository.prs["3-feat"] = [prs[2]]
 
-        result, escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, escalations = _scan.reworks, _scan.escalations
 
         # PRs 100 and 101 should be queued for rework
         assert len(result) == 2
@@ -1106,10 +1092,11 @@ class TestBranchNameParsing:
         )
         mock_repository.prs["3896-add-unit-tests-for-publish-executor"] = [pr]
 
-        result, _escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, _escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         assert result[0].issue_key.stable_id() == "3896"
@@ -1129,10 +1116,11 @@ class TestBranchNameParsing:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, _escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, _escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         # Should use issue 42 from branch, not 99 from body
@@ -1151,10 +1139,11 @@ class TestBranchNameParsing:
         )
         mock_repository.prs["feature-branch"] = [pr]
 
-        result, _escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, _escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         assert result[0].issue_key.stable_id() == "123"
@@ -1177,10 +1166,11 @@ class TestIssueCentricAgentLookup:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, _escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, _escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 1
         assert result[0].agent_type == "agent:backend"
@@ -1198,10 +1188,11 @@ class TestIssueCentricAgentLookup:
         mock_repository.prs["2-feat"] = [pr2]
         mock_repository.prs["3-feat"] = [pr3]
 
-        result, _escalations = scanner.scan_for_reworks(
+        _scan = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
+        result, _escalations = _scan.reworks, _scan.escalations
 
         assert len(result) == 3
         agents_by_issue = {
@@ -1244,7 +1235,7 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert result == [], "PR linked to excluded-label issue should be skipped"
 
     def test_rework_skips_excluded_label_issue(self, scanner, mock_repository, mock_config):
@@ -1264,7 +1255,8 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-rework"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+        _scan = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+        result, escalations = _scan.reworks, _scan.escalations
         assert result == [], "PR linked to excluded-label issue should be skipped"
         assert escalations == []
 
@@ -1275,7 +1267,7 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(200, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert result == [], "PR for issue #42 should be skipped when scope is issue #100"
 
     def test_rework_skips_out_of_scope_issue_number(self, scanner, mock_repository, mock_config):
@@ -1287,7 +1279,8 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(200, branch="42-feature", body="Closes #42", labels=["needs-rework"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+        _scan = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+        result, escalations = _scan.reworks, _scan.escalations
         assert result == [], "PR for issue #42 should be skipped when scope is issue #100"
         assert escalations == []
 
@@ -1298,7 +1291,7 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert len(result) == 1
         assert result[0].issue_number == 42
 
@@ -1318,7 +1311,7 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert len(result) == 1
 
     def test_review_includes_closed_issue_when_filter_label_matches(
@@ -1343,7 +1336,7 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert len(result) == 1
         assert result[0].issue_number == 42
 
@@ -1363,7 +1356,7 @@ class TestIssueScopeFiltering:
         pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
         mock_repository.prs["42-feature"] = [pr]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert result == []
 
     def test_mixed_excluded_and_non_excluded(self, scanner, mock_repository, mock_config):
@@ -1395,6 +1388,6 @@ class TestIssueScopeFiltering:
         mock_repository.prs["1-feature"] = [pr1]
         mock_repository.prs["2-feature"] = [pr2]
 
-        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
         assert len(result) == 1
         assert result[0].issue_number == 2

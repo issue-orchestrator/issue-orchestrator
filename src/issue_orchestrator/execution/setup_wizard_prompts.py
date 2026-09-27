@@ -7,6 +7,7 @@ budget; these are pure text builders with no wizard-state dependencies.
 from __future__ import annotations
 
 from .tech_lead_board_prompt import (
+    TECH_LEAD_BLOCKED_OPEN_PRS_SECTION,
     TECH_LEAD_TIMELINE_ACTOR_SECTION,
     TECH_LEAD_WRITE_HEALTH_SECTION,
 )
@@ -521,7 +522,8 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"
 
 It contains active sessions (type/state/age, exact `terminal_id`/`run_id`
 generation, plus `idle_minutes`/`commits_ahead` hung-evidence), pending queues with reasons,
-blocked issues, `recent_failures` (context), `problem_cohort` (the issue
+blocked issues, `blocked_open_prs` (open PRs held by a blocking label),
+`recent_failures` (context), `problem_cohort` (the issue
 numbers a health review owns act-level authority over, empty otherwise), open
 pattern case files, per-area distinct patterns plus shipped-fix counts, a
 restart-safe `recent_shipped_fixes` list with issue/PR/area evidence,
@@ -534,6 +536,8 @@ context (what else was running, queued, or failing at the same time). Health
 reviews: the snapshot IS your assignment - review it end to end.
 
 {TECH_LEAD_WRITE_HEALTH_SECTION}
+
+{TECH_LEAD_BLOCKED_OPEN_PRS_SECTION}
 
 {TECH_LEAD_TIMELINE_ACTOR_SECTION}
 

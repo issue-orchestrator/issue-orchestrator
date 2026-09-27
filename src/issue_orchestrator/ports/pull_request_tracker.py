@@ -265,6 +265,14 @@ class PullRequestTracker(Protocol):
     platform's API, not internal persistence.
     """
 
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
+        """Every OPEN pull request whose head is ``branch``: uncached and complete.
+
+        For safety decisions that must not miss a PR (#7293): never answered
+        from a cache, and raises rather than returning a capped page.
+        """
+        ...
+
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         """Get all pull requests for a specific branch.
 
@@ -480,12 +488,15 @@ class PullRequestTracker(Protocol):
         """
         ...
 
-    def merged_prs_closing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
-        """Numbers of MERGED pull requests that close any of ``issue_numbers``.
+    def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
+        """Numbers of MERGED pull requests that reference any of ``issue_numbers``.
 
-        Linked by a closing reference ("Closes #N"), resolved without the
-        search API. Together with :meth:`list_open_prs_complete` this answers
-        "which PRs belong to these issues" for many issues at once.
+        Includes a closing reference ("Closes #N") and a partial one
+        ("Refs #N", #7288), and is resolved without the search API. A caller
+        still checks each PR's own link before trusting it: a PR that only
+        mentions the issue is in this set too. Together with
+        :meth:`list_open_prs_complete` this answers "which PRs belong to these
+        issues" for many issues at once.
 
         Raises:
             RepositoryError: If the answer cannot be proven complete.

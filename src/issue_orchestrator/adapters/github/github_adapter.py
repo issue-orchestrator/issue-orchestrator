@@ -869,6 +869,10 @@ class GitHubAdapter:
 
     # PRRepository implementation
 
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
+        """Uncached, complete open-PR set for a head branch (fails if capped)."""
+        return [self._pr_info_from_api(raw) for raw in self._client.read_publication_prs(branch)]
+
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         """Get all pull requests for a specific branch.
 
@@ -1215,9 +1219,9 @@ class GitHubAdapter:
         """Every open PR; raises rather than returning a partial list."""
         return [self._pr_info_from_api(pr) for pr in self._client.list_open_prs_complete()]
 
-    def merged_prs_closing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
-        """Merged PRs whose closing reference names one of ``issue_numbers``."""
-        return self._client.merged_prs_closing_issues(issue_numbers)
+    def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
+        """Merged PRs that reference one of ``issue_numbers`` (closing or partial)."""
+        return self._client.merged_prs_referencing_issues(issue_numbers)
 
     def create_pr(
         self,

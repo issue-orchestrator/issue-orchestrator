@@ -263,7 +263,8 @@ def plan_tech_lead_launch_queue(
             pending.append(item)
 
     revalidated = plan_tech_lead_launch_revalidation(
-        pending, snapshot.issues, is_blocking_any, snapshot.tech_lead_subjects
+        pending, snapshot.issues, is_blocking_any, snapshot.tech_lead_subjects,
+        published_review_subjects=snapshot.published_review_subjects,
     )
     withdrawals: list[Action] = []
     for withdrawal in revalidated.withdrawn:

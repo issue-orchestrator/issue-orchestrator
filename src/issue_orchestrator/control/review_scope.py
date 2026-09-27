@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Protocol
 
 from ..domain.branch_naming import extract_issue_number_from_branch
+from ..domain.pr_issue_reference import body_links_issue, linked_issue_number, linked_issue_numbers
+from ..infra.repo_scope import require_repo
 from ..ports.pull_request_tracker import PRInfo
 from .issue_scope import IssueScopeDecision, evaluate_issue_scope
 
@@ -16,7 +18,6 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
 
 logger = logging.getLogger(__name__)
-_CLOSING_ISSUE_RE = re.compile(r"\bCloses\s+#(\d+)\b", re.IGNORECASE)
 
 
 class ReviewIssueReader(Protocol):
@@ -36,20 +37,37 @@ class ReviewScopeResult:
     issue: "Issue | None" = None
 
 
-def extract_issue_number_from_pr(pr: PRInfo) -> int:
+def extract_issue_number_from_pr(pr: PRInfo, *, repo_slug: str) -> int:
     """Extract the linked issue number from an orchestrator PR."""
     if pr.branch:
         issue_from_branch = extract_issue_number_from_branch(pr.branch)
         if issue_from_branch is not None:
             return issue_from_branch
 
-    return extract_issue_number(pr.body, pr.number)
+    return extract_issue_number(pr.body, pr.number, repo_slug=repo_slug)
 
 
-def extract_issue_number(pr_body: str, fallback: int) -> int:
-    """Extract issue number from a PR body using the standard closing reference."""
-    match = _CLOSING_ISSUE_RE.search(pr_body)
-    return int(match.group(1)) if match else fallback
+def extract_issue_number(pr_body: str, fallback: int, *, repo_slug: str) -> int:
+    """The local issue a PR body links first (any GitHub closing keyword, or
+    ``Refs #N`` for a partial PR); ``fallback`` when it links none."""
+    linked = linked_issue_number(pr_body, repo_slug=repo_slug)
+    return fallback if linked is None else linked
+
+
+def issues_with_open_prs(prs: Iterable[PRInfo], *, repo_slug: str) -> frozenset[int]:
+    """Issues an orchestrator PR belongs to: its ``N-`` branch or its linked
+    issue (``Closes #N``, or ``Refs #N`` for a partial PR, #7288).
+
+    Precise on purpose (#7293): a PR that merely mentions ``#N`` is not that
+    issue's PR, and treating it as one would keep an issue gated behind
+    someone else's work.
+    """
+    issues: set[int] = set()
+    for pr in prs:
+        from_branch = extract_issue_number_from_branch(pr.branch) if pr.branch else None
+        issues.update(number for number in (from_branch,) if number is not None)
+        issues.update(linked_issue_numbers(pr.body or "", repo_slug=repo_slug))
+    return frozenset(issues)
 
 
 def pr_fields_reference_issue(
@@ -58,6 +76,7 @@ def pr_fields_reference_issue(
     title: str,
     body: str,
     issue_numbers: Iterable[int],
+    repo_slug: str,
 ) -> bool:
     """Return whether PR fields reference any of the issue numbers."""
     issue_number_set = set(issue_numbers)
@@ -69,8 +88,7 @@ def pr_fields_reference_issue(
         if issue_from_branch in issue_number_set:
             return True
 
-    body_issue_numbers = {int(match.group(1)) for match in _CLOSING_ISSUE_RE.finditer(body)}
-    if issue_number_set & body_issue_numbers:
+    if body_links_issue(body, issue_number_set, repo_slug=repo_slug):
         return True
 
     return any(re.search(rf"#{issue_number}\b", title) for issue_number in issue_number_set)
@@ -100,7 +118,7 @@ class ReviewScopeChecker:
 
     def check_pr(self, pr: PRInfo) -> ReviewScopeResult:
         """Return whether the PR's linked issue is in scope."""
-        issue_number = extract_issue_number_from_pr(pr)
+        issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
         return self.check_issue_number(issue_number, pr.number)
 
     def is_pr_in_scope(self, pr: PRInfo) -> bool:

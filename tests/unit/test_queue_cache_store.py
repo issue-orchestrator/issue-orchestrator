@@ -214,6 +214,13 @@ class TestStuckSweepState:
         assert loaded == {7, 42}
         assert all(isinstance(n, int) for n in loaded)
 
+    def test_review_release_budgets_round_trip(self, store: QueueCacheStore) -> None:
+        # #7293: which remedy a recovery counter budgets survives a restart.
+        assert store.load_review_release_budgets() == set()
+        store.save_review_release_budgets({382, 390})
+        store.save_review_release_budgets({382})
+        assert store.load_review_release_budgets() == {382}
+
     def test_pending_escalations_defaults_to_empty(
         self, store: QueueCacheStore
     ) -> None:

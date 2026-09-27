@@ -30,10 +30,13 @@ from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
 from ..infra.config import Config
 from ..events import EventName
+from ..history import issues_held_by_session_history
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .host_rate_limit_launch_gate import live_episode_keys
 from .provider_launch_readiness import ProviderLaunchReadiness
+from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
+from .published_review_release import held_investigation_subjects
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -127,6 +130,13 @@ class FactGatherer:
     # unrelated tests need not wire it; without it every provider-unavailable
     # issue is conservatively treated as owned (the pre-#6824 skip).
     provider_circuit_open: Optional[Callable[["Issue"], bool]] = None
+    # The stuck sweep's published-review ownership check (#7293): an open PR
+    # carrying the issue's published validated work owns the issue. Production
+    # binds the runtime lifecycle's owner (the one the reset gate enforces)
+    # after construction; compositions without validated work hold nothing.
+    published_review: PublishedReviewHolds = field(
+        default_factory=lambda: NO_PUBLISHED_REVIEW_HOLDS
+    )
     # Per-target read budget for finding-promotion loop closure (#6957 F5). Owned
     # here because the budget is a fact-gathering concern (it bounds this
     # component's cross-repo reads per tick) and rotates across ticks, so it must
@@ -269,13 +279,16 @@ class FactGatherer:
             ),
             discovered_failures=tuple(state.discovered_failures),
             stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
+            stuck_sweep_review_releases=tuple(state.stuck_sweep_review_releases),
             tech_lead_facts=tech_lead_facts,
             tech_lead_subjects=tech_lead_subjects,
+            published_review_subjects=held_investigation_subjects(
+                state.pending_tech_lead_reviews, self.published_review),
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
-            session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
+            session_history_issue_numbers=issues_held_by_session_history(state.session_history),
             e2e_occupies_slot=e2e_occupies_slot,
             e2e_due=e2e_due,
             budgeted_validation_notices=self.budgeted_validation_reports.pending(),
@@ -558,6 +571,7 @@ class FactGatherer:
             dispositions=build_disposition_ledger(
                 self.tech_lead_authority, self.repository_host, now
             ),
+            published_review=self.published_review,
         )
 
     def _open_proposal_targets(self) -> frozenset[int]:
@@ -594,12 +608,19 @@ class FactGatherer:
             return
         recovered = [failure.issue_number for failure in result.recovered]
         exhausted = list(result.exhausted)
-        if not recovered and not exhausted:
+        held_for_review = list(result.held_for_review)
+        released_for_review = list(result.released_for_review)
+        if not (recovered or exhausted or held_for_review or released_for_review):
             return
         self.events.publish(
             make_trace_event(
                 EventName.TECH_LEAD_STUCK_SWEEP,
-                {"recovered": recovered, "exhausted": exhausted},
+                {
+                    "recovered": recovered,
+                    "exhausted": exhausted,
+                    "held_for_review": held_for_review,
+                    "released_for_review": released_for_review,
+                },
             )
         )
 

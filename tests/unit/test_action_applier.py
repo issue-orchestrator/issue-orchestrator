@@ -216,6 +216,35 @@ class TestAddLabelAction:
         assert result.details["no_op"] is True
         mock_labels.add_label.assert_not_called()
 
+    def test_a_fresh_presence_add_is_not_fooled_by_a_stale_cache(
+        self, applier, mock_labels, mock_fresh_issue_reader
+    ):
+        """#7293: a gate whose absence is dangerous must really be written.
+
+        The cache still says pr-pending is on; GitHub no longer has it.
+        """
+        mock_labels.has_label.return_value = True
+        mock_fresh_issue_reader.read_issue_labels.return_value = ["blocked-failed"]
+
+        result = applier.apply(AddLabelAction(
+            issue_number=123, label="pr-pending", reason="gate", fresh_presence=True))
+
+        assert result.success
+        assert not result.details.get("no_op")
+        mock_labels.add_label.assert_called_once_with(123, "pr-pending")
+
+    def test_a_fresh_presence_add_is_a_no_op_when_github_has_it(
+        self, applier, mock_labels, mock_fresh_issue_reader
+    ):
+        mock_labels.has_label.return_value = False
+        mock_fresh_issue_reader.read_issue_labels.return_value = ["pr-pending"]
+
+        result = applier.apply(AddLabelAction(
+            issue_number=123, label="pr-pending", reason="gate", fresh_presence=True))
+
+        assert result.details["no_op"] is True
+        mock_labels.add_label.assert_not_called()
+
     def test_add_label_raises_when_claim_lost(self, applier, mock_labels, mock_events):
         """Claim verification blocks external mutation when ownership is lost."""
         claim_manager = MagicMock(spec=ClaimManager)
@@ -2382,6 +2411,54 @@ class TestRecoverTerminalIssueAction:
         assert entry.status == "merged"
         assert entry.status_reason == "PR merged; awaiting merge reconciled"
 
+    def test_partial_merge_sheds_releases_the_issue_and_records_no_shipped_fix(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        """#7288: a merged partial PR finishes one slice, not the issue.
+
+        The recovery sheds pr-pending and terminalizes history as merged, like
+        any merge. It never closes the issue. It marks the entry so the
+        session-history gate lets the next slice launch in this run, and it
+        records no shipped fix: that record is create-once per issue, and the
+        first slice would take it from the PR that finishes the work.
+        """
+        from issue_orchestrator.history import issues_held_by_session_history
+
+        from dataclasses import replace
+
+        entry = replace(self._awaiting_merge_entry(), issue_labels=("area:db",))
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "agent:backend"],
+            history_entry=entry,
+        )
+        store = InMemoryTechLeadAuthorityStore()
+        applier.tech_lead_ops = store
+
+        result = applier.apply(RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="Partial PR merged; issue stays open for its remaining work",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+            merged_at=self._CLOSE_MERGED_AT,
+            partial_pr=True,
+        ))
+
+        assert result.success, result.error
+        removed = {call.args[1] for call in mock_labels.remove_label.call_args_list}
+        assert "pr-pending" in removed
+        mock_repository_host.update_issue_state.assert_not_called()
+        assert entry.status == "merged"
+        assert entry.partial_pr_merged is True
+        assert issues_held_by_session_history([entry]) == frozenset()
+        assert store.list_recent_shipped_fixes(limit=10) == ()
+
     _CLOSE_MERGED_AT = "2026-08-03T13:52:09Z"
 
     def _close_on_merge_action(self):
@@ -3220,6 +3297,9 @@ class TestClaimGateAudit:
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
         # Human outcome delegates every write through guarded label/comment handlers.
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
+        # Review release (#7293) delegates every write through the guarded
+        # add/remove label handlers, which verify the claim themselves.
+        ActionType.RELEASE_PUBLISHED_REVIEW,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,
