@@ -14,8 +14,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.control.session_restorer import SessionRestorer
 from issue_orchestrator.control.session_routing import restore_running_sessions
+from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.ports.session_runner import DiscoveredSession
@@ -64,3 +67,22 @@ def test_a_pre_role_registry_row_is_treated_as_ended_without_a_github_write(
     assert restarted.active_sessions == []
     # Its queued work goes back on the queue through the dead-run sweep.
     assert [item.pr_number for item in restarted.pending_reworks] == [70]
+
+
+def test_an_unreadable_ledger_row_is_left_to_normal_restoration(tmp_path: Path) -> None:
+    """Review r1: a SQLite read failure is the port's typed "unavailable", so
+    the pre-role check declines instead of aborting startup."""
+    harness, session = _routed_rework(tmp_path)
+    ledger = _pre_role_ledger(tmp_path, harness, session)
+    with sqlite3.connect(tmp_path / "pre-role" / "runs.sqlite") as conn:
+        conn.execute("ALTER TABLE issue_runs RENAME TO issue_runs_gone")
+    restorer = SessionRestorer(
+        harness.launcher.config, MockRepositoryHost(), MockWorkingCopy(), run_ledger=ledger
+    )
+
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        ledger.recorded_run(session.run_assets)
+    assert restorer.predates_run_roles(DiscoveredSession(
+        issue_number=session.issue.number, tab_name="", is_review=False,
+        session_name=session.terminal_id, run_dir=str(session.run_assets.run_dir),
+    )) is False
