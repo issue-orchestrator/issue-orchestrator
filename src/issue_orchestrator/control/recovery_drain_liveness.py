@@ -243,6 +243,30 @@ class RecoveryDrainLiveness:
         if not self.resolve_if_terminal(record_id):
             self.record(key, drain_outcome(result))
 
+    def settle_explicit(
+        self,
+        record_id: str,
+        key: LivenessKey | None,
+        outcome: RecoveryCompleted | RecoveryAttemptPending | Exception,
+    ) -> None:
+        """Settle an operator's explicit recovery, which runs whatever the
+        owner holds -- even with no key, when a fact read for it just failed
+        (that failure is already counted under its own key). A recovery that
+        resolved the record still releases every lane either way."""
+        if key is not None:
+            if isinstance(outcome, Exception):
+                self.settle_error(key, outcome)
+            else:
+                self.settle(key, outcome)
+            return
+        if isinstance(outcome, RecoveryCompleted) or (
+            isinstance(outcome, RecoveryAttemptPending)
+            and outcome.kind is RecoveryPendingKind.RESOLVED
+        ):
+            self.resolve_record(record_id)
+            return
+        self.resolve_if_terminal(record_id)
+
     def resolve_if_terminal(self, record_id: str) -> bool:
         """Whether the record is durably resolved -- then every lane's rows
         are released -- whatever the attempt that just ran reported: a step

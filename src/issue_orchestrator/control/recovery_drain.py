@@ -72,16 +72,12 @@ class RecoveryDrain:
         """
         request = self._request(command)
         key = self._liveness.key(request)
-        if key is None:
-            # A fact read for the record just failed, and was settled as that
-            # read's attempt; the operator's run still goes ahead.
-            return self._operation.run(request, state)
         try:
             result = self._operation.run(request, state)
         except Exception as error:
-            self._liveness.settle_error(key, error)
+            self._liveness.settle_explicit(request.record_id, key, error)
             raise
-        self._liveness.settle(key, result)
+        self._liveness.settle_explicit(request.record_id, key, result)
         return result
 
     def tick(

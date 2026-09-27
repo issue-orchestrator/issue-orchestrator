@@ -353,6 +353,27 @@ def test_a_record_resolved_by_an_attempt_that_then_fails_releases_every_lane(
     assert engine.escalation.unblocks == [(410, True)]
 
 
+def test_an_explicit_recovery_with_no_key_still_releases_what_it_resolved(tmp_path) -> None:
+    """Parked; the operator's explicit recovery finds the disposition read
+    failing (no key), but the operation itself completes the record. Every
+    lane is released at once, block included (review B r17)."""
+    engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"))
+    engine.passes(10)
+    [parked] = engine.escalation.parked
+    record_id = parked.key.identity.subject.removeprefix("validated_work:")
+    engine.unreadable = frozenset({record_id})
+    completed = RecoveryCompleted.__new__(RecoveryCompleted)
+    engine.operation.result = completed
+
+    assert engine.drain.recover(_operator_retry(engine), OrchestratorState()) is completed
+
+    assert engine.rows.rows == {}
+    engine.clock.advance(POLICY.max_backoff)
+    engine.owner.reconcile_effects()
+    assert parked.key in [row.key for batch in engine.escalation.released for row in batch]
+    assert engine.escalation.unblocks == [(410, True)]
+
+
 def test_a_state_change_is_a_new_question(tmp_path) -> None:
     """Parked while queued; the record then moves to publishing with the same
     evidence. That is new facts, so the drain tries it again (review B r1)."""
