@@ -9573,7 +9573,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         applier = MagicMock()
         applier.runtime_lifecycle.published_review = self._custody()
 
-        assert refuse_launch_over_published_review(applier, MagicMock(), 123, tech_lead=True) is None
+        assert refuse_launch_over_published_review(applier, MagicMock(), 123, kind=SessionKind.TECH_LEAD) is None
         applier.apply.assert_not_called()
 
     def test_a_validation_retry_never_starts_a_second_coder_on_the_pr(

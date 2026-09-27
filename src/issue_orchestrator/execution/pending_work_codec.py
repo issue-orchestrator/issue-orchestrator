@@ -267,19 +267,10 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
 
 
 def _decode_retry_source_kind(payload: dict[str, Any]) -> SessionKind:
-    """The kind a queued validation retry relaunches as, including pre-#7347 rows.
-
-    Before #7347 a tech-lead run was stamped ``code``, so the retry of one was
-    queued with ``source_task: "code"``. It is still recognisable without
-    guessing: only a tech-lead retry inherits launch authority, so a ``code``
-    retry that carries an ``authority_run`` is a tech-lead retry. Every other
-    stored value is read as stamped. (A rework's retry of a retry was queued
-    ``code`` and ran as coding work; it is read as what it ran as.)
-    """
-    stamped = SessionKind(payload["source_task"])
-    if stamped is SessionKind.CODE and payload.get("authority_run") is not None:
-        return SessionKind.TECH_LEAD
-    return stamped
+    """The kind a queued validation retry relaunches as (see ``from_retry_stamp``)."""
+    return SessionKind.from_retry_stamp(
+        payload["source_task"], carries_authority=payload.get("authority_run") is not None
+    )
 
 
 def _decode_run_identity(payload: object) -> SessionRunIdentity | None:

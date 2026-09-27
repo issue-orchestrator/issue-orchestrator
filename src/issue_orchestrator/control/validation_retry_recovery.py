@@ -49,7 +49,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # The kinds a validation retry relaunches as: every kind that makes commits.
-_RETRYABLE_KINDS = (SessionKind.CODE, SessionKind.REWORK, SessionKind.TECH_LEAD)
+_RETRYABLE_KINDS = tuple(
+    kind for kind in SessionKind if kind.capabilities.produces_commits
+)
 
 
 class ValidationRetryRecovery:

@@ -397,16 +397,18 @@ def test_startup_publishing_worktree_retained_when_custody_unavailable(custody):
 
 @pytest.mark.parametrize("scope", ["exact_run", "named_terminal"])
 def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody, scope):
+    # A capturable kind: only a run whose completion is the issue's deliverable
+    # is captured at termination (#7347).
     review = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=Config(repo="owner/repo")).allocate(
-        IssueRunAllocation(custody.worktree, "review-phase-1", 42,
-            SessionKey(GitHubIssueKey("owner/repo", "42"), SessionKind.REVIEW), "agent:test", "test", terminal_id="review-42"))
+        IssueRunAllocation(custody.worktree, "rework-phase-1", 42,
+            SessionKey(GitHubIssueKey("owner/repo", "42"), SessionKind.REWORK), "agent:test", "test", terminal_id="rework-42"))
     review_capability = custody.ledger.submission_capability(review)
     receipt = custody.intake.submit(review_capability, command(completion(), "review-receipt"))
     custody.intake.prepare_receipt(receipt, review)
     if scope == "exact_run":
-        assert custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).unresolved
+        assert custody.lifecycle.preserve_terminal(42, "rework-42", "completed", run=review).unresolved
     else:
-        assert custody.lifecycle.preserve_named_terminal("review-42", "completed")[0].unresolved
+        assert custody.lifecycle.preserve_named_terminal("rework-42", "completed")[0].unresolved
     with pytest.raises(IntakeClosed):
         custody.intake.submit(review_capability, command(completion(), "review-after-close"))
     submit(custody, "coder-still-open")

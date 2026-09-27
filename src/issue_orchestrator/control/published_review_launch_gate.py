@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..domain.session_kind import SessionKind
 from ..infra.logging_config import issue_log
 from .actions import AddLabelAction
 from .session_launch_types import LaunchResult
@@ -34,10 +35,15 @@ def refuse_launch_over_published_review(
     labels: "LabelManager",
     issue_number: int,
     *,
-    tech_lead: bool,
+    kind: SessionKind,
 ) -> LaunchResult | None:
-    """A non-launch while an open PR holds the issue's published work, else None."""
-    if tech_lead:
+    """A non-launch while an open PR holds the issue's published work, else None.
+
+    Only a kind whose output IS the issue's deliverable (``capturable``) would
+    start a second author on that PR's branch; a tech-lead run reads the issue
+    and publishes nothing as its work, so it is not refused (#7293, #7347).
+    """
+    if not kind.capabilities.capturable:
         return None
     holds = action_applier.runtime_lifecycle.published_review.holds(issue_number)
     if not holds:

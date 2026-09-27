@@ -268,8 +268,15 @@ class SessionObserver:
         return None
 
     def _try_send_exit_if_has_pr(self, session: Session) -> None:
-        """Send /exit to session if it has an open PR but is still running."""
-        if session.exit_sent:
+        """Send /exit to a session whose open PR says its work is done.
+
+        Only a kind whose own output is the PR (``open_pr_means_done``: coding)
+        may be read that way. A review, rework, retrospective review or
+        tech-lead run starts with the PR already open - it is the thing under
+        review - so applying this there /exited every reviewer ~24 s after
+        launch (#7343), and a rework's validation retry the same (#7347).
+        """
+        if session.exit_sent or not session.key.kind.capabilities.open_pr_means_done:
             return
         try:
             prs = self._get_open_prs_for_branch(session.branch_name)
@@ -766,7 +773,11 @@ class SessionObserver:
             issue_log(session.issue.number, "Session exited, checking completion status"),
         )
 
-        # Check if PR exists for the branch
+        # An open PR on the branch is a finished session only for a kind whose
+        # output is that PR; every other kind's branch has one from the start,
+        # so its exit is read from the issue's labels like any other (#7347).
+        if not session.key.kind.capabilities.open_pr_means_done:
+            return self._determine_outcome_from_labels(session)
         try:
             prs = self._get_open_prs_for_branch(session.branch_name)
             if prs:

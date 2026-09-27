@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..domain.models import DiscoveredFailure, SessionStatus
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL, TECH_LEAD_OBSERVATION_LABEL
 from ..ports.repository_host import (
     RepositoryHostError,
@@ -471,6 +472,8 @@ def _scan_stuck_issues(
             needs_human_numbers.add(issue.number)
         if issue.number in base_owned:
             continue
+        if not SessionKind.issue_is_work_item(issue.agent_type, config.tech_lead_review_agent):
+            continue  # tech-lead machinery, never stuck work (#7347 blind spot 7)
         if _reconciler_owns(issue, label_manager, provider_circuit_open):
             owned.add(issue.number)
             continue

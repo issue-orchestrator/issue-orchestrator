@@ -293,8 +293,8 @@ def _run_source_kind(run_dir: Path) -> SessionKind | None:
 
 
 def _run_is_review_only(run_dir: Path) -> bool:
-    task = _run_source_kind(run_dir)
-    return task is not None and task.is_review_only
+    kind = _run_source_kind(run_dir)
+    return kind is not None and not kind.capabilities.produces_commits
 
 
 def _run_can_supersede_retry_state(run_dir: Path) -> bool:
@@ -315,7 +315,7 @@ def _run_can_supersede_retry_state(run_dir: Path) -> bool:
     before it the older retry state must stay discoverable.
     """
     kind = _run_source_kind(run_dir)
-    if kind is None or kind.is_review_only:
+    if kind is None or not kind.capabilities.produces_commits:
         return False
     if not (run_dir / "manifest.json").exists():
         return False

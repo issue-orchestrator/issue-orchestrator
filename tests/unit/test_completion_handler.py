@@ -2709,34 +2709,25 @@ class TestStatusSessionTypeMatrix:
         assert isinstance(result.actions[0], RemoveLabelAction)
         assert result.actions[0].label == config.get_label_in_progress()
 
-    def test_completed_review_session_removes_in_progress(
-        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    @pytest.mark.parametrize("terminal_id", ["review-1", "rework-1"])
+    def test_completed_session_that_never_held_the_claim_leaves_it_alone(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path, terminal_id: str
     ) -> None:
-        """COMPLETED review session: removes in-progress, no labels added."""
+        """A review or rework never takes the issue's in-progress claim, so its
+        completion does not release one: custody is the kind's capability on
+        every outcome (#7347 C7; a failing reviewer already left it alone)."""
         session = create_test_session(
-            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+            make_issue(), agent_config, tmp_worktree, terminal_id=terminal_id
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.COMPLETED
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
-        # Review sessions don't have in-progress to remove, but the action is still generated
-        assert len(result.actions) == 1
-        assert isinstance(result.actions[0], RemoveLabelAction)
-
-    def test_completed_rework_session_removes_in_progress(
-        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
-    ) -> None:
-        """COMPLETED rework session: removes in-progress, no labels added."""
-        session = create_test_session(
-            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        assert not any(
+            isinstance(action, RemoveLabelAction)
+            and action.label == config.get_label_in_progress()
+            for action in result.actions
         )
-        result = make_handler(config).process_completion(
-            session, SessionStatus.COMPLETED
-        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
-
-        assert len(result.actions) == 1
-        assert isinstance(result.actions[0], RemoveLabelAction)
 
     # --- BLOCKED Status ---
 

@@ -31,6 +31,14 @@ older stamp into a kind are the documented LEGACY decoders below
 (:meth:`SessionKind.from_ledger_stamps`, :meth:`SessionKind.from_phase_label`),
 which exist because records written before this change carry the old stamps.
 
+What a kind MAY DO is its capability row (:class:`SessionCapabilities`, the
+``_CAPABILITIES`` table below, read as ``kind.capabilities``). Policy asks the
+table, never the kind directly; a static guard
+(``tests/unit/domain/test_session_kind_guard.py``) fails the build on any new
+direct kind comparison outside this module. Behaviour that is genuinely one
+kind's own - verdict routing, workspace shape, tech-lead exclusivity - stays in
+per-kind handlers the guard lists by name.
+
 A tech lead's FLAVOR (batch review / health review / failure investigation) is
 deliberately NOT part of the kind. Its single owner is
 ``TechLeadLaunchScope`` / the launch-authority row, and every flavor has the
@@ -39,6 +47,7 @@ second owner and make pre-#7347 ledger rows (which recorded only "tech-lead")
 ambiguous.
 """
 
+from dataclasses import dataclass
 from enum import Enum
 
 #: The agent label the historical-completion intake records its runs under.
@@ -64,6 +73,70 @@ class SessionType(Enum):
     TECH_LEAD = "tech-lead"
 
 
+class CompletionProtocol(Enum):
+    """How a session of a kind reports that it is done."""
+
+    CODING_DONE = "coding-done"
+    REVIEWER_DONE = "reviewer-done"
+    NONE = "none"  # never an agent session (a historical import)
+
+
+class SandboxRole(Enum):
+    """The sandbox-relevant role a session plays.
+
+    Distinct from :class:`SessionKind`: several kinds collapse to one sandbox
+    role (a ``CODE`` and a ``REWORK`` session are both a ``CODER``). The role is
+    the axis the scope policy branches on, and the seam future policies extend
+    (e.g. a tech-lead's evidence-map-driven read scope).
+    """
+
+    CODER = "coder"
+    REVIEWER = "reviewer"
+    TECH_LEAD = "tech-lead"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCapabilities:
+    """What a session of one kind may do: ONE row of the capability table.
+
+    - ``produces_commits``: it may commit on its branch, so the code validation
+      gate runs on its completion and a failed validation is retried AS this
+      kind. Review-only kinds make no commits (#6426).
+    - ``capturable``: its validated, publication-requesting completion is the
+      issue's deliverable, so termination captures it into validated-work
+      recovery (with a head that is ahead of base). A tech-lead run is never
+      captured - its own completion owns its branch (#7323, #7346) - and a
+      completion that is not capturable may finish with nothing to publish.
+    - ``open_pr_means_done``: an open PR on its branch means its work is done,
+      so the observer may ``/exit`` it and read its exit as COMPLETED. Only a
+      coding session's PR is its own output; every other kind starts with the
+      PR already open (#7343).
+    - ``holds_issue_custody``: it holds its issue's in-progress claim - taken at
+      launch, released at every terminal outcome - and its failure, timeout,
+      block or invalid record applies the issue's blocking labels. Coding runs
+      and tech-lead runs (on their anchor or focus issue) do; a rework - and so
+      a rework's validation retry - never took the claim, its open PR holds
+      the issue; a reviewer's completion never touches it.
+    - ``killable_generation``: it is an issue-runtime owner - the tech lead may
+      kill it, an issue reset terminates it, a stop terminates it with capture.
+    - ``completion_protocol`` / ``sandbox_role``: which completion command,
+      default prompt and sandbox role its agent gets.
+    """
+
+    produces_commits: bool
+    capturable: bool
+    open_pr_means_done: bool
+    holds_issue_custody: bool
+    killable_generation: bool
+    completion_protocol: CompletionProtocol
+    sandbox_role: SandboxRole | None
+
+    @property
+    def reports_verdict(self) -> bool:
+        """Its completion is a reviewer's verdict (reviewer-done), never a PR."""
+        return self.completion_protocol is CompletionProtocol.REVIEWER_DONE
+
+
 class SessionKind(Enum):
     """The kind of work a session (or recorded run) performs.
 
@@ -80,30 +153,14 @@ class SessionKind(Enum):
     HISTORICAL = "historical"  # An operator's historical-completion import
 
     @property
-    def is_review_only(self) -> bool:
-        """Whether this kind is read-only: it makes no commits and publishes nothing.
-
-        Review-only sessions (auditing a PR or existing merged work) produce no
-        branch commits, so the publish/code-validation-retry machinery - which
-        exists to validate a coder's changes before opening a PR - does not apply
-        to them. Treating a review-only session as ordinary coding work leads to
-        empty-branch ``create_pr`` attempts (see issue #6426).
-        """
-        return self in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}
+    def capabilities(self) -> SessionCapabilities:
+        """This kind's row of the capability table: what its sessions may do."""
+        return _CAPABILITIES[self]
 
     @property
-    def holds_issue_custody(self) -> bool:
-        """Whether a session of this kind holds its issue's in-progress claim.
-
-        Its launch adds ``in-progress`` and its failure, timeout or block
-        releases it and applies the issue's blocking labels. Before #7347 this
-        was read off the terminal-name prefix (``issue-``), which covered coding
-        sessions and - because they launched as ``issue-N`` - tech-lead runs
-        and every validation retry. The kind keeps coding and tech-lead runs; a
-        rework (including its validation retry) never takes the claim, since
-        its open PR holds the issue.
-        """
-        return self in {SessionKind.CODE, SessionKind.TECH_LEAD}
+    def runs_as_agent_session(self) -> bool:
+        """Whether a run of this kind is an agent session with a terminal."""
+        return self in _SESSION_TYPE
 
     @property
     def session_type(self) -> SessionType:
@@ -164,6 +221,22 @@ class SessionKind(Enum):
         return kind
 
     @classmethod
+    def issue_is_work_item(
+        cls, agent_label: str | None, tech_lead_agent: str | None
+    ) -> bool:
+        """Whether an issue is a work item that stuck-issue recovery may re-drive.
+
+        Asked of the capability table through the kind a launch of the issue
+        would stamp: an issue that launches as a kind whose output is not the
+        issue's deliverable (not ``capturable``) - a tech lead's batch or
+        health-review anchor - is tech-lead machinery. Its run holds the
+        in-progress claim and a failed or blocked run labels it like any
+        claimed issue, which made the stuck sweep launch a failure
+        investigation of the tech lead's own anchor (#7347 blind spot 7).
+        """
+        return cls.for_issue_launch(agent_label, tech_lead_agent).capabilities.capturable
+
+    @classmethod
     def from_ledger_stamps(
         cls, task: str, completion_task: str | None, agent_label: str | None
     ) -> "SessionKind":
@@ -209,6 +282,22 @@ class SessionKind(Enum):
         )
 
     @classmethod
+    def from_retry_stamp(cls, stamped: str, *, carries_authority: bool) -> "SessionKind":
+        """Decode a queued validation retry's source kind, including pre-#7347 rows.
+
+        Before #7347 a tech-lead run was stamped ``code``, and so was its retry.
+        It is still recognisable without guessing: only a tech-lead retry
+        inherits launch authority, so a ``code`` retry that carries an
+        ``authority_run`` is a tech-lead retry. Every other stored value is read
+        as stamped (a rework's retry of a retry was queued ``code`` and ran as
+        coding work; it is read as what it ran as).
+        """
+        kind = cls(stamped)
+        if kind is cls.CODE and carries_authority:
+            return cls.TECH_LEAD
+        return kind
+
+    @classmethod
     def from_phase_label(cls, label: str) -> "SessionKind | None":
         """LEGACY pre-filter: the kind a run directory's phase label implies.
 
@@ -229,6 +318,63 @@ class SessionKind(Enum):
                 return kind
         return None
 
+
+_CAPABILITIES: dict[SessionKind, SessionCapabilities] = {
+    SessionKind.CODE: SessionCapabilities(
+        produces_commits=True,
+        capturable=True,
+        open_pr_means_done=True,
+        holds_issue_custody=True,
+        killable_generation=True,
+        completion_protocol=CompletionProtocol.CODING_DONE,
+        sandbox_role=SandboxRole.CODER,
+    ),
+    SessionKind.REWORK: SessionCapabilities(
+        produces_commits=True,
+        capturable=True,
+        open_pr_means_done=False,  # its branch's PR is the one it is fixing
+        holds_issue_custody=False,  # the open PR holds the issue
+        killable_generation=True,
+        completion_protocol=CompletionProtocol.CODING_DONE,
+        sandbox_role=SandboxRole.CODER,
+    ),
+    SessionKind.REVIEW: SessionCapabilities(
+        produces_commits=False,
+        capturable=False,
+        open_pr_means_done=False,  # it starts with the PR it reviews open
+        holds_issue_custody=False,
+        killable_generation=False,
+        completion_protocol=CompletionProtocol.REVIEWER_DONE,
+        sandbox_role=SandboxRole.REVIEWER,
+    ),
+    SessionKind.RETROSPECTIVE_REVIEW: SessionCapabilities(
+        produces_commits=False,
+        capturable=False,
+        open_pr_means_done=False,
+        holds_issue_custody=False,
+        killable_generation=False,
+        completion_protocol=CompletionProtocol.REVIEWER_DONE,
+        sandbox_role=SandboxRole.REVIEWER,
+    ),
+    SessionKind.TECH_LEAD: SessionCapabilities(
+        produces_commits=True,  # it may commit, and its validation is retried
+        capturable=False,  # its completion owns its branch; never recovered
+        open_pr_means_done=False,
+        holds_issue_custody=True,
+        killable_generation=False,
+        completion_protocol=CompletionProtocol.CODING_DONE,
+        sandbox_role=SandboxRole.TECH_LEAD,
+    ),
+    SessionKind.HISTORICAL: SessionCapabilities(
+        produces_commits=False,  # never a session: nothing to validate or retry
+        capturable=True,  # the operator imported it to be recovered
+        open_pr_means_done=False,
+        holds_issue_custody=False,
+        killable_generation=False,
+        completion_protocol=CompletionProtocol.NONE,
+        sandbox_role=None,
+    ),
+}
 
 _SESSION_TYPE: dict[SessionKind, SessionType] = {
     SessionKind.CODE: SessionType.ISSUE,

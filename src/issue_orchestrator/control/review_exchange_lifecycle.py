@@ -74,7 +74,11 @@ from .session_manager import SessionType
 logger = logging.getLogger(__name__)
 
 
-ISSUE_RUNTIME_SESSION_TYPES = (SessionType.ISSUE, SessionType.REWORK)
+# The terminal lanes an issue's runtime owners run in: the naming lane of every
+# kind the capability table calls a killable generation (#7347).
+ISSUE_RUNTIME_SESSION_TYPES: tuple[SessionType, ...] = tuple(
+    kind.session_type for kind in SessionKind if kind.capabilities.killable_generation
+)
 
 
 @dataclass(frozen=True)
@@ -267,7 +271,7 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         session
         for session in active_sessions
         if session.issue.number == target.issue_number
-        and session.key.kind in {SessionKind.CODE, SessionKind.REWORK}
+        and session.key.kind.capabilities.killable_generation
     ]
     if not candidates:
         return (

@@ -1717,9 +1717,10 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
-            # A clean tech_lead audit has nothing to publish; that is success,
-            # not publish-failure (ADR-0031 / #6768 B1).
-            if processing_policy.is_tech_lead and is_benign_tech_lead_no_commits(action, e):
+            # A completion whose publication is optional (a clean tech_lead
+            # audit) with nothing to publish is success, not publish-failure
+            # (ADR-0031 / #6768 B1, #7347).
+            if processing_policy.publication_is_optional and is_benign_tech_lead_no_commits(action, e):
                 logger.info("[tech_lead] clean audit, nothing to publish: issue=#%d", issue_number)
                 return self._ActionResult(branch=branch)
             logger.exception(

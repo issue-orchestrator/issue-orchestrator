@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 
 from ..domain.completion_intake import CompletionIntakeError
@@ -23,6 +24,29 @@ from ..ports.working_copy import WorkingCopy
 from .validated_work_capture import ValidatedWorkCustody
 from .validated_work_escrow import EscrowReconciliation
 
+logger = logging.getLogger(__name__)
+
+
+def _capturable(
+    candidates: tuple[PreparedCompletionEvidence, ...],
+) -> tuple[PreparedCompletionEvidence, ...]:
+    """Keep the completions whose kind makes them the issue's deliverable (#7347).
+
+    A tech-lead run is recorded against its subject issue, but its branch is its
+    own and its completion already decides what that branch publishes; taking
+    its validated head as the subject's work put a ``recovery-pending`` on the
+    subject that no publication ever released (#7323, #7346).
+    """
+    for candidate in candidates:
+        if not candidate.role.kind.capabilities.capturable:
+            logger.info(
+                "[VALIDATED_WORK] Not capturing issue #%d run %s: a %s run's "
+                "completion is not the issue's deliverable",
+                candidate.role.issue_number, candidate.run.run.run_id,
+                candidate.role.kind.value,
+            )
+    return tuple(c for c in candidates if c.role.kind.capabilities.capturable)
+
 
 class ValidatedWorkPreservationService:
     def __init__(self, *, intake: CompletionIntakeRuntime, store: ValidatedWorkAdmissionStore,
@@ -42,7 +66,9 @@ class ValidatedWorkPreservationService:
         return self._store.for_issue(issue_number)
 
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
-        candidates = self._intake.prepare_termination(command.run_evidence, command.scope)
+        candidates = _capturable(
+            self._intake.prepare_termination(command.run_evidence, command.scope)
+        )
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")

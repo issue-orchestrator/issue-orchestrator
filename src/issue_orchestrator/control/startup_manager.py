@@ -623,7 +623,7 @@ class StartupManager:
         return any(
             self._session_exists(kind.terminal_name(issue_number))
             for kind in SessionKind
-            if kind.holds_issue_custody
+            if kind.capabilities.holds_issue_custody
         )
 
     def _clear_orphaned_label(self, issue: Issue) -> None:

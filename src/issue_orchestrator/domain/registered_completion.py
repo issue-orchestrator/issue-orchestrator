@@ -88,6 +88,17 @@ class CompletionProcessingPolicy:
     def is_tech_lead(self) -> bool:
         return self.kind is SessionKind.TECH_LEAD
 
+    @property
+    def publication_is_optional(self) -> bool:
+        """Whether this completion may finish with nothing to publish.
+
+        Only a kind whose publication is the issue's deliverable
+        (``capturable``) must publish something; for any other (a tech-lead
+        run's clean audit) an empty branch is success, not a publish failure
+        (#7347 A9). An unknown role proves nothing, so it must publish.
+        """
+        return self.kind is not None and not self.kind.capabilities.capturable
+
     def inheritable_launch_authority(
         self, run: "SessionRunIdentity | None"
     ) -> "SessionRunIdentity | None":
