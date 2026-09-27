@@ -91,3 +91,21 @@ it since the orchestrator last started, between `first_skipped_at` and
   blocked issue too, so the rework would never run.
 - `blocked_open_prs: null` means the snapshot predates the field, not that
   nothing is blocked. An open PR carrying neither scan label is not listed."""
+
+#: Where the generated per-role charter lives and how to read it (#7330).
+TECH_LEAD_CHARTER_SECTION = """### Your charter
+
+Before proposing any action, read the charter the orchestrator generated from
+this repository's `tech_lead.charter` config:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/tech-lead-charter.md"
+```
+
+For each role (`flow`, `review_loop`, `abstraction`, `platform`, `intake`,
+`learning`, and the catch-all `general`) it lists which action types act on
+their own, which are proposed for operator approval, and which are advice only.
+The orchestrator enforces exactly that list when your run completes; the role
+and depth of an action come from its `action_type`, never from anything you
+write. Still propose what the evidence calls for: an action outside the charter
+is recorded for the operator as advice, and noticing is never restricted."""

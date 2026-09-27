@@ -15,6 +15,7 @@ from .actions import (
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
+from .tech_lead_charter_lifecycle import link_approved_proposal
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
 if TYPE_CHECKING:
@@ -85,6 +86,10 @@ def finalize_tech_lead_op_execution(
             " TechLeadAuthorityStore wired into this applier",
         )
     try:
+        # Link the outcome BEFORE the proposal closes: a closed proposal whose
+        # op row survives is what terminal cleanup reads as "declined", so the
+        # approval must already be on the record by then (#7330 review r2 F1).
+        link_approved_proposal(ops, proposal_issue, applied=result.success)
         if before_finalize_write is not None:
             before_finalize_write()
         repository_host.add_comment(proposal_issue, comment)
