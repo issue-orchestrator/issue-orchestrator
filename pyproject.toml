@@ -117,6 +117,7 @@ filterwarnings = [
 markers = [
     "e2e: End-to-end tests with real GitHub (requires gh auth and E2E_TEST_REPO)",
     "heavy_e2e: Expensive journey-level tests for onboarding or full-stack orchestration flows",
+    "tech_lead_exam: Live tech-lead exam (#7304) — plants known faults, runs the real engine and tech lead, grades the outcome; run via make test-tech-lead-exam, never in PR validation",
     "integration: Integration tests that may exercise external adapters",
     "live: Tests that require network access and external services",
     "live_agent: Tests that make real model calls; excluded from deterministic PR validation",

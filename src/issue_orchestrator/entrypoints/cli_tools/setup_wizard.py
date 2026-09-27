@@ -51,6 +51,7 @@ from ...execution.providers import (
 
 # Schema metadata for defaults/labels/hints
 from ...domain.worktree_paths import default_worktree_base_config
+from ...infra.config_models import SessionInteractionsConfig
 from ...infra.settings_schema import get_setup_fields
 from ...ports.session_log import detect_ai_system_from_command
 
@@ -435,14 +436,19 @@ def _config_uses_claude_code(config: dict[str, Any]) -> bool:
 
 
 def _claude_session_interactions_enabled(config: dict[str, Any]) -> bool:
-    """Return whether runner-managed Claude startup interactions are enabled."""
+    """Return whether runner-managed startup interactions will be enabled.
+
+    Mirrors the loader: an absent setting takes ``SessionInteractionsConfig``'s
+    default, so the wizard never reports a state the saved config won't load as.
+    """
+    default = SessionInteractionsConfig().enabled
     execution_config = config.get("execution")
     if not isinstance(execution_config, dict):
-        return False
+        return default
     interactions_config = execution_config.get("session_interactions")
     if not isinstance(interactions_config, dict):
-        return False
-    return bool(interactions_config.get("enabled"))
+        return default
+    return bool(interactions_config.get("enabled", default))
 
 
 def _print_claude_code_worktree_note(prompter: Prompter) -> None:
@@ -479,11 +485,14 @@ def _prompt_claude_session_interactions(
         "orchestrator-created worktrees."
     )
     prompter.print("Recommended for hands-free Claude onboarding.")
-    if prompter.yes_no(
-        "Enable trusted session interactions for Claude startup prompts?",
-        default=True,
-    ):
-        execution_config["session_interactions"] = {"enabled": True}
+    # Persist the answer either way: omitting a "no" would load as the
+    # (enabled) default and silently reverse the operator's choice.
+    execution_config["session_interactions"] = {
+        "enabled": prompter.yes_no(
+            "Enable trusted session interactions for Claude startup prompts?",
+            default=True,
+        )
+    }
 
 
 def _print_claude_code_next_steps(

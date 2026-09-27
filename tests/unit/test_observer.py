@@ -1485,3 +1485,31 @@ class TestEmitNoOutputEdgeCases:
 
         # No events should be emitted
         mock_events.publish.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "task",
+    [SessionKind.REVIEW, SessionKind.REWORK, SessionKind.RETROSPECTIVE_REVIEW, SessionKind.TECH_LEAD],
+)
+def test_a_session_that_starts_with_its_pr_open_is_never_exited(
+    monitor, sample_session, mock_session_runner, mock_repository_host, task
+):
+    """#7343: a reviewer's branch always has the PR it reviews open.
+
+    The has-PR rule /exited every porchpin reviewer ~24 s after launch; it
+    is only for a coding session whose work produced the PR.
+    """
+    from dataclasses import replace
+
+    mock_session_runner.session_exists_by_name.return_value = True
+    mock_repository_host.get_prs_for_branch.return_value = [
+        PRInfo(number=376, url="https://...", title="PR", branch="test", labels=[], body="", state="open")
+    ]
+    sample_session.key = replace(sample_session.key, kind=task)
+    sample_session.exit_sent = False
+
+    status = monitor.check_session(sample_session)
+
+    assert status == SessionStatus.RUNNING
+    mock_session_runner.send_to_session_by_name.assert_not_called()
+    assert sample_session.exit_sent is False

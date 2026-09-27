@@ -562,14 +562,14 @@ def _restored_identity_mismatch(session: Session, claim: PendingWorkClaim) -> st
             expected = SessionKind.TECH_LEAD
         case PendingValidationRetry() as request:
             expected, claimed_agent = request.source_kind, request.agent_label
-        case PendingRework():
-            expected = SessionKind.REWORK
+        case PendingRework() as request:
+            expected, claimed_agent = SessionKind.REWORK, request.agent_type
         case _:
             return None
     recorded_agent = session.agent_label
     if claimed_agent is not None and claimed_agent != recorded_agent:
         return (
-            f"its claim is a retry by {claimed_agent!r} but the run was "
+            f"its claim is work by {claimed_agent!r} but the run was "
             f"recorded for {recorded_agent!r}"
         )
     recorded = session.key.kind
@@ -578,19 +578,25 @@ def _restored_identity_mismatch(session: Session, claim: PendingWorkClaim) -> st
             f"its claim holds {claim.kind.value} work of kind {expected.value} "
             f"but the run was recorded as {recorded.value}"
         )
-    return _rework_pr_mismatch(session, claim.request)
+    return _rework_target_mismatch(session, claim.request)
 
 
-def _rework_pr_mismatch(session: Session, request: object) -> str | None:
-    """A rework's PR is recorded by its run's ledger row; its claim must agree."""
+def _rework_target_mismatch(session: Session, request: object) -> str | None:
+    """A rework's PR and cycle are recorded by its run's ledger row (restored
+    onto the session); its claim must agree on each half it names. A run
+    recorded before #7347 has no target, and the claim then supplies it."""
     match request:
-        case PendingValidationRetry(pr_number=int() as claimed) | PendingRework(pr_number=int() as claimed):
-            recorded = session.pr_number
+        case PendingValidationRetry() | PendingRework():
+            claimed = (request.pr_number, request.rework_cycle)
         case _:
             return None
-    if recorded is None or recorded == claimed:
+    recorded = (session.pr_number, session.rework_cycle)
+    if None in recorded or all(c in (None, r) for c, r in zip(claimed, recorded)):
         return None
-    return f"its claim reworks PR #{claimed} but the run was recorded for PR #{recorded}"
+    return (
+        f"its claim reworks PR #{claimed[0]} cycle {claimed[1]} but the run "
+        f"was recorded for PR #{recorded[0]} cycle {recorded[1]}"
+    )
 
 
 def _restore_claim_context(session: Session, claim: PendingWorkClaim) -> None:
