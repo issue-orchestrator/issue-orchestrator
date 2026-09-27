@@ -379,14 +379,17 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     orchestrator.state.active_sessions = [
         SimpleNamespace(
             terminal_id="issue-77",
+            key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
             terminal_id="rework-77",
+            key=SimpleNamespace(kind=SessionKind.REWORK),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
             terminal_id="issue-88",
+            key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=88),
         ),
     ]
@@ -450,6 +453,7 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     tech_lead = SimpleNamespace(
         run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        key=SimpleNamespace(kind=SessionKind.TECH_LEAD),
         scratch_worktree=True, worktree_path=scratch,
         tech_lead_scope=TechLeadLaunchScope(
             flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
@@ -457,6 +461,7 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     )
     other = SimpleNamespace(
         terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None,
+        key=SimpleNamespace(kind=SessionKind.CODE),
         scratch_worktree=False, worktree_path=None, tech_lead_scope=None,
     )
     orchestrator.state.active_sessions[:] = [tech_lead, other]
@@ -500,6 +505,7 @@ def _terminate_fixture(sample_config, tmp_path):
     tech_lead = SimpleNamespace(
         run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        key=SimpleNamespace(kind=SessionKind.TECH_LEAD),
         scratch_worktree=True, worktree_path=scratch,
     )
     orchestrator.state.active_sessions[:] = [tech_lead]
@@ -578,7 +584,7 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
     scratch = tmp_path / "repo-tech-lead-77-abc"
     session = SimpleNamespace(
         terminal_id="tech-lead-77",
-        key=SimpleNamespace(stable_id=lambda: "tech_lead:77"),
+        key=SimpleNamespace(stable_id=lambda: "tech_lead:77", kind=SessionKind.TECH_LEAD),
         issue=SimpleNamespace(number=77),
         lease_id="lease-1",
         scratch_worktree=True,

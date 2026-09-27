@@ -7,8 +7,10 @@ from unittest.mock import Mock
 
 import pytest
 
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.events import EventName
 from issue_orchestrator.control.review_exchange_lifecycle import (
+    IssueRuntimeOwnerKind,
     ValidatedWorkCustodyUnproven,
 )
 
@@ -37,8 +39,23 @@ class _FakeSessionManager:
         self.running.discard(ref.name)
 
 
+_LANE_KINDS = {
+    "issue": SessionKind.CODE,
+    "rework": SessionKind.REWORK,
+    "review": SessionKind.REVIEW,
+    "tech-lead": SessionKind.TECH_LEAD,
+}
+
+
+def _recorded_kind(terminal_id: str) -> SessionKind:
+    """The kind a fake session was launched as, from the lane it was named in."""
+    return _LANE_KINDS[terminal_id.rsplit("-", 1)[0]]
+
+
 def _active_session(terminal_id: str):
-    return SimpleNamespace(terminal_id=terminal_id)
+    return SimpleNamespace(
+        terminal_id=terminal_id, key=SimpleNamespace(kind=_recorded_kind(terminal_id))
+    )
 
 
 class _FakePublishRetryAbandoner:
@@ -96,6 +113,59 @@ def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange(
         "review-77",
         "issue-999",
     ]
+
+
+def _recorded(terminal_id: str, kind: SessionKind, issue_number: int = 230):
+    """A session as the restorer brings it back: kind from its ledger row."""
+    return SimpleNamespace(
+        terminal_id=terminal_id,
+        issue=SimpleNamespace(number=issue_number),
+        key=SimpleNamespace(kind=kind),
+        run_assets=None,
+    )
+
+
+@pytest.mark.parametrize("terminal", ["tech-lead-230", "issue-230"], ids=["new-lane", "pre-7347-lane"])
+def test_a_tech_lead_run_is_never_issue_runtime(completion_intake, terminal) -> None:
+    """#7347 review r7: a tech lead reads its subject from its own checkout. It
+    neither counts as the issue's runtime nor is torn down with it - also
+    when a pre-#7347 tech lead is still running under ``issue-230``."""
+    session_manager = _FakeSessionManager({terminal})
+    active_sessions = [_recorded(terminal, SessionKind.TECH_LEAD)]
+    owners = runtime_owners(completion_intake=completion_intake, session_manager=session_manager,
+        active_sessions=active_sessions)
+
+    assert IssueRuntimeOwnerKind.SESSIONS not in owners.core.probe(230).active
+    result = owners.terminate(230, "reset-retry")
+
+    assert session_manager.stopped == []
+    assert result.stopped_session_ids == ()
+    assert [session.terminal_id for session in active_sessions] == [terminal]
+
+
+def test_a_coding_run_is_still_issue_runtime(completion_intake) -> None:
+    session_manager = _FakeSessionManager({"issue-230"})
+    active_sessions = [_recorded("issue-230", SessionKind.CODE)]
+    owners = runtime_owners(completion_intake=completion_intake, session_manager=session_manager,
+        active_sessions=active_sessions)
+
+    assert IssueRuntimeOwnerKind.SESSIONS in owners.core.probe(230).active
+    owners.terminate(230, "reset-retry")
+
+    assert session_manager.stopped == ["issue-230"]
+    assert active_sessions == []
+
+
+def test_an_unaccounted_live_issue_terminal_is_still_guarded(completion_intake) -> None:
+    """Its owner is unknown, so it stays issue runtime until it is classified."""
+    session_manager = _FakeSessionManager({"issue-230"})
+    owners = runtime_owners(completion_intake=completion_intake, session_manager=session_manager,
+        active_sessions=[])
+
+    assert IssueRuntimeOwnerKind.SESSIONS in owners.core.probe(230).active
+    owners.terminate(230, "reset-retry")
+
+    assert session_manager.stopped == ["issue-230"]
 
 
 def test_terminate_issue_runtime_clears_stale_active_session_records(
@@ -237,6 +307,7 @@ def _session(terminal_id: str, issue_number: int):
     return SimpleNamespace(
         terminal_id=terminal_id,
         issue=SimpleNamespace(number=issue_number),
+        key=SimpleNamespace(kind=_recorded_kind(terminal_id)),
         run_assets=None,
     )
 
