@@ -27,7 +27,9 @@ from issue_orchestrator.control.needs_human_block import NO_OTHER_NEEDS_HUMAN_CA
 from issue_orchestrator.control.published_review_custody import PublishedReviewCustody
 from issue_orchestrator.control.recovery_publication_attempt import RecoveryPublicationAttempt
 from issue_orchestrator.control.recovery_publication_completion import RecoveryPublicationCompletion
+from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.control.recovery_record_operation import RecoveryRecordOperation
+from issue_orchestrator.control.remote_authority_refresh import RemoteAuthorityRefreshOperation
 from issue_orchestrator.control.review_exchange_lifecycle import (
     CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners,
 )
@@ -44,15 +46,17 @@ from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.models import OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.publication_remote import PublicationRemoteError
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
 from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
 from issue_orchestrator.domain.registered_completion import (
     CompletionProcessingPolicy, CompletionRunRole,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.validated_work import (
-    DispositionPhase, PublishValidatedHeadStatus, ResolutionKind, ValidatedWorkFailure,
-    ValidatedWorkState,
+    DispositionPhase, PublishValidatedHeadStatus, RemoteBaselineStatus, ResolutionKind,
+    ValidatedWorkFailure, ValidatedWorkState,
 )
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_scope import (
@@ -74,10 +78,12 @@ from issue_orchestrator.infra.validated_work_store import SqliteValidatedWorkSto
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
+from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.retained_claim_maintenance import NullRetainedClaimMaintenance
 from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from tests.runtime_lifecycle_helpers import no_open_pull_requests
 from tests.unit.test_completion_evidence_intake import command, completion
-from tests.unit.validated_work_support import Liveness
+from tests.unit.validated_work_support import Liveness, Rig, capture, owned_intake
 
 ISSUE = 410
 TECH_LEAD = "agent:tech-lead"
@@ -88,16 +94,17 @@ RECOVERY_PENDING = "recovery-pending"
 class Labels:
     """GitHub's view of the issue's labels: the one fake in this composition."""
 
-    def __init__(self) -> None:
+    def __init__(self, issue: int = ISSUE) -> None:
+        self.issue = issue
         self.labels: set[str] = set()
         self.operations: list[tuple[str, str]] = []
 
     def read_issue_labels(self, issue_number):
-        assert issue_number == ISSUE
+        assert issue_number == self.issue
         return sorted(self.labels)
 
     def apply(self, action):
-        assert action.issue_number == ISSUE
+        assert action.issue_number == self.issue
         add = isinstance(action, AddLabelAction)
         (self.labels.add if add else self.labels.discard)(action.label)
         self.operations.append(("add" if add else "remove", action.label))
@@ -140,7 +147,7 @@ def _rig(tmp_path, agent_label):
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
-        custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate),
+        custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
         working_copy=wc, observer=observer)
     sessions = Mock()
     sessions.exists.return_value = False
@@ -154,6 +161,7 @@ def _rig(tmp_path, agent_label):
                                             blocks=aggregate, events=events)
     rig = SimpleNamespace(git=git, worktree=worktree, ledger=ledger, run=run, intake=intake, store=store,
         execution=execution, labels=labels, lifecycle=lifecycle, events=events, retirement=retirement,
+        aggregate=aggregate,
         agent_label=agent_label, state=state)
     receipt = intake.submit(ledger.submission_capability(run), command(completion(), "validated"))
     intake.drain()
@@ -347,3 +355,86 @@ def test_store_retires_only_the_exact_evidence_set_under_a_live_claim(tech_lead,
     assert store.retire_outside_scope(live, evidence_ids=exact, actor="a", reason="r")
     assert not store.retire_outside_scope(live, evidence_ids=exact, actor="a", reason="r")
     assert store.get(disposition.record_id).state is ValidatedWorkState.ABANDONED
+
+
+# -- the other admission / drain paths --------------------------------------
+
+
+def test_escrow_repair_never_re_admits_an_out_of_scope_orphan(tech_lead, monkeypatch):
+    """A pre-rule tech-lead capture that crashed after escrow, before the store row."""
+    with monkeypatch.context() as legacy:
+        legacy.setattr(validated_work_preservation, "recovery_owns", lambda role: True)
+        legacy.setattr(tech_lead.aggregate, "admit", Mock(side_effect=OSError("crash before admission")))
+        assert not tech_lead.lifecycle.preserve_completed_run(
+            ISSUE, f"issue-{ISSUE}", "session-completion", run=tech_lead.run)
+    assert not tech_lead.store.for_issue(ISSUE).found_work
+
+    # The next terminal boundary runs escrow repair first.
+    assert not tech_lead.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=tech_lead.run)
+
+    assert not tech_lead.store.for_issue(ISSUE).found_work
+    assert tech_lead.labels.operations == []
+
+
+def test_escrow_repair_still_re_admits_a_coding_orphan(coder, monkeypatch):
+    with monkeypatch.context() as crash:
+        crash.setattr(coder.aggregate, "admit", Mock(side_effect=OSError("crash before admission")))
+        assert not coder.lifecycle.preserve_completed_run(
+            ISSUE, f"issue-{ISSUE}", "session-completion", run=coder.run)
+
+    assert coder.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coder.run)
+    assert coder.store.for_issue(ISSUE).unresolved
+    assert coder.labels.labels == {RECOVERY_PENDING}
+
+
+class _UnreadableRemote:
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def observe(self, request):
+        self.reads += 1
+        raise PublicationRemoteError("remote unreadable")
+
+
+@pytest.mark.parametrize("task", [TaskKind.TECH_LEAD, TaskKind.CODE])
+def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_read(tmp_path, task):
+    """The remote-authority refresh lane reaches retirement too (PARKED, remote_unreadable)."""
+    store = Rig(tmp_path / "work.sqlite").open()
+    execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
+    labels = Labels(issue=6914)
+    intake = owned_intake(task)
+    aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
+        admission=RankedEvidenceAdmission(store, intake), phases=store, authority=effects,
+        gate=FileIssueDispositionMutationGate(tmp_path), labels=LabelManager(Config(repo="owner/repo")),
+        reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
+    admission = capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.REMOTE_UNREADABLE,
+                        reason="capture read failed", remote_status=RemoteBaselineStatus.UNOBSERVED)
+    aggregate.admit(admission)
+    assert labels.labels == {RECOVERY_PENDING}
+    events = InMemoryEventSink()
+    scope = OutOfScopeRecordRetirement(intake=intake, store=store, effects=effects, blocks=aggregate, events=events)
+    remote = _UnreadableRemote()
+    drain = RecoveryDrain(
+        queue=store,
+        operation=RecoveryRecordOperation(execution=execution, store=store, preparation=Mock(),
+                                          publication=Mock(), completion=Mock(), scope=scope),
+        authority_refresh=RemoteAuthorityRefreshOperation(execution=execution, effects=effects, store=store,
+                                                          observer=remote, scope=scope),
+        claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
+        batch_size=5, interval_seconds=1,
+    )
+
+    drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    record = store.record_for_id(admission.evidence.record_id)
+    if task is TaskKind.TECH_LEAD:
+        assert record.disposition.state is ValidatedWorkState.ABANDONED
+        assert record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE
+        assert remote.reads == 0
+        assert labels.labels == set()
+    else:
+        assert record.disposition.state is ValidatedWorkState.PARKED
+        assert remote.reads == 1
+        assert labels.labels == {RECOVERY_PENDING}

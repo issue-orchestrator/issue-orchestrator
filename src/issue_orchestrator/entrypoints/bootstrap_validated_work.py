@@ -132,7 +132,7 @@ def build_validated_work_admission(config: Config, working_copy: ExactGit, intak
     store = RankedEvidenceAdmission(SqliteValidatedWorkIntakeStore(root / "validated_work.sqlite", ancestry, escrow), intake)
     return ValidatedWorkAdmissionOwners(
         store, ValidatedWorkCustody(escrow, store),
-        EscrowReconciliation(escrow=escrow, store=store),
+        EscrowReconciliation(escrow=escrow, store=store, intake=intake),
         UnavailableValidatedWorkCaptureObserver(),
     )
 
@@ -218,7 +218,7 @@ def build_validated_work_runtime(
         intake=intake, store=records, effects=effects, blocks=blocks, events=events,
     )
     custody = ValidatedWorkCustody(escrow, blocks)
-    repair = EscrowReconciliation(escrow=escrow, store=blocks)
+    repair = EscrowReconciliation(escrow=escrow, store=blocks, intake=intake)
     workspaces = EscrowPublicationWorkspaces(
         root=root / "validated-work-publications",
         repository=config.repo_root,
@@ -346,6 +346,7 @@ def build_validated_work_recovery(
         queue=owners.records,
         operation=operation,
         authority_refresh=RemoteAuthorityRefreshOperation(
+            scope=owners.scope_retirement,
             execution=owners.execution,
             effects=owners.effects,
             store=owners.records,

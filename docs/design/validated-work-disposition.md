@@ -1361,9 +1361,15 @@ records, one stranded in `PUBLISHING`). Review runs publish nothing.
 - **Capture** (`ValidatedWorkPreservationService.dispose_at_termination`, every
   terminal boundary) drops out-of-scope candidates before admission, so
   `recovery_holds_captured_work` is false for them.
+- **Escrow repair** (`EscrowReconciliation.reconcile_escrow_orphans`) is an
+  admission path too: an out-of-scope orphan (a pre-rule capture that crashed
+  before its store row) is not admitted and stays in escrow, inert and listed in
+  `EscrowReport.outside_scope`. No role filter authorizes deleting escrow; only
+  a resolved store row does.
 - **Records admitted before the rule** are resolved by
-  `OutOfScopeRecordRetirement`, which `RecoveryRecordOperation` consults under
-  the record's claim before any issue read or workspace preparation. It proves
+  `OutOfScopeRecordRetirement`, which both drain lanes consult under the
+  record's claim: `RecoveryRecordOperation` before any issue read or workspace
+  preparation, and `RemoteAuthorityRefreshOperation` before any remote read. It proves
   the role from exact owner custody (`prepare_evidence`) for the current and
   every attached evidence; any in-scope evidence leaves the record to recovery,
   and a missing proof raises rather than resolving. The store then moves the
@@ -1371,8 +1377,8 @@ records, one stranded in `PUBLISHING`). Review runs publish nothing.
   only while the claim holds and the record's current+attached evidence set is
   exactly the one proved. The aggregate block projection then withdraws
   `recovery-pending`; the drain's block sweep heals a projection that was busy.
-  `PARKED`/`FAILED` records the drain does not select keep the existing operator
-  abandonment path.
+  `PARKED` (other than remote-unreadable) and `FAILED` records, which the drain
+  does not select, keep the existing operator abandonment path.
 
 ## 3. Composition and control flow
 

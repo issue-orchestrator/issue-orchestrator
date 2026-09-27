@@ -17,6 +17,7 @@ from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
 from ..ports.validated_work_store import ValidatedWorkStore
+from .validated_work_scope_retirement import OutOfScopeRecordRetirement
 
 
 class RemoteAuthorityRefreshOperation:
@@ -29,12 +30,14 @@ class RemoteAuthorityRefreshOperation:
         effects: ValidatedWorkEffectAuthority,
         store: ValidatedWorkStore,
         observer: ValidatedWorkCaptureObserver,
+        scope: OutOfScopeRecordRetirement,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._execution = execution
         self._effects = effects
         self._store = store
         self._observer = observer
+        self._scope = scope
         self._clock = clock
 
     def run(self, request: RemoteAuthorityRefreshRequest) -> RecoveryAttemptPending:
@@ -64,6 +67,11 @@ class RemoteAuthorityRefreshOperation:
                 refusal = request.refusal(record)
                 if refusal is not None:
                     return RecoveryAttemptPending(refusal)
+                # Before the remote read: a record recovery never owned must not
+                # wait on remote authority it will never use (#7323).
+                retired = self._scope.retire_if_outside(token, claim, record)
+                if retired is not None:
+                    return retired
                 key = record.disposition.key
                 try:
                     facts = perform(
