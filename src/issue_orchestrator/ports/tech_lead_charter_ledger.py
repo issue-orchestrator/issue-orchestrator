@@ -23,6 +23,7 @@ from typing import Iterable, Protocol, Sequence
 from ..domain.tech_lead_charter import CharterOutcome, CharterRole
 from ..domain.tech_lead_charter_decisions import (
     CharterExecutionLink,
+    CharterExecutionResult,
     CharterProposalLifecycle,
     TechLeadCharterDecision,
 )
@@ -210,7 +211,10 @@ def linked_execution(
     """The record *link* updates, shared by every implementation.
 
     ``None`` when no such decision is recorded; a decision the charter did
-    not let execute is a caller bug and raises.
+    not let execute is a caller bug and raises. A park describes the
+    replanned step failing as a whole; it never overrides an effect this
+    attempt already linked as applied (the step can fail after its effect
+    committed), so that record is kept as it is.
     """
     if row is None:
         return None
@@ -219,6 +223,11 @@ def linked_execution(
             f"charter decision {row.decision_id} was {row.outcome.value}, not executed;"
             " only an executed decision links an applier result"
         )
+    if (
+        link.result is CharterExecutionResult.PARKED
+        and row.execution is CharterExecutionResult.APPLIED
+    ):
+        return row
     return row.with_execution(link, at=at)
 
 

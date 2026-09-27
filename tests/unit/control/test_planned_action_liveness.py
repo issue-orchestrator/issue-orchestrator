@@ -1098,6 +1098,35 @@ def test_a_parked_executed_decision_shows_the_park_on_its_record(sample_config) 
     assert not row.took_effect
 
 
+def test_a_park_never_overrides_an_effect_that_committed(sample_config) -> None:
+    """#7362 review r4: the filing commits and is linked applied, then the plan
+    step fails after it every tick until the liveness owner parks it. The park
+    is the step's; the record keeps saying the effect applied."""
+    from issue_orchestrator.control.tech_lead_charter_policy import apply_charter_audited_action
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.unit.test_tech_lead_charter_ledger import _executed_promotion
+
+    audited = _executed_promotion()
+    store = InMemoryTechLeadAuthorityStore()
+    filed: list = []
+
+    def apply(action):
+        apply_charter_audited_action(
+            action, authority=store,
+            apply_action=lambda effect: filed.append(effect) or ActionResult.ok(effect),
+        )
+        raise RuntimeError("step bookkeeping failed after the filing")
+
+    engine = _Engine(sample_config, planned=lambda: [audited], apply=apply, charter=store.charter_ledger)
+    for _ in range(POLICY.max_attempts):
+        engine.tick()
+
+    assert len(filed) == POLICY.max_attempts and len(engine.owner.parked()) == 1
+    [row] = store.charter_ledger.list_recent()
+    assert row.execution is CharterExecutionResult.APPLIED and row.took_effect
+
+
 def test_a_plan_with_an_executed_decision_needs_the_charter_ledger(sample_config) -> None:
     """Without it a park could not be linked back, so admission refuses (#7362)."""
     from tests.unit.test_tech_lead_charter_ledger import _executed_promotion
