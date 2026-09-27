@@ -471,3 +471,73 @@ def test_a_release_during_an_attempt_is_not_undone_by_its_settlement(tmp_path) -
     store = SQLiteActionLivenessStore(path)
     assert store.row(KEY) is None
     assert escalation.parked == [] and escalation.blocks == []
+
+
+def test_a_release_racing_the_withdrawal_decision_keeps_its_debt(tmp_path) -> None:
+    """Two escalated parks on one issue. Clearing the first decides whether
+    the block is still the other park's; the operator CLI releases that other
+    park (a second connection) right after the engine's first store step. Its
+    owed withdrawal must survive, and the next reconcile takes the block off
+    (review r21)."""
+    from issue_orchestrator.control.action_liveness import release_parked_action
+    from issue_orchestrator.control.action_liveness_escalation import ActionLivenessEscalation
+    from issue_orchestrator.control.actions import (
+        ActionResult,
+        AddCommentAction,
+        AddLabelAction,
+        RemoveLabelAction,
+    )
+    from issue_orchestrator.domain.human_block import HumanBlockRequest
+    from tests.unit.control.test_action_liveness_escalation import _shared_block
+
+    labels, block = _shared_block(tmp_path)
+
+    class _Applier:
+        def apply(self, action):
+            if isinstance(action, AddCommentAction):
+                return ActionResult.ok(action)
+            request = HumanBlockRequest(action.issue_number, action.needs_human_cause, "r")
+            if isinstance(action, AddLabelAction):
+                committed = block.acquire(request).committed
+                return ActionResult.ok(action) if committed else ActionResult.fail(action, "x")
+            assert isinstance(action, RemoveLabelAction)
+            block.release(request)
+            return ActionResult.ok(action)
+
+    path = tmp_path / "action_liveness.sqlite"
+    engine_store = SQLiteActionLivenessStore(path)
+    clock = ManualClock()
+    owner = liveness_owner(
+        store=engine_store,
+        escalation=ActionLivenessEscalation(
+            events=MagicMock(), applier=_Applier(), needs_human_label="needs-human",
+        ),
+        clock=clock, policy=POLICY,
+    )
+    first = KEY
+    second = LivenessKey(ActionIdentity("issue:229", "add_comment#x"), "e" * 32, 229)
+    owner.record(first, ActionOutcome.permanent("stuck"))
+    owner.record(second, ActionOutcome.permanent("also stuck"))
+    assert "needs-human" in labels.live[229]
+
+    released: list[bool] = []
+
+    def then_operator_releases(method):
+        def step(issue_number):
+            answer = method(issue_number)
+            if not released:
+                released.append(True)
+                release_parked_action(SQLiteActionLivenessStore(path), second.identity)
+            return answer
+        return step
+
+    for name in ("parked_rows_for_issue", "clear_release_if_escalated_park"):
+        setattr(engine_store, name, then_operator_releases(getattr(engine_store, name)))
+
+    owner.record(first, ActionOutcome.done())
+
+    assert released, "the operator's release ran inside the withdrawal decision"
+    assert [p.issue_number for p in SQLiteActionLivenessStore(path).pending_releases()] == [229]
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+    assert "needs-human" not in labels.live[229]

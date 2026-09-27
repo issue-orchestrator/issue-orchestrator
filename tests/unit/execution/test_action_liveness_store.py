@@ -205,3 +205,16 @@ def test_settlement_is_conditional_on_the_row_it_read(tmp_path) -> None:
     assert store.row(first.key) == first
     # Expected the row that is there: applied.
     assert store.settle(first, _row(parked=True), announce_parked=True)
+
+
+def test_an_owed_withdrawal_is_forgotten_only_under_an_escalated_park(tmp_path) -> None:
+    store = SQLiteActionLivenessStore(tmp_path / "l.sqlite")
+    store.request_release(410)
+    store.put(_row(escalated=False))
+
+    assert not store.clear_release_if_escalated_park(410)
+    assert [p.issue_number for p in store.pending_releases()] == [410]
+
+    store.put(_row(action="add_label", escalated=True))
+    assert store.clear_release_if_escalated_park(410)
+    assert store.pending_releases() == ()

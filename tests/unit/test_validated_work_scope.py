@@ -165,7 +165,7 @@ def _rig(tmp_path, agent_label):
     sessions.exists.return_value = False
     jobs = Mock()
     jobs.cancel_matching.return_value = ()
-    lifecycle = IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(sessions, [], Mock(), jobs, Mock()),
+    lifecycle = IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(sessions, [], Mock(), jobs, Mock(), Mock()),
         preservation, IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-26T04:24:41Z"),
         Mock(), PublishedReviewCustody(preservation, no_open_pull_requests()))
     events = InMemoryEventSink()

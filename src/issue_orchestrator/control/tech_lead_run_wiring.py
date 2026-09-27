@@ -323,8 +323,8 @@ def withdraw_revalidated_tech_lead_run(
     claim and shared run hold together (#7348) -- so the per-tick recovery
     sweep cannot re-admit the run it just withdrew.
     """
-    from .tech_lead_run_retirement import (
-        TechLeadRunRetirement,
+    from .queued_work_retirement import (
+        QueuedWorkRetirement,
         withdraw_queued_tech_lead_run,
     )
 
@@ -334,7 +334,7 @@ def withdraw_revalidated_tech_lead_run(
         action.reason,
     )
     withdraw_queued_tech_lead_run(
-        TechLeadRunRetirement(tick.state, tick.pending_work_claims),
+        QueuedWorkRetirement(tick.state, tick.pending_work_claims),
         tick.run_ownership,
         tick.events,
         run_key=IssueInvestigationScope(action.issue_number).run_key,
@@ -476,12 +476,12 @@ def reconcile_orchestrator_tech_lead_ownership(
 def _withdraw_lost_queued_runs(
     orchestrator: TechLeadFacadeHost, lost: set[str]
 ) -> None:
-    from .tech_lead_run_retirement import TechLeadRunRetirement
+    from .queued_work_retirement import QueuedWorkRetirement
 
-    retired = TechLeadRunRetirement(
+    retired = QueuedWorkRetirement(
         orchestrator.state,
         orchestrator.deps.pending_work_claims,  # type: ignore[attr-defined]
-    ).retire_run_keys(frozenset(lost))
+    ).retire_tech_lead_run_keys(frozenset(lost))
     for item in retired:
         logger.warning(
             "[TECH_LEAD] Withdrew queued %s for #%d: another orchestrator"

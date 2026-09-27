@@ -13,6 +13,8 @@ from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.working_copy import WorkingCopy
 from ..ports.persistent_exchange_pair_registry import PersistentExchangePairRegistry
 from ..control.background_job_supervisor import BackgroundJobSupervisor
+from ..control.in_flight_work import InFlightWorkLedger
+from ..ports.pending_work_claim_store import PendingWorkClaimStore
 from ..control.session_manager import SessionManager
 from ..domain.models import OrchestratorState
 from .bootstrap_validated_work import ValidatedWorkAdmissionOwners
@@ -24,7 +26,8 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         pair_registry: PersistentExchangePairRegistry | None,
         supervisor: BackgroundJobSupervisor | None,
         publish_recovery: IssuePublishRetryRuntime, events: EventSink,
-        pull_requests: BranchPullRequestReader, stuck_sweep: FactGatherer | None) -> IssueRuntimeLifecycleOwners:
+        pull_requests: BranchPullRequestReader, stuck_sweep: FactGatherer | None,
+        pending_work_claims: PendingWorkClaimStore) -> IssueRuntimeLifecycleOwners:
     def live_runs(issue_number: int) -> tuple[IssueRunRecord, ...]:
         return tuple(IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id))
             for session in state.active_sessions if session.issue.number == issue_number)
@@ -38,4 +41,5 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         # The sweep asks the very owner the reset gate enforces (#7293).
         stuck_sweep.published_review = published_review
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(sessions, state.active_sessions,
-        pair_registry, supervisor, publish_recovery), preservation, evidence, events, published_review)
+        pair_registry, supervisor, publish_recovery, InFlightWorkLedger(state, pending_work_claims)),
+        preservation, evidence, events, published_review)

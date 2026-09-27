@@ -152,6 +152,15 @@ class ActionLivenessStore(Protocol):
         """The withdrawal committed, or is no longer owed."""
         ...
 
+    def clear_release_if_escalated_park(self, issue_number: int) -> bool:
+        """Forget ``issue_number``'s owed withdrawal iff an escalated park stands on it.
+
+        Decided and applied in one transaction: the block on the issue is that
+        park's, so the withdrawal is no longer owed. Returns whether such a park
+        stands; when none does, any owed withdrawal is left in place.
+        """
+        ...
+
 
 class LivenessEscalation(Protocol):
     """Make a park visible to a person, and withdraw that when it resolves.

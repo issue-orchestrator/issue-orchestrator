@@ -173,6 +173,12 @@ class InMemoryActionLivenessStore:
     def clear_release(self, issue_number: int) -> None:
         self.releases.pop(issue_number, None)
 
+    def clear_release_if_escalated_park(self, issue_number: int) -> bool:
+        if not any(park.escalated for park in self.parked_rows_for_issue(issue_number)):
+            return False
+        self.releases.pop(issue_number, None)
+        return True
+
 
 @dataclass
 class RecordingEscalation:

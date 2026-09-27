@@ -522,13 +522,13 @@ class _FreshIssue:
     def read_issue_labels(self, issue_number: int) -> list[str]:
         self.reads.append(issue_number)
         if self.fails:
-            raise FreshIssueReadError("transport failed")
+            raise FreshIssueReadError("transport failed", transient=True)
         return []
 
     def read_issue_snapshot(self, issue_number: int) -> FreshIssueSnapshot:
         self.reads.append(issue_number)
         if self.fails:
-            raise FreshIssueReadError("transport failed")
+            raise FreshIssueReadError("transport failed", transient=True)
         return FreshIssueSnapshot(number=issue_number, labels=(), state=self.state)
 
 
