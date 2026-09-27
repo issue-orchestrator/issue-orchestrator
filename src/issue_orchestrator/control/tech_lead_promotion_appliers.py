@@ -25,10 +25,11 @@ from typing import TYPE_CHECKING, Callable
 from ..domain.tech_lead_findings import (
     CASE_FILE_DECLINED,
     CASE_FILE_SHIPPED,
-    PROMOTION_STATE_DECLINED,
     PROMOTION_STATE_SHIPPED,
     CaseFileLifecycleTransition,
+    promotion_state_for_retirement,
 )
+from ..ports.pattern_registry import TerminalRetirementPolicy
 from .actions import (
     Action,
     ActionResult,
@@ -236,6 +237,11 @@ def apply_settle_tech_lead_promotion(
     see :class:`~.actions.SettleTechLeadPromotionAction` for why closing loses no
     evidence.
 
+    Settlement is an OBSERVED outcome, so it ADOPTS a retirement shared
+    authority already recorded under another transition (a bulk lifecycle
+    reconciliation, another client): the ledger then settles to the recorded
+    disposition instead of refusing forever (#7345).
+
     Ordering makes a crash mid-settlement self-healing: the durable ledger state
     is written LAST, so an interrupted settlement is re-planned next tick and the
     comment/close/record steps are individually idempotent (``record_shipped_fix``
@@ -255,7 +261,7 @@ def apply_settle_tech_lead_promotion(
         transition = _promotion_lifecycle_transition(
             action, recorded_at=now_iso or _utc_now_iso()
         )
-        PatternCaseFileLifecycleOwner(
+        retirement = PatternCaseFileLifecycleOwner(
             registry=pattern_registry,
             repository_host=repository_host,
             before_write=before_write,
@@ -268,8 +274,29 @@ def apply_settle_tech_lead_promotion(
             # file, so the gate and the mutation can never address two issues
             # (#7247 review F2).
             issue_number=action.case_file_issue_number,
+            # An OBSERVED outcome, not a reviewed decision: if shared authority
+            # already retired this signature under another transition (e.g. a
+            # #7240 bulk reconciliation), its recorded disposition is the answer.
+            # Refusing it could never succeed, so it retried every tick (#7345).
+            already_terminal=TerminalRetirementPolicy.ADOPT,
         )
-        if action.shipped:
+        # Project what authority RECORDED, never what this settlement requested:
+        # an adopted retirement may disagree with ``action.shipped``.
+        state = promotion_state_for_retirement(retirement.transition.disposition)
+        if retirement.adopted:
+            logger.info(
+                "[tech_lead] Promotion for %r settles as %s: the case file was"
+                " already retired as %r by transition %r",
+                action.signature,
+                state,
+                retirement.transition.disposition,
+                retirement.transition.transition_id,
+            )
+        shipped = state == PROMOTION_STATE_SHIPPED
+        # The merged PR url IS the shipped-fix evidence (see the action). An
+        # adopted ``shipped`` retirement whose promoted issue closed without a
+        # merged PR has none, so shared authority's record stands alone.
+        if shipped and action.merged_pr_url:
             before_write()
             authority.record_shipped_fix(
                 issue_number=action.case_file_issue_number,
@@ -280,10 +307,8 @@ def apply_settle_tech_lead_promotion(
         before_write()
         authority.settle_promotion(
             signature=action.signature,
-            state=PROMOTION_STATE_SHIPPED
-            if action.shipped
-            else PROMOTION_STATE_DECLINED,
-            shipped_pr_url=action.merged_pr_url,
+            state=state,
+            shipped_pr_url=action.merged_pr_url if shipped else "",
         )
     except (ReconciliationRequired, ClaimLostError):
         # NOT an operational failure of this action: the plan or the claim this
@@ -301,5 +326,6 @@ def apply_settle_tech_lead_promotion(
     return ActionResult.ok(
         action,
         issue_number=action.case_file_issue_number,
-        shipped=action.shipped,
+        shipped=shipped,
+        adopted=retirement.adopted,
     )
