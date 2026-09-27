@@ -83,6 +83,34 @@ def test_the_issue_runtime_boundary_settles_a_stopped_rework_claim(tmp_path):
     assert state.pending_reworks == []
 
 
+def test_a_stop_that_commits_then_raises_still_settles_the_claim(tmp_path):
+    """codex #7380 r2: the terminal was killed, then ``stop`` raised (e.g.
+    publishing its event). The failure propagates, but the ended rework's
+    claim must not be left HELD beside no live run."""
+    harness, state, _session = _live_rework(tmp_path)
+    core, sessions = _core(state, harness)
+    stopped: list[str] = []
+    sessions.exists.side_effect = lambda ref: (
+        ref.name == f"rework-{SUBJECT}" and ref.name not in stopped
+    )
+
+    def stop(ref):
+        stopped.append(ref.name)
+        raise RuntimeError("event publish failed after the kill")
+
+    sessions.stop.side_effect = stop
+
+    with pytest.raises(RuntimeError):
+        core.release_preserved(
+            SUBJECT, "reset-retry", ValidatedWorkDispositionBatch.no_work(SUBJECT, "t")
+        )
+
+    assert state.active_sessions == []
+    assert harness.claims.list_unresolved_claims() == ()
+    assert _next_tick_sweep(state, harness) == 0
+    assert state.pending_reworks == []
+
+
 def test_an_already_dead_rework_terminal_is_settled_too(tmp_path):
     """A stale record (terminal gone) is cleared by the same boundary."""
     harness, state, _session = _live_rework(tmp_path)

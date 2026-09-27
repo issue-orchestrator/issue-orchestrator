@@ -235,7 +235,18 @@ def _release_issue_runtime(
     if session_manager is not None:
         for ref in refs:
             if session_manager.exists(ref):
-                session_manager.stop(ref)
+                try:
+                    session_manager.stop(ref)
+                except Exception:
+                    # A stop can commit and THEN raise. Whatever it ended must
+                    # still settle before the failure propagates, or its claim
+                    # stays HELD beside no live run (#7380 review r2) -- the
+                    # same post-stop rule `_stop_exact_generation` applies.
+                    if not session_manager.exists(ref):
+                        _end_session_records(
+                            active_sessions, lambda session: session.terminal_id == ref.name, work
+                        )
+                    raise
                 stopped.append(ref.name)
             elif ref.name in matching_active:
                 stale.append(ref.name)
