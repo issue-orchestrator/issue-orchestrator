@@ -298,9 +298,6 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         session.issue.number, session.terminal_id, "session-completion", run=session.run_assets
     )
 
-    # Remove by session name, NOT issue number - multiple sessions can share an issue number
-    state.drop_active_session(session.terminal_id)
-
     # Settle the claim this session took off a pending queue at launch (#6999
     # F2/A1). One typed outcome for every terminal path: a session stopped by
     # its provider never got to attempt the work, so its request goes back to
@@ -312,6 +309,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
 
     work_outcome = SettlementOutcome.for_provider_error(provider_error_type)
     InFlightWorkLedger(state, pending_work_claims).settle(session, work_outcome)
+    # After settling (#7348): a record dropped first let a raising settle re-admit the work.
+    # Remove by session name, NOT issue number - multiple sessions can share an issue number
+    state.drop_active_session(session.terminal_id)
 
     # Handle validation retry - queue for re-launch instead of normal completion
     if status == SessionStatus.NEEDS_VALIDATION_RETRY:

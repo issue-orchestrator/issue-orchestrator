@@ -73,7 +73,11 @@ placeholders; what remains open belongs to the io-in-container half:
    `docker/execenv/Dockerfile`.
 2. `CONDOR_VERSION` — **resolved, amended by evidence**: pinned as the
    `CONDOR_PACKAGE_VERSION` build arg (htcondor.org 24.0 LTS point
-   release). Two empirical amendments to the original design: the
+   release), applied to the whole package family (`htcondor`, `condor`,
+   `condor-upgrade-checks`): `htcondor` depends on `condor (= exact)`
+   and apt never backtracks from condor's newest candidate, so pinning
+   the metapackage alone breaks the build on every upstream point
+   release. Two empirical amendments to the original design: the
    distro's own package (23.4) silently declines cgroup-v2 family
    tracking and cannot be used, and htcondor.org ships **amd64 only**,
    so the image is built and run `linux/amd64` (native on CI; emulated

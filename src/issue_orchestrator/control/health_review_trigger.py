@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     )
     from ..infra.config import Config
     from ..ports import Issue, RepositoryHost
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .pending_session_queues import TechLeadQueueOutcome
@@ -422,6 +423,7 @@ def _queue_anchor_by_marker(
     title: str,
     labels: Iterable[str],
     *,
+    claims: "PendingWorkClaimStore",
     storm_problems: tuple["DiscoveredFailure", ...] = (),
 ) -> "TechLeadQueueOutcome":
     """Route an orchestrator-created anchor to its variant's owner queue op.
@@ -432,6 +434,7 @@ def _queue_anchor_by_marker(
     :class:`PendingSessionQueues` instead of overloading batch intake.
     """
     from .pending_session_queues import PendingSessionQueues
+    from .tech_lead_run_retirement import TechLeadRunRetirement
 
     queues = PendingSessionQueues(state)
     if has_health_review_marker(labels):
@@ -439,7 +442,12 @@ def _queue_anchor_by_marker(
             problem.issue_number for problem in storm_problems
         )
         if storm_issue_numbers:
-            queues.remove_failure_investigations(storm_issue_numbers)
+            # The storm review now covers these investigations, so each one
+            # ENDS here -- durable claim included, or the per-tick recovery
+            # sweep re-admits it behind the review (#7348).
+            TechLeadRunRetirement(state, claims).retire_failure_investigations(
+                storm_issue_numbers
+            )
         return queues.queue_health_review(
             issue_number,
             title,
@@ -493,6 +501,8 @@ def intake_created_tech_lead_anchor(
     state: "OrchestratorState",
     store: "Optional[QueueCacheStore]",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
+    *,
+    claims: "PendingWorkClaimStore",
 ) -> "TechLeadQueueOutcome":
     """Route a successfully created tech_lead anchor into the pending queue.
 
@@ -510,6 +520,7 @@ def intake_created_tech_lead_anchor(
         issue_number,
         action.title,
         action.labels,
+        claims=claims,
         storm_problems=action.storm_problems if persisted else (),
     )
     record_health_review_creation(action, state, store)
@@ -520,6 +531,8 @@ def queue_recovered_tech_lead_anchor(
     state: "OrchestratorState",
     issue: "Issue",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
+    *,
+    claims: "PendingWorkClaimStore",
 ) -> "TechLeadQueueOutcome":
     """Route a recovered open anchor into the pending queue (startup).
 
@@ -554,6 +567,7 @@ def queue_recovered_tech_lead_anchor(
         issue.number,
         issue.title,
         issue.labels,
+        claims=claims,
         storm_problems=cohort or (),
     )
 
@@ -566,6 +580,7 @@ def ensure_on_demand_health_review_anchor(
     action_applier: "SupportsApplyAction",
     queue_cache_store: "Optional[QueueCacheStore]",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]",
+    claims: "PendingWorkClaimStore",
     now: float,
 ) -> "Optional[PendingTechLeadReview]":
     """Discover-or-create the health-review anchor and queue it for launch NOW.
@@ -605,7 +620,9 @@ def ensure_on_demand_health_review_anchor(
             )
             return None
         logger.info("Reusing open health-review anchor #%d on demand", existing)
-        queue_recovered_tech_lead_anchor(state, issue, tech_lead_authority)
+        queue_recovered_tech_lead_anchor(
+            state, issue, tech_lead_authority, claims=claims
+        )
         anchor_number: Optional[int] = existing
     else:
         anchor_number = _create_on_demand_health_anchor(
@@ -614,6 +631,7 @@ def ensure_on_demand_health_review_anchor(
             action_applier=action_applier,
             queue_cache_store=queue_cache_store,
             tech_lead_authority=tech_lead_authority,
+            claims=claims,
             now=now,
         )
         if anchor_number is None:
@@ -628,6 +646,7 @@ def _create_on_demand_health_anchor(
     action_applier: "SupportsApplyAction",
     queue_cache_store: "Optional[QueueCacheStore]",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]",
+    claims: "PendingWorkClaimStore",
     now: float,
 ) -> Optional[int]:
     """Shape + create + intake a fresh on-demand health-review anchor.
@@ -661,7 +680,8 @@ def _create_on_demand_health_anchor(
         )
         return None
     intake_created_tech_lead_anchor(
-        action, issue_number, state, queue_cache_store, tech_lead_authority
+        action, issue_number, state, queue_cache_store, tech_lead_authority,
+        claims=claims,
     )
     return issue_number
 
@@ -693,6 +713,7 @@ def recover_pending_tech_lead_anchors(
     config: "Config",
     session_exists: Callable[[str], bool],
     tech_lead_authority: "TechLeadAuthorityStore | None",
+    claims: "PendingWorkClaimStore",
 ) -> None:
     """Requeue open tech_lead anchors on startup (crash-safe label recovery).
 
@@ -755,7 +776,9 @@ def recover_pending_tech_lead_anchors(
         # owner routes it (#6768 B5: queued flavor reaches launch verbatim)
         # and rehydrates a storm anchor's cohort from the durable ledger
         # (#6780: the recovered anchor must keep its act-level scope).
-        outcome = queue_recovered_tech_lead_anchor(state, issue, tech_lead_authority)
+        outcome = queue_recovered_tech_lead_anchor(
+            state, issue, tech_lead_authority, claims=claims
+        )
         if outcome is TechLeadQueueOutcome.DUPLICATE:
             print(f"  tech_lead issue #{issue.number}: Already queued")
             continue

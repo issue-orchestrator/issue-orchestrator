@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ..ports.issue_run_evidence import IssueRunLedger
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .label_manager import LabelManager
     from .label_store_reconciler import FreshLabelSnapshot
@@ -102,6 +103,8 @@ class StartupManager:
         label_store: "LabelStore | None" = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
         issue_run_ledger: "IssueRunLedger | None" = None,
+        *,
+        pending_work_claims: "PendingWorkClaimStore",
     ):
         """Initialize the startup manager.
 
@@ -145,6 +148,9 @@ class StartupManager:
         # Gated-proposal ledger (#6778); None (tests) = no op-backed exclusions.
         self._tech_lead_authority = tech_lead_authority
         self._issue_run_ledger = issue_run_ledger
+        # Anchor recovery can fold individual investigations into a storm
+        # review; ending them must retire their durable claims too (#7348).
+        self._pending_work_claims = pending_work_claims
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -731,6 +737,7 @@ class StartupManager:
             config=self.config,
             session_exists=self._session_exists,
             tech_lead_authority=self._tech_lead_authority,
+            claims=self._pending_work_claims,
         )
 
     def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:

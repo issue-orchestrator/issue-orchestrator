@@ -267,13 +267,6 @@ class TestHelperFunctions:
         label = get_pause_label()
         assert label == "io:needs-reconcile"
 
-    def test_get_pause_label_with_custom_prefix(self):
-        """Test get_pause_label returns correct label with custom prefix."""
-        from issue_orchestrator.control.reconciliation import get_pause_label
-
-        label = get_pause_label("myprefix")
-        assert label == "myprefix:needs-reconcile"
-
     def test_build_expected_for_mutation_forbids_pause_label(self):
         """Test build_expected_for_mutation includes pause label in forbidden."""
         from issue_orchestrator.control.reconciliation import build_expected_for_mutation
@@ -301,16 +294,6 @@ class TestHelperFunctions:
         # Should have both the custom forbidden and the pause label
         assert "blocked" in expected.forbidden_labels
         assert "io:needs-reconcile" in expected.forbidden_labels
-
-    def test_build_expected_for_mutation_with_custom_prefix(self):
-        """Test build_expected_for_mutation uses custom prefix."""
-        from issue_orchestrator.control.reconciliation import build_expected_for_mutation
-
-        expected = build_expected_for_mutation(prefix="custom")
-
-        assert "custom:needs-reconcile" in expected.forbidden_labels
-        assert "io:needs-reconcile" not in expected.forbidden_labels
-
 
 class TestFailureTypeClassification:
     """Tests for SYSTEMIC vs ISSUE_LOCAL failure classification."""

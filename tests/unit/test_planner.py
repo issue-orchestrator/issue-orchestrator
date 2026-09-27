@@ -3365,6 +3365,7 @@ class TestStormCohortCleanupLifecycle:
             state,
             None,
             authority,
+            claims=MagicMock(),
         )
         clear_discovered_facts(state, config, authority, tick_paused=False)
 
@@ -5263,6 +5264,33 @@ class TestPlanStaleInProgressCleanup:
         # No cleanup actions
         remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
         assert len(remove_actions) == 0
+
+
+    def test_subject_paused_for_reconciliation_gets_no_stale_cleanup(self):
+        """#7349 (porchpin #410): a subject paused behind ``io:needs-reconcile``
+        keeps its labels until a human lifts the pause, and the mutation gate
+        refuses every gated write against it. Planning the stale in-progress
+        removal / stale-claim cleanup for it anyway meant a write the gate was
+        bound to refuse, on every tick, forever."""
+        config = make_config()
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        paused = make_issue(410, labels=["in-progress", "io:claimed", "io:needs-reconcile"])
+        writable = make_issue(7, labels=["in-progress", "io:claimed"])
+
+        plan = planner.plan(make_snapshot(
+            issues=[paused, writable],
+            stale_in_progress_issues=(paused, writable),
+            stale_claim_issues=(paused, writable),
+        ))
+
+        label_writes = [
+            *plan.actions_of_type(ActionType.REMOVE_LABEL),
+            *plan.actions_of_type(ActionType.ADD_LABEL),
+        ]
+        assert {a.issue_number for a in label_writes} == {7}
+        assert {a.label for a in plan.actions_of_type(ActionType.REMOVE_LABEL)} == {
+            "in-progress", "io:claimed",
+        }
 
 
 class TestMergeQueueEnqueuePlanning:

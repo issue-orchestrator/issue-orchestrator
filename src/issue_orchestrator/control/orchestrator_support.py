@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..infra.config import Config
@@ -47,7 +48,8 @@ from .tech_lead_artifact_retention import clear_discovered_facts
 from .tech_lead_run_ownership import TechLeadRunOwnership, single_instance_run_ownership
 from .tech_lead_run_wiring import tech_lead_state_handlers
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
-from .reconciliation import ReconciliationRequired, get_pause_label
+from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
+from .reconciliation import ReconciliationRequired, get_pause_label, is_paused_for_reconciliation
 from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
@@ -139,6 +141,10 @@ class OrchestratorSupport:
     cleanup_manager: "CleanupManager"
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
+    # The durable pending-work ledger. A queued tech-lead run that ends without
+    # launching must retire its deferred row here too, or the per-tick recovery
+    # sweep re-admits it (#7348).
+    pending_work_claims: "PendingWorkClaimStore"
     queue_cache_store: "QueueCacheStore | None" = None
     # Durable tech_lead ledgers (#6780). Anchor intake records a storm cohort
     # here, and the end-of-tick fact clear reads it to hold the cohort's run
@@ -226,19 +232,26 @@ class OrchestratorSupport:
 
         applied_count = 0
         failed_count = 0
+        # A refused subject is withheld from the rest of THIS application;
+        # every other subject's actions still run (#7349).
+        isolation = PlanSubjectIsolation()
 
         for action in plan.actions:
             if self.state.paused:
                 break
+
+            withheld = isolation.withheld_subject(action)
+            if withheld is not None:
+                self._emit_apply_failed(action, f"withheld: #{withheld} was refused by reconciliation this tick")
+                failed_count += 1
+                continue
 
             result_info = self._apply_single_action(action, pause_issue_callback)
             if result_info.success:
                 applied_count += 1
             else:
                 failed_count += 1
-
-            if result_info.halt:
-                break
+            isolation.withhold(result_info.withhold_subjects)
 
         self.events.publish(make_trace_event(EventName.APPLY_COMPLETED, self.event_context.enrich({"applied_steps": applied_count, "failed_steps": failed_count})))
 
@@ -246,7 +259,8 @@ class OrchestratorSupport:
     class _ActionApplyResult:
         """Result of applying a single action."""
         success: bool = False
-        halt: bool = False  # Stop processing remaining actions
+        # Subjects whose remaining actions this application must not run.
+        withhold_subjects: frozenset[int] = frozenset()
 
     def _apply_single_action(self, action: "Action", pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
         """Apply a single action and return the result."""
@@ -265,7 +279,7 @@ class OrchestratorSupport:
                 return self._handle_action_success(action, result)
             return self._handle_action_failure(action, result)
         except ReconciliationRequired as rr:
-            return self._handle_reconciliation_error(rr, pause_issue_callback)
+            return self._handle_reconciliation_error(action, rr, pause_issue_callback)
         except Exception as e:
             logger.exception("Failed to apply action %s: %s", action, e)
             self.events.publish(make_trace_event(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
@@ -310,19 +324,35 @@ class OrchestratorSupport:
         self._emit_apply_failed(action, result.error or "unknown")
         return self._ActionApplyResult(success=False)
 
-    def _handle_reconciliation_error(self, rr: ReconciliationRequired, pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
-        """Handle reconciliation required error."""
+    def _handle_reconciliation_error(
+        self, action: "Action", rr: ReconciliationRequired, pause_issue_callback: Callable[[int, str], None]
+    ) -> "_ActionApplyResult":
+        """Escalate the refused subject; withhold only that subject (#7349).
+
+        A subject already paused for reconciliation was refused BECAUSE of the
+        pause: that is the pause working, not new drift, so it is not paused
+        again. Either way the refusal is published and the subject's remaining
+        actions are withheld, while every other subject's actions still run.
+        """
         issue_number = rr.entity_id
-        logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
+        already_paused = is_paused_for_reconciliation(rr.actual.labels)
         self.events.publish(make_trace_event(
             EventName.RECONCILIATION_REQUIRED,
             self.event_context.enrich({
                 "issue_number": issue_number, "entity_type": rr.entity_type, "reason": rr.reason,
                 "expected_labels": list(rr.expected.labels), "actual_labels": list(rr.actual.labels),
+                "already_paused": already_paused,
             }),
         ))
-        pause_issue_callback(issue_number, rr.reason)
-        return self._ActionApplyResult(success=False, halt=True)
+        if already_paused:
+            logger.warning("[RECONCILIATION] %s #%d is paused for reconciliation; withholding its %s this tick",
+                           rr.entity_type, issue_number, action.action_type.value)
+        else:
+            logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
+            pause_issue_callback(issue_number, rr.reason)
+        return self._ActionApplyResult(
+            success=False, withhold_subjects=action_subjects(action) | {issue_number}
+        )
 
     def _emit_apply_failed(self, action: "Action", error: str) -> None:
         """Emit APPLY_FAILED event."""
@@ -491,11 +521,14 @@ def pause_issue_for_reconciliation(
     """Pause an issue due to reconciliation failure (state drift)."""
     pause_label = get_pause_label()
     try:
-        action_applier.apply(AddLabelAction(
+        result = action_applier.apply(AddLabelAction(
             issue_number=issue_number,
             label=pause_label,
             reason="reconciliation drift detected",
         ))
+        if not result.success:
+            _report_pause_not_applied(events, event_context, issue_number, result.error or "unknown error")
+            return
         logger.warning(
             "[RECONCILIATION] Paused issue #%d with label '%s': %s",
             issue_number, pause_label, reason
@@ -509,10 +542,26 @@ def pause_issue_for_reconciliation(
             }),
         ))
     except Exception as e:
-        logger.error(
-            "[RECONCILIATION] Failed to add pause label to #%d: %s",
-            issue_number, e
-        )
+        _report_pause_not_applied(events, event_context, issue_number, str(e))
+
+
+def _report_pause_not_applied(
+    events: EventSink, event_context: EventContext, issue_number: int, error: str
+) -> None:
+    """A drifted subject whose pause could not be written stays visible.
+
+    The subject is still withheld for the rest of the tick; this makes the
+    missing pause label an explicit failed step rather than a log line.
+    """
+    logger.error("[RECONCILIATION] Failed to add pause label to #%d: %s", issue_number, error)
+    events.publish(make_trace_event(
+        EventName.APPLY_FAILED,
+        event_context.enrich({
+            "step_type": "add_label",
+            "issue_number": issue_number,
+            "error": f"reconciliation pause not applied: {error}",
+        }),
+    ))
 
 
 def emit_heartbeat_if_needed(
