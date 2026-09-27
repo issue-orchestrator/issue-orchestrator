@@ -61,7 +61,6 @@ _PER_KIND_HANDLERS: dict[tuple[str, str], int] = {
     ("control/health_review_trigger.py", "recover_pending_tech_lead_anchors"): 1,
     ("domain/models.py", "PendingValidationRetry.__post_init__"): 1,
     ("domain/registered_completion.py", "CompletionRunRole.__post_init__"): 1,
-    ("domain/registered_completion.py", "CompletionRunRole.require_processing_role"): 1,
     ("domain/registered_completion.py", "CompletionProcessingPolicy.is_tech_lead"): 1,
     # J - presentation and identity: dashboard phase words, and "is this the
     # retrospective review of that issue".
