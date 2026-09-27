@@ -829,6 +829,7 @@ _NON_PROVIDER_TEXT_CLASSIFIERS = frozenset(
         # --- git and GitHub responses, not a provider CLI ---
         "adapters/github/github_adapter.py::GitHubAdapter.create_issue._check",
         "adapters/github/http_client.py::classify_github_http_failure",
+        "adapters/github/publication_remote.py::_create_rejection",
         "adapters/github/rate_limit.py::github_rate_limit",
         "adapters/worktree/_worktree.py::_delete_remote_branch",
         "adapters/worktree/worktree_policy.py::ValidateOrDeletePolicy._check_broken_git_state",

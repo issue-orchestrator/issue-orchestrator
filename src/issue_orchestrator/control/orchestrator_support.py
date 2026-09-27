@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..infra.config import Config
@@ -140,6 +141,10 @@ class OrchestratorSupport:
     cleanup_manager: "CleanupManager"
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
+    # The durable pending-work ledger. A queued tech-lead run that ends without
+    # launching must retire its deferred row here too, or the per-tick recovery
+    # sweep re-admits it (#7348).
+    pending_work_claims: "PendingWorkClaimStore"
     queue_cache_store: "QueueCacheStore | None" = None
     # Durable tech_lead ledgers (#6780). Anchor intake records a storm cohort
     # here, and the end-of-tick fact clear reads it to hold the cohort's run
