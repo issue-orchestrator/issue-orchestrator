@@ -28,7 +28,6 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
-from ..domain.session_kind import SessionKind
 from ..ports import EventSink, TraceEvent, NullEventSink
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
@@ -269,16 +268,15 @@ class SessionObserver:
         return None
 
     def _try_send_exit_if_has_pr(self, session: Session) -> None:
-        """Send /exit to a CODING session whose open PR says its work is done.
+        """Send /exit to a session whose open PR says its work is done.
 
-        Only a coding session's branch acquiring an open PR means its job is
-        finished. A review, rework or retrospective review starts with that PR
-        already open - it is the thing under review - so applying this there
-        /exited every reviewer ~24 s after launch (#7343). A tech-lead run is
-        stamped TECH_LEAD since #7347, so it is excluded too; the capability
-        table (#7347 step 2) replaces this kind check.
+        Only a kind whose own output is the PR (``open_pr_means_done``: coding)
+        may be read that way. A review, rework, retrospective review or
+        tech-lead run starts with the PR already open - it is the thing under
+        review - so applying this there /exited every reviewer ~24 s after
+        launch (#7343), and a rework's validation retry the same (#7347).
         """
-        if session.exit_sent or session.key.kind is not SessionKind.CODE:
+        if session.exit_sent or not session.key.kind.capabilities.open_pr_means_done:
             return
         try:
             prs = self._get_open_prs_for_branch(session.branch_name)
@@ -775,7 +773,11 @@ class SessionObserver:
             issue_log(session.issue.number, "Session exited, checking completion status"),
         )
 
-        # Check if PR exists for the branch
+        # An open PR on the branch is a finished session only for a kind whose
+        # output is that PR; every other kind's branch has one from the start,
+        # so its exit is read from the issue's labels like any other (#7347).
+        if not session.key.kind.capabilities.open_pr_means_done:
+            return self._determine_outcome_from_labels(session)
         try:
             prs = self._get_open_prs_for_branch(session.branch_name)
             if prs:

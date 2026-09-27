@@ -17,7 +17,7 @@ from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
 from .issue_run_evidence import ReworkTarget
-from .session_kind import SessionKind
+from .session_kind import CompletionProtocol, SessionKind
 from .sandbox_scope import (
     SandboxScope,
     SandboxScopeContext,
@@ -864,10 +864,17 @@ DEFAULT_REVIEW_INITIAL_PROMPT = (
     "When done, use reviewer-done to report your verdict."
 )
 
-# Task kinds whose default initial prompt is the review prompt above.
-_REVIEW_TASK_KINDS = frozenset(
-    {SessionKind.REVIEW.value, SessionKind.RETROSPECTIVE_REVIEW.value}
-)
+
+def _reports_with_reviewer_done(task_kind: str) -> bool:
+    """Whether a launch of this kind value completes with reviewer-done.
+
+    Those launches default to the review prompt; the kind's completion protocol
+    is the one answer (#7347), not a list of review kind names.
+    """
+    return (
+        SessionKind(task_kind).capabilities.completion_protocol
+        is CompletionProtocol.REVIEWER_DONE
+    )
 
 
 @dataclass
@@ -947,7 +954,7 @@ class AgentConfig:
         field_default = type(self).__dataclass_fields__["initial_prompt"].default
         if self.initial_prompt != field_default:
             return self.initial_prompt
-        if task_kind in _REVIEW_TASK_KINDS:
+        if _reports_with_reviewer_done(task_kind):
             return DEFAULT_REVIEW_INITIAL_PROMPT
         return self.initial_prompt
 
@@ -1984,7 +1991,7 @@ class PendingValidationRetry:
     @property
     def rework_target(self) -> "ReworkTarget | None":
         """The PR and cycle a REWORK retry's run records at allocation, if known."""
-        if self.source_kind is not SessionKind.REWORK:
+        if not self.source_kind.capabilities.pushes_to_an_open_pr:
             return None
         return ReworkTarget.of(self.pr_number, self.rework_cycle)
 
@@ -2011,7 +2018,7 @@ class PendingValidationRetry:
     def __post_init__(self) -> None:
         if self.recovery_error is not None and not self.recovery_error.strip():
             raise ValueError("PendingValidationRetry.recovery_error must be non-empty")
-        if self.source_kind.is_review_only or self.source_kind is SessionKind.HISTORICAL:
+        if not self.source_kind.capabilities.produces_commits:
             raise ValueError(
                 "PendingValidationRetry cannot be created for "
                 f"{self.source_kind.value} work (issue #{self.issue_number}): only a "

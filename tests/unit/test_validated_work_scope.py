@@ -61,7 +61,7 @@ from issue_orchestrator.domain.validated_work import (
 )
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_scope import (
-    RECOVERABLE_TASKS, outside_scope_reason, recovery_owns,
+    outside_scope_reason, recovery_owns,
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
@@ -162,7 +162,10 @@ def _rig(tmp_path, agent_label):
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
-        working_copy=wc, observer=observer)
+        working_copy=wc, observer=observer,
+        # No remote in this rig: the base is unreadable, so the kind alone
+        # decides here (the ahead-of-base rule has its own tests).
+        base_branch=lambda _issue, _worktree: "main")
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
@@ -237,7 +240,8 @@ def test_only_coding_rework_and_historical_runs_produce_recoverable_work(task):
             outside_scope_reason(role)
     else:
         assert task.value in outside_scope_reason(role)
-    assert RECOVERABLE_TASKS == frozenset(recoverable)
+    # The capability table is the rule's single source (#7347).
+    assert recovery_owns(role) is task.capabilities.capturable
 
 
 # -- capture: new completions ------------------------------------------------

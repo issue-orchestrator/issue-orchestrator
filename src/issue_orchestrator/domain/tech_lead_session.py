@@ -451,13 +451,13 @@ class TechLeadSessionGeneration:
         ):
             raise ValueError("session generation issue_number must be a positive int")
         task_kind = cast(object, self.task_kind)
-        if not isinstance(task_kind, SessionKind) or task_kind not in {
-            SessionKind.CODE,
-            SessionKind.REWORK,
-        }:
+        if (
+            not isinstance(task_kind, SessionKind)
+            or not task_kind.capabilities.killable_generation
+        ):
             raise ValueError(
-                "session generation task_kind must be code or rework, got "
-                f"{task_kind!r}"
+                "session generation task_kind must be a killable generation "
+                f"(code or rework), got {task_kind!r}"
             )
         terminal_id = cast(object, self.terminal_id)
         if not isinstance(terminal_id, str) or not terminal_id.strip():

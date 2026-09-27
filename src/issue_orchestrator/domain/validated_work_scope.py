@@ -18,18 +18,15 @@ existed.
 """
 
 from .registered_completion import CompletionRunRole
-from .session_kind import SessionKind
-
-# An operator's historical import (#7347: its own kind, stamped CODE before)
-# is work the operator imported precisely so recovery would publish it.
-RECOVERABLE_TASKS: frozenset[SessionKind] = frozenset(
-    {SessionKind.CODE, SessionKind.REWORK, SessionKind.HISTORICAL}
-)
 
 
 def recovery_owns(role: CompletionRunRole) -> bool:
-    """Whether this run's validated completion is work recovery may publish."""
-    return role.kind in RECOVERABLE_TASKS
+    """Whether this run's validated completion is work recovery may publish.
+
+    The kind's ``capturable`` capability answers (#7347): coding, rework and an
+    operator's historical import; never a tech-lead or review run.
+    """
+    return role.kind.capabilities.capturable
 
 
 def outside_scope_reason(role: CompletionRunRole) -> str:

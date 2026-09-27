@@ -563,7 +563,8 @@ def _restored_identity_mismatch(session: Session, claim: PendingWorkClaim) -> st
         case PendingValidationRetry() as request:
             expected, claimed_agent = request.source_kind, request.agent_label
         case PendingRework() as request:
-            expected, claimed_agent = SessionKind.REWORK, request.agent_type
+            expected = SessionKind.REWORK
+            claimed_agent = request.agent_type
         case _:
             return None
     recorded_agent = session.agent_label

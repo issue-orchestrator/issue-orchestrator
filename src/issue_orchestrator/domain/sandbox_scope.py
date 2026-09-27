@@ -22,11 +22,10 @@ Only an explicitly opted-in agent receives a bounded scope.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
-from .session_kind import SessionKind
+from .session_kind import SandboxRole, SessionKind
 
 if TYPE_CHECKING:
     from .models import AgentConfig
@@ -135,20 +134,6 @@ REVIEW_EXCHANGE_CODER_TASK_KIND = "review_exchange_coder"
 REVIEW_EXCHANGE_REVIEWER_TASK_KIND = "review_exchange_reviewer"
 
 
-class SandboxRole(Enum):
-    """The sandbox-relevant role a session plays.
-
-    Distinct from :class:`SessionKind`: several task kinds collapse to one sandbox
-    role (a ``CODE`` and a ``REWORK`` session are both a ``CODER``). The role is
-    the axis the scope policy branches on, and the seam future policies extend
-    (e.g. a tech-lead's evidence-map-driven read scope).
-    """
-
-    CODER = "coder"
-    REVIEWER = "reviewer"
-    TECH_LEAD = "tech-lead"
-
-
 @dataclass(frozen=True)
 class SandboxScope:
     """A bounded, provider-agnostic sandbox for one agent session.
@@ -226,34 +211,28 @@ class SandboxScopeContext:
     evidence_read_roots: tuple[Path, ...] = ()
 
 
-_CODER_TASK_KINDS = frozenset(
-    {SessionKind.CODE.value, SessionKind.REWORK.value, REVIEW_EXCHANGE_CODER_TASK_KIND}
-)
-_REVIEWER_TASK_KINDS = frozenset(
-    {
-        SessionKind.REVIEW.value,
-        SessionKind.RETROSPECTIVE_REVIEW.value,
-        REVIEW_EXCHANGE_REVIEWER_TASK_KIND,
-    }
-)
-_TECH_LEAD_TASK_KINDS = frozenset({SessionKind.TECH_LEAD.value})
+_EXCHANGE_ROLES: dict[str, SandboxRole] = {
+    REVIEW_EXCHANGE_CODER_TASK_KIND: SandboxRole.CODER,
+    REVIEW_EXCHANGE_REVIEWER_TASK_KIND: SandboxRole.REVIEWER,
+}
 
 
 def _role_for_task_kind(task_kind: str) -> SandboxRole:
     """Map a task kind to its sandbox role.
 
-    An unrecognized task kind fails safe to :attr:`SandboxRole.CODER` (the
-    most bounded worktree-only policy) rather than leaving an opted-in agent
-    unsandboxed — the sandbox is a security floor, so ambiguity must never
-    widen it.
+    A session kind's role is its capability row's (#7347); the two exchange
+    roles are named here. An unrecognized task kind fails safe to
+    :attr:`SandboxRole.CODER` (the most bounded worktree-only policy) rather
+    than leaving an opted-in agent unsandboxed — the sandbox is a security
+    floor, so ambiguity must never widen it.
     """
-    if task_kind in _REVIEWER_TASK_KINDS:
-        return SandboxRole.REVIEWER
-    if task_kind in _TECH_LEAD_TASK_KINDS:
-        return SandboxRole.TECH_LEAD
-    if task_kind in _CODER_TASK_KINDS:
+    if task_kind in _EXCHANGE_ROLES:
+        return _EXCHANGE_ROLES[task_kind]
+    try:
+        role = SessionKind(task_kind).capabilities.sandbox_role
+    except ValueError:
         return SandboxRole.CODER
-    return SandboxRole.CODER
+    return role if role is not None else SandboxRole.CODER
 
 
 def compute_session_scope(

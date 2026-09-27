@@ -212,9 +212,14 @@ class SessionController:
         completion_path: str | None,
     ) -> tuple[CompletionRecordLoadResult, CompletionIntakeReceipt | None]:
         """Coding completion is selected by the run owner before decision policy."""
-        from ..domain.session_kind import SessionKind
+        from ..domain.session_kind import CompletionProtocol
 
-        if task_kind not in (SessionKind.CODE, SessionKind.REWORK, SessionKind.TECH_LEAD):
+        # Every kind that completes with coding-done registers its completion
+        # through intake; reviewer-done kinds are read from their record file.
+        if (
+            task_kind is None
+            or task_kind.capabilities.completion_protocol is not CompletionProtocol.CODING_DONE
+        ):
             return self.completion_processor.read_completion_record_result(
                 worktree, completion_path
             ), None
@@ -853,7 +858,7 @@ class SessionController:
         # and publish nothing, so the code validation-retry gate does not apply.
         # Running it relaunches the work as a coder retry that ultimately tries
         # to open a PR on an empty branch (see issue #6426).
-        if task_kind is not None and task_kind.is_review_only:
+        if task_kind is not None and not task_kind.capabilities.produces_commits:
             logger.debug(issue_log(issue_number, "Skipping code validation gate: review-only session"))
             return None
         return self._run_validation_gate(

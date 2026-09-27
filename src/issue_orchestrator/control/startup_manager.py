@@ -53,7 +53,7 @@ from ..domain.session_kind import SessionKind
 from .actions import AddLabelAction, RemoveLabelAction
 from .health_review_cadence import hydrate_last_health_review_at
 from .health_review_trigger import recover_pending_tech_lead_anchors
-from .stuck_sweep import hydrate_stuck_sweep_state
+from .stuck_sweep_state import hydrate_stuck_sweep_state
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -627,7 +627,7 @@ class StartupManager:
         return any(
             self._session_exists(kind.terminal_name(issue_number))
             for kind in SessionKind
-            if kind.holds_issue_custody
+            if kind.capabilities.holds_issue_custody
         )
 
     def _clear_orphaned_label(self, issue: Issue) -> None:

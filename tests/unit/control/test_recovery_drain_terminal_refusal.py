@@ -57,7 +57,9 @@ def retained(custody):
     )
     custody.git.run(custody.repo, ["add", ".gitignore"])
     custody.git.run(custody.repo, ["commit", "-m", "Ignore generated output"])
-    custody.git.run(custody.worktree, ["merge", "--ff-only", "main"])
+    # The custody branch carries a commit of its own since #7347; this shape
+    # is the branch sitting exactly on main.
+    custody.git.run(custody.worktree, ["reset", "--hard", "main"])
     base = custody.git.head_sha(custody.repo)
     assert custody.git.head_sha(custody.worktree) == base
     custody.git.run(custody.repo, ["update-ref", "refs/remotes/origin/main", base])

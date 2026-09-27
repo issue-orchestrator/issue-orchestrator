@@ -158,7 +158,7 @@ def test_an_exhausted_investigation_does_not_block_the_release_that_supersedes_i
 
 
 def test_the_remedy_a_budget_counts_survives_a_restart():
-    from issue_orchestrator.control.stuck_sweep import (
+    from issue_orchestrator.control.stuck_sweep_state import (
         hydrate_stuck_sweep_state,
         persist_stuck_sweep_state,
     )

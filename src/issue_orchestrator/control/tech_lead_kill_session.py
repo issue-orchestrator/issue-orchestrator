@@ -81,7 +81,7 @@ def kill_hung_session_stale_reason(
             f"the proposal recorded unsupported session type"
             f" {target_session_type!r} for issue #{issue_number}"
         )
-    if task_kind not in {SessionKind.CODE, SessionKind.REWORK}:
+    if not task_kind.capabilities.killable_generation:
         return (
             f"the proposal targeted non-killable {task_kind.value!r} work"
             f" for issue #{issue_number}"

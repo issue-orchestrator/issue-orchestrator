@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..domain.models import Session, SessionStatus
-from ..domain.session_kind import SessionKind
 from ..infra.config import Config
 from ..ports import RepositoryHost
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -122,16 +121,16 @@ class CompletionActionPlanner:
         self._provider_availability = provider_availability
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
-        """Map the session's kind to its interrupted-retry mode.
+        """Map the session's kind capabilities to its interrupted-retry mode.
 
-        A tech-lead run is retried as coding work, as it was when it launched
-        under the ``issue-`` terminal name (#7347 keeps that behaviour).
+        A reviewer (verdict) is retried under the review switch; a kind that
+        commits (coding, rework, tech lead) under the coding switch (#7347).
         """
-        kind = session.key.kind
-        if kind in (SessionKind.CODE, SessionKind.REWORK, SessionKind.TECH_LEAD):
-            return "coding"
-        if kind in (SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW):
+        capabilities = session.key.kind.capabilities
+        if capabilities.reports_verdict:
             return "review"
+        if capabilities.produces_commits:
+            return "coding"
         return None
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
@@ -205,7 +204,7 @@ class CompletionActionPlanner:
                 expected=expected,
             ),
         ]
-        if session.key.kind.holds_issue_custody:
+        if session.key.kind.capabilities.holds_issue_custody:
             actions.append(
                 RemoveLabelAction(
                     issue_number=session.issue.number,
@@ -397,20 +396,33 @@ class CompletionActionPlanner:
             )
 
         if status == SessionStatus.COMPLETED:
-            # POLICY: Completion -> release in-progress (claim maintained via pr-pending).
-            actions: list[Action] = [
-                RemoveLabelAction(
-                    issue_number=session.issue.number,
-                    label=self._lm.in_progress,
-                    reason="Session completed successfully",
-                    expected=expected,
-                )
-            ]
+            # POLICY: Completion -> release in-progress (claim maintained via
+            # pr-pending) - for the kinds that hold it. A reviewer completing
+            # used to strip a claim it never took, while a failing one did not
+            # (#7347 C7): custody is the kind's capability either way.
+            actions: list[Action] = list(
+                self._release_claim(session, expected, "Session completed successfully")
+            )
             actions.extend(self._generate_tech_lead_actions(session, expected, processing_policy))
             return tuple(actions)
 
         # NEEDS_HUMAN keeps in-progress to maintain the ownership claim.
         return ()
+
+    def _release_claim(
+        self, session: Session, expected: ExpectedState, reason: str
+    ) -> tuple[Action, ...]:
+        """Release the issue's in-progress claim iff the session's kind holds it."""
+        if not session.key.kind.capabilities.holds_issue_custody:
+            return ()
+        return (
+            RemoveLabelAction(
+                issue_number=session.issue.number,
+                label=self._lm.in_progress,
+                reason=reason,
+                expected=expected,
+            ),
+        )
 
     def _generate_processing_failure_actions(
         self,
@@ -550,7 +562,7 @@ class CompletionActionPlanner:
         """Generate actions when session timed out."""
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
-        is_issue_session = session.key.kind.holds_issue_custody
+        is_issue_session = session.key.kind.capabilities.holds_issue_custody
         session_kind = session.key.kind.session_type.value
 
         if is_issue_session:
@@ -624,7 +636,7 @@ class CompletionActionPlanner:
         command (interrupted auto-retry is decided by the caller)."""
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
-        is_issue_session = session.key.kind.holds_issue_custody
+        is_issue_session = session.key.kind.capabilities.holds_issue_custody
         session_kind = session.key.kind.session_type.value
 
         if is_issue_session:
@@ -702,7 +714,7 @@ class CompletionActionPlanner:
                 label_manager=self._lm,
                 provider_availability=self._provider_availability,
             )
-        is_issue_session = session.key.kind.holds_issue_custody
+        is_issue_session = session.key.kind.capabilities.holds_issue_custody
         label = blocked_label or self._lm.blocked
 
         if is_issue_session:

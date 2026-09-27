@@ -10389,3 +10389,160 @@ def test_startup_does_not_requeue_an_anchor_whose_tech_lead_run_is_live(
     )
 
     assert bool(state.pending_tech_lead_reviews) is requeued
+
+
+class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
+    """#7343 through the real launch: the observer asks ``open_pr_means_done``.
+
+    Each session below is produced by the production launcher, so its kind is
+    the one the launch stamped - not a fixture's. Every one of them runs on a
+    branch that has an open PR; only the coding session's PR is its own output.
+    """
+
+    @staticmethod
+    def _observer(config, runner, host):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.observation.observer import SessionObserver
+
+        return SessionObserver(
+            config,
+            session_runner=runner,
+            repository_host=host,
+            fresh_issue_reader=MagicMock(),
+            session_output=FileSystemSessionOutput(),
+        )
+
+    @staticmethod
+    def _launched(kind: str, launcher_bundle, sample_config, sample_issue, tmp_path):
+        launcher = launcher_bundle.launcher
+        if kind == "code":
+            return launcher.launch_issue_session(sample_issue, active_sessions=[]).session
+        if kind == "review":
+            return launcher.launch_review_session(
+                PendingReview(
+                    issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+                    pr_number=456,
+                    pr_url="https://github.com/test/repo/pull/456",
+                    branch_name="123-feature",
+                    _issue_number=123,
+                ),
+                active_sessions=[],
+            ).session
+        if kind == "rework-retry":
+            return launcher.launch_validation_retry_session(
+                TestTheLaunchStampsOneKind.retry_of(SessionKind.REWORK), active_sessions=[]
+            ).session
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        return launcher.launch_issue_session(
+            Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo"),
+            active_sessions=[],
+        ).session
+
+    @pytest.mark.parametrize(
+        ("kind", "exited"),
+        [("code", True), ("review", False), ("rework-retry", False), ("tech-lead", False)],
+    )
+    def test_the_running_session_is_exited_only_for_its_own_pr(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, exited
+    ) -> None:
+        session = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert session is not None
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = True
+        runner.send_to_session_by_name.return_value = True
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+
+        status = self._observer(sample_config, runner, host).check_session(session)
+
+        assert status is SessionStatus.RUNNING
+        assert runner.send_to_session_by_name.called is exited
+        assert session.exit_sent is exited
+
+    @staticmethod
+    def _restored(session, launcher_bundle, sample_config, terminal_name: str):
+        """The same run as a restart brings it back: through the production
+        restorer, which reads its kind and role from the ledger row its launch
+        recorded - under the name it is found running as."""
+        from issue_orchestrator.control.session_restorer import SessionRestorer
+        from issue_orchestrator.ports.session_runner import DiscoveredSession
+
+        repo_host = MagicMock()
+        repo_host.get_issue.return_value = session.issue
+        working_copy = MagicMock()
+        working_copy.get_current_branch.return_value = session.branch_name
+        restorer = SessionRestorer(
+            sample_config, repo_host, working_copy,
+            run_ledger=launcher_bundle.issue_run_ledger,
+        )
+        [restored] = restorer.restore_sessions(
+            [DiscoveredSession(
+                issue_number=session.issue.number, tab_name="", is_review=False,
+                session_name=terminal_name, run_dir=str(session.run_dir),
+            )],
+            already_tracked=[],
+        )
+        return restored
+
+    @pytest.mark.parametrize(
+        ("kind", "terminal", "exited"),
+        [
+            ("code", "issue-123", True),
+            ("tech-lead", "tech-lead-125", False),
+            # A tech lead launched before #7347 is still running as issue-N.
+            ("tech-lead", "issue-125", False),
+        ],
+        ids=["code", "tech-lead", "tech-lead-pre-7347-name"],
+    )
+    def test_a_restored_session_is_exited_only_for_its_own_pr(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, terminal, exited
+    ) -> None:
+        """#7352 codex r2: a tech-lead batch or health review on an anchor
+        branch with an open PR is never /exited - after a restart too, and on
+        both observer paths that send it (the tick's ``check_session`` and the
+        observation's ``observe_session``)."""
+        launched = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert launched is not None
+        session = self._restored(launched, launcher_bundle, sample_config, terminal)
+        assert session.key.kind is launched.key.kind
+        assert session.terminal_id == terminal
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = True
+        runner.send_to_session_by_name.return_value = True
+        runner.is_process_alive.return_value = True
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+        observer = self._observer(sample_config, runner, host)
+
+        assert observer.check_session(session) is SessionStatus.RUNNING
+        assert runner.send_to_session_by_name.called is exited
+        session.exit_sent = False
+        runner.send_to_session_by_name.reset_mock()
+        observer.observe_session(session)
+        assert runner.send_to_session_by_name.called is exited
+        assert session.exit_sent is exited
+
+    @pytest.mark.parametrize(
+        ("kind", "completed"),
+        [("code", True), ("review", False), ("rework-retry", False), ("tech-lead", False)],
+    )
+    def test_an_exited_session_is_completed_by_an_open_pr_only_if_it_is_its_own(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, completed
+    ) -> None:
+        """The exit-path twin (observer.py ``_determine_exited_session_outcome``)."""
+        session = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert session is not None
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = False
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+
+        status = self._observer(sample_config, runner, host).check_session(session)
+
+        assert (status is SessionStatus.COMPLETED) is completed

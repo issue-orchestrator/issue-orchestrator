@@ -64,7 +64,7 @@ def provider_blocked_actions(
                     issue_key=session.issue.key.stable_id(),
                 )
             )
-    if session.key.kind.holds_issue_custody:
+    if session.key.kind.capabilities.holds_issue_custody:
         actions.append(
             RemoveLabelAction(
                 issue_number=session.issue.number,

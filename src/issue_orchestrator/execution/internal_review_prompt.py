@@ -12,7 +12,7 @@ from ..domain.coder_prompt import (
     PreparedCoderPromptAddendum,
     build_internal_review_addendum,
 )
-from ..domain.session_kind import SessionKind
+from ..domain.session_kind import CompletionProtocol, SessionKind
 from ..ports.coder_prompt import CoderPromptAddendumProvider
 
 if TYPE_CHECKING:
@@ -52,11 +52,17 @@ class FileInternalReviewPromptAddendum:
     def _applies_to(self, kind: SessionKind) -> bool:
         """Own the complete internal-review policy in one place.
 
-        Coding and rework sessions get it. A tech-lead run is its own kind
-        since #7347, so it is excluded by kind; before that it launched stamped
-        CODE and had to be subtracted again by agent label here.
+        It reviews the issue's DELIVERABLE before an agent reports it, so it
+        applies to the agent kinds whose coding-done completion is captured as
+        the issue's work: coding and rework. A tech-lead run's publication is
+        not the issue's work (#7347), and a historical import has no agent.
         """
-        return self.enabled and kind in {SessionKind.CODE, SessionKind.REWORK}
+        capabilities = kind.capabilities
+        return (
+            self.enabled
+            and capabilities.capturable
+            and capabilities.completion_protocol is CompletionProtocol.CODING_DONE
+        )
 
     def _contained_instructions_path(self) -> Path:
         """Resolve instructions from the trusted, non-mutating repository root."""

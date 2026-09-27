@@ -574,7 +574,7 @@ def prepare_tech_lead_session_data(
                     run_id=session.run_id,
                 )
                 for session in board_snapshot.sessions
-                if session.session_type in {SessionKind.CODE.value, SessionKind.REWORK.value}
+                if SessionKind(session.session_type).capabilities.killable_generation
             ),
             key=TechLeadSessionGeneration.sort_key,
         )

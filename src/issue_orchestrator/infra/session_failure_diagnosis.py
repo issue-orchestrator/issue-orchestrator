@@ -94,7 +94,7 @@ def _search_worktree_in_base(
             if any(
                 kind.terminal_name(issue_number) in name
                 for kind in SessionKind
-                if kind is not SessionKind.HISTORICAL
+                if kind.runs_as_agent_session
             ):
                 return worktree_path
     return None

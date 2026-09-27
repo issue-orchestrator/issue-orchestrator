@@ -1440,7 +1440,7 @@ class SessionLauncher:
 
         A rework's retry does not: the rework launch never takes the claim.
         """
-        if not kind.holds_issue_custody:
+        if not kind.capabilities.holds_issue_custody:
             return LaunchMutations(True)
         return apply_launch_mutations(self._action_applier.apply, [action(
             issue_number=issue.number, label=self._lm.in_progress,

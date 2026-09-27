@@ -84,7 +84,7 @@ def registered_run(
             f"Validation retry run {key.run_id}/{key.session_name} has no "
             "durably recorded completion role"
         )
-    if record.session_key.kind.is_review_only:
+    if not record.session_key.kind.capabilities.produces_commits:
         return None, (
             f"Validation retry run {key.run_id}/{key.session_name} is "
             f"review-only work ({record.session_key.kind.value})"

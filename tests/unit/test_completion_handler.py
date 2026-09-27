@@ -1144,6 +1144,31 @@ class TestCleanupStrategy:
         assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
         assert result.cleanup.pending_cleanup is None
 
+    def test_tech_lead_session_does_not_defer_cleanup(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Only a session whose own PR is its output waits for that PR's review
+        (``open_pr_means_done``); a tech-lead run's branch is not the issue's
+        deliverable (#7347), so its worktree is not held for a review."""
+        config.tech_lead_review_agent = "agent:tech-lead"
+        issue = make_issue()
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="tech-lead-42",
+            task_kind=SessionKind.TECH_LEAD,
+        )
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
+
+        assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
+
     def test_rework_session_does_not_defer_cleanup(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
@@ -2709,34 +2734,25 @@ class TestStatusSessionTypeMatrix:
         assert isinstance(result.actions[0], RemoveLabelAction)
         assert result.actions[0].label == config.get_label_in_progress()
 
-    def test_completed_review_session_removes_in_progress(
-        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    @pytest.mark.parametrize("terminal_id", ["review-1", "rework-1"])
+    def test_completed_session_that_never_held_the_claim_leaves_it_alone(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path, terminal_id: str
     ) -> None:
-        """COMPLETED review session: removes in-progress, no labels added."""
+        """A review or rework never takes the issue's in-progress claim, so its
+        completion does not release one: custody is the kind's capability on
+        every outcome (#7347 C7; a failing reviewer already left it alone)."""
         session = create_test_session(
-            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+            make_issue(), agent_config, tmp_worktree, terminal_id=terminal_id
         )
         result = make_handler(config).process_completion(
             session, SessionStatus.COMPLETED
         , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
 
-        # Review sessions don't have in-progress to remove, but the action is still generated
-        assert len(result.actions) == 1
-        assert isinstance(result.actions[0], RemoveLabelAction)
-
-    def test_completed_rework_session_removes_in_progress(
-        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
-    ) -> None:
-        """COMPLETED rework session: removes in-progress, no labels added."""
-        session = create_test_session(
-            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        assert not any(
+            isinstance(action, RemoveLabelAction)
+            and action.label == config.get_label_in_progress()
+            for action in result.actions
         )
-        result = make_handler(config).process_completion(
-            session, SessionStatus.COMPLETED
-        , processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
-
-        assert len(result.actions) == 1
-        assert isinstance(result.actions[0], RemoveLabelAction)
 
     # --- BLOCKED Status ---
 

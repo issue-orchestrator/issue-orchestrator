@@ -5,7 +5,6 @@ from enum import StrEnum
 from pathlib import Path
 
 from .session_key import SessionKey
-from .session_kind import SessionKind
 from .session_run import SessionRunAssets
 
 
@@ -73,7 +72,7 @@ class IssueRunRecord:
     def __post_init__(self) -> None:
         if self.terminal_binding is not None and type(self.terminal_binding) is not RunTerminalBinding:
             raise TypeError("run requires typed terminal ownership")
-        if self.rework_target is not None and self.session_key.kind is not SessionKind.REWORK:
+        if self.rework_target is not None and not self.session_key.kind.capabilities.pushes_to_an_open_pr:
             raise ValueError(
                 f"a {self.session_key.kind.value} run cannot record a rework target"
             )

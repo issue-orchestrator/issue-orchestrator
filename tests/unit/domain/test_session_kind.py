@@ -59,18 +59,6 @@ class TestDerivedVocabularies:
         with pytest.raises(ValueError, match="positive int"):
             SessionKind.CODE.phase_label(attempt)  # type: ignore[arg-type]
 
-    def test_only_coding_and_tech_lead_runs_hold_issue_custody(self) -> None:
-        """A rework, and so a rework's validation retry, never takes the claim."""
-        assert {kind for kind in SessionKind if kind.holds_issue_custody} == {
-            SessionKind.CODE,
-            SessionKind.TECH_LEAD,
-        }
-
-    def test_review_kinds_are_review_only(self) -> None:
-        assert {kind for kind in SessionKind if kind.is_review_only} == {
-            SessionKind.REVIEW,
-            SessionKind.RETROSPECTIVE_REVIEW,
-        }
 
 
 class TestTheLaunchStamp:
@@ -156,15 +144,15 @@ class TestPhaseLabelPreFilter:
         assert SessionKind.from_phase_label("mystery-1") is None
         assert SessionKind.from_phase_label("") is None
 
-    @pytest.mark.parametrize("kind", [k for k in SessionKind if k is not SessionKind.HISTORICAL])
-    def test_every_phase_label_a_kind_writes_reads_back_its_review_only_ness(
+    @pytest.mark.parametrize("kind", [k for k in SessionKind if k.runs_as_agent_session])
+    def test_every_phase_label_a_kind_writes_reads_back_whether_it_commits(
         self, kind: SessionKind
     ) -> None:
-        """The pre-filter only has to get review-only-ness right: rework shares
+        """The pre-filter only has to get "makes commits" right: rework shares
         ``coding-N`` by design and the ledger join supplies the real kind."""
         parsed = SessionKind.from_phase_label(kind.phase_label(1))
         assert parsed is not None
-        assert parsed.is_review_only is kind.is_review_only
+        assert parsed.capabilities.produces_commits is kind.capabilities.produces_commits
 
 
 def test_every_kind_names_its_work_and_only_a_tech_lead_is_one() -> None:

@@ -644,7 +644,7 @@ class CompletionHandler:
         """Emit events for a completed session (coding/rework only)."""
         # Review sessions get their events from _publish_review_outcome().
         # Retrospective review sessions complete through label/state actions.
-        if session.key.kind in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind.capabilities.reports_verdict:
             return
 
         identity = SessionEventIdentity.of(session)
@@ -790,7 +790,7 @@ class CompletionHandler:
             logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
             # Only trigger pr_created for issue sessions (not review/rework sessions)
             # Review/rework sessions work on issues that already have PRs
-            is_issue_session = session.key.kind.holds_issue_custody
+            is_issue_session = session.key.kind.capabilities.open_pr_means_done
             if status == SessionStatus.COMPLETED and pr_url and is_issue_session:
                 if issue_machine.can_transition("pr_created"):
                     logger.info(
@@ -991,11 +991,9 @@ class CompletionHandler:
         if not self._cleanup_actions_requested():
             return CleanupDecision.none()
 
-        is_work_session = session.key.kind not in {
-            SessionKind.REVIEW,
-            SessionKind.RETROSPECTIVE_REVIEW,
-            SessionKind.REWORK,
-        }
+        # Only a session whose own PR is its output waits for that PR's review
+        # before its worktree goes (#7347: a tech-lead run no longer does).
+        is_work_session = session.key.kind.capabilities.open_pr_means_done
 
         if is_work_session and pr_url and pr_number and self._should_wait_for_review_before_cleanup():
             pending_cleanup = PendingCleanup(
@@ -1043,7 +1041,7 @@ class CompletionHandler:
         Note: This returns True even for dry-run PRs (so pr-pending label gets added).
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
-        is_review_session = session.key.kind in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}
+        is_review_session = session.key.kind.capabilities.reports_verdict
         should_queue = should_queue_pr_review(
             has_pr=bool(pr_url),
             code_review_agent_configured=bool(self.config.code_review_agent),
@@ -1083,7 +1081,7 @@ class CompletionHandler:
         """Return label actions after an approved local review exchange."""
         if not review_exchange_completed or not pr_url:
             return ()
-        if session.key.kind in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind.capabilities.reports_verdict:
             return ()
         return (
             AddLabelAction(
