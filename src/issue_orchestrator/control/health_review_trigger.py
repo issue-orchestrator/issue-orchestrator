@@ -45,6 +45,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Iterable, Optional, Sequence
 
 from .health_review_body import PERIODIC_HEALTH_REVIEW_BODY, problem_storm_body
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
     TechLeadCreationOrigin,
@@ -742,7 +743,12 @@ def recover_pending_tech_lead_anchors(
     if case_files:
         print(f"  Skipped {len(case_files)} pattern case file(s) (#6781)")
     for issue in anchors:
-        if session_exists(f"issue-{issue.number}"):
+        # A tech-lead run is ``tech-lead-N`` since #7347; a live ``issue-N`` is
+        # one launched before the upgrade.
+        if any(
+            session_exists(kind.terminal_name(issue.number))
+            for kind in (SessionKind.TECH_LEAD, SessionKind.CODE)
+        ):
             print(f"  tech_lead issue #{issue.number}: Already running")
             continue
         # The ADR-0031 §4 marker label declares the anchor's variant; the

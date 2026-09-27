@@ -102,10 +102,15 @@ def make_session(
     issue: Issue | None = None,
     terminal_id: str = "issue-1",
 ) -> Session:
-    """Create a session for planner tests."""
+    """Create a session for planner tests.
+
+    Its kind is the one the launcher naming a terminal this way stamps (#7347):
+    policy reads the kind, never the name.
+    """
     issue = issue or make_issue()
+    kind = SessionKind.from_phase_label(terminal_id) or SessionKind.CODE
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=SessionKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=kind),
         issue=issue,
         agent_config=AgentConfig(
             prompt_path=tmp_path / "prompt.md", timeout_minutes=45
@@ -2352,3 +2357,44 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     host.add_comment.assert_not_called()
     host.close_issue.assert_not_called()
     run_kill.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "extra"),
+    [
+        (SessionStatus.TIMED_OUT, {}),
+        (SessionStatus.FAILED, {}),
+        (SessionStatus.BLOCKED, {"blocked_reason": "stuck"}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("terminal_id", "releases_claim"),
+    [
+        ("issue-7", True),
+        # A tech-lead run is named ``tech-lead-N`` since #7347 but still holds
+        # its issue's claim: the kind, not the name prefix, decides.
+        ("tech-lead-7", True),
+        # A rework - and so a rework's validation retry, which relaunches as
+        # rework since #7347 - never took the claim, so it does not release it.
+        ("rework-7", False),
+        ("review-7", False),
+    ],
+)
+def test_terminal_failure_custody_follows_the_kind(tmp_path, status, extra, terminal_id, releases_claim):
+    config = Config()
+    session = make_session(tmp_path, issue=make_issue(), terminal_id=terminal_id)
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        status,
+        processing_policy=CompletionProcessingPolicy(session.agent_label, session.key.kind),
+        **extra,
+    )
+
+    released = [
+        action
+        for action in actions
+        if isinstance(action, RemoveLabelAction)
+        and action.label == LabelManager(config).in_progress
+    ]
+    assert bool(released) is releases_claim

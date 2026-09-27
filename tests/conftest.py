@@ -1112,6 +1112,7 @@ def build_test_orchestrator_deps(
         config=config,
         repository_host=repo_host,
         working_copy=working_copy,
+        run_ledger=issue_run_ledger,
     )
 
     _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)

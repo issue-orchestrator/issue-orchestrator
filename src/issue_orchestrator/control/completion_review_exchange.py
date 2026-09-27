@@ -1111,9 +1111,13 @@ class CompletionReviewExchange:
         # can prove this site is safe without reading two lines up.
         subject = Issue(number=issue_number, title=issue_title, labels=[],
                         repo=require_repo(self._config))
+        # The exchange launches the parent's coder agent again on the issue, so
+        # its run is stamped by the same issue-lane rule as any launch of that
+        # agent (#7347): a tech lead's exchange run is a tech-lead run.
+        kind = SessionKind.for_issue_launch(agent_label, self._config.tech_lead_review_agent)
         return self._issue_run_allocator.allocate_exchange(IssueExchangeRunAllocation(
             worktree_path=worktree, issue_number=issue_number,
-            session_key=SessionKey(subject.key, SessionKind.CODE),
+            session_key=SessionKey(subject.key, kind),
             parent_session_name=parent_session_name, agent_label=agent_label,
         ))
 

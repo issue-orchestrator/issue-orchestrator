@@ -1436,7 +1436,7 @@ class TestHandleSessionCompletion:
             orchestrator.config,
             session_output=orchestrator.deps.session_output,
             pending_work_claims=orchestrator.deps.pending_work_claims,
-            processing_policy=unprocessed_session_policy(session, orchestrator.config),
+            processing_policy=unprocessed_session_policy(session),
             review_exchange_halted=True,
         )
 
@@ -4642,7 +4642,10 @@ class TestAQueuedValidationRetryNamesTheRunItCameFrom:
 
     def _queue_a_retry(self, config, worktree_manager, agent_label: str):
         issue = create_issue(6410, labels=[agent_label])
-        session = create_session(issue)
+        # The kind is the launch stamp for the label (#7347).
+        session = create_session(
+            issue, task=SessionKind.for_issue_launch(agent_label, config.tech_lead_review_agent)
+        )
         session.agent_label = agent_label
         orchestrator = create_test_orchestrator(
             config, worktree_manager=worktree_manager

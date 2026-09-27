@@ -782,21 +782,8 @@ class TestOrchestratorState:
                 session_name="retrospective-review-367",
             ),
         )
-        restored_legacy_issue = Issue(number=368, title="Restored", labels=["agent:web"])
-        restored_legacy_session = Session(
-            key=_make_session_key(368, SessionKind.CODE),
-            issue=restored_legacy_issue,
-            agent_config=sample_agent_config,
-            terminal_id="retrospective-review-368",
-            worktree_path=Path("/tmp/work368"),
-            branch_name="issue-368",
-            run_assets=make_session_run_assets(
-                Path("/tmp/work368"),
-                session_name="retrospective-review-368",
-            ),
-        )
         state = OrchestratorState(
-            active_sessions=[active_session, restored_legacy_session],
+            active_sessions=[active_session],
             pending_retrospective_reviews=[
                 PendingRetrospectiveReview(
                     issue_key=FakeIssueKey("365"),
@@ -821,12 +808,10 @@ class TestOrchestratorState:
             365,
             366,
             367,
-            368,
         }
         assert state.pending_or_active_retrospective_review_issue_numbers() == {
             365,
             367,
-            368,
         }
         assert state.has_in_flight_retrospective_review(366) is True
         assert state.has_pending_or_active_retrospective_review(366) is False
@@ -889,7 +874,7 @@ class TestPendingValidationRetry:
     """Guard tests for the validation-retry queue/recovery owner boundary."""
 
     @staticmethod
-    def _build(source_task: SessionKind) -> PendingValidationRetry:
+    def _build(source_kind: SessionKind) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=42,
             issue_title="Issue 42",
@@ -900,14 +885,14 @@ class TestPendingValidationRetry:
             validation_error="dirty tree",
             validation_error_file=None,
             retry_count=1,
-            source_task=source_task,
+            source_kind=source_kind,
         )
 
     def test_accepts_coding_source_tasks(self):
         """Coding-style sources produce a queueable retry."""
         for task in (SessionKind.CODE, SessionKind.REWORK):
             retry = self._build(task)
-            assert retry.source_task is task
+            assert retry.source_kind is task
 
     @pytest.mark.parametrize(
         "review_task",

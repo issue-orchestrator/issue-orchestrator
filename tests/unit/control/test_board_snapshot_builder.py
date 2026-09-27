@@ -347,7 +347,7 @@ class TestQueuesBlockedAndFailures:
                     validation_error="pytest exploded",
                     validation_error_file=None,
                     retry_count=1,
-                    source_task=SessionKind.CODE,
+                    source_kind=SessionKind.CODE,
                 ),
             ],
             priority_queue=[42],

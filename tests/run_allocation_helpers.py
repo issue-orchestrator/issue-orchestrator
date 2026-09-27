@@ -42,6 +42,12 @@ class MemoryIssueRunLedger:
     def recorded_runs(self, issue_number):
         return tuple(record for number, record in self.records.values() if number == issue_number)
 
+    def recorded_run(self, run):
+        entry = self.records.get(run.identity)
+        if entry is None or entry[1].run != run:
+            raise IssueRunEvidenceUnavailable("exact allocated run is not registered")
+        return entry[1]
+
 
 def branch_working_copy():
     from issue_orchestrator.ports.working_copy import WorkingCopy, BranchStatus

@@ -124,19 +124,6 @@ class SessionObserver:
             label_manager = LabelManager(config)
         self._lm = label_manager
 
-    def _extract_session_number(self, session_name: str) -> int:
-        """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
-        if session_name.startswith("issue-"):
-            return int(session_name.replace("issue-", ""))
-        elif session_name.startswith("review-"):
-            return int(session_name.replace("review-", ""))
-        elif session_name.startswith("rework-"):
-            return int(session_name.replace("rework-", ""))
-        elif session_name.startswith("tech-lead-"):
-            return int(session_name.replace("tech-lead-", ""))
-        else:
-            raise ValueError(f"Unknown session name format: {session_name}")
-
     def _session_exists_by_name(self, session_name: str) -> bool:
         """Check if a session exists by its full name (e.g., 'review-456')."""
         if self._session_runner is None:

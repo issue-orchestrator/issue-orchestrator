@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..domain.session_kind import SessionKind
+
 if TYPE_CHECKING:
     from .config import Config
     from ..ports.session_output import SessionOutput
@@ -89,7 +91,11 @@ def _search_worktree_in_base(
             if not session_dir.is_dir():
                 continue
             name = session_dir.name
-            if any(x in name for x in [f"issue-{issue_number}", f"review-{issue_number}", f"rework-{issue_number}"]):
+            if any(
+                kind.terminal_name(issue_number) in name
+                for kind in SessionKind
+                if kind is not SessionKind.HISTORICAL
+            ):
                 return worktree_path
     return None
 

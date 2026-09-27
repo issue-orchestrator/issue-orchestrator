@@ -52,13 +52,17 @@ def get_completion_instructions(task_kind: str) -> str:
     """Load task-specific completion instructions.
 
     Args:
-        task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead",
-                  "review_exchange_coder", "review_exchange_reviewer").
+        task_kind: The session kind value (``SessionKind.value``: "code",
+                  "rework", "tech-lead", "review", "retrospective-review") or a
+                  review-exchange role ("review_exchange_coder",
+                  "review_exchange_reviewer").
 
     Returns:
         Markdown instructions for the appropriate completion command.
     """
-    if task_kind in ("code", "rework"):
+    # A tech-lead run completes with coding-done (its decision artifacts ride
+    # on the completion record); before #7347 it launched stamped "code".
+    if task_kind in ("code", "rework", "tech-lead"):
         return get_coding_done_instructions()
     if task_kind == "review_exchange_coder":
         return get_review_exchange_coder_instructions()

@@ -27,7 +27,7 @@ from ..domain.historical_intake_policy import (
     failed_historical_validation,
 )
 from ..domain.session_key import SessionKey
-from ..domain.session_kind import SessionKind
+from ..domain.session_kind import HISTORICAL_AGENT_LABEL, SessionKind
 from ..ports.completion_intake import (
     CompletionEvidenceValidator,
     CompletionIntakeLedger,
@@ -88,11 +88,11 @@ class HistoricalCompletionIntake:
                 issue_number=command.issue_number,
                 session_key=SessionKey(
                     GitHubIssueKey(repo=command.repo_slug, external_id=str(command.issue_number)),
-                    SessionKind.CODE,
+                    SessionKind.HISTORICAL,
                 ),
                 worktree_path=worktree,
                 session_name="historical-" + uuid4().hex,
-                agent_label="operator:historical",
+                agent_label=HISTORICAL_AGENT_LABEL,
                 backend="historical_intake",
                 claude_log_dir=None,
                 orchestrator_log=None,

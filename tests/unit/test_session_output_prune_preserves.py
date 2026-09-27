@@ -102,7 +102,7 @@ def test_an_ordinary_retry_preserves_the_run_that_makes_it_restartable(
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=SessionKind.CODE,
+        source_kind=SessionKind.CODE,
         authority_run=None,
     )
 

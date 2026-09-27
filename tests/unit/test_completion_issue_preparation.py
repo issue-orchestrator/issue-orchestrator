@@ -86,6 +86,6 @@ def test_historical_receipt_uses_same_numeric_issue_binding(tmp_path, interrupte
     assert candidate.run.terminal_binding.terminal_id is None
     assert candidate.role.issue_number == 42
     assert candidate.role.agent_label == "operator:historical"
-    assert candidate.role.task is SessionKind.CODE
+    assert candidate.role.kind is SessionKind.HISTORICAL
     assert runner.run.call_count == calls + int(interrupted)
     validator.validate.assert_not_called()

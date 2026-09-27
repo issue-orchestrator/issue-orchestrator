@@ -485,9 +485,8 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
     for session in state.active_sessions:
         runtime = session.runtime_minutes
         timeout = session.agent_config.timeout_minutes
-        tmux_name = session.terminal_id or ""
-        is_review = tmux_name.startswith("review-")
-        phase = "Reviewing" if is_review else "Coding"
+        kind = session.key.kind
+        phase = "Reviewing" if kind is SessionKind.REVIEW else "Coding"
 
         agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
         if runtime >= timeout:
@@ -498,16 +497,17 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             status_reason = f"Running for {runtime} min"
 
         seen_issues.add(session.issue.number)
-        if session.key.kind == SessionKind.REVIEW:
+        if kind is SessionKind.REVIEW:
             flow_stage = "review"
-        elif session.key.kind == SessionKind.RETROSPECTIVE_REVIEW:
+        elif kind is SessionKind.RETROSPECTIVE_REVIEW:
             flow_stage = "review"
             phase = "Retro review"
             status_reason = f"Reviewing existing implementation for {runtime} min"
-        elif session.key.kind == SessionKind.REWORK:
+        elif kind is SessionKind.REWORK:
             flow_stage = "rework"
-        elif session.key.kind == SessionKind.TECH_LEAD:
+        elif kind is SessionKind.TECH_LEAD:
             flow_stage = "tech_lead"
+            phase = "Tech lead"
         else:
             flow_stage = "in_progress"
         flow_steps = flow_steps_for(flow_stage)

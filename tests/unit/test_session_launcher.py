@@ -976,10 +976,7 @@ class TestLaunchIssueSession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=SessionKind.CODE,
-            agent_label=sample_issue.agent_type,
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.CODE)
 
     def test_missing_internal_review_instructions_fail_before_initial_mutation(
         self,
@@ -1074,10 +1071,7 @@ class TestLaunchIssueSession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" not in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=SessionKind.CODE,
-            agent_label="agent:tech-lead",
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.TECH_LEAD)
 
     def test_tech_lead_launch_preserves_branch_but_coding_does_not(
         self, session_launcher, mock_worktree_manager, sample_config, sample_issue, tmp_path
@@ -2049,7 +2043,7 @@ class TestLaunchValidationRetrySession:
             validation_error="Validation blocked before running command: dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2069,81 +2063,6 @@ class TestLaunchValidationRetrySession:
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "Validation Retry" in command
         assert "dirty worktree" in command
-
-    def test_an_investigations_retry_reuses_its_exact_scratch_checkout(
-        self,
-        launcher_bundle,
-        mock_worktree_manager,
-        sample_config,
-        tmp_path,
-    ):
-        """The BASELINE, pinned so a narrowing cannot be undone by accident.
-
-        Earlier revisions of #7271 refused this launch or derived a scratch
-        worktree for it. Both needed a lifecycle boundary that did not exist
-        then, so #7271 pinned today's behaviour and left the rest to #7273 and
-        #7274: the retry launches, carries the recorded branch, and gets no
-        scratch treatment. A mutation restoring either would fail here.
-
-        #7273 has since landed ONE of the two things it was waiting for: the
-        branch is now PRESERVED, because reuse rebases onto the base and
-        hard-resets on conflict, and an investigation's branch was never pushed.
-        Everything else here still stands.
-
-        The retry carries the REAL tech-lead identity -- the configured review
-        agent, not merely scratch-shaped strings -- because a refusal or a
-        scratch derivation conditioned on that identity is exactly what a
-        narrowing would reintroduce, and an ``agent:web`` retry would not see
-        it.
-        """
-        sample_config.agents["agent:tech-lead"] = AgentConfig(
-            prompt_path=tmp_path / "prompt.md",
-            model="sonnet",
-            timeout_minutes=45,
-        )
-        sample_config.tech_lead_review_agent = "agent:tech-lead"
-        token = "a" * 12
-        scratch_branch = scratch_branch_name(123, token)
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:tech-lead",
-            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
-            branch_name=scratch_branch,
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=SessionKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry,
-            active_sessions=[],
-        )
-
-        assert result.success is True, (
-            "the investigation's retry was refused; that needs #7274 first"
-        )
-        call = mock_worktree_manager.create_calls[0]
-        assert call["worktree_name"] == scratch_worktree_name("io", 123, token), (
-            "the launcher discarded the CHECKOUT half of the retry identity, so "
-            "a stale branch name falls back to the ordinary issue worktree"
-        )
-        assert call["branch_name"] == scratch_branch
-        assert call["reuse_options"].preserve_branch is True, (
-            "the retry would rebase/reset the investigation's unpushed branch "
-            "onto base -- #7273"
-        )
-        assert call["reuse_options"].disable_reuse is False, (
-            "the retry stopped REUSING its checkout, which detaches and "
-            "recreates it -- and reuse is what keeps the investigation's "
-            "checkout active, so #7274's custody has nothing to protect"
-        )
-        assert result.session is not None
-        assert result.session.scratch_worktree is True
-        assert result.session.tech_lead_scope is None
 
     def test_an_ordinary_retry_keeps_its_existing_derivation(
         self,
@@ -2166,7 +2085,7 @@ class TestLaunchValidationRetrySession:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2198,7 +2117,7 @@ class TestLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2209,10 +2128,7 @@ class TestLaunchValidationRetrySession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=SessionKind.CODE,
-            agent_label="agent:web",
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.CODE)
 
     def test_missing_internal_review_instructions_fail_before_retry_mutation(
         self,
@@ -2236,7 +2152,7 @@ class TestLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -3004,7 +2920,10 @@ class TestLaunchReworkSession:
         monkeypatch.setattr(SqliteTechLeadAuthorityStore, "save_rework_receipts", original)
         run_dirs = list((launcher_bundle.create_session_calls[0]["wd"] / ".issue-orchestrator/sessions").iterdir())
         run_dir = next(path for path in run_dirs if path.name.endswith("__coding-2"))
-        restorer = SessionRestorer(sample_config, mock_repo_host, mock_working_copy, tech_lead_authority=store)
+        restorer = SessionRestorer(
+            sample_config, mock_repo_host, mock_working_copy,
+            run_ledger=launcher_bundle.issue_run_ledger, tech_lead_authority=store,
+        )
         sessions = restorer.restore_known_terminal(issue_number=123, session_name="rework-123", run_dir=run_dir,
             is_review=False, already_tracked=[])
         assert len(sessions) == 1
@@ -3031,10 +2950,7 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=SessionKind.REWORK,
-            agent_label="agent:web",
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.REWORK)
 
     def test_missing_internal_review_instructions_fail_before_rework_mutation(
         self,
@@ -3651,7 +3567,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         other_retry = PendingValidationRetry(
@@ -3664,7 +3580,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry, other_retry])
@@ -3710,7 +3626,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry])
@@ -7963,7 +7879,7 @@ class TestStackRelaunchGate:
             validation_error="boom",
             validation_error_file="/tmp/err.txt",
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8076,7 +7992,7 @@ class TestStackRelaunchGate:
             validation_error="boom",
             validation_error_file="/tmp/err.txt",
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8177,7 +8093,7 @@ class TestSetupRunsExactlyOncePerLaunch:
             validation_error="dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8561,7 +8477,7 @@ class TestLaunchRetryGuardClearing:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8725,6 +8641,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         source: SessionRunIdentity | None,
         agent_label: str = "agent:tech-lead",
         worktree_path: str = "/tmp/repo-tech-lead-6410-abcdef123456",
+        recovery_error: str | None = None,
     ) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=6410,
@@ -8736,9 +8653,13 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            # A tech lead's retry relaunches as a tech-lead run (#7347).
+            source_kind=(
+                SessionKind.TECH_LEAD if agent_label == "agent:tech-lead" else SessionKind.CODE
+            ),
             validation_cmd="make test",
             authority_run=source,
+            recovery_error=recovery_error,
         )
 
     def _resumed(self, launcher_bundle, sample_config, tmp_path, checkout: Path):
@@ -9012,6 +8933,20 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         assert call["reuse_options"].preserve_branch is True, (
             "the retry would rebase/reset the investigation branch onto base"
         )
+        # The exact scratch checkout is REUSED, not re-derived: the checkout
+        # half of the identity and its branch both come back.
+        assert call["worktree_name"] == checkout.name, (
+            "the launcher discarded the CHECKOUT half of the retry identity"
+        )
+        assert call["branch_name"] == "tech-lead-investigation-6410-abcdef123456"
+        assert call["reuse_options"].disable_reuse is False, (
+            "the retry stopped REUSING its checkout, which detaches and recreates it"
+        )
+        assert result.session is not None
+        assert result.session.scratch_worktree is True
+        # A tech lead's retry is a tech-lead run (#7347), not a coder.
+        assert result.session.key.kind is SessionKind.TECH_LEAD
+        assert result.session.terminal_id == "tech-lead-6410"
 
     def test_an_ordinary_retry_keeps_being_refreshed(
         self, launcher_bundle, sample_config, mock_worktree_manager
@@ -9140,9 +9075,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         assert result.session.issue.agent_type == "agent:tech-lead", (
             "the resumed issue still reads as the focus issue's coder"
         )
-        assert unprocessed_session_policy(
-            result.session, sample_config
-        ).is_tech_lead, "the resumed run does not classify as tech-lead work"
+        assert unprocessed_session_policy(result.session).is_tech_lead, "the resumed run does not classify as tech-lead work"
 
     def test_a_launch_that_never_spawns_leaves_no_destination_authority(
         self, launcher_bundle, sample_config, tmp_path
@@ -9544,9 +9477,8 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         else (round 3 finding 1).
         """
         TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
-        damaged = replace(
-            self._retry(None),
-            recovery_error="its original launch authority is missing",
+        damaged = self._retry(
+            None, recovery_error="its original launch authority is missing"
         )
 
         result = launcher_bundle.launcher.launch_validation_retry_session(
@@ -9660,7 +9592,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
             validation_error="Validation failed",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -9670,3 +9602,166 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         assert "PR #500" in result.reason
         assert mock_worktree_manager.create_calls == []
         assert launcher_bundle.create_session_calls == []
+
+
+class TestTheLaunchStampsOneKind:
+    """Every vocabulary a launch writes derives from ONE stamped kind (#7347).
+
+    Before, a tech-lead run launched as CODE / ``issue-N`` / ``coding-1`` and a
+    rework's validation retry relaunched as CODE / ``issue-N``: every
+    ``kind is CODE`` policy check silently included both.
+    """
+
+    @staticmethod
+    def _identity(session) -> dict:
+        return json.loads((session.run_dir / "session-identity.json").read_text())
+
+    @staticmethod
+    def _started_task(mock_events) -> str:
+        started = [e for e in mock_events.events if str(e.name) == "session.started"]
+        return started[-1].data["task"]
+
+    def test_a_tech_lead_run_is_stamped_tech_lead_everywhere(
+        self, launcher_bundle, sample_config, mock_events, tmp_path
+    ) -> None:
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        issue = Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo")
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.TECH_LEAD
+        assert session.terminal_id == "tech-lead-125"
+        assert launcher_bundle.create_session_calls[0]["name"] == "tech-lead-125"
+        assert session.run_assets.session_name == "tech-lead-1"
+        assert (
+            launcher_bundle.issue_run_ledger.recorded_run(session.run_assets).session_key.kind
+            is SessionKind.TECH_LEAD
+        )
+        assert self._identity(session)["task"] == "tech-lead"
+        assert self._started_task(mock_events) == "tech-lead"
+        # Its own kind still completes with coding-done, not reviewer-done.
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "coding-done" in command
+        assert "reviewer-done" not in command
+
+    def test_a_coding_run_keeps_its_names(
+        self, launcher_bundle, sample_issue, mock_events
+    ) -> None:
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.CODE
+        assert session.terminal_id == f"issue-{sample_issue.number}"
+        assert session.run_assets.session_name == "coding-1"
+        assert (
+            launcher_bundle.issue_run_ledger.recorded_run(session.run_assets).session_key.kind
+            is SessionKind.CODE
+        )
+        assert self._identity(session)["task"] == "code"
+        assert self._started_task(mock_events) == "code"
+
+    @staticmethod
+    def _retry(kind: SessionKind) -> PendingValidationRetry:
+        return PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123",
+            validation_error="tests failed",
+            validation_error_file=None,
+            retry_count=1,
+            source_kind=kind,
+            validation_cmd="make test",
+        )
+
+    @staticmethod
+    def _in_progress_moves(launcher_bundle) -> list:
+        return [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+            if isinstance(call.args[0], (AddLabelAction, RemoveLabelAction))
+            and call.args[0].label == "in-progress"
+        ]
+
+    def test_a_reworks_retry_relaunches_as_rework(
+        self, launcher_bundle, mock_events
+    ) -> None:
+        """It used to drop ``source_task`` and come back as a coder."""
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(SessionKind.REWORK), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.REWORK
+        assert session.terminal_id == "rework-123"
+        assert launcher_bundle.create_session_calls[0]["name"] == "rework-123"
+        assert session.run_assets.session_name == "coding-2"
+        assert (
+            launcher_bundle.issue_run_ledger.recorded_run(session.run_assets).session_key.kind
+            is SessionKind.REWORK
+        )
+        assert self._identity(session)["task"] == "rework"
+        assert self._started_task(mock_events) == "rework"
+        # A rework launch never takes the issue's in-progress claim; neither
+        # does its retry.
+        assert self._in_progress_moves(launcher_bundle) == []
+
+    def test_a_coders_retry_still_takes_the_claim(self, launcher_bundle) -> None:
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self._retry(SessionKind.CODE), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        assert result.session.key.kind is SessionKind.CODE
+        assert result.session.terminal_id == "issue-123"
+        [claim] = self._in_progress_moves(launcher_bundle)
+        assert isinstance(claim, AddLabelAction)
+
+
+@pytest.mark.parametrize(
+    ("live_terminal", "requeued"),
+    [
+        ("tech-lead-905", False),  # a tech-lead run's own name since #7347
+        ("issue-905", False),  # a tech-lead run launched before the upgrade
+        ("rework-905", True),
+        (None, True),
+    ],
+)
+def test_startup_does_not_requeue_an_anchor_whose_tech_lead_run_is_live(
+    sample_config, mock_repo_host, tmp_path, live_terminal, requeued
+) -> None:
+    from issue_orchestrator.control.health_review_trigger import (
+        recover_pending_tech_lead_anchors,
+    )
+    from issue_orchestrator.domain.tech_lead_session import HEALTH_REVIEW_MARKER_LABEL
+
+    TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+    mock_repo_host.issues = {
+        905: Issue(
+            number=905,
+            title="Health Review — problem storm",
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+    }
+    state = OrchestratorState()
+
+    recover_pending_tech_lead_anchors(
+        state,
+        repository_host=mock_repo_host,
+        config=sample_config,
+        session_exists=lambda name: name == live_terminal,
+        tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+    )
+
+    assert bool(state.pending_tech_lead_reviews) is requeued

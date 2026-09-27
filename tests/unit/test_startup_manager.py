@@ -2054,3 +2054,57 @@ class TestStartupSweepsThePendingWorkLedger:
         await manager.run_startup(sample_state)
 
         restore_sessions_fn.assert_called_once_with([])
+
+
+@pytest.mark.parametrize(
+    ("live_terminal", "cleared"),
+    [
+        # A tech-lead run is ``tech-lead-N`` since #7347 and holds the claim.
+        ("tech-lead-7", False),
+        ("issue-7", False),
+        # A rework never holds the issue's in-progress claim.
+        ("rework-7", True),
+        (None, True),
+    ],
+)
+def test_an_in_progress_issue_is_orphaned_only_when_no_claim_holder_is_live(
+    mock_config,
+    mock_events,
+    mock_runner,
+    mock_repository_host,
+    mock_action_applier,
+    mock_issue_branches_fn,
+    mock_label_store,
+    sample_state,
+    live_terminal,
+    cleared,
+):
+    manager = StartupManager(
+        config=mock_config,
+        events=mock_events,
+        runner=mock_runner,
+        repository_host=mock_repository_host,
+        action_applier=mock_action_applier,
+        issue_branches_fn=mock_issue_branches_fn,
+        session_exists_fn=lambda name: name == live_terminal,
+        restore_sessions_fn=MagicMock(),
+        launch_session_fn=lambda issue: None,
+        update_queue_cache_fn=lambda: None,
+        issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        startup_worktree_reconciler=_startup_worktree_reconciler(),
+        label_store=mock_label_store,
+    )
+    mock_action_applier.apply.return_value = MagicMock(success=True)
+    issue = Issue(7, "Anchor", labels=["in-progress", "agent:tech-lead"], repo="owner/repo")
+    resume: list = []
+
+    manager._analyze_and_handle_issue(sample_state, issue, {}, resume, "agent:tech-lead")
+
+    removed = [
+        call.args[0]
+        for call in mock_action_applier.apply.call_args_list
+        if isinstance(call.args[0], RemoveLabelAction)
+        and call.args[0].label == "in-progress"
+    ]
+    assert bool(removed) is cleared
+    assert resume == []

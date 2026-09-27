@@ -48,6 +48,7 @@ from ..domain.models import (
     ORCHESTRATOR_PR_MARKER,
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
+from ..domain.session_kind import SessionKind
 from .actions import AddLabelAction, RemoveLabelAction
 from .health_review_trigger import (
     hydrate_last_health_review_at,
@@ -481,7 +482,7 @@ class StartupManager:
                 issue=issue,
                 repo=self.config.repo,
                 issue_branches=issue_branches,
-                check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+                check_session_fn=self._issue_custody_session_exists,
                 pr_tracker=self.repository_host,
             )
             if not analysis.has_open_pr or not analysis.pr_url:
@@ -584,7 +585,7 @@ class StartupManager:
 
         analysis = analyze_issue(
             issue=issue, repo=self.config.repo, issue_branches=issue_branches,
-            check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+            check_session_fn=self._issue_custody_session_exists,
             pr_tracker=self.repository_host,
         )
 
@@ -610,6 +611,20 @@ class StartupManager:
             ])
         else:
             print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
+
+    def _issue_custody_session_exists(self, issue_number: int) -> bool:
+        """Whether a live terminal holds this issue's in-progress claim.
+
+        Every kind that holds the claim can: a coding session (``issue-N``) and,
+        since #7347 stamps it as its own kind, a tech-lead run
+        (``tech-lead-N``). Checking ``issue-N`` alone read a running tech lead's
+        anchor as orphaned in-progress work.
+        """
+        return any(
+            self._session_exists(kind.terminal_name(issue_number))
+            for kind in SessionKind
+            if kind.holds_issue_custody
+        )
 
     def _clear_orphaned_label(self, issue: Issue) -> None:
         """Clear stale in-progress label from issue."""

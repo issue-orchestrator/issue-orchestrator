@@ -6,7 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
+from ..domain.models import Session, SessionStatus
+from ..domain.session_kind import SessionKind
 from ..infra.config import Config
 from ..ports import RepositoryHost
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -121,14 +122,15 @@ class CompletionActionPlanner:
         self._provider_availability = provider_availability
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
-        """Map session type to interrupted-retry mode."""
-        if session.terminal_id.startswith("issue-") or session.terminal_id.startswith(
-            "rework-"
-        ):
+        """Map the session's kind to its interrupted-retry mode.
+
+        A tech-lead run is retried as coding work, as it was when it launched
+        under the ``issue-`` terminal name (#7347 keeps that behaviour).
+        """
+        kind = session.key.kind
+        if kind in (SessionKind.CODE, SessionKind.REWORK, SessionKind.TECH_LEAD):
             return "coding"
-        if session.terminal_id.startswith(
-            ("review-", RETROSPECTIVE_REVIEW_TERMINAL_PREFIX)
-        ):
+        if kind in (SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW):
             return "review"
         return None
 
@@ -180,7 +182,7 @@ class CompletionActionPlanner:
             )
             return None
 
-        session_kind = session.terminal_id.split("-", 1)[0]
+        session_kind = session.key.kind.session_type.value
         actions: list[Action] = [
             AddLabelAction(
                 issue_number=session.issue.number,
@@ -203,7 +205,7 @@ class CompletionActionPlanner:
                 expected=expected,
             ),
         ]
-        if session.terminal_id.startswith("issue-"):
+        if session.key.kind.holds_issue_custody:
             actions.append(
                 RemoveLabelAction(
                     issue_number=session.issue.number,
@@ -548,8 +550,8 @@ class CompletionActionPlanner:
         """Generate actions when session timed out."""
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
-        is_issue_session = session.terminal_id.startswith("issue-")
-        session_kind = session.terminal_id.split("-", 1)[0]
+        is_issue_session = session.key.kind.holds_issue_custody
+        session_kind = session.key.kind.session_type.value
 
         if is_issue_session:
             timeout_mins = (
@@ -622,8 +624,8 @@ class CompletionActionPlanner:
         command (interrupted auto-retry is decided by the caller)."""
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
-        is_issue_session = session.terminal_id.startswith("issue-")
-        session_kind = session.terminal_id.split("-", 1)[0]
+        is_issue_session = session.key.kind.holds_issue_custody
+        session_kind = session.key.kind.session_type.value
 
         if is_issue_session:
             return [
@@ -700,7 +702,7 @@ class CompletionActionPlanner:
                 label_manager=self._lm,
                 provider_availability=self._provider_availability,
             )
-        is_issue_session = session.terminal_id.startswith("issue-")
+        is_issue_session = session.key.kind.holds_issue_custody
         label = blocked_label or self._lm.blocked
 
         if is_issue_session:

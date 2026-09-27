@@ -531,7 +531,7 @@ class TestRunScopedReviewOnlyRecovery:
 
         artifacts = find_pending_retry_artifacts(worktree)
         assert artifacts is not None
-        assert artifacts.source_task == SessionKind.CODE
+        assert artifacts.source_kind == SessionKind.CODE
         assert artifacts.state.retry_count == 1
 
     def test_unrecognized_run_identity_is_not_recovered(self, tmp_path: Path):
@@ -561,7 +561,7 @@ class TestRunScopedReviewOnlyRecovery:
 
         artifacts = find_pending_retry_artifacts(worktree)
         assert artifacts is not None
-        assert artifacts.source_task == SessionKind.CODE
+        assert artifacts.source_kind == SessionKind.CODE
 
     def test_coding_retry_recovered_despite_newer_review_only_run(self, tmp_path: Path):
         """A newer review-only run does not shadow an older genuine coding retry."""
@@ -581,4 +581,4 @@ class TestRunScopedReviewOnlyRecovery:
 
         artifacts = find_pending_retry_artifacts(worktree)
         assert artifacts is not None
-        assert artifacts.source_task == SessionKind.CODE
+        assert artifacts.source_kind == SessionKind.CODE

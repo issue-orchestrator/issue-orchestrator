@@ -128,10 +128,16 @@ def create_test_session(
     agent_config: AgentConfig,
     worktree_path: Path,
     terminal_id: str = "issue-1",
-    task_kind: SessionKind = SessionKind.CODE,
+    task_kind: SessionKind | None = None,
     run_assets: SessionRunAssets | None = None,
 ) -> Session:
-    """Create a test session."""
+    """Create a test session.
+
+    Without an explicit kind, the kind is the one the launcher that names a
+    terminal this way stamps (#7347): policy reads the kind, never the name.
+    """
+    if task_kind is None:
+        task_kind = SessionKind.from_phase_label(terminal_id) or SessionKind.CODE
     issue_key = FakeIssueKey(str(issue.number))
     session_key = SessionKey(issue=issue_key, kind=task_kind)
     pr_number: int | None = None

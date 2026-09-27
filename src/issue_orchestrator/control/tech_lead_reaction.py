@@ -28,9 +28,9 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping
 
 from ..domain.dependency_gates import Gate, GateBlockReason
 from ..domain.models import DiscoveredFailure, Session, SessionStatus
+from ..domain.session_kind import SessionKind
 from ..ports.provider_resilience import ProviderErrorType
 from .dependency_gate_snapshot import build_successor_index
-from .tech_lead_session_policy import is_tech_lead_session
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -159,7 +159,6 @@ def record_completed_session_problem(
     *,
     status: SessionStatus,
     session: Session,
-    tech_lead_agent: str | None,
     blocking_label: str,
     artifact_hints: Callable[[], tuple[str, ...]],
     record: Callable[[DiscoveredFailure], None],
@@ -193,8 +192,8 @@ def record_completed_session_problem(
         return
     if status not in _REACTIVE_SESSION_STATUSES:
         return
-    # The session's OWN role, settled at launch (#7273 round 2 finding 1).
-    if is_tech_lead_session(tech_lead_agent, session.agent_label):
+    # The session's OWN kind, stamped at launch (#7347; #7273 round 2 finding 1).
+    if session.key.kind is SessionKind.TECH_LEAD:
         return
     record(
         DiscoveredFailure(

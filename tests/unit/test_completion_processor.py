@@ -3869,7 +3869,7 @@ class TestTechLeadCompletionEffects:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
-            source_task=SessionKind.CODE,
+            source_kind=SessionKind.TECH_LEAD,
             authority_run=source.identity,
         )
         resumed = make_session_run_assets(

@@ -33,21 +33,18 @@ different failure modes, and only that module may depend on this one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
 from ..domain.models import (
-    AgentConfig,
     PendingRework,
     PendingTechLeadReview,
     PendingValidationRetry,
     Session,
 )
-from ..domain.pending_work import InFlightWork, PendingWorkClaim, PendingWorkKind
-from ..domain.session_key import SessionKey
+from ..domain.pending_work import InFlightWork, PendingWorkClaim
 from ..domain.session_kind import SessionKind
 from ..ports.pending_work_claim_store import ClaimState, PendingWorkClaimStore
 from ..ports.provider_resilience import ProviderErrorType
@@ -104,7 +101,11 @@ class SettlementOutcome(Enum):
 
 @dataclass(frozen=True, slots=True)
 class QuarantinedSession:
-    """A restored terminal whose claim record could not be read (#6999 F6).
+    """A restored terminal whose claim cannot be trusted (#6999 F6, #7347).
+
+    Its claim record could not be read, could not prove the authority its
+    completion needs, or contradicts the kind and role the run ledger recorded
+    for it.
 
     The dangerous state this type exists to make un-ignorable: the terminal is
     alive and doing queued work, and the orchestrator no longer knows which.
@@ -272,13 +273,7 @@ class InFlightWorkLedger:
         self._forget_in_memory(session)
         return held
 
-    def rehydrate(
-        self,
-        sessions: Sequence[Session],
-        *,
-        agent_configs: Mapping[str, AgentConfig],
-        tech_lead_label: str | None,
-    ) -> "ClaimRestoration":
+    def rehydrate(self, sessions: Sequence[Session]) -> "ClaimRestoration":
         """Re-take the claims of terminals that survived a restart (#6999 F4).
 
         The pending queues are in-memory, so after a restart a live terminal's
@@ -286,11 +281,11 @@ class InFlightWorkLedger:
         it back is what lets a provider failure observed AFTER the restart still
         return the work.
 
-        The claim is also the authority on what the terminal is doing, which the
-        restored session cannot always tell: terminal-name parsing gives a
-        rework session generic CODE identity and no PR number, and without the
-        PR number the provider-blocked planner cannot put ``needs-rework`` back.
-        Reconciling identity from the claim fixes that at its source.
+        The restored session's kind and role come from the run ledger (#7347);
+        the claim must agree with them, and contributes what only it holds - a
+        rework's PR number (without which the provider-blocked planner cannot
+        put ``needs-rework`` back), a retry's attempt count, a health review's
+        owned cohort. A claim that contradicts the ledger quarantines the run.
 
         Returns a typed per-session verdict rather than a bare list (#6999 F6).
         A session whose claim is RECORDED BUT UNREADABLE is quarantined, not
@@ -354,13 +349,25 @@ class InFlightWorkLedger:
                         )
                     )
                     continue
+                mismatch = _restored_identity_mismatch(session, claim)
+                if mismatch is not None:
+                    logger.error(
+                        "[WORK] Quarantining %s: %s", session.terminal_id, mismatch
+                    )
+                    quarantined.append(
+                        QuarantinedSession(
+                            session,
+                            mismatch,
+                            self.claims.run_key_for(session.run_assets),
+                            self.claims.quarantine_key_for(session.run_assets),
+                        )
+                    )
+                    continue
                 if self.holds(session.terminal_id) is None:
                     self.state.in_flight_work.append(
                         InFlightWork(session.terminal_id, claim)
                     )
-                _reconcile_restored_identity(
-                    session, claim, agent_configs, tech_lead_label
-                )
+                _restore_claim_context(session, claim)
                 logger.info(
                     "[WORK] Restored terminal %s is still holding %s",
                     session.terminal_id,
@@ -538,75 +545,61 @@ class InFlightWorkLedger:
         ]
 
 
-def _reconcile_restored_identity(
-    session: Session,
-    claim: PendingWorkClaim,
-    agent_configs: Mapping[str, AgentConfig],
-    tech_lead_label: str | None,
-) -> None:
-    """Give a restored session back the identity its claim proves it has.
+def _restored_identity_mismatch(session: Session, claim: PendingWorkClaim) -> str | None:
+    """Why a restored session's recorded identity contradicts its claim, or None.
 
-    Restoration rebuilds a session from its terminal name and its run assets,
-    which cannot express every task kind OR launch role: a ``rework-*`` terminal
-    comes back as generic CODE work with no PR number, and a resumed tech-lead
-    retry comes back wearing the focus issue's coder label. The claim knows
-    better, and downstream policy depends on it - restoring the ``needs-rework``
-    label, which is keyed on the PR (#6999 F4), and classifying a resumed retry
-    as tech-lead work so it can inherit its grant (#7273 round 13).
+    Restoration now rebuilds a session's KIND and agent role from the durable
+    run ledger (#7347), so the claim no longer has to correct them - it has to
+    AGREE with them. Before, restoration read the kind off the terminal name
+    and the role off the issue's first agent label, and this module patched
+    both from the claim (#6999 F4, #7273 round 13/14). A disagreement now means
+    the ledger and the claim store describe different work for one live run;
+    neither can be trusted over the other, so the run is quarantined.
     """
-    if claim.kind is PendingWorkKind.TECH_LEAD:
-        # The third kind with the same gap. An ORIGINAL failure investigation is
-        # rebuilt with the focus issue's coder label and no launch scope, so its
-        # real completion is refused for a caller-role mismatch against the
-        # durable TECH_LEAD allocation (round 14 finding 2).
-        request = claim.request
-        assert isinstance(request, PendingTechLeadReview)
-        if tech_lead_label is None:
-            raise RuntimeError(
-                "Cannot restore tech-lead session without a configured "
-                "tech-lead agent"
-            )
-        try:
-            agent_config = agent_configs[tech_lead_label]
-        except KeyError as exc:
-            raise RuntimeError(
-                "Cannot restore tech-lead session for unconfigured "
-                f"agent {tech_lead_label!r}"
-            ) from exc
-        session.agent_label = tech_lead_label
-        session.agent_config = agent_config
-        session.tech_lead_scope = request.launch_scope()
-        return
+    claimed_agent: str | None = None
+    match claim.request:
+        case PendingTechLeadReview():
+            expected = SessionKind.TECH_LEAD
+        case PendingValidationRetry() as request:
+            expected, claimed_agent = request.source_kind, request.agent_label
+        case PendingRework():
+            expected = SessionKind.REWORK
+        case _:
+            return None
+    recorded_agent = session.agent_label
+    if claimed_agent is not None and claimed_agent != recorded_agent:
+        return (
+            f"its claim is a retry by {claimed_agent!r} but the run was "
+            f"recorded for {recorded_agent!r}"
+        )
+    recorded = session.key.kind
+    if recorded is not expected:
+        return (
+            f"its claim holds {claim.kind.value} work of kind {expected.value} "
+            f"but the run was recorded as {recorded.value}"
+        )
+    return None
 
-    if claim.kind is PendingWorkKind.VALIDATION_RETRY:
-        # The resumed run's ROLE lives only in the claim. Restoration rebuilds
-        # a session from the focus issue's own label, which for an investigation
-        # is the coder label -- so `unprocessed_session_policy` classified the
-        # restored run as ordinary work and the next retry was queued with no
-        # `authority_run` at all. That is the original #7273 defect, reached
-        # through a restart instead of a relaunch (round 13 finding 1).
-        request = claim.request
-        assert isinstance(request, PendingValidationRetry)
-        try:
-            agent_config = agent_configs[request.agent_label]
-        except KeyError as exc:
-            raise RuntimeError(
-                "Cannot restore validation-retry session for unconfigured "
-                f"agent {request.agent_label!r}"
-            ) from exc
-        session.agent_label = request.agent_label
-        session.agent_config = agent_config
-        session.validation_retry_count = request.retry_count
-        return
 
-    if claim.kind is not PendingWorkKind.REWORK:
-        return
-    request = claim.request
-    assert isinstance(request, PendingRework)
-    session.key = SessionKey(issue=session.key.issue, kind=SessionKind.REWORK)
-    if request.pr_number is not None:
-        session.pr_number = request.pr_number
-    session.rework_cycle = request.rework_cycle
+def _restore_claim_context(session: Session, claim: PendingWorkClaim) -> None:
+    """Carry onto a restored session the facts only its claim holds.
+
+    The kind and role come from the run ledger; these do not live there: a
+    health review's owned cohort (the producer's launch grant), a retry's
+    attempt count, and a rework's PR - which the provider-blocked planner needs
+    to put ``needs-rework`` back (#6999 F4).
+    """
+    match claim.request:
+        case PendingTechLeadReview() as request:
+            session.tech_lead_scope = request.launch_scope()
+        case PendingValidationRetry() as request:
+            session.validation_retry_count = request.retry_count
+        case PendingRework() as request:
+            if request.pr_number is not None:
+                session.pr_number = request.pr_number
+            session.rework_cycle = request.rework_cycle
+        case _:
+            return
 
 
 __all__ = [

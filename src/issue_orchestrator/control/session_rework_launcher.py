@@ -270,10 +270,7 @@ def _rework_launch_identity(
         return LaunchResult(
             None, False, f"Unresolved issue number for rework {rework.issue_key}"
         )
-    prepared_coder_prompt = deps.coder_prompt_addendum.prepare(
-        task=SessionKind.REWORK,
-        agent_label=rework.agent_type,
-    )
+    prepared_coder_prompt = deps.coder_prompt_addendum.prepare(kind=SessionKind.REWORK)
     if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
         return LaunchResult.required_input_unavailable(prepared_coder_prompt.reason)
     if result := deps.check_provider_ready(agent_config, issue_number):
@@ -302,7 +299,7 @@ def launch_rework_session(
     if isinstance(scoped, LaunchResult):
         return scoped
     work_claim = deps.scoped_rework.claim(work_claim, scoped.keys)
-    session_name = f"rework-{issue_number}"
+    session_name = SessionKind.REWORK.terminal_name(issue_number)
     # Preflight: session conflicts, then the stack work gate. A blocked/ambiguous
     # stack predecessor fails the rework closed before the reused successor
     # worktree is reset onto the default base (#6596).
@@ -343,7 +340,7 @@ def launch_rework_session(
     )
 
     coding_attempt = rework.rework_cycle + 1
-    phase_name = f"coding-{coding_attempt}"
+    phase_name = SessionKind.REWORK.phase_label(coding_attempt)
     ctx = WorktreeContext.create(
         command_runner=deps.command_runner,
         worktree_manager=deps.worktree_manager,

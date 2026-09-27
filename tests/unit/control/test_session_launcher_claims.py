@@ -216,7 +216,7 @@ class TestSessionLauncherClaimAcquisition:
                 prompt_provider = MagicMock()
 
                 def prepare_prompt(*args, **kwargs):
-                    operations.append(("prompt", kwargs["agent_label"]))
+                    operations.append(("prompt", kwargs["kind"]))
                     return PreparedCoderPromptAddendum(None)
 
                 prompt_provider.prepare.side_effect = prepare_prompt

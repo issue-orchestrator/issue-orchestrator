@@ -1024,7 +1024,7 @@ class AgentConfig:
                        uses {pr_number} but this is not provided, a KeyError is raised.
             existing_work: Optional context about existing commits in the worktree.
                           If provided, prepended to prompt so agent knows to complete vs restart.
-            task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead").
+            task_kind: The session kind value (e.g., "code", "rework", "review", "tech-lead").
                       Determines which completion instructions are injected.
         """
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -1159,7 +1159,7 @@ class AgentConfig:
         Args:
             prompt: The fully rendered prompt to send to the agent
             prompt_file: Path to the prompt/instructions file (for system prompt)
-            task_kind: The task kind value (e.g., "code", "rework", "review", "tech_lead").
+            task_kind: The session kind value (e.g., "code", "rework", "review", "tech-lead").
             extra_provider_args: Per-issue overrides (e.g., from labels) merged on top
                 of the agent's ``provider_args``.
             sandbox_scope: The per-session sandbox scope (ADR-0034), or ``None``
@@ -1312,12 +1312,12 @@ def _require_session_run_assets(value: object) -> None:
 
 
 def is_retrospective_review_session(session: Session) -> bool:
-    """Return true for current and restored retrospective review sessions."""
+    """Return true for current and restored retrospective review sessions.
 
-    return (
-        session.key.kind == SessionKind.RETROSPECTIVE_REVIEW
-        or session.terminal_id.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX)
-    )
+    A restored session carries its launch-stamped kind back from the run
+    ledger (#7347), so the kind alone answers; the terminal name is not read.
+    """
+    return session.key.kind is SessionKind.RETROSPECTIVE_REVIEW
 
 
 def active_retrospective_review_issue_numbers(sessions: Iterable[Session]) -> set[int]:
@@ -1898,13 +1898,15 @@ class PendingValidationRetry:
     a retry. The next tick will re-launch the session as a coding session with
     error context.
 
-    ``source_task`` is the task kind of the session that produced the retry. It
-    is required so every queue/recovery call site must declare provenance: a
-    validation retry always relaunches as coding work, so a review-only source
-    (PR review / retrospective review) is rejected at construction. Review-only
-    sessions make no commits, and relaunching one as coding work opens a PR on an
-    empty branch (see issue #6426). This is the owner-boundary guard that
-    complements the recovery scanner skipping review-only run directories.
+    ``source_kind`` is the kind of the session that produced the retry, and the
+    kind the retry relaunches AS (#7347): a rework's retry is still rework, a
+    tech lead's retry is still a tech-lead run. Before #7347 the relaunch
+    dropped it and every retry became coding work. It is required so every
+    queue/recovery call site must declare provenance, and a review-only source
+    (PR review / retrospective review) is rejected at construction: review-only
+    sessions make no commits, and relaunching one opens a PR on an empty branch
+    (see issue #6426). This is the owner-boundary guard that complements the
+    recovery scanner skipping review-only run directories.
     """
     issue_number: int
     issue_title: str
@@ -1915,7 +1917,7 @@ class PendingValidationRetry:
     validation_error: str
     validation_error_file: str | None
     retry_count: int  # Current retry count (will be incremented on re-launch)
-    source_task: SessionKind
+    source_kind: SessionKind
     validation_cmd: str | None = None  # For building retry prompt
     #: The run this retry inherits its launch authority FROM (#7273).
     #:
@@ -1940,11 +1942,28 @@ class PendingValidationRetry:
     def __post_init__(self) -> None:
         if self.recovery_error is not None and not self.recovery_error.strip():
             raise ValueError("PendingValidationRetry.recovery_error must be non-empty")
-        if self.source_task.is_review_only:
+        if self.source_kind.is_review_only or self.source_kind is SessionKind.HISTORICAL:
             raise ValueError(
-                "PendingValidationRetry cannot be created for review-only task "
-                f"{self.source_task.value} (issue #{self.issue_number}): review-only "
-                "sessions make no commits and must never enter the coder retry pipeline."
+                "PendingValidationRetry cannot be created for "
+                f"{self.source_kind.value} work (issue #{self.issue_number}): only a "
+                "launched session that makes commits can be retried; review-only "
+                "sessions must never enter the coder retry pipeline."
+            )
+        # Only a tech-lead run is admitted by a create-once launch-authority
+        # row, so only its retry names the run it inherits from. A tech-lead
+        # retry without one is launchable only if it is already refused
+        # (recovery_error) -- the launcher would otherwise start a run whose
+        # completion is guaranteed to be rejected.
+        if self.source_kind is SessionKind.TECH_LEAD:
+            if self.authority_run is None and self.recovery_error is None:
+                raise ValueError(
+                    f"tech-lead validation retry for issue #{self.issue_number} "
+                    "names no launch authority to inherit"
+                )
+        elif self.authority_run is not None:
+            raise ValueError(
+                f"{self.source_kind.value} validation retry for issue "
+                f"#{self.issue_number} cannot inherit tech-lead launch authority"
             )
 
 

@@ -1,12 +1,11 @@
 """ADR-0031 owner boundary for tech_lead session identity and completion effects.
 
-Both tech_lead variants (batch PR review and failure investigation) launch as
-``issue-{N}`` sessions under the configured tech lead agent, so nothing about a
-session's name distinguishes them. This module is the single owner for:
+Every tech_lead flavor (batch PR review, health review, failure investigation)
+launches as a ``SessionKind.TECH_LEAD`` session (``tech-lead-{N}``); the kind is
+stamped at launch by ``SessionKind.for_issue_launch`` (#7347), so WHETHER a
+session is a tech lead is the kind's answer, not this module's. This module is
+the single owner for:
 
-- **identity**: what makes a session a tech_lead session (the config-declared
-  tech lead agent), consolidating the checks previously duplicated in
-  ``SessionLauncher`` and ``CompletionActionPlanner``;
 - **flavor**: reading the launch-time :class:`TechLeadAssignment` that says
   which variant a session was given (manifest selection keys off it);
 - **launch preparation**: per-flavor session inputs (PR manifest download,
@@ -78,14 +77,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def is_tech_lead_session(
-    tech_lead_review_agent: str | None, agent_type: str | None
-) -> bool:
-    """True when ``agent_type`` is the configured tech_lead review agent."""
-    return bool(tech_lead_review_agent and agent_type == tech_lead_review_agent)
-
-
 def recover_tech_lead_launch_scope(
+    kind: SessionKind,
     config: "Config",
     issue: "Issue",
     tech_lead_authority: "TechLeadAuthorityStore | None",
@@ -110,11 +103,12 @@ def recover_tech_lead_launch_scope(
     3. anything else is an ordinary board issue the tech lead was aimed at, so
        it is a ``FAILURE_INVESTIGATION``.
 
-    Returns ``None`` for a session that is not a tech-lead run at all.
+    Returns ``None`` for a session that is not a tech-lead run at all - which
+    the restored run's recorded KIND says (#7347), not the issue's labels.
     """
     from .health_review_trigger import is_batch_anchor_title
 
-    if not is_tech_lead_session(config.tech_lead_review_agent, issue.agent_type):
+    if kind is not SessionKind.TECH_LEAD:
         return None
     if health_review_flavor_if_anchored(issue.labels) is not None:
         cohort = (
@@ -497,6 +491,7 @@ def _resolve_health_review_cohort(
 
 def prepare_tech_lead_session_data(
     *,
+    kind: SessionKind,
     config: "Config",
     repository_host: "RepositoryHost",
     manifest_downloader: "ManifestDownloader",
@@ -529,7 +524,7 @@ def prepare_tech_lead_session_data(
     (labels are the crash-safe truth a restart recovers from); otherwise
     BATCH_REVIEW.
     """
-    if not is_tech_lead_session(config.tech_lead_review_agent, issue.agent_type):
+    if kind is not SessionKind.TECH_LEAD:
         return ()
     flavor = (
         (tech_lead_scope.flavor if tech_lead_scope is not None else None)

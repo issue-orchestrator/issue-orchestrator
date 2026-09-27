@@ -43,6 +43,7 @@ from issue_orchestrator.domain.tech_lead_run import (
     REASON_NO_LONGER_BLOCKED,
     REASON_TECH_LEAD_DISABLED,
 )
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
@@ -113,7 +114,9 @@ class FakeSession:
             TechLeadLaunchScope(flavor=flavor) if flavor is not None else None
         )
         self.terminal_id = f"tech-lead-{issue_number}"
-        self.key = SimpleNamespace(stable_id=lambda: f"tech_lead:{issue_number}")
+        self.key = SimpleNamespace(
+            stable_id=lambda: f"tech_lead:{issue_number}", kind=SessionKind.TECH_LEAD
+        )
         # The launch authority opens the run's LOCAL record from these
         # (ADR-0033 / #6858).
         self.started_at = datetime(2026, 8, 9, 12, 0, 0)

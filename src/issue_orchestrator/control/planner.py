@@ -339,7 +339,7 @@ class Planner:
         rule (ADR-0031: agent label == configured ``tech_lead_review_agent``) has
         a single definition shared with the E2E worker-slot gate.
         """
-        return active_tech_lead_session_count(self.config, snapshot.active_sessions)
+        return active_tech_lead_session_count(snapshot.active_sessions)
 
     def _worker_capacity(self, snapshot: OrchestratorSnapshot) -> int:
         """Remaining worker-budget capacity this tick — charged for reviews,

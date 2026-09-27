@@ -331,7 +331,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 validation_error="dirty tree",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=SessionKind.CODE,
+                source_kind=SessionKind.CODE,
             ),
             PendingValidationRetry(
                 issue_number=other,
@@ -343,7 +343,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 validation_error="dirty tree",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=SessionKind.CODE,
+                source_kind=SessionKind.CODE,
             ),
         ],
         # discovered facts — Planner inputs that should not survive a scratch reset

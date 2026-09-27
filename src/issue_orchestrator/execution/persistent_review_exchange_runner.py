@@ -182,10 +182,7 @@ class PersistentReviewExchangeRunner:
             )
             return wt.path
 
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(
-            task=SessionKind.REWORK,
-            agent_label=coder_label,
-        )
+        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=SessionKind.REWORK)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
             raise RuntimeError(
                 "Required coder prompt addendum unavailable: "

@@ -746,11 +746,10 @@ class CompletionHandler:
         self._update_issue_machine(session, status, pr_url)
 
         # 3. Update review state machine
-        is_review = session.terminal_id.startswith("review-")
-        is_rework = session.terminal_id.startswith("rework-")
-        if is_review and status == SessionStatus.COMPLETED:
+        kind = session.key.kind
+        if kind is SessionKind.REVIEW and status == SessionStatus.COMPLETED:
             self._update_review_machine(session)
-        elif is_rework and status == SessionStatus.COMPLETED:
+        elif kind is SessionKind.REWORK and status == SessionStatus.COMPLETED:
             self._complete_rework_review_machine(session)
 
     def _update_session_machine(
@@ -791,7 +790,7 @@ class CompletionHandler:
             logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
             # Only trigger pr_created for issue sessions (not review/rework sessions)
             # Review/rework sessions work on issues that already have PRs
-            is_issue_session = session.terminal_id.startswith("issue-")
+            is_issue_session = session.key.kind.holds_issue_custody
             if status == SessionStatus.COMPLETED and pr_url and is_issue_session:
                 if issue_machine.can_transition("pr_created"):
                     logger.info(

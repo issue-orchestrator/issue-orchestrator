@@ -61,8 +61,11 @@ class IssueRunRow:
                 "branch_name": record.branch_name,
                 "terminal_binding": None if record.terminal_binding is None else json.dumps({"terminal_id": record.terminal_binding.terminal_id}),
                 "agent_label": record.agent_label,
-                "completion_task": record.completion_task.value
-                if record.completion_task is not None
+                # The kind is written to both columns: ``task`` is the kind and
+                # ``completion_task`` its role record, NULL only for a legacy
+                # row that never recorded a role (``agent_label`` NULL too).
+                "completion_task": record.session_key.kind.value
+                if record.agent_label is not None
                 else None,
                 # Retain the allocated lexical path without following mutable targets.
                 "run_dir": os.path.normpath(str(run.run_dir)),
@@ -106,7 +109,7 @@ class IssueRunRow:
     def processing_role(self) -> CompletionRunRole:
         record = self.decode()
         return CompletionRunRole.from_recorded(
-            self.data["issue_number"], record.completion_task, record.agent_label
+            self.data["issue_number"], record.session_key.kind, record.agent_label
         )
 
     def decode(self) -> IssueRunRecord:
@@ -136,14 +139,13 @@ class IssueRunRow:
         return IssueRunRecord(
             session_key=SessionKey(
                 GitHubIssueKey(repo=row["issue_scope"], external_id=row["issue_key"]),
-                SessionKind(row["task"]),
+                SessionKind.from_ledger_stamps(
+                    row["task"], row["completion_task"], row["agent_label"]
+                ),
             ),
             run=assets,
             recorded_at=row["recorded_at"],
             branch_name=row["branch_name"],
             terminal_binding=None if row["terminal_binding"] is None else RunTerminalBinding(**json.loads(row["terminal_binding"])),
             agent_label=row["agent_label"],
-            completion_task=SessionKind(row["completion_task"])
-            if row["completion_task"] is not None
-            else None,
         )

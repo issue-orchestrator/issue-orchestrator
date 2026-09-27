@@ -356,10 +356,7 @@ def test_run_resolves_coder_addendum_for_coder_worktree_only(
 
     _run(runner, tmp_path)
 
-    provider.prepare.assert_called_once_with(
-        task=SessionKind.REWORK,
-        agent_label="agent:coder",
-    )
+    provider.prepare.assert_called_once_with(kind=SessionKind.REWORK)
     assert captured["coder_prompt_addendum"] == "INTERNAL-CODER-ONLY"
 
 

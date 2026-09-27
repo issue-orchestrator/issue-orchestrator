@@ -92,6 +92,20 @@ class SessionKind(Enum):
         return self in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}
 
     @property
+    def holds_issue_custody(self) -> bool:
+        """Whether a session of this kind holds its issue's in-progress claim.
+
+        Its launch adds ``in-progress`` and its failure, timeout or block
+        releases it and applies the issue's blocking labels. Before #7347 this
+        was read off the terminal-name prefix (``issue-``), which covered coding
+        sessions and - because they launched as ``issue-N`` - tech-lead runs
+        and every validation retry. The kind keeps coding and tech-lead runs; a
+        rework (including its validation retry) never takes the claim, since
+        its open PR holds the issue.
+        """
+        return self in {SessionKind.CODE, SessionKind.TECH_LEAD}
+
+    @property
     def session_type(self) -> SessionType:
         """The terminal naming lane a session of this kind is launched in."""
         try:
@@ -126,7 +140,11 @@ class SessionKind(Enum):
 
     @classmethod
     def for_issue_launch(
-        cls, agent_label: str | None, tech_lead_agent: str | None
+        cls,
+        agent_label: str | None,
+        tech_lead_agent: str | None,
+        *,
+        granted_tech_lead_scope: bool = False,
     ) -> "SessionKind":
         """The kind an issue-lane launch stamps: the ONE agent-label mapping.
 
@@ -134,11 +152,16 @@ class SessionKind(Enum):
         a tech-lead run (whether it came off the pending tech-lead queue or was
         picked up as an ordinary issue); every other issue launch is coding.
         This is the only place the agent label decides a kind; afterwards the
-        stamped kind is the answer.
+        stamped kind is the answer. A launch granted a tech-lead scope that
+        would stamp anything else is a composition error and raises.
         """
-        if tech_lead_agent and agent_label == tech_lead_agent:
-            return cls.TECH_LEAD
-        return cls.CODE
+        kind = cls.TECH_LEAD if tech_lead_agent and agent_label == tech_lead_agent else cls.CODE
+        if granted_tech_lead_scope and kind is not cls.TECH_LEAD:
+            raise ValueError(
+                f"a launch granted a tech-lead scope would run as {kind.value} "
+                f"(agent {agent_label!r}, tech lead {tech_lead_agent!r})"
+            )
+        return kind
 
     @classmethod
     def from_ledger_stamps(

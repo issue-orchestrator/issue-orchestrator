@@ -50,6 +50,7 @@ from .bootstrap_pending_work import (
 )
 from .bootstrap_session_launcher import build_session_launcher_factory
 from .bootstrap_run_services import (
+    build_session_restorer,
     create_io_adapters as _create_io_adapters,
     build_issue_run_services,
     build_completion_intake,
@@ -431,7 +432,6 @@ def build_orchestrator(
         Fully configured Orchestrator instance
     """
     from ..infra.orchestrator import Orchestrator
-    from ..control.session_restorer import SessionRestorer
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..execution.tech_lead_downloader import TechLeadDownloader
@@ -587,13 +587,6 @@ def build_orchestrator(
         if github
         else None
     )
-    session_restorer = SessionRestorer(
-        config=config,
-        repository_host=github,
-        working_copy=working_copy,
-        tech_lead_authority=tech_lead_authority,
-    ) if github else None
-
     # Create state machine manager
     state_machine_manager = StateMachineManager(config=config)
 
@@ -643,6 +636,9 @@ def build_orchestrator(
     assert action_applier is not None
     assert fresh_issue_reader is not None
     assert github is not None
+    session_restorer = build_session_restorer(
+        config, github, working_copy, issue_run_ledger, tech_lead_authority
+    )
     validated_work = validated_work_bootstrap.build_validated_work_runtime(
         config, working_copy, issue_run_ledger, command_runner, validated_work_liveness,
         github, fresh_issue_reader, action_applier, label_manager, pending_work.needs_human_block,
@@ -1041,13 +1037,8 @@ def build_orchestrator_for_testing(
         config, github, events, working_copy, tech_lead_authority_for_testing,
     )
 
-    # Create SessionRestorer for testing
-    from ..control.session_restorer import SessionRestorer
-    session_restorer = SessionRestorer(
-        config=config,
-        repository_host=github,
-        working_copy=working_copy,
-        tech_lead_authority=tech_lead_authority_for_testing,
+    session_restorer = build_session_restorer(
+        config, github, working_copy, issue_run_ledger, tech_lead_authority_for_testing
     )
 
     # Create StateMachineManager for testing

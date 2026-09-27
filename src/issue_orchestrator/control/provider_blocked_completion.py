@@ -11,6 +11,7 @@ pushed the planner past its line budget.
 from __future__ import annotations
 
 from ..domain.models import Session
+from ..domain.session_kind import SessionKind
 from .actions import Action, AddLabelAction, RemoveLabelAction
 from .label_manager import LabelManager
 from .provider_availability import ProviderAvailabilityPolicy
@@ -63,7 +64,7 @@ def provider_blocked_actions(
                     issue_key=session.issue.key.stable_id(),
                 )
             )
-    if session.terminal_id.startswith("issue-"):
+    if session.key.kind.holds_issue_custody:
         actions.append(
             RemoveLabelAction(
                 issue_number=session.issue.number,
@@ -72,7 +73,7 @@ def provider_blocked_actions(
                 expected=expected,
             )
         )
-    if session.terminal_id.startswith("rework-") and session.pr_number:
+    if session.key.kind is SessionKind.REWORK and session.pr_number:
         actions.append(
             AddLabelAction(
                 issue_number=session.pr_number,

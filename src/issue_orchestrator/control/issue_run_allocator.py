@@ -34,6 +34,7 @@ class IssueRunAllocationService:
         return self._ledger.submission_capability(run)
 
     def allocate(self, request: IssueRunAllocation) -> SessionRunAssets:
+        self._require_launch_role(request.session_key, request.agent_label)
         run = self._output.start_run(
             worktree_path=request.worktree_path,
             session_name=request.session_name,
@@ -54,6 +55,7 @@ class IssueRunAllocationService:
     def allocate_exchange(
         self, request: IssueExchangeRunAllocation
     ) -> ReviewExchangeRun:
+        self._require_launch_role(request.session_key, request.agent_label)
         run = self._output.start_review_exchange_run(
             request.worktree_path,
             issue_number=request.issue_number,
@@ -89,8 +91,22 @@ class IssueRunAllocationService:
                 branch_name=status.branch,
                 terminal_binding=RunTerminalBinding(terminal_id),
                 agent_label=agent_label,
-                completion_task=SessionKind.TECH_LEAD
-                if agent_label == self._configuration.tech_lead_review_agent
-                else key.kind,
             ),
         )
+
+    def _require_launch_role(self, key: SessionKey, agent_label: str) -> None:
+        """Refuse a run whose stamped kind contradicts its agent role.
+
+        The kind is stamped by the launcher (#7347); allocation is the last
+        point before it becomes durable, so a launch path that stamped a
+        tech-lead agent's run as anything but ``TECH_LEAD`` (or the reverse)
+        fails here, before any run directory or ledger row exists. The ledger
+        used to paper over exactly that by re-deriving the role from the label.
+        """
+        tech_lead_agent = self._configuration.tech_lead_review_agent
+        runs_as_tech_lead = key.kind is SessionKind.TECH_LEAD
+        if runs_as_tech_lead != (tech_lead_agent is not None and agent_label == tech_lead_agent):
+            raise IssueRunEvidenceUnavailable(
+                f"run stamped {key.kind.value} does not match its agent role "
+                f"{agent_label!r} (configured tech lead: {tech_lead_agent!r})"
+            )

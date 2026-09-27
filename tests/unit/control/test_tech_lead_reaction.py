@@ -415,7 +415,6 @@ def _record(session, status: SessionStatus) -> list[DiscoveredFailure]:
     record_completed_session_problem(
         status=status,
         session=session,
-        tech_lead_agent="agent:tech-lead",
         blocking_label="blocked",
         artifact_hints=lambda: ("hint",),
         record=recorded.append,
@@ -449,7 +448,7 @@ def test_every_worker_task_kind_records_its_problem(task, status, tmp_path) -> N
 
 def test_tech_lead_sessions_never_record_their_own_problems(tmp_path) -> None:
     """The LAUNCH-OWNED role prevents recursion, not mutable issue labels."""
-    session = _worker_session(SessionKind.CODE, tmp_path, agent_label="agent:tech-lead")
+    session = _worker_session(SessionKind.TECH_LEAD, tmp_path, agent_label="agent:tech-lead")
     # A failure investigation runs against the original worker issue, whose
     # tracker labels still identify its CODER. Classification must use the role
     # settled at launch rather than re-reading this label -- and giving both the
