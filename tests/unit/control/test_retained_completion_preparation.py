@@ -194,6 +194,7 @@ def test_a_partial_completion_carries_its_typed_claim_into_the_command(retained)
     raw = json.loads(completion())
     raw["partial_pr"] = True
     rig = prepare(retained, raw=raw)
+    rig.prs.get_prs_for_branch.return_value = []
 
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
 

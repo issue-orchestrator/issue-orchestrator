@@ -3,7 +3,6 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from ..domain.pr_issue_reference import names_issue_in_closing_keyword
 from ..infra.runtime_artifacts import (
     build_forbidden_runtime_artifact_reason, forbidden_branch_runtime_artifacts,
 )
@@ -44,36 +43,16 @@ class PublicationSourceGuards:
         forbidden = forbidden_branch_runtime_artifacts(paths.paths)
         return build_forbidden_runtime_artifact_reason(forbidden) if forbidden else None
 
-    def partial_delivery(
-        self, worktree: Path, issue_number: int, *, repo_slug: str
-    ) -> str | None:
-        """Why the branch's commits would close an issue declared partly delivered.
-
-        GitHub closes an issue named by a closing keyword in any commit
-        message that reaches the default branch, and a squash merge usually
-        copies those messages into its own. So a partial delivery must not
-        carry one in any commit (#7288).
-        """
+    def branch_commit_messages(self, worktree: Path) -> tuple[tuple[str, ...], str | None]:
+        """The full messages of the branch's own commits, or why they are unreadable."""
         base_ref = f"origin/{self._base_branch()}"
         commits = self._working_copy.branch_commit_messages_against_base(worktree, base_ref)
         if not commits.success:
-            return (
-                f"Could not read branch commit messages against {base_ref} for the "
-                f"partial-delivery check: {commits.error or 'unknown git error'}"
+            return (), (
+                f"Could not read branch commit messages against {base_ref}: "
+                f"{commits.error or 'unknown git error'}"
             )
-        closing = [
-            message.splitlines()[0]
-            for message in commits.messages
-            if names_issue_in_closing_keyword(message, issue_number, repo_slug=repo_slug)
-        ]
-        if not closing:
-            return None
-        return (
-            f"completion declared partial delivery of #{issue_number}, but "
-            f"{len(closing)} commit(s) close it by keyword (first: {closing[0]!r}); "
-            f"GitHub would close #{issue_number} on merge. Reword them to "
-            f"'Refs #{issue_number}' or publish without --partial"
-        )
+        return commits.messages, None
 
     def check(self, worktree: Path) -> str | None:
         return self.test_skips(worktree) or self.runtime_artifacts(worktree)

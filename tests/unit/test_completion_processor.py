@@ -85,6 +85,7 @@ from issue_orchestrator.ports.working_copy import (
     BranchTextFilesResult,
     DiffResult,
     PushResult,
+    RebaseResult,
 )
 from issue_orchestrator.domain.events import EventBus, SessionEvent
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
@@ -287,6 +288,9 @@ def mock_git_adapter():
     )
     adapter.branch_post_image_paths_against_base = Mock(
         return_value=BranchPathsResult(success=True, paths=())
+    )
+    adapter.branch_commit_messages_against_base = Mock(
+        return_value=BranchCommitMessagesResult(success=True, messages=())
     )
     return adapter
 
@@ -672,6 +676,7 @@ class TestPartialPRReference:
         existing, partial, published,
     ):
         mock_pr_adapter.get_prs_for_issue.return_value = [self._pr(existing)]
+        mock_pr_adapter.get_prs_for_branch.return_value = [self._pr(existing)]
 
         result = self._run(
             processor, mock_git_adapter, worktree_with_completion, partial=partial
@@ -685,13 +690,18 @@ class TestPartialPRReference:
     def test_a_created_pr_that_closes_the_issue_is_refused_for_a_partial_completion(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
     ):
-        """An idempotent create can return an earlier "Closes" PR."""
-        mock_pr_adapter.create_pr.return_value = self._pr("Closes #123\n\nBody")
+        """An idempotent create returns the branch's open "Closes" PR; the
+        guard sees that PR on the branch before any write and refuses."""
+        existing = self._pr("Closes #123\n\nBody")
+        mock_pr_adapter.create_pr.return_value = existing
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
 
         result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=True)
 
         assert not result.success
         assert any("closes it on merge" in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
 
     def test_a_fresh_partial_pr_is_created_with_a_refs_line_and_published(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
@@ -708,7 +718,7 @@ class TestPartialPRReference:
         ("implementation", "commit_messages", "refused_because"),
         [
             ("Split A. Closes #123 once B lands.", ("Split A",), "implementation or problems text"),
-            ("Split A", ("Split A\n\nFixes #123",), "commit(s) close it by keyword"),
+            ("Split A", ("Split A\n\nFixes #123",), "close it by keyword"),
         ],
     )
     def test_a_partial_completion_whose_own_words_close_the_issue_is_refused_before_any_pr(
@@ -728,6 +738,7 @@ class TestPartialPRReference:
 
         assert not result.success
         assert any(refused_because in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.create_pr.assert_not_called()
         mock_pr_adapter.get_prs_for_issue.assert_not_called()
 
@@ -747,7 +758,75 @@ class TestPartialPRReference:
 
         assert not result.success
         assert any("Could not read branch commit messages" in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.create_pr.assert_not_called()
+
+    @pytest.mark.parametrize("partial", [True, False])
+    def test_a_closing_commit_never_reaches_an_open_partial_pr(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+        partial,
+    ):
+        """#7302 R7: the branch's open PR refs #123 and a rework commit says
+        "Fixes #123". Pushing it would close #123 when the PR merges, whether
+        or not the rework repeats --partial (an existing partial PR keeps its
+        line). The guard runs before the push: the push port is never called."""
+        existing = self._pr("Refs #123\n\nBody")
+        mock_pr_adapter.get_prs_for_issue.return_value = [existing]
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
+
+        result = self._run(
+            processor, mock_git_adapter, worktree_with_completion, partial=partial,
+            commit_messages=("Rework\n\nFixes #123",),
+        )
+
+        assert not result.success
+        assert any("close it by keyword" in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_a_whole_delivery_may_close_its_issue_by_commit(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """No partial claim and a "Closes #123" PR: a "Fixes #123" commit is fine."""
+        existing = self._pr("Closes #123\n\nBody")
+        mock_pr_adapter.get_prs_for_issue.return_value = [existing]
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
+
+        result = self._run(
+            processor, mock_git_adapter, worktree_with_completion, partial=False,
+            commit_messages=("Finish\n\nFixes #123",),
+        )
+
+        assert result.success
+        mock_git_adapter.push.assert_called()
+
+    def test_the_guard_runs_again_before_the_push_after_a_rebase_retry(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """A non-fast-forward push is retried after a rebase; the retry is a
+        new branch write and is guarded again before it pushes."""
+        existing = self._pr("Refs #123\n\nBody")
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
+        mock_git_adapter.push.return_value = PushResult(
+            success=False, branch="123-feature", remote="origin", message="non-fast-forward",
+        )
+        mock_git_adapter.has_uncommitted_changes.return_value = False
+        mock_git_adapter.rebase_on_branch.return_value = RebaseResult(success=True, message="ok")
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_git_adapter.branch_commit_messages_against_base.side_effect = [
+            BranchCommitMessagesResult(success=True, messages=("Slice",)),
+            BranchCommitMessagesResult(success=True, messages=("Slice\n\nFixes #123",)),
+        ]
+        worktree = worktree_with_completion(self._record(partial=True))
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert mock_git_adapter.push.call_count == 1
+        assert any("close it by keyword" in e for e in result.errors)
 
 
 class TestStackCreatedPRBaseEnforcement:
