@@ -1338,17 +1338,18 @@ class ActionApplier:
             # Close-on-merge fallback (porchpin #81): revalidation ordering
             # and rationale live in run_close_on_merge_fallback — the module
             # owns the destructive precondition; the planner's bit is advisory.
-            close_applied, close_error = run_close_on_merge_fallback(
+            close_applied, close_failure = run_close_on_merge_fallback(
                 repository_host=self.repository_host,
                 action=action,
                 close=self._apply_close_issue,
             )
-            if close_error is not None:
+            if close_failure is not None:
                 # Fail without any further mutation (no shed, no history);
                 # the entry stays reconcilable for retry.
-                return ActionResult.fail(
+                return ActionResult.fail_limited(
                     action,
-                    close_error,
+                    close_failure.reason,
+                    close_failure.host_rate_limit,
                     issue_number=action.issue_number,
                     pr_number=action.pr_number,
                 )

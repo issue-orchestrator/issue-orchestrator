@@ -2564,6 +2564,39 @@ class TestRecoverTerminalIssueAction:
         # Entry stays in its reconcilable status for the next discovery pass.
         assert entry.status == "completed"
 
+    @pytest.mark.parametrize("where", ["close", "evidence"])
+    def test_a_rate_limited_close_on_merge_forwards_its_limit(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager, where,
+    ):
+        """The fallback close and its apply-time evidence reads both keep a
+        typed GitHub rate limit for the liveness owner (#7350 r17)."""
+        from datetime import datetime, timezone
+
+        from issue_orchestrator.control.planned_action_liveness import outcome_of_result
+        from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+        from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+        reset = datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
+        limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+        limited.rate_limit = HostRateLimit(resets_at=reset, kind="primary")
+        self._stub_close_evidence(mock_repository_host)
+        if where == "close":
+            mock_repository_host.update_issue_state.side_effect = limited
+        else:
+            mock_repository_host.issue_closed_on_or_after.side_effect = limited
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "agent:backend"],
+            history_entry=self._awaiting_merge_entry(),
+        )
+
+        result = applier.apply(self._close_on_merge_action())
+
+        assert not result.success
+        assert outcome_of_result(result).retry_at == reset
+
     def test_apply_time_revalidation_preserves_human_reopen(
         self, mock_labels, mock_sessions, mock_events, mock_repository_host,
         real_label_manager,
