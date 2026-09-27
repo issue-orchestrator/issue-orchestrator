@@ -49,6 +49,21 @@ class ValidatedWorkStore(Protocol):
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome: ...
 
+    def retire_outside_scope(
+        self,
+        claim: ValidatedWorkClaim,
+        *,
+        evidence_ids: frozenset[str],
+        actor: str,
+        reason: str,
+    ) -> bool:
+        """Resolve, under the caller's claim, a record recovery never owned (#7323).
+
+        ``evidence_ids`` is every current and attached evidence the caller
+        proved outside recovery scope; any other set refuses with no write.
+        """
+        ...
+
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch: ...
 
     def has_unresolved_work(self, issue_number: int) -> bool: ...
