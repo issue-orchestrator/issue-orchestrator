@@ -62,6 +62,9 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     PublicEventName.SESSION_TIMEOUT: EventSpec(phase='in_progress', step='timeout', status='failed', level='detail'),
     PublicEventName.SESSION_BLOCKED: EventSpec(phase='in_progress', step='blocked', status='failed', level='detail'),
     PublicEventName.SESSION_LAUNCH_BLOCKED_PROVIDER: EventSpec(phase='in_progress', step='launch_blocked_provider', status='failed', level='detail'),
+    # 'started', not 'failed': the launch is WAITING for a known reset, and
+    # rendering it as a failure is the conflation #7297 removes.
+    PublicEventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT: EventSpec(phase='in_progress', step='launch_deferred_rate_limit', status='started', level='detail'),
     PublicEventName.SESSION_PROVIDER_AUTH_TERMINATED: EventSpec(phase='in_progress', step='provider_auth_terminated', status='failed', level='detail'),
     PublicEventName.SESSION_CLAIM_UNREADABLE: EventSpec(phase='in_progress', step='claim_unreadable', status='failed', level='detail'),
     PublicEventName.SESSION_RUN_UNRESTORABLE: EventSpec(phase='in_progress', step='run_unrestorable', status='failed', level='detail'),
