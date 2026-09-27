@@ -77,6 +77,10 @@ class RecoveryAttemptPending:
     message: str
     failure: ValidatedWorkFailure | None = None
     authority_stale: RecoveryAuthorityStale | None = None
+    #: Another owner holds the record right now (its execution lease, its
+    #: reserved stop, or its claim). Nothing about THIS attempt failed, so the
+    #: action liveness owner records nothing for it (#7350).
+    contended: bool = False
 
     def __post_init__(self) -> None:
         if (

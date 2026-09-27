@@ -255,3 +255,10 @@ class _PassthroughLiveness:
 
 
 PASSTHROUGH_LIVENESS = _PassthroughLiveness()
+
+
+def drain_liveness(owner: ActionLivenessOwner | None = None, *, record_issue=lambda _record_id: 1):
+    """A recovery-drain liveness over an in-memory owner (#7350)."""
+    from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
+
+    return RecoveryDrainLiveness(owner=owner or liveness_owner(), record_issue=record_issue)

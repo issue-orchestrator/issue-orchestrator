@@ -43,10 +43,10 @@ class RemoteAuthorityRefreshOperation:
     def run(self, request: RemoteAuthorityRefreshRequest) -> RecoveryAttemptPending:
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return RecoveryAttemptPending("Remote authority refresh is already executing")
+            return RecoveryAttemptPending("Remote authority refresh is already executing", contended=True)
         with lease as token:
             if not self._execution.relinquish(token):
-                return RecoveryAttemptPending("Record awaits its reserved stop operation")
+                return RecoveryAttemptPending("Record awaits its reserved stop operation", contended=True)
             record = self._store.record_for_id(request.record_id)
             refusal = request.refusal(record)
             if refusal is not None:
@@ -58,7 +58,8 @@ class RemoteAuthorityRefreshOperation:
             )
             if claim is None:
                 return RecoveryAttemptPending(
-                    "Remote authority refresh belongs to another owner or changed"
+                    "Remote authority refresh belongs to another owner or changed",
+                    contended=True,
                 )
             self._execution.remember_claim(token, claim)
             try:

@@ -806,13 +806,13 @@ def build_orchestrator(
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer)
     action_applier.runtime_lifecycle = runtime_lifecycle
+    action_liveness = build_action_liveness(
+        config, events=events, action_applier=action_applier, label_manager=label_manager
+    )
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
         runtime=runtime_lifecycle.core, working_copy=working_copy, fresh_issue_reader=fresh_issue_reader,
-        action_applier=action_applier, label_manager=label_manager,
-    )
-    action_liveness = build_action_liveness(
-        config, events=events, action_applier=action_applier, label_manager=label_manager
+        action_applier=action_applier, label_manager=label_manager, action_liveness=action_liveness.owner,
     )
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.unit.control.liveness_doubles import drain_liveness
 from issue_orchestrator.control.actions import RecoverValidatedWorkAction
 from issue_orchestrator.control.action_results import ActionResultType
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
@@ -164,6 +165,7 @@ def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=1,
+        liveness=drain_liveness(),
     )
     command = StoredEvidenceCommand(
         issue_number=42,
@@ -236,6 +238,7 @@ def test_shared_preflight_reports_exact_changed_authority_without_claim(tmp_path
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=1,
+        liveness=drain_liveness(),
     )
     command = StoredEvidenceCommand(
         issue_number=42,

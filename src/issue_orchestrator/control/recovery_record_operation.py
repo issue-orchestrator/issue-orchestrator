@@ -36,10 +36,10 @@ class RecoveryRecordOperation:
         """
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return RecoveryAttemptPending("Record recovery is already executing")
+            return RecoveryAttemptPending("Record recovery is already executing", contended=True)
         with lease as token:
             if not self._execution.relinquish(token):
-                return RecoveryAttemptPending("Record awaits its reserved stop operation")
+                return RecoveryAttemptPending("Record awaits its reserved stop operation", contended=True)
             try:
                 return self._run_owned(token, request, state)
             finally:
@@ -54,7 +54,7 @@ class RecoveryRecordOperation:
         claim = self._store.acquire_claim(request.record_id,
             expected_states=frozenset({record.disposition.state}), evidence_id=request.evidence_id)
         if claim is None:
-            return RecoveryAttemptPending("Record belongs to another owner or its evidence changed")
+            return RecoveryAttemptPending("Record belongs to another owner or its evidence changed", contended=True)
         self._execution.remember_claim(token, claim)
         # Before any issue read or workspace: a record recovery never owned
         # resolves here rather than failing preparation forever (#7323).
