@@ -44,6 +44,9 @@
                 // The expanded row renders the provider-outage badge, so the
                 // list must rebuild when a row gains or loses it.
                 item.provider_signal || '',
+                // ...and the custody line (#7331): rebuild when what it says
+                // changes, not when only its age ticks.
+                item.custody_signal || '',
                 isViewed ? '1' : '0',
             ].join('|');
         }).join('||');

@@ -1,3 +1,4 @@
+{% from "_blocked_custody.html" import custody_block %}
 {% set issue_time = issue.time if issue.time else '' %}
 {% set issue_time_is_timestamp = issue.time_is_timestamp if issue.time_is_timestamp else false %}
 {% set issue_runtime_label = issue.runtime_label if issue.runtime_label else '' %}
@@ -173,6 +174,12 @@
             {% endif %}
         </span>
     </div>
+    {#- Blocked-item custody (#7331): a sibling of the row, never inside its
+        role="button", so the "Why this state?" disclosure is not a control
+        nested in another control. -#}
+    {% if issue.custody %}
+    <div class="issue-row-custody">{{ custody_block(issue.custody) }}</div>
+    {% endif %}
     {# Expandable sub-issues for E2E items #}
     {% if issue.e2e_sub_issues or issue.e2e_failed_tests %}
     <div class="e2e-sub-issues-container" id="e2e-sub-{{ issue.issue_number }}" style="display: none;">

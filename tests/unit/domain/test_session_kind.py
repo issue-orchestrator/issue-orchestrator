@@ -153,3 +153,10 @@ class TestPhaseLabelPreFilter:
         parsed = SessionKind.from_phase_label(kind.phase_label(1))
         assert parsed is not None
         assert parsed.capabilities.produces_commits is kind.capabilities.produces_commits
+
+
+def test_every_kind_names_its_work_and_only_a_tech_lead_is_one() -> None:
+    """Custody's card words and tech-lead identity come from the owner (#7347)."""
+    assert {kind: kind.work_description for kind in SessionKind}[SessionKind.REWORK] == "rework session"
+    assert all(kind.work_description for kind in SessionKind)
+    assert {kind for kind in SessionKind if kind.is_tech_lead} == {SessionKind.TECH_LEAD}

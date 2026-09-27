@@ -47,6 +47,10 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "plugins/agent_context.js",
     "session_dialogs.js",
     "controls_refresh.js",
+    # ``blocked_custody.js`` renders the server-derived custody of each blocked
+    # item and the Blocked column's needs-attention line (#7331). Loaded before
+    # ``kanban_columns.js``, whose card and row renderers call it.
+    "blocked_custody.js",
     "kanban_columns.js",
     "issue_metadata.js",
     "issue_menus.js",

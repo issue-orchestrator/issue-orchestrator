@@ -58,6 +58,15 @@ export interface BlockedCodingAttemptPayload {
   started_at?: string | null;
 }
 
+export interface BlockedCustodySummaryPayload {
+  by_state: CustodyStateCountPayload[];
+  headline: string;
+  needs_attention: number;
+  stale: number;
+  total: number;
+  unowned: number;
+}
+
 export interface BlockedIssuePayload {
   agent_type: string;
   all_blocking_labels: string[];
@@ -79,6 +88,22 @@ export interface BlockedIssuesDialogPayload {
 
 export interface BlockedIssuesPayload {
   blocked_issues: BlockedIssuePayload[];
+}
+
+export interface BlockedItemCustodyPayload {
+  age_label: string;
+  attention_text: string;
+  charter: CustodyCharterPayload | null;
+  label: string;
+  needs_attention: boolean;
+  owner: string;
+  reason: string;
+  since: string;
+  since_basis: string;
+  stale: boolean;
+  stale_after_label: string;
+  state: "unowned" | "queued_for_tech_lead" | "investigating" | "waiting_on_you" | "being_fixed" | "waiting_on_world" | "held" | "verify";
+  tone: "attention" | "pending" | "active" | "you" | "world" | "held" | "verify";
 }
 
 export interface CapturedOutputAvailabilityPayload {
@@ -153,6 +178,30 @@ export interface CreateE2EUntriagedIssuesCommandPayload {
   kind: "create_e2e_untriaged_issues";
   label: string;
   run_id: number;
+}
+
+export interface CustodyCharterPayload {
+  action: string;
+  action_ceiling: "propose" | "execute";
+  ceiling_source: string;
+  decided_at: string;
+  decision_id: string;
+  lifecycle_label: string;
+  outcome: "executed" | "proposed" | "advice_only" | "refused_destructive";
+  outcome_label: string;
+  proposal_issue_number: number;
+  reason: string;
+  required_depth: "workaround" | "fix" | "restructure";
+  role: "flow" | "review_loop" | "abstraction" | "platform" | "intake" | "learning" | "general";
+  role_authority: "propose" | "execute";
+  role_depth: "workaround" | "fix" | "restructure";
+  role_enabled: boolean;
+}
+
+export interface CustodyStateCountPayload {
+  count: number;
+  label: string;
+  state: "unowned" | "queued_for_tech_lead" | "investigating" | "waiting_on_you" | "being_fixed" | "waiting_on_world" | "held" | "verify";
 }
 
 export interface CycleArtifactsPayload {
@@ -588,6 +637,7 @@ export interface FailedE2ETestExecutionPayload {
 
 export interface FlowColumnPayload {
   count: number;
+  custody_summary?: BlockedCustodySummaryPayload;
   expandable?: boolean;
   hidden_count: number;
   id: string;
@@ -742,6 +792,8 @@ export interface IssueDetailValidationDiagnosticPayload {
 export interface IssueItemPayload {
   action?: string | null;
   action_hint?: string | null;
+  custody?: BlockedItemCustodyPayload | null;
+  custody_signal?: string | null;
   issue_number?: number | string | null;
   issue_url?: string | null;
   open_run_command?: OpenE2ERunCommandPayload | null;

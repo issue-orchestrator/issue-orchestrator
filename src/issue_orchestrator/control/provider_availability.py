@@ -214,16 +214,25 @@ class ProviderAvailabilityPolicy:
         meter map without spawning a subprocess, and any matching open lane
         conservatively retains ownership.
         """
-        if not issue.agent_type:
-            return False
-        agent = self.config.agents.get(issue.agent_type)
+        return bool(self.open_lanes_for_agent(issue.agent_type))
+
+    def open_lanes_for_agent(self, agent_type: str | None) -> tuple[str, ...]:
+        """The lane keys still holding ``agent_type``'s work, in candidate order.
+
+        The same ownership read as :meth:`circuit_is_open_for_issue`, naming
+        the lanes so a board can say WHICH provider it waits on (#7331).
+        """
+        if not agent_type:
+            return ()
+        agent = self.config.agents.get(agent_type)
         if agent is None or not agent.provider:
-            return False
-        return any(
-            self.circuit_is_open(lane.key)
+            return ()
+        return tuple(
+            lane.key
             for lane in self.readiness_probe.candidate_lanes(
                 agent.provider, agent.model
             )
+            if self.circuit_is_open(lane.key)
         )
 
     # ------------------------------------------------------------------
