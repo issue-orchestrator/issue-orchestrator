@@ -2712,9 +2712,10 @@ response. The adapter classifies it into a typed `PrCreateRejection` (#7346):
 |---|---|
 | no commits between base and head | `PR_CREATE_NO_COMMITS` ⇒ `REJECTED` ⇒ `FAILED` (needs human) |
 | a PR already exists for the head | re-list and adopt only by this operation's marker; if the listing does not show it yet, `REMOTE_UNREADABLE` transient, bounded by the attempt budget |
-| any other structured validation refusal | `PR_CREATE_REJECTED` ⇒ `REJECTED` ⇒ `FAILED` (needs human) |
+| a field-level validation refusal (`base`/`head` invalid) | `PR_CREATE_REJECTED` ⇒ `REJECTED` ⇒ `FAILED` (needs human) |
 
-An unanswered create (transport error, 5xx, lost body) and a 422 without
+An unanswered create (transport error, 5xx, lost body), a rate limit, an
+unrecognized `custom` 422 message (a throttle), and a 422 without
 GitHub's structured `errors[]` (throttling, malformed body) stay a transient
 `REMOTE_UNREADABLE`, bounded by the attempt budget.
 

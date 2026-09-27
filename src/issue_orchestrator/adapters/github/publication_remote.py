@@ -78,8 +78,14 @@ def _create_rejection(exc: GitHubHttpError) -> PublicationPrCreateRejected | Non
         rejection = PrCreateRejection.NO_COMMITS
     elif _ALREADY_EXISTS in folded:
         rejection = PrCreateRejection.ALREADY_EXISTS
-    else:
+    elif all(isinstance(item.get("field"), str) and item.get("code") != "custom" for item in errors):
+        # A field-level refusal (``base``/``head`` invalid or missing) names
+        # what is wrong with this exact request. A ``custom`` message that is
+        # neither recognized refusal (a throttle, "please wait ...") proves
+        # nothing permanent and stays retryable.
         rejection = PrCreateRejection.INVALID
+    else:
+        return None
     detail = "; ".join(
         messages or [f"{item.get('field', '?')}: {item['code']}" for item in errors]
     )

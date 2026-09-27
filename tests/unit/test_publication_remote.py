@@ -321,6 +321,16 @@ def test_create_422_is_a_typed_definite_refusal(remote_factory, response, reject
         httpx.Response(422, json={"message": "Your request was flagged as spam; retry later."}),
         httpx.Response(422, text="not json"),
         httpx.Response(422, json={"message": "Validation Failed", "errors": []}),
+        # Structured, but a throttle rather than a refusal of this request.
+        httpx.Response(
+            422,
+            headers={"Retry-After": "60"},
+            json={
+                "message": "Validation Failed",
+                "errors": [{"resource": "PullRequest", "code": "custom",
+                            "message": "Please wait before trying again"}],
+            },
+        ),
     ],
 )
 def test_create_failure_without_a_definite_refusal_stays_untyped(remote_factory, response):
