@@ -175,8 +175,8 @@ def link_or_log(link: "Callable[[], None]", what: str) -> None:
 class CompletionEffectLinks:
     """What a completion's apply did with every executed decision's effects.
 
-    The completion owner notes each batch it applies, in order, and whether it
-    returned or raised; every effect it never reached was withheld. Results
+    The completion owner notes each result as it lands and which action raised;
+    every effect it never reached was withheld. Results
     line up with the batch by position (``apply_all`` returns one per action),
     so a composite applier's result is attributed to the action that was
     planned, whatever inner action it names.
@@ -191,15 +191,13 @@ class CompletionEffectLinks:
         for action, result in zip(batch, results):
             self._found[id(action)] = result_of(result)
 
-    def raised(self, batch: Sequence["Action"], error: BaseException) -> None:
-        for action in batch:
-            self._found.setdefault(
-                id(action),
-                (
-                    CharterExecutionResult.FAILED,
-                    f"the completion apply raised before its result was known: {error}",
-                ),
-            )
+    def raised(self, action: "Action", error: BaseException) -> None:
+        """*action*'s apply raised: its result is unknown, so it did not take
+        effect. The batch's actions after it were never attempted (withheld)."""
+        self._found[id(action)] = (
+            CharterExecutionResult.FAILED,
+            f"its apply raised before a result was known: {type(error).__name__}: {error}",
+        )
 
     def link(self, authority: "Callable[[], TechLeadAuthorityStore | None]") -> None:
         """Link every executed decision's folded result; *authority* is read only

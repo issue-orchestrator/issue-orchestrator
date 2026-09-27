@@ -2471,6 +2471,50 @@ def test_an_executed_release_refused_at_apply_time_never_reads_as_a_remedy(tmp_p
     assert "release withheld review) did not take effect: refused" in custody.reason
 
 
+def test_a_batch_that_raises_keeps_what_landed_before_the_raise():
+    """#7362 review r1: apply_all raising mid-batch must not deny an effect that
+    committed before it: that one is applied, the raising one failed, the rest
+    withheld."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.reconciliation import ExternalSnapshot, ReconciliationRequired
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decisions = [_decision(f"A{n}", "post_comment", target=n) for n in (5, 6, 7)]
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions(decisions)
+    refused = ReconciliationRequired("issue", 6, ExternalSnapshot.for_issue(6, set()),
+                                     ExternalSnapshot.for_issue(6, {"io:needs-reconcile"}), reason="drift")
+    host = MagicMock()
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_ops = store
+    dispatch = applier._dispatch
+
+    def refuse_six(action):  # the mutation gate refuses #6 past the apply boundary
+        if action.number == 6:
+            raise refused
+        return dispatch(action)
+
+    applier._dispatch = refuse_six  # type: ignore[method-assign]
+    actions = [AddCommentAction(number=n, comment=f"c{n}", charter_decisions=(d.decision_id,))
+               for n, d in zip((5, 6, 7), decisions)]
+
+    _results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+
+    assert error is refused
+    # #5's comment committed before the raise; #7's was never attempted.
+    assert [call.args[0] for call in host.add_comment.call_args_list] == [5]
+    rows = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert {a: r.execution for a, r in rows.items()} == {
+        "A5": CharterExecutionResult.APPLIED,
+        "A6": CharterExecutionResult.FAILED,
+        "A7": CharterExecutionResult.WITHHELD,
+    }
+    assert rows["A5"].took_effect and not rows["A6"].took_effect
+    assert "ReconciliationRequired" in (rows["A6"].execution_reason or "")
+
+
 def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):
     """A ledger write that fails is loud: nothing applies unaudited (#7330)."""
     from unittest.mock import MagicMock

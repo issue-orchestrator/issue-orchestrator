@@ -472,12 +472,15 @@ def _apply_completion_action_batch(
         len(actions),
         [type(action).__name__ for action in actions],
     )
+    landed: list[ActionResult] = []
     try:
         # `or []` tolerates test doubles whose apply_all returns None.
-        results = list(action_applier.apply_all(list(actions)) or [])
+        results = list(action_applier.apply_all(list(actions), on_result=landed.append) or [])
     except Exception as exc:
         if links is not None:
-            links.raised(actions, exc)
+            # What landed before the raise stands; the raise is the next one's.
+            links.applied(actions, landed)
+            links.raised(actions[len(landed)], exc)
         logger.warning(
             issue_log(
                 issue_number,
