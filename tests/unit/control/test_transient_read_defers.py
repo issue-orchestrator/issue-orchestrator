@@ -167,6 +167,7 @@ def _support_over(reader, events):
         session_manager=MagicMock(), action_applier=applier, fact_gatherer=MagicMock(),
         planner=MagicMock(), worktree_manager=MagicMock(), state_machine_manager=MagicMock(),
         cleanup_manager=cleanup, get_review_machine=Mock(), kill_session=Mock(),
+        pending_work_claims=MagicMock(),
     )
 
     def pause(number, reason):
