@@ -723,4 +723,3 @@ class _DecisionActionPlanner:
             self._plan_create_issue(proposed, execute=execute)
             return
         self.actions.extend(self._concrete_decision(proposed, gate_reason=None))
-

@@ -445,3 +445,49 @@ def test_an_advice_only_promotion_files_nothing_but_is_recorded() -> None:
     assert isinstance(record, RecordTechLeadCharterDecisionsAction)
     [decision] = record.decisions
     assert decision.outcome is CharterOutcome.ADVICE_ONLY
+
+
+def test_an_advice_only_promotion_lane_needs_no_filing_dependency_and_still_records() -> None:
+    """learning kept at workaround: nothing can be filed, so the self route's
+    follow-up worker agent is not required, and the lane still runs (through
+    the real readiness + fact gathering) to record why nothing was filed
+    (review r4 F1)."""
+    from dataclasses import replace as dc_replace
+
+    from issue_orchestrator.control.tech_lead_finding_promotion import (
+        gather_finding_promotion_facts,
+        plan_finding_promotion_actions,
+    )
+    from issue_orchestrator.control.tech_lead_promotion_read_budget import PromotionReadBudget
+    from issue_orchestrator.domain.models import TechLeadFacts
+    from issue_orchestrator.infra.tech_lead_promotion_activation import promotion_lane_readiness
+
+    config = Config()
+    config.repo = "o/r"
+    config.tech_lead_review_agent = "agent:tech-lead"
+    config.tech_lead_follow_up_agent = None
+    config.tech_lead.charter.learning.depth = "workaround"
+    store = InMemoryTechLeadAuthorityStore()
+    store.record_pattern(
+        signature="sig-a", issue_number=65, observation_id="sig-a:obs-1",
+        fix_class="code", area="", diagnosis="Retry never backs off.",
+    )
+    for index in (2, 3):
+        store.note_pattern_observation(signature="sig-a", observation_id=f"sig-a:obs-{index}")
+
+    # (Startup validation separately requires the follow-up agent whenever a
+    # tech-lead agent is configured, #6779 R14; the LANE's readiness must not.)
+    assert promotion_lane_readiness(config).problems == ()
+    promotable, _, _ = gather_finding_promotion_facts(
+        config, authority=store, target=None, read_budget=PromotionReadBudget()
+    )
+    [record] = plan_finding_promotion_actions(
+        config, dc_replace(TechLeadFacts(), promotable_findings=promotable)
+    )
+
+    assert isinstance(record, RecordTechLeadCharterDecisionsAction)
+    [decision] = record.decisions
+    assert (decision.action_id, decision.outcome) == ("sig-a", CharterOutcome.ADVICE_ONLY)
+    # Once learning may fix, filing is possible again and the dependency returns.
+    config.tech_lead.charter.learning.depth = "fix"
+    assert promotion_lane_readiness(config).problems

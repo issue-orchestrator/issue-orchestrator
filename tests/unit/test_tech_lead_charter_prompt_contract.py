@@ -153,6 +153,24 @@ def _tail(node: ast.expr) -> str:
     return ""
 
 
+def _bindings(node: ast.AST) -> list[tuple[ast.expr | None, list[ast.expr]]]:
+    """(value, targets) for every name-binding form that can carry an alias:
+    plain, annotated and walrus assignment, and ``with ... as`` items."""
+    if isinstance(node, ast.Assign):
+        return [(node.value, list(node.targets))]
+    if isinstance(node, ast.AnnAssign):
+        return [(node.value, [node.target])]
+    if isinstance(node, ast.NamedExpr):
+        return [(node.value, [node.target])]
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return [
+            (item.context_expr, [item.optional_vars])
+            for item in node.items
+            if item.optional_vars is not None
+        ]
+    return []
+
+
 def _dial_reads(tree: ast.AST) -> list[str]:
     """Every way to REACH a dial block, not just a leaf read.
 
@@ -166,9 +184,9 @@ def _dial_reads(tree: ast.AST) -> list[str]:
     aliases = {
         target.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.Assign) and _tail(node.value) == "tech_lead"
-        and isinstance(node.value, ast.Attribute)
-        for target in node.targets
+        for value, targets in _bindings(node)
+        if isinstance(value, ast.Attribute) and value.attr == "tech_lead"
+        for target in targets
         if isinstance(target, ast.Name)
     }
     reads: list[str] = []
@@ -182,7 +200,7 @@ def _dial_reads(tree: ast.AST) -> list[str]:
             elif node.attr in _DIAL_BLOCKS.get(receiver, ()) and (
                 isinstance(node.value, ast.Attribute)
                 or receiver == "findings"
-                or node.value.__class__ is ast.Name and _tail(node.value) in aliases
+                or (isinstance(node.value, ast.Name) and node.value.id in aliases)
             ):
                 reads.append(f"{receiver}.{node.attr}")
         elif (
@@ -211,6 +229,11 @@ def _dial_reads(tree: ast.AST) -> list[str]:
             "lead = config.tech_lead\nmodes = lead.authority\nx = modes.create_issue",
             ["tech_lead.authority"],
         ),
+        (
+            "lead: TechLeadConfig = config.tech_lead\nx = lead.authority.post_comment",
+            ["tech_lead.authority"],
+        ),
+        ("if (lead := config.tech_lead):\n    x = lead.charter", ["tech_lead.charter"]),
     ],
 )
 def test_the_guard_sees_aliased_and_indirect_dial_reads(source: str, expected: list[str]) -> None:

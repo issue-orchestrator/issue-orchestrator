@@ -234,6 +234,20 @@ CHARTER_ACTION_CLASSES: Mapping[str, CharterActionClass] = {
 }
 
 
+def promotion_ceiling(promote_mode: str) -> tuple[CharterAuthority, str]:
+    """The per-action ceiling ``tech_lead.findings.promote`` sets for a promotion.
+
+    ``auto`` files ungated (execute); ``gated`` needs approval (propose). ``off``
+    switches the lane off entirely and is never decided here.
+    """
+    if promote_mode == "off":
+        raise ValueError("finding promotion is off; it has no charter ceiling")
+    authority = (
+        CharterAuthority.EXECUTE if promote_mode == "auto" else CharterAuthority.PROPOSE
+    )
+    return authority, f"tech_lead.findings.promote ({promote_mode})"
+
+
 class UnclassifiedCharterActionError(KeyError):
     """An action kind reached the charter with no classification row."""
 

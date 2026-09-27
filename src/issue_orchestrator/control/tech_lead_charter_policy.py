@@ -31,9 +31,9 @@ from ..domain.tech_lead_charter import (
     CharterVerdict,
     TechLeadCharter,
     decide_charter,
+    promotion_ceiling,
 )
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
-from ..domain.tech_lead_findings import FINDING_PROMOTION_AUTO
 from .action_base import Action, ActionType
 from .action_results import ActionResult
 from .tech_lead_mutation import NO_RECONCILIATION_SUBJECT
@@ -63,13 +63,7 @@ class TechLeadCharterPolicy:
 
     def _ceiling(self, kind: str) -> tuple[CharterAuthority, str]:
         if kind == PROMOTE_FINDING_KIND:
-            mode = self.findings.promote
-            return (
-                CharterAuthority.EXECUTE
-                if mode == FINDING_PROMOTION_AUTO
-                else CharterAuthority.PROPOSE,
-                f"tech_lead.findings.promote ({mode})",
-            )
+            return promotion_ceiling(self.findings.promote)
         return (
             CharterAuthority(self.authority.mode_for(kind)),
             f"tech_lead.authority.{kind}",

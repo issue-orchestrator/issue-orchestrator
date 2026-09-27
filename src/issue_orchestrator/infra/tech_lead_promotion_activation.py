@@ -35,6 +35,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .config_models_tech_lead_charter import promotion_can_file
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -97,7 +99,14 @@ def promotion_lane_readiness(config: "Config") -> PromotionLaneReadiness:
         for area, target in findings.route.items()
         if target.is_self or target.agent_label is None
     )
-    if inherits_source_agent and not config.tech_lead_follow_up_agent:
+    # Only a lane that can FILE needs the filing dependency: when the charter
+    # keeps every promotion as advice, the lane still runs (to record why) but
+    # never stamps a worker agent on anything (#7330 review r4 F1).
+    if (
+        inherits_source_agent
+        and not config.tech_lead_follow_up_agent
+        and promotion_can_file(config.tech_lead)
+    ):
         problems.append(
             "review.tech_lead_follow_up_agent is required by"
             f" tech_lead.findings.route[{', '.join(repr(a) for a in inherits_source_agent)}]:"

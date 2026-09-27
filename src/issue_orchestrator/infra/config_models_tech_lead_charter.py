@@ -32,6 +32,9 @@ from typing import Any
 
 from ..domain.tech_lead_charter import (
     CHARTER_ACTION_CLASSES,
+    PROMOTE_FINDING_KIND,
+    decide_charter,
+    promotion_ceiling,
     DEFAULT_ROLE_CHARTERS,
     CharterBinding,
     CharterAuthority,
@@ -54,6 +57,28 @@ DESTRUCTIVE_TECH_LEAD_ACTIONS: tuple[str, ...] = tuple(
     for kind, action_class in CHARTER_ACTION_CLASSES.items()
     if action_class.binding is CharterBinding.DESTRUCTIVE
 )
+
+
+def promotion_can_file(tech_lead: Any) -> bool:
+    """Whether the charter lets the promotion lane FILE anything (#7330).
+
+    Filing dependencies (the follow-up worker agent a ``self`` route stamps on
+    the issue) are only required when this is True: a lane whose promotions the
+    ``learning`` role keeps as advice files nothing, but must still run to
+    record why. Takes the ``TechLeadConfig`` (duck-typed: that module imports
+    this one). Delegates to the same pure decision the policy owner makes.
+    """
+    findings = tech_lead.findings
+    if not findings.enabled:
+        return False
+    ceiling, source = promotion_ceiling(findings.promote)
+    verdict = decide_charter(
+        PROMOTE_FINDING_KIND,
+        tech_lead.charter.to_charter(),
+        action_ceiling=ceiling,
+        ceiling_source=source,
+    )
+    return not verdict.advice_only
 
 
 def destructive_execute_error(action_type: str, mode: str) -> str | None:
@@ -211,4 +236,3 @@ class TechLeadCharterConfig:
 
     def to_event_dict(self) -> dict[str, dict[str, object]]:
         return {role.value: self.role(role).to_event_dict() for role in CharterRole}
-

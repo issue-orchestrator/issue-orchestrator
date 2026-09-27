@@ -102,6 +102,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def promotion_target_repo(config: "Config", *, area: str) -> str:
+    """The repo a finding's area routes to, WITHOUT its scheduling labels.
+
+    Selection only needs the target to apply the per-target cap; resolving the
+    labels would demand the filing dependencies (the follow-up worker agent)
+    even for a candidate the charter keeps as advice and never files (#7330).
+    """
+    target = config.tech_lead.findings.route_for(area)
+    if not target.is_self:
+        return target.repo
+    if not config.repo:
+        raise ValueError(
+            "tech_lead.findings routes to 'self' but no repository is configured"
+        )
+    return config.repo
+
+
 def resolve_promotion_route(config: "Config", *, area: str) -> PromotionRoute:
     """The full queue contract of the repo a finding's area routes to.
 
@@ -253,7 +270,7 @@ def select_promotable_findings(
     )
     selected: list[PromotableFinding] = []
     for row in candidates:
-        target = resolve_promotion_route(config, area=row.area).target_repo
+        target = promotion_target_repo(config, area=row.area)
         target_key = target.casefold()
         if in_flight.get(target_key, 0) >= findings.max_open_promoted:
             logger.info(
