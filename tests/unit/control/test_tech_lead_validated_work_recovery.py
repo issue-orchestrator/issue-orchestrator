@@ -183,6 +183,7 @@ def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
             record_id=authority.record_id,
             evidence_id=authority.evidence_id,
             approved=authority,
+            issue_number=42,
         ),
         state,
     )

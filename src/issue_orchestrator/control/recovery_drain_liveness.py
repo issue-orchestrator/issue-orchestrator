@@ -146,7 +146,7 @@ class RecoveryDrainLiveness:
         if isinstance(request, RemoteAuthorityRefreshRequest):
             return self._key(REFRESH_ACTION, request.record_id,
                              request.authority.issue_number, request)
-        disposition = self._disposition(RECOVER_ACTION, request.record_id, request.evidence_id)
+        disposition = self._disposition(RECOVER_ACTION, request)
         if disposition is None or isinstance(disposition, LivenessKey):
             return disposition
         return self._record_key(RECOVER_ACTION, request.record_id, request.evidence_id, disposition)
@@ -155,7 +155,7 @@ class RecoveryDrainLiveness:
         """The scope sweep's judgement of one record (#7323's lane), over every
         evidence row it reads: newly attached evidence is a new question."""
         record_id, evidence_id = request.record_id, request.evidence_id
-        disposition = self._disposition(SCOPE_ACTION, record_id, evidence_id)
+        disposition = self._disposition(SCOPE_ACTION, request)
         if disposition is None or isinstance(disposition, LivenessKey):
             return disposition
         attached = self._guarded_read(
@@ -168,16 +168,26 @@ class RecoveryDrainLiveness:
         return self._record_key(SCOPE_ACTION, record_id, evidence_id, disposition, attached=attached)
 
     def _disposition(
-        self, action: str, record_id: str, evidence_id: str
+        self, action: str, request: RecoveryRecordRequest
     ) -> ValidatedWorkDisposition | LivenessKey | None:
-        """The record's disposition, read under its own stable "unreadable" key
-        (with no issue to escalate on, since none could be read)."""
-        unreadable = self._key(action, record_id, None, {
-            "record_id": record_id, "evidence_id": evidence_id, "state": _UNREADABLE,
+        """The record's disposition, read under its own stable "unreadable" key,
+        escalated on the issue the durable selection named. A disposition that
+        names another issue than its selection is a failed read too."""
+        record_id, selected_issue = request.record_id, request.issue_number
+        unreadable = self._key(action, record_id, selected_issue, {
+            "record_id": record_id, "evidence_id": request.evidence_id, "state": _UNREADABLE,
         })
-        return self._guarded_read(
-            unreadable, lambda: self.records.get(record_id), f"Disposition of record {record_id}"
-        )
+
+        def read() -> ValidatedWorkDisposition:
+            disposition = self.records.get(record_id)
+            if selected_issue is not None and disposition.key.issue_number != selected_issue:
+                raise ValueError(
+                    f"record {record_id} was selected under issue #{selected_issue} but its"
+                    f" disposition names #{disposition.key.issue_number}"
+                )
+            return disposition
+
+        return self._guarded_read(unreadable, read, f"Disposition of record {record_id}")
 
     def _guarded_read(
         self, unreadable: LivenessKey, read: Callable[[], _Fact], what: str

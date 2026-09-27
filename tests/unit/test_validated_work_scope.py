@@ -449,7 +449,7 @@ def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_r
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
         scope_sweep=NullValidatedWorkScopeSweep(),  # the refresh lane alone must retire it
         batch_size=5, interval_seconds=1,
-        liveness=drain_liveness(),
+        liveness=drain_liveness(records=store),
     )
 
     drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
@@ -497,9 +497,9 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
         scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
                                               retirement=retirement, batch_size=5,
-                                              liveness=drain_liveness()),
+                                              liveness=drain_liveness(records=store)),
         batch_size=5, interval_seconds=1,
-        liveness=drain_liveness(),
+        liveness=drain_liveness(records=store),
     )
 
     report = drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
@@ -551,7 +551,7 @@ def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tm
     store.retire_outside_scope = evidence_lands_first
     sweep = OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
                                       retirement=retirement, batch_size=5,
-                                      liveness=drain_liveness())
+                                      liveness=drain_liveness(records=store))
 
     report = sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
 

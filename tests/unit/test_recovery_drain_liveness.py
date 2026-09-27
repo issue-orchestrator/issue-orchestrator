@@ -160,10 +160,9 @@ def test_a_record_whose_disposition_cannot_be_read_is_still_bounded(tmp_path) ->
     """Selection returns the record but its disposition read fails every
     pass. Each failed READ is an attempt under a stable key; after
     max_attempts the read stops -- across restarts too -- the next record
-    keeps its turn, and after a release the healed record runs (review B r11,
-    r16)."""
+    keeps its turn, the park escalates on the record's issue, and after that
+    issue's Retry the healed record runs (review B r11, r16, r18)."""
     from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
-    from issue_orchestrator.domain.action_liveness import ActionIdentity
 
     engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"), issues=(410, 411))
     first, second = (
@@ -191,12 +190,13 @@ def test_a_record_whose_disposition_cannot_be_read_is_still_bounded(tmp_path) ->
         row for row in engine.escalation.parked
         if row.key.identity.subject == f"validated_work:{first}"
     ]
-    assert unreadable_park.key.escalation_issue is None
+    # Escalated where the work is -- the issue the durable selection named --
+    # so the issue carries the block and its Retry releases it (review B r18).
+    assert unreadable_park.key.escalation_issue == 410
+    assert 410 in [row.key.escalation_issue for row in engine.escalation.committed_blocks]
 
     engine.unreadable = frozenset()
-    engine.owner.release_identity(
-        ActionIdentity(f"validated_work:{first}", "recover_validated_work")
-    )
+    engine.owner.release_issue(410)  # the operator's Retry on #410
     engine.passes(1)
     assert engine.operation.called.count(first) == 1
 

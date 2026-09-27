@@ -54,6 +54,7 @@ class RecoveryDrain:
             record_id=command.authority.record_id,
             evidence_id=command.evidence_id,
             approved=command.authority,
+            issue_number=command.issue_number,
         )
 
     def preflight(

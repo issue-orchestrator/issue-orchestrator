@@ -110,7 +110,7 @@ def test_queue_routes_unobserved_remote_authority_to_refresh(tmp_path):
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=2,
         interval_seconds=10,
-        liveness=drain_liveness(),
+        liveness=drain_liveness(records=store),
     ).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
     assert len(report.items) == 2
     assert operations.called == []
@@ -136,7 +136,7 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
         batch_size=2,
         interval_seconds=10,
         clock=lambda: now.value,
-        liveness=drain_liveness(liveness_owner(clock=liveness_clock)),
+        liveness=drain_liveness(liveness_owner(clock=liveness_clock), records=store),
     )
     state = OrchestratorState()
     active = lambda: RecoveryDrainMode.ACTIVE
@@ -179,7 +179,7 @@ def test_interval_starts_after_synchronous_work_finishes(tmp_path):
         batch_size=1,
         interval_seconds=10,
         clock=lambda: now.value,
-        liveness=drain_liveness(),
+        liveness=drain_liveness(records=store),
     )
     active = lambda: RecoveryDrainMode.ACTIVE
     assert len(drain.tick(OrchestratorState(), active).items) == 1
@@ -291,7 +291,7 @@ def test_lifecycle_stop_during_batch_prevents_another_operation_and_preserves_cu
         batch_size=3,
         interval_seconds=10,
         clock=lambda: now.value,
-        liveness=drain_liveness(),
+        liveness=drain_liveness(records=store),
     )
 
     first = drain.tick(OrchestratorState(), lambda: mode.value)
