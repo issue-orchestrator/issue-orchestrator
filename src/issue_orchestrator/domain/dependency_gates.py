@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .host_rate_limit import HostRateLimit
 from .dependencies import (
     Dependency,
     DependencyMode,
@@ -256,6 +257,14 @@ class DependencyGateReport:
     @property
     def can_start_work(self) -> bool:
         return self.work.is_open
+
+    @property
+    def host_rate_limit(self) -> HostRateLimit | None:
+        """A host rate limit behind any edge that could not be looked up (#7297)."""
+        return next(
+            (dep.host_rate_limit for dep in self.dependencies if dep.host_rate_limit),
+            None,
+        )
 
     @property
     def can_review(self) -> bool:

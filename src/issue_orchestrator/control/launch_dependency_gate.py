@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence
 
 from ..domain.dependency_gates import Gate
+from ..domain.host_rate_limit import HostRateLimit
 from ..events import EventName
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
 from .session_launch_types import LaunchResult
@@ -115,8 +116,8 @@ class LaunchDependencyGate:
                 ],
             )
             return DependencyFreshness(
-                failure=LaunchResult(
-                    None, False, f"Dependencies not satisfied: {summary}"
+                failure=dependency_blocked_result(
+                    f"Dependencies not satisfied: {summary}", report.host_rate_limit
                 )
             )
 
@@ -202,7 +203,9 @@ class LaunchDependencyGate:
             reason=reason,
             retryable=decision.retryable,
         )
-        return LaunchResult(None, False, f"Stack dependencies not satisfied: {reason}")
+        return dependency_blocked_result(
+            f"Stack dependencies not satisfied: {reason}", decision.host_rate_limit
+        )
 
     def _publish_blocked(
         self,
@@ -227,3 +230,14 @@ class LaunchDependencyGate:
 
 
 __all__ = ["DependencyFreshness", "LaunchDependencyGate"]
+
+
+def dependency_blocked_result(reason: str, rate_limit: HostRateLimit | None) -> LaunchResult:
+    """A dependency block; one the host caused by rate limiting defers (#7297).
+
+    An edge GitHub refused to look up is UNKNOWN, not unsatisfied: failing the
+    launch on it would count a known wait as a failure.
+    """
+    if rate_limit is not None:
+        return LaunchResult.host_rate_limited(reason, rate_limit)
+    return LaunchResult(None, False, reason)
