@@ -60,7 +60,6 @@ _PER_KIND_HANDLERS: dict[tuple[str, str], int] = {
     ("control/worker_budget.py", "active_tech_lead_session_count"): 1,
     ("control/tech_lead_artifact_retention.py", "tech_lead_problem_artifact_hold_issue_numbers"): 1,
     ("control/tech_lead_reaction.py", "record_completed_session_problem"): 1,
-    ("control/health_review_trigger.py", "recover_pending_tech_lead_anchors"): 1,
     # A tech-lead run is never issue runtime, even under a pre-#7347 issue-N.
     ("control/review_exchange_lifecycle.py", "_is_tech_lead_run"): 1,
     ("domain/models.py", "PendingValidationRetry.__post_init__"): 1,
