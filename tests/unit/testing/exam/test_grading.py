@@ -109,9 +109,56 @@ class TestCaseBBlockedGreenPr:
         assert card.passed, card.failures
         assert card.remedy is not None
         assert card.remedy.verdict is RemedyVerdict.ACCEPTABLE
-        # Nothing in the action vocabulary can release a review yet.
-        assert card.remedy.vocabulary_gap is True
+        # release_withheld_review can express the fix now (#7399).
+        assert card.remedy.vocabulary_gap is False
         assert card.diagnosis is not None and card.diagnosis.passed
+
+    def test_an_executed_release_is_the_right_remedy(self) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._subject(),
+                runs=(
+                    run(
+                        action("release_withheld_review", "only blocked-failed withholds it", target=ISSUE),
+                        summary=GOOD_DIAGNOSIS,
+                    ),
+                ),
+            ),
+        )
+
+        assert card.passed, card.failures
+        assert card.remedy is not None
+        assert card.remedy.verdict is RemedyVerdict.RIGHT
+        assert card.remedy.evidence == f"release_withheld_review->#{ISSUE} (executed)"
+
+    @pytest.mark.parametrize(
+        "disposition",
+        [TechLeadActionDisposition.PROPOSED, TechLeadActionDisposition.REJECTED],
+    )
+    def test_a_release_that_did_not_execute_is_not_the_right_remedy(
+        self, disposition: TechLeadActionDisposition
+    ) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._subject(),
+                runs=(
+                    run(
+                        action("release_withheld_review", "release", target=ISSUE, disposition=disposition),
+                        action("escalate_to_human", GOOD_ESCALATION),
+                        summary=GOOD_DIAGNOSIS,
+                    ),
+                ),
+            ),
+        )
+
+        # Under propose authority the executed escalation is still the best
+        # a tech lead could do: acceptable, not right.
+        assert card.remedy is not None
+        assert card.remedy.verdict is RemedyVerdict.ACCEPTABLE
 
     def test_reset_retry_proposal_is_the_wrong_remedy(self) -> None:
         card = grade(
@@ -254,7 +301,7 @@ def test_scorecard_json_is_machine_readable() -> None:
         ],
     }
     assert payload["remedy"]["verdict"] == "missing"
-    assert payload["remedy"]["vocabulary_gap"] is True
+    assert payload["remedy"]["vocabulary_gap"] is False  # #7399 closed the gap
     assert payload["diagnosis"]["tech_lead_ran"] is False
     assert payload["destructive_actions"] == []
     assert payload["elapsed_seconds"] == 321.0

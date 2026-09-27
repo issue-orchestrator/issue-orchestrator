@@ -327,6 +327,10 @@ def pr_review_approved(role: str) -> Goal:
     return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
 
 
+#: The engine's event for a code-review session it launched (``session_launcher``).
+REVIEW_STARTED_EVENT = "review.started"
+
+
 def engine_saw_item(role: str) -> Goal:
     """The engine published at least one event about the item.
 

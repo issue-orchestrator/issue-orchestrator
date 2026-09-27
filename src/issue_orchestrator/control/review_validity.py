@@ -42,10 +42,83 @@ def evaluate_review_validity(
     review_label_confirmed: bool = False,
 ) -> ReviewValidity:
     """Return whether a review is still valid for queue/launch processing."""
-    issue_labels = tuple(issue.labels) if issue is not None else ()
+    return _evaluate(
+        config=config,
+        label_manager=label_manager,
+        observed_issue_labels=tuple(issue.labels) if issue is not None else None,
+        pr=pr,
+        review_label_confirmed=review_label_confirmed,
+    )
+
+
+@dataclass(frozen=True)
+class ReviewWithholding:
+    """This owner's answer twice: as the labels stand, and without one block.
+
+    ``current`` is exactly what review discovery decides for the PR today;
+    ``without_block`` is the same decision with ``block_label`` taken off the
+    issue and nothing else changed. The review is withheld ONLY by that block
+    when today's answer is ``issue_blocked`` and the answer without it admits
+    the review (#7399) - no second copy of the validity rules is consulted.
+    """
+
+    current: ReviewValidity
+    without_block: ReviewValidity
+    block_label: str
+
+    @property
+    def withheld_only_by_block(self) -> bool:
+        return (
+            not self.current.valid
+            and self.current.reason == "issue_blocked"
+            and self.without_block.valid
+        )
+
+
+def evaluate_review_withholding(
+    *,
+    config: "Config",
+    label_manager: "LabelManager",
+    issue: "Issue",
+    pr: "PRInfo",
+    block_label: str,
+) -> ReviewWithholding:
+    """Whether ``block_label`` on ``issue`` is all that keeps ``pr`` from review.
+
+    The review label is NOT taken as confirmed: a PR that lost it is withheld
+    by more than the block, because discovery would not list it at all.
+    """
+    labels = tuple(issue.labels)
+    folded = block_label.casefold()
+
+    def decide(issue_labels: tuple[str, ...]) -> ReviewValidity:
+        return _evaluate(
+            config=config,
+            label_manager=label_manager,
+            observed_issue_labels=issue_labels,
+            pr=pr,
+            review_label_confirmed=False,
+        )
+
+    return ReviewWithholding(
+        current=decide(labels),
+        without_block=decide(tuple(label for label in labels if label.casefold() != folded)),
+        block_label=block_label,
+    )
+
+
+def _evaluate(
+    *,
+    config: "Config",
+    label_manager: "LabelManager",
+    observed_issue_labels: tuple[str, ...] | None,
+    pr: "PRInfo | None",
+    review_label_confirmed: bool,
+) -> ReviewValidity:
+    issue_labels = observed_issue_labels if observed_issue_labels is not None else ()
     pr_labels = tuple(pr.labels) if pr is not None else ()
 
-    if pr is None and issue is None:
+    if pr is None and observed_issue_labels is None:
         return ReviewValidity(
             valid=True,
             reason="ok",
@@ -91,14 +164,14 @@ def evaluate_review_validity(
                 pr_labels=pr_labels,
             )
 
-    if issue is None:
+    if observed_issue_labels is None:
         return ReviewValidity(
             valid=True,
             reason="ok",
             pr_labels=pr_labels,
         )
 
-    issue_blocking = tuple(label_manager.get_blocking(issue.labels))
+    issue_blocking = tuple(label_manager.get_blocking(issue_labels))
     if issue_blocking:
         return ReviewValidity(
             valid=False,
@@ -108,7 +181,7 @@ def evaluate_review_validity(
             blocking_labels=issue_blocking,
         )
 
-    if label_manager.needs_rework in issue.labels:
+    if label_manager.needs_rework in issue_labels:
         return ReviewValidity(
             valid=False,
             reason="issue_needs_rework",

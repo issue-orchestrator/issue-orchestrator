@@ -214,6 +214,7 @@ tech_lead:
     kill_hung_session: execute
     request_rework: execute
     recover_validated_work: execute
+    release_withheld_review: execute
     # Auto-file create_issue follow-ups directly (the default), made explicit now
     # that it is safe: duplicate proposals are deduped against the full open
     # backlog (#6880 gate + #6882 trusted SQL corpus), so the tech lead cannot

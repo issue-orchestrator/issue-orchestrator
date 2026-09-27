@@ -72,6 +72,7 @@ from .actions import (
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
 )
@@ -112,6 +113,7 @@ _OP_TITLES: dict[str, str] = {
     "reset_retry": "reset & retry issue #{target} from scratch",
     "kill_hung_session": "kill hung session for issue #{target}",
     "recover_validated_work": "recover retained validated work for issue #{target}",
+    "release_withheld_review": "release the withheld review of issue #{target}'s PR",
 }
 
 
@@ -147,6 +149,7 @@ def build_stored_tech_lead_op(
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
+    observed_at: str = "",
     now_iso: str | None = None,
 ) -> StoredTechLeadOp:
     """The orchestrator-side executable payload for an act-level proposal.
@@ -172,6 +175,7 @@ def build_stored_tech_lead_op(
         target_terminal_id=target_session.terminal_id if target_session else "",
         target_session_type=(target_session.task_kind.value if target_session else ""),
         finding_ids=tuple(proposed.finding_ids),
+        observed_at=observed_at,
     )
 
 
@@ -189,6 +193,12 @@ def _proposal_issue_body(
         if op.op_type == "kill_hung_session"
         else ""
     )
+    if op.op_type == "release_withheld_review":
+        session_row += (
+            f"| Observed | {op.observed_at} (a failure recorded after this refuses the release) |\n"
+            "| Predicted effects | pr-pending on, the PR's review label kept, then only"
+            " blocked-failed off; re-verified at approval, refused typed if stale |\n"
+        )
     if op.rework_request is not None:
         request = op.rework_request
         target = request.target
@@ -264,6 +274,7 @@ def build_tech_lead_proposal_issue_action(
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
+    observed_at: str = "",
     now_iso: str | None = None,
 ) -> CreateTechLeadProposalIssueAction:
     """Compose the gated proposal issue creation for an act-level proposal.
@@ -278,6 +289,7 @@ def build_tech_lead_proposal_issue_action(
         target_session=target_session,
         rework_request=rework_request,
         validated_work_authority=validated_work_authority,
+        observed_at=observed_at,
         now_iso=now_iso,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
@@ -575,6 +587,20 @@ def plan_approved_tech_lead_op_executions(
                     finding_ids=op.finding_ids,
                     anchor_issue_number=item.proposal_issue_number,
                     proposal_issue_number=item.proposal_issue_number,
+                    reason=reason,
+                    expected=build_expected_for_mutation(),
+                )
+            )
+        elif op.op_type == "release_withheld_review":
+            actions.append(
+                ReleaseWithheldReviewAction(
+                    issue_number=op.target_issue_number,
+                    rationale=op.rationale,
+                    proposal_id=op.source_action_id,
+                    finding_ids=op.finding_ids,
+                    anchor_issue_number=item.proposal_issue_number,
+                    proposal_issue_number=item.proposal_issue_number,
+                    observed_at=op.observed_at,
                     reason=reason,
                     expected=build_expected_for_mutation(),
                 )

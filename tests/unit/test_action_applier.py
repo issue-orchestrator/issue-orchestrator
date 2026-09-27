@@ -3232,6 +3232,10 @@ class TestClaimGateAudit:
     #   authority on the target issue before invoking the shared recovery
     #   operation; that owner then checks the full launch-bound evidence
     #   snapshot before publishing its retained branch/PR.
+    # - RELEASE_WITHHELD_REVIEW: owner command (#7399) - re-verifies every
+    #   precondition with read-only owners, then performs its only writes
+    #   (pr-pending, review label, blocked-failed) as AddLabel/RemoveLabel
+    #   actions dispatched back through this applier's claim-verified handlers.
     # - DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: orchestrator-owned ledger cleanup
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
@@ -3292,6 +3296,7 @@ class TestClaimGateAudit:
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
         ActionType.RECOVER_VALIDATED_WORK,
+        ActionType.RELEASE_WITHHELD_REVIEW,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         # Writes only the local charter decision ledger (#7330); no GitHub call.

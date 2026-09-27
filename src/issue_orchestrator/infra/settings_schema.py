@@ -1490,6 +1490,31 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.recover_validated_work",
         },
     )
+    tech_lead_authority_release_withheld_review: str = Field(
+        "execute",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Release Withheld Review",
+        description=(
+            "Release the code review of a green PR withheld only by its issue's"
+            " own blocked-failed"
+        ),
+        json_schema_extra={
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "Not destructive: it removes only the issue's blocked-failed"
+                " (pr-pending goes on first), so execute (default) leaves the"
+                " decision to the charter's flow role. The orchestrator"
+                " re-verifies the open linked PR, green checks, no live session"
+                " or claim, that the block is the only thing review validity"
+                " withholds the review for, and that no newer failure was"
+                " recorded; a failed precondition refuses the release with a"
+                " typed reason. propose files a gated proposal issue instead."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.release_withheld_review",
+            "yaml_path": "tech_lead.authority.release_withheld_review",
+        },
+    )
     # Per-role charter dials (#7330): one enabled/depth/authority triple per role.
     tech_lead_charter_flow_enabled: bool = _charter_field(CharterRole.FLOW, "enabled")
     tech_lead_charter_flow_depth: str = _charter_field(CharterRole.FLOW, "depth")
@@ -1821,6 +1846,7 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_kill_hung_session",
         "tech_lead_authority_request_rework",
         "tech_lead_authority_recover_validated_work",
+        "tech_lead_authority_release_withheld_review",
     )
     @classmethod
     def _validate_tech_lead_authority_mode(cls, value: str, info: ValidationInfo) -> str:

@@ -17,7 +17,7 @@ from ..domain.scoped_rework import ReworkRequest
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from ..domain.models import DiscoveredFailure
 from ..domain.tech_lead_milestone import TechLeadMilestoneIntent
@@ -334,6 +334,9 @@ class ResetRetryIssueAction(Action):
     ``issue_number == anchor_issue_number``.
     """
 
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "reset_retry"
+
     issue_number: int = 0  # The issue to scratch-reset (the proposal's target)
     rationale: str = ""  # The agent's recorded rationale (proposal body)
     proposal_id: str = ""  # The decision artifact action id (A<n>)
@@ -369,6 +372,9 @@ class KillHungSessionAction(Action):
     mutations, mirroring ``reset_retry``.
     """
 
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "kill_hung_session"
+
     issue_number: int = 0  # The issue whose runtime is terminated (op target)
     rationale: str = ""  # The agent's recorded rationale (stored op)
     proposal_id: str = ""  # The decision artifact action id (A<n>)
@@ -403,6 +409,9 @@ class KillHungSessionAction(Action):
 class RequestReworkAction(Action):
     """A consent-bound instruction to the branch-preserving rework owner."""
 
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "request_rework"
+
     request: ReworkRequest = field(kw_only=True)
     proposal_id: str = field(kw_only=True)
     finding_ids: tuple[str, ...] = ()
@@ -421,6 +430,9 @@ class RequestReworkAction(Action):
 @dataclass(frozen=True)
 class RecoverValidatedWorkAction(Action):
     """Publish one exact retained validated head through the recovery owner."""
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "recover_validated_work"
 
     authority: ValidatedWorkAuthoritySnapshot = field(kw_only=True)
     rationale: str = ""
@@ -445,6 +457,60 @@ class RecoverValidatedWorkAction(Action):
 
     def reconciliation_subject(self) -> int:
         return self.issue_number
+
+
+@dataclass(frozen=True)
+class ReleaseWithheldReviewAction(Action):
+    """Release the review of an issue's open PR withheld only by the issue's block.
+
+    Planned directly under ``execute`` authority or from an approved gated
+    proposal (#7399). It carries only intent and provenance: which issue, and
+    when the proposing tech lead observed it. The applier's owner
+    (``tech_lead_review_release``) re-verifies every precondition against the
+    live owners before any write and refuses, typed, when one fails.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "release_withheld_review"
+
+    issue_number: int = 0
+    rationale: str = ""
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    #: ISO-8601 instant the proposing tech lead observed the board. A failure
+    #: recorded for the issue since then is newer than the block it diagnosed.
+    observed_at: str = ""
+    requires_effective_disposition: bool = False
+    action_type: ActionType = field(
+        default=ActionType.RELEASE_WITHHELD_REVIEW, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("ReleaseWithheldReviewAction requires a positive issue_number")
+        if not self.proposal_id:
+            raise ValueError("ReleaseWithheldReviewAction requires the proposal id")
+        if not self.observed_at:
+            raise ValueError("ReleaseWithheldReviewAction requires the observation instant")
+        if self.proposal_issue_number < 0:
+            raise ValueError("proposal_issue_number cannot be negative")
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
+#: Act-level ops that carry ``requires_effective_disposition``: when one is a
+#: failure investigation's terminal remedy, a refused (stale) apply satisfies the
+#: investigation only if its result says the remedy's goal already holds.
+#: ``request_rework`` is judged by its own receipt instead.
+EFFECTIVE_DISPOSITION_OP_ACTIONS = (
+    ResetRetryIssueAction,
+    KillHungSessionAction,
+    RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
+)
 
 
 @dataclass(frozen=True)

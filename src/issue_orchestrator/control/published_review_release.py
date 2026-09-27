@@ -118,6 +118,62 @@ class ReviewReleaseOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewReleaseWrites:
+    """The ordered, guarded writes that release one PR's review (steps 3-4).
+
+    Shared by every release so each gets the same order and guards: the sweep
+    and a refused reset (for published work, below) and the tech lead's
+    ``release_withheld_review`` (#7399), which decide eligibility their own way
+    and then hand this the issue and the PR to release.
+    """
+
+    labels: "LabelManager"
+    apply: Callable[["Action"], ActionResult]
+    #: The PR label review discovery scans for; empty when none is configured.
+    review_label: str
+
+    def release(self, issue_number: int, pr_number: int, reason: str) -> tuple["ReviewReleaseStatus", str]:
+        """Release; ``reason`` is recorded on every write and returned on success."""
+        gate = self.apply(AddLabelAction(
+            issue_number=issue_number, label=self.labels.pr_pending, fresh_presence=True,
+            reason=reason))
+        if not gate.success:
+            return ReviewReleaseStatus.GATE_FAILED, f"pr-pending not added: {gate.error}"
+        routed = self._route(pr_number, reason)
+        if routed is not None and not routed.success:
+            return ReviewReleaseStatus.ROUTE_FAILED, f"review label not restored: {routed.error}"
+        try:
+            lifted = self._lift(issue_number, reason)
+        except ReconciliationRequired as refused:
+            # The board moved (pr-pending gone, needs-human landed): not released.
+            return ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, f"blocked-failed kept: {refused}"
+        if not lifted.success:
+            return ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, f"blocked-failed not removed: {lifted.error}"
+        return ReviewReleaseStatus.RELEASED, reason
+
+    def _route(self, pr_number: int, reason: str) -> ActionResult | None:
+        """Make sure review discovery will find the PR: it scans the review label.
+
+        A released issue whose PR lost that label has no route to review, so
+        the label is restored on the PR before the issue block comes off.
+        Nothing to do when no review label is configured.
+        """
+        if not self.review_label:
+            return None
+        return self.apply(AddLabelAction(
+            issue_number=pr_number, label=self.review_label, fresh_presence=True,
+            reason=reason))
+
+    def _lift(self, issue_number: int, reason: str) -> ActionResult:
+        return self.apply(RemoveLabelAction(
+            issue_number=issue_number, label=self.labels.blocked_failed,
+            reason=reason,
+            expected=build_expected_for_mutation(
+                required={self.labels.blocked_failed, self.labels.pr_pending},
+                forbidden={self.labels.needs_human})))
+
+
+@dataclass(frozen=True, slots=True)
 class PublishedReviewRelease:
     custody: PublishedReviewHolds
     labels: "LabelManager"
@@ -138,48 +194,15 @@ class PublishedReviewRelease:
                                  f"issue blocks {self.labels.get_blocking(current)}; a held PR carries "
                                  f"its own block, or the issue's block is not only blocked-failed")
         described = "; ".join(hold.describe() for hold in holds)
-        gate = self.apply(AddLabelAction(
-            issue_number=issue_number, label=self.labels.pr_pending, fresh_presence=True,
-            reason=f"published validated work is under review: {described}"))
-        if not gate.success:
-            return self._outcome(issue_number, ReviewReleaseStatus.GATE_FAILED, holds,
-                                 f"pr-pending not added: {gate.error}")
-        routed = self._route(holds, described)
-        if routed is not None and not routed.success:
-            return self._outcome(issue_number, ReviewReleaseStatus.ROUTE_FAILED, holds,
-                                 f"review label not restored: {routed.error}")
-        try:
-            lifted = self._lift(issue_number, described)
-        except ReconciliationRequired as refused:
-            # The board moved (pr-pending gone, needs-human landed): not released.
-            return self._outcome(issue_number, ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, holds,
-                                 f"blocked-failed kept: {refused}")
-        if not lifted.success:
-            return self._outcome(issue_number, ReviewReleaseStatus.BLOCK_REMOVAL_FAILED, holds,
-                                 f"blocked-failed not removed: {lifted.error}")
-        return self._outcome(issue_number, ReviewReleaseStatus.RELEASED, holds, described)
-
-    def _route(self, holds: tuple[PublishedReviewHold, ...], described: str) -> ActionResult | None:
-        """Make sure review discovery will find the PR: it scans the review label.
-
-        A released issue whose PR lost that label has no route to review, so
-        the label is restored on the first unblocked held PR before the issue
-        block comes off. Nothing to do when no review label is configured.
-        """
-        if not self.review_label:
-            return None
         target = next(hold for hold in holds if not self.labels.get_blocking(hold.pr_labels))
-        return self.apply(AddLabelAction(
-            issue_number=target.pr_number, label=self.review_label, fresh_presence=True,
-            reason=f"published validated work is under review: {described}"))
+        status, detail = self.writes.release(
+            issue_number, target.pr_number, f"published validated work is under review: {described}")
+        return self._outcome(issue_number, status, holds,
+                             described if status is ReviewReleaseStatus.RELEASED else detail)
 
-    def _lift(self, issue_number: int, described: str) -> ActionResult:
-        return self.apply(RemoveLabelAction(
-            issue_number=issue_number, label=self.labels.blocked_failed,
-            reason=f"published validated work is under review: {described}",
-            expected=build_expected_for_mutation(
-                required={self.labels.blocked_failed, self.labels.pr_pending},
-                forbidden={self.labels.needs_human})))
+    @property
+    def writes(self) -> "ReviewReleaseWrites":
+        return ReviewReleaseWrites(labels=self.labels, apply=self.apply, review_label=self.review_label)
 
     @staticmethod
     def _outcome(issue_number: int, status: ReviewReleaseStatus,

@@ -10,6 +10,7 @@ from .actions import (
     ActionResult,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
 )
@@ -30,6 +31,7 @@ _TechLeadOpAction = TypeVar(
     KillHungSessionAction,
     RequestReworkAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
 )
 
 
@@ -53,16 +55,6 @@ def _terminal_outcome_comment(
     return None
 
 
-def _proposal_op_type(action: _TechLeadOpAction) -> str:
-    if isinstance(action, RequestReworkAction):
-        return "request_rework"
-    if isinstance(action, ResetRetryIssueAction):
-        return "reset_retry"
-    if isinstance(action, KillHungSessionAction):
-        return "kill_hung_session"
-    return "recover_validated_work"
-
-
 def finalize_tech_lead_op_execution(
     result: ActionResult,
     action: _TechLeadOpAction,
@@ -75,7 +67,7 @@ def finalize_tech_lead_op_execution(
     proposal_issue = action.proposal_issue_number
     if not proposal_issue:
         return result
-    op_type = _proposal_op_type(action)
+    op_type = action.op_type
     comment = _terminal_outcome_comment(result, op_type, action.issue_number)
     if comment is None:
         return result

@@ -863,6 +863,10 @@ class StoredTechLeadOp:
     finding_ids: tuple[str, ...] = ()
     rework_request: ReworkRequest | None = None
     validated_work_authority: ValidatedWorkAuthoritySnapshot | None = None
+    # When the proposing session observed the board (ISO-8601). Required for
+    # ``release_withheld_review``: a failure recorded for its target since
+    # then is newer than the block the tech lead diagnosed (#7399).
+    observed_at: str = ""
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -906,6 +910,7 @@ class StoredTechLeadOp:
         if self.rework_request is not None and self.target_issue_number != self.rework_request.target.issue_number:
             raise ValueError("Stored rework target issue must match its request")
         _validate_stored_op_recovery_authority(self)
+        _validate_stored_op_observation(self)
         findings = cast(object, self.finding_ids)
         if not isinstance(findings, tuple) or any(
             not isinstance(item, str) for item in findings
@@ -928,6 +933,7 @@ class StoredTechLeadOp:
             "target_session_id": self.target_session_id,
             "target_terminal_id": self.target_terminal_id,
             "target_session_type": self.target_session_type,
+            "observed_at": self.observed_at,
             "finding_ids": list(self.finding_ids),
             "rework_request": self.rework_request.to_dict() if self.rework_request else None,
             "validated_work_authority": (
@@ -967,6 +973,7 @@ class StoredTechLeadOp:
             target_session_id=str(data.get("target_session_id", "")),
             target_terminal_id=str(data.get("target_terminal_id", "")),
             target_session_type=str(data.get("target_session_type", "")),
+            observed_at=str(data.get("observed_at", "")),
             finding_ids=tuple(str(item) for item in raw_findings),
             rework_request=ReworkRequest.from_dict(cast(dict[str, Any], data["rework_request"])) if data.get("rework_request") is not None else None,
             validated_work_authority=(
@@ -996,6 +1003,21 @@ def _validate_stored_op_recovery_authority(op: StoredTechLeadOp) -> None:
         and op.target_issue_number != op.validated_work_authority.issue_number
     ):
         raise ValueError("Stored recovery target issue must match its authority")
+
+
+def _validate_stored_op_observation(op: StoredTechLeadOp) -> None:
+    observed = cast(object, op.observed_at)
+    if not isinstance(observed, str):
+        raise ValueError(f"StoredTechLeadOp observed_at must be a string, got {observed!r}")
+    if op.op_type != "release_withheld_review":
+        return
+    try:
+        datetime.fromisoformat(observed)
+    except ValueError as exc:
+        raise ValueError(
+            "release_withheld_review requires the ISO-8601 instant its proposer"
+            f" observed the board, got {observed!r}"
+        ) from exc
 
 
 def _validate_stored_op_session_fields(op: StoredTechLeadOp) -> None:

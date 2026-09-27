@@ -216,6 +216,12 @@ CHARTER_ACTION_CLASSES: Mapping[str, CharterActionClass] = {
         CharterRole.FLOW, _W, CharterBinding.APPROVABLE,
         "publish retained validated work",
     ),
+    # Removes the issue's own blocked-failed so its green PR's review runs
+    # (#7399): a label comes off, nothing is lost, so it is not destructive.
+    "release_withheld_review": CharterActionClass(
+        CharterRole.FLOW, _F, CharterBinding.APPROVABLE,
+        "release a review withheld only by the issue's own block",
+    ),
     "reset_retry": CharterActionClass(
         CharterRole.FLOW, _W, CharterBinding.DESTRUCTIVE,
         "reset an issue and retry it from scratch",

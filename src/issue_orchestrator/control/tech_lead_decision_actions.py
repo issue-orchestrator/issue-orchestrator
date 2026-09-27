@@ -26,7 +26,8 @@ emits the orchestrator's action vocabulary:
   evidence ``AddCommentAction`` on the existing case file. Under
   ``propose`` authority it stays a shadow record like any other proposal.
 - Act-level proposals with ``execute`` authority -> typed
-  :class:`ResetRetryIssueAction` / :class:`KillHungSessionAction` commands;
+  :class:`ResetRetryIssueAction` / :class:`KillHungSessionAction` /
+  :class:`ReleaseWithheldReviewAction` (#7399) commands;
   each applier owner re-validates the proposal's preconditions at execution
   time and downgrades stale proposals to a surfaced record (#6764, ADR-0031
   §2).
@@ -93,6 +94,7 @@ from .actions import (
     AddCommentAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
@@ -423,7 +425,8 @@ class _DecisionActionPlanner:
                         target_session=self.observed_session_generation(proposed.target_number)
                             if proposed.action_type == "kill_hung_session" else None,
                         rework_request=request,
-                        validated_work_authority=validated_work_authority),
+                        validated_work_authority=validated_work_authority,
+                        observed_at=self.observed_at),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number
@@ -465,6 +468,7 @@ class _DecisionActionPlanner:
                 target_session=target_session,
                 rework_request=request,
                 validated_work_authority=validated_work_authority,
+                observed_at=self.observed_at,
             )
         )
 
@@ -522,6 +526,16 @@ class _DecisionActionPlanner:
                     expected=self.expected,
                 )
             )
+            return
+        if proposed.action_type == "release_withheld_review":
+            self.actions.append(ReleaseWithheldReviewAction(
+                issue_number=proposed.target_number, rationale=proposed.body or "",
+                proposal_id=proposed.id, finding_ids=proposed.finding_ids,
+                anchor_issue_number=self._anchor_number, observed_at=self.observed_at,
+                reason=(f"tech_lead decision action {proposed.id}: release the withheld"
+                        f" review of issue #{proposed.target_number}"),
+                expected=self.expected,
+            ))
             return
         assert proposed.action_type == "kill_hung_session"
         target_session = self.observed_session_generation(proposed.target_number)

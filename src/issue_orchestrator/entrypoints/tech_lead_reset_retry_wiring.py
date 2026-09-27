@@ -22,7 +22,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Sequence
 
-from ..control.published_review_release import published_review_release_for
+from ..control.published_review_release import ReviewReleaseWrites, published_review_release_for
+from ..control.session_history import SessionHistoryOwner
+from ..infra.repo_scope import require_repo
+from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
     KillSessionRunOutcome,
@@ -39,6 +42,7 @@ from ..control.tech_lead_validated_work_recovery import (
 if TYPE_CHECKING:
     from ..domain.tech_lead_session import TechLeadSessionGeneration
     from ..infra.orchestrator import Orchestrator
+    from ..ports import RepositoryHost
     from ..ports.issue import Issue
 
 # Event provenance for ISSUE_UNBLOCKED emitted by an agent-authorized reset,
@@ -57,6 +61,39 @@ def build_tech_lead_validated_work_recovery_executor(
         recover=lambda command: deps.validated_work_recovery.recover(
             command, orchestrator.state
         ),
+    )
+
+
+def build_tech_lead_review_release_executor(
+    orchestrator: "Orchestrator", host: "RepositoryHost"
+) -> TechLeadReviewReleaseExecutor:
+    """Bind ``release_withheld_review`` (#7399) to the owner of each precondition.
+
+    Every read is the live owner's own: the runtime lifecycle's probe and
+    published-review custody, the durable claim ledger, the session history,
+    the review scanner's branch map, fresh GitHub reads, and the release writes
+    the stuck sweep uses, applied through the guarded applier.
+    """
+    deps = orchestrator.deps
+    labels = deps.label_manager
+    history = SessionHistoryOwner(lambda: orchestrator.state.session_history)
+    return TechLeadReviewReleaseExecutor(
+        events=deps.events,
+        config=orchestrator.config,
+        labels=labels,
+        read_issue=host.get_issue,
+        list_open_prs=host.list_open_prs_complete,
+        issue_branches=deps.pr_scanner.load_issue_branches,
+        read_checks=host.read_pr_status_check_rollup,
+        runtime_activity=deps.runtime_lifecycle.probe,
+        unresolved_claims=deps.pending_work_claims.list_unresolved_claims,
+        failures_not_before=history.failures_not_before,
+        custody=deps.runtime_lifecycle.published_review,
+        writes=ReviewReleaseWrites(
+            labels=labels, apply=deps.action_applier.apply,
+            review_label=orchestrator.config.code_review_label or "",
+        ),
+        repo_slug=require_repo(orchestrator.config),
     )
 
 

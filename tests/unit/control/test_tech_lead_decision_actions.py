@@ -11,6 +11,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadProposalIssueAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RecordTechLeadDispositionAction,
     EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
@@ -1637,6 +1638,44 @@ def test_recover_validated_work_binds_the_exact_launch_grant(authority_mode) -> 
     )
     assert isinstance(planned, (CreateTechLeadProposalIssueAction, RecoverValidatedWorkAction))
     assert bound is grant
+
+
+def _release(action_id: str = "A11") -> ProposedTechLeadAction:
+    return ProposedTechLeadAction(
+        id=action_id,
+        action_type="release_withheld_review",
+        target_number=13,
+        body="Only blocked-failed withholds PR #14's review.",
+        finding_ids=("T1",),
+    )
+
+
+def test_release_withheld_review_executes_by_default_as_an_owner_command() -> None:
+    """The default ceiling is open and the flow role executes (#7399): the
+    planner emits the typed command, carrying the tech lead's observation
+    instant, and nothing else decides eligibility here."""
+    [planned] = _plan(_decision(_release()))
+
+    assert isinstance(planned, ReleaseWithheldReviewAction)
+    assert planned.issue_number == 13
+    assert planned.anchor_issue_number == 99
+    assert planned.proposal_id == "A11"
+    assert planned.proposal_issue_number == 0
+    assert planned.finding_ids == ("T1",)
+    assert planned.observed_at == SOURCE_RUN["observed_at"]
+    assert planned.expected is EXPECTED
+
+
+def test_release_withheld_review_under_propose_files_a_gated_proposal() -> None:
+    [planned] = _plan(_decision(_release()), _config(release_withheld_review="propose"))
+
+    assert isinstance(planned, CreateTechLeadProposalIssueAction)
+    assert planned.op.op_type == "release_withheld_review"
+    assert planned.op.target_issue_number == 13
+    # The approval path re-verifies "no newer failure" against the same instant.
+    assert planned.op.observed_at == SOURCE_RUN["observed_at"]
+    assert "release the withheld review of issue #13" in planned.title
+    assert SOURCE_RUN["observed_at"] in planned.body
 
 
 def test_mixed_decision_preserves_order_and_authority() -> None:

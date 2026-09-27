@@ -21,6 +21,7 @@ from issue_orchestrator.control.actions import (
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     ResetRetryIssueAction,
 )
 from issue_orchestrator.control.label_manager import LabelManager
@@ -2006,3 +2007,62 @@ def test_proposal_intent_store_failure_prevents_remote_create(monkeypatch):
         proposal_guard=lambda *args: None, before_case_file_write=lambda: None)
     assert not result.success
     host.create_issue.assert_not_called()
+
+
+# --- release_withheld_review (#7399) ----------------------------------------
+
+_OBSERVED = "2026-09-27T14:12:09+00:00"
+
+
+def _release_op(target: int = 13, observed_at: str = _OBSERVED) -> StoredTechLeadOp:
+    return StoredTechLeadOp(
+        op_type="release_withheld_review", target_issue_number=target,
+        rationale="Only blocked-failed withholds the review.", source_run_id="run-1",
+        source_session_name="issue-99", source_action_id="A4",
+        created_at="2026-09-27T14:20:00+00:00", finding_ids=("T1",), observed_at=observed_at,
+    )
+
+
+def test_a_stored_release_op_round_trips_its_observation_instant() -> None:
+    op = _release_op()
+
+    assert StoredTechLeadOp.from_dict(op.to_dict()) == op
+
+
+@pytest.mark.parametrize("observed_at", ["", "yesterday"])
+def test_a_stored_release_op_requires_its_observation_instant(observed_at: str) -> None:
+    with pytest.raises(ValueError, match="observed the board"):
+        _release_op(observed_at=observed_at)
+
+
+def test_approved_release_op_plans_the_release_with_its_observation() -> None:
+    [action] = plan_approved_tech_lead_op_executions(
+        (ApprovedTechLeadOp(proposal_issue_number=502, op=_release_op(14)),)
+    )
+
+    assert isinstance(action, ReleaseWithheldReviewAction)
+    assert action.issue_number == 14
+    assert action.proposal_id == "A4"
+    assert action.proposal_issue_number == 502
+    assert action.anchor_issue_number == 502
+    # "No newer failure" is judged against when the tech lead LOOKED, not when
+    # the operator approved.
+    assert action.observed_at == _OBSERVED
+    assert action.finding_ids == ("T1",)
+
+
+def test_finalizing_an_approved_release_names_its_operation() -> None:
+    host = MagicMock()
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=502, op=_release_op(14))
+    action = ReleaseWithheldReviewAction(
+        issue_number=14, proposal_id="A4", anchor_issue_number=502,
+        proposal_issue_number=502, observed_at=_OBSERVED, expected=EXPECTED,
+    )
+
+    finalize_tech_lead_op_execution(
+        ActionResult.ok(action, issue_number=14), action, repository_host=host, ops=ops
+    )
+
+    (number, comment), _ = host.add_comment.call_args
+    assert number == 502 and "`release_withheld_review` for #14" in comment

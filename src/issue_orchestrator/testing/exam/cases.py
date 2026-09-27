@@ -72,8 +72,11 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
 
     An issue carries ``blocked-failed`` while its open, CI-green PR waits on a
     code review that the block vetoes. Right answer: the tech lead diagnoses
-    the veto and proposes releasing the review (removing the block), NOT
-    ``reset_retry``, and nothing destroys the PR.
+    the veto and releases the review with ``release_withheld_review`` (#7399),
+    which removes only the block, NOT ``reset_retry``, and nothing destroys
+    the PR. The live driver waits for the released review to launch and
+    notes it on the scorecard when it does not. Handing the release to a human
+    stays acceptable (it is all a ``propose``-authority tech lead can do).
 
     The answer does not depend on which tech-lead run is asked. The live
     driver uses the investigation the stuck sweep starts — the path porchpin
@@ -149,11 +152,11 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
                 " code review runs; never reset_retry a published green PR"
             ),
             role=SUBJECT,
-            # No tech-lead action type releases a review today (the vocabulary
-            # is post_comment/create_issue/escalate/defer/flag_pattern plus
-            # reset_retry/kill/request_rework/recover_validated_work), so the
-            # best achievable answer is to hand the release to a human.
-            right_action_types=frozenset(),
+            # The right remedy is the release itself (#7399), graded only when
+            # the engine executed it. Handing the release to a human stays
+            # acceptable: under ``propose`` authority that is the best a tech
+            # lead can do.
+            right_action_types=frozenset({"release_withheld_review"}),
             acceptable_action_types=frozenset(
                 {"escalate_to_human", "post_comment", "defer_to_tracker"}
             ),
@@ -165,6 +168,7 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
         known_blockers=(
             "#7294 board snapshot cannot see blocked issues whose PR waits on review",
             "#7293 sweep/reset_retry treat published validated PRs as stuck",
+            "#7399 no tech-lead action could release a withheld review",
         ),
     )
 

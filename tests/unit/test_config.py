@@ -3790,6 +3790,7 @@ tech_lead:
             "kill_hung_session": "propose",
             "request_rework": "propose",
             "recover_validated_work": "propose",
+            "release_withheld_review": "execute",
         }
 
     def test_tech_lead_authority_defaults(self):

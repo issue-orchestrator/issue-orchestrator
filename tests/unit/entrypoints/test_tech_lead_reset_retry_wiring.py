@@ -234,3 +234,73 @@ def test_no_active_runtime_executes_reset(monkeypatch):
     reset_spy.assert_called_once()
     assert reset_spy.call_args.kwargs["issue_number"] == 17
     assert reset_spy.call_args.kwargs["from_scratch"] is True
+
+
+# -- release_withheld_review through its production wiring (#7399) ------------
+
+
+def _build_release(*, job_supervisor=None, history=()):
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.control.action_results import ActionResult
+    from issue_orchestrator.domain.models import SessionHistoryEntry
+    from issue_orchestrator.entrypoints.tech_lead_reset_retry_wiring import (
+        build_tech_lead_review_release_executor,
+    )
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo, StatusCheckRollupRead
+
+    config = Config()
+    config.repo = "owner/repo"
+    config.code_review_label = "needs-code-review"
+    state = OrchestratorState()
+    state.session_history = [
+        SessionHistoryEntry(issue_number=17, title="t", agent_type="agent:test", status=status,
+                            runtime_minutes=1, completed_at=datetime(2026, 9, 27, 15, tzinfo=timezone.utc))
+        for status in history
+    ]
+    host = MagicMock()
+    host.get_issue.return_value = Issue(
+        number=17, title="t", labels=[BLOCKED_FAILED, "pr-pending"], state="open", repo="owner/repo")
+    host.list_open_prs_complete.return_value = [PRInfo(
+        number=18, title="#17", url="u", branch="17-work", body="Closes #17", state="open",
+        labels=["needs-code-review"], head_sha="a" * 40)]
+    host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead("SUCCESS")
+    applier = MagicMock()
+    applier.apply.side_effect = ActionResult.ok
+    deps = SimpleNamespace(
+        label_manager=LabelManager(config), events=MagicMock(), action_applier=applier,
+        pr_scanner=SimpleNamespace(load_issue_branches=lambda: {}),
+        pending_work_claims=SimpleNamespace(list_unresolved_claims=lambda: ()),
+        runtime_lifecycle=runtime_owners(active_sessions=state.active_sessions, job_supervisor=job_supervisor),
+    )
+    orchestrator = SimpleNamespace(deps=deps, config=config, state=state)
+    return build_tech_lead_review_release_executor(orchestrator, host), applier
+
+
+def _release_action():
+    from issue_orchestrator.control.actions import ReleaseWithheldReviewAction
+
+    return ReleaseWithheldReviewAction(issue_number=17, proposal_id="A2", anchor_issue_number=17,
+                                       observed_at="2026-09-27T14:00:00+00:00")
+
+
+def test_release_wiring_releases_through_the_guarded_applier():
+    executor, applier = _build_release()
+
+    result = executor.apply(_release_action())
+
+    assert result.success, result.error
+    assert [type(call.args[0]).__name__ for call in applier.apply.call_args_list] == [
+        "AddLabelAction", "AddLabelAction", "RemoveLabelAction"]
+
+
+def test_release_wiring_sees_hidden_runtime_and_newer_history():
+    supervisor = BackgroundJobSupervisor(_StubRunner())
+    assert supervisor.submit(HIDDEN_EXCHANGE_JOB_ID, lambda: None, timeout_seconds=600)
+    busy, busy_applier = _build_release(job_supervisor=supervisor)
+    failed, failed_applier = _build_release(history=("failed",))
+
+    assert busy.apply(_release_action()).details["refusal"] == "live_session"
+    assert failed.apply(_release_action()).details["refusal"] == "newer_failure"
+    busy_applier.apply.assert_not_called()
+    failed_applier.apply.assert_not_called()

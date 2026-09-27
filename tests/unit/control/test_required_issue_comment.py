@@ -247,3 +247,28 @@ def test_comment_owner_uses_injected_publisher_and_checks_required_receipt(requi
             assert calls[5:] == ["publish", "receipt", "expected", "claim"]
     else:
         assert calls == ["expected", "claim", "publish"]
+
+
+@pytest.mark.parametrize("stale", [None, "checks_not_green: PR #71 checks are FAILURE"])
+def test_release_proposal_reuse_asks_the_release_owner_whether_it_still_applies(stale) -> None:
+    """#7399: re-proposing a release reuses the open proposal only while the
+    release owner's own verification (against the ORIGINAL observation) holds."""
+    host, authority = Host(), InMemoryTechLeadAuthorityStore()
+    observed = "2026-09-27T14:12:09+00:00"
+    op = StoredTechLeadOp(
+        op_type="release_withheld_review", target_issue_number=6410, rationale="release",
+        source_run_id="source", source_session_name="session", source_action_id="A4",
+        created_at="2026-09-27T14:20:00+00:00", observed_at=observed,
+    )
+    authority.record_op(issue_number=7000, op=op)
+    release = MagicMock()
+    release.stale_reason.return_value = stale
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),
+        repository_host=host, tech_lead_ops=authority, release_withheld_review=release)
+    action = ReuseTechLeadProposalAction(number=7000, comment="Reuse current release", required_op=op)
+
+    result = applier.apply(action)
+
+    release.stale_reason.assert_called_with(6410, observed)
+    assert result.success is (stale is None)
+    assert host.comments == ([(7000, action.comment)] if stale is None else [])
