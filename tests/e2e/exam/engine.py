@@ -116,6 +116,10 @@ class ExamEngine:
         )
         self._runtime: OrchestratorRuntime | None = None
 
+    def write_config(self) -> Path:
+        """Write the exact config file :meth:`start` launches the engine with."""
+        return self.process.write_e2e_config()
+
     @property
     def runtime(self) -> OrchestratorRuntime:
         if self._runtime is None:
