@@ -95,9 +95,12 @@ class SqliteTechLeadCharterLedger:
         with self._transaction() as tx:
             candidates = _decode(
                 tx.execute(
+                    # Every record of the run: a coalesced sibling names the
+                    # origin action only inside its record; links_to_proposal
+                    # decides exactly which ones match.
                     "SELECT record FROM tech_lead_charter_decisions WHERE"
-                    " (run_id = ? AND action_id = ?) OR proposal_issue_number = ?",
-                    (run_id, action_id, proposal_issue_number),
+                    " run_id = ? OR proposal_issue_number = ?",
+                    (run_id, proposal_issue_number),
                 )
             )
             updated = 0

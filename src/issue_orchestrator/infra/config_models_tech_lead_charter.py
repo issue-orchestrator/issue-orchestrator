@@ -124,6 +124,11 @@ class RoleCharterConfig:
     def errors(self, role: CharterRole) -> list[str]:
         path = f"tech_lead.charter.{role.value}"
         errors: list[str] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(
+                f"{path}.enabled must be a boolean, got"
+                f" {type(self.enabled).__name__} ({self.enabled!r})"
+            )
         if self.depth not in TECH_LEAD_CHARTER_DEPTHS:
             errors.append(
                 f"{path}.depth must be one of {list(TECH_LEAD_CHARTER_DEPTHS)},"
@@ -137,6 +142,9 @@ class RoleCharterConfig:
         return errors
 
     def to_role_charter(self) -> RoleCharter:
+        if not isinstance(self.enabled, bool):
+            # A truthy "false" must never enable a role (fail closed, loudly).
+            raise ValueError(f"charter role enabled must be a boolean, got {self.enabled!r}")
         return RoleCharter(
             depth=CharterDepth(self.depth),
             authority=CharterAuthority(self.authority),

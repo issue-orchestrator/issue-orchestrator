@@ -314,7 +314,8 @@ class _DecisionActionPlanner:
     report_text: str = ""
     actions: list[Action] = field(default_factory=list)
     shadow: list[SurfaceTechLeadProposalAction] = field(default_factory=list)
-    _planned_ops: set[tuple[str, int | str]] = field(default_factory=set)
+    # (op, target) -> the action id whose gated proposal covers it.
+    _planned_ops: dict[tuple[str, int | str], str] = field(default_factory=dict)
     # (action_id, title, body) of EVERY create_issue intent this decision has
     # processed — whether it filed a new issue or routed onto an existing one.
     # The persisted-corpus gate cannot see them (they have no issue number yet),
@@ -441,9 +442,11 @@ class _DecisionActionPlanner:
         if key in self._planned_ops:
             # Two identical act-level proposals inside ONE decision: the
             # first creation covers both; a second issue would break the
-            # one-open-proposal-per-(op, target) ledger invariant.
+            # one-open-proposal-per-(op, target) ledger invariant. Its charter
+            # record follows the first one's proposal lifecycle (#7330).
+            self.charter_log.note_coalesced(proposed.id, self._planned_ops[key])
             return
-        self._planned_ops.add(key)
+        self._planned_ops[key] = proposed.id
         # kill_hung_session binds approval to the target's live session
         # generation (#6779 R1); reset_retry carries no generation binding.
         target_session = (

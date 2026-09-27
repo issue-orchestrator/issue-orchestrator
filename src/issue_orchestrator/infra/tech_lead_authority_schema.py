@@ -119,6 +119,8 @@ CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_role
     ON tech_lead_charter_decisions (role, decided_at);
 CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_decided
     ON tech_lead_charter_decisions (decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_run
+    ON tech_lead_charter_decisions (run_id);
 """
 
 # (table, column, DDL) added after that table first shipped. ``CREATE TABLE IF

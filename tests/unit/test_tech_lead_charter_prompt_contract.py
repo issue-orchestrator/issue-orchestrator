@@ -161,15 +161,30 @@ def _dial_reads(tree: ast.AST) -> list[str]:
     then ``modes.create_issue`` is reported at the assignment — as well as
     ``getattr(config.tech_lead, "authority")`` and ``.mode_for(...)``.
     """
+    # Names bound to ``<x>.tech_lead`` (``lead = config.tech_lead``) reach the
+    # dial blocks through a bare Name, so they are tracked as aliases.
+    aliases = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and _tail(node.value) == "tech_lead"
+        and isinstance(node.value, ast.Attribute)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
     reads: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
+            receiver = _tail(node.value)
+            if isinstance(node.value, ast.Name) and receiver in aliases:
+                receiver = "tech_lead"
             if node.attr == "mode_for":
                 reads.append("mode_for")
-            elif node.attr in _DIAL_BLOCKS.get(_tail(node.value), ()) and (
-                isinstance(node.value, ast.Attribute) or _tail(node.value) == "findings"
+            elif node.attr in _DIAL_BLOCKS.get(receiver, ()) and (
+                isinstance(node.value, ast.Attribute)
+                or receiver == "findings"
+                or node.value.__class__ is ast.Name and _tail(node.value) in aliases
             ):
-                reads.append(f"{_tail(node.value)}.{node.attr}")
+                reads.append(f"{receiver}.{node.attr}")
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -192,6 +207,10 @@ def _dial_reads(tree: ast.AST) -> list[str]:
         ("m = cfg.authority.mode_for('x')", ["mode_for"]),
         # The tech-lead COMPOSITION's authority store is not a dial.
         ("store = tech_lead.authority", []),
+        (
+            "lead = config.tech_lead\nmodes = lead.authority\nx = modes.create_issue",
+            ["tech_lead.authority"],
+        ),
     ],
 )
 def test_the_guard_sees_aliased_and_indirect_dial_reads(source: str, expected: list[str]) -> None:

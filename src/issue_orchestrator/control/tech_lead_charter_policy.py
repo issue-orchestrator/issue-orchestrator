@@ -20,7 +20,7 @@ that may have changed since.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..domain.tech_lead_charter import (
     CHARTER_ACTION_CLASSES,
@@ -150,6 +150,51 @@ class RecordTechLeadCharterDecisionsAction(Action):
 
     def reconciliation_subject(self) -> int:
         return NO_RECONCILIATION_SUBJECT
+
+
+@dataclass(frozen=True)
+class CharterAuditedAction(Action):
+    """An effect that runs only after its charter decision is on the record.
+
+    Used where the effect and its record would otherwise be separate actions in
+    an ungated tick (the promotion lane): a failed record write would leave a
+    filed effect with no decision explaining it, and nothing would re-record it
+    once the effect made the candidate ineligible (#7330 review r3 F3). The
+    inner effect still goes through the applier's own dispatch and guards.
+    """
+
+    decisions: tuple[TechLeadCharterDecision, ...] = ()
+    effect: Action | None = None
+    action_type: ActionType = field(
+        default=ActionType.APPLY_CHARTER_AUDITED_ACTION, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if not self.decisions or self.effect is None:
+            raise ValueError("CharterAuditedAction needs decisions and an effect")
+
+    def reconciliation_subject(self) -> int:
+        # The wrapper writes only the charter ledger; the effect is guarded
+        # on its own subject when it is dispatched.
+        return NO_RECONCILIATION_SUBJECT
+
+
+def apply_charter_audited_action(
+    action: Action,
+    *,
+    authority: "TechLeadAuthorityStore | None",
+    apply_action: "Callable[[Action], ActionResult]",
+) -> ActionResult:
+    assert isinstance(action, CharterAuditedAction) and action.effect is not None
+    recorded = apply_record_tech_lead_charter_decisions(
+        RecordTechLeadCharterDecisionsAction(decisions=action.decisions, reason=action.reason),
+        authority=authority,
+    )
+    if not recorded.success:
+        return ActionResult.fail(
+            action, f"charter decision not recorded; effect withheld: {recorded.error}"
+        )
+    return apply_action(action.effect)
 
 
 def apply_record_tech_lead_charter_decisions(

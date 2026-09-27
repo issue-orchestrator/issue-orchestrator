@@ -142,7 +142,8 @@ def links_to_proposal(
     """
     if row.lifecycle is not CharterProposalLifecycle.AWAITING_APPROVAL:
         return False
-    return (row.run_id == run_id and row.action_id == action_id) or (
+    same_run = row.run_id == run_id
+    return (same_run and action_id in (row.action_id, row.proposal_origin_action_id)) or (
         row.proposal_issue_number == proposal_issue_number
     )
 

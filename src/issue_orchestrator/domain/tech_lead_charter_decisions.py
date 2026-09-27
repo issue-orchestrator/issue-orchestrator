@@ -86,6 +86,9 @@ class TechLeadCharterDecision:
     lifecycle_updated_at: str | None = None
     #: The gated proposal issue, once known.
     proposal_issue_number: int | None = None
+    #: Set when this action coalesced into an earlier same-(op, target)
+    #: proposal of the SAME run; that action's proposal lifecycle is this one's.
+    proposal_origin_action_id: str | None = None
 
     @classmethod
     def from_verdict(
@@ -102,6 +105,7 @@ class TechLeadCharterDecision:
         decided_at: str,
         tracks_proposal: bool,
         proposal_issue_number: int | None = None,
+        proposal_origin_action_id: str | None = None,
     ) -> "TechLeadCharterDecision":
         """Freeze *verdict* into a record.
 
@@ -138,6 +142,7 @@ class TechLeadCharterDecision:
             lifecycle=lifecycle,
             lifecycle_updated_at=decided_at if lifecycle is not None else None,
             proposal_issue_number=proposal_issue_number,
+            proposal_origin_action_id=proposal_origin_action_id,
         )
 
     def with_lifecycle(
@@ -179,6 +184,7 @@ class TechLeadCharterDecision:
             "lifecycle": self.lifecycle.value if self.lifecycle else None,
             "lifecycle_updated_at": self.lifecycle_updated_at,
             "proposal_issue_number": self.proposal_issue_number,
+            "proposal_origin_action_id": self.proposal_origin_action_id,
         }
 
     @classmethod
@@ -211,6 +217,7 @@ class TechLeadCharterDecision:
             lifecycle=CharterProposalLifecycle(lifecycle) if lifecycle else None,
             lifecycle_updated_at=data.get("lifecycle_updated_at"),
             proposal_issue_number=int(proposal) if proposal is not None else None,
+            proposal_origin_action_id=data.get("proposal_origin_action_id"),
         )
 
 

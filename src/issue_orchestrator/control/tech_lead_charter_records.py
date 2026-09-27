@@ -22,7 +22,9 @@ from ..domain.tech_lead_charter_decisions import (
 )
 from ..domain.tech_lead_findings import PromotableFinding
 from .action_base import Action
+from .tech_lead_actions import PromoteTechLeadFindingAction
 from .tech_lead_charter_policy import (
+    CharterAuditedAction,
     RecordTechLeadCharterDecisionsAction,
     TechLeadCharterPolicy,
 )
@@ -49,11 +51,13 @@ class CharterDecisionLog:
         default_factory=dict
     )
     _reused_proposals: dict[str, int] = field(default_factory=dict)
+    _coalesced: dict[str, str] = field(default_factory=dict)
 
     def discard(self) -> None:
         """Forget every verdict: the whole decision was rejected, nothing applies."""
         self._verdicts.clear()
         self._reused_proposals.clear()
+        self._coalesced.clear()
 
     def note(self, proposed: ProposedTechLeadAction, verdict: CharterVerdict) -> None:
         self._verdicts[proposed.id] = (proposed, verdict)
@@ -80,6 +84,10 @@ class CharterDecisionLog:
             and not verdict.advice_only
         )
 
+    def note_coalesced(self, action_id: str, origin_action_id: str) -> None:
+        """A same-(op, target) sibling folded into *origin_action_id*'s proposal."""
+        self._coalesced[action_id] = origin_action_id
+
     def records(self) -> tuple[TechLeadCharterDecision, ...]:
         return tuple(
             TechLeadCharterDecision.from_verdict(
@@ -96,6 +104,7 @@ class CharterDecisionLog:
                 # whose approval and decline link back to this record.
                 tracks_proposal=proposed.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS,
                 proposal_issue_number=self._reused_proposals.get(proposed.id),
+                proposal_origin_action_id=self._coalesced.get(proposed.id),
             )
             for proposed, verdict in self._verdicts.values()
         )
@@ -136,23 +145,25 @@ def charter_advice_digest_lines(
     return lines
 
 
-def promotion_charter_record(
+def audit_promotions(
     policy: TechLeadCharterPolicy,
     promotable: "tuple[PromotableFinding, ...] | list[PromotableFinding]",
+    planned: list[Action],
     *,
     decided_at: str,
 ) -> list[Action]:
-    """The charter decision behind this tick's promotion candidates.
+    """Bind each promotion filing to its charter decision (#7330).
 
-    One record per signature (upserted, so an unchanged verdict is not
-    re-dated). A candidate the charter keeps as advice stays promotable, so its
-    record is what explains why no promotion issue appears.
+    A planned filing becomes a :class:`CharterAuditedAction`, so it cannot run
+    without its decision on the record. A candidate the charter kept as advice
+    files nothing; its standalone record is what explains why no promotion
+    issue appears (upserted, so an unchanged verdict is not re-dated).
     """
     if not promotable or not policy.promotion_lane_enabled:
-        return []
+        return planned
     verdict = policy.promotion()
-    records = tuple(
-        TechLeadCharterDecision.from_verdict(
+    decisions = {
+        finding.evidence.signature: TechLeadCharterDecision.from_verdict(
             verdict,
             decision_id=promotion_decision_key(finding.evidence.signature),
             source=CharterDecisionSource.PROMOTION,
@@ -165,13 +176,25 @@ def promotion_charter_record(
             tracks_proposal=False,
         )
         for finding in promotable
-    )
-    return [
-        RecordTechLeadCharterDecisionsAction(
-            decisions=records,
-            reason=f"tech_lead charter: record {len(records)} promotion decision(s)",
-        )
-    ]
+    }
+    audited: list[Action] = []
+    filed: set[str] = set()
+    for action in planned:
+        if isinstance(action, PromoteTechLeadFindingAction):
+            filed.add(action.signature)
+            audited.append(CharterAuditedAction(
+                decisions=(decisions[action.signature],), effect=action,
+                reason=action.reason,
+            ))
+        else:
+            audited.append(action)
+    advice = tuple(d for signature, d in decisions.items() if signature not in filed)
+    if advice:
+        audited.append(RecordTechLeadCharterDecisionsAction(
+            decisions=advice,
+            reason=f"tech_lead charter: record {len(advice)} unfiled promotion decision(s)",
+        ))
+    return audited
 
 
 def partition_charter_records(

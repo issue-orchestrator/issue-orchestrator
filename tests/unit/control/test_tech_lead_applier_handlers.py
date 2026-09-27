@@ -250,7 +250,28 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
             _charter_record_action(),
             0,
         ),
+        # The wrapper writes only the charter ledger; its effect is dispatched
+        # back through the applier and guarded on its own subject there.
+        ActionType.APPLY_CHARTER_AUDITED_ACTION: (
+            _charter_audited_action(),
+            0,
+        ),
     }
+
+
+def _charter_audited_action() -> Action:
+    from issue_orchestrator.control.tech_lead_charter_policy import CharterAuditedAction
+
+    from issue_orchestrator.control.tech_lead_charter_policy import (
+        RecordTechLeadCharterDecisionsAction,
+    )
+
+    record = _charter_record_action()
+    assert isinstance(record, RecordTechLeadCharterDecisionsAction)
+    return CharterAuditedAction(
+        decisions=record.decisions,
+        effect=DiscardTerminalTechLeadProposalOpsAction(candidate_issue_numbers=(1,)),
+    )
 
 
 def _charter_record_action() -> Action:

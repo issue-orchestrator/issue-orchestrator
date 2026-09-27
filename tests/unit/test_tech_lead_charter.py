@@ -383,3 +383,15 @@ def test_settings_schema_rejects_values_the_charter_cannot_honour(
 
     with pytest.raises(ValidationError):
         ReviewSettings(**{field: value})
+
+
+def test_a_programmatic_non_boolean_enabled_never_enables_a_role() -> None:
+    """A truthy string must not switch a role on (review r3 F2)."""
+    config = Config()
+    setattr(config.tech_lead.charter.flow, "enabled", "false")
+
+    errors = config.validate()
+
+    assert any("tech_lead.charter.flow.enabled must be a boolean" in e for e in errors)
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        TechLeadCharterPolicy.from_config(config)

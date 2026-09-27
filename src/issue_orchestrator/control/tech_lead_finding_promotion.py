@@ -78,7 +78,7 @@ from ..infra.tech_lead_promotion_activation import promotion_lane_readiness
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_issue_policy import tech_lead_follow_up_agent_label
 from .tech_lead_charter_policy import TechLeadCharterPolicy
-from .tech_lead_charter_records import promotion_charter_record
+from .tech_lead_charter_records import audit_promotions
 # The lane's cross-tick read budget lives in its own module (it is the only
 # MUTABLE state here); re-exported so callers keep one import site.
 from .tech_lead_promotion_read_budget import (
@@ -531,17 +531,16 @@ def plan_finding_promotion_actions(
     """
     if facts is None:
         return []
-    actions = plan_finding_promotions(config, promotable=facts.promotable_findings)
+    # Each filing carries the charter decision it was made under, and an
+    # unfiled candidate is recorded as advice (#7330).
+    actions = audit_promotions(
+        TechLeadCharterPolicy.from_config(config),
+        facts.promotable_findings,
+        plan_finding_promotions(config, promotable=facts.promotable_findings),
+        decided_at=datetime.now(timezone.utc).isoformat(),
+    )
     actions.extend(plan_promotion_updates(config, updates=facts.promotion_updates))
     actions.extend(plan_promotion_settlements(facts.settled_promotions))
-    # Why each candidate was (or was not) filed, per the charter (#7330).
-    actions.extend(
-        promotion_charter_record(
-            TechLeadCharterPolicy.from_config(config),
-            facts.promotable_findings,
-            decided_at=datetime.now(timezone.utc).isoformat(),
-        )
-    )
     return actions
 
 

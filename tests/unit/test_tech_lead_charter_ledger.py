@@ -344,3 +344,104 @@ def test_an_applied_op_is_never_recorded_declined_after_a_failed_close(store) ->
 
     [row] = store.charter_ledger.list_recent()
     assert row.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
+
+
+# -- round 3: coalesced proposals, audited promotion filings ------------------
+
+
+def test_a_coalesced_sibling_follows_its_origin_proposal_lifecycle(store) -> None:
+    """Two same-target gated kills in ONE decision file one proposal; approving
+    it must resolve BOTH records, never leave the sibling awaiting forever."""
+    from issue_orchestrator.control.tech_lead_charter_records import CharterDecisionLog
+
+    log = CharterDecisionLog(run_id="run-1", anchor_issue_number=99, decided_at="t0")
+    from issue_orchestrator.domain.tech_lead_artifacts import ProposedTechLeadAction
+
+    for action_id in ("A1", "A2"):
+        log.note(
+            ProposedTechLeadAction(id=action_id, action_type="kill_hung_session",
+                                   target_number=13, body="Hung."),
+            _policy().decide("kill_hung_session"),
+        )
+    log.note_coalesced("A2", "A1")
+    store.charter_ledger.record_decisions(log.records())
+
+    updated = store.charter_ledger.link_proposal_outcome(
+        run_id="run-1", action_id="A1", proposal_issue_number=500,
+        lifecycle=CharterProposalLifecycle.APPROVED_APPLIED, at="t1",
+    )
+
+    assert updated == 2
+    assert {row.lifecycle for row in store.charter_ledger.list_recent()} == {
+        CharterProposalLifecycle.APPROVED_APPLIED
+    }
+
+
+def _promotion_facts():
+    from issue_orchestrator.domain.tech_lead_findings import PatternEvidence, PromotableFinding
+
+    evidence = PatternEvidence(
+        signature="sig-a", case_file_issue_number=65, observation_count=3,
+        fix_class="code", area="", diagnosis="Retry never backs off.",
+    )
+    return (PromotableFinding(evidence=evidence, target_repo="o/r"),)
+
+
+def test_a_promotion_filing_never_runs_without_its_recorded_decision() -> None:
+    from issue_orchestrator.control.actions import PromoteTechLeadFindingAction
+    from issue_orchestrator.control.tech_lead_charter_policy import (
+        CharterAuditedAction,
+        apply_charter_audited_action,
+    )
+    from issue_orchestrator.control.tech_lead_charter_records import audit_promotions
+    from issue_orchestrator.control.tech_lead_finding_promotion import plan_finding_promotions
+
+    config = Config()
+    config.repo = "o/r"
+    config.agents = {"agent:web": MagicMock()}
+    config.tech_lead_follow_up_agent = "agent:web"
+    promotable = _promotion_facts()
+    [audited] = audit_promotions(
+        TechLeadCharterPolicy.from_config(config), promotable,
+        plan_finding_promotions(config, promotable=promotable), decided_at="t0",
+    )
+    assert isinstance(audited, CharterAuditedAction)
+    assert isinstance(audited.effect, PromoteTechLeadFindingAction)
+
+    effects: list = []
+    failing = MagicMock()
+    failing.charter_ledger.record_decisions.side_effect = RuntimeError("disk full")
+    with pytest.raises(RuntimeError):
+        apply_charter_audited_action(audited, authority=failing, apply_action=effects.append)
+    assert effects == []  # the external filing never ran
+    missing = apply_charter_audited_action(audited, authority=None, apply_action=effects.append)
+    assert not missing.success and effects == []
+
+    store = InMemoryTechLeadAuthorityStore()
+    apply_charter_audited_action(
+        audited, authority=store,
+        apply_action=lambda action: effects.append(action) or ActionResult.ok(action),
+    )
+    assert effects == [audited.effect]
+    [row] = store.charter_ledger.list_recent()
+    assert (row.action_id, row.outcome) == ("sig-a", CharterOutcome.PROPOSED)
+
+
+def test_an_advice_only_promotion_files_nothing_but_is_recorded() -> None:
+    from issue_orchestrator.control.tech_lead_charter_records import audit_promotions
+    from issue_orchestrator.control.tech_lead_finding_promotion import plan_finding_promotions
+
+    config = Config()
+    config.repo = "o/r"
+    config.tech_lead.charter.learning.depth = "workaround"
+    promotable = _promotion_facts()
+    planned = plan_finding_promotions(config, promotable=promotable)
+
+    [record] = audit_promotions(
+        TechLeadCharterPolicy.from_config(config), promotable, planned, decided_at="t0"
+    )
+
+    assert planned == []
+    assert isinstance(record, RecordTechLeadCharterDecisionsAction)
+    [decision] = record.decisions
+    assert decision.outcome is CharterOutcome.ADVICE_ONLY
