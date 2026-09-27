@@ -56,14 +56,17 @@ CASE_B_EXTERNAL_ID = "M0-761"
 CASE_C_EXTERNAL_ID = "M0-762"
 
 #: Production tech-lead authority for every act-level action (the operator's
-#: io/porchpin configs), so a destructive remedy is really executed — and
-#: really graded — as it would be. Filing is proposed instead: an executed
-#: follow-up is worked by the exam's scripted coder (the first Case B run
-#: grew a second investigation that way), and a case file is a real issue
-#: other engines' case-file readers could pick up. A proposed escalation
-#: still grades as a remedy.
+#: io/porchpin configs), so a remedy is executed — and graded — as it would
+#: be. ``reset_retry`` is destructive, so the charter (#7330) only allows it
+#: to be proposed; the engine refuses to start on ``execute``, and
+#: ``test_exam_engine_config`` loads this block through the real config
+#: validator so the exam cannot drift from what production may run. Filing
+#: is proposed too: an executed follow-up is worked by the exam's scripted
+#: coder (the first Case B run grew a second investigation that way), and a
+#: case file is a real issue other engines' case-file readers could pick up.
+#: A proposed escalation still grades as a remedy.
 EXAM_TECH_LEAD_AUTHORITY = {
-    "reset_retry": "execute",
+    "reset_retry": "propose",
     "kill_hung_session": "execute",
     "request_rework": "execute",
     "recover_validated_work": "execute",
