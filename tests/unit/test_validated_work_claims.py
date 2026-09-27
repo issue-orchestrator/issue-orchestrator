@@ -136,7 +136,7 @@ def test_positive_death_proof_mints_new_secret_and_invalidates_every_old_write(
     assert new.secret.digest() != old.secret.digest()
     assert not store.holds_claim(old)
     assert not store.record_attempt_outcome(
-        old, attempt, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
+        old, attempt, rate_limit=None, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
     )
     assert not store.record_pr_number(old, pr_number=500)
     assert not store.record_finalization_phase(
@@ -205,25 +205,25 @@ def test_attempt_cas_before_external_call_and_write_once_outcome(tmp_path):
     assert not store.record_attempt_outcome(
         token,
         replace(attempt, expected_remote_head=""),
-        outcome=Status.PUBLISHED,
+        rate_limit=None, outcome=Status.PUBLISHED,
         failure=None,
         finished_at=LATER,
     )
     assert store.record_attempt_outcome(
         token,
         attempt,
-        outcome=Status.TRANSIENT_FAILURE,
+        rate_limit=None, outcome=Status.TRANSIENT_FAILURE,
         failure=Failure.REMOTE_UNREADABLE,
         finished_at=LATER,
     )
     assert not store.record_attempt_outcome(
-        token, attempt, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
+        token, attempt, rate_limit=None, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
     )
     assert store.holds_claim(token)
     newer = begin(reopened, token)
     assert newer.attempt_no == 2
     assert not store.record_attempt_outcome(
-        token, newer, outcome=Status.SUPERSEDED, failure=None, finished_at=LATER
+        token, newer, rate_limit=None, outcome=Status.SUPERSEDED, failure=None, finished_at=LATER
     )
     assert store.publish_attempts(token.record_id)[1].outcome is None
 
@@ -249,14 +249,14 @@ def test_invalid_outcome_timestamp_leaves_attempt_and_record_readable(
     before = store.get(token.record_id)
     with pytest.raises(ValueError):
         store.record_attempt_outcome(
-            token, attempt, outcome=outcome, failure=failure, finished_at=finished_at
+            token, attempt, rate_limit=None, outcome=outcome, failure=failure, finished_at=finished_at
         )
     reopened = rig.open()
     assert reopened.get(token.record_id) == before
     assert reopened.publish_attempts(token.record_id) == (attempt,)
     assert reopened.holds_claim(token)
     assert reopened.record_attempt_outcome(
-        token, attempt, outcome=outcome, failure=failure, finished_at=LATER
+        token, attempt, rate_limit=None, outcome=outcome, failure=failure, finished_at=LATER
     )
     assert reopened.publish_attempts(token.record_id) == (
         replace(attempt, outcome=outcome, failure=failure, finished_at=LATER),
@@ -276,7 +276,7 @@ def test_attempt_budget_survives_restarts_and_exhaustion_is_unresolved(tmp_path)
         assert store.record_attempt_outcome(
             token,
             attempt,
-            outcome=Status.TRANSIENT_FAILURE,
+            rate_limit=None, outcome=Status.TRANSIENT_FAILURE,
             failure=Failure.REMOTE_UNREADABLE,
             finished_at=LATER,
         )
@@ -285,6 +285,59 @@ def test_attempt_budget_survives_restarts_and_exhaustion_is_unresolved(tmp_path)
     assert store.has_unresolved_work(6914)
     assert begin(store, token) is None
     assert store.evidence_for_retention(released_before="9999-01-01T00:00:00+00:00") == ()
+
+
+def test_rate_limited_attempts_stay_in_history_but_spend_no_budget(tmp_path):
+    """Secondary limits reset within minutes, so five limited PR creates can
+    fit in one liveness wait. None of them may fail the record (#7350)."""
+    from tests.unit.control.liveness_doubles import rate_limited
+
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    a = capture()
+    store.admit(a)
+    token = claim(store, a)
+    limit = rate_limited().rate_limit
+    for n in range(1, 8):
+        store = rig.open()
+        attempt = begin(store, token)
+        assert attempt is not None and attempt.attempt_no == n
+        assert store.record_attempt_outcome(
+            token,
+            attempt,
+            rate_limit=limit, outcome=Status.TRANSIENT_FAILURE,
+            failure=Failure.REMOTE_UNREADABLE,
+            finished_at=LATER,
+        )
+    assert store.get(token.record_id).state is State.PUBLISHING
+    assert all(attempt.rate_limited for attempt in store.publish_attempts(token.record_id))
+    # Ordinary failures still spend the full budget after the limited ones.
+    for _ in range(5):
+        attempt = begin(store, token)
+        assert attempt is not None
+        assert store.record_attempt_outcome(
+            token,
+            attempt,
+            rate_limit=None, outcome=Status.TRANSIENT_FAILURE,
+            failure=Failure.REMOTE_UNREADABLE,
+            finished_at=LATER,
+        )
+    assert store.get(token.record_id).state is State.FAILED
+
+
+def test_an_existing_database_gains_the_rate_limited_bit_as_spent(tmp_path):
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open()
+    a = capture()
+    store.admit(a)
+    token = claim(store, a)
+    assert begin(store, token) is not None
+    with closing(sqlite3.connect(rig.path)) as conn, conn:
+        conn.execute("ALTER TABLE validated_work_publish_attempts DROP COLUMN rate_limited")
+
+    [attempt] = rig.open().publish_attempts(token.record_id)
+
+    assert attempt.attempt_no == 1 and not attempt.rate_limited
 
 
 def test_finalization_is_fenced_forward_only_and_cannot_infer_recovered(tmp_path):
@@ -297,7 +350,7 @@ def test_finalization_is_fenced_forward_only_and_cannot_infer_recovered(tmp_path
         token, phase=Phase.REVIEW_ROUTED, recorded_at=LATER
     )
     assert store.record_attempt_outcome(
-        token, attempt, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
+        token, attempt, rate_limit=None, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
     )
     assert store.holds_claim(token)
     assert begin(store, token) is None
@@ -547,7 +600,7 @@ def test_outcome_shape_validation_follows_claim_authentication(tmp_path, release
         assert not store.record_attempt_outcome(
             token,
             attempt,
-            outcome=Status.PUBLISHED,
+            rate_limit=None, outcome=Status.PUBLISHED,
             failure=Failure.PUSH_FAILED,
             finished_at=LATER,
         )
@@ -556,7 +609,7 @@ def test_outcome_shape_validation_follows_claim_authentication(tmp_path, release
             store.record_attempt_outcome(
                 token,
                 attempt,
-                outcome=Status.PUBLISHED,
+                rate_limit=None, outcome=Status.PUBLISHED,
                 failure=Failure.PUSH_FAILED,
                 finished_at=LATER,
             )
@@ -651,11 +704,11 @@ def test_outcome_enum_validation_requires_authenticated_stored_attempt(
     if authentication == "current" and outcome is not Status.SUPERSEDED:
         with pytest.raises(ValueError):
             store.record_attempt_outcome(
-                token, submitted, outcome=outcome, failure=None, finished_at=LATER
+                token, submitted, rate_limit=None, outcome=outcome, failure=None, finished_at=LATER
             )
     else:
         assert not store.record_attempt_outcome(
-            token, submitted, outcome=outcome, failure=None, finished_at=LATER
+            token, submitted, rate_limit=None, outcome=outcome, failure=None, finished_at=LATER
         )
     reopened = rig.open()
     assert reopened.get(token.record_id) == before

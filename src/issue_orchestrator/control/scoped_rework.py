@@ -16,6 +16,7 @@ from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .scoped_rework_proposals import ReworkProposalView
+from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.scoped_rework import (
     TechLeadProposalCommand,
     TechLeadProposalCommandOutcome,
@@ -193,7 +194,9 @@ class RequestReworkExecutor:
     def _mutate(self, action: RequestReworkAction, mutation: Action) -> None:
         result = self.mutate(action, mutation)
         if not result.success:
-            raise RuntimeError(f"Scoped mutation did not commit: {result.error}")
+            raise RuntimeError(f"Scoped mutation did not commit: {result.error}") from (
+                rate_limit_cause(result.host_rate_limit)
+            )
 
     def _forward_fix(self, action: RequestReworkAction, issue: Issue) -> ReworkReceipt:
         request = action.request

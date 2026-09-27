@@ -1,6 +1,7 @@
 """Transactional disposition and fence contracts. Implementations own all atomicity."""
 
 from __future__ import annotations
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.validated_work import ValidatedWorkFailure, ValidatedWorkState
 from ..domain.validated_work_claim import (
     ProcessIdentity,
@@ -155,6 +156,7 @@ class ValidatedWorkStore(Protocol):
         outcome: PublishValidatedHeadStatus,
         failure: ValidatedWorkFailure | None,
         finished_at: str,
+        rate_limit: HostRateLimit | None,
     ) -> bool: ...
 
     def record_finalization_phase(

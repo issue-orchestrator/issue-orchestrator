@@ -313,6 +313,7 @@ class SessionLauncher:
             "configuration_mode": self.config.configuration_mode,
             "config_name": self.config.config_name,
             "config_fingerprint": self.config.config_fingerprint,
+            "session_binding_fingerprint": self.config.session_binding_fingerprint,
         }
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""

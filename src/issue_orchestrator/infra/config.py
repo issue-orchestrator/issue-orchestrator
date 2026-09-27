@@ -1270,6 +1270,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         )
         # Parse complex optional configs
         apply_optional_sections(config, sections)
+        config.record_loaded_state()
         config.refresh_config_fingerprint()
         return config
 

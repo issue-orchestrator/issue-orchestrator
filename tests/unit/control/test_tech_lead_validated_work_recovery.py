@@ -5,7 +5,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from tests.unit.control.liveness_doubles import drain_liveness
+from tests.unit.control.liveness_doubles import drain_liveness, rate_limited
+from issue_orchestrator.control.planned_action_liveness import outcome_of_result
 from issue_orchestrator.control.actions import RecoverValidatedWorkAction
 from issue_orchestrator.control.action_results import ActionResultType
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
@@ -148,6 +149,26 @@ def test_executor_downgrades_stale_authority_without_reporting_success(tmp_path)
     assert result.details["authority_stale_fields"] == ["observation_revision"]
     recover.assert_not_called()
     events.publish.assert_called_once()
+
+
+def test_executor_forwards_a_pending_rate_limit_to_planned_liveness(tmp_path):
+    """A rate-limited recovery is a wait until the host's reset, not a spent
+    attempt: the ActionResult keeps the pending result's limit (#7350)."""
+    _store, authority = _authority(tmp_path)
+    limit = rate_limited().rate_limit
+    executor = TechLeadValidatedWorkRecoveryExecutor(
+        Mock(),
+        lambda _command: None,
+        lambda _command: RecoveryAttemptPending(
+            "remote unreadable", ValidatedWorkFailure.REMOTE_UNREADABLE, rate_limit=limit
+        ),
+    )
+
+    result = executor.apply(_action(authority))
+
+    assert result.result_type is ActionResultType.FAILURE
+    assert result.host_rate_limit == limit
+    assert outcome_of_result(result).retry_at == limit.resets_at
 
 
 def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from issue_orchestrator.control.actions import (
+    ActionResult,
     AddLabelAction,
     RemoveLabelAction,
     SupersedePullRequestAction,
@@ -208,9 +209,9 @@ class _ActionApplier:
     def apply(
         self,
         action: AddLabelAction | RemoveLabelAction | SupersedePullRequestAction,
-    ) -> SimpleNamespace:
+    ) -> ActionResult:
         if isinstance(action, (AddLabelAction, RemoveLabelAction)) and action.label == self.fail_on_label:
-            return SimpleNamespace(success=False, error=f"label mutation failed: {action.label}")
+            return ActionResult.fail(action, f"label mutation failed: {action.label}")
         if isinstance(action, AddLabelAction):
             self.repo.add_label(action.issue_number, action.label)
         elif isinstance(action, SupersedePullRequestAction):
@@ -222,7 +223,7 @@ class _ActionApplier:
             ]
         else:
             self.repo.remove_label(action.issue_number, action.label)
-        return SimpleNamespace(success=True, error=None)
+        return ActionResult.ok(action)
 
 
 def _service(

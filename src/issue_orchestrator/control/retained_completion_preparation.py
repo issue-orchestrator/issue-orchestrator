@@ -3,6 +3,7 @@
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.completion_processing import ProcessingResult
 from ..domain.publication_workspace import PublicationWorkspace
+from ..domain.recovery_attempt import RecoveryAttemptPending
 from ..domain.recovery_publication import PreparedRecoveryPublication
 from ..domain.validated_head_publication import PublicationContent, PublishValidatedHeadCommand, RemoteHeadExpectation
 from ..domain.validated_work import EvidenceRole, RemoteBaselineStatus, ReviewDisposition
@@ -10,6 +11,13 @@ from ..domain.validated_work_store import EvidenceRow
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.working_copy import WorkingCopy
 from .completion_processor import CompletionProcessor
+from .pull_request_preparation import PullRequestPreparationRefusal
+
+
+def _policy_pending(policy_refusal: ProcessingResult) -> RecoveryAttemptPending:
+    """Completion policy (reserved labels, role, tech-lead shaping, validation)
+    reads no host, so its refusal has no rate limit to keep."""
+    return RecoveryAttemptPending(policy_refusal.message)
 
 
 class RetainedCompletionPreparation:
@@ -21,7 +29,7 @@ class RetainedCompletionPreparation:
         self._repo = repo_slug
 
     def prepare(self, evidence: EvidenceRow, workspace: PublicationWorkspace,
-                issue_title: str) -> PreparedRecoveryPublication | ProcessingResult:
+                issue_title: str) -> PreparedRecoveryPublication | RecoveryAttemptPending:
         admitted = evidence.admission.evidence
         key = admitted.identity.key
         if (key.repo_slug != self._repo or workspace.key != key
@@ -36,17 +44,17 @@ class RetainedCompletionPreparation:
         self._require_source(workspace)
         prepared = self._completion.prepare_retained_completion(completion, workspace)
         if isinstance(prepared, ProcessingResult):
-            return prepared
-        errors: list[str] = []
-        publication = self._completion.prepare_pull_request(
+            return _policy_pending(prepared)
+        publication = self._completion.pull_requests.prepare(
             worktree=workspace.checkout, record=prepared.record, issue_number=key.issue_number,
             issue_title=issue_title, branch=key.branch_name, agent_label=prepared.agent_label,
-            errors=errors, exchange_mode=prepared.actions.exchange_mode,
+            exchange_mode=prepared.actions.exchange_mode,
             exchange_result=prepared.actions.exchange_result,
         )
-        if publication is None or errors:
-            return ProcessingResult(False, "Retained PR preparation refused publication", errors=errors,
-                                    processing_policy=prepared.processing_policy)
+        if isinstance(publication, PullRequestPreparationRefusal):
+            # A rate-limited stack or partial-delivery read waits for the
+            # host's reset instead of spending recovery budget (#7426).
+            return RecoveryAttemptPending(publication.message, rate_limit=publication.rate_limit)
         self._require_source(workspace)
         observation = admitted.observations
         if observation.remote_baseline_status is not RemoteBaselineStatus.OBSERVED:

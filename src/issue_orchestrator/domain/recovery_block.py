@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from .host_rate_limit import HostRateLimit, rate_limit_cause, require_limit_only_on_failure
+
 from .validated_work import (
     FinalizationPhase,
     ValidatedWorkState,
@@ -193,10 +195,21 @@ class RecoveryBlockReconcileOutcome:
     status: RecoveryBlockReconcileStatus
     labels_removed: tuple[str, ...]
     message: str
+    #: The host's typed rate limit behind a projection to retry (#7350).
+    rate_limit: HostRateLimit | None = None
+
+    def __post_init__(self) -> None:
+        require_limit_only_on_failure(
+            self.rate_limit,
+            failed=self.status is not RecoveryBlockReconcileStatus.RECONCILED,
+            result="recovery block reconciliation",
+        )
 
     def require_reconciled(self) -> "RecoveryBlockReconcileOutcome":
         if self.status is not RecoveryBlockReconcileStatus.RECONCILED:
-            raise RecoveryBlockProjectionDeferred(self.message)
+            raise RecoveryBlockProjectionDeferred(self.message) from rate_limit_cause(
+                self.rate_limit
+            )
         return self
 
 
