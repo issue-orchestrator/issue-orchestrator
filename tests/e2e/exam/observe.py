@@ -102,7 +102,7 @@ def linked_pull_requests(repo: str, issue_number: int, *, state: str) -> list[PR
         prs = adapter.list_prs_numbered_above(issue_number)
     else:
         raise ValueError(f"unsupported PR state {state!r}")
-    return [pr for pr in prs if extract_issue_number_from_pr(pr) == issue_number]
+    return [pr for pr in prs if extract_issue_number_from_pr(pr, repo_slug=repo) == issue_number]
 
 
 def _pr_fact(repo: str, pr: PRInfo, *, read_checks: bool) -> PullRequestFact:
