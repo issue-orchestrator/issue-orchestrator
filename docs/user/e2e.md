@@ -69,11 +69,13 @@ one, the real tech lead), and grades the result against a known right answer:
 - destructive actions taken (a PR closed unmerged, a deleted branch, an executed `reset_retry`);
 - GitHub calls per rate-limit class (search, GraphQL, core) and elapsed time;
 - for every unfinished item, where it stalled: last transition, the gate that refuses it, blocking labels, and any agent screen that never took its prompt.
+- in every case, livelocks: the same failure repeated for the same subject with no state change (the class where a settlement or drain fails on every tick forever).
 
 ```bash
 make test-tech-lead-exam                                   # every case, engine at HEAD
 make test-tech-lead-exam EXAM_CASE=A                       # one case
 make test-tech-lead-exam EXAM_CASE=A EXAM_ENGINE_REF=c3784fe^   # engine at an older commit
+make test-tech-lead-exam EXAM_ENGINE_REF=origin/tech-lead-reliability   # engine at a branch tip (fetch first)
 ```
 
 `EXAM_ENGINE_REF` runs the engine from a fresh standalone clone of that commit, while the
@@ -88,6 +90,7 @@ inside `make validate-pr`; its grader, case answers and fault shim have unit tes
 |------|---------------|--------------|
 | A | the review-exchange reviewer exits without answering, three exchanges in a row, after the work validated | recovery publishes the PR, code review runs, the PR leaves draft, no `blocked-failed`/`needs-human` remains |
 | B | the issue carries `blocked-failed` while its open, green PR waits on code review | the tech-lead investigation the stuck sweep starts names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
+| C | the issue carries `in-progress` with no session plus the engine's `needs-reconcile` pause (porchpin#410) | the pause stays for a human, and the engine repeats nothing tick after tick |
 
 Run the live agent-guided onboarding acceptance explicitly:
 

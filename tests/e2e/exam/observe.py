@@ -45,6 +45,7 @@ from issue_orchestrator.testing.exam import (
     TechLeadRunFact,
     WorkItemFact,
 )
+from issue_orchestrator.testing.exam.livelock import find_repeating_failures
 from issue_orchestrator.testing.exam.screens import SCREEN_QUOTE_CHARS, render_recording, silent_screen
 from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
 from issue_orchestrator.testing.exam.tech_lead import (
@@ -354,7 +355,7 @@ def build_observation(
     engine_commit: str,
     items: tuple[WorkItemFact, ...],
     tech_lead_runs: tuple[TechLeadRunFact, ...],
-    events: Iterable[Mapping[str, Any]],
+    events: list[Mapping[str, Any]],
     owned: frozenset[int],
     gh_audit_report: Mapping[str, Any],
     elapsed_seconds: float,
@@ -367,6 +368,7 @@ def build_observation(
         items=items,
         tech_lead_runs=tech_lead_runs,
         tech_lead_receipts=executed_receipts(events),
+        repeating_failures=find_repeating_failures(events),
         owned_numbers=owned,
         # The engine is a fresh process per run, so its report IS the run's calls.
         github_calls=GitHubCallCounts.between(None, gh_audit_report),

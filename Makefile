@@ -43,7 +43,7 @@ help:
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
-	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B, EXAM_ENGINE_REF=<commit>)"
+	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C, EXAM_ENGINE_REF=<commit or branch>)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude-dev    Test dev agent: Claude execution -> PR created"

@@ -57,6 +57,7 @@ def grade(case: ExamCase, observation: ExamObservation) -> Scorecard:
         remedy=_grade_remedy(case.remedy, observation),
         destructive=_destructive_actions(observation),
         out_of_scope=_out_of_scope(observation),
+        repeating_failures=observation.repeating_failures,
         expects_destructive=case.expects_destructive,
         github_calls=observation.github_calls,
         stalls=stalls,

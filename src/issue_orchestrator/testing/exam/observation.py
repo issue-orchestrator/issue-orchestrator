@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from .github_calls import GitHubCallCounts
+from .livelock import RepeatingFailure
 
 
 class PullRequestState(str, Enum):
@@ -297,6 +298,8 @@ class RunEnd(str, Enum):
 
     GOAL_REACHED = "goal_reached"
     TECH_LEAD_CONCLUDED = "tech_lead_concluded"
+    WINDOW_ELAPSED = "window_elapsed"
+    """The case watches the engine for a fixed window (e.g. for a livelock)."""
     QUIESCENT = "quiescent"
     TIMEOUT = "timeout"
     ENGINE_EXITED = "engine_exited"
@@ -309,6 +312,9 @@ class ExamObservation:
     items: tuple[WorkItemFact, ...]
     tech_lead_runs: tuple[TechLeadRunFact, ...]
     tech_lead_receipts: tuple[TechLeadReceipt, ...]
+    repeating_failures: tuple[RepeatingFailure, ...]
+    """Failures the engine repeated with no state change (livelocks), found
+    on its whole event stream (``livelock.find_repeating_failures``)."""
     owned_numbers: frozenset[int]
     """Every issue/PR the run owns, gathered by the harness from GitHub: the
     issues carrying the run label (it creates them with it; the engine files
@@ -335,6 +341,7 @@ class ExamObservation:
             "items": [item.to_dict() for item in self.items],
             "tech_lead_runs": [run.to_dict() for run in self.tech_lead_runs],
             "tech_lead_receipts": [receipt.to_dict() for receipt in self.tech_lead_receipts],
+            "repeating_failures": [r.to_dict() for r in self.repeating_failures],
             "owned_numbers": sorted(self.owned_numbers),
             "github_calls": self.github_calls.to_dict(),
             "elapsed_seconds": round(self.elapsed_seconds, 1),
@@ -352,6 +359,9 @@ class ExamObservation:
             tech_lead_runs=tuple(TechLeadRunFact.from_dict(r) for r in data["tech_lead_runs"]),
             tech_lead_receipts=tuple(
                 TechLeadReceipt.from_dict(r) for r in data["tech_lead_receipts"]
+            ),
+            repeating_failures=tuple(
+                RepeatingFailure.from_dict(r) for r in data["repeating_failures"]
             ),
             owned_numbers=frozenset(int(n) for n in data["owned_numbers"]),
             github_calls=GitHubCallCounts.from_dict(data["github_calls"]),

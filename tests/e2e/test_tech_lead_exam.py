@@ -32,6 +32,7 @@ from issue_orchestrator.testing.exam import render_summary
 from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+    STALE_CLAIM_PAUSED_FOR_RECONCILE,
 )
 from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
@@ -43,8 +44,10 @@ from tests.e2e.exam.scenarios import (
     ExamRun,
     case_a,
     case_b,
+    case_c,
     run_case_a,
     run_case_b,
+    run_case_c,
 )
 from tests.e2e.flows import E2EFlow
 
@@ -98,7 +101,11 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=5000, system_gh_activity_limit=5000)
 @pytest.mark.parametrize(
     "case_id",
-    [HALTED_EXCHANGE_WITH_VALIDATED_WORK, BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW],
+    [
+        HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+        BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+        STALE_CLAIM_PAUSED_FOR_RECONCILE,
+    ],
 )
 async def test_tech_lead_exam(
     case_id: str,
@@ -108,7 +115,11 @@ async def test_tech_lead_exam(
 ) -> None:
     identity = RunIdentity.new(case_id)
     run_label = identity.label
-    make_case = case_a if case_id == HALTED_EXCHANGE_WITH_VALIDATED_WORK else case_b
+    make_case = {
+        HALTED_EXCHANGE_WITH_VALIDATED_WORK: case_a,
+        BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW: case_b,
+        STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
+    }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
         repo=repo_name,
@@ -121,6 +132,8 @@ async def test_tech_lead_exam(
     try:
         if case_id == HALTED_EXCHANGE_WITH_VALIDATED_WORK:
             result = await run_case_a(run, flows)
+        elif case_id == STALE_CLAIM_PAUSED_FOR_RECONCILE:
+            result = await run_case_c(run, flows)
         else:
             result = await run_case_b(
                 run,

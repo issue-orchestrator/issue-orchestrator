@@ -294,6 +294,21 @@ def pr_review_approved(role: str) -> Goal:
     return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
 
 
+def issue_keeps_labels(role: str, labels: Iterable[str]) -> Goal:
+    """The issue still carries ``labels`` (e.g. a pause only a human lifts)."""
+    wanted = frozenset(labels)
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        missing = sorted(wanted - item.issue_labels)
+        return GoalCheck(
+            not missing,
+            f"issue #{item.issue_number} lost {missing}" if missing
+            else f"issue #{item.issue_number} still carries {sorted(wanted)}",
+        )
+
+    return Goal(f"{role}.keeps_labels", role, f"the {role} issue keeps {sorted(wanted)}", check)
+
+
 def single_pull_request(role: str) -> Goal:
     """The item has exactly one PR: the work was published once.
 

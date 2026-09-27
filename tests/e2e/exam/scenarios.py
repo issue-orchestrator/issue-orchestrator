@@ -21,6 +21,7 @@ from issue_orchestrator.testing.exam.cases import (
     SUBJECT,
     blocked_issue_green_pr_awaiting_review,
     halted_exchange_with_validated_work,
+    stale_claim_paused_for_reconcile,
 )
 
 from tests.e2e.exam.agents import CODER_LABEL
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
 #: an item's snapshot and some of its events by it.
 CASE_A_EXTERNAL_ID = "M0-760"
 CASE_B_EXTERNAL_ID = "M0-761"
+CASE_C_EXTERNAL_ID = "M0-762"
 
 #: Production tech-lead authority for every act-level action (the operator's
 #: io/porchpin configs), so a destructive remedy is really executed — and
@@ -385,6 +387,73 @@ async def run_case_b(
             await engine.close()
     finally:
         checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Case C
+# ---------------------------------------------------------------------------
+
+#: How long Case C watches: ~25 engine ticks — far past the livelock
+#: threshold if the engine loops, and nothing is expected to finish.
+CASE_C_WINDOW_S = 6 * 60
+
+
+async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity
+    )
+    try:
+        config = exam_config(
+            run.base_config,
+            checkout=checkout,
+            run_label=run.run_label,
+            reviewer_exchange_fault="none",
+        )
+        labels = _labels(config)
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        flow.ensure_labels([labels.in_progress, labels.needs_reconcile])
+        _, number = flow.create_issue(
+            f"[{CASE_C_EXTERNAL_ID}] [EXAM-C] Stale claim paused for reconciliation",
+            [CODER_LABEL, E2E_DATA_LABEL, labels.in_progress, labels.needs_reconcile],
+            body=(
+                "Tech-lead exam case C: in-progress with no session, paused with the"
+                " engine's needs-reconcile label (porchpin#410's shape)."
+            ),
+        )
+        engine = ExamEngine(config, checkout, overlay={})
+        await engine.start()
+        try:
+            started = time.monotonic()
+
+            async def window_elapsed() -> bool:
+                return time.monotonic() - started >= CASE_C_WINDOW_S
+
+            # Never quiescent by design: a livelocked engine is never quiet,
+            # and a correct one has nothing to finish. Watch a fixed window.
+            ended_by = await drive(
+                engine,
+                done=window_elapsed,
+                quiet_s=CASE_C_WINDOW_S * 10,
+                timeout_s=CASE_C_WINDOW_S * 2,
+                reached=RunEnd.WINDOW_ELAPSED,
+            )
+            return await _finish(
+                run,
+                engine,
+                items=[TrackedItem(SUBJECT, number, external_id=CASE_C_EXTERNAL_ID)],
+                extra_prs={},
+                started=started,
+                ended_by=ended_by,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+def case_c(config: Config) -> ExamCase:
+    return stale_claim_paused_for_reconcile(needs_reconcile_label=_labels(config).needs_reconcile)
 
 
 def case_a(config: Config) -> ExamCase:

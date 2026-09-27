@@ -121,6 +121,7 @@ def observation(
     runs: tuple[TechLeadRunFact, ...] = (),
     receipts: tuple[TechLeadReceipt, ...] = (),
     owned: frozenset[int] | None = None,
+    repeating: tuple = (),
     ended_by: RunEnd = RunEnd.GOAL_REACHED,
 ) -> ExamObservation:
     """``owned`` defaults to the subject and its PRs, as the harness gathers it."""
@@ -130,6 +131,7 @@ def observation(
         items=(subject,),
         tech_lead_runs=runs,
         tech_lead_receipts=receipts,
+        repeating_failures=repeating,
         owned_numbers=owned
         if owned is not None
         else frozenset({subject.issue_number, *(p.number for p in subject.pull_requests)}),

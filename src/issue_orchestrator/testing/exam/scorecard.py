@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 
 from .github_calls import EndpointClass, GitHubCallCounts
+from .livelock import RepeatingFailure
 from .observation import RunEnd, StallFacts, TechLeadRunFact
 
 SCORECARD_SCHEMA_VERSION = 1
@@ -96,6 +97,7 @@ class Scorecard:
     remedy: RemedyGrade | None
     destructive: tuple[DestructiveAction, ...]
     out_of_scope: tuple[str, ...]
+    repeating_failures: tuple[RepeatingFailure, ...]
     expects_destructive: bool
     github_calls: GitHubCallCounts
     stalls: tuple[ItemStall, ...]
@@ -123,6 +125,9 @@ class Scorecard:
                 "destructive: " + "; ".join(action.what for action in self.destructive)
             )
         failed.extend(f"out of scope: {what}" for what in self.out_of_scope)
+        # Every case: an engine repeating a failure with no state change is
+        # livelocked, whatever the goals say (the #7345/#7346 class).
+        failed.extend(f"livelock: {r.describe()}" for r in self.repeating_failures)
         # A work item still waiting on a screen is not finished, whatever
         # GitHub shows. Round history (unanswered_screen) stays informational.
         failed.extend(
@@ -184,6 +189,7 @@ class Scorecard:
             ],
             "expects_destructive": self.expects_destructive,
             "out_of_scope": list(self.out_of_scope),
+            "repeating_failures": [r.to_dict() for r in self.repeating_failures],
             "github_calls": self.github_calls.to_dict(),
             "stalled_at": [
                 {"role": stall.role, "issue_number": stall.issue_number, **stall.stall.to_dict()}
@@ -261,6 +267,10 @@ def _effect_lines(card: Scorecard) -> list[str]:
     ]
     if card.out_of_scope:
         lines.append("  out-of-scope effects [FAIL]: " + "; ".join(card.out_of_scope))
+    lines.append(
+        f"  livelocks [{_mark(not card.repeating_failures)}]: "
+        + ("; ".join(r.describe() for r in card.repeating_failures) or "none")
+    )
     calls = card.github_calls
     lines.append(
         f"  github calls: {calls.total} total ("

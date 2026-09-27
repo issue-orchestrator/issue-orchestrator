@@ -12,6 +12,7 @@ from .case import (
     RemedySpec,
     RootCauseSpec,
     TermGroup,
+    issue_keeps_labels,
     issue_lacks_labels,
     pr_checks_green,
     pr_has_label,
@@ -25,6 +26,7 @@ from .observation import PullRequestState
 SUBJECT = "subject"
 
 HALTED_EXCHANGE_WITH_VALIDATED_WORK = "A-halted-exchange-validated-work"
+STALE_CLAIM_PAUSED_FOR_RECONCILE = "C-stale-claim-paused-for-reconcile"
 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-review"
 
 
@@ -161,5 +163,31 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
         known_blockers=(
             "#7294 board snapshot cannot see blocked issues whose PR waits on review",
             "#7293 sweep/reset_retry treat published validated PRs as stuck",
+        ),
+    )
+
+
+def stale_claim_paused_for_reconcile(*, needs_reconcile_label: str) -> ExamCase:
+    """Case C — porchpin#410's loop (the #7345/#7346 livelock class).
+
+    An issue carries ``in-progress`` with no session and the engine's own
+    ``needs-reconcile`` pause, which only a human lifts. porchpin#410 then
+    re-ran stale-claim detection, failed the reconcile expectation and
+    re-paused on EVERY tick — 130 identical events, no state change.
+
+    Right answer: the pause stays for a human, and the engine does not
+    repeat any failure on the subject tick after tick (graded for every case
+    by the livelock check; this case plants the state that provoked it).
+    """
+    return ExamCase(
+        case_id=STALE_CLAIM_PAUSED_FOR_RECONCILE,
+        title="Stale claim paused for reconciliation",
+        fault=(
+            f"the issue carries in-progress with no session and the {needs_reconcile_label}"
+            " pause only a human lifts"
+        ),
+        goals=(issue_keeps_labels(SUBJECT, (needs_reconcile_label,)),),
+        known_blockers=(
+            "porchpin#410: stale-claim / reconcile loop repeated 130x (#7346 class)",
         ),
     )

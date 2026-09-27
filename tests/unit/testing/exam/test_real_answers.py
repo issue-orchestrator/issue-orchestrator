@@ -93,6 +93,7 @@ def _observation(runs: tuple[TechLeadRunFact, ...]) -> ExamObservation:
         items=(subject,),
         tech_lead_runs=runs,
         tech_lead_receipts=(),
+        repeating_failures=(),
         owned_numbers=frozenset({7316, 7317}),
         github_calls=GitHubCallCounts.between(None, {"by_command": {"GET /search/issues": 1}}),
         elapsed_seconds=900.0,
