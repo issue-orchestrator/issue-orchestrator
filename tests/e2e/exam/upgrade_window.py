@@ -76,6 +76,24 @@ async def capture_restart_window(
         # A dead engine has no control API; what it did before dying is lost
         # with it, and the grade fails on the tick shortfall and the exit.
         return RestartWindow(events=(), writes={}, engine_alive=False)
+    await quiesce(engine, deadline=deadline, poll_s=poll_s, clock=clock, sleep=sleep)
+    report = engine.gh_audit_report()
+    events = await _settled_history(engine, deadline, poll_s, clock, sleep)
+    return RestartWindow(
+        events=tuple(events), writes=writes_by_kind(report["by_command"]), engine_alive=True
+    )
+
+
+async def quiesce(
+    engine: WindowEngine,
+    *,
+    deadline: float,
+    poll_s: float = 2.0,
+    clock=time.monotonic,
+    sleep=asyncio.sleep,
+) -> Sequence[Mapping[str, Any]]:
+    """Pause the engine and wait out the tick in progress; returns its
+    complete history at that point, after which it applies nothing more."""
     engine.pause()
     at_pause = await _settled_history(engine, deadline, poll_s, clock, sleep)
     noted = max(event_id_of(event) for event in at_pause)
@@ -84,17 +102,10 @@ async def capture_restart_window(
         if any(
             event.get("type") == "tick.completed" and event_id_of(event) > noted for event in settled
         ):
-            break
+            return settled
         if clock() >= deadline:
-            raise RuntimeError(
-                "no tick completed after the pause; the restart window cannot be closed"
-            )
+            raise RuntimeError("no tick completed after the pause; the engine cannot be quiesced")
         await sleep(poll_s)
-    report = engine.gh_audit_report()
-    events = await _settled_history(engine, deadline, poll_s, clock, sleep)
-    return RestartWindow(
-        events=tuple(events), writes=writes_by_kind(report["by_command"]), engine_alive=True
-    )
 
 
 async def _settled_history(engine: WindowEngine, deadline: float, poll_s: float, clock, sleep):

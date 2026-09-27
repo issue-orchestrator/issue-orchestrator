@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import pytest
 
@@ -103,7 +103,9 @@ def _capture(engine: FakeCandidate) -> RestartWindow:
     )
 
 
-def _grade(window: RestartWindow, whole_run: list[dict[str, Any]] | None = None, *, complete: bool = True):
+def _grade(
+    window: RestartWindow, whole_run: Sequence[Mapping[str, Any]] | None = None, *, complete: bool = True
+):
     facts = upgrade_facts(
         window,
         whole_run=whole_run or [],
@@ -277,3 +279,60 @@ def test_a_failed_start_stops_the_engine_it_launched(monkeypatch, tmp_path: Path
     with pytest.raises(AssertionError, match="control API readiness"):
         asyncio.run(exam_engine.start())
     assert stopped == [True]
+
+
+class TestPremiseAtStop:
+    """Round 5 F1: both sessions must still be live at the stop itself."""
+
+    class Base:
+        def __init__(self, reads: list[tuple[tuple[str, int], ...]]) -> None:
+            self.reads = reads
+
+        def active_session_issues(self) -> tuple[tuple[str, int], ...]:
+            return self.reads.pop(0) if len(self.reads) > 1 else self.reads[0]
+
+    def items(self):
+        from tests.e2e.exam.observe import TrackedItem
+
+        return TrackedItem("coding", 911, external_id="M0-763"), TrackedItem("review", 921, external_id="M0-764")
+
+    def test_both_live_at_the_stop(self, monkeypatch) -> None:
+        from tests.e2e.exam import scenarios
+
+        monkeypatch.setattr(scenarios, "linked_pull_requests", lambda repo, issue, *, state: [type("PR", (), {"number": 922})()])
+        coding, review = self.items()
+        both = (("issue-911", 911), ("review-922", 921))
+        assert scenarios.in_flight_at_stop(self.Base([both]), "o/r", coding=coding, review=review) == (911, 921)
+
+    @pytest.mark.parametrize(
+        "at_stop",
+        [(("issue-911", 911),), (("review-922", 921),), ()],
+        ids=["review ended", "coder ended", "both ended"],
+    )
+    def test_a_session_that_ended_since_it_was_seen_is_refused(self, monkeypatch, at_stop) -> None:
+        from tests.e2e.exam import scenarios
+
+        monkeypatch.setattr(scenarios, "linked_pull_requests", lambda repo, issue, *, state: [type("PR", (), {"number": 922})()])
+        coding, review = self.items()
+        with pytest.raises(RuntimeError, match="did not hold at the stop"):
+            scenarios.in_flight_at_stop(self.Base([at_stop]), "o/r", coding=coding, review=review)
+
+
+def test_a_hazard_published_after_the_watchers_last_event_is_graded() -> None:
+    """Round 5 F3: the final read quiesces the engine first, so a hazard the
+    watcher has not processed (or that is published just before the read)
+    is in the graded run."""
+    from tests.e2e.exam.upgrade_window import quiesce
+
+    engine = FakeCandidate()
+    window = _capture(engine)
+    engine.paused = False
+    engine.paused_after_tick = None  # the harness resumed after the release
+    watcher_saw = list(engine.history)
+    late = engine.ticks + 1
+    engine.schedule(late, "POST /repos/o/r/issues/911/labels", ("session.claim_unreadable", {"issue_number": 911, "cause": "late"}))
+
+    whole_run = watcher_saw + list(asyncio.run(quiesce(engine, deadline=engine.clock() + 600, clock=engine.clock, sleep=engine.sleep)))
+
+    assert _grade(window, whole_run).failures == ("upgrade: restore hazard: session.claim_unreadable on #911 (late)",)
+    assert engine.paused  # stays paused through the observation

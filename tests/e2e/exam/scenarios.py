@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.infra.config import Config
@@ -38,7 +38,7 @@ from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine, case_u_engine
 from tests.e2e.exam.engine import EngineCheckout, ExamEngine
-from tests.e2e.exam.upgrade_window import capture_restart_window, upgrade_facts
+from tests.e2e.exam.upgrade_window import capture_restart_window, quiesce, upgrade_facts
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
@@ -440,8 +440,12 @@ CASE_U_PLANT_S = 15 * 60
 CASE_U_WINDOW_S = 10 * 60
 
 
+class _SessionReader(Protocol):
+    def active_session_issues(self) -> tuple[tuple[str, int], ...]: ...
+
+
 def _in_flight(
-    engine: ExamEngine, repo: str, *, coding: TrackedItem, review: TrackedItem
+    engine: _SessionReader, repo: str, *, coding: TrackedItem, review: TrackedItem
 ) -> bool:
     """Both pieces of work are mid-flight: the held coder is running, and the
     review of the other issue's published PR is running."""
@@ -454,6 +458,20 @@ def _in_flight(
         return False
     prs = linked_pull_requests(repo, review.issue_number, state="open")
     return any(f"review-{pr.number}" in review_names for pr in prs)
+
+
+def in_flight_at_stop(
+    engine: _SessionReader, repo: str, *, coding: TrackedItem, review: TrackedItem
+) -> tuple[int, int]:
+    """The premise, checked again at the stop itself: a session that ended
+    since it was first seen is not work in flight, and the case must not
+    grade an upgrade that inherited less than it claims."""
+    if not _in_flight(engine, repo, coding=coding, review=review):
+        raise RuntimeError(
+            "case U's premise did not hold at the stop: both pieces of work were in flight,"
+            f" but not any more (active: {engine.active_session_issues()})"
+        )
+    return (coding.issue_number, review.issue_number)
 
 
 async def run_case_u(
@@ -497,7 +515,7 @@ async def run_case_u(
                     f" base engine never ran both #{coding_number}'s held coder and"
                     f" #{review_number}'s PR review at once (active: {base.active_session_issues()})"
                 )
-            sessions_at_stop = tuple(sorted({number for _, number in base.active_session_issues()}))
+            sessions_at_stop = in_flight_at_stop(base, run.repo, coding=coding, review=review)
         finally:
             # A graceful stop is how an operator restarts an engine; it does
             # not drain, so the work above is cut off mid-flight.
@@ -524,12 +542,14 @@ async def run_case_u(
                 quiet_s=420,
                 timeout_s=45 * 60,
             )
-            # The watcher may not have processed the newest events yet; read
-            # the engine's own tail past what it has seen.
+            # Quiesce before the last read, and stay paused through the
+            # observation: nothing can be published after the history that
+            # is graded. The watcher may lag, so the engine's own history is
+            # the record.
             alive = candidate.is_running()
-            whole_run = list(runtime.watcher.view.global_events)
+            whole_run: list[Mapping[str, Any]] = list(runtime.watcher.view.global_events)
             if alive:
-                whole_run += candidate.event_history(after=runtime.watcher.view.last_event_id)
+                whole_run += await quiesce(candidate, deadline=time.monotonic() + CASE_U_WINDOW_S)
             facts = upgrade_facts(
                 window,
                 whole_run=whole_run,
