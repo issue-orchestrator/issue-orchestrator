@@ -118,6 +118,54 @@ def test_a_failed_settlement_keeps_the_rework_record(tmp_path):
     assert state.pending_reworks == []
 
 
+def _terminate_generation(tmp_path, *, stop_raises_after_commit: bool):
+    """A tech lead's kill_hung_session: stop the EXACT rework generation."""
+    from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
+    from tests.runtime_lifecycle_helpers import runtime_owners
+
+    harness, state, session = _live_rework(tmp_path)
+    retry = MagicMock()
+    retry.has_active_retry.return_value = False
+    lifecycle = runtime_owners(
+        active_sessions=state.active_sessions, pair_registry=None,
+        job_supervisor=None, publish_recovery=retry,
+    )
+    object.__setattr__(lifecycle.core, "work", InFlightWorkLedger(state, harness.claims))
+
+    killed: list[str] = []
+
+    def kill(name: str) -> None:
+        killed.append(name)  # the stop COMMITTED...
+        if stop_raises_after_commit:
+            raise RuntimeError("tmux answered late")  # ...but reported failure
+
+    target = TechLeadSessionGeneration(
+        SUBJECT, session.key.task, session.terminal_id, session.run_assets.run_id
+    )
+    try:
+        lifecycle.terminate_generation(
+            target, "tech-lead kill", session_exists=lambda name: name not in killed,
+            kill_session=kill,
+        )
+    except Exception:
+        assert stop_raises_after_commit
+    return harness, state
+
+
+@pytest.mark.parametrize("stop_raises_after_commit", [False, True])
+def test_a_killed_rework_generation_settles_its_claim(tmp_path, stop_raises_after_commit):
+    """codex #7380 r1: the generation-bound kill dropped the exact rework's
+    record without settling its HELD claim, so the sweep relaunched it."""
+    harness, state = _terminate_generation(
+        tmp_path, stop_raises_after_commit=stop_raises_after_commit
+    )
+
+    assert state.active_sessions == []
+    assert harness.claims.list_unresolved_claims() == ()
+    assert _next_tick_sweep(state, harness) == 0
+    assert state.pending_reworks == []
+
+
 @pytest.mark.parametrize(
     ("queue", "attribute"),
     [

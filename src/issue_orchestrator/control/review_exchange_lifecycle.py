@@ -244,14 +244,8 @@ def _release_issue_runtime(
         active_sessions,
         set(stopped).union(stale),
     )
-    # Each ended run's pending-work claim is CONSUMED before its record goes
-    # (#7380): the record is what tells the recovery sweep the run is live, so
-    # dropped first -- or dropped beside a claim left HELD -- the next tick
-    # re-admitted the rework this boundary just ended.
-    for session in tuple(active_sessions or ()):
-        if session.terminal_id in terminal_ids_to_clear:
-            work.settle(session, SettlementOutcome.CONSUMED)
-    _drop_active_session_records(active_sessions, terminal_ids_to_clear)
+    ended = set(terminal_ids_to_clear)
+    _end_session_records(active_sessions, lambda session: session.terminal_id in ended, work)
     if stopped or terminal_ids_to_clear:
         logger.info(
             "[ISSUE_RUNTIME] terminated issue=%d reason=%s stopped=%s cleared=%s",
@@ -320,6 +314,7 @@ def _terminate_issue_session_generation(
     kill_session: Callable[[str], None],
     pair_registry: "PersistentExchangePairRegistry | None",
     job_supervisor: "BackgroundJobSupervisor | None",
+    work: "InFlightWorkLedger",
     publish_recovery: "PublishRetryAbandoner | None" = None,
 ) -> GenerationBoundTermination:
     """Conditionally stop the exact launch-observed worker generation.
@@ -372,6 +367,7 @@ def _terminate_issue_session_generation(
         session_exists=session_exists,
         kill_session=kill_session,
         validated_work=validated_work,
+        work=work,
     )
     termination = IssueRuntimeTermination(
         issue_number=target.issue_number,
@@ -390,20 +386,41 @@ def _raise_lifecycle_errors(message: str, errors: list[Exception]) -> None:
     raise ExceptionGroup(message, errors)
 
 
+def _end_session_records(
+    active_sessions: list["Session"] | None,
+    ended: Callable[["Session"], bool],
+    work: "InFlightWorkLedger",
+) -> None:
+    """Settle each ended run's claim as CONSUMED, THEN drop its record (#7380).
+
+    The one settle-before-drop step every issue-runtime termination shares. The
+    record is what tells the recovery sweep the run is live, so a record dropped
+    beside a claim left HELD -- or before a settlement that then raised -- let
+    the next tick re-admit the work this boundary just ended.
+    """
+    if active_sessions is None:
+        return
+    for session in tuple(active_sessions):
+        if ended(session):
+            work.settle(session, SettlementOutcome.CONSUMED)
+    active_sessions[:] = [session for session in active_sessions if not ended(session)]
+
+
 def _drop_exact_generation(
-    active_sessions: list["Session"], target: TechLeadSessionGeneration
+    active_sessions: list["Session"], target: TechLeadSessionGeneration,
+    work: "InFlightWorkLedger",
 ) -> None:
     """Reconcile only the active row proven to represent the stopped generation."""
-    active_sessions[:] = [
-        session
-        for session in active_sessions
-        if not (
+    _end_session_records(
+        active_sessions,
+        lambda session: (
             session.issue.number == target.issue_number
             and session.key.task is target.task_kind
             and session.terminal_id == target.terminal_id
             and session.run_assets.run_id == target.run_id
-        )
-    ]
+        ),
+        work,
+    )
 
 
 def _stop_exact_generation(
@@ -413,6 +430,7 @@ def _stop_exact_generation(
     active_sessions: list["Session"],
     session_exists: Callable[[str], bool],
     kill_session: Callable[[str], None],
+    work: "InFlightWorkLedger",
 ) -> None:
     """Stop one exact terminal and reconcile whether a raised stop committed."""
     try:
@@ -427,10 +445,10 @@ def _stop_exact_generation(
             ) from stop_error
         if terminal_still_running:
             raise
-        _drop_exact_generation(active_sessions, target)
+        _drop_exact_generation(active_sessions, target, work)
         raise GenerationTerminationPartialFailure(target, stop_error, validated_work) from stop_error
 
-    _drop_exact_generation(active_sessions, target)
+    _drop_exact_generation(active_sessions, target, work)
 
 
 def _issue_runtime_session_active(
@@ -485,20 +503,6 @@ def _active_session_ids_to_clear(
         for session in active_sessions
         if session.terminal_id in terminal_ids
     )
-
-
-def _drop_active_session_records(
-    active_sessions: list["Session"] | None,
-    terminal_ids: tuple[str, ...],
-) -> None:
-    if active_sessions is None or not terminal_ids:
-        return
-    terminal_id_set = set(terminal_ids)
-    active_sessions[:] = [
-        session
-        for session in active_sessions
-        if session.terminal_id not in terminal_id_set
-    ]
 
 
 def _shutdown_agent_runtime(
@@ -745,7 +749,7 @@ class IssueRuntimeLifecycleOwners:
         return _terminate_issue_session_generation(target=target, reason=reason, preserve=self.preserve,
             active_sessions=self.core.active_sessions, session_exists=session_exists, kill_session=kill_session,
             pair_registry=self.core.pair_registry, job_supervisor=self.core.job_supervisor,
-            publish_recovery=self.core.publish_recovery)
+            work=self.core.work, publish_recovery=self.core.publish_recovery)
 
     def shutdown(self, runner: SessionRunner) -> None:
         # Freeze every retained issue before the first global subprocess teardown.
