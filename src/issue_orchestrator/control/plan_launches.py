@@ -11,14 +11,22 @@ was planned both as a tech-lead run and as an ordinary issue). Each duplicate
 also spent a worker slot the plan could have given to real work.
 
 This owner is the one place a plan's launches pass through. It counts the
-capacity each stage's launches consume, and it refuses a second launch of a
-subject the plan already launches: refused, reported in ``Plan.skipped`` with
-the reason, and never applied.
+capacity each stage's launches consume, and it refuses two kinds of second
+launch - refused, reported in ``Plan.skipped`` with the reason, never applied:
+
+* the SAME launch again: the same kind of session for the same issue or PR;
+* a new ISSUE session for an issue the plan already launches other work for.
+  The issue pipeline is planned last and already skips issues that have a
+  review, rework or retrospective review pending; this closes the kinds it
+  does not see (a queued tech-lead run, a validation retry) in the one plan
+  where both would otherwise start.
+
+Other combinations - a rework and a tech-lead investigation of one issue -
+are separate sessions by design and are left to the stages that plan them.
 
 The subject is the GitHub number the launch acts on - the issue for an issue,
 rework, retrospective-review, tech-lead or validation-retry launch, the PR for
-a code review. Issues and PRs share one number space in a repository, so two
-launches naming one number are two launches of one thing.
+a code review. Issues and PRs share one number space in a repository.
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 from .action_base import Action
-from .actions import ActionType, LaunchSessionAction, LaunchValidationRetryAction
+from .actions import ActionType, LaunchSessionAction, LaunchValidationRetryAction, SessionType
 from .planner_types import SkippedItem
 
 logger = logging.getLogger(__name__)
@@ -50,31 +58,34 @@ def launch_subject(action: Action) -> int | None:
         return action.issue_number
     if action.action_type in CAPACITY_CONSUMING_LAUNCH_TYPES:
         # A launch kind added without a subject here would bypass the
-        # one-launch-per-subject rule; fail loudly instead.
+        # duplicate-launch rule; fail loudly instead.
         raise TypeError(f"launch action {type(action).__name__} names no subject")
     return None
 
 
-def _describe(action: Action) -> str:
+def _kind(action: Action) -> str:
     if isinstance(action, LaunchSessionAction):
-        return f"{action.session_type.value} launch"
-    return f"{action.action_type.value} launch"
+        return action.session_type.value
+    return action.action_type.value
+
+
+def _describe(action: Action) -> str:
+    return f"{_kind(action)} launch"
 
 
 @dataclass
 class PlanLaunches:
     """Every launch stage of one plan passes its actions through :meth:`admit`."""
 
-    #: The plan's skipped list; a refused duplicate is reported into it.
+    #: The plan's skipped list; a refused launch is reported into it.
     skipped: list[SkippedItem]
-    _by_subject: dict[int, Action] = field(default_factory=dict)
+    _by_subject: dict[int, list[Action]] = field(default_factory=dict)
 
     def admit(self, stage: Sequence[Action], *, into: list[Action]) -> int:
         """Append ``stage``'s admitted actions to ``into``; return the slots they use.
 
         Non-launch actions (a provider-skip label, a tech-lead withdrawal) pass
-        through untouched. A launch of a subject this plan already launches is
-        refused, so it neither runs nor consumes capacity.
+        through untouched. A refused launch neither runs nor consumes capacity.
         """
         launches = 0
         for action in stage:
@@ -82,10 +93,11 @@ class PlanLaunches:
             if subject is None:
                 into.append(action)
                 continue
-            first = self._by_subject.get(subject)
-            if first is not None:
+            earlier = self._by_subject.setdefault(subject, [])
+            conflict = self._conflict(action, earlier)
+            if conflict is not None:
                 reason = (
-                    f"duplicate launch: #{subject} already has a {_describe(first)}"
+                    f"duplicate launch: #{subject} already has a {_describe(conflict)}"
                     " in this plan"
                 )
                 logger.warning("[PLAN] Refusing %s of #%d: %s", _describe(action), subject, reason)
@@ -93,10 +105,22 @@ class PlanLaunches:
                     SkippedItem(item_type=_describe(action), number=subject, reason=reason)
                 )
                 continue
-            self._by_subject[subject] = action
+            earlier.append(action)
             into.append(action)
             launches += 1
         return launches
+
+    @staticmethod
+    def _conflict(action: Action, earlier: list[Action]) -> Action | None:
+        """The admitted launch ``action`` would duplicate, if any."""
+        new_issue_work = (
+            isinstance(action, LaunchSessionAction)
+            and action.session_type is SessionType.ISSUE
+        )
+        for admitted in earlier:
+            if new_issue_work or _kind(admitted) == _kind(action):
+                return admitted
+        return None
 
 
 __all__ = [

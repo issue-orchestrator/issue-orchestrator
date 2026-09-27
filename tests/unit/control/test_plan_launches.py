@@ -50,6 +50,35 @@ def test_a_validation_retry_and_an_issue_launch_of_one_issue_are_one_subject() -
     assert [s.number for s in skipped] == [7]
 
 
+def test_the_same_launch_twice_is_refused() -> None:
+    skipped: list[SkippedItem] = []
+    launches = PlanLaunches(skipped)
+    actions: list[Action] = []
+    review = LaunchSessionAction(session_type=SessionType.REVIEW, number=70)
+
+    assert launches.admit([review, review], into=actions) == 1
+    assert actions == [review]
+    assert [(s.number, s.item_type) for s in skipped] == [(70, "review launch")]
+
+
+def test_distinct_session_kinds_of_one_issue_that_are_not_new_issue_work_both_launch() -> None:
+    """A rework and a tech-lead investigation of one issue are separate sessions.
+
+    The plan-level rule refuses duplicates and new coding work on an issue the
+    plan already launches; it does not second-guess the stages that plan two
+    different kinds of work for one issue.
+    """
+    skipped: list[SkippedItem] = []
+    launches = PlanLaunches(skipped)
+    actions: list[Action] = []
+    rework = LaunchSessionAction(session_type=SessionType.REWORK, number=7)
+    tech_lead = LaunchSessionAction(session_type=SessionType.TECH_LEAD, number=7)
+
+    assert launches.admit([rework, tech_lead], into=actions) == 2
+    assert actions == [rework, tech_lead]
+    assert skipped == []
+
+
 def test_non_launch_actions_pass_through_and_cost_nothing() -> None:
     skipped: list[SkippedItem] = []
     launches = PlanLaunches(skipped)
