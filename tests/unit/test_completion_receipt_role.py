@@ -121,12 +121,15 @@ def _stamped_kind(label: str) -> SessionKind:
     return SessionKind.TECH_LEAD if label.endswith("tech-lead") else SessionKind.CODE
 
 
-def allocate(tmp_path, allocator, *, label="agent:tech-lead", exchange=False):
+def allocate(
+    tmp_path, allocator, *, label="agent:tech-lead", exchange=False,
+    kind: SessionKind | None = None,
+):
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     # The launcher stamps the kind; the allocation owner records it and refuses
     # a stamp that contradicts the configured tech-lead identity.
-    key = SessionKey(FakeIssueKey("42", "example/repo"), _stamped_kind(label))
+    key = SessionKey(FakeIssueKey("42", "example/repo"), kind or _stamped_kind(label))
     if exchange:
         return allocator.allocate_exchange(
             IssueExchangeRunAllocation(worktree, 42, key, "issue-42", label)
@@ -300,6 +303,24 @@ def test_recorded_coder_receipt_still_processes(tmp_path, role_boundary):
     )
     assert result.success
     effects[1].add_comment.assert_called_once()
+
+
+def test_a_review_by_the_tech_lead_agent_processes_as_a_review(tmp_path, role_boundary):
+    """#7347 review r5: the reviewer may also be the configured tech lead. The
+    allocator records its REVIEW run; completion processing must accept that
+    recorded role by the same rule - not reject it for sharing the label."""
+    ledger, allocator, owner, processor, _, _, _ = role_boundary
+    run = allocate(tmp_path, allocator, label="agent:tech-lead", kind=SessionKind.REVIEW)
+    receipt = submit(owner, ledger, run)
+
+    result = owner.resume_receipt(
+        ledger.submission_capability(run), receipt, 42, "Review", processor
+    )
+
+    policy = result.require_processing_policy()
+    assert (policy.agent_label, policy.kind) == ("agent:tech-lead", SessionKind.REVIEW)
+    assert not policy.is_tech_lead
+    assert not any("tech_lead" in error for error in result.errors or ())
 
 
 def test_new_allocation_captures_current_configuration_without_rewriting_old_role(

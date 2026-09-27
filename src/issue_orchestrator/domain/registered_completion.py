@@ -47,7 +47,10 @@ class CompletionRunRole:
             raise CompletionIntakeError("receipt does not bind processing issue")
         if supplied_label is not None and supplied_label != self.agent_label:
             raise CompletionIntakeError("caller role differs from recorded allocation")
-        if (self.kind is SessionKind.TECH_LEAD) != (self.agent_label == tech_lead_label):
+        # The allocator's rule, from the same owner (#7347 review r5): only the
+        # issue-lane kinds are decided by the agent label, so a review by an
+        # agent that is also the tech lead is still a review.
+        if self.kind.contradicts_agent_role(self.agent_label, tech_lead_label):
             raise CompletionIntakeError(
                 "recorded Tech Lead role does not match configured launch policy"
             )
