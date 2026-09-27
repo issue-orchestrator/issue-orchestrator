@@ -138,7 +138,7 @@ def test_the_issue_runtime_lanes_are_the_killable_kinds_lanes() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "optional"), [(C, False), (RW, False), (TL, True), (None, False)]
+    ("kind", "optional"), [(C, False), (RW, False), (H, False), (TL, True), (R, True), (None, False)]
 )
 def test_only_a_non_deliverable_completion_may_publish_nothing(kind, optional) -> None:
     from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
