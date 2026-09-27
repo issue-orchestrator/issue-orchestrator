@@ -69,9 +69,9 @@ class RemoteAuthorityRefreshOperation:
                     return RecoveryAttemptPending(refusal)
                 # Before the remote read: a record recovery never owned must not
                 # wait on remote authority it will never use (#7323).
-                retired = self._scope.retire_if_outside(token, claim, record)
-                if retired is not None:
-                    return retired
+                scope = self._scope.retire_if_outside(token, claim, record)
+                if scope.outside_scope:
+                    return scope.pending()
                 key = record.disposition.key
                 try:
                     facts = perform(

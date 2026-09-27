@@ -58,9 +58,9 @@ class RecoveryRecordOperation:
         self._execution.remember_claim(token, claim)
         # Before any issue read or workspace: a record recovery never owned
         # resolves here rather than failing preparation forever (#7323).
-        retired = self._scope.retire_if_outside(token, claim, record)
-        if retired is not None:
-            return retired
+        scope = self._scope.retire_if_outside(token, claim, record)
+        if scope.outside_scope:
+            return scope.pending()
         ready = self._preparation.prepare(token, claim, request)
         if isinstance(ready, RecoveryAttemptPending):
             return ready

@@ -506,3 +506,40 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
         drain._next_at = float("-inf")
         drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
         assert intake.prepare_evidence.call_count == calls
+
+
+def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tmp_path):
+    """The store refuses the retirement; the sweep must not report it retired."""
+    store = Rig(tmp_path / "work.sqlite").open()
+    execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
+    labels = Labels(issue=6914)
+    intake = owned_intake(TaskKind.TECH_LEAD)
+    aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
+        admission=RankedEvidenceAdmission(store, intake), phases=store, authority=effects,
+        gate=FileIssueDispositionMutationGate(tmp_path), labels=LabelManager(Config(repo="owner/repo")),
+        reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
+    admission = capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.PR_BRANCH_MISMATCH,
+                        reason="admitted before the scope rule")
+    aggregate.admit(admission)
+    events = InMemoryEventSink()
+    retirement = OutOfScopeRecordRetirement(intake=intake, store=store, effects=effects,
+                                            blocks=aggregate, events=events)
+    real_cas = store.retire_outside_scope
+
+    def evidence_lands_first(claim, **kwargs):
+        store.admit(capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.PR_BRANCH_MISMATCH,
+                            reason="newer run on the same head", run="run-2"))
+        return real_cas(claim, **kwargs)
+
+    store.retire_outside_scope = evidence_lands_first
+    sweep = OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
+                                      retirement=retirement, batch_size=5)
+
+    report = sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert report.retired == ()
+    assert store.record_for_id(admission.evidence.record_id).disposition.state is ValidatedWorkState.PARKED
+    assert store.owner_of(admission.evidence.record_id) is None
+    assert RECOVERY_PENDING in labels.labels
+    assert events.get_events(EventName.VALIDATED_WORK_ABANDONED.value) == []

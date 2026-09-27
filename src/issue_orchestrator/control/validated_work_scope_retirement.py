@@ -13,6 +13,8 @@ holds is outside scope, and the store refuses if that set changed meanwhile.
 """
 
 import logging
+from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
 
 from ..domain.recovery_attempt import RecoveryAttemptPending
@@ -34,6 +36,30 @@ from ..ports.validated_work_store import ValidatedWorkStore
 
 logger = logging.getLogger(__name__)
 
+
+class ScopeRetirementStatus(StrEnum):
+    IN_SCOPE = "in_scope"  # recovery owns this record; nothing was written
+    RETIRED = "retired"  # resolved ABANDONED / outside_recovery_scope
+    CHANGED = "changed"  # the store CAS refused: evidence or claim moved
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeRetirement:
+    """What `retire_if_outside` did. Only RETIRED is a state transition."""
+
+    status: ScopeRetirementStatus
+    message: str
+
+    @property
+    def outside_scope(self) -> bool:
+        return self.status is not ScopeRetirementStatus.IN_SCOPE
+
+    def pending(self) -> RecoveryAttemptPending:
+        """The drain lanes' answer for a record they must not publish or refresh."""
+        if not self.outside_scope:
+            raise ValueError("an in-scope record continues through recovery")
+        return RecoveryAttemptPending(self.message)
+
 RETIREMENT_ACTOR = "orchestrator:validated-work-scope"
 
 
@@ -54,8 +80,8 @@ class OutOfScopeRecordRetirement:
         )
 
     def retire_if_outside(self, token: RecordExecutionToken, claim: ValidatedWorkClaim,
-                          record: ValidatedWorkRecord) -> RecoveryAttemptPending | None:
-        """None when recovery owns this record; otherwise resolve it and say why."""
+                          record: ValidatedWorkRecord) -> ScopeRetirement:
+        """Resolve the record when recovery never owned it; say exactly what happened."""
         perform = partial(self._effects.perform, token, claim)
         record_id = record.disposition.record_id
         rows = (record.current_evidence,
@@ -65,14 +91,15 @@ class OutOfScopeRecordRetirement:
             for row in rows
         )
         if any(recovery_owns(role) for role in roles):
-            return None
+            return ScopeRetirement(ScopeRetirementStatus.IN_SCOPE, "recovery owns this record")
         reason = outside_scope_reason(roles[0])
         retired = perform(lambda: self._store.retire_outside_scope(
             claim, evidence_ids=frozenset(row.evidence_id for row in rows),
             actor=RETIREMENT_ACTOR, reason=reason,
         ))
         if not retired:
-            return RecoveryAttemptPending("Retained record changed before out-of-scope retirement")
+            return ScopeRetirement(ScopeRetirementStatus.CHANGED,
+                                   "Retained record changed before out-of-scope retirement")
         issue = record.disposition.key.issue_number
         logger.info("[VALIDATED_WORK] Retired record %s of issue #%d: %s", record_id, issue, reason)
         self._events.publish(make_trace_event(EventName.VALIDATED_WORK_ABANDONED, {
@@ -87,9 +114,10 @@ class OutOfScopeRecordRetirement:
         # projection is healed by the drain's block sweep, which revisits every
         # issue with retained evidence.
         projection = perform(lambda: self._blocks.reconcile_issue_block(issue))
-        return RecoveryAttemptPending(
+        return ScopeRetirement(
+            ScopeRetirementStatus.RETIRED,
             f"Retired retained work outside recovery scope: {reason}; "
-            f"block projection {projection.status.value}: {projection.message}"
+            f"block projection {projection.status.value}: {projection.message}",
         )
 
 
@@ -166,9 +194,9 @@ class OutOfScopeRetirementSweep:
                 if claim is None:
                     return False
                 self._execution.remember_claim(token, claim)
-                if self._retirement.retire_if_outside(token, claim, record) is None:
+                outcome = self._retirement.retire_if_outside(token, claim, record)
+                if outcome.status is ScopeRetirementStatus.IN_SCOPE:
                     self._owned.add(request.evidence_id)
-                    return False
-                return True
+                return outcome.status is ScopeRetirementStatus.RETIRED
             finally:
                 self._execution.relinquish(token)
