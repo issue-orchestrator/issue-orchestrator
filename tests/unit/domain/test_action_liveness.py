@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -110,6 +110,31 @@ def test_permanent_and_needs_human_park_on_first_occurrence(outcome) -> None:
     assert row is not None and row.parked and row.attempts == 1
     assert row.last_outcome is outcome.kind
     assert admission(row, NOW + timedelta(days=365)) is Admission.PARKED
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        ActionOutcome.transient("rate limited", NOW + timedelta(minutes=30)),
+        ActionOutcome.transient("still broken"),
+        ActionOutcome.permanent("refused"),
+    ],
+    ids=["declared-wait", "transient", "permanent"],
+)
+def test_a_park_ends_only_by_success(outcome) -> None:
+    """An attempt run despite a park (an operator's explicit recovery) that
+    does not succeed leaves it parked with its escalation, so its block stays
+    accounted for (review B r6)."""
+    parked = POLICY.after(None, KEY, ActionOutcome.permanent("stuck"), NOW)
+    assert parked is not None and parked.parked
+    escalated = replace(parked, escalated=True, explained=True, escalation_attempts=1,
+                        escalation_attempted_at=NOW)
+
+    row = POLICY.after(escalated, KEY, outcome, NOW + timedelta(minutes=5))
+
+    assert row is not None and row.parked
+    assert (row.escalated, row.explained, row.escalation_attempts) == (True, True, 1)
+    assert row.first_failed_at == NOW
 
 
 def test_done_leaves_no_row() -> None:

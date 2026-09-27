@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from issue_orchestrator.domain.action_liveness import (
     ActionIdentity,
+    LivenessAnnouncement,
     LivenessKey,
     LivenessRow,
     OutcomeKind,
@@ -218,3 +219,54 @@ def test_an_owed_withdrawal_is_forgotten_only_under_an_escalated_park(tmp_path) 
     store.put(_row(action="add_label", escalated=True))
     assert store.clear_release_if_escalated_park(410)
     assert store.pending_releases() == ()
+
+
+def test_a_settlement_owns_the_database_from_its_read(tmp_path) -> None:
+    """The operator releases (another connection, another thread) right after
+    settle() read its expected row. The release must wait for the settlement
+    and then remove what it wrote: never a park restored after its release
+    (review r24)."""
+    import threading
+
+    from issue_orchestrator.control.action_liveness import release_parked_action
+
+    path = tmp_path / "l.sqlite"
+    engine = SQLiteActionLivenessStore(path)
+    expected = _row(parked=False)
+    assert engine.settle(None, expected, announce_parked=False)
+    released = threading.Event()
+
+    def operator_release() -> None:
+        release_parked_action(SQLiteActionLivenessStore(path), expected.key.identity)
+        released.set()
+
+    class _PauseAfterRead:
+        """The engine's connection, letting the operator in after settle's read."""
+
+        def __init__(self, conn) -> None:
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            result = self._conn.execute(sql, *args)
+            if sql.startswith("SELECT") and "fingerprint=?" in sql:
+                threading.Thread(target=operator_release, daemon=True).start()
+                # A release that is not held off commits well within this.
+                released.wait(timeout=1.0)
+            return result
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._conn.__exit__(*exc)
+
+    connection = _PauseAfterRead(engine._connection())
+    engine._connection = lambda: connection  # type: ignore[method-assign]
+    engine.settle(expected, _row(parked=True), announce_parked=True)
+    assert released.wait(timeout=35.0), "the release ran once the settlement committed"
+
+    after = SQLiteActionLivenessStore(path)
+    assert after.row(expected.key) is None
+    kinds = [kind for _id, kind, _row_ in after.pending_announcements()]
+    assert kinds.count(LivenessAnnouncement.PARKED) == kinds.count(LivenessAnnouncement.RELEASED)
