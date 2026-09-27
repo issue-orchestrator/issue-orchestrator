@@ -350,3 +350,17 @@ def test_the_preparation_names_how_each_refusal_counts() -> None:
     assert prepare(labels=("io:needs-reconcile",)).kind is RecoveryPendingKind.NEEDS_HUMAN
     assert prepare(busy=True).kind is RecoveryPendingKind.WAITING
     assert prepare(gate_busy=True).kind is RecoveryPendingKind.CONTENDED
+
+
+def test_a_refused_pr_create_parks_at_once(tmp_path) -> None:
+    """#7357's typed refusals are deterministic: no budget is spent on them."""
+    from issue_orchestrator.domain.validated_work import ValidatedWorkFailure
+
+    engine = _Engine(
+        tmp_path,
+        RecoveryAttemptPending("PR create refused", ValidatedWorkFailure.PR_CREATE_NO_COMMITS),
+    )
+    engine.passes(10)
+
+    assert len(engine.operation.called) == 1
+    assert engine.escalation.parked[0].last_outcome.value == "permanent"

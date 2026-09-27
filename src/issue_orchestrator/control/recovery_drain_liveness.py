@@ -36,6 +36,7 @@ from ..domain.action_liveness import (
 )
 from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_completion import RecoveryCompleted
+from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..ports.repository_host import host_rate_limit_of
@@ -57,7 +58,16 @@ def drain_outcome(
         return ActionOutcome.done()
     failure = "" if result.failure is None else f" [{result.failure.value}]"
     reason = f"{result.message}{failure}"
+    if result.failure in _DETERMINISTIC_REFUSALS:
+        return ActionOutcome.permanent(reason)
     return _OUTCOMES[result.kind](reason)
+
+
+#: Failures the same selection will meet every time (#7357's typed PR-create
+#: refusals): parked on the first occurrence rather than after a budget.
+_DETERMINISTIC_REFUSALS = frozenset(
+    {ValidatedWorkFailure.PR_CREATE_NO_COMMITS, ValidatedWorkFailure.PR_CREATE_REJECTED}
+)
 
 
 #: One mapping from how a pending result says it should be counted to the

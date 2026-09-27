@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.unit.control.liveness_doubles import drain_liveness
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.control.validated_work_scope_retirement import (
     OutOfScopeRecordRetirement,
@@ -138,6 +139,7 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
         ),
         batch_size=5,
         interval_seconds=10,
+        liveness=drain_liveness(),
         clock=lambda: now.value,
     )
 
