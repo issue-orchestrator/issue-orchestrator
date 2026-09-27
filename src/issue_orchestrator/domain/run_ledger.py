@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Iterable, Optional, TypeVar
 
+from .host_rate_limit import HostRateLimit
 from .tech_lead_run import (
     TechLeadRunScopeKind,
     global_run_precedence,
@@ -183,6 +184,9 @@ class RunLedgerOutcome:
     holder: str = ""
     barrier_reason: str = ""
     detail: str = ""
+    #: Set when the store was unavailable because the host rate-limited it
+    #: (#7297): the launch authority holds the run until the reset.
+    host_rate_limit: HostRateLimit | None = None
 
     @property
     def granted(self) -> bool:
@@ -190,8 +194,15 @@ class RunLedgerOutcome:
         return self.status in (RunLedgerStatus.GRANTED, RunLedgerStatus.ADOPTED)
 
     @classmethod
-    def unavailable(cls, run_key: str, detail: str) -> "RunLedgerOutcome":
-        return cls(RunLedgerStatus.UNAVAILABLE, run_key, detail=detail)
+    def unavailable(
+        cls, run_key: str, detail: str, *, host_rate_limit: HostRateLimit | None = None
+    ) -> "RunLedgerOutcome":
+        return cls(
+            RunLedgerStatus.UNAVAILABLE,
+            run_key,
+            detail=detail,
+            host_rate_limit=host_rate_limit,
+        )
 
 
 @dataclass(frozen=True, slots=True)

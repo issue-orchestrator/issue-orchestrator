@@ -497,6 +497,15 @@ class LaunchSettlement:
             # exists, so dropping it here would lose it permanently.
             logger.info("[PROVIDER] Launch deferred, work retained: %s", result.reason)
             return SettlementDecision(WorkDisposal.RETAINED, claim, _no_projection)
+        if result.disposition is LaunchDisposition.HOST_RATE_LIMITED:
+            # The host refused until a known reset (#7297). The same decision
+            # as a provider refusal - retained, no budget spent - because a
+            # retry before the reset is refused by construction, so counting it
+            # would turn a transient limit into a needs-human escalation. The
+            # bound on waiting lives in HostRateLimitLaunchGate, which hands a
+            # limit that never lifts back as a RETRYABLE_FAILURE.
+            logger.info("[GITHUB] Launch deferred on a rate limit, work retained: %s", result.reason)
+            return SettlementDecision(WorkDisposal.RETAINED, claim, _no_projection)
         if result.disposition is LaunchDisposition.CLAIM_UNRECORDED:
             # The ledger refused the claim, so this request has no durable row
             # and the launch never happened (#6999 F1 round 2). Nothing about

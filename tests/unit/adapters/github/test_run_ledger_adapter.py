@@ -332,3 +332,15 @@ def test_an_expired_peer_hold_is_reclaimable_through_the_real_adapter():
 
     assert outcome.status is RunLedgerStatus.GRANTED
     assert client.updated_refs, "reclaiming an expired hold is a real write"
+
+
+def test_a_rate_limited_ledger_read_reports_its_typed_limit() -> None:
+    """#7297 r9: the authority holds the run on the shared window, not blindly."""
+    from .test_ref_claim_adapter import RateLimitedRefClient
+
+    adapter = GitHubRefRunLedgerAdapter(RateLimitedRefClient(), "engine-a")
+
+    outcome = adapter.submit(_reserve())
+
+    assert outcome.status is RunLedgerStatus.UNAVAILABLE
+    assert outcome.host_rate_limit is not None

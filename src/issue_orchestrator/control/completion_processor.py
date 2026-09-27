@@ -2222,8 +2222,9 @@ class CompletionProcessor:
     ) -> bool:
         """Run the partial-delivery guard before a branch write; record a refusal.
 
-        Not retryable: the agent's words, or the existing PR's reference line,
-        have to change first (#7288).
+        Not retryable when the agent's words, or the existing PR's reference
+        line, have to change first (#7288). Retryable when the guard only failed
+        to read GitHub (a rate limit, #7297): the delivery itself is not at fault.
         """
         refusal = self._partial_delivery.refusal(
             worktree, issue_number=issue_number, branch=branch,
@@ -2231,11 +2232,11 @@ class CompletionProcessor:
         )
         if refusal is None:
             return False
-        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {refusal}")
-        logger.error("Partial publication refused for #%d: %s", issue_number, refusal)
+        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {refusal.reason}")
+        logger.error("Partial publication refused for #%d: %s", issue_number, refusal.reason)
         self._emit_publish_failed(
             issue_number=issue_number, stage=ERROR_PREFIX_CREATE_PR,
-            error=refusal, retryable=False, branch=branch,
+            error=refusal.reason, retryable=refusal.retryable, branch=branch,
         )
         return True
 

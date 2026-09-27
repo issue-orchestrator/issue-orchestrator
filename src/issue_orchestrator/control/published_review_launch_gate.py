@@ -65,8 +65,10 @@ def refuse_launch_over_published_review(
         described,
         "restored" if gate.success else f"NOT restored: {gate.error}",
     )
-    return LaunchResult(
-        None,
-        False,
-        f"Published validated work is under review: {described}",
-    )
+    reason = f"Published validated work is under review: {described}"
+    if gate.host_rate_limit is not None:
+        # The gate could not be restored because GitHub refused it on a rate
+        # limit (#7297): defer on the shared window instead of re-reading
+        # custody every tick, and restore the gate once it reopens.
+        return LaunchResult.host_rate_limited(reason, gate.host_rate_limit)
+    return LaunchResult(None, False, reason)

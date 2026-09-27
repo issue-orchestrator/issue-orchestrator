@@ -23,6 +23,7 @@ from ..ports.pattern_registry import (
     PatternRegistryEntry,
     PatternRegistryError,
     PatternReservation,
+    TerminalRetirementPolicy,
 )
 
 
@@ -125,6 +126,7 @@ class ReadOnlyPatternCaseFileRegistry(PatternCaseFileRegistry):
         issue_number: int,
         expected_revision: str | None = None,
         expected_signatures: frozenset[str] | None = None,
+        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
     ) -> PatternReservation:
         self._refuse("reserve_retirement")
 
