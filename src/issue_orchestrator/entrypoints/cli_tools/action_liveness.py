@@ -30,7 +30,7 @@ from ...infra.repo_identity import state_dir
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="issue-orchestrator action-liveness")
     commands = parser.add_subparsers(dest="command", required=True)
-    listing = commands.add_parser("list", help="Every parked action")
+    listing = commands.add_parser("list", help="Every parked or waiting action")
     release = commands.add_parser("release", help="Give one parked action a fresh budget")
     release.add_argument("--subject", required=True, help="e.g. engine, issue:410")
     release.add_argument("--action", required=True, help="e.g. create_tech_lead_issue")
@@ -45,10 +45,10 @@ def main(argv: list[str]) -> int:
         state_dir(Path(args.repo_root).resolve()) / ACTION_LIVENESS_DB
     )
     if args.command == "list":
-        for row in store.parked_rows():
+        for row in store.visible_rows():
             print(
-                f"{row.key.identity.subject}\t{row.key.identity.action}"
-                f"\t{row.last_outcome.value}\t{row.last_reason}"
+                f"{'parked' if row.parked else 'waiting'}\t{row.key.identity.subject}"
+                f"\t{row.key.identity.action}\t{row.last_outcome.value}\t{row.last_reason}"
             )
         return 0
     released = release_parked_action(store, ActionIdentity(args.subject, args.action))

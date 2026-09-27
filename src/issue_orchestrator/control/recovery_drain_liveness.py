@@ -80,12 +80,17 @@ class RecoveryDrainLiveness:
 
     def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
         if isinstance(request, RemoteAuthorityRefreshRequest):
-            action, issue = REFRESH_ACTION, request.authority.issue_number
+            action, issue, facts = REFRESH_ACTION, request.authority.issue_number, request
         else:
+            # The record and its current evidence are the facts. An operator's
+            # approval is authority to run, not a fact: the explicit recovery
+            # of a parked selection is the same question, and its success
+            # must settle that park.
             action, issue = RECOVER_ACTION, self.record_issue(request.record_id)
+            facts = {"record_id": request.record_id, "evidence_id": request.evidence_id}
         return LivenessKey(
             identity=ActionIdentity(drain_subject(request.record_id), action),
-            fingerprint=fact_fingerprint(request),
+            fingerprint=fact_fingerprint(facts),
             escalation_issue=issue,
         )
 
