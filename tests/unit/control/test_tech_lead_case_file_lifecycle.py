@@ -34,10 +34,14 @@ from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.pattern_registry import (
     PatternRegistryError,
     PatternReservationState,
+    TerminalRetirementPolicy,
 )
 
 from tests.unit.adapters.github.test_ref_claim_adapter import FakeGitHubRefClient
 
+
+REFUSE = TerminalRetirementPolicy.REFUSE
+ADOPT = TerminalRetirementPolicy.ADOPT
 
 CASE_FILE = 81
 """The canonical case file ``_seed`` binds to the ``stale-pattern`` signature."""
@@ -136,10 +140,12 @@ def test_two_clients_converge_on_one_terminal_disposition() -> None:
     repository = _Repository()
 
     outcome = _owner(first, repository).retire(
-        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
     replay = _owner(second, repository).retire(
-        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
 
     assert not outcome.deduplicated
@@ -163,18 +169,21 @@ def test_ambiguous_comment_is_never_reissued_and_later_receipt_recovers() -> Non
 
     with pytest.raises(RuntimeError, match="ambiguous transport"):
         _owner(first, repository).retire(
-            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+            already_terminal=REFUSE,
         )
     now[0] += timedelta(hours=1)
     with pytest.raises(AmbiguousPatternPublicationError):
         _owner(second, repository).retire(
-            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+            already_terminal=REFUSE,
         )
 
     repository.fail_comment = False
     repository.comments.append((81, retirement_comment(_transition())))
     recovered = _owner(second, repository).retire(
-        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
 
     assert not recovered.deduplicated
@@ -206,7 +215,8 @@ def test_restart_after_close_phase_finishes_without_reposting_comment() -> None:
     repository.closures.append(81)  # the first process closed, then crashed
 
     _owner(registry, repository).retire(
-        signature="stale-pattern", transition=transition, issue_number=CASE_FILE
+        signature="stale-pattern", transition=transition, issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
 
     assert len(repository.comments) == 1
@@ -223,7 +233,8 @@ def test_retry_keeps_first_recorded_timestamp_authoritative() -> None:
     repository = _Repository()
     original = _transition()
     first = _owner(registry, repository).retire(
-        signature="stale-pattern", transition=original, issue_number=CASE_FILE
+        signature="stale-pattern", transition=original, issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
     later_retry = CaseFileLifecycleTransition(
         transition_id=original.transition_id,
@@ -234,7 +245,8 @@ def test_retry_keeps_first_recorded_timestamp_authoritative() -> None:
     )
 
     replay = _owner(registry, repository).retire(
-        signature="stale-pattern", transition=later_retry, issue_number=CASE_FILE
+        signature="stale-pattern", transition=later_retry, issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
 
     assert replay.deduplicated
@@ -266,6 +278,7 @@ def test_retirement_refuses_a_case_file_the_command_did_not_authorize() -> None:
             signature="stale-pattern",
             transition=_transition(),
             issue_number=CASE_FILE + 1,
+            already_terminal=REFUSE,
         )
 
     assert repository.comments == []
@@ -285,7 +298,8 @@ def test_terminal_signature_accepts_later_evidence_without_reopening() -> None:
     _seed(registry)
     repository = _Repository()
     _owner(registry, repository).retire(
-        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
 
     admitted = registry.reserve_observation(
@@ -382,7 +396,8 @@ def test_a_guard_refusal_before_any_write_leaves_the_retirement_resumable() -> N
 
     with pytest.raises(ReconciliationRequired):
         _owner(registry, repository, before_write=guard).retire(
-            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+            already_terminal=REFUSE,
         )
 
     # Nothing was posted, so nothing may be recorded as in flight.
@@ -393,7 +408,8 @@ def test_a_guard_refusal_before_any_write_leaves_the_retirement_resumable() -> N
 
     # Authority returns; the exact same retirement replays to completion.
     recovered = _owner(registry, repository).retire(
-        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
 
     assert not recovered.deduplicated
@@ -417,7 +433,8 @@ def test_a_guard_refusal_does_not_mask_a_genuinely_ambiguous_write() -> None:
 
     with pytest.raises(RuntimeError, match="ambiguous transport"):
         _owner(registry, repository).retire(
-            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+            already_terminal=REFUSE,
         )
 
     entry = registry.read(signature="stale-pattern")
@@ -426,7 +443,8 @@ def test_a_guard_refusal_does_not_mask_a_genuinely_ambiguous_write() -> None:
     now[0] += timedelta(hours=1)
     with pytest.raises(AmbiguousPatternPublicationError):
         _owner(registry, repository).retire(
-            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+            already_terminal=REFUSE,
         )
     assert repository.comments == []
 
@@ -456,7 +474,8 @@ def test_a_concurrent_seed_cannot_move_a_reserved_retirements_revision() -> None
     # The plan reserves, and its publication is left ambiguous.
     with pytest.raises(RuntimeError, match="ambiguous transport"):
         _owner(registry, repository).retire(
-            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+            signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+            already_terminal=REFUSE,
         )
     reserved = registry.read(signature="stale-pattern")
     assert reserved is not None
@@ -489,7 +508,8 @@ def test_a_concurrent_seed_cannot_move_a_reserved_retirements_revision() -> None
     repository.fail_comment = False
     repository.comments.append((CASE_FILE, retirement_comment(_transition())))
     _owner(registry, repository).retire(
-        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE
+        signature="stale-pattern", transition=_transition(), issue_number=CASE_FILE,
+        already_terminal=REFUSE,
     )
     settled = registry.read(signature="stale-pattern")
     assert settled is not None
@@ -522,3 +542,219 @@ def test_a_seed_still_merges_once_no_effect_is_in_flight() -> None:
     merged = registry.read(signature="stale-pattern")
     assert merged is not None
     assert "run:session:B7" in merged.observation_ids
+
+
+# --- a signature already retired under ANOTHER transition id (#7345) ---------
+
+
+def _other_writer_retired(disposition: str = "shipped") -> CaseFileLifecycleTransition:
+    return CaseFileLifecycleTransition(
+        transition_id="promotion:stale-pattern:owner/repo:199:declined",
+        disposition=disposition,  # type: ignore[arg-type]
+        reason="Promoted issue owner/repo#199 was closed without a merged fix.",
+        evidence=("owner/repo#199",),
+        recorded_at="2026-09-11T12:00:00+00:00",
+    )
+
+
+def _local_registry() -> Any:
+    from issue_orchestrator.control.pattern_registry import (
+        LocalPatternCaseFileRegistry,
+    )
+    from issue_orchestrator.ports.tech_lead_authority import (
+        InMemoryTechLeadAuthorityStore,
+    )
+
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_pattern(
+        signature="stale-pattern",
+        issue_number=CASE_FILE,
+        observation_id="run:session:A1",
+    )
+    return LocalPatternCaseFileRegistry(authority)
+
+
+def _shared_registry() -> Any:
+    registry = _registry(
+        FakeGitHubRefClient(), "engine-a", [datetime(2026, 9, 10, tzinfo=timezone.utc)]
+    )
+    _seed(registry)
+    return registry
+
+
+REGISTRIES = pytest.mark.parametrize(
+    "make_registry", (_shared_registry, _local_registry), ids=("shared", "local")
+)
+
+
+@REGISTRIES
+def test_an_observed_outcome_adopts_the_recorded_terminal_transition(
+    make_registry: Any,
+) -> None:
+    """A different disposition under a different id is ADOPTED, not refused."""
+    registry = make_registry()
+    first = _Repository()
+    _owner(registry, first).retire(
+        signature="stale-pattern",
+        transition=_other_writer_retired(),
+        issue_number=CASE_FILE,
+        already_terminal=REFUSE,
+    )
+    repository = _Repository()
+
+    outcome = _owner(registry, repository).retire(
+        signature="stale-pattern",
+        transition=_transition(CASE_FILE_DECLINED),
+        issue_number=CASE_FILE,
+        already_terminal=ADOPT,
+    )
+
+    assert outcome.adopted and outcome.deduplicated
+    assert outcome.transition == _other_writer_retired()
+    assert repository.comments == [] and repository.closures == []
+    entry = registry.read(signature="stale-pattern")
+    assert entry is not None
+    assert [item.transition_id for item in entry.lifecycle] == [
+        _other_writer_retired().transition_id
+    ]
+
+
+@REGISTRIES
+def test_a_reviewed_decision_still_refuses_a_signature_retired_under_another_id(
+    make_registry: Any,
+) -> None:
+    """REFUSE stays fail-fast: changing a terminal disposition is a reopen."""
+    registry = make_registry()
+    _owner(registry, _Repository()).retire(
+        signature="stale-pattern",
+        transition=_other_writer_retired(),
+        issue_number=CASE_FILE,
+        already_terminal=REFUSE,
+    )
+    repository = _Repository()
+
+    with pytest.raises(PatternRegistryError, match="is terminal"):
+        _owner(registry, repository).retire(
+            signature="stale-pattern",
+            transition=_transition(CASE_FILE_DECLINED),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )
+
+    assert repository.comments == [] and repository.closures == []
+
+
+@REGISTRIES
+def test_adoption_never_reopens_a_terminal_signature(make_registry: Any) -> None:
+    """Only a TERMINAL request is answered by adoption; a reopen stays refused."""
+    from issue_orchestrator.ports.pattern_registry import (
+        admit_lifecycle_transition,
+        resolve_admitted_transition,
+    )
+
+    registry = make_registry()
+    _owner(registry, _Repository()).retire(
+        signature="stale-pattern",
+        transition=_other_writer_retired(),
+        issue_number=CASE_FILE,
+        already_terminal=REFUSE,
+    )
+    entry = registry.read(signature="stale-pattern")
+    assert entry is not None
+    reopen = _transition(CASE_FILE_ACTIVE)
+
+    assert resolve_admitted_transition(entry, reopen, already_terminal=ADOPT) is None
+    with pytest.raises(PatternRegistryError, match="is terminal"):
+        admit_lifecycle_transition(entry, reopen, already_terminal=ADOPT)
+    with pytest.raises(PatternRegistryError, match="is terminal"):
+        _owner(registry, _Repository()).classify(
+            signature="stale-pattern", transition=reopen
+        )
+
+
+@REGISTRIES
+def test_adoption_does_not_mask_a_reused_id_with_a_changed_payload(
+    make_registry: Any,
+) -> None:
+    """Identity conflicts are still refused before adoption is considered."""
+    registry = make_registry()
+    _owner(registry, _Repository()).retire(
+        signature="stale-pattern",
+        transition=_other_writer_retired(),
+        issue_number=CASE_FILE,
+        already_terminal=REFUSE,
+    )
+    changed = replace(_other_writer_retired(), reason="A different reviewed intent.")
+
+    with pytest.raises(PatternRegistryError, match="changed payload"):
+        _owner(registry, _Repository()).retire(
+            signature="stale-pattern",
+            transition=changed,
+            issue_number=CASE_FILE,
+            already_terminal=ADOPT,
+        )
+
+
+class _CrashOnClose(_Repository):
+    def update_issue_state(self, issue_number: int, state: str) -> None:
+        raise RuntimeError("the other writer's process died before closing")
+
+
+@REGISTRIES
+def test_an_observed_outcome_resumes_another_writers_admitted_retirement(
+    make_registry: Any,
+) -> None:
+    """ADOPT covers a terminal intent that is admitted but not yet committed.
+
+    The other writer confirmed its comment and stopped before the close. Its
+    reservation is durable, so an exact-intent resume rule refused the
+    settlement forever. Adoption finishes THAT transition, with ITS comment,
+    and reports it."""
+    registry = make_registry()
+    with pytest.raises(RuntimeError):
+        _owner(registry, _CrashOnClose()).retire(
+            signature="stale-pattern",
+            transition=_other_writer_retired(),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )
+    repository = _Repository()
+
+    outcome = _owner(registry, repository).retire(
+        signature="stale-pattern",
+        transition=_transition(CASE_FILE_DECLINED),
+        issue_number=CASE_FILE,
+        already_terminal=ADOPT,
+    )
+
+    assert outcome.adopted
+    assert outcome.transition == _other_writer_retired()
+    assert repository.comments == []
+    assert repository.closures == [CASE_FILE]
+    entry = registry.read(signature="stale-pattern")
+    assert entry is not None and entry.pending_retirement is None
+    assert [item.transition_id for item in entry.lifecycle] == [
+        _other_writer_retired().transition_id
+    ]
+
+
+@REGISTRIES
+def test_a_reviewed_decision_still_refuses_another_writers_pending_retirement(
+    make_registry: Any,
+) -> None:
+    registry = make_registry()
+    with pytest.raises(RuntimeError):
+        _owner(registry, _CrashOnClose()).retire(
+            signature="stale-pattern",
+            transition=_other_writer_retired(),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )
+
+    with pytest.raises(PatternRegistryError, match="different retirement in flight"):
+        _owner(registry, _Repository()).retire(
+            signature="stale-pattern",
+            transition=_transition(CASE_FILE_DECLINED),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )

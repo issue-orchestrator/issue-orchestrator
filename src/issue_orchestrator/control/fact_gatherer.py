@@ -25,6 +25,7 @@ import time
 from collections.abc import Mapping, Sequence
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
 from ..infra.config import Config
@@ -32,6 +33,7 @@ from ..events import EventName
 from ..history import issues_held_by_session_history
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
+from .host_rate_limit_launch_gate import live_episode_keys
 from .provider_launch_readiness import ProviderLaunchReadiness
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
 from .published_review_release import held_investigation_subjects
@@ -250,6 +252,9 @@ class FactGatherer:
             pending_reworks=tuple(state.pending_reworks),
             pending_tech_lead=tuple(state.pending_tech_lead_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
+            host_rate_limit_hold=state.host_rate_limit.open_at(
+                datetime.now(UTC), live=live_episode_keys(state)
+            ),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,
