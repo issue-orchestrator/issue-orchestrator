@@ -414,7 +414,9 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
                 return PatternReservation(PatternReservationState.COMMITTED, current)
             pending = current.pending_retirement
             if pending is not None:
-                return self._existing_retirement(current, desired)
+                return self._existing_retirement(
+                    current, desired, already_terminal=already_terminal
+                )
             if current.pending_observation is not None:
                 return PatternReservation(PatternReservationState.HELD, current)
             require_reviewed_revision(current, expected_revision)
@@ -436,8 +438,12 @@ class GitHubRefPatternRegistry(PatternCaseFileRegistry):
         self,
         current: PatternRegistryEntry,
         desired: PendingPatternRetirement,
+        *,
+        already_terminal: TerminalRetirementPolicy,
     ) -> PatternReservation:
-        pending = require_resumable_retirement(current, desired)
+        pending = require_resumable_retirement(
+            current, desired, already_terminal=already_terminal
+        )
         if pending.phase is PatternRetirementPhase.CLOSE:
             return PatternReservation(PatternReservationState.RECOVERABLE, current)
         if current.publication_started_at is not None:

@@ -2799,8 +2799,15 @@ class TestSettlementAdoptsAnAlreadyTerminalCaseFile:
 
         return Counting()
 
-    def _world(self, *, recorded_disposition: str = "shipped"):
-        """Shared registry already terminal under the RECONCILIATION's id."""
+    def _world(
+        self, *, recorded_disposition: str = "shipped", interrupted: bool = False
+    ):
+        """Shared registry already terminal under the RECONCILIATION's id.
+
+        ``interrupted`` stops the reconciliation after its evidence comment was
+        confirmed but before the close and the final compare-and-swap — its
+        terminal intent is durably admitted but not yet committed.
+        """
         from issue_orchestrator.adapters.github.pattern_registry import (
             GitHubRefPatternRegistry,
         )
@@ -2815,8 +2822,9 @@ class TestSettlementAdoptsAnAlreadyTerminalCaseFile:
             FakeGitHubRefClient,
         )
 
+        client = FakeGitHubRefClient()
         shared = GitHubRefPatternRegistry(
-            cast(Any, FakeGitHubRefClient()), claimant_id="porchpin", lease_seconds=30
+            cast(Any, client), claimant_id="porchpin", lease_seconds=30
         )
         reserved = shared.reserve(
             PendingCaseFile(
@@ -2837,21 +2845,37 @@ class TestSettlementAdoptsAnAlreadyTerminalCaseFile:
             shared=shared, local=authority, claimant_id="porchpin"
         )
         registry.synchronize()
-        # The #7240 reconciliation: a REVIEWED decision, under its own id.
-        PatternCaseFileLifecycleOwner(
-            registry=registry, repository_host=cast(Any, _RecordingRepository())
-        ).retire(
-            signature=self.SIGNATURE,
-            transition=CaseFileLifecycleTransition(
-                transition_id=self.RECONCILIATION_ID,
-                disposition=recorded_disposition,  # type: ignore[arg-type]
-                reason="Reviewed backlog reconciliation.",
-                evidence=("issue-orchestrator/issue-orchestrator#7238",),
-                recorded_at="2026-09-12T01:40:00+00:00",
-            ),
-            issue_number=self.CASE_FILE,
-            already_terminal=TerminalRetirementPolicy.REFUSE,
+        reconciler_repository = _RecordingRepository()
+        if interrupted:
+
+            def crash(_issue: int, _state: str) -> None:
+                raise RuntimeError("the reconciliation process died")
+
+            reconciler_repository.update_issue_state = crash  # type: ignore[method-assign]
+        # The #7240 reconciliation: a REVIEWED decision, under its own id, run
+        # by a DIFFERENT client of the same shared registry.
+        reconciler = GitHubRefPatternRegistry(
+            cast(Any, client), claimant_id="reconciler", lease_seconds=30
         )
+        retire = PatternCaseFileLifecycleOwner(
+            registry=reconciler, repository_host=cast(Any, reconciler_repository)
+        ).retire
+        try:
+            retire(
+                signature=self.SIGNATURE,
+                transition=CaseFileLifecycleTransition(
+                    transition_id=self.RECONCILIATION_ID,
+                    disposition=recorded_disposition,  # type: ignore[arg-type]
+                    reason="Reviewed backlog reconciliation.",
+                    evidence=("issue-orchestrator/issue-orchestrator#7238",),
+                    recorded_at="2026-09-12T01:40:00+00:00",
+                ),
+                issue_number=self.CASE_FILE,
+                already_terminal=TerminalRetirementPolicy.REFUSE,
+            )
+        except RuntimeError:
+            assert interrupted
+        registry.synchronize()
         authority.record_promotion(
             promotion=_promotion(
                 self.SIGNATURE,
@@ -2980,6 +3004,45 @@ class TestSettlementAdoptsAnAlreadyTerminalCaseFile:
         ]
 
 
+    def test_a_settlement_finishes_an_interrupted_reconciliation_and_adopts_it(self):
+        """The same livelock one step earlier: the other writer's terminal
+        intent is ADMITTED (comment confirmed, close pending) but its process
+        stopped. Its reservation outlives the lease, so settlement must resume
+        THAT retirement as recorded, not refuse it every tick."""
+        shared, registry, authority = self._world(interrupted=True)
+        pending = shared.read(signature=self.SIGNATURE)
+        assert pending is not None and pending.pending_retirement is not None
+        assert pending.pending_retirement.phase is PatternRetirementPhase.CLOSE
+        target = self._counting_target()
+        target.outcomes[(self.TARGET, self.TARGET_ISSUE)] = PromotedIssueOutcome(
+            state="closed"
+        )
+        config = _config()
+        budget = PromotionReadBudget()
+        [action] = self._tick(config, authority, target, budget)
+        assert isinstance(action, SettleTechLeadPromotionAction)
+        assert not action.shipped
+
+        repository = _RecordingRepository()
+        result = self._apply(
+            action, registry=registry, authority=authority, repository=repository
+        )
+
+        assert result.success, result.error
+        assert result.details["adopted"] is True
+        # The reconciliation's OWN transition is what got committed, and the
+        # only remaining effect it owed — the close — was performed once.
+        entry = shared.read(signature=self.SIGNATURE)
+        assert entry is not None and entry.pending_retirement is None
+        assert [item.transition_id for item in entry.lifecycle] == [
+            self.RECONCILIATION_ID
+        ]
+        assert repository.comments == []
+        assert repository.closed == [self.CASE_FILE]
+        promotion = authority.load_promotion(signature=self.SIGNATURE)
+        assert promotion is not None and promotion.state == PROMOTION_STATE_SHIPPED
+        assert self._tick(config, authority, target, budget) == []
+
 @pytest.mark.parametrize(
     ("disposition", "state"),
     (
@@ -3007,3 +3070,4 @@ def test_a_nonterminal_disposition_cannot_settle_a_promotion(disposition):
 
     with pytest.raises(ValueError, match="not terminal"):
         promotion_state_for_retirement(disposition)
+

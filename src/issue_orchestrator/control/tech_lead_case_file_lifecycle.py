@@ -141,7 +141,13 @@ class PatternCaseFileLifecycleOwner:
         entry = self._subject(reservation.entry, issue_number)
         pending = entry.pending_retirement
         if pending is None:
-            return self._outcome(entry, issue_number, transition, deduplicated=True)
+            return self._outcome(
+                entry,
+                issue_number,
+                transition,
+                deduplicated=True,
+                already_terminal=already_terminal,
+            )
 
         if pending.phase is PatternRetirementPhase.COMMENT:
             entry = self._subject(
@@ -149,7 +155,13 @@ class PatternCaseFileLifecycleOwner:
             )
             pending = entry.pending_retirement
             if pending is None:
-                return self._outcome(entry, issue_number, transition, deduplicated=True)
+                return self._outcome(
+                    entry,
+                    issue_number,
+                    transition,
+                    deduplicated=True,
+                    already_terminal=already_terminal,
+                )
 
         self._before_write()
         self._repository.update_issue_state(issue_number, "closed")
@@ -157,7 +169,13 @@ class PatternCaseFileLifecycleOwner:
         committed = self._registry.finalize_retirement(
             signature=signature, reservation_id=entry.reservation_id
         )
-        return self._outcome(committed, issue_number, transition, deduplicated=False)
+        return self._outcome(
+            committed,
+            issue_number,
+            transition,
+            deduplicated=False,
+            already_terminal=already_terminal,
+        )
 
     def _recover_or_acquire(
         self, reservation: PatternReservation, issue_number: int
@@ -270,7 +288,7 @@ class PatternCaseFileLifecycleOwner:
         requested: CaseFileLifecycleTransition,
         *,
         deduplicated: bool,
-        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
+        already_terminal: TerminalRetirementPolicy,
     ) -> CaseFileRetirementOutcome:
         """Report the transition the REGISTRY committed, never the attempt's.
 

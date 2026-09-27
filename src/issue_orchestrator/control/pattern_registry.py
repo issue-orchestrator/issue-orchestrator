@@ -593,7 +593,9 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             existing = self._pending_retirements.get(signature)
             if existing is not None:
                 _reservation_id, _pending, started = existing
-                pending = require_resumable_retirement(current, desired)
+                pending = require_resumable_retirement(
+                    current, desired, already_terminal=already_terminal
+                )
                 state = (
                     PatternReservationState.RECOVERABLE
                     if pending.phase is PatternRetirementPhase.CLOSE

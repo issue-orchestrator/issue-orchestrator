@@ -346,7 +346,10 @@ def admit_lifecycle_transition(
 
 
 def require_resumable_retirement(
-    entry: PatternRegistryEntry, desired: PendingPatternRetirement
+    entry: PatternRegistryEntry,
+    desired: PendingPatternRetirement,
+    *,
+    already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
 ) -> PendingPatternRetirement:
     """THE compatibility rule for resuming ONE in-flight terminal write.
 
@@ -367,6 +370,12 @@ def require_resumable_retirement(
     the complete decision set is admitted before its first write (#7248 round 2
     review F2/A2).
 
+    Under :attr:`TerminalRetirementPolicy.ADOPT` any pending terminal
+    retirement is resumable AS RECORDED — the caller finishes the other
+    writer's transition with that writer's comment, and the lifecycle owner
+    reports the adopted transition once it commits (#7345). REFUSE keeps the
+    exact-intent rule above.
+
     Returns the pending retirement so a caller that must then decide its
     reservation STATE — recoverable, publishing, held — works from the payload
     this rule just proved compatible.
@@ -376,6 +385,15 @@ def require_resumable_retirement(
         raise PatternRegistryError(
             f"pattern {entry.signature!r} has no retirement in flight"
         )
+    if already_terminal is TerminalRetirementPolicy.ADOPT:
+        # An observed outcome adopts ANOTHER writer's admitted terminal intent
+        # exactly as it adopts a committed one: the pending retirement is
+        # resumed with ITS OWN transition and comment (the receipt recovery
+        # searches for), never re-issued with the caller's. Without this, a
+        # writer that stopped mid-retirement left a durable reservation that
+        # the settling writer could neither resume nor replace, and settlement
+        # failed on every tick until someone re-ran the other writer (#7345).
+        return pending
     if not pending.transition.same_intent(desired.transition):
         raise PatternRegistryError(
             f"pattern {entry.signature!r} has a different retirement in flight"

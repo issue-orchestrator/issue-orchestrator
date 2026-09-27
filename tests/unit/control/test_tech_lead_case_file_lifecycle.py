@@ -693,3 +693,68 @@ def test_adoption_does_not_mask_a_reused_id_with_a_changed_payload(
             issue_number=CASE_FILE,
             already_terminal=ADOPT,
         )
+
+
+class _CrashOnClose(_Repository):
+    def update_issue_state(self, issue_number: int, state: str) -> None:
+        raise RuntimeError("the other writer's process died before closing")
+
+
+@REGISTRIES
+def test_an_observed_outcome_resumes_another_writers_admitted_retirement(
+    make_registry: Any,
+) -> None:
+    """ADOPT covers a terminal intent that is admitted but not yet committed.
+
+    The other writer confirmed its comment and stopped before the close. Its
+    reservation is durable, so an exact-intent resume rule refused the
+    settlement forever. Adoption finishes THAT transition, with ITS comment,
+    and reports it."""
+    registry = make_registry()
+    with pytest.raises(RuntimeError):
+        _owner(registry, _CrashOnClose()).retire(
+            signature="stale-pattern",
+            transition=_other_writer_retired(),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )
+    repository = _Repository()
+
+    outcome = _owner(registry, repository).retire(
+        signature="stale-pattern",
+        transition=_transition(CASE_FILE_DECLINED),
+        issue_number=CASE_FILE,
+        already_terminal=ADOPT,
+    )
+
+    assert outcome.adopted
+    assert outcome.transition == _other_writer_retired()
+    assert repository.comments == []
+    assert repository.closures == [CASE_FILE]
+    entry = registry.read(signature="stale-pattern")
+    assert entry is not None and entry.pending_retirement is None
+    assert [item.transition_id for item in entry.lifecycle] == [
+        _other_writer_retired().transition_id
+    ]
+
+
+@REGISTRIES
+def test_a_reviewed_decision_still_refuses_another_writers_pending_retirement(
+    make_registry: Any,
+) -> None:
+    registry = make_registry()
+    with pytest.raises(RuntimeError):
+        _owner(registry, _CrashOnClose()).retire(
+            signature="stale-pattern",
+            transition=_other_writer_retired(),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )
+
+    with pytest.raises(PatternRegistryError, match="different retirement in flight"):
+        _owner(registry, _Repository()).retire(
+            signature="stale-pattern",
+            transition=_transition(CASE_FILE_DECLINED),
+            issue_number=CASE_FILE,
+            already_terminal=REFUSE,
+        )
