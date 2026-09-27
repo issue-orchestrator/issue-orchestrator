@@ -99,6 +99,7 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_escalations",
     "discovered_failures",
     "stuck_sweep_escalations",
+    "stuck_sweep_review_releases",
     "immediate_cleanups",
 )
 

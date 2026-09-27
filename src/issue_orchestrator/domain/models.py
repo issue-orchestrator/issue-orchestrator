@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from .blocked_open_pr import BlockedOpenPRLedger
 from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
@@ -2043,6 +2044,9 @@ class OrchestratorState:
     # In-memory like ``priority_queue`` (GitHub labels stay the crash-safe
     # truth); a restart simply re-establishes the baseline on the next scan.
     previously_blocked_issue_numbers: set[int] = field(default_factory=set)
+    # #7294: open PRs the PR scanner keeps skipping because the issue or PR
+    # carries a blocking label. Owned by the ledger; read by the board snapshot.
+    blocked_open_prs: BlockedOpenPRLedger = field(default_factory=BlockedOpenPRLedger)
     dependency_gate_snapshot: DependencyGateSnapshot = field(default_factory=DependencyGateSnapshot)  # Producer-evaluated stack gate reports + successor edges for the UI (#6597)
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
@@ -2122,10 +2126,17 @@ class OrchestratorState:
     # present) — persisted like ``recovery_attempts`` so an escalation survives a
     # crash or an apply failure and is retried until it lands (#6824 R1).
     pending_stuck_sweep_escalations: set[int] = field(default_factory=set)
+    # DURABLE: issues whose ``recovery_attempts`` counter budgets published-PR
+    # review releases rather than investigations (#7293). A counter measures
+    # ONE remedy; switching remedy restarts it.
+    review_release_budgets: set[int] = field(default_factory=set)
     # Tick-scoped buffer seeded from the durable set each sweep: every unacked
     # escalation gets an idempotent, retry-safe needs-human label (the
     # authoritative, label-only escalation, #6824 R1).
     stuck_sweep_escalations: list[int] = field(default_factory=list)
+    # One-shot buffer of issues whose published PR's review the sweep releases
+    # (#7293); the next snapshot consumes it.
+    stuck_sweep_review_releases: list[int] = field(default_factory=list)
 
     @property
     def paused(self) -> bool:

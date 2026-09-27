@@ -28,6 +28,7 @@ from ..domain.session_run import SessionRunAssets
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from .completion_review_exchange import is_review_exchange_job_for_issue
+from .published_review_custody import PublishedReviewCustody
 from .issue_termination import (
     IssueTerminationOutcome as IssueTerminationOutcome,
     ValidatedWorkCustodyUnproven as ValidatedWorkCustodyUnproven,
@@ -596,6 +597,9 @@ class IssueRuntimeLifecycleOwners:
     validated_work: ValidatedWorkPreservation
     run_evidence: IssueRunEvidenceSource
     events: EventSink
+    # Resolved (RECOVERED) work is safe for the store to forget, but not for a
+    # reset to destroy while an open PR carries it (#7293).
+    published_review: PublishedReviewCustody
 
     def _capture(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
         evidence = self.run_evidence.evidence_for_issue(issue_number)
@@ -682,7 +686,17 @@ class IssueRuntimeLifecycleOwners:
             observe=self._observe,
         )
 
+    def require_published_work_released(self, issue_number: int) -> None:
+        """Refuse any reset while an open PR carries the issue's published work.
+
+        Every reset deletes the issue's remote branches, which closes that PR;
+        a scratch reset also supersedes it. Checked before the reset terminates
+        anything, and again inside `require_reset`, the destructive primitive.
+        """
+        self.published_review.require_released(issue_number)
+
     def require_reset(self, issue_number: int, reason: str) -> ValidatedWorkDispositionBatch:
+        self.require_published_work_released(issue_number)
         batch = self.preserve(issue_number, reason)
         if batch.unresolved:
             raise UnresolvedValidatedWork(batch)

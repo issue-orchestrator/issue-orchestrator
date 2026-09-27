@@ -7,6 +7,7 @@ import pytest
 
 from issue_orchestrator.control.actions import RequestReworkAction
 from issue_orchestrator.control.in_flight_work import SettlementOutcome
+from issue_orchestrator.control.pr_scanner import ReworkScan
 from issue_orchestrator.control.scoped_rework_launch import (
     ScopedReworkLaunch,
     scoped_rework_request_keys,
@@ -306,17 +307,17 @@ def test_ui_approval_uses_same_stored_op_and_discovery_deduplicates(lane):
         MagicMock(),
         rework_request_keys=lambda number: scoped_rework_request_keys(store, number),
     )
-    reworks, escalations = scanner.scan_for_reworks(
-        [], [], issue_branches={5: pr.branch}
-    )
+    scan = scanner.scan_for_reworks([], [], issue_branches={5: pr.branch})
+    reworks, escalations = scan.reworks, scan.escalations
     assert len(reworks) == 1 and not escalations
     assert reworks[0].scoped_request_keys == (request.key,)
     assert reworks[0].feedback is None
-    assert scanner.scan_for_reworks(reworks, [], issue_branches={5: pr.branch}) == (
-        [],
-        [],
-    )
-    assert scanner.scan_for_reworks([], [5], issue_branches={5: pr.branch}) == ([], [])
+    assert scanner.scan_for_reworks(
+        reworks, [], issue_branches={5: pr.branch}
+    ) == ReworkScan(reworks=[], escalations=[], blocked=[])
+    assert scanner.scan_for_reworks(
+        [], [5], issue_branches={5: pr.branch}
+    ) == ReworkScan(reworks=[], escalations=[], blocked=[])
     workflow = GitHubWorkflow(
         config, MagicMock(), host, MagicMock(), scanner, None, EventContext()
     )

@@ -802,7 +802,7 @@ def build_orchestrator(
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
-        publish_recovery=publish_recovery, events=events)
+        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer)
     action_applier.runtime_lifecycle = runtime_lifecycle
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
@@ -853,7 +853,7 @@ def build_orchestrator(
             label_manager=label_manager,
             needs_human_block=pending_work.needs_human_block,
             fresh_issue_reader=fresh_issue_reader,
-            queue_cache_store=queue_cache_store,
+            queue_cache_store=queue_cache_store, published_review=runtime_lifecycle.published_review,
         ),
         board_snapshot_builder=create_board_snapshot_builder(
             config, timeline_store, tech_lead_board_publisher, working_copy
@@ -1257,7 +1257,7 @@ def build_orchestrator_for_testing(
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
-        publish_recovery=publish_recovery, events=events)
+        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer)
     action_applier.runtime_lifecycle = runtime_lifecycle
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,
@@ -1300,7 +1300,7 @@ def build_orchestrator_for_testing(
             label_manager=label_manager,
             needs_human_block=pending_work.needs_human_block,
             fresh_issue_reader=fresh_issue_reader,
-            queue_cache_store=queue_cache_store,
+            queue_cache_store=queue_cache_store, published_review=runtime_lifecycle.published_review,
         ),
         board_snapshot_builder=create_board_snapshot_builder(
             config, timeline_store, tech_lead_board_publisher_for_testing, working_copy

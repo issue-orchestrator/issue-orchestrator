@@ -443,6 +443,10 @@ class MockGitHubAdapter:
         return label in self.labels.get(issue_number, set())
 
     # PRRepository methods
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
+        """Open PRs for a branch (the fake's set is always complete)."""
+        return [pr for pr in self.prs.get(branch, []) if pr.state == "open"]
+
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         """Get PRs for a branch."""
         self.get_prs_calls.append({"branch": branch, "state": state})
@@ -1282,7 +1286,7 @@ def build_test_orchestrator_deps(
         state=state, ledger=issue_run_ledger, intake=completion_intake,
         validated_work=validated_work, working_copy=evidence_working_copy,
         sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
-        publish_recovery=publish_recovery, events=events,
+        publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
 
@@ -1363,6 +1367,7 @@ def build_test_orchestrator_deps(
             needs_human_block=needs_human_block,
             fresh_issue_reader=fresh_reader,
             queue_cache_store=infra_services.queue_cache_store,
+            published_review=runtime_lifecycle.published_review,
         ),
         repository_host=repo_host,
         e2e_issue_tracker=e2e_issue_tracker,
