@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from functools import partial
 
 from ..domain.action_liveness import ActionOutcome
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_drain import RecoveryDrainMode, RecoveryScopeSweepReport
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import UNRESOLVED_STATES, ResolutionKind, require_positive
@@ -63,6 +63,8 @@ class ScopeRetirement:
         """The drain lanes' answer for a record they must not publish or refresh."""
         if not self.outside_scope:
             raise ValueError("an in-scope record continues through recovery")
+        if self.status is ScopeRetirementStatus.RETIRED:
+            return RecoveryAttemptPending(self.message, kind=RecoveryPendingKind.RESOLVED)
         return RecoveryAttemptPending(self.message)
 
 RETIREMENT_ACTOR = "orchestrator:validated-work-scope"
@@ -215,6 +217,9 @@ class OutOfScopeRetirementSweep:
             self._liveness.settle_error(key, error)
             return False
         self._liveness.record(key, judgement.outcome)
+        if judgement.retired:
+            # Resolved: no lane's question about this record is still open.
+            self._liveness.resolve_record(request.record_id)
         return judgement.retired
 
     def _judge(self, request: RecoveryRecordRequest) -> "_Judgement":

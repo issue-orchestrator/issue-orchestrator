@@ -61,8 +61,11 @@ REFRESH_ACTION = "refresh_remote_authority"
 SCOPE_ACTION = "judge_record_scope"
 
 
+_SUBJECT_PREFIX = "validated_work:"
+
+
 def drain_subject(record_id: str) -> str:
-    return f"validated_work:{record_id}"
+    return f"{_SUBJECT_PREFIX}{record_id}"
 
 
 def drain_outcome(result: RecoveryCompleted | RecoveryAttemptPending) -> ActionOutcome:
@@ -99,6 +102,7 @@ _OUTCOMES: dict[
     RecoveryPendingKind.WAITING: lambda reason, _result: ActionOutcome.waiting(reason),
     RecoveryPendingKind.NEEDS_HUMAN: lambda reason, _result: ActionOutcome.needs_human(reason),
     RecoveryPendingKind.ADVANCED: lambda _reason, _result: ActionOutcome.done(),
+    RecoveryPendingKind.RESOLVED: lambda _reason, _result: ActionOutcome.done(),
 }
 
 
@@ -198,6 +202,14 @@ class RecoveryDrainLiveness:
         self, key: LivenessKey, result: RecoveryCompleted | RecoveryAttemptPending
     ) -> None:
         self.record(key, drain_outcome(result))
+        if isinstance(result, RecoveryCompleted) or result.kind is RecoveryPendingKind.RESOLVED:
+            self.resolve_record(key.identity.subject.removeprefix(_SUBJECT_PREFIX))
+
+    def resolve_record(self, record_id: str) -> None:
+        """The record is resolved (recovered or retired): release every drain
+        lane's rows about it, and owe the withdrawal of their blocks."""
+        for action in (RECOVER_ACTION, REFRESH_ACTION, SCOPE_ACTION):
+            self.owner.release_identity(ActionIdentity(drain_subject(record_id), action))
 
     def record(self, key: LivenessKey, outcome: ActionOutcome) -> None:
         """Settle one attempt of a drain lane's action."""

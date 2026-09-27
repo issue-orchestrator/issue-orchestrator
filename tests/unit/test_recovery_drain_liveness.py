@@ -328,6 +328,34 @@ def test_a_committed_refresh_is_done_and_releases_older_refresh_parks() -> None:
     assert escalation.unblocks == [(410, True)]
 
 
+def test_an_operation_that_retires_its_record_resolves_every_lane() -> None:
+    """A recovery or refresh that found its record outside scope and retired
+    it answered every lane's question: all of the record's rows go
+    (review B r9)."""
+    from issue_orchestrator.control.validated_work_scope_retirement import (
+        ScopeRetirement,
+        ScopeRetirementStatus,
+    )
+    from issue_orchestrator.domain.action_liveness import ActionIdentity, ActionOutcome, LivenessKey
+
+    rows = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=rows, clock=ManualClock(), policy=POLICY)
+    liveness = drain_liveness(owner)
+    subject = "validated_work:r1"
+    parks = [
+        LivenessKey(ActionIdentity(subject, action), "a" * 32, 410)
+        for action in ("recover_validated_work", "refresh_remote_authority", "judge_record_scope")
+    ]
+    for key in parks:
+        owner.record(key, ActionOutcome.permanent("stuck"))
+    retired = ScopeRetirement(ScopeRetirementStatus.RETIRED, "retired outside scope").pending()
+    assert retired.kind is RecoveryPendingKind.RESOLVED
+
+    liveness.settle(LivenessKey(parks[0].identity, "b" * 32, 410), retired)
+
+    assert rows.rows == {}
+
+
 # --- The operations mark contention, which the drain then does not count ----
 
 

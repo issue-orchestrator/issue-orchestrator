@@ -32,6 +32,9 @@ class RecoveryPendingKind(StrEnum):
     #: This attempt's own action finished and the record advanced (a remote
     #: authority refresh committed); recovery continues in its own lane.
     ADVANCED = "advanced"
+    #: This attempt resolved the record (retired it outside recovery's scope):
+    #: every lane's question about it is answered.
+    RESOLVED = "resolved"
 
 
 @dataclass(frozen=True, slots=True)

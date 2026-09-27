@@ -780,6 +780,41 @@ def test_an_unreadable_record_is_judged_bounded_and_never_starves_the_sweep(tmp_
     assert rig.store.get(first) == before
 
 
+def test_retiring_a_record_releases_every_lanes_park(tmp_path):
+    """Recovery parked the record; the scope sweep's retirement is refused
+    once, then succeeds. The record is resolved, so the recovery park goes
+    too and its block is withdrawn, not left for days (review B r9)."""
+    from issue_orchestrator.domain.action_liveness import ActionOutcome
+    from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+
+    rig = _scope_rig(tmp_path, proof=lambda record: False)
+    record = rig.store.record_for_id(rig.record_id)
+    liveness = rig.sweep._liveness
+    recover_key = liveness.key(
+        RecoveryRecordRequest(rig.record_id, record.current_evidence.evidence_id)
+    )
+    liveness.owner.record(recover_key, ActionOutcome.permanent("publish refused"))
+    [parked] = rig.escalation.parked
+    assert parked.key == recover_key
+    real_retire = rig.store.retire_outside_scope
+    attempts: list[str] = []
+
+    def refuse_once(claim, **kwargs):
+        attempts.append(claim.record_id)
+        return False if len(attempts) == 1 else real_retire(claim, **kwargs)
+
+    rig.store.retire_outside_scope = refuse_once
+    rig.passes(3)
+
+    assert len(attempts) == 2
+    assert rig.store.get(rig.record_id).state is ValidatedWorkState.ABANDONED
+    assert rig.rows.rows == {}
+    rig.clock.advance(rig.policy.max_backoff)
+    liveness.owner.reconcile_effects()
+    assert recover_key in [row.key for batch in rig.escalation.released for row in batch]
+    assert rig.escalation.unblocks == [(recover_key.escalation_issue, True)]
+
+
 def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
     """The scope sweep re-selects an unchanged record each interval. A proof
     that raises every time is held, then parked on the record's issue, and the
