@@ -10207,6 +10207,10 @@ class TestTheLaunchStampsOneKind:
         )
         assert self._identity(session)["task"] == "code"
         assert self._started_task(mock_events) == "code"
+        # The restore binding a restart checks it against (#7347 follow-up).
+        assert self._identity(session)["session_binding_fingerprint"] == (
+            launcher_bundle.launcher.config.session_binding_fingerprint
+        )
 
     def test_a_review_by_the_agent_that_is_also_the_tech_lead_is_a_review(
         self, launcher_bundle, sample_config, tmp_path
