@@ -120,7 +120,9 @@ class StateBlockedItemCustodyReader:
         state: Callable[[], "OrchestratorState"],
         labels: "LabelManager",
         authority: "TechLeadAuthorityStore",
-        needs_human_causes: Callable[[int], "frozenset[NeedsHumanCause]"],
+        needs_human_causes: Callable[
+            [Sequence[int]], Mapping[int, "frozenset[NeedsHumanCause]"]
+        ],
         provider_lanes: Callable[[str | None], tuple[str, ...]],
         provider_circuits: "ProviderCircuitStatusReader",
         parked_actions: "ParkedActionReader",
@@ -148,7 +150,7 @@ class StateBlockedItemCustodyReader:
             sweep=self._sweep_schedule(state),
             rate_limit=_rate_limit(state, now),
         )
-        shared = self._shared_facts(state)
+        shared = self._shared_facts(state, issue_numbers)
         return BlockedCustodyBoard(
             items=tuple(
                 derive_item_custody(
@@ -169,9 +171,7 @@ class StateBlockedItemCustodyReader:
     ) -> ItemCustodyFacts:
         unreadable = list(shared.unreadable)
         decisions = _guard(unreadable, "charter decision ledger", lambda: self._decisions(number), ())
-        causes = _guard(
-            unreadable, "needs-human causes", lambda: self._needs_human_causes(number), frozenset()
-        )
+        causes = shared.needs_human_causes.get(number, frozenset())
         parked = _guard(
             unreadable, "action liveness owner", lambda: self._parked.parked_for_issue(number), ()
         )
@@ -212,18 +212,9 @@ class StateBlockedItemCustodyReader:
         )
 
     def _decisions(self, number: int) -> tuple["TechLeadCharterDecision", ...]:
-        """Decisions ABOUT this item: aimed at it, or anchored on it with no other target.
-
-        The ledger's per-issue read also returns every decision a run anchored
-        on the item made about OTHER issues; those say nothing about this one.
-        """
-        return tuple(
-            decision
-            for decision in self._authority.charter_ledger.list_for_issue(
-                number, limit=DECISIONS_PER_ITEM
-            )
-            if decision.target_number == number
-            or (decision.target_number is None and decision.anchor_issue_number == number)
+        """Decisions ABOUT this item, filtered by the ledger before its limit."""
+        return self._authority.charter_ledger.list_about_issue(
+            number, limit=DECISIONS_PER_ITEM
         )
 
     def _observed_labels(self, raw: Iterable[str]) -> ObservedLabels:
@@ -271,7 +262,9 @@ class StateBlockedItemCustodyReader:
             next_due_at=(last + interval) if (enabled and last is not None) else None,
         )
 
-    def _shared_facts(self, state: "OrchestratorState") -> "_SharedFacts":
+    def _shared_facts(
+        self, state: "OrchestratorState", issue_numbers: Sequence[int]
+    ) -> "_SharedFacts":
         """Facts read once per board, indexed by issue number."""
         unreadable: list[str] = []
         investigations: dict[int, ActiveWork] = {}
@@ -283,6 +276,12 @@ class StateBlockedItemCustodyReader:
                 target.setdefault(number, ActiveWork(work.what, work.since))
         proposals: dict[int, tuple[OpenProposal, ...]] = _guard(
             unreadable, "approval backlog", lambda: _proposals(self._authority), {}
+        )
+        causes: Mapping[int, frozenset[NeedsHumanCause]] = _guard(
+            unreadable,
+            "needs-human causes",
+            lambda: self._needs_human_causes(issue_numbers),
+            {},
         )
         tracked: dict[int, TrackedFix] = _guard(
             unreadable,
@@ -299,6 +298,7 @@ class StateBlockedItemCustodyReader:
             tech_lead_queue=_tech_lead_queue(state),
             proposals=proposals,
             tracked_fixes=tracked,
+            needs_human_causes=causes,
             unreadable=tuple(unreadable),
         )
 
@@ -325,6 +325,7 @@ class _SharedFacts:
     tech_lead_queue: Mapping[int, ActiveWork]
     proposals: Mapping[int, tuple[OpenProposal, ...]]
     tracked_fixes: Mapping[int, TrackedFix]
+    needs_human_causes: Mapping[int, "frozenset[NeedsHumanCause]"]
     unreadable: tuple[str, ...]
 
 

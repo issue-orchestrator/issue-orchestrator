@@ -109,13 +109,15 @@ class SharedNeedsHumanBlock(Protocol):
         """Recorded disposition sources, without claiming the label is present."""
         ...
 
-    def recorded_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
-        """The causes on record for ``issue_number``, for display (#7331).
+    def recorded_causes(
+        self, issue_numbers: Sequence[int]
+    ) -> dict[int, frozenset[NeedsHumanCause]]:
+        """The causes on record for each issue, for display (#7331).
 
-        The owner's rows plus the quarantine ledger: no label read, no gate,
-        no pruning. The label stays authoritative, so a reader pairs this with
-        the label it observed. The tech-lead marker is a label, not a record,
-        and is not included.
+        The owner's rows plus the quarantine ledger, read once for the whole
+        batch: no label read, no gate, no pruning. The label stays
+        authoritative, so a reader pairs this with the label it observed. The
+        tech-lead marker is a label, not a record, and is not included.
         """
         ...
 
@@ -239,13 +241,17 @@ class NeedsHumanBlock:
             if key.startswith(prefix)
         )
 
-    def recorded_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
-        causes = {
-            _cause_for_key(key) for key in self.causes.needs_human_causes(issue_number)
-        }
-        if issue_number in self.quarantined_issue_numbers():
-            causes.add(NeedsHumanCause.CLAIM_QUARANTINE)
-        return frozenset(causes)
+    def recorded_causes(
+        self, issue_numbers: Sequence[int]
+    ) -> dict[int, frozenset[NeedsHumanCause]]:
+        quarantined = self.quarantined_issue_numbers()  # one scan per batch
+        recorded: dict[int, frozenset[NeedsHumanCause]] = {}
+        for number in issue_numbers:
+            causes = {_cause_for_key(key) for key in self.causes.needs_human_causes(number)}
+            if number in quarantined:
+                causes.add(NeedsHumanCause.CLAIM_QUARANTINE)
+            recorded[number] = frozenset(causes)
+        return recorded
 
     def owns(self, label: str) -> bool:
         return label == self.needs_human_label
@@ -661,9 +667,10 @@ class _NoOtherCauses:
         del issue_number
         return frozenset()
 
-    def recorded_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
-        del issue_number
-        return frozenset()
+    def recorded_causes(
+        self, issue_numbers: Sequence[int]
+    ) -> dict[int, frozenset[NeedsHumanCause]]:
+        return {number: frozenset() for number in issue_numbers}
 
     def owns(self, label: str) -> bool:
         del label

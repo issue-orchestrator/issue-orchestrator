@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping, Sequence
 
 import pytest
 
@@ -91,12 +91,24 @@ class _Parked:
         return self._facts.get(issue_number, ())
 
 
+def _causes_reader(
+    causes: dict[int, frozenset[NeedsHumanCause]], *, broken: bool
+) -> Callable[[Sequence[int]], Mapping[int, frozenset[NeedsHumanCause]]]:
+    def read(numbers: Sequence[int]) -> Mapping[int, frozenset[NeedsHumanCause]]:
+        if broken:
+            raise RuntimeError("cause store locked")
+        return {number: causes.get(number, frozenset()) for number in numbers}
+
+    return read
+
+
 def _reader(
     state: OrchestratorState,
     *,
     config: Config | None = None,
     authority: InMemoryTechLeadAuthorityStore | None = None,
-    causes: Callable[[int], frozenset[NeedsHumanCause]] = lambda _n: frozenset(),
+    causes: dict[int, frozenset[NeedsHumanCause]] | None = None,
+    broken_causes: bool = False,
     lanes: Callable[[str | None], tuple[str, ...]] = lambda _a: (),
     circuits: tuple[ProviderCircuitStatus, ...] = (),
     parked: _Parked | None = None,
@@ -107,7 +119,7 @@ def _reader(
         state=lambda: state,
         labels=LabelManager(config),
         authority=authority or InMemoryTechLeadAuthorityStore(),
-        needs_human_causes=causes,
+        needs_human_causes=_causes_reader(causes or {}, broken=broken_causes),
         provider_lanes=lanes,
         provider_circuits=StaticProviderCircuitStatusReader(statuses=circuits),
         parked_actions=parked or NO_ACTION_LIVENESS_OWNER,
@@ -313,6 +325,28 @@ def test_only_decisions_about_the_item_explain_it() -> None:
     assert board.for_issue(51).state is CustodyState.VERIFY
 
 
+def test_a_busy_anchored_run_cannot_crowd_out_the_item_s_own_remedy() -> None:
+    """The ledger filters to decisions ABOUT the item before its read limit."""
+    from issue_orchestrator.control.blocked_item_custody_reader import DECISIONS_PER_ITEM
+
+    authority = InMemoryTechLeadAuthorityStore()
+    remedy = _decision("recover_validated_work", target=53, anchor=53, action_id="A0")
+    others = [
+        replace(
+            _decision("kill_hung_session", target=1000 + i, anchor=53, action_id=f"A{i + 1}"),
+            decided_at=(NOW - timedelta(minutes=30 - i)).isoformat(),
+        )
+        for i in range(DECISIONS_PER_ITEM + 5)
+    ]
+    authority.charter_ledger.record_decisions([remedy, *others])
+    state = OrchestratorState(cached_scope_issues=[_blocked(53, "blocked-failed")])
+
+    custody = _reader(state, authority=authority).read([53]).for_issue(53)
+
+    assert custody.state is CustodyState.VERIFY
+    assert custody.charter is not None and custody.charter.decision_id == remedy.decision_id
+
+
 def test_an_untargeted_decision_of_a_run_anchored_on_the_item_explains_it() -> None:
     authority = InMemoryTechLeadAuthorityStore()
     authority.charter_ledger.record_decisions([_decision("create_issue", target=None, anchor=52)])
@@ -359,7 +393,9 @@ def test_needs_human_reads_its_recorded_cause() -> None:
     )
     causes = {70: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
 
-    board = _reader(state, causes=lambda n: causes.get(n, frozenset())).read([70, 71])
+    causes[71] = frozenset({NeedsHumanCause.SESSION_LIFECYCLE})
+
+    board = _reader(state, causes=causes).read([70, 71])
 
     assert board.for_issue(70).state is CustodyState.WAITING_ON_YOU
     held = board.for_issue(71)
@@ -490,12 +526,9 @@ def test_an_action_the_liveness_owner_parked_holds_its_item() -> None:
 
 
 def test_a_source_that_raises_makes_its_item_custody_unknown() -> None:
-    def broken(_number: int) -> frozenset[NeedsHumanCause]:
-        raise RuntimeError("cause store locked")
-
     state = OrchestratorState(cached_scope_issues=[_blocked(120, "needs-human")])
 
-    custody = _reader(state, causes=broken).read([120]).for_issue(120)
+    custody = _reader(state, broken_causes=True).read([120]).for_issue(120)
 
     assert custody.state is CustodyState.UNOWNED
     assert custody.reason == "custody unknown: needs-human causes could not be read"
@@ -525,7 +558,11 @@ def test_stale_thresholds_come_from_config() -> None:
     config.tech_lead.custody.stale_after_minutes.held = 30
     state = OrchestratorState(cached_scope_issues=[_blocked(140, "needs-human")])
 
-    custody = _reader(state, config=config).read([140]).for_issue(140)
+    custody = (
+        _reader(state, config=config, causes={140: frozenset({NeedsHumanCause.SESSION_LIFECYCLE})})
+        .read([140])
+        .for_issue(140)
+    )
 
     assert custody.state is CustodyState.HELD
     assert custody.stale_after == timedelta(minutes=30)

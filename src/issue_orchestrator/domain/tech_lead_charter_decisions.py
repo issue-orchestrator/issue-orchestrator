@@ -145,6 +145,17 @@ class TechLeadCharterDecision:
             proposal_origin_action_id=proposal_origin_action_id,
         )
 
+    def is_about_issue(self, issue_number: int) -> bool:
+        """Whether this decision says something about *issue_number* (#7331).
+
+        Aimed at it, or taken by a run anchored on it without another target
+        (a follow-up issue filed for it). A decision an anchored run took about
+        a DIFFERENT issue is not about the anchor.
+        """
+        return self.target_number == issue_number or (
+            self.target_number is None and self.anchor_issue_number == issue_number
+        )
+
     def with_lifecycle(
         self,
         lifecycle: CharterProposalLifecycle,
