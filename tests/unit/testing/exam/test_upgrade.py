@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -35,7 +36,7 @@ CASE_U = upgrade_with_work_in_flight(code_reviewed_label="code-reviewed", hold_l
 SPEC = UpgradeSpec(early_ticks=UPGRADE_EARLY_TICKS, hold_labels=HOLD)
 
 
-def facts(**overrides: object) -> UpgradeFacts:
+def facts(**overrides: Any) -> UpgradeFacts:
     base = UpgradeFacts(
         base_commit="72d207e" + "0" * 33,
         candidate_commit="a120d59" + "0" * 33,
@@ -45,7 +46,7 @@ def facts(**overrides: object) -> UpgradeFacts:
         early_label_changes=(),
         hazards=(),
     )
-    return replace(base, **overrides)  # type: ignore[arg-type]
+    return replace(base, **overrides)
 
 
 def finished(role: str, issue: int, pr_number: int):

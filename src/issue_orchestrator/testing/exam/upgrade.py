@@ -129,20 +129,30 @@ def label_changes(events: Iterable[Mapping[str, Any]]) -> tuple[LabelChange, ...
 
 
 def complete_history(events: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
-    """``events`` (an engine's buffered history from id 0), checked complete.
+    """``events`` (an engine's buffered history from id 0), checked complete
+    and returned in id order.
 
     A restart's hazards are published during startup, before any watcher has
     connected, so they are read from the engine's replay buffer. A buffer
     that has already dropped its oldest events cannot prove there were none.
+    Ids are allotted before publication, so concurrent publishers can buffer
+    them out of order; completeness is the id SET 1..N, not the sequence.
     """
-    ids = [event.get("event_id") for event in events]
-    if not events or ids[0] != 1 or ids != list(range(1, len(ids) + 1)):
-        head = ids[:3]
+    ids = [_event_id(event) for event in events]
+    if not ids or sorted(ids) != list(range(1, len(ids) + 1)):
         raise ValueError(
-            f"engine event history is incomplete (first ids {head} of {len(ids)});"
-            " a restart window cannot be graded from a truncated buffer"
+            f"engine event history is incomplete ({len(ids)} events, lowest ids"
+            f" {sorted(set(ids))[:3]}); a restart window cannot be graded from a"
+            " truncated buffer"
         )
-    return events
+    return sorted(events, key=_event_id)
+
+
+def _event_id(event: Mapping[str, Any]) -> int:
+    event_id = event.get("event_id")
+    if not isinstance(event_id, int) or isinstance(event_id, bool):
+        raise ValueError(f"engine event without an integer event_id: {event!r}")
+    return event_id
 
 
 def merged_by_id(*streams: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -151,10 +161,7 @@ def merged_by_id(*streams: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any
     seen: dict[int, Mapping[str, Any]] = {}
     for stream in streams:
         for event in stream:
-            event_id = event.get("event_id")
-            if not isinstance(event_id, int) or isinstance(event_id, bool):
-                raise ValueError(f"engine event without an integer event_id: {event!r}")
-            seen.setdefault(event_id, event)
+            seen.setdefault(_event_id(event), event)
     return [seen[event_id] for event_id in sorted(seen)]
 
 

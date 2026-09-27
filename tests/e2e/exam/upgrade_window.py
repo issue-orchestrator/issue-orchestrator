@@ -7,11 +7,14 @@ restart's own doing, whenever in the window it happens. It spans at least
 ``min_ticks`` ticks, so the engine had time to act.
 
 The window is closed by what the harness reads, in order:
-1. the engine's complete event history from its first event (startup
-   restore publishes before any watcher connects);
-2. its cumulative GitHub audit report.
-Only then is the work released. Everything read belongs to the window by
-construction; no timing boundary has to be guessed.
+1. the engine's cumulative GitHub audit report;
+2. its complete event history from its first event (startup restore
+   publishes before any watcher connects).
+Only then is the work released. The order makes the two coherent: every
+write the audit counted has its event in the later history. A write after
+the audit shows up as an event only, and it is still inside the window.
+Everything read belongs to the window by construction; no timing boundary
+has to be guessed.
 """
 
 from __future__ import annotations
@@ -60,7 +63,7 @@ async def capture_restart_window(
     sleep=asyncio.sleep,
 ) -> RestartWindow:
     """Wait for ``min_ticks`` ticks (or the engine's death, or the backstop),
-    then close the window: history first, then the audit report."""
+    then close the window: the audit report first, then the history."""
     deadline = clock() + timeout_s
     while engine.is_running() and clock() < deadline:
         history = engine.event_history()
@@ -71,8 +74,8 @@ async def capture_restart_window(
         # A dead engine has no control API; what it did before dying is lost
         # with it, and the grade fails on the tick shortfall and the exit.
         return RestartWindow(events=(), writes={}, engine_alive=False)
-    events = complete_history(engine.event_history())
     report = engine.gh_audit_report()
+    events = complete_history(engine.event_history())
     return RestartWindow(
         events=tuple(events), writes=writes_by_kind(report["by_command"]), engine_alive=True
     )

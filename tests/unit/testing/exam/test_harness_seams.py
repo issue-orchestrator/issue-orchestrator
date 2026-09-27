@@ -705,3 +705,31 @@ def test_an_upgrade_refuses_a_checkout_the_base_engine_dirtied(tmp_path: Path) -
 
     with pytest.raises(RuntimeError, match="checkout"):
         EngineCheckout(root=engine_root, commit=base).switch_to(harness_root=harness, ref=candidate)
+
+
+def test_removing_the_engine_checkout_removes_the_worktrees_it_created(tmp_path: Path) -> None:
+    """Codex Case U round 2 F2: agent worktrees live outside the clone and
+    are registered only in it; removing the clone must not orphan them."""
+    from tests.e2e.exam.engine_checkout import EngineCheckout
+
+    harness = tmp_path / "harness"
+    base, _ = _git_repo_with_two_commits(harness)
+    engine_root = tmp_path / "engine"
+    subprocess.run(["git", "clone", "-q", "--shared", str(harness), str(engine_root)], check=True)
+    agent_worktree = tmp_path / "worktrees" / "issue-911"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "911-exam", str(agent_worktree), base],
+        cwd=engine_root,
+        check=True,
+    )
+    (agent_worktree / "uncommitted.txt").write_text("agent work in progress", encoding="utf-8")
+
+    EngineCheckout(root=engine_root, commit=base).remove()
+
+    assert not engine_root.exists()
+    assert not agent_worktree.exists()
+    assert (harness / ".git").is_dir()  # the harness repository is untouched
+    harness_worktrees = subprocess.run(
+        ["git", "worktree", "list"], cwd=harness, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    assert len(harness_worktrees) == 1
