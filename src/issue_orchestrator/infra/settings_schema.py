@@ -2357,12 +2357,12 @@ class AdvancedSettings(BaseModel):
         },
     )
     session_interactions_enabled: bool = Field(
-        False,
+        True,
         title="Enable Session Interaction Rules",
         description="Allow the orchestrator to auto-respond to trusted prompts in running agent sessions",
         json_schema_extra={
             "doc_examples": ["true", "false"],
-            "doc_notes": "Off by default. Enable only if you want runner-managed prompt responses such as Claude's initial trust confirmation.",
+            "doc_notes": "On by default. The built-in rules answer the startup screens of agents io launches (Claude's trust screen, Codex's Folder access choice for the untrusted worktrees io registers); with them off such sessions wait on that screen until they time out. Set false only to opt out.",
             "section": "Interactive Sessions",
             "restart_required": True,
             "config_attr": "session_interactions.enabled",

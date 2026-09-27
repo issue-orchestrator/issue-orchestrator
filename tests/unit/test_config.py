@@ -177,7 +177,7 @@ class TestConfig:
         assert config.repo is None
         assert config.web_port == 0
         assert config.control_api_port == 0
-        assert config.session_interactions.enabled is False
+        assert config.session_interactions.enabled is True
 
     def test_github_auth_kwargs(self):
         """GitHub auth helper exposes the repo-scoped auth settings."""
@@ -1119,7 +1119,7 @@ labels:
         """Test that queue_refresh_seconds defaults to 600."""
         config = Config()
         assert config.queue_refresh_seconds == 600
-        assert config.session_interactions.enabled is False
+        assert config.session_interactions.enabled is True
         assert config.fetch_layer_enabled is True
         assert config.fetch_layer_network_sync_seconds == 60
         assert config.fetch_layer_full_scan_interval_seconds == 1800
@@ -1179,20 +1179,51 @@ worktrees:
 
         assert config.session_interactions.enabled is True
 
-    def test_session_interactions_omitted_from_to_event_dict_when_disabled(self):
+    def test_session_interactions_default_on_when_omitted(self, tmp_path):
+        """#7343: io must answer the startup screens its own setup produces
+        (untrusted worktrees -> Codex "Folder access"), so omission means on."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+""")
+
+        assert Config.load(config_file).session_interactions.enabled is True
+
+    def test_session_interactions_explicit_false_opts_out(self, tmp_path):
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+execution:
+  session_interactions:
+    enabled: false
+""")
+
+        assert Config.load(config_file).session_interactions.enabled is False
+
+    def test_session_interactions_omitted_from_to_event_dict_when_enabled(self):
         config = Config()
 
         result = config.to_event_dict()
 
         assert "session_interactions" not in result["execution"]
 
-    def test_session_interactions_included_in_to_event_dict_when_enabled(self):
+    def test_session_interactions_included_in_to_event_dict_when_disabled(self):
         config = Config()
-        config.session_interactions.enabled = True
+        config.session_interactions.enabled = False
 
         result = config.to_event_dict()
 
-        assert result["execution"]["session_interactions"] == {"enabled": True}
+        assert result["execution"]["session_interactions"] == {"enabled": False}
 
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""
