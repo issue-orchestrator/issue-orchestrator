@@ -12,7 +12,7 @@ PullRequestTracker into a single interface.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from ..domain.host_rate_limit import HostRateLimit
+from ..domain.host_rate_limit import HostRateLimit, HostRateLimitReported
 from .issue_tracker import IssueTracker
 from .label_set import LabelSet
 from .pull_request_tracker import PullRequestTracker
@@ -92,7 +92,7 @@ def host_rate_limit_of(exc: BaseException) -> HostRateLimit | None:
     """
     current: BaseException | None = exc
     while current is not None:
-        if isinstance(current, RepositoryHostRateLimitedError):
+        if isinstance(current, (RepositoryHostRateLimitedError, HostRateLimitReported)):
             return current.rate_limit
         current = current.__cause__
     return None

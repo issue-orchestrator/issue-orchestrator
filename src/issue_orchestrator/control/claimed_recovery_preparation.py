@@ -90,7 +90,8 @@ class ClaimedRecoveryPreparation:
                 workspace = perform(lambda: self._workspaces.prepare(
                     record.current_evidence.admission))
             except CompletionIntakeError as error:
-                return RecoveryAttemptPending(str(error), ValidatedWorkFailure.WORKSPACE_INTEGRITY)
+                return RecoveryAttemptPending(str(error), ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+                                              rate_limit=host_rate_limit_of(error))
         prepared = perform(lambda: self._preparation.prepare(record.current_evidence, workspace, issue.title))
         if isinstance(prepared, ProcessingResult):
             return RecoveryAttemptPending(prepared.message)

@@ -20,6 +20,8 @@ from issue_orchestrator.domain.recovery_completion import RecoveryCompleted
 from issue_orchestrator.domain.validated_work import ValidatedWorkState, FinalizationPhase, ReviewDisposition
 from issue_orchestrator.execution.publication_workspace import EscrowPublicationWorkspaces
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from tests.unit.control.liveness_doubles import rate_limited
 from tests.unit.control.test_recovery_publication_attempt import publication as publication, held
 from tests.unit.control.test_retained_completion_preparation import retained as retained
 from tests.unit.test_validated_work_preservation import custody as custody
@@ -29,6 +31,8 @@ class Labels:
     def __init__(self):
         self.labels = {"recovery-pending"}
         self.operations = []
+        #: A typed host rate limit every label write reports instead.
+        self.limit = None
 
     def read_issue_labels(self, issue_number):
         assert issue_number == 42
@@ -36,6 +40,8 @@ class Labels:
 
     def apply(self, action):
         assert action.issue_number == 42
+        if self.limit is not None:
+            return ActionResult.fail_limited(action, "API rate limit exceeded", self.limit)
         if isinstance(action, AddLabelAction):
             self.labels.add(action.label)
             self.operations.append(("add", action.label))
@@ -140,3 +146,16 @@ def test_cleanup_requires_durable_pr_and_review_identity(completion, change):
             cleanup.release(token, claim, wrong)
         assert rig.prepared.workspace.checkout.exists()
         assert completion.labels.operations == before
+
+
+def test_a_rate_limited_routing_write_leaves_a_pending_result_with_its_reset(completion):
+    """Finalization turns the limit into a transient outcome; completion must
+    hand it to the drain's liveness owner rather than drop it (#7350)."""
+    rig, owner = completion.rig, completion.owner
+    completion.labels.limit = limit = rate_limited().rate_limit
+    with held(rig) as (token, claim):
+        target = rig.worker.advance(token, claim, rig.prepared, approved=rig.authority)
+        result = owner.complete(token, claim, rig.prepared, target, OrchestratorState(), "Retained feature")
+        assert isinstance(result, RecoveryAttemptPending)
+        assert result.rate_limit == limit
+        assert rig.store.get(claim.record_id).state is ValidatedWorkState.PUBLISHING

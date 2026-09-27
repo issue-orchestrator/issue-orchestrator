@@ -38,7 +38,9 @@ from tests.unit.aggregate_recovery_support import (
     assert_admission_busy_in_child,
     assert_human_acquisition_busy_in_child,
 )
+from tests.unit.control.liveness_doubles import rate_limited
 from tests.unit.staged_finalization_support import Crash
+from issue_orchestrator.ports.repository_host import host_rate_limit_of
 from tests.unit.threading_helpers import join_or_fail, run_in_thread, wait_for_event
 from tests.unit.validated_work_support import capture
 
@@ -220,6 +222,35 @@ def test_sweep_repairs_projection_after_abandonment_commits_before_label_write(
     assert len(
         rig.events.get_events(EventName.VALIDATED_WORK_ABANDONED.value)
     ) == 1
+
+
+def test_a_rate_limited_label_write_carries_its_reset_out_of_every_block_boundary(tmp_path):
+    """The applier reports the limit on a result; the label owner raises it,
+    and each block boundary (reconcile, operator abandonment) keeps it (#7350)."""
+    rig = AggregateRig(tmp_path)
+    command = _make_abandonable(rig)
+    limit = rate_limited().rate_limit
+    rig.remote.limit_remove, rig.remote.limit = "recovery-pending", limit
+
+    with pytest.raises(RecoveryBlockProjectionDeferred) as deferred:
+        rig.abandonment.abandon(command)
+    outcome = rig.aggregate.reconcile_issue_block(6914)
+
+    assert host_rate_limit_of(deferred.value) == limit
+    assert outcome.status is RecoveryBlockReconcileStatus.RETRY
+    assert outcome.rate_limit == limit
+
+
+def test_a_rate_limited_release_reaches_the_finalization_outcome(tmp_path):
+    rig = AggregateRig(tmp_path)
+    limit = rate_limited().rate_limit
+    rig.remote.limit_remove, rig.remote.limit = "recovery-pending", limit
+
+    result = rig.base.invoke()
+
+    assert result.status is FinalizationStatus.TRANSIENT
+    assert result.phase_reached is Phase.REVIEW_ROUTED
+    assert result.rate_limit == limit
 
 
 def test_abandoning_one_record_keeps_an_unresolved_siblings_recovery_block(tmp_path):

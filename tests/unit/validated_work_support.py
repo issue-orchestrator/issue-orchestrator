@@ -225,7 +225,7 @@ def finalize(
     assert store.record_attempt_outcome(
         token,
         attempt,
-        outcome=PublishValidatedHeadStatus.PUBLISHED,
+        rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
         failure=None,
         finished_at=LATER,
     )

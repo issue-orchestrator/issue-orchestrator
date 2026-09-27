@@ -36,7 +36,7 @@ def _snapshot(path):
 
 def _checkpoint(store, token, attempt, phase, outcome=Status.PUBLISHED):
     assert store.record_attempt_outcome(
-        token, attempt, outcome=outcome, failure=None, finished_at=LATER
+        token, attempt, rate_limit=None, outcome=outcome, failure=None, finished_at=LATER
     )
     if phase is not Phase.NOT_STARTED:
         assert store.record_finalization_phase(
@@ -177,7 +177,7 @@ def test_stale_owner_is_refused_before_corrupt_attempt_is_read(tmp_path, corrupt
             )
         assert _resolve(current, old) is Refusal.STALE_CLAIM
         assert not current.record_attempt_outcome(
-            old, attempt, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
+            old, attempt, rate_limit=None, outcome=Status.PUBLISHED, failure=None, finished_at=LATER
         )
         assert (
             current.begin_publish_attempt(
@@ -255,7 +255,7 @@ def test_other_attempt_authorization_reads_validate_complete_row(tmp_path, opera
             store.record_attempt_outcome(
                 token,
                 attempt,
-                outcome=Status.PUBLISHED,
+                rate_limit=None, outcome=Status.PUBLISHED,
                 failure=None,
                 finished_at=LATER,
             )

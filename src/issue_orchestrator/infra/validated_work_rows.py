@@ -35,6 +35,7 @@ from .sqlite_connection import open_sqlite
 from .validated_work_codec import decode_evidence
 from .validated_work_schema import SCHEMA
 from .validated_work_migrations import (
+    migrate_attempt_rate_limit,
     migrate_evidence_base_gate,
     migrate_remote_baseline_authority,
 )
@@ -54,6 +55,7 @@ class DispositionDatabase:
             conn.execute("BEGIN IMMEDIATE")
             with conn:
                 migrate_evidence_base_gate(conn)
+                migrate_attempt_rate_limit(conn)
             migrate_remote_baseline_authority(conn)
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(
@@ -217,7 +219,20 @@ def attempt_row(row: sqlite3.Row) -> PublishAttempt:
         PublishValidatedHeadStatus(row["outcome"]) if row["outcome"] else None,
         ValidatedWorkFailure(row["failure"]) if row["failure"] else None,
         row["finished_at"],
+        bool(row["rate_limited"]),
     )
+
+
+def spent_attempts(conn: sqlite3.Connection, record_id: str) -> int:
+    """Attempts that spent publish budget: every one the host did not rate limit.
+
+    An attempt still in flight (or lost with its process) counts: nothing
+    proves the host refused it.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) FROM validated_work_publish_attempts WHERE record_id=? AND rate_limited=0",
+        (record_id,),
+    ).fetchone()[0]
 
 
 def refresh_observations(

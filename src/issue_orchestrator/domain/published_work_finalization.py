@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from urllib.parse import urlsplit
 
+from .host_rate_limit import HostRateLimit, require_limit_only_on_failure
 from .models import OrchestratorState
 from .retry_review_routing import RetryReviewRouting
 from .validated_work import (
@@ -114,8 +115,16 @@ class FinalizationOutcome:
     labels_removed: tuple[str, ...]
     failure: ValidatedWorkFailure | None
     message: str
+    #: The host's typed rate limit behind a transient stage (#7350). A rate
+    #: limit is never a durable routing failure: the host said when to retry.
+    rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
+        require_limit_only_on_failure(
+            self.rate_limit,
+            failed=self.status is FinalizationStatus.TRANSIENT,
+            result="transient finalization",
+        )
         if (
             type(self.status) is not FinalizationStatus
             or type(self.phase_reached) is not FinalizationPhase
@@ -184,11 +193,18 @@ class RecoveryBlockReleaseOutcome:
     status: RecoveryBlockReleaseStatus
     labels_removed: tuple[str, ...]
     message: str
+    #: The host's typed rate limit behind a refused release (#7350).
+    rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
         require_text(self.record_id, "record_id")
         if type(self.status) is not RecoveryBlockReleaseStatus:
             raise ValueError("release status must be typed")
+        require_limit_only_on_failure(
+            self.rate_limit,
+            failed=self.status is RecoveryBlockReleaseStatus.REFUSED,
+            result="recovery block release",
+        )
         _labels(self.labels_removed)
         require_text(self.message, "message")
 

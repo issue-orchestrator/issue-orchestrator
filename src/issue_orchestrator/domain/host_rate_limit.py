@@ -55,6 +55,42 @@ class HostRateLimit:
             raise ValueError("HostRateLimit.resets_at must be timezone-aware")
 
 
+def require_limit_only_on_failure(
+    limit: HostRateLimit | None, *, failed: bool, result: str
+) -> None:
+    """A rate limit explains why a result must be retried later; nothing else has one.
+
+    Every typed result that can be built from a caught host error carries the
+    limit behind it, so the action liveness owner waits for the reset instead
+    of spending an attempt (#7350). This is that family's shared invariant.
+    """
+    if limit is None:
+        return
+    if type(limit) is not HostRateLimit:
+        raise ValueError(f"{result} rate limit must be a HostRateLimit")
+    if not failed:
+        raise ValueError(f"only a retryable failed {result} may carry a host rate limit")
+
+
+class HostRateLimitReported(Exception):
+    """A rate limit a typed result reported, raised as the cause of an exception.
+
+    Some stages end by turning a failed result into an exception for their
+    caller's retry path. Raising that exception
+    ``from rate_limit_cause(result.rate_limit)`` keeps the limit where
+    ``host_rate_limit_of`` finds it, instead of flattening it into a message.
+    """
+
+    def __init__(self, rate_limit: HostRateLimit) -> None:
+        super().__init__(f"host rate limit until {rate_limit.resets_at.isoformat()}")
+        self.rate_limit = rate_limit
+
+
+def rate_limit_cause(limit: HostRateLimit | None) -> HostRateLimitReported | None:
+    """The cause to raise a failed result's exception ``from``, or ``None``."""
+    return None if limit is None else HostRateLimitReported(limit)
+
+
 @dataclass(frozen=True, slots=True)
 class RateLimitEpisode:
     """One observation of the window, as the launch that observed it saw it."""

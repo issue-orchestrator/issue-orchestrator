@@ -54,5 +54,6 @@ class RemotePublicationVerifier:
             return PublicationVerification(after, pr, None, "Fresh publication facts verified")
         except PublicationRemoteError as error:
             return PublicationVerification(
-                None, None, Failure.REMOTE_UNREADABLE, str(error), host_rate_limit_of(error)
+                None, None, Failure.REMOTE_UNREADABLE, str(error),
+                rate_limit=host_rate_limit_of(error),
             )

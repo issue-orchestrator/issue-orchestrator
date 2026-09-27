@@ -28,6 +28,7 @@ from issue_orchestrator.execution.git_validated_head_executor import (
     GitValidatedHeadExecutor,
 )
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+from .control.liveness_doubles import rate_limited
 from .git_escrow_support import git_rig
 
 
@@ -37,6 +38,8 @@ class Remote:
         self.prs = []
         self.created = 0
         self.read_error = False
+        # What a failed read was raised from (a typed rate limit, say).
+        self.read_error_cause = None
         self.lost_create = False
         self.create_rejection = None
         self.adopt_on_exists = False
@@ -49,7 +52,7 @@ class Remote:
 
     def read_branch(self, command):
         if self.read_error:
-            raise PublicationRemoteError("offline")
+            raise PublicationRemoteError("offline") from self.read_error_cause
         result = self.rig.git.run(
             self.rig.remote,
             ["rev-parse", "--verify", f"refs/heads/{command.branch_name}"],
@@ -180,6 +183,31 @@ def test_failed_read_is_never_absence(setup):
     assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
     assert outcome.push_outcome is None
     assert remote.created == 0
+
+
+@pytest.mark.parametrize("stage", ["branch", "pr"])
+def test_a_rate_limited_remote_read_carries_its_limit_to_the_outcome(setup, stage):
+    """The executor catches remote errors into outcomes, so the outcome is
+    the only place the host's reset can travel to the liveness owner (#7350)."""
+    rig, remote, executor, command = setup
+    remote.read_error_cause = limited = rate_limited()
+    if stage == "branch":
+        remote.read_error = True
+    else:
+        rig.run("push", "origin", f"{rig.target}:refs/heads/feature")
+        listed = remote.list_prs
+
+        def list_then_fail(command):
+            remote.read_error = True
+            return listed(command)
+
+        remote.list_prs = list_then_fail
+
+    outcome = executor.publish_or_reconcile(command)
+
+    assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
+    assert outcome.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert outcome.rate_limit == limited.rate_limit
 
 
 def test_auth_failure_during_destination_resolution_is_retryable_without_effect(setup):
