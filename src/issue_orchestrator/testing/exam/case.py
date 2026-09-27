@@ -327,6 +327,15 @@ def pr_review_approved(role: str) -> Goal:
     return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
 
 
+def issue_is_open(role: str) -> Goal:
+    """The issue is still open (e.g. held for a human, not closed away)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        return GoalCheck(item.issue_state == "open", f"issue #{item.issue_number} is {item.issue_state}")
+
+    return Goal(f"{role}.issue_open", role, f"the {role} issue stays open", check)
+
+
 def issue_keeps_labels(role: str, labels: Iterable[str]) -> Goal:
     """The issue still carries ``labels`` (e.g. a pause only a human lifts)."""
     wanted = frozenset(labels)

@@ -649,3 +649,46 @@ class TestRoundThirteenFindings:
     def test_the_same_advice_about_the_subject_is_acceptable(self) -> None:
         card = self._b(f"remove blocked-failed from #{ISSUE} to release the review of PR #{PR}.")
         assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.ACCEPTABLE
+
+
+
+class TestRoundFourteenFindings:
+    def test_case_c_fails_when_the_paused_issue_is_closed(self) -> None:
+        from dataclasses import replace
+
+        from issue_orchestrator.testing.exam.cases import (
+            STALE_CLAIM_PAUSED_FOR_RECONCILE,
+            stale_claim_paused_for_reconcile,
+        )
+
+        closed = replace(item(issue_labels=("io:needs-reconcile",)), issue_state="closed")
+        card = grade(
+            stale_claim_paused_for_reconcile(needs_reconcile_label="io:needs-reconcile"),
+            observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, closed),
+        )
+        assert "goal subject.issue_open: issue #901 is closed" in card.failures
+
+    @pytest.mark.parametrize(
+        ("disposition", "verdict"),
+        [
+            (TechLeadActionDisposition.PROPOSED, RemedyVerdict.MISSING),
+            (TechLeadActionDisposition.REJECTED, RemedyVerdict.MISSING),
+            (TechLeadActionDisposition.EXECUTED, RemedyVerdict.RIGHT),
+        ],
+    )
+    def test_a_right_action_counts_only_once_executed(self, disposition, verdict) -> None:
+        from dataclasses import replace
+
+        right_case = replace(
+            CASE_B,
+            remedy=replace(CASE_B.remedy, right_action_types=frozenset({"recover_validated_work"})),
+        )
+        card = grade(
+            right_case,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("recover_validated_work", "recover it", disposition=disposition), summary=GOOD_DIAGNOSIS),),
+            ),
+        )
+        assert card.remedy is not None and card.remedy.verdict is verdict

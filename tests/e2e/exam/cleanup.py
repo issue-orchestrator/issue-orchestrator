@@ -10,9 +10,11 @@ the other steps running and raises every failure together.
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import Iterable
 
 from tests.e2e.exam.observe import linked_pull_requests
+from tests.e2e.exam.run_identity import github_remote
 from tests.e2e.fixtures import _github_adapter
 
 logger = logging.getLogger(__name__)
@@ -61,9 +63,46 @@ def teardown_run(repo: str, run_label: str, created: Iterable[int]) -> None:
     relied on to find them. The issues themselves are closed by the caller.
     """
     labelled = [issue.number for issue in _github_adapter(repo).list_issues(labels=[run_label], state="all")]
-    for number in sorted(set(created) | set(labelled)):
+    owned = sorted(set(created) | set(labelled))
+    for number in owned:
         for pr in linked_pull_requests(repo, number, state="all"):
             remove_pr(repo, pr.number)
+    # A branch the engine pushed for an owned issue whose PR was never
+    # created is found by the engine's branch naming (``<issue>-...``).
+    for branch in branches_for_issues(repo, owned):
+        remove_branch(repo, branch)
+
+
+def branches_for_issues(repo: str, issue_numbers: Iterable[int]) -> list[str]:
+    """Every remote branch named ``<issue>-...`` for the given issues.
+
+    ``git ls-remote`` returns ALL heads in one complete read and spends no
+    GitHub API budget; it addresses the run's repository (github_remote).
+    """
+    wanted = {str(number) for number in issue_numbers}
+    if not wanted:
+        return []
+    result = subprocess.run(
+        ["git", "ls-remote", "--heads", github_remote(repo)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise ExamCleanupError(f"could not list remote branches of {repo}: {result.stderr.strip()}")
+    return parse_issue_branches(result.stdout, wanted)
+
+
+def parse_issue_branches(ls_remote: str, issue_numbers: Iterable[str]) -> list[str]:
+    """Branches from ``git ls-remote --heads`` output whose name is exactly
+    ``<issue>-...`` for one of ``issue_numbers`` (so #7 never matches 77-x)."""
+    wanted = set(issue_numbers)
+    branches: list[str] = []
+    for line in ls_remote.splitlines():
+        ref = line.split("\t", 1)[-1].strip()
+        name = ref.removeprefix("refs/heads/")
+        prefix, sep, _rest = name.partition("-")
+        if sep and prefix in wanted:
+            branches.append(name)
+    return sorted(branches)
 
 
 def delete_registered_branches(repo: str, branches: Iterable[str]) -> None:

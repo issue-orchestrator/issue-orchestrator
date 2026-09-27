@@ -156,7 +156,13 @@ def _grade_remedy(
             evidence=_describe(forbidden),
             vocabulary_gap=not spec.right_action_types,
         )
-    right = [a for a in actions if a.action_type in spec.right_action_types]
+    # Like acceptable remedies: only an effect that reached GitHub counts.
+    right = [
+        a
+        for a in actions
+        if a.action_type in spec.right_action_types
+        and a.disposition is TechLeadActionDisposition.EXECUTED
+    ]
     if right:
         return RemedyGrade(spec.summary, RemedyVerdict.RIGHT, _describe(right), False)
     acceptable = [

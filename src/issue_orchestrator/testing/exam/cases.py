@@ -12,6 +12,7 @@ from .case import (
     RemedySpec,
     RootCauseSpec,
     TermGroup,
+    issue_is_open,
     issue_keeps_labels,
     issue_lacks_labels,
     pr_checks_green,
@@ -188,7 +189,10 @@ def stale_claim_paused_for_reconcile(*, needs_reconcile_label: str) -> ExamCase:
             f"the issue carries in-progress with no session and the {needs_reconcile_label}"
             " pause only a human lifts"
         ),
-        goals=(issue_keeps_labels(SUBJECT, (needs_reconcile_label,)),),
+        goals=(
+            issue_is_open(SUBJECT),
+            issue_keeps_labels(SUBJECT, (needs_reconcile_label,)),
+        ),
         known_blockers=(
             "porchpin#410's labels (its 130x loop also needed #7346's wedged record; see #7332)",
         ),

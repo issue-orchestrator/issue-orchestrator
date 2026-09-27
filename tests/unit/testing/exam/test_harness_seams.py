@@ -438,6 +438,7 @@ def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeyp
         return [SimpleNamespace(number=70)] if number == 7 else []
 
     monkeypatch.setattr(cleanup, "linked_pull_requests", linked)
+    monkeypatch.setattr(cleanup, "branches_for_issues", lambda _repo, _numbers: [])
     ran: list[str] = []
 
     with pytest.raises(ExceptionGroup) as caught:
@@ -515,6 +516,7 @@ def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch) -> None:
         cleanup, "linked_pull_requests",
         lambda _repo, number, state: [SimpleNamespace(number=70)] if (number, state) == (7, "all") else [],
     )
+    monkeypatch.setattr(cleanup, "branches_for_issues", lambda _repo, _numbers: [])
 
     cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])
 
@@ -572,3 +574,41 @@ def test_only_this_runs_log_tailers_are_selected(tmp_path) -> None:
     ]
 
     assert owned_log_tailers(ps_lines, [exam_base, engine_root, None]) == [101, 102]
+
+
+
+def test_an_engine_branch_with_no_pr_is_found_by_naming_and_removed(monkeypatch) -> None:
+    """Round 14 F2: the engine pushed 7-work, PR creation failed — no PR links it."""
+    from tests.e2e.exam import cleanup
+
+    adapter = _StrictFake(delete_works=True)
+    adapter.branches = {"7-exam-work"}
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    monkeypatch.setattr(cleanup, "linked_pull_requests", lambda _repo, number, state: [])
+    seen: list[list[int]] = []
+
+    def branches(_repo, numbers):
+        seen.append(list(numbers))
+        return ["7-exam-work"]
+
+    monkeypatch.setattr(cleanup, "branches_for_issues", branches)
+
+    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])
+
+    assert seen == [[7]]
+    assert adapter.deleted == ["7-exam-work"] and adapter.branches == set()
+
+
+def test_issue_branches_match_the_engines_naming_exactly() -> None:
+    from tests.e2e.exam.cleanup import parse_issue_branches
+
+    ls_remote = "\n".join(
+        [
+            "aaa\trefs/heads/7-exam-work",
+            "bbb\trefs/heads/77-other",
+            "ccc\trefs/heads/main",
+            "ddd\trefs/heads/70-7-lookalike",
+            "eee\trefs/heads/8-second",
+        ]
+    )
+    assert parse_issue_branches(ls_remote, {"7", "8"}) == ["7-exam-work", "8-second"]
