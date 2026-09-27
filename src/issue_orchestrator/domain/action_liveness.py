@@ -362,10 +362,14 @@ class LivenessPolicy:
             next_attempt_at=None,
         )
         if previous is not None and previous.parked:
-            # Recording onto a row that is already parked (two copies of one
-            # action admitted in the same plan) keeps its escalation state.
-            row = replace(
+            # A park ends only by success or release (each of which withdraws
+            # its block). An attempt run despite it -- an operator's explicit
+            # recovery -- that does not succeed leaves it parked, escalation
+            # and all: turning it into a wait would drop the park while its
+            # block stayed on the issue.
+            return replace(
                 row,
+                attempts=spent + 1,
                 escalated=previous.escalated,
                 explained=previous.explained,
                 escalation_attempts=previous.escalation_attempts,

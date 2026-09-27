@@ -175,9 +175,17 @@ class SQLiteActionLivenessStore:
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction that owns the database from its first read.
+
+        ``BEGIN IMMEDIATE`` takes SQLite's write lock before anything is read,
+        so a decision read inside the transaction (``settle``'s expected row,
+        a release's rows) cannot be overtaken by another connection's commit
+        -- the operator CLI's, say -- before the write that depends on it.
+        """
         with self._write_lock:
             conn = self._connection()
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
                 yield conn
 
     def row(self, key: LivenessKey) -> LivenessRow | None:
