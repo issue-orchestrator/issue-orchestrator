@@ -549,7 +549,11 @@ async def run_case_u(
             alive = candidate.is_running()
             whole_run: list[Mapping[str, Any]] = list(runtime.watcher.view.global_events)
             if alive:
-                whole_run += await quiesce(candidate, deadline=time.monotonic() + CASE_U_WINDOW_S)
+                whole_run += await quiesce(
+                    candidate,
+                    deadline=time.monotonic() + CASE_U_WINDOW_S,
+                    after=runtime.watcher.view.last_event_id,
+                )
             facts = upgrade_facts(
                 window,
                 whole_run=whole_run,

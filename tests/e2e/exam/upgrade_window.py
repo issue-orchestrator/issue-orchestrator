@@ -37,7 +37,7 @@ from issue_orchestrator.testing.exam.upgrade import (
 
 class WindowEngine(Protocol):
     def is_running(self) -> bool: ...
-    def event_history(self) -> list[dict[str, Any]]: ...
+    def event_history(self, *, after: int = 0) -> list[dict[str, Any]]: ...
     def gh_audit_report(self) -> dict[str, Any]: ...
     def pause(self) -> None: ...
 
@@ -88,17 +88,24 @@ async def quiesce(
     engine: WindowEngine,
     *,
     deadline: float,
+    after: int = 0,
     poll_s: float = 2.0,
     clock=time.monotonic,
     sleep=asyncio.sleep,
 ) -> Sequence[Mapping[str, Any]]:
     """Pause the engine and wait out the tick in progress; returns its
-    complete history at that point, after which it applies nothing more."""
+    complete history past ``after`` at that point, after which it applies
+    nothing more.
+
+    ``after`` is how much the caller already holds (the watcher's last id):
+    the engine buffers only its newest events, so a long run's history from
+    id 1 may be gone from it while the watcher still has it.
+    """
     engine.pause()
-    at_pause = await _settled_history(engine, deadline, poll_s, clock, sleep)
-    noted = max(event_id_of(event) for event in at_pause)
+    at_pause = await _settled_history(engine, deadline, poll_s, clock, sleep, after=after)
+    noted = max((event_id_of(event) for event in at_pause), default=after)
     while True:
-        settled = await _settled_history(engine, deadline, poll_s, clock, sleep)
+        settled = await _settled_history(engine, deadline, poll_s, clock, sleep, after=after)
         if any(
             event.get("type") == "tick.completed" and event_id_of(event) > noted for event in settled
         ):
@@ -108,12 +115,15 @@ async def quiesce(
         await sleep(poll_s)
 
 
-async def _settled_history(engine: WindowEngine, deadline: float, poll_s: float, clock, sleep):
-    """The complete history, retried while a concurrent publisher briefly
-    leaves a hole; a hole or a dropped prefix that persists is refused."""
+async def _settled_history(
+    engine: WindowEngine, deadline: float, poll_s: float, clock, sleep, *, after: int = 0
+):
+    """The complete history past ``after``, retried while a concurrent
+    publisher briefly leaves a hole; a hole or a dropped prefix that persists
+    is refused."""
     while True:
         try:
-            return complete_history(engine.event_history())
+            return complete_history(engine.event_history(after=after), after=after)
         except ValueError:
             if clock() >= deadline:
                 raise

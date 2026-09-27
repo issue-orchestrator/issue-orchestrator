@@ -36,7 +36,9 @@ class FakeCandidate:
         *,
         reads_per_tick: int = 1,
         audit: dict[str, int] | None = None,
+        buffer_max: int = 1000,
     ) -> None:
+        self.buffer_max = buffer_max
         self.history: list[dict[str, Any]] = list(startup or [])
         self.audit: dict[str, int] = dict(audit or {})
         self.reads_per_tick = reads_per_tick
@@ -82,9 +84,11 @@ class FakeCandidate:
         self.paused_after_tick = self.ticks
         self.at_pause()
 
-    def event_history(self) -> list[dict[str, Any]]:
+    def event_history(self, *, after: int = 0) -> list[dict[str, Any]]:
+        """Like the engine's EventHub: only its newest ``buffer_max`` events."""
         self.reads.append("history")
-        snapshot = list(self.history)
+        buffered = self.history[-self.buffer_max :]
+        snapshot = [event for event in buffered if event["event_id"] > after]
         self.history_reads += 1
         if self.history_reads % self.reads_per_tick == 0:
             self._complete_tick()
@@ -197,8 +201,8 @@ class HoleyHistory(FakeCandidate):
         super().__init__(*args, **kwargs)
         self.holey_reads = holey_reads
 
-    def event_history(self) -> list[dict[str, Any]]:
-        history = super().event_history()
+    def event_history(self, *, after: int = 0) -> list[dict[str, Any]]:
+        history = super().event_history(after=after)
         if self.paused and self.holey_reads:
             self.holey_reads -= 1
             return [event for event in history if event["event_id"] != 2]
@@ -336,3 +340,32 @@ def test_a_hazard_published_after_the_watchers_last_event_is_graded() -> None:
 
     assert _grade(window, whole_run).failures == ("upgrade: restore hazard: session.claim_unreadable on #911 (late)",)
     assert engine.paused  # stays paused through the observation
+
+
+class TestLongRun:
+    """Round 6 F1: a healthy run longer than the engine's replay buffer."""
+
+    def run(self, *, drop_from_watcher: int | None = None):
+        from tests.e2e.exam.upgrade_window import quiesce
+
+        engine = FakeCandidate(buffer_max=50)
+        window = _capture(engine)
+        engine.paused = False
+        engine.paused_after_tick = None  # resumed after the release
+        for _ in range(200):  # a long run: the buffer has dropped the window's ids
+            engine.publish("tick.completed", {})
+        watcher = [event for event in engine.history if event["event_id"] > 3]
+        if drop_from_watcher is not None:
+            watcher = [event for event in watcher if event["event_id"] != drop_from_watcher]
+        tail = asyncio.run(
+            quiesce(engine, deadline=engine.clock() + 600, after=watcher[-1]["event_id"], clock=engine.clock, sleep=engine.sleep)
+        )
+        assert engine.history[0]["event_id"] < len(engine.history) - engine.buffer_max  # prefix really gone
+        return _grade(window, [*watcher, *tail])
+
+    def test_a_healthy_long_run_is_graded_from_window_watcher_and_tail(self) -> None:
+        assert self.run().passed
+
+    def test_an_event_missing_from_every_source_is_still_refused(self) -> None:
+        with pytest.raises(ValueError, match="incomplete"):
+            self.run(drop_from_watcher=120)

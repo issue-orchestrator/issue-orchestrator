@@ -128,7 +128,9 @@ def label_changes(events: Iterable[Mapping[str, Any]]) -> tuple[LabelChange, ...
     )
 
 
-def complete_history(events: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+def complete_history(
+    events: Sequence[Mapping[str, Any]], *, after: int = 0
+) -> Sequence[Mapping[str, Any]]:
     """``events`` (an engine's buffered history from id 0), checked complete
     and returned in id order.
 
@@ -139,11 +141,10 @@ def complete_history(events: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[st
     them out of order; completeness is the id SET 1..N, not the sequence.
     """
     ids = [event_id_of(event) for event in events]
-    if not ids or sorted(ids) != list(range(1, len(ids) + 1)):
+    if sorted(ids) != list(range(after + 1, after + len(ids) + 1)) or (not ids and after == 0):
         raise ValueError(
-            f"engine event history is incomplete ({len(ids)} events, lowest ids"
-            f" {sorted(set(ids))[:3]}); a restart window cannot be graded from a"
-            " truncated buffer"
+            f"engine event history is incomplete ({len(ids)} events after id {after}, lowest"
+            f" ids {sorted(set(ids))[:3]}); a restart cannot be graded from a truncated buffer"
         )
     return sorted(events, key=event_id_of)
 
