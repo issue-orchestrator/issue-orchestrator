@@ -127,6 +127,13 @@ _UPDATE_ESCALATION = (
 _DELETE_KEY = "DELETE FROM action_liveness WHERE subject=? AND action=? AND fingerprint=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
 _FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
+_ESCALATED_PARK_ON_ISSUE = (
+    "SELECT 1 FROM action_liveness WHERE escalation_issue=?"
+    " AND next_attempt_at IS NULL AND escalated=1"
+)
+_FORGET_RELEASE_UNDER_ESCALATED_PARK = (
+    _FORGET_RELEASE + " AND EXISTS (" + _ESCALATED_PARK_ON_ISSUE + ")"
+)
 _OWE_ANNOUNCEMENT = (
     "INSERT INTO action_liveness_announcement (subject, action, fingerprint,"
     " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
@@ -346,6 +353,14 @@ class SQLiteActionLivenessStore:
     def clear_release(self, issue_number: int) -> None:
         with self._write() as conn:
             conn.execute(_FORGET_RELEASE, (issue_number,))
+
+    def clear_release_if_escalated_park(self, issue_number: int) -> bool:
+        with self._write() as conn:
+            # One statement decides and deletes, so a park released by another
+            # connection between a read and the delete cannot lose its debt;
+            # it also opens the write transaction the answer is read inside.
+            conn.execute(_FORGET_RELEASE_UNDER_ESCALATED_PARK, (issue_number, issue_number))
+            return conn.execute(_ESCALATED_PARK_ON_ISSUE, (issue_number,)).fetchone() is not None
 
     def _select(self, query: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
         rows = self._connection().execute(query, params).fetchall()

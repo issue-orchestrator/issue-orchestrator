@@ -262,12 +262,10 @@ class ActionLivenessOwner:
             self._unblock(issue, now)
 
     def _unblock(self, issue_number: int, now: datetime) -> None:
-        parks = self._store.parked_rows_for_issue(issue_number)
-        if any(park.escalated for park in parks):
+        if self._store.clear_release_if_escalated_park(issue_number):
             # Another park's committed block is the one on the issue now.
-            self._store.clear_release(issue_number)
             return
-        if parks:
+        if self._store.parked_rows_for_issue(issue_number):
             # A park still stands whose own block has not landed: the label on
             # the issue is its block too. Keep the debt; it settles once that
             # park lands its block (above) or is itself gone (below).
