@@ -9,6 +9,7 @@ publishes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -138,11 +139,16 @@ class Board:
     history: list[SessionHistoryEntry] = field(default_factory=list)
     holds: tuple[PublishedReviewHold, ...] = ()
     fail_writes: frozenset[type] = frozenset()
+    #: Run when the PR's review label is written (another owner acting meanwhile).
+    during_route: "Callable[[Board], None] | None" = None
     writes: list[Action] = field(default_factory=list)
     events: list[TraceEvent] = field(default_factory=list)
 
     def apply(self, action: Action) -> ActionResult:
         self.writes.append(action)
+        routing = isinstance(action, AddLabelAction) and action.issue_number == PR
+        if routing and self.during_route is not None:
+            self.during_route(self)
         if type(action) in self.fail_writes:
             return ActionResult.fail(action, "write refused")
         return ActionResult.ok(action)
@@ -432,3 +438,31 @@ def test_an_issue_inside_the_configured_scope_is_released() -> None:
     board = Board(filter_label="io:e2e:run", issue=_issue("blocked-failed", "pr-pending", "io:e2e:run"))
 
     assert board.executor().apply(_action()).success
+
+
+def _block_issue(board: Board) -> None:
+    board.issue = _issue("blocked-failed", "pr-pending", "blocked")
+
+
+def _block_pr(board: Board) -> None:
+    board.live = {PR: _pr(labels=(REVIEW_LABEL, "blocked-failed"))}
+
+
+def _close_pr(board: Board) -> None:
+    board.live = {PR: replace(_pr(), state="closed")}
+
+
+@pytest.mark.parametrize("meanwhile", [_block_issue, _block_pr, _close_pr])
+def test_a_change_during_the_writes_withdraws_the_release_before_the_block_comes_off(
+    meanwhile: "Callable[[Board], None]",
+) -> None:
+    """#7399 review r3: the writes take time; review validity is asked again,
+    from fresh reads, right before blocked-failed would come off."""
+    board = Board(during_route=meanwhile)
+
+    result = board.executor().apply(_action())
+
+    assert not result.success
+    assert result.details["status"] == "withdrawn"
+    assert not any(isinstance(write, RemoveLabelAction) for write in board.writes)
+    assert EventName.TECH_LEAD_ACTION_EXECUTED.value not in _event_names(board)

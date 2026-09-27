@@ -36,8 +36,10 @@ class _Labels:
     """Live issue labels plus the guarded writes the owner delegates to."""
 
     def __init__(self, labels, *, refuse_add=False, refuse_remove=False, board_moved=False,
-                 refuse_route=False):
+                 refuse_route=False, lands_during_route=()):
         self.board_moved = board_moved
+        #: Labels another owner puts on the ISSUE while the PR route is written.
+        self.lands_during_route = tuple(lands_during_route)
         self.refuse_route = refuse_route
         self.pr_live: set[str] = set()
         self.live = set(labels)
@@ -57,6 +59,7 @@ class _Labels:
                     return ActionResult.fail(action, "github refused the PR label")
                 self.writes.append(("add-pr", action.label))
                 self.pr_live.add(action.label)
+                self.live.update(self.lands_during_route)
                 return ActionResult.ok(action)
             if self.refuse_add:
                 return ActionResult.fail(action, "github refused the add")
@@ -248,3 +251,16 @@ def test_the_sweeps_release_command_runs_through_the_real_applier_dispatch():
     assert result.result_type is ActionResultType.SUCCESS, result.error
     assert live[ISSUE] == {"agent:web", LM.pr_pending}
     assert live[PR] == {REVIEW_LABEL}
+
+
+def test_a_block_that_lands_during_the_writes_withdraws_the_release():
+    """#7399 review r3: eligibility is asked again right before the block
+    comes off; a human's block that landed meanwhile has its own owner."""
+    labels = _Labels(["agent:web", LM.blocked_failed], lands_during_route=(LM.blocked,))
+
+    outcome = _owner(labels).release(ISSUE)
+
+    assert outcome.status is ReviewReleaseStatus.WITHDRAWN
+    assert not outcome.released and not outcome.left_alone
+    assert ("remove", LM.blocked_failed) not in labels.writes
+    assert {LM.blocked_failed, LM.blocked} <= labels.live

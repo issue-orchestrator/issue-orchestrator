@@ -94,6 +94,10 @@ class ReviewReleaseStatus(StrEnum):
     ROUTE_FAILED = "route_failed"
     #: pr-pending is on, but blocked-failed would not come off.
     BLOCK_REMOVAL_FAILED = "block_removal_failed"
+    #: pr-pending is on, but just before the block would come off the release
+    #: was no longer eligible (another block landed, the PR moved): nothing
+    #: was removed.
+    WITHDRAWN = "withdrawn"
 
 
 _LEFT_ALONE = frozenset({ReviewReleaseStatus.NOT_HELD, ReviewReleaseStatus.NOT_RELEASABLE})
@@ -132,8 +136,18 @@ class ReviewReleaseWrites:
     #: The PR label review discovery scans for; empty when none is configured.
     review_label: str
 
-    def release(self, issue_number: int, pr_number: int, reason: str) -> tuple["ReviewReleaseStatus", str]:
-        """Release; ``reason`` is recorded on every write and returned on success."""
+    def release(
+        self, issue_number: int, pr_number: int, reason: str, *,
+        still_releasable: Callable[[], str | None],
+    ) -> tuple["ReviewReleaseStatus", str]:
+        """Release; ``reason`` is recorded on every write and returned on success.
+
+        ``still_releasable`` is the caller's own eligibility rule, asked again
+        immediately before the block comes off: the gate and route writes take
+        time, and a block that lands meanwhile (a human's ``blocked``,
+        recovery-pending, a PR block) has an owner of its own. It returns why
+        the release no longer holds, or ``None`` (#7399 review r3).
+        """
         gate = self.apply(AddLabelAction(
             issue_number=issue_number, label=self.labels.pr_pending, fresh_presence=True,
             reason=reason))
@@ -142,6 +156,9 @@ class ReviewReleaseWrites:
         routed = self._route(pr_number, reason)
         if routed is not None and not routed.success:
             return ReviewReleaseStatus.ROUTE_FAILED, f"review label not restored: {routed.error}"
+        withdrawn = still_releasable()
+        if withdrawn is not None:
+            return ReviewReleaseStatus.WITHDRAWN, f"blocked-failed kept: {withdrawn}"
         try:
             lifted = self._lift(issue_number, reason)
         except ReconciliationRequired as refused:
@@ -183,21 +200,33 @@ class PublishedReviewRelease:
     review_label: str
 
     def release(self, issue_number: int) -> ReviewReleaseOutcome:
-        holds = self.custody.holds(issue_number)
-        if not holds:
-            return self._outcome(issue_number, ReviewReleaseStatus.NOT_HELD, holds,
-                                 "no open PR carries published validated work")
-        current = self.read_labels(issue_number)
-        releasable = review_releasable(current, holds, self.labels)
-        if not releasable:
-            return self._outcome(issue_number, ReviewReleaseStatus.NOT_RELEASABLE, holds,
-                                 f"issue blocks {self.labels.get_blocking(current)}; a held PR carries "
-                                 f"its own block, or the issue's block is not only blocked-failed")
+        holds, refusal = self._eligibility(issue_number)
+        if refusal is not None:
+            return self._outcome(issue_number, refusal[0], holds, refusal[1])
         described = "; ".join(hold.describe() for hold in holds)
         target = next(hold for hold in holds if not self.labels.get_blocking(hold.pr_labels))
         status, detail = self.writes.release(
-            issue_number, target.pr_number, f"published validated work is under review: {described}")
+            issue_number, target.pr_number, f"published validated work is under review: {described}",
+            still_releasable=lambda: self._withdrawn(issue_number))
         return self._outcome(issue_number, status, holds, detail)
+
+    def _eligibility(
+        self, issue_number: int
+    ) -> tuple[tuple[PublishedReviewHold, ...], tuple[ReviewReleaseStatus, str] | None]:
+        """Custody and the eligibility rule, read now: the holds, and why not."""
+        holds = self.custody.holds(issue_number)
+        if not holds:
+            return holds, (ReviewReleaseStatus.NOT_HELD, "no open PR carries published validated work")
+        current = self.read_labels(issue_number)
+        if not review_releasable(current, holds, self.labels):
+            return holds, (ReviewReleaseStatus.NOT_RELEASABLE,
+                           f"issue blocks {self.labels.get_blocking(current)}; a held PR carries "
+                           f"its own block, or the issue's block is not only blocked-failed")
+        return holds, None
+
+    def _withdrawn(self, issue_number: int) -> str | None:
+        _holds, refusal = self._eligibility(issue_number)
+        return None if refusal is None else refusal[1]
 
     @property
     def writes(self) -> "ReviewReleaseWrites":

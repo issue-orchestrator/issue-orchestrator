@@ -288,6 +288,27 @@ class TechLeadReviewReleaseExecutor:
                                   f"PR #{pr.number} checks are {checks.state or 'absent'}")
         return None
 
+    def _no_longer_withheld(self, issue_number: int, pr_number: int) -> str | None:
+        """The last check before the block comes off, from fresh reads.
+
+        The gate and route writes take time: a block that landed on the issue
+        or the PR meanwhile has an owner of its own, and a closed PR has no
+        review to release. Review validity judges the issue and PR as they are
+        now; anything but "withheld only by blocked-failed" withdraws.
+        """
+        issue = self.read_issue(issue_number)
+        pr = self.read_pr(pr_number)
+        if issue is None or pr is None:
+            return f"issue #{issue_number} or PR #{pr_number} could not be re-read"
+        withholding = evaluate_review_withholding(
+            config=self.config, label_manager=self.labels, issue=issue, pr=pr,
+            block_label=self.labels.blocked_failed,
+        )
+        if not withholding.withheld_only_by_block:
+            return (f"PR #{pr_number} review is now {withholding.current.reason}"
+                    f" (blocking {list(withholding.current.blocking_labels)})")
+        return None
+
     # -- apply ----------------------------------------------------------------
 
     def apply(self, action: ReleaseWithheldReviewAction) -> ActionResult:
@@ -297,6 +318,7 @@ class TechLeadReviewReleaseExecutor:
         status, detail = self.writes.release(
             action.issue_number, verdict.pr.number,
             f"tech lead {action.proposal_id} released the review: {verdict.describe()}",
+            still_releasable=lambda: self._no_longer_withheld(action.issue_number, verdict.pr.number),
         )
         if status is not ReviewReleaseStatus.RELEASED:
             logger.error(issue_log(action.issue_number,
