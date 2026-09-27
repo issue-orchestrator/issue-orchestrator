@@ -223,6 +223,7 @@ def test_shared_preflight_reports_exact_changed_authority_without_claim(tmp_path
         preparation=Mock(),
         publication=Mock(),
         completion=Mock(),
+        scope=Mock(),
     )
     drain = RecoveryDrain(
         queue=Mock(),
@@ -307,6 +308,7 @@ def test_shared_preflight_names_each_changed_approval_fact(
         preparation=Mock(),
         publication=Mock(),
         completion=Mock(),
+        scope=Mock(),
     )
     command = StoredEvidenceCommand(
         issue_number=42,

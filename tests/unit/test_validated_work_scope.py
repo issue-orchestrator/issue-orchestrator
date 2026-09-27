@@ -1,0 +1,349 @@
+"""Validated-work recovery owns coding/rework completions only (#7323).
+
+Real Git, SQLite, intake, escrow and aggregate recovery-block composition; only
+GitHub labels are a fake. The tech-lead run is recorded exactly as porchpin#410's
+was: session key task ``code`` on the anchor issue, allocated to the configured
+tech-lead agent, so its ``completion_task`` is ``tech-lead``.
+"""
+
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
+
+import pytest
+
+from issue_orchestrator.adapters.issue_disposition_gate import FileIssueDispositionMutationGate
+from issue_orchestrator.control import validated_work_preservation
+from issue_orchestrator.control.actions import ActionResult, AddLabelAction
+from issue_orchestrator.control.aggregate_recovery_block import AggregateRecoveryBlocks
+from issue_orchestrator.control.claimed_recovery_preparation import ClaimedRecoveryPreparation
+from issue_orchestrator.control.completion_handler import CleanupDecision, SessionStatus
+from issue_orchestrator.control.completion_intake import CompletionEvidenceIntakeService
+from issue_orchestrator.control.completion_intake_validation import ConfiguredCompletionEvidenceValidator
+from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
+from issue_orchestrator.control.issue_run_evidence import IssueRunEvidenceService
+from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES
+from issue_orchestrator.control.published_review_custody import PublishedReviewCustody
+from issue_orchestrator.control.recovery_publication_attempt import RecoveryPublicationAttempt
+from issue_orchestrator.control.recovery_publication_completion import RecoveryPublicationCompletion
+from issue_orchestrator.control.recovery_record_operation import RecoveryRecordOperation
+from issue_orchestrator.control.review_exchange_lifecycle import (
+    CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners,
+)
+from issue_orchestrator.control.session_completion import handle_session_completion
+from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
+from issue_orchestrator.control.validated_work_capture import ValidatedWorkCustody
+from issue_orchestrator.control.validated_work_effects import FencedValidatedWorkEffects
+from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
+from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
+from issue_orchestrator.control.validated_work_scope_retirement import (
+    RETIREMENT_ACTOR, OutOfScopeRecordRetirement,
+)
+from issue_orchestrator.domain.completion_intake import CompletionIntakeError
+from issue_orchestrator.domain.issue_key import GitHubIssueKey
+from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
+from issue_orchestrator.domain.models import OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_entry import RecoveryRecordRequest
+from issue_orchestrator.domain.registered_completion import (
+    CompletionProcessingPolicy, CompletionRunRole,
+)
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.validated_work import (
+    DispositionPhase, PublishValidatedHeadStatus, ResolutionKind, ValidatedWorkFailure,
+    ValidatedWorkState,
+)
+from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
+from issue_orchestrator.domain.validated_work_scope import (
+    RECOVERABLE_TASKS, outside_scope_reason, recovery_owns,
+)
+from issue_orchestrator.events import EventName
+from issue_orchestrator.execution.command_runner import LocalCommandRunner
+from issue_orchestrator.execution.git_tools import create_git
+from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+from issue_orchestrator.execution.historical_intake_custody import IsolatedCompletionValidationWorkspace
+from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.execution.validated_work_ancestry import GitValidatedWorkAncestry
+from issue_orchestrator.execution.validated_work_execution import LocalValidatedWorkExecutionOwner
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.validated_work_escrow import FilesystemValidatedWorkEscrow
+from issue_orchestrator.infra.validated_work_store import SqliteValidatedWorkStore
+from issue_orchestrator.ports.background_job import BackgroundJobRunner
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
+from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
+from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
+from tests.runtime_lifecycle_helpers import no_open_pull_requests
+from tests.unit.test_completion_evidence_intake import command, completion
+from tests.unit.validated_work_support import Liveness
+
+ISSUE = 410
+TECH_LEAD = "agent:tech-lead"
+CODER = "agent:coder"
+RECOVERY_PENDING = "recovery-pending"
+
+
+class Labels:
+    """GitHub's view of the issue's labels: the one fake in this composition."""
+
+    def __init__(self) -> None:
+        self.labels: set[str] = set()
+        self.operations: list[tuple[str, str]] = []
+
+    def read_issue_labels(self, issue_number):
+        assert issue_number == ISSUE
+        return sorted(self.labels)
+
+    def apply(self, action):
+        assert action.issue_number == ISSUE
+        add = isinstance(action, AddLabelAction)
+        (self.labels.add if add else self.labels.discard)(action.label)
+        self.operations.append(("add" if add else "remove", action.label))
+        return ActionResult.ok(action)
+
+
+def _rig(tmp_path, agent_label):
+    repo, worktree, state = tmp_path / "repository", tmp_path / "worktree", tmp_path / "owner-state"
+    repo.mkdir()
+    git = create_git(LocalCommandRunner())
+    git.run(repo, ["init", "-b", "main"])
+    git.run(repo, ["config", "user.name", "Scope test"])
+    git.run(repo, ["config", "user.email", "test@example.invalid"])
+    (repo / "content").write_text("base")
+    git.run(repo, ["add", "content"])
+    git.run(repo, ["commit", "-m", "base"])
+    git.run(repo, ["worktree", "add", "-b", f"{ISSUE}-health-review-walk-the-floor", str(worktree)])
+    wc = GitWorkingCopy(git=git)
+    config = Config(repo="owner/repo", tech_lead_review_agent=TECH_LEAD)
+    ledger = SqliteIssueRunLedger(state / "runs.sqlite", repo_slug="owner/repo")
+    run = IssueRunAllocationService(FileSystemSessionOutput(), ledger, wc, configuration=config).allocate(
+        IssueRunAllocation(worktree, "coding-1", ISSUE,
+            SessionKey(GitHubIssueKey("owner/repo", str(ISSUE)), TaskKind.CODE), agent_label, "test",
+            terminal_id=f"issue-{ISSUE}"))
+    validator = ConfiguredCompletionEvidenceValidator(wc, LocalCommandRunner(),
+        IsolatedCompletionValidationWorkspace(state, git, lambda _path: None), command="true", timeout_seconds=30)
+    intake = CompletionEvidenceIntakeService(ledger, validator, Mock(spec=HistoricalIntakeHandler),
+                                             Mock(spec=BackgroundJobRunner))
+    escrow = FilesystemValidatedWorkEscrow(state / "validated-work", repository=repo, repo_slug="owner/repo", git=wc)
+    store = SqliteValidatedWorkStore(state / "work.sqlite",
+        ancestry=GitValidatedWorkAncestry(repository=repo, repo_slug="owner/repo", git=wc),
+        artifacts=escrow, liveness=Liveness(), retention=escrow)
+    execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
+    labels = Labels()
+    aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
+        admission=RankedEvidenceAdmission(store, ledger), phases=store, authority=effects,
+        gate=FileIssueDispositionMutationGate(state), labels=LabelManager(Config(repo="owner/repo")),
+        reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
+    observer = Mock(spec=ValidatedWorkCaptureObserver)
+    observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
+    preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
+        custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate),
+        working_copy=wc, observer=observer)
+    sessions = Mock()
+    sessions.exists.return_value = False
+    jobs = Mock()
+    jobs.cancel_matching.return_value = ()
+    lifecycle = IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(sessions, [], Mock(), jobs, Mock()),
+        preservation, IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-26T04:24:41Z"),
+        Mock(), PublishedReviewCustody(preservation, no_open_pull_requests()))
+    events = InMemoryEventSink()
+    retirement = OutOfScopeRecordRetirement(intake=ledger, store=store, effects=effects,
+                                            blocks=aggregate, events=events)
+    rig = SimpleNamespace(git=git, worktree=worktree, ledger=ledger, run=run, intake=intake, store=store,
+        execution=execution, labels=labels, lifecycle=lifecycle, events=events, retirement=retirement,
+        agent_label=agent_label, state=state)
+    receipt = intake.submit(ledger.submission_capability(run), command(completion(), "validated"))
+    intake.drain()
+    rig.receipt = receipt
+    return rig
+
+
+@pytest.fixture
+def tech_lead(tmp_path):
+    return _rig(tmp_path, TECH_LEAD)
+
+
+@pytest.fixture
+def coder(tmp_path):
+    return _rig(tmp_path, CODER)
+
+
+def _complete(rig, make_session):
+    """Drive the session's end through `handle_session_completion` itself."""
+    session = replace(make_session(issue_number=ISSUE, worktree_path=rig.worktree,
+                                   branch_name=f"{ISSUE}-health-review-walk-the-floor"),
+                      run_assets=rig.run)
+    handler = MagicMock()
+    handler.process_completion.return_value = SimpleNamespace(
+        actions=[], history_status=SessionStatus.COMPLETED,
+        history_entry=SessionHistoryEntry(issue_number=ISSUE, title="Health Review", agent_type=rig.agent_label,
+                                          status="completed", runtime_minutes=1, pr_url=None),
+        pr_url=None, pr_number=None, cleanup=CleanupDecision.immediate(), should_queue_review=False,
+    )
+    applier = MagicMock()
+    applier.runtime_lifecycle = rig.lifecycle
+    session_output = MagicMock()
+    session_output.attach_claude_log.return_value = None
+    handle_session_completion(
+        session=session, status=SessionStatus.COMPLETED, state=OrchestratorState(),
+        completion_handler=handler, action_applier=applier, observer=MagicMock(), worktree_manager=None,
+        kill_session_fn=lambda _terminal_id: None, config=MagicMock(), session_output=session_output,
+        pending_work_claims=SqlitePendingWorkClaimStore.for_repo(rig.state),
+        processing_policy=CompletionProcessingPolicy.for_unprocessed_session(rig.agent_label, TECH_LEAD),
+    )
+    return handler.process_completion.call_args.kwargs["recovery_holds_validated_work"]
+
+
+# -- the rule ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("task", list(TaskKind))
+def test_only_coding_and_rework_runs_produce_recoverable_work(task):
+    label = TECH_LEAD if task is TaskKind.TECH_LEAD else CODER
+    role = CompletionRunRole(ISSUE, task, label)
+    assert recovery_owns(role) is (task in {TaskKind.CODE, TaskKind.REWORK})
+    if recovery_owns(role):
+        with pytest.raises(ValueError):
+            outside_scope_reason(role)
+    else:
+        assert task.value in outside_scope_reason(role)
+    assert RECOVERABLE_TASKS == frozenset({TaskKind.CODE, TaskKind.REWORK})
+
+
+# -- capture: new completions ------------------------------------------------
+
+
+def test_tech_lead_completion_with_validation_adds_no_recovery_pending(tech_lead, make_session):
+    """porchpin#410 / exam Case B: the tech lead's own validated completion."""
+    holds = _complete(tech_lead, make_session)
+
+    assert holds is False
+    assert not tech_lead.store.for_issue(ISSUE).found_work
+    assert tech_lead.labels.operations == []
+    assert RECOVERY_PENDING not in tech_lead.labels.labels
+
+
+def test_coding_completion_with_validation_still_hands_recovery_its_work(coder, make_session):
+    holds = _complete(coder, make_session)
+
+    assert holds is True
+    assert coder.store.for_issue(ISSUE).unresolved
+    assert coder.labels.operations == [("add", RECOVERY_PENDING)]
+
+
+# -- recovery: records admitted before the rule ----------------------------
+
+
+def _legacy_capture(rig, monkeypatch):
+    """Admit this run's work the way capture did before the rule (#7323)."""
+    with monkeypatch.context() as legacy:
+        legacy.setattr(validated_work_preservation, "recovery_owns", lambda role: True)
+        assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=rig.run)
+    assert rig.labels.labels == {RECOVERY_PENDING}
+    (disposition,) = rig.store.for_issue(ISSUE).dispositions
+    return disposition
+
+
+def _strand_publishing(rig, disposition):
+    """Leave the record exactly as porchpin#410's: PUBLISHING after a transient attempt."""
+    claim = rig.store.acquire_claim(disposition.record_id, expected_states=frozenset({ValidatedWorkState.QUEUED}),
+                                    evidence_id=disposition.evidence_id)
+    attempt = rig.store.begin_publish_attempt(claim, expected_attempt_no=0,
+        target_head_sha=disposition.key.validated_head_sha, expected_remote_head="",
+        phase=DispositionPhase.PRE_SUBMISSION, started_at="2026-09-26T04:26:28+00:00")
+    assert attempt is not None
+    assert rig.store.record_attempt_outcome(claim, attempt, outcome=PublishValidatedHeadStatus.TRANSIENT_FAILURE,
+        failure=ValidatedWorkFailure.REMOTE_UNREADABLE, finished_at="2026-09-26T04:30:23+00:00")
+    assert rig.store.relinquish_claim(claim)
+    assert rig.store.get(disposition.record_id).state is ValidatedWorkState.PUBLISHING
+
+
+def _operation(rig):
+    """The drain's per-record operation; nothing past the scope check may run."""
+    preparation = Mock(spec=ClaimedRecoveryPreparation)
+    preparation.prepare.return_value = RecoveryAttemptPending("preparation reached")
+    return preparation, RecoveryRecordOperation(execution=rig.execution, store=rig.store, preparation=preparation,
+        publication=Mock(spec=RecoveryPublicationAttempt), completion=Mock(spec=RecoveryPublicationCompletion),
+        scope=rig.retirement)
+
+
+@pytest.mark.parametrize("stranded_in", ["queued", "publishing"])
+def test_existing_tech_lead_record_is_retired_and_releases_recovery_pending(tech_lead, monkeypatch, stranded_in):
+    disposition = _legacy_capture(tech_lead, monkeypatch)
+    if stranded_in == "publishing":
+        _strand_publishing(tech_lead, disposition)
+    preparation, operation = _operation(tech_lead)
+
+    result = operation.run(RecoveryRecordRequest(disposition.record_id, disposition.evidence_id), OrchestratorState())
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert "outside recovery scope" in result.message
+    preparation.prepare.assert_not_called()
+    record = tech_lead.store.record_for_id(disposition.record_id)
+    assert record.disposition.state is ValidatedWorkState.ABANDONED
+    assert record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE
+    assert record.disposition.resolution is not None
+    assert record.disposition.resolution.actor == RETIREMENT_ACTOR
+    assert "tech-lead run" in record.disposition.resolution.reason
+    assert tech_lead.store.owner_of(disposition.record_id) is None
+    assert not tech_lead.store.has_unresolved_work(ISSUE)
+    assert tech_lead.labels.labels == set()
+    assert tech_lead.labels.operations[-1] == ("remove", RECOVERY_PENDING)
+    event = tech_lead.events.last_event(EventName.VALIDATED_WORK_ABANDONED.value)
+    assert event.data["resolution_kind"] == ResolutionKind.OUTSIDE_RECOVERY_SCOPE.value
+    assert event.data["record_id"] == disposition.record_id
+    # Resolved: the drain's next pass leaves it alone.
+    assert operation.run(RecoveryRecordRequest(disposition.record_id, disposition.evidence_id),
+                         OrchestratorState()).message == "Retained work is not authorized for publication"
+
+
+def test_existing_coding_record_is_left_to_recovery(coder, monkeypatch):
+    disposition = _legacy_capture(coder, monkeypatch)
+    preparation, operation = _operation(coder)
+
+    result = operation.run(RecoveryRecordRequest(disposition.record_id, disposition.evidence_id), OrchestratorState())
+
+    assert result == RecoveryAttemptPending("preparation reached")
+    preparation.prepare.assert_called_once()
+    assert coder.store.get(disposition.record_id).state is ValidatedWorkState.QUEUED
+    assert coder.labels.labels == {RECOVERY_PENDING}
+    assert coder.events.get_events(EventName.VALIDATED_WORK_ABANDONED.value) == []
+
+
+def test_retirement_without_exact_custody_proof_resolves_nothing(tech_lead, monkeypatch):
+    """No proof of the run's role, no retirement: the failure is loud, the block stays."""
+    disposition = _legacy_capture(tech_lead, monkeypatch)
+    preparation, operation = _operation(tech_lead)
+    monkeypatch.setattr(tech_lead.ledger, "prepare_evidence",
+                        Mock(side_effect=CompletionIntakeError("retained evidence has no exact owner proof")))
+
+    with pytest.raises(CompletionIntakeError):
+        operation.run(RecoveryRecordRequest(disposition.record_id, disposition.evidence_id), OrchestratorState())
+
+    assert tech_lead.store.get(disposition.record_id).state is ValidatedWorkState.QUEUED
+    assert tech_lead.store.owner_of(disposition.record_id) is None
+    assert tech_lead.labels.labels == {RECOVERY_PENDING}
+
+
+def test_store_retires_only_the_exact_evidence_set_under_a_live_claim(tech_lead, monkeypatch):
+    disposition = _legacy_capture(tech_lead, monkeypatch)
+    store = tech_lead.store
+    claim = store.acquire_claim(disposition.record_id, expected_states=frozenset({ValidatedWorkState.QUEUED}),
+                                evidence_id=disposition.evidence_id)
+    exact = frozenset({disposition.evidence_id})
+
+    assert not store.retire_outside_scope(claim, evidence_ids=exact | {"e1:unproven"}, actor="a", reason="r")
+    assert not store.retire_outside_scope(claim, evidence_ids=frozenset(), actor="a", reason="r")
+    assert store.get(disposition.record_id).state is ValidatedWorkState.QUEUED
+    assert store.relinquish_claim(claim)
+    assert not store.retire_outside_scope(claim, evidence_ids=exact, actor="a", reason="r")
+    assert store.get(disposition.record_id).state is ValidatedWorkState.QUEUED
+
+    live = store.acquire_claim(disposition.record_id, expected_states=frozenset({ValidatedWorkState.QUEUED}),
+                               evidence_id=disposition.evidence_id)
+    assert store.retire_outside_scope(live, evidence_ids=exact, actor="a", reason="r")
+    assert not store.retire_outside_scope(live, evidence_ids=exact, actor="a", reason="r")
+    assert store.get(disposition.record_id).state is ValidatedWorkState.ABANDONED

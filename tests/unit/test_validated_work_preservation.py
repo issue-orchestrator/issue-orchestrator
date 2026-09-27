@@ -402,10 +402,12 @@ def test_terminal_preservation_keeps_unrelated_allocated_run_open(custody, scope
     review_capability = custody.ledger.submission_capability(review)
     receipt = custody.intake.submit(review_capability, command(completion(), "review-receipt"))
     custody.intake.prepare_receipt(receipt, review)
+    # A review run's completion is never recovery's work (#7323): the capture
+    # still closes exactly this run's intake, and admits nothing.
     if scope == "exact_run":
-        assert custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).unresolved
+        assert not custody.lifecycle.preserve_terminal(42, "review-42", "completed", run=review).found_work
     else:
-        assert custody.lifecycle.preserve_named_terminal("review-42", "completed")[0].unresolved
+        assert not custody.lifecycle.preserve_named_terminal("review-42", "completed")[0].found_work
     with pytest.raises(IntakeClosed):
         custody.intake.submit(review_capability, command(completion(), "review-after-close"))
     submit(custody, "coder-still-open")

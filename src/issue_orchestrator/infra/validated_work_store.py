@@ -155,6 +155,22 @@ class SqliteValidatedWorkStore:
     ) -> AbandonValidatedWorkOutcome:
         return self._abandonment.abandon_if_current(command)
 
+    def retire_outside_scope(
+        self,
+        claim: ValidatedWorkClaim,
+        *,
+        evidence_ids: frozenset[str],
+        actor: str,
+        reason: str,
+    ) -> bool:
+        with self._db.transaction(write=True) as conn:
+            if not self._claims.holds(conn, claim):
+                return False
+            return self._abandonment.retire_outside_scope(
+                conn, claim.record_id, claim.fence,
+                evidence_ids=evidence_ids, actor=actor, reason=reason,
+            )
+
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._snapshots.for_issue(issue_number)
 

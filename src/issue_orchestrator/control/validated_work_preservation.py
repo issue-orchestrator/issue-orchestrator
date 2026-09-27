@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 
 from ..domain.completion_intake import CompletionIntakeError
@@ -15,6 +16,7 @@ from ..domain.validated_work_capture import (
     candidate_evidence, candidate_key, newest_per_work,
 )
 from ..domain.validated_work_remote_authority import classify_remote_pr
+from ..domain.validated_work_scope import outside_scope_reason, recovery_owns
 from ..domain.validated_work_escrow import EscrowArtifacts
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
@@ -22,6 +24,8 @@ from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.working_copy import WorkingCopy
 from .validated_work_capture import ValidatedWorkCustody
 from .validated_work_escrow import EscrowReconciliation
+
+logger = logging.getLogger(__name__)
 
 
 class ValidatedWorkPreservationService:
@@ -42,7 +46,9 @@ class ValidatedWorkPreservationService:
         return self._store.for_issue(issue_number)
 
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
-        candidates = self._intake.prepare_termination(command.run_evidence, command.scope)
+        candidates = self._recoverable(
+            self._intake.prepare_termination(command.run_evidence, command.scope)
+        )
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")
@@ -57,6 +63,20 @@ class ValidatedWorkPreservationService:
             self._store.for_issue(command.issue_number),
             captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
         )
+
+    @staticmethod
+    def _recoverable(
+        candidates: tuple[PreparedCompletionEvidence, ...],
+    ) -> tuple[PreparedCompletionEvidence, ...]:
+        """Keep only the completions recovery owns; see `validated_work_scope`."""
+        for candidate in candidates:
+            if not recovery_owns(candidate.role):
+                logger.info(
+                    "[VALIDATED_WORK] Not capturing issue #%d run %s: %s",
+                    candidate.role.issue_number, candidate.run.run.run_id,
+                    outside_scope_reason(candidate.role),
+                )
+        return tuple(candidate for candidate in candidates if recovery_owns(candidate.role))
 
     def _capture(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,

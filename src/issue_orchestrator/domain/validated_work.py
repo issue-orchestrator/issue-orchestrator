@@ -173,6 +173,9 @@ class ResolutionKind(StrEnum):
     PUBLISHED = "published"  # this record's own publication
     CONTAINED_IN_PUBLISHED_HEAD = "contained_in_published_head"  # §2.1.4 / §3.5
     OPERATOR_ABANDONED = "operator_abandoned"
+    # Admitted before capture refused runs recovery never owns (#7323): not
+    # lost work, so no operator accepts a loss. ABANDONED is its resolved state.
+    OUTSIDE_RECOVERY_SCOPE = "outside_recovery_scope"
 
 
 class LineageRole(StrEnum):

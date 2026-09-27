@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.recovery_drain import RecoveryDrain
     from ..control.review_exchange_lifecycle import CoreIssueRuntimeOwners
+    from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.publication_remote import PublicationRemote
     from ..ports.recovery_issue_reader import RecoveryIssueReader
@@ -90,6 +91,7 @@ class ValidatedWorkRecoveryOwners(ValidatedWorkAdmissionOwners):
     effects: ValidatedWorkEffectAuthority
     blocks: "AggregateRecoveryBlocks"
     abandonment: ValidatedWorkAbandonmentOwner
+    scope_retirement: "OutOfScopeRecordRetirement"
     workspaces: PublicationWorkspaces
     remote: "PublicationRemote"
     issues: "RecoveryIssueReader"
@@ -154,6 +156,7 @@ def build_validated_work_runtime(
         OperatorValidatedWorkAbandonment,
     )
     from ..control.validated_work_effects import FencedValidatedWorkEffects
+    from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
     from ..control.worktree_context import prepare_worktree_environment
     from ..execution.publication_workspace import EscrowPublicationWorkspaces
     from ..execution.git_tools import create_git
@@ -211,6 +214,9 @@ def build_validated_work_runtime(
         blocks=blocks,
         events=events,
     )
+    scope_retirement = OutOfScopeRecordRetirement(
+        intake=intake, store=records, effects=effects, blocks=blocks, events=events,
+    )
     custody = ValidatedWorkCustody(escrow, blocks)
     repair = EscrowReconciliation(escrow=escrow, store=blocks)
     workspaces = EscrowPublicationWorkspaces(
@@ -237,6 +243,7 @@ def build_validated_work_runtime(
         effects=effects,
         blocks=blocks,
         abandonment=abandonment,
+        scope_retirement=scope_retirement,
         workspaces=workspaces,
         remote=external.remote,
         capture_observer=external.capture_observer,
@@ -333,6 +340,7 @@ def build_validated_work_recovery(
             verifier=verifier,
         ),
         completion=completion,
+        scope=owners.scope_retirement,
     )
     return RecoveryDrain(
         queue=owners.records,
