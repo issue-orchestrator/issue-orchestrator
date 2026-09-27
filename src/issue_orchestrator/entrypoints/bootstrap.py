@@ -804,7 +804,7 @@ def build_orchestrator(
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
-        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer)
+        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims)
     action_applier.runtime_lifecycle = runtime_lifecycle
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
@@ -1238,7 +1238,7 @@ def build_orchestrator_for_testing(
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
-        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer)
+        publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims)
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
         config, events=events, action_applier=action_applier, label_manager=label_manager

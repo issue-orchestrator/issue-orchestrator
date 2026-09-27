@@ -938,7 +938,7 @@ class TestCheckSessionExceptionHandling:
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
         mock_fresh_issue_reader.read_issue_labels.side_effect = FreshIssueReadError(
-            "could not read fresh labels for issue #321: rate limited"
+            "could not read fresh labels for issue #321: rate limited", transient=True
         )
 
         assert monitor.check_session(session) == expected

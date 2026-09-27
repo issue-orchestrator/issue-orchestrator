@@ -433,7 +433,7 @@ def _queue_anchor_by_marker(
     :class:`PendingSessionQueues` instead of overloading batch intake.
     """
     from .pending_session_queues import PendingSessionQueues
-    from .tech_lead_run_retirement import TechLeadRunRetirement
+    from .queued_work_retirement import QueuedWorkRetirement
 
     queues = PendingSessionQueues(state)
     if has_health_review_marker(labels):
@@ -444,7 +444,7 @@ def _queue_anchor_by_marker(
             # The storm review now covers these investigations, so each one
             # ENDS here -- durable claim included, or the per-tick recovery
             # sweep re-admits it behind the review (#7348).
-            TechLeadRunRetirement(state, claims).retire_failure_investigations(
+            QueuedWorkRetirement(state, claims).retire_failure_investigations(
                 storm_issue_numbers
             )
         return queues.queue_health_review(

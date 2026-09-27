@@ -123,7 +123,7 @@ class PendingSessionQueues:
         A launch hands the run's durable claim to the launch transaction, which
         holds it or settles it. Every OTHER way a queued run ends must also
         retire that claim, so it goes through
-        :class:`..control.tech_lead_run_retirement.TechLeadRunRetirement`
+        :class:`..control.queued_work_retirement.QueuedWorkRetirement`
         instead (#7348); a guard test pins this method to launch routing.
         """
         self.state.pending_tech_lead_reviews[:] = [

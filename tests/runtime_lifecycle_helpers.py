@@ -40,7 +40,8 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
         retry = Mock()
         retry.has_active_retry.return_value = False
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(session_manager,
-        [] if active_sessions is None else active_sessions, pair_registry, job_supervisor, retry),
+        [] if active_sessions is None else active_sessions, pair_registry, job_supervisor, retry,
+        Mock()),  # claim settlement is covered by test_rework_claim_retirement
         preservation, source, Mock(),
         published_review or PublishedReviewCustody(preservation, no_open_pull_requests()))
 

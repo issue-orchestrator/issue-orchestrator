@@ -1274,7 +1274,8 @@ class _UnreadableRepo(_Repo):
         self.label_reads.append(issue_number)
         if issue_number in self.unreadable:
             raise FreshIssueReadError(
-                f"could not read fresh labels for issue #{issue_number}: rate limited"
+                f"could not read fresh labels for issue #{issue_number}: rate limited",
+                transient=True,
             )
         return super().read_issue_labels(issue_number)
 
@@ -1350,7 +1351,7 @@ def test_existing_pr_recovery_stays_retryable_when_the_read_fails(
     def _fail_on_finalize(issue_number: int) -> list[str]:
         calls["n"] += 1
         if calls["n"] > 1:
-            raise FreshIssueReadError("rate limited")
+            raise FreshIssueReadError("rate limited", transient=True)
         return original(issue_number)
 
     repo.read_issue_labels = _fail_on_finalize  # type: ignore[method-assign]
@@ -1391,7 +1392,8 @@ class _TwoIssueRepo:
     def read_issue_labels(self, issue_number: int) -> list[str]:
         if issue_number in self.unreadable:
             raise FreshIssueReadError(
-                f"could not read fresh labels for issue #{issue_number}: rate limited"
+                f"could not read fresh labels for issue #{issue_number}: rate limited",
+                transient=True,
             )
         return list(self.labels.get(issue_number, []))
 

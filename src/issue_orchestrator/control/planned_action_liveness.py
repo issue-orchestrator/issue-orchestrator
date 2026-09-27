@@ -60,8 +60,9 @@ from .action_results import ActionResult, ActionResultType
 from .action_liveness import ActionLivenessOwner
 from .reconciliation import (
     ReconciliationRequired,
+    ReconciliationResponse,
     get_pause_label,
-    is_paused_for_reconciliation,
+    response_to,
 )
 
 if TYPE_CHECKING:
@@ -225,13 +226,17 @@ def _transient(reason: str, limit: HostRateLimit | None) -> ActionOutcome:
 def outcome_of_error(error: Exception) -> ActionOutcome:
     """An action that raised instead of returning.
 
-    A refusal because the subject is paused behind the reconciliation label is
-    not transient: every mutation planned for that subject is refused the same
-    way until a person reconciles it and removes the label (census loop #4).
-    Any other drift, a lost claim, or an unexpected error may heal.
+    A gate refusal means what :func:`~.reconciliation.response_to` says it
+    means. Refused BECAUSE the subject is paused behind the reconciliation
+    label is not transient: every mutation planned for that subject is refused
+    the same way until a person reconciles it and removes the label (census
+    loop #4). A subject the gate could not read this tick is deferred (#7379):
+    transient, waiting on the read's rate limit when one is behind it. Observed
+    drift, a lost claim, or an unexpected error may heal.
     """
-    if isinstance(error, ReconciliationRequired) and is_paused_for_reconciliation(
-        error.actual.labels
+    if (
+        isinstance(error, ReconciliationRequired)
+        and response_to(error) is ReconciliationResponse.ALREADY_PAUSED
     ):
         return ActionOutcome.needs_human(
             f"subject is paused behind {get_pause_label()}; every planned mutation"

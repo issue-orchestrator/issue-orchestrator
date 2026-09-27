@@ -10,6 +10,7 @@ from ...ports.fresh_issue_reader import (
     FreshIssueSnapshot,
     FreshIssueSnapshotReader,
 )
+from ...ports.repository_host import RepositoryHostError, is_transient_host_failure
 from .errors import GitHubHttpError
 from .http_client import GitHubHttpClient, GitHubHttpConfig, build_github_auth
 from .repo import get_repo_from_git, GitRepoError
@@ -80,15 +81,17 @@ class GitHubFreshIssueReader(FreshIssueReader, FreshIssueSnapshotReader):
                 scope=gh_audit.AuditScope.UNKNOWN,
             ):
                 return self._client.get_issue_labels(issue_number, use_cache=False)
-        except GitHubHttpError as exc:
+        except RepositoryHostError as exc:
             logger.error("Failed to read fresh labels for issue %s: %s", issue_number, exc)
             raise FreshIssueReadError(
-                f"could not read fresh labels for issue #{issue_number}: {exc}"
+                f"could not read fresh labels for issue #{issue_number}: {exc}",
+                transient=is_transient_host_failure(exc),
             ) from exc
         except Exception as exc:
             logger.error("Unexpected error reading fresh labels for issue %s: %s", issue_number, exc)
             raise FreshIssueReadError(
-                f"could not read fresh labels for issue #{issue_number}: {exc}"
+                f"could not read fresh labels for issue #{issue_number}: {exc}",
+                transient=False,
             ) from exc
 
     def read_issue_snapshot(self, issue_number: int) -> FreshIssueSnapshot:
@@ -105,30 +108,34 @@ class GitHubFreshIssueReader(FreshIssueReader, FreshIssueSnapshotReader):
                 scope=gh_audit.AuditScope.UNKNOWN,
             ):
                 payload = self._client.get_issue(issue_number, use_cache=False)
-        except GitHubHttpError as exc:
+        except RepositoryHostError as exc:
             logger.error(
                 "Failed to read fresh issue %s: %s", issue_number, exc
             )
             raise FreshIssueReadError(
-                f"could not read fresh state for issue #{issue_number}: {exc}"
+                f"could not read fresh state for issue #{issue_number}: {exc}",
+                transient=is_transient_host_failure(exc),
             ) from exc
         except Exception as exc:
             logger.error(
                 "Unexpected error reading fresh issue %s: %s", issue_number, exc
             )
             raise FreshIssueReadError(
-                f"could not read fresh state for issue #{issue_number}: {exc}"
+                f"could not read fresh state for issue #{issue_number}: {exc}",
+                transient=False,
             ) from exc
         if not isinstance(payload, dict):
             raise FreshIssueReadError(
-                f"issue #{issue_number} did not return an issue payload"
+                f"issue #{issue_number} did not return an issue payload",
+                transient=False,  # a malformed answer will not fix itself
             )
         state = payload.get("state")
         labels = payload.get("labels")
         if not isinstance(state, str) or not isinstance(labels, list):
             # A payload this adapter cannot read is UNKNOWN, never a default.
             raise FreshIssueReadError(
-                f"issue #{issue_number} payload is missing state or labels"
+                f"issue #{issue_number} payload is missing state or labels",
+                transient=False,  # a malformed answer will not fix itself
             )
         names = []
         for label in labels:
@@ -142,7 +149,8 @@ class GitHubFreshIssueReader(FreshIssueReader, FreshIssueSnapshotReader):
                 # to stop. Unknown is not an observation (#7248 round 7 F10).
                 raise FreshIssueReadError(
                     f"issue #{issue_number} returned a label this adapter"
-                    f" cannot decode: {label!r}"
+                    f" cannot decode: {label!r}",
+                    transient=False,  # a malformed answer will not fix itself
                 )
             names.append(name)
         try:
@@ -151,7 +159,8 @@ class GitHubFreshIssueReader(FreshIssueReader, FreshIssueSnapshotReader):
             )
         except ValueError as exc:
             raise FreshIssueReadError(
-                f"issue #{issue_number} reported an unusable state: {exc}"
+                f"issue #{issue_number} reported an unusable state: {exc}",
+                transient=False,  # a malformed answer will not fix itself
             ) from exc
 
 
