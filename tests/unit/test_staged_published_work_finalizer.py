@@ -158,7 +158,7 @@ def test_fresh_read_errors_are_transient_never_durable_failure(tmp_path, point):
     rig = FinalizationRig(tmp_path / "work.sqlite")
     rig.points.at, rig.points.error = (
         point,
-        FreshIssueReadError("fresh read unavailable"),
+        FreshIssueReadError("fresh read unavailable", transient=True),
     )
     result = rig.invoke()
     assert result.status is Status.TRANSIENT

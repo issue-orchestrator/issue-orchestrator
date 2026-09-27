@@ -16,6 +16,7 @@ and partial or contradictory state updates.
 
 import logging
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import FrozenSet, Iterable, Optional, Protocol, Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,48 @@ class ReconciliationRequired(Exception):
         msg += f" Expected labels {expected.labels}, found {actual.labels}"
 
         super().__init__(msg)
+
+
+class ReconciliationDeferred(ReconciliationRequired):
+    """The subject could not be OBSERVED this tick, for a reason expected to clear.
+
+    Still a refusal -- a subclass, so every caller that fails closed on
+    :class:`ReconciliationRequired` keeps refusing the write -- but NOT drift:
+    nobody saw the labels disagree. Pausing on it turned a network blip into a
+    hold only a human could lift (porchpin #410, #7379), so the response is to
+    defer the subject and try again next tick. Raised ``from`` the read
+    failure, so a host rate limit behind it stays reachable through
+    ``host_rate_limit_of``.
+    """
+
+
+class ReconciliationResponse(StrEnum):
+    """What a refused subject calls for (#7349, #7379)."""
+
+    #: Observed drift: pause the subject behind the reconciliation label.
+    PAUSE = "pause"
+    #: Refused BECAUSE of the pause label: the pause is working; nothing to add.
+    ALREADY_PAUSED = "already_paused"
+    #: Not observed this tick (transient): defer the subject, never pause it.
+    DEFER = "defer"
+
+
+#: (could not observe this tick, already carries the pause) -> response. A
+#: deferral wins: an unread subject has no observed labels to judge.
+_RESPONSES: dict[tuple[bool, bool], ReconciliationResponse] = {
+    (True, True): ReconciliationResponse.DEFER,
+    (True, False): ReconciliationResponse.DEFER,
+    (False, True): ReconciliationResponse.ALREADY_PAUSED,
+    (False, False): ReconciliationResponse.PAUSE,
+}
+
+
+def response_to(refusal: ReconciliationRequired) -> ReconciliationResponse:
+    """The one decision of what a gate refusal means for its subject."""
+    return _RESPONSES[(
+        isinstance(refusal, ReconciliationDeferred),
+        is_paused_for_reconciliation(refusal.actual.labels),
+    )]
 
 
 @dataclass(frozen=True)

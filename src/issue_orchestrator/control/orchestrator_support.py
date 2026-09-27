@@ -48,7 +48,7 @@ from .tech_lead_run_ownership import TechLeadRunOwnership, single_instance_run_o
 from .tech_lead_run_wiring import tech_lead_state_handlers
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
-from .reconciliation import ReconciliationRequired, get_pause_label, is_paused_for_reconciliation
+from .reconciliation import ReconciliationRequired, ReconciliationResponse, get_pause_label, response_to
 from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
@@ -322,29 +322,32 @@ class OrchestratorSupport:
     def _handle_reconciliation_error(
         self, action: "Action", rr: ReconciliationRequired, pause_issue_callback: Callable[[int, str], None]
     ) -> "_ActionApplyResult":
-        """Escalate the refused subject; withhold only that subject (#7349).
+        """Respond to the refused subject; withhold only that subject (#7349).
 
-        A subject already paused for reconciliation was refused BECAUSE of the
-        pause: that is the pause working, not new drift, so it is not paused
-        again. Either way the refusal is published and the subject's remaining
-        actions are withheld, while every other subject's actions still run.
+        ``response_to`` owns what a refusal means: observed drift pauses the
+        subject; a subject refused BECAUSE of its pause is not paused again; a
+        subject that could not be read this tick (transient) is deferred, never
+        paused (#7379). Every refusal is published with its response, and the
+        subject's remaining actions are withheld while every other subject's
+        actions still run.
         """
         issue_number = rr.entity_id
-        already_paused = is_paused_for_reconciliation(rr.actual.labels)
+        response = response_to(rr)
         self.events.publish(make_trace_event(
             EventName.RECONCILIATION_REQUIRED,
             self.event_context.enrich({
                 "issue_number": issue_number, "entity_type": rr.entity_type, "reason": rr.reason,
                 "expected_labels": list(rr.expected.labels), "actual_labels": list(rr.actual.labels),
-                "already_paused": already_paused,
+                "already_paused": response is ReconciliationResponse.ALREADY_PAUSED,
+                "response": response.value,
             }),
         ))
-        if already_paused:
-            logger.warning("[RECONCILIATION] %s #%d is paused for reconciliation; withholding its %s this tick",
-                           rr.entity_type, issue_number, action.action_type.value)
-        else:
+        if response is ReconciliationResponse.PAUSE:
             logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
             pause_issue_callback(issue_number, rr.reason)
+        else:
+            logger.warning("[RECONCILIATION] %s #%d refused (%s); withholding its %s this tick",
+                           rr.entity_type, issue_number, response.value, action.action_type.value)
         return self._ActionApplyResult(
             success=False, withhold_subjects=action_subjects(action) | {issue_number}
         )
