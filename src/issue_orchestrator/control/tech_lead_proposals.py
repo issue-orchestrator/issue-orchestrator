@@ -76,6 +76,7 @@ from .actions import (
     ResetRetryIssueAction,
 )
 from .reconciliation import build_expected_for_mutation
+from .tech_lead_charter_lifecycle import link_declined_proposal
 from .tech_lead_proposal_execution import (
     execute_approved_tech_lead_op as execute_approved_tech_lead_op,
     finalize_tech_lead_op_execution as finalize_tech_lead_op_execution,
@@ -518,6 +519,7 @@ def apply_discard_terminal_tech_lead_proposal_ops(
                 issue_number,
             )
             continue
+        link_declined_proposal(authority, issue_number)
         authority.discard_op(issue_number=issue_number)
         discarded.append(issue_number)
         logger.info(

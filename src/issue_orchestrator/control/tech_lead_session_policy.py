@@ -58,6 +58,7 @@ from ..ports.event_sink import make_trace_event
 from .session_launch_types import LaunchResult
 from .scoped_rework_observation import observe_rework_targets
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
+from .tech_lead_charter_prompt import stage_tech_lead_charter
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
@@ -77,71 +78,10 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import PendingValidationRetry
-    from ..domain.session_run import SessionRunAssets, SessionRunIdentity
+    from ..domain.session_run import SessionRunAssets
     from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
-
-
-def recover_tech_lead_launch_scope(
-    kind: SessionKind,
-    config: "Config",
-    issue: "Issue",
-    tech_lead_authority: "TechLeadAuthorityStore | None",
-    run: "SessionRunIdentity",
-) -> "TechLeadLaunchScope | None":
-    """Rebuild a RESTORED tech-lead session's launch grant from durable truth.
-
-    A session that survives an orchestrator restart has no in-memory producer to
-    hand it a :class:`TechLeadLaunchScope`, and before #6994 round 1 F3 it was
-    restored without one — which quietly downgraded a running whole-board review
-    to "issue-scoped", so the global barrier lifted and targeted work launched
-    alongside an exclusive review, and the dashboard reported the anchor as a
-    targeted running issue.
-
-    Everything needed to rebuild the grant is already durable, and this reads it
-    in the SAME order the launch path resolves flavor
-    (:func:`prepare_tech_lead_session_data`), so a restored run and a fresh one
-    can never be classified differently:
-
-    1. the ADR-0031 §4 marker label on the anchor -> ``HEALTH_REVIEW``, whose
-       owned cohort comes back from the durable authority ledger;
-    2. the batch anchor's title signature -> ``BATCH_REVIEW``;
-    3. anything else is an ordinary board issue the tech lead was aimed at, so
-       it is a ``FAILURE_INVESTIGATION``.
-
-    Returns ``None`` for a session that is not a tech-lead run at all - which
-    the restored run's recorded KIND says (#7347), not the issue's labels.
-    """
-    from .health_review_trigger import is_batch_anchor_title
-
-    if kind is not SessionKind.TECH_LEAD:
-        return None
-    # The run's own create-once launch record is the authority (#7347 review
-    # r9): the flavor and cohort it was launched with. Labels and titles are
-    # mutable and are read only for a run that has no record.
-    recorded = (
-        tech_lead_authority.load(run_id=run.run_id, session_name=run.session_name)
-        if tech_lead_authority is not None
-        else None
-    )
-    if recorded is not None:
-        return recorded.launch_scope()
-    if health_review_flavor_if_anchored(issue.labels) is not None:
-        cohort = (
-            tech_lead_authority.load_storm_cohort(anchor_issue_number=issue.number)
-            if tech_lead_authority is not None
-            else None
-        )
-        return TechLeadLaunchScope(
-            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
-            problem_issue_numbers=tuple(
-                sorted({problem.issue_number for problem in cohort or ()})
-            ),
-        )
-    if is_batch_anchor_title(issue.title):
-        return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.BATCH_REVIEW)
-    return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
 
 
 def resumes_an_investigation(retry: "PendingValidationRetry") -> bool:
@@ -612,6 +552,7 @@ def prepare_tech_lead_session_data(
     assignment_path = run_dir / TECH_LEAD_DATA_DIRNAME / TECH_LEAD_ASSIGNMENT_FILENAME
     assignment.write(assignment_path)
     ctx.update_manifest({"tech_lead_assignment": str(assignment_path)})
+    stage_tech_lead_charter(config, run_dir, ctx)
     focus_issue = issue.number if focused else None
     problem_issue_numbers = (
         _resolve_health_review_cohort(

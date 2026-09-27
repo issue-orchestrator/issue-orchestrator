@@ -220,9 +220,10 @@ tech_lead:
   # total live agents are then bounded at max_concurrent_sessions + 1.
   max_concurrent: 1
   # Direct actions execute through owners that revalidate their exact observed
-  # authority immediately before mutating.
+  # authority immediately before mutating. reset_retry (reset from scratch) is
+  # destructive and always needs operator approval (#7330), so it stays at its
+  # default, propose.
   authority:
-    reset_retry: execute
     kill_hung_session: execute
     request_rework: execute
     recover_validated_work: execute

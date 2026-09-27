@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .tech_lead_board_prompt import (
     TECH_LEAD_BLOCKED_OPEN_PRS_SECTION,
+    TECH_LEAD_CHARTER_SECTION,
     TECH_LEAD_TIMELINE_ACTOR_SECTION,
     TECH_LEAD_WRITE_HEALTH_SECTION,
 )
@@ -413,9 +414,9 @@ Compact `tech-lead-decision.json` example:
   issues carrying the `proposed-tech-lead` label; a human approves one by
   removing that label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not
-  executed. `reset_retry` under `tech_lead.authority.reset_retry: execute` and
+  executed. `reset_retry` is destructive and ALWAYS waits for that approval;
   `kill_hung_session` under `tech_lead.authority.kill_hung_session: execute`
-  run directly with their execution-time re-checks. Never propose or
+  runs directly with its execution-time re-check. Never propose or
   touch the `proposed-tech-lead` label yourself; it is orchestrator-owned and
   rejected like other workflow labels.
 - A completed session missing either artifact — or violating any rule
@@ -511,6 +512,8 @@ The `flavor` field selects exactly ONE flow below - follow only that flow:
 
 Manifest steps belong ONLY to the batch flow: the other two flavors receive
 no PR manifest and must not follow any batch step.
+
+{TECH_LEAD_CHARTER_SECTION}
 
 ### Board snapshot
 
