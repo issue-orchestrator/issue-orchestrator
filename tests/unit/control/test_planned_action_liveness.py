@@ -592,3 +592,52 @@ def test_one_operations_success_does_not_erase_anothers_budget(sample_config) ->
     removals = [call.args[0] for call in engine.applier.apply.call_args_list]
     assert sum(1 for a in removals if a is failing) == POLICY.max_attempts
     assert sum(1 for a in removals if a is fine) == 20
+
+
+# --- #7303's typed GitHub rate limit is transient(retry_at) -----------------
+
+
+def _rate_limited(engine, *, raise_it: bool):
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    def apply(action):
+        limit = HostRateLimit(
+            resets_at=engine.clock.now + timedelta(minutes=45), kind="primary"
+        )
+        error = RepositoryHostRateLimitedError("API rate limit exceeded")
+        error.rate_limit = limit  # the port's typed limit, as adapters attach it
+        if raise_it:
+            raise error
+        return ActionResult.fail_from(action, error)
+
+    return apply
+
+
+@pytest.mark.parametrize("raise_it", [False, True], ids=["returned", "raised"])
+def test_a_github_rate_limit_waits_for_its_reset_and_spends_nothing(
+    sample_config, raise_it
+) -> None:
+    engine = _Engine(sample_config, planned=lambda: [_settle()], apply=lambda a: None)
+    engine.applier.apply.side_effect = _rate_limited(engine, raise_it=raise_it)
+
+    # Ticks every 10 minutes for 110 minutes: within the 2 h declared-wait
+    # bound, each limit is waited out (45 min) and nothing is spent.
+    for _ in range(12):
+        engine.tick(advance=timedelta(minutes=10))
+
+    attempts = engine.attempts_of(_settle().action_type)
+    assert attempts == 3, "one attempt per reset, never while the limit holds"
+    [row] = engine.store.rows.values()
+    assert row.attempts == 0 and not row.parked
+    assert "GitHub rate limit until" in row.last_reason
+
+
+def test_a_github_rate_limit_that_never_lifts_still_parks(sample_config) -> None:
+    engine = _Engine(sample_config, planned=lambda: [_settle()], apply=lambda a: None)
+    engine.applier.apply.side_effect = _rate_limited(engine, raise_it=False)
+
+    for _ in range(48):
+        engine.tick(advance=timedelta(hours=1))
+
+    assert len(engine.escalation.parked) == 1

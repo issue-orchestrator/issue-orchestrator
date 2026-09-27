@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 from enum import Enum, StrEnum
 from pathlib import PurePath
 
+from .host_rate_limit import RATE_LIMIT_DEFERRAL_BOUND
+
 
 class OutcomeKind(StrEnum):
     """How one attempt of an action ended, as the liveness owner classifies it."""
@@ -263,7 +265,9 @@ class LivenessPolicy:
     max_attempts: int = 5
     base_backoff: timedelta = timedelta(minutes=1)
     max_backoff: timedelta = timedelta(minutes=30)
-    declared_wait_bound: timedelta = timedelta(hours=2)
+    #: The same bound the launch gate holds a GitHub rate limit for (#7303):
+    #: one answer to "how long may a declared wait spend nothing".
+    declared_wait_bound: timedelta = RATE_LIMIT_DEFERRAL_BOUND
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:

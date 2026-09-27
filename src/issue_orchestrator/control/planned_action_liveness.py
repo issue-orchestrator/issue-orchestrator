@@ -43,6 +43,8 @@ from ..domain.action_liveness import (
     LivenessKey,
     fact_fingerprint,
 )
+from ..domain.host_rate_limit import HostRateLimit
+from ..ports.repository_host import host_rate_limit_of
 from .action_base import Action
 from .action_results import ActionResult, ActionResultType
 from .action_liveness import ActionLivenessOwner
@@ -127,11 +129,24 @@ def observed_labels(snapshot: "OrchestratorSnapshot") -> dict[int, tuple[str, ..
 def outcome_of_result(result: ActionResult) -> ActionOutcome:
     """A returned result: a failure is transient unless an applier said otherwise.
 
-    A skipped action found nothing to do, which is progress for liveness.
+    A GitHub rate limit (#7303's typed ``HostRateLimit``) is a transient failure
+    that says when the host will answer again: it waits until then and spends
+    nothing, within the policy's declared-wait bound. A skipped action found
+    nothing to do, which is progress for liveness.
     """
-    if result.result_type is ActionResultType.FAILURE:
-        return ActionOutcome.transient(result.error or "action failed without an error")
-    return ActionOutcome.done()
+    if result.result_type is not ActionResultType.FAILURE:
+        return ActionOutcome.done()
+    reason = result.error or "action failed without an error"
+    return _transient(reason, result.host_rate_limit)
+
+
+def _transient(reason: str, limit: HostRateLimit | None) -> ActionOutcome:
+    if limit is None:
+        return ActionOutcome.transient(reason)
+    return ActionOutcome.transient(
+        f"{reason} (GitHub rate limit until {limit.resets_at.isoformat()})",
+        retry_at=limit.resets_at,
+    )
 
 
 def outcome_of_error(error: Exception) -> ActionOutcome:
@@ -148,7 +163,7 @@ def outcome_of_error(error: Exception) -> ActionOutcome:
             f"subject is paused behind {pause_label}; every planned mutation is"
             " refused until a person reconciles it and removes the label"
         )
-    return ActionOutcome.transient(f"{type(error).__name__}: {error}")
+    return _transient(f"{type(error).__name__}: {error}", host_rate_limit_of(error))
 
 
 @dataclass(frozen=True, slots=True)
