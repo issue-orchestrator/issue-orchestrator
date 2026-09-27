@@ -28,6 +28,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
+from ..domain.session_key import TaskKind
 from ..ports import EventSink, TraceEvent, NullEventSink
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
@@ -281,8 +282,16 @@ class SessionObserver:
         return None
 
     def _try_send_exit_if_has_pr(self, session: Session) -> None:
-        """Send /exit to session if it has an open PR but is still running."""
-        if session.exit_sent:
+        """Send /exit to a CODING session whose open PR says its work is done.
+
+        Only a coding session's branch acquiring an open PR means its job is
+        finished. A review, rework or retrospective review starts with that PR
+        already open - it is the thing under review - so applying this there
+        /exited every reviewer ~24 s after launch (#7343). Tech-lead sessions
+        still launch stamped CODE, so they are not yet excluded here; #7347
+        replaces this kind check with a capability on an authoritative kind.
+        """
+        if session.exit_sent or session.key.task is not TaskKind.CODE:
             return
         try:
             prs = self._get_open_prs_for_branch(session.branch_name)
