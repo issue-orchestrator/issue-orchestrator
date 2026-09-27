@@ -65,7 +65,6 @@ from .tech_lead_session_policy import (
     resumable_retry_identity,
     failure_investigation_scratch_identity,
     prepare_tech_lead_session_data,
-    recover_tech_lead_launch_scope,
     tech_lead_prep_failure,
 )
 from .host_rate_limit_launch_gate import LaunchMutations, apply_launch_mutations, converge_claim
@@ -1403,9 +1402,9 @@ class SessionLauncher:
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
                 scratch_worktree=scratch_identity is not None,
-                # A tech lead's retry is the same logical run: its grant comes
-                # from durable truth, as for a restored run (#7347 review r8).
-                tech_lead_scope=recover_tech_lead_launch_scope(kind, self.config, issue, self._tech_lead_authority),
+                # A tech lead's retry is the same logical run: it keeps the grant
+                # its carried launch record holds (#7347 review r8, r9).
+                tech_lead_scope=None if carried is None else carried.authority.launch_scope(),
             )
             log_transition(
                 "issue",

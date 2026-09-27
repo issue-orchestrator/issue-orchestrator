@@ -8717,6 +8717,64 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         ownership.reconcile(live)
         assert ownership.owns(IssueInvestigationScope(6410).run_key)
 
+    def test_a_health_reviews_retry_keeps_its_recorded_grant(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """#7347 review r9: a health review's retry is launched after its
+        anchor's marker label is gone. The run keeps the grant its launch
+        record holds - HEALTH_REVIEW and its owned cohort - so its global
+        lease is kept, instead of being re-inferred from mutable labels."""
+        from dataclasses import replace
+
+        from issue_orchestrator.control.tech_lead_run_admission import live_run_scopes
+        from issue_orchestrator.domain.tech_lead_run import GlobalHealthReviewScope
+        from tests.unit.control.run_ledger_doubles import SharedRunLedger
+
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        checkout = tmp_path / "worktree-6410"
+        checkout.mkdir()
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="tech-lead-1", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id, session_name=source.session_name,
+            authority=TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+                anchor_issue_number=6410,
+                problem_issue_numbers=(5, 7),
+            ),
+        )
+        data = self._seed_launch_inputs(checkout, source)
+        (data / "tech-lead-assignment.json").write_text(
+            json.dumps(TechLeadAssignment(flavor=TechLeadSessionFlavor.HEALTH_REVIEW).to_dict())
+        )
+        BoardSnapshot(
+            generated_at="2026-09-18T00:00:00", orchestrator_paused=False,
+            recent_failures=[], problem_cohort=[5, 7],
+        ).write(data / "board-snapshot.json")
+        # The anchor as the retry finds it: no health-review marker any more.
+        retry = replace(
+            self._retry(source, worktree_path=str(checkout)), branch_name="6410-health-review"
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        scope = session.tech_lead_scope
+        assert scope is not None
+        assert (scope.flavor, scope.problem_issue_numbers) == (
+            TechLeadSessionFlavor.HEALTH_REVIEW, (5, 7),
+        )
+        live = live_run_scopes(sample_config, [], [session])
+        assert live == (GlobalHealthReviewScope(),)
+        ownership = SharedRunLedger().ownership("engine-a")
+        assert ownership.claim(GlobalHealthReviewScope()).owned
+        ownership.reconcile(live)
+        assert ownership.owns(GlobalHealthReviewScope().run_key)
+
     def test_the_resumed_run_gets_the_original_grant(
         self, launcher_bundle, sample_config, tmp_path
     ) -> None:

@@ -1068,6 +1068,9 @@ class TestRestoredTechLeadScope:
         from issue_orchestrator.domain.models import DiscoveredFailure
 
         class _Authority:
+            def load(self, *, run_id, session_name):
+                return None  # a run with no launch record: labels decide
+
             def load_storm_cohort(self, *, anchor_issue_number):
                 assert anchor_issue_number == 900
                 return (
@@ -1087,6 +1090,35 @@ class TestRestoredTechLeadScope:
         restored, _ = self._restore(tmp_path, issue, authority=_Authority())
 
         assert restored[0].tech_lead_scope.problem_issue_numbers == (5, 7)
+
+    def test_a_restored_run_keeps_the_grant_it_was_launched_with(self, tmp_path):
+        """#7347 review r9: the run's create-once launch record decides, not
+        the anchor's current labels - a marker removed after launch does not
+        turn a health review into a failure investigation."""
+        from issue_orchestrator.domain.tech_lead_session import (
+            TechLeadLaunchAuthority,
+            TechLeadSessionFlavor,
+        )
+
+        class _Authority:
+            def load(self, *, run_id, session_name):
+                return TechLeadLaunchAuthority(
+                    flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+                    anchor_issue_number=900,
+                    problem_issue_numbers=(5, 7),
+                )
+
+            def load_storm_cohort(self, *, anchor_issue_number):
+                raise AssertionError("a recorded grant is not re-inferred")
+
+        issue = Issue(number=900, title="Health Review", labels=["agent:tech-lead"])
+        restored, _ = self._restore(tmp_path, issue, authority=_Authority())
+
+        scope = restored[0].tech_lead_scope
+        assert scope is not None
+        assert (scope.flavor, scope.problem_issue_numbers) == (
+            TechLeadSessionFlavor.HEALTH_REVIEW, (5, 7),
+        )
 
     def test_a_restored_global_run_still_blocks_targeted_launches(self, tmp_path):
         """The end the barrier exists for (#6994 round 1 F3)."""

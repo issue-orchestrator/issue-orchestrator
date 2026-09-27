@@ -594,6 +594,17 @@ class TechLeadLaunchAuthority:
                 "sorted and unique"
             )
 
+    def launch_scope(self) -> TechLeadLaunchScope:
+        """The grant this run was launched under, from its create-once record.
+
+        Recorded, never re-inferred: a restored or retried run keeps the
+        flavor and owned cohort it was launched with even if its anchor's
+        marker label or title has changed since (#7347 review r9).
+        """
+        return TechLeadLaunchScope(
+            flavor=self.flavor, problem_issue_numbers=self.problem_issue_numbers
+        )
+
     def allowed_targets(self) -> frozenset[int]:
         """Issue/PR numbers a decision from this session may target.
 

@@ -77,7 +77,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import PendingValidationRetry
-    from ..domain.session_run import SessionRunAssets
+    from ..domain.session_run import SessionRunAssets, SessionRunIdentity
     from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ def recover_tech_lead_launch_scope(
     config: "Config",
     issue: "Issue",
     tech_lead_authority: "TechLeadAuthorityStore | None",
+    run: "SessionRunIdentity",
 ) -> "TechLeadLaunchScope | None":
     """Rebuild a RESTORED tech-lead session's launch grant from durable truth.
 
@@ -116,6 +117,16 @@ def recover_tech_lead_launch_scope(
 
     if kind is not SessionKind.TECH_LEAD:
         return None
+    # The run's own create-once launch record is the authority (#7347 review
+    # r9): the flavor and cohort it was launched with. Labels and titles are
+    # mutable and are read only for a run that has no record.
+    recorded = (
+        tech_lead_authority.load(run_id=run.run_id, session_name=run.session_name)
+        if tech_lead_authority is not None
+        else None
+    )
+    if recorded is not None:
+        return recorded.launch_scope()
     if health_review_flavor_if_anchored(issue.labels) is not None:
         cohort = (
             tech_lead_authority.load_storm_cohort(anchor_issue_number=issue.number)
