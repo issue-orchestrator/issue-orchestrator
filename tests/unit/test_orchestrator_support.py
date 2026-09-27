@@ -1666,6 +1666,43 @@ class TestOrchestratorSupportApplyPlan:
                     if e.name == EventName.APPLY_FAILED and "withheld" in e.data["error"]]
         assert [e.data["step_type"] for e in withheld] == ["apply_charter_audited_action"]
 
+    def test_a_charter_audited_wrapper_is_gated_on_its_effect_before_recording(self, support, mock_event_sink):
+        """Isolation review r1: the wrapper is the FIRST action for a drifted
+        #229. It is gated on its effect's subject and expectations before the
+        charter decision is written, so a refused effect leaves no record, and
+        the refusal withholds #229's later actions."""
+        from issue_orchestrator.control.actions import PromoteTechLeadFindingAction
+        from issue_orchestrator.control.planner_types import Plan
+        from issue_orchestrator.control.tech_lead_charter_policy import CharterAuditedAction
+        from tests.unit.control.test_tech_lead_applier_handlers import _charter_record_action
+
+        authority = MagicMock()
+        target = MagicMock()
+        labels, pause = self._real_gate(
+            support, {229: ["blocked"]}, tech_lead_ops=authority, promotion_target=target,
+        )
+        marker = "<!-- issue-orchestrator:tech-lead-promotion:v1:abc -->"
+        promotion = PromoteTechLeadFindingAction(
+            signature="sig", case_file_issue_number=229, target_repo="owner/upstream",
+            title="[tech-lead:src] sig", body=f"body\n\n{marker}", labels=("agent:backend",),
+            observation_count=2, idempotency_marker=marker,
+            expected=build_expected_for_mutation(forbidden={"blocked"}),
+        )
+        plan = Plan(actions=(
+            CharterAuditedAction(decisions=_charter_record_action().decisions, effect=promotion),
+            AddLabelAction(issue_number=229, label="pr-pending", reason="later write on #229"),
+        ), skipped=())
+
+        support.apply_plan(gated(plan), pause)
+
+        authority.charter_ledger.record_decisions.assert_not_called()
+        assert target.method_calls == []
+        refused = [e for e in mock_event_sink.events if e.name == EventName.RECONCILIATION_REQUIRED]
+        assert [e.data["issue_number"] for e in refused] == [229]
+        withheld = [e for e in mock_event_sink.events
+                    if e.name == EventName.APPLY_FAILED and "withheld" in e.data["error"]]
+        assert [(e.data["issue_number"], e.data["step_type"]) for e in withheld] == [(229, "add_label")]
+
     def test_drifted_subject_is_paused_and_withheld_while_others_continue(self, support, mock_event_sink):
         """#7349: NEW drift on one subject escalates THAT subject -- it is
         paused behind ``io:needs-reconcile`` and its remaining actions are

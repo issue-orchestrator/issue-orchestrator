@@ -36,7 +36,7 @@ from ..domain.tech_lead_charter import (
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from .action_base import Action, ActionType
 from .action_results import ActionResult
-from .tech_lead_mutation import NO_RECONCILIATION_SUBJECT
+from .tech_lead_mutation import NO_RECONCILIATION_SUBJECT, TechLeadMutation
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -166,10 +166,23 @@ class CharterAuditedAction(Action):
     def __post_init__(self) -> None:
         if not self.decisions or self.effect is None:
             raise ValueError("CharterAuditedAction needs decisions and an effect")
+        if self.expected is not None:
+            raise ValueError(
+                "CharterAuditedAction takes its expected state from its effect"
+            )
+        # The wrapper is guarded with its EFFECT's expectations, so the applier's
+        # gate refuses a drifted subject BEFORE the charter decision is written.
+        # Guarded only at the effect's own dispatch, a refused effect left a
+        # decision on the record for an effect that never ran (isolation review).
+        object.__setattr__(self, "expected", self.effect.expected)  # effect checked above
 
     def reconciliation_subject(self) -> int:
-        # The wrapper writes only the charter ledger; the effect is guarded
-        # on its own subject when it is dispatched.
+        # The effect's subject: the wrapper's record is only true if the effect
+        # may run, so both are gated on the same issue. The effect is guarded
+        # again when it is dispatched.
+        effect = self.effect
+        if isinstance(effect, TechLeadMutation):
+            return effect.reconciliation_subject()
         return NO_RECONCILIATION_SUBJECT
 
 
