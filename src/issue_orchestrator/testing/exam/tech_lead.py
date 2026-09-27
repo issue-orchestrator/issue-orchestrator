@@ -23,7 +23,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from .observation import TechLeadActionDisposition, TechLeadReceipt
+from .observation import TechLeadActionDisposition, TechLeadReceipt, TechLeadRunFact
 
 REJECTED = "tech_lead.decision_rejected"
 EXECUTED = "tech_lead.action_executed"
@@ -144,3 +144,15 @@ def executed_receipts(events: Iterable[Mapping[str, Any]]) -> tuple[TechLeadRece
             TechLeadReceipt(action_type=action_type, target_number=target, anchor_issue_number=anchor)
         )
     return tuple(receipts)
+
+
+def actions_resolved(runs: Iterable[TechLeadRunFact]) -> bool:
+    """Every CONCLUDED run's actions have a known fate (executed, proposed or
+    rejected) — the engine has finished applying what its tech lead decided.
+    A still-running run is not waited for here."""
+    return all(
+        action.disposition is not TechLeadActionDisposition.UNKNOWN
+        for run in runs
+        if run.phase != "running"
+        for action in run.actions
+    )

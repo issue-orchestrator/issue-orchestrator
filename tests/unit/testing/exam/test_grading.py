@@ -587,3 +587,44 @@ class TestRoundEightFindings:
         goals = {goal.name: goal for goal in card.goals}
         assert goals["subject.pr_checks_green"].passed, goals["subject.pr_checks_green"].evidence
         assert card.passed, card.failures
+
+
+class TestRoundTenFindings:
+    @pytest.mark.parametrize(
+        "denial",
+        [
+            f"Issue #{ISSUE} has blocked-failed and blocked-failed does not prevent code review for PR #{PR}.",
+            f"#{ISSUE}'s blocked-failed label doesn't block the code review of PR #{PR}.",
+            f"blocked-failed on #{ISSUE} is not the reason PR #{PR} lacks code review.",
+        ],
+    )
+    def test_a_diagnosis_denying_the_cause_fails(self, denial: str) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=denial),),
+            ),
+        )
+        assert card.diagnosis is not None and not card.diagnosis.passed
+        assert not card.passed
+
+    @pytest.mark.parametrize(
+        "affirmed",
+        [
+            GOOD_DIAGNOSIS,
+            f"blocked-failed on #{ISSUE} makes review validity drop the code review of PR #{PR}.",
+            f"PR #{PR} never gets its code review because #{ISSUE} carries blocked-failed.",
+        ],
+    )
+    def test_a_diagnosis_negating_the_effect_still_passes(self, affirmed: str) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=affirmed),),
+            ),
+        )
+        assert card.diagnosis is not None and card.diagnosis.passed, card.failures

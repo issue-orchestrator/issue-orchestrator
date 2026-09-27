@@ -156,6 +156,19 @@ class ExamEngine:
             (str(entry["session_name"]), int(entry["issue_number"])) for entry in sessions
         )
 
+    def progress_events(self) -> int:
+        """Events about some work item. Tick, plan and fetch events carry no
+        ``issue_key`` and fire every tick, so they never count as progress."""
+        return sum(1 for event in self.runtime.watcher.view.global_events if event.get("issue_key"))
+
+    def pending_work(self) -> int:
+        """Reviews and reworks the engine has queued but not launched."""
+        status = self._get_json(self.config.control_api_port, "/api/status")
+        counts = [status.get("pending_reviews"), status.get("pending_reworks")]
+        if any(isinstance(n, bool) or not isinstance(n, int) for n in counts):
+            raise RuntimeError(f"/api/status queue counts are not ints: {status!r}")
+        return sum(counts)
+
     def active_sessions(self) -> int:
         status = self._get_json(self.config.control_api_port, "/api/status")
         value = status.get("active_sessions")

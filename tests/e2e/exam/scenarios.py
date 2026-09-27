@@ -7,7 +7,6 @@ tests pin it.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from typing import Any, Awaitable, Callable
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
+from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
     SUBJECT,
     blocked_issue_green_pr_awaiting_review,
@@ -25,6 +25,7 @@ from issue_orchestrator.testing.exam.cases import (
 )
 
 from tests.e2e.exam.agents import CODER_LABEL
+from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.engine import (
     EngineCheckout,
@@ -99,12 +100,6 @@ class ExamRun:
         return self.identity.label
 
 
-def _progress_events(engine: ExamEngine) -> int:
-    """Events about some work item. Tick, plan and fetch events carry no
-    ``issue_key`` and fire every tick, so they never count as progress."""
-    return sum(1 for event in engine.runtime.watcher.view.global_events if event.get("issue_key"))
-
-
 def goals_met_probe(
     run: ExamRun, engine: ExamEngine, item: TrackedItem, *, every_s: float = 60.0
 ) -> Callable[[], Awaitable[bool]]:
@@ -134,39 +129,6 @@ def goals_met_probe(
         return all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role)
 
     return done
-
-
-async def drive(
-    engine: ExamEngine,
-    *,
-    done: Callable[[], Awaitable[bool]],
-    quiet_s: float,
-    timeout_s: float,
-    reached: RunEnd = RunEnd.GOAL_REACHED,
-    poll_s: float = 20.0,
-) -> RunEnd:
-    """Let the real engine work until ``done``, quiescence, or the deadline.
-
-    ``reached`` names what ``done`` means, so the scorecard says which one
-    ended the run.
-    """
-    started = time.monotonic()
-    last_count = -1
-    last_change = started
-    while True:
-        if not engine.is_running():
-            return RunEnd.ENGINE_EXITED
-        if await done():
-            return reached
-        now = time.monotonic()
-        count = _progress_events(engine)
-        if count != last_count:
-            last_count, last_change = count, now
-        elif now - last_change >= quiet_s and engine.active_sessions() == 0:
-            return RunEnd.QUIESCENT
-        if now - started >= timeout_s:
-            return RunEnd.TIMEOUT
-        await asyncio.sleep(poll_s)
 
 
 async def _finish(
@@ -375,8 +337,20 @@ async def run_case_b(
                 reached=RunEnd.TECH_LEAD_CONCLUDED,
             )
             if ended_by is RunEnd.TECH_LEAD_CONCLUDED:
-                # Let the engine apply the decision it just accepted.
-                await asyncio.sleep(120)
+                # Let the engine apply the decision it just accepted: wait,
+                # bounded, until every concluded run's actions have a fate.
+                resolved = await settle(
+                    lambda: actions_resolved(
+                        observe_tech_lead_runs(
+                            checkout.state_dir,
+                            runtime.watcher,
+                            worktree_base=engine.config.worktree_base,
+                        )
+                    ),
+                    timeout_s=5 * 60,
+                )
+                if not resolved:
+                    run.notes.append("tech-lead actions still unresolved 5 min after the run concluded")
             return await _finish(
                 run,
                 engine,

@@ -116,6 +116,13 @@ def _plain(text: str) -> str:
 
 
 _REFERENCE = re.compile(r"#(\d+)")
+#: A negated causal verb: the clause denies that the cause causes the effect.
+_DENIED_CAUSE = re.compile(
+    r"\b(?:does|do|did|is|are|was|were|would|will|can|could)(?:\s+not|n't)\s+"
+    r"(?:\w+\s+)?(?:prevent|block|cause|stop|veto|hold|affect|explain|withhold|gate)"
+    r"|\b(?:cannot|can't|never)\s+(?:prevent|block|cause|stop|veto|hold)"
+    r"|\bnot\s+(?:the\s+)?(?:cause|reason|blocker)\b"
+)
 
 
 def _about_item(clause: str, item_numbers: frozenset[int]) -> bool:
@@ -166,6 +173,11 @@ class RootCauseSpec:
         its code review"), so a lexical reading cannot tell it from a denial.
         That limit is why the clause is reported as evidence for a human to
         audit rather than trusted silently.
+
+        One polarity IS judged, because it is unambiguous: a negated CAUSAL
+        verb ("blocked-failed does not prevent code review") denies the
+        relationship itself, whereas a correct diagnosis negates the EFFECT
+        ("never gets its code review") and keeps the cause affirmative.
         """
         return next(
             (
@@ -173,6 +185,7 @@ class RootCauseSpec:
                 for clause in _clauses(text)
                 if all(group.named_in(clause) for group in self.concepts)
                 and _about_item(clause, item_numbers)
+                and not _DENIED_CAUSE.search(clause)
             ),
             "",
         )
