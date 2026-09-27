@@ -205,17 +205,25 @@ class ExamEngine:
         ``issue_key`` and fire every tick, so they never count as progress."""
         return sum(1 for event in self.runtime.watcher.view.global_events if event.get("issue_key"))
 
-    def event_history(self) -> list[dict[str, Any]]:
-        """Every event this process has buffered, from its first.
+    def event_history(self, *, after: int = 0) -> list[dict[str, Any]]:
+        """Every event this process has buffered with an id above ``after``
+        (from its first by default).
 
         The watcher only sees events published after it connects; a
         restart's startup work happens before that.
         """
-        payload = self._get_json(self.config.control_api_port, "/api/events_since?after=0")
+        payload = self._get_json(self.config.control_api_port, f"/api/events_since?after={after}")
         events = payload.get("events")
         if not isinstance(events, list):
             raise RuntimeError(f"/api/events_since has no events list: {payload!r}")
         return events
+
+    def pause(self) -> None:
+        """Stop the engine applying actions (an operator pause)."""
+        self._post(self.config.control_api_port, "/api/pause")
+
+    def resume(self) -> None:
+        self._post(self.config.control_api_port, "/api/resume")
 
     def gh_audit_report(self) -> dict[str, Any]:
         """This process's GitHub calls so far, by command."""
@@ -241,6 +249,14 @@ class ExamEngine:
         if isinstance(value, bool) or not isinstance(value, int):
             raise RuntimeError(f"/api/status active_sessions is not an int: {status!r}")
         return value
+
+    def _post(self, port: int, path: str) -> None:
+        request = urllib.request.Request(
+            f"http://localhost:{port}{path}", data=b"{}", method="POST", headers=control_api_headers()
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"POST {path} returned {response.status}")
 
     def _get_json(self, port: int, path: str) -> dict[str, Any]:
         request = urllib.request.Request(

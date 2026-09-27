@@ -11,30 +11,47 @@ import pytest
 from issue_orchestrator.testing.exam import grade
 from issue_orchestrator.testing.exam.cases import UPGRADE_EARLY_TICKS
 from issue_orchestrator.testing.exam.upgrade import WriteKind
-from tests.e2e.exam.upgrade_window import capture_restart_window, upgrade_facts
+from tests.e2e.exam.upgrade_window import RestartWindow, capture_restart_window, upgrade_facts
 from tests.unit.testing.exam.test_upgrade import CASE_U, upgrade_observation
 
-
-def tick(event_id: int) -> dict[str, Any]:
-    return {"event_id": event_id, "type": "tick.completed", "payload": {}}
+COMMENT = "POST /repos/o/r/issues/921/comments"
+LABEL = "POST /repos/o/r/issues/921/labels"
+NEEDS_HUMAN = {"issue_number": 921, "added": ["io:needs-human"], "removed": []}
 
 
 class FakeCandidate:
-    """A live engine on a fake clock: a tick completes every
-    ``reads_per_tick`` history reads, publishing its actions' events
-    (``pending``) before its own ``tick.completed``, as the engine does."""
+    """A live engine on a fake clock.
+
+    A tick completes every ``reads_per_tick`` history reads. Its actions
+    (``schedule``d GitHub writes, each with the event it publishes, if any)
+    hit GitHub and publish their events before the tick's own
+    ``tick.completed``, as the engine does. The tick in progress at the
+    pause may still land its writes (worst case for the window); a tick
+    that starts after the pause applies nothing.
+    """
 
     def __init__(
-        self, startup: list[dict[str, Any]], audit: dict[str, int], *, reads_per_tick: int = 1
+        self,
+        startup: list[dict[str, Any]] | None = None,
+        *,
+        reads_per_tick: int = 1,
+        audit: dict[str, int] | None = None,
     ) -> None:
+        self.history: list[dict[str, Any]] = list(startup or [])
+        self.audit: dict[str, int] = dict(audit or {})
         self.reads_per_tick = reads_per_tick
         self.history_reads = 0
-        self.history: list[dict[str, Any]] = list(startup)
-        self.pending: list[tuple[str, dict[str, Any]]] = []
-        self.audit = audit
+        self.scheduled: dict[int, list[tuple[str, tuple[str, dict[str, Any]] | None]]] = {}
+        self.ticks = 0
+        self.paused = False
+        self.paused_after_tick: int | None = None
+        self.at_pause = lambda: None
         self.reads: list[str] = []
         self.alive = True
         self.now = 0.0
+
+    def schedule(self, tick: int, command: str, event: tuple[str, dict[str, Any]] | None = None) -> None:
+        self.scheduled.setdefault(tick, []).append((command, event))
 
     def clock(self) -> float:
         return self.now
@@ -45,18 +62,32 @@ class FakeCandidate:
     def publish(self, event_type: str, payload: dict[str, Any]) -> None:
         self.history.append({"event_id": len(self.history) + 1, "type": event_type, "payload": payload})
 
+    def _complete_tick(self) -> None:
+        self.ticks += 1
+        started_paused = self.paused_after_tick is not None and self.ticks > self.paused_after_tick + 1
+        for command, event in self.scheduled.pop(self.ticks, []):
+            if started_paused:
+                continue  # a paused engine applies no actions
+            self.audit[command] = self.audit.get(command, 0) + 1
+            if event is not None:
+                self.publish(*event)
+        self.publish("tick.completed", {})
+
     def is_running(self) -> bool:
         return self.alive
+
+    def pause(self) -> None:
+        self.reads.append("pause")
+        self.paused = True
+        self.paused_after_tick = self.ticks
+        self.at_pause()
 
     def event_history(self) -> list[dict[str, Any]]:
         self.reads.append("history")
         snapshot = list(self.history)
         self.history_reads += 1
         if self.history_reads % self.reads_per_tick == 0:
-            for event_type, payload in self.pending:
-                self.publish(event_type, payload)
-            self.pending = []
-            self.publish("tick.completed", {})
+            self._complete_tick()
         return snapshot
 
     def gh_audit_report(self) -> dict[str, Any]:
@@ -64,32 +95,39 @@ class FakeCandidate:
         return {"by_command": dict(self.audit)}
 
 
-def _capture(engine: FakeCandidate):
+def _capture(engine: FakeCandidate) -> RestartWindow:
     return asyncio.run(
         capture_restart_window(
-            engine,
-            min_ticks=UPGRADE_EARLY_TICKS,
-            timeout_s=600,
-            clock=engine.clock,
-            sleep=engine.sleep,
+            engine, min_ticks=UPGRADE_EARLY_TICKS, timeout_s=600, clock=engine.clock, sleep=engine.sleep
         )
     )
 
 
+def _grade(window: RestartWindow, whole_run: list[dict[str, Any]] | None = None, *, complete: bool = True):
+    facts = upgrade_facts(
+        window,
+        whole_run=whole_run or [],
+        complete=complete,
+        base_commit="b" * 40,
+        candidate_commit="c" * 40,
+        sessions_at_stop=(911, 921),
+    )
+    return grade(CASE_U, upgrade_observation(facts))
+
+
 def test_startup_hazards_and_pages_before_any_watcher_fail_the_case() -> None:
-    """Finding 1: what the candidate does at startup, before a watcher can
+    """Round 1 F1: what the candidate does at startup, before a watcher can
     connect, reaches the scorecard through the real capture path, even if
     the label is cleared and the work finishes later."""
     startup = [
         {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "RUN_UNRESTORABLE"}},
-        {"event_id": 2, "type": "issue.labels_changed", "payload": {"issue_number": 921, "added": ["io:needs-human"], "removed": []}},
+        {"event_id": 2, "type": "issue.labels_changed", "payload": NEEDS_HUMAN},
     ]
-    engine = FakeCandidate(startup, audit={"POST /repos/o/r/issues/921/comments": 1})
+    engine = FakeCandidate(startup, audit={COMMENT: 1, LABEL: 1})
     window = _capture(engine)
-    later = [{"event_id": 40, "type": "issue.labels_changed", "payload": {"issue_number": 921, "added": [], "removed": ["io:needs-human"]}}]
+    cleared = [{"event_id": 400, "type": "issue.labels_changed", "payload": {**NEEDS_HUMAN, "added": [], "removed": ["io:needs-human"]}}]
 
-    facts = upgrade_facts(window, whole_run=later, base_commit="b" * 40, candidate_commit="c" * 40, sessions_at_stop=(911, 921))
-    card = grade(CASE_U, upgrade_observation(facts))
+    card = _grade(window, cleared, complete=False)
 
     assert all(goal.passed for goal in card.goals)
     assert card.failures == (
@@ -99,34 +137,118 @@ def test_startup_hazards_and_pages_before_any_watcher_fail_the_case() -> None:
     )
 
 
-def test_the_window_closes_audit_first_then_history_and_reads_nothing_after() -> None:
-    """Finding 2: the window is closed by the reads themselves (the cumulative
-    audit, then the history), before the harness releases the work, so no
-    tick boundary has to be timed."""
-    engine = FakeCandidate([], audit={"POST /repos/o/r/issues/5/comments": 2})
+@pytest.mark.parametrize("reads_per_tick", [1, 3, 8], ids=["tick per read", "tick spans reads", "slow tick"])
+def test_writes_up_to_the_pause_count_in_both_reads(reads_per_tick: int) -> None:
+    """Round 4 F1: one cutoff for comments (audit) and labels (events). The
+    tick in progress at the pause lands its writes and their events before
+    the window closes, and both reads see them."""
+    engine = FakeCandidate(reads_per_tick=reads_per_tick)
+
+    def writes_in_the_tick_in_progress() -> None:
+        in_progress = engine.ticks + 1
+        engine.schedule(in_progress, COMMENT)
+        engine.schedule(in_progress, LABEL, ("issue.labels_changed", NEEDS_HUMAN))
+
+    engine.at_pause = writes_in_the_tick_in_progress
     window = _capture(engine)
 
-    # One audit read, then history reads only: the one that notes the
-    # barrier and the one that finds a tick completed after it.
-    audit_at = engine.reads.index("audit")
-    assert engine.reads.count("audit") == 1
-    assert engine.reads[audit_at + 1 :] == ["history", "history"]
-    assert window.ticks >= UPGRADE_EARLY_TICKS
-    assert window.writes[WriteKind.COMMENT] == 2
+    assert engine.reads.index("pause") < engine.reads.index("audit")
+    assert window.writes[WriteKind.COMMENT] == 1
+    card = _grade(window)
+    assert "upgrade: 1 comment(s) posted in the restart window" in card.failures
+    assert "upgrade: hold label added in the restart window: #921 +io:needs-human" in card.failures
+
+
+def test_a_paused_engine_writes_nothing_more_and_both_reads_agree() -> None:
+    """Writes the engine WOULD make after the pause never happen, so neither
+    read can see one without the other."""
+    engine = FakeCandidate()
+
+    def writes_in_every_later_tick() -> None:
+        for later in range(engine.ticks + 2, engine.ticks + 30):
+            engine.schedule(later, COMMENT)
+            engine.schedule(later, LABEL, ("issue.labels_changed", NEEDS_HUMAN))
+
+    engine.at_pause = writes_in_every_later_tick
+    window = _capture(engine)
+
+    assert window.writes[WriteKind.COMMENT] == 0
+    assert window.writes[WriteKind.LABEL_ADD] == 0
+    assert _grade(window).passed
 
 
 def test_a_candidate_that_dies_in_the_window_fails_on_ticks() -> None:
-    engine = FakeCandidate([], audit={})
+    engine = FakeCandidate()
     engine.alive = False
-    window = _capture(engine)
+    card = _grade(_capture(engine), complete=False)
+    assert (
+        f"upgrade: candidate completed only 0 of {UPGRADE_EARLY_TICKS} ticks before the held work was released"
+        in card.failures
+    )
 
-    facts = upgrade_facts(window, whole_run=[], base_commit="b" * 40, candidate_commit="c" * 40, sessions_at_stop=(911, 921))
-    card = grade(CASE_U, upgrade_observation(facts))
-    assert f"upgrade: candidate completed only 0 of {UPGRADE_EARLY_TICKS} ticks before the held work was released" in card.failures
+
+class HoleyHistory(FakeCandidate):
+    """From the pause on, returns its history with id 2 missing for
+    ``holey_reads`` reads (a publisher still in flight)."""
+
+    def __init__(self, *args: Any, holey_reads: int, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.holey_reads = holey_reads
+
+    def event_history(self) -> list[dict[str, Any]]:
+        history = super().event_history()
+        if self.paused and self.holey_reads:
+            self.holey_reads -= 1
+            return [event for event in history if event["event_id"] != 2]
+        return list(reversed(history))  # complete, but buffered out of order
+
+
+STARTUP = [
+    {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "X"}},
+    {"event_id": 2, "type": "issue.labels_changed", "payload": {"issue_number": 911, "added": [], "removed": ["stale"]}},
+]
+
+
+def test_a_briefly_holey_history_is_retried_and_graded_in_id_order() -> None:
+    """Round 2 F3 / round 3 F2: a hole a concurrent publisher leaves for a
+    moment is waited out; the complete history is graded in id order."""
+    window = _capture(HoleyHistory(STARTUP, holey_reads=3))
+
+    assert [event["event_id"] for event in window.events] == list(range(1, len(window.events) + 1))
+    assert _grade(window).failures == ("upgrade: restore hazard: session.run_unrestorable on #921 (X)",)
+
+
+def test_a_persistent_hole_is_refused() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
+        _capture(HoleyHistory(STARTUP, holey_reads=10_000))
+
+
+class TestWholeRun:
+    """Round 4 F2: hazards after the window come from the engine's own tail
+    too, not only from what the watcher had processed."""
+
+    def window(self) -> RestartWindow:
+        return _capture(FakeCandidate())
+
+    def test_a_hazard_only_the_engine_tail_holds_fails_the_case(self) -> None:
+        window = self.window()
+        last = len(window.events)
+        watcher_saw = [{"event_id": last + 1, "type": "tick.completed", "payload": {}}]
+        engine_tail = [
+            {"event_id": last + 2, "type": "session.claim_unreadable", "payload": {"issue_number": 911, "cause": "late"}}
+        ]
+        card = _grade(window, watcher_saw + engine_tail)
+        assert card.failures == ("upgrade: restore hazard: session.claim_unreadable on #911 (late)",)
+
+    def test_a_live_engines_run_with_a_hole_is_refused(self) -> None:
+        window = self.window()
+        last = len(window.events)
+        with pytest.raises(ValueError, match="incomplete"):
+            _grade(window, [{"event_id": last + 2, "type": "tick.completed", "payload": {}}])
 
 
 def test_a_failed_start_stops_the_engine_it_launched(monkeypatch, tmp_path: Path) -> None:
-    """Finding 3: a start that fails after launching the process stops it,
+    """Round 1 F3: a start that fails after launching the process stops it,
     so the checkout is never removed from under a running engine."""
     from tests.e2e.exam import engine as engine_module
     from tests.e2e.exam.case_engines import case_c_engine
@@ -155,72 +277,3 @@ def test_a_failed_start_stops_the_engine_it_launched(monkeypatch, tmp_path: Path
     with pytest.raises(AssertionError, match="control API readiness"):
         asyncio.run(exam_engine.start())
     assert stopped == [True]
-
-
-class LateLabelCandidate(FakeCandidate):
-    """Its hold-label write is on GitHub (audited) before its event is
-    published; the event lands with the tick in progress at the audit read."""
-
-    def gh_audit_report(self) -> dict[str, Any]:
-        report = super().gh_audit_report()
-        self.pending.append(
-            ("issue.labels_changed", {"issue_number": 921, "added": ["io:needs-human"], "removed": []})
-        )
-        return report
-
-
-def test_an_audited_label_whose_event_is_still_unpublished_is_waited_for() -> None:
-    """Round 3 F1: the window closes only at a tick boundary after the audit
-    read, so an audited write's late event is in the history graded."""
-    # A tick spans several reads: the label lands only when the tick that
-    # was in progress at the audit read completes.
-    engine = LateLabelCandidate([], audit={"POST /repos/o/r/issues/921/labels": 1}, reads_per_tick=4)
-    window = _capture(engine)
-
-    facts = upgrade_facts(window, whole_run=[], base_commit="b" * 40, candidate_commit="c" * 40, sessions_at_stop=(911, 921))
-    card = grade(CASE_U, upgrade_observation(facts))
-    assert "upgrade: hold label added in the restart window: #921 +io:needs-human" in card.failures
-
-
-class HoleyHistory(FakeCandidate):
-    """From the audit read on, returns its history with id 2 missing for
-    ``holey_reads`` reads (a publisher still in flight)."""
-
-    def __init__(self, *args: Any, holey_reads: int, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.holey_reads = holey_reads
-        self.audited = False
-
-    def gh_audit_report(self) -> dict[str, Any]:
-        self.audited = True
-        return super().gh_audit_report()
-
-    def event_history(self) -> list[dict[str, Any]]:
-        history = super().event_history()
-        if self.audited and self.holey_reads:
-            self.holey_reads -= 1
-            return [event for event in history if event["event_id"] != 2]
-        return list(reversed(history))  # complete, but buffered out of order
-
-
-STARTUP = [
-    {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "X"}},
-    {"event_id": 2, "type": "issue.labels_changed", "payload": {"issue_number": 911, "added": [], "removed": ["stale"]}},
-]
-
-
-def test_a_briefly_holey_history_is_retried_and_graded_in_id_order() -> None:
-    """Round 2 F3 / round 3 F2: a hole a concurrent publisher leaves for a
-    moment is waited out; the complete history is graded in id order."""
-    engine = HoleyHistory(STARTUP, audit={}, holey_reads=3)
-    window = _capture(engine)
-
-    assert [event["event_id"] for event in window.events] == list(range(1, len(window.events) + 1))
-    facts = upgrade_facts(window, whole_run=[], base_commit="b" * 40, candidate_commit="c" * 40, sessions_at_stop=(911, 921))
-    assert facts.hazards == ("session.run_unrestorable on #921 (X)",)
-
-
-def test_a_persistent_hole_is_refused() -> None:
-    engine = HoleyHistory(STARTUP, audit={}, holey_reads=10_000)
-    with pytest.raises(ValueError, match="incomplete"):
-        _capture(engine)

@@ -510,21 +510,30 @@ async def run_case_u(
         runtime = await candidate.start()
         try:
             flow.watcher = runtime.watcher
-            # Closed BEFORE the release: everything in it happened while all
-            # the work was still held (upgrade_window).
+            # Closed (paused) BEFORE the release: everything in it happened
+            # while all the work was still held (upgrade_window).
             window = await capture_restart_window(
                 candidate, min_ticks=UPGRADE_EARLY_TICKS, timeout_s=CASE_U_WINDOW_S
             )
             release.touch()
+            if window.engine_alive:
+                candidate.resume()
             ended_by = await drive(
                 candidate,
                 done=goals_met_probe(run, candidate, coding, review),
                 quiet_s=420,
                 timeout_s=45 * 60,
             )
+            # The watcher may not have processed the newest events yet; read
+            # the engine's own tail past what it has seen.
+            alive = candidate.is_running()
+            whole_run = list(runtime.watcher.view.global_events)
+            if alive:
+                whole_run += candidate.event_history(after=runtime.watcher.view.last_event_id)
             facts = upgrade_facts(
                 window,
-                whole_run=list(runtime.watcher.view.global_events),
+                whole_run=whole_run,
+                complete=alive,
                 base_commit=base_commit,
                 candidate_commit=checkout.commit,
                 sessions_at_stop=sessions_at_stop,

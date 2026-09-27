@@ -9,8 +9,8 @@ when the candidate takes all of that over quietly:
 
 * nothing is quarantined or declared unrestorable (the restore owners'
   ``session.*`` hazard events);
-* in its restart window (from its start until the harness releases the
-  held work, at least ``early_ticks`` ticks) it posts no comment and adds
+* in its restart window (from its start until the harness pauses it, at
+  least ``early_ticks`` ticks, with the work still held) it posts no comment and adds
   no hold label (needs-human, blocked-*), the writes an operator would be
   paged by. Nothing in flight can finish inside the window, so any such
   write is the restart's own doing;
