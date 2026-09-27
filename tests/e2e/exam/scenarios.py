@@ -35,6 +35,7 @@ from tests.e2e.exam.observe import (
     linked_pull_requests,
     observe_item,
     observe_tech_lead_runs,
+    owned_numbers,
     parked_screen,
     terminal_tech_lead_runs,
 )
@@ -197,6 +198,9 @@ async def _finish(
             engine.checkout.state_dir, watcher, worktree_base=engine.config.worktree_base
         ),
         events=list(watcher.view.global_events),
+        owned=owned_numbers(
+            run.repo, run.run_label, (n for numbers in extra_prs.values() for n in numbers)
+        ),
         gh_audit_report=report,
         elapsed_seconds=time.monotonic() - started,
         ended_by=ended_by,

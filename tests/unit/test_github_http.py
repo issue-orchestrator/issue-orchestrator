@@ -3031,3 +3031,62 @@ def test_merged_prs_closing_issues_refuses_a_malformed_answer(repository, match)
 
     with pytest.raises(GitHubScanIncompleteError, match=match):
         client.merged_prs_closing_issues([5])
+
+
+def _pulls_pages(prs: list[dict], *, fail_page: int | None = None):
+    """Serve ``/pulls`` newest-first in pages of 100, like GitHub."""
+    ordered = sorted(prs, key=lambda pr: -pr["number"])
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        seen.append(page)
+        assert request.url.params["state"] == "all"
+        assert request.url.params["sort"] == "created"
+        assert request.url.params["direction"] == "desc"
+        if page == fail_page:
+            return httpx.Response(502, text="bad gateway")
+        return httpx.Response(200, json=ordered[(page - 1) * 100 : page * 100])
+
+    return handler, seen
+
+
+def test_prs_numbered_above_walk_every_page_down_to_the_floor() -> None:
+    """The exam must see an issue's closed PR even behind 100+ newer PRs (#7304 review)."""
+    subject_old = {"number": 1001, "state": "closed"}
+    subject_new = {"number": 1250, "state": "open"}
+    newer = [{"number": 1300 + i, "state": "open"} for i in range(150)]
+    older = [{"number": 900 - i, "state": "closed"} for i in range(300)]
+    handler, seen = _pulls_pages([subject_old, subject_new, *newer, *older])
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    prs = client.list_prs_numbered_above(1000)
+
+    numbers = [pr["number"] for pr in prs]
+    assert 1001 in numbers and 1250 in numbers
+    assert all(number > 1000 for number in numbers)
+    assert len(numbers) == 152
+    assert seen == [1, 2]  # stops at the page that reaches the floor; never walks the old history
+
+
+def test_prs_numbered_above_fail_loud_when_a_page_fails() -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubScanIncompleteError
+
+    newer = [{"number": 2000 + i, "state": "open"} for i in range(150)]
+    handler, _seen = _pulls_pages([{"number": 1001, "state": "closed"}, *newer], fail_page=2)
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="page 2"):
+        client.list_prs_numbered_above(1000)
+
+
+def test_prs_numbered_above_refuse_a_malformed_pull_request() -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubScanIncompleteError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"number": 1001}, {"number": "x"}])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="malformed pull request"):
+        client.list_prs_numbered_above(1000)

@@ -314,38 +314,36 @@ def _pr_info(number: int, issue: int, state: str = "open"):
 
 
 class _PagedPulls:
-    """``/pulls`` newest-first: one page of ``list_prs``, a complete open walk."""
+    """The adapter's two complete PR reads over a fixed PR set."""
 
     def __init__(self, prs):
         self.prs = sorted(prs, key=lambda pr: -pr.number)
 
-    def list_prs(self, state: str, limit: int):
-        return [pr for pr in self.prs if state == "all" or pr.state == state][:limit]
+    def list_prs_numbered_above(self, floor: int):
+        return [pr for pr in self.prs if pr.number > floor]
 
     def list_open_prs_complete(self):
         return [pr for pr in self.prs if pr.state == "open"]
 
 
-def test_an_item_pr_beyond_the_newest_page_fails_loudly(monkeypatch) -> None:
-    """Round 2 F3: 100+ newer PRs must not silently hide the item's PR."""
+def test_an_items_closed_pr_behind_many_newer_prs_is_observed(monkeypatch) -> None:
+    """Round 2 F3 / round 3 F3: seen however many newer PRs exist, never guessed."""
     from tests.e2e.exam import observe
 
-    item_pr = _pr_info(1001, 1000, state="closed")
-    newer = [_pr_info(2000 + i, 1500 + i) for i in range(observe.PULLS_PAGE)]
-    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *newer]))
+    old_attempt = _pr_info(1001, 1000, state="closed")
+    current = _pr_info(1250, 1000)
+    newer = [_pr_info(1300 + i, 1299 + i) for i in range(150)]
+    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([old_attempt, current, *newer]))
 
-    with pytest.raises(RuntimeError, match="may be on a later page"):
-        observe.linked_pull_requests("o/r", 1000, state="all")
+    assert [pr.number for pr in observe.linked_pull_requests("o/r", 1000, state="all")] == [1250, 1001]
 
 
-def test_the_newest_page_is_trusted_once_it_reaches_back_past_the_issue(monkeypatch) -> None:
+def test_an_unsupported_pr_state_is_refused(monkeypatch) -> None:
     from tests.e2e.exam import observe
 
-    item_pr = _pr_info(1001, 1000, state="closed")
-    older = [_pr_info(900 - i, 800 - i) for i in range(observe.PULLS_PAGE)]
-    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *older]))
-
-    assert [pr.number for pr in observe.linked_pull_requests("o/r", 1000, state="all")] == [1001]
+    monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([]))
+    with pytest.raises(ValueError, match="unsupported PR state"):
+        observe.linked_pull_requests("o/r", 1000, state="closed")
 
 
 def test_open_prs_come_from_the_complete_walk_not_one_page(monkeypatch) -> None:
@@ -353,7 +351,7 @@ def test_open_prs_come_from_the_complete_walk_not_one_page(monkeypatch) -> None:
     from tests.e2e.exam import observe
 
     item_pr = _pr_info(1001, 1000)
-    newer = [_pr_info(2000 + i, 1500 + i) for i in range(observe.PULLS_PAGE + 5)]
+    newer = [_pr_info(2000 + i, 1500 + i) for i in range(105)]
     monkeypatch.setattr(observe, "_github_adapter", lambda _repo: _PagedPulls([item_pr, *newer]))
 
     assert [pr.number for pr in observe.linked_pull_requests("o/r", 1000, state="open")] == [1001]

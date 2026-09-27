@@ -214,12 +214,13 @@ def _out_of_scope(observation: ExamObservation) -> tuple[str, ...]:
 
     The engine confines tech-lead targets to the run's scope
     (``control.tech_lead_target_scope``); this checks that it held, because an
-    exam runs against a shared repository.
+    exam runs against a shared repository. Ownership is the harness's
+    explicit set, never inferred from the runs — a run anchored on a real
+    issue would otherwise make that issue look owned.
     """
-    owned = observation.exam_numbers
     return tuple(
         f"{receipt.action_type} executed on #{receipt.target_number},"
         f" outside the exam's issues/PRs (anchor #{receipt.anchor_issue_number})"
         for receipt in observation.tech_lead_receipts
-        if receipt.target_number is not None and receipt.target_number not in owned
+        if receipt.target_number not in observation.owned_numbers
     )

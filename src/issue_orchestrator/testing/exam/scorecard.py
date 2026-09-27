@@ -112,6 +112,13 @@ class Scorecard:
                 "destructive: " + "; ".join(action.what for action in self.destructive)
             )
         failed.extend(f"out of scope: {what}" for what in self.out_of_scope)
+        # A work item still waiting on a screen is not finished, whatever
+        # GitHub shows. Round history (unanswered_screen) stays informational.
+        failed.extend(
+            f"parked: {stall.role} #{stall.issue_number}: {stall.stall.parked_screen}"
+            for stall in self.stalls
+            if stall.stall.parked_screen
+        )
         return tuple(failed)
 
     @property

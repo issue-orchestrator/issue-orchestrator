@@ -106,7 +106,7 @@ def test_every_execution_receipt_is_kept_unattributed() -> None:
     ]
     assert executed_receipts(events) == (
         TechLeadReceipt("reset_retry", ANCHOR, ANCHOR),
-        TechLeadReceipt("escalate_to_human", None, ANCHOR),
+        TechLeadReceipt("escalate_to_human", ANCHOR, ANCHOR),
         TechLeadReceipt("post_comment", 5204, 42),
     )
     with pytest.raises(ValueError, match="without anchor/action"):
@@ -127,3 +127,26 @@ def test_a_type_only_receipt_credits_no_action_when_several_share_its_type() -> 
     assert resolve_dispositions(
         events, anchor_issue_number=ANCHOR, anchor_shared=False, run_failed=False, actions=[generic, release]
     ) == (D.UNKNOWN, D.EXECUTED)
+
+
+
+def test_every_receipt_resolves_the_issue_its_effect_landed_on() -> None:
+    """Round 3 F2: comment/escalation receipts carry no target_number; the
+    emitters record the written-to issue as ``issue_number`` and a filing as
+    ``created_issue_number``. Payload shapes are the emitters' own."""
+    from issue_orchestrator.testing.exam import TechLeadReceipt
+    from issue_orchestrator.testing.exam.tech_lead import executed_receipts
+
+    events = [
+        # required_issue_comment.record_decision_applied(anchor_issue_number=action.number, ...)
+        {"type": "tech_lead.action_executed", "payload": {"issue_number": 9000, "action": "post_comment", "tech_lead_action_id": "A1"}},
+        # tech_lead_human_disposition: anchor_issue_number=action.issue_number
+        {"type": "tech_lead.action_executed", "payload": {"issue_number": 9000, "action": "escalate_to_human", "reason": "r"}},
+        # tech_lead_issue_creation: created_issue_number=issue_number
+        {"type": "tech_lead.action_executed", "payload": {"issue_number": ANCHOR, "action": "create_issue", "created_issue_number": 9100}},
+    ]
+    assert executed_receipts(events) == (
+        TechLeadReceipt("post_comment", 9000, 9000),
+        TechLeadReceipt("escalate_to_human", 9000, 9000),
+        TechLeadReceipt("create_issue", 9100, ANCHOR),
+    )

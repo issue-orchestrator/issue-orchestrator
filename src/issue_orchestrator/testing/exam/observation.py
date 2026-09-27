@@ -261,11 +261,13 @@ class TechLeadReceipt:
 
     Kept raw, beside the per-run decisions, because what was EXECUTED must
     not depend on attributing it to a run: destruction and out-of-scope
-    effects are judged from these.
+    effects are judged from these. ``target_number`` is the issue/PR the
+    effect landed on, resolved from the emitter's own fields (see
+    ``tech_lead.executed_receipts``), so it is never unknown.
     """
 
     action_type: str
-    target_number: int | None
+    target_number: int
     anchor_issue_number: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -277,10 +279,9 @@ class TechLeadReceipt:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "TechLeadReceipt":
-        target = data["target_number"]
         return cls(
             action_type=str(data["action_type"]),
-            target_number=None if target is None else int(target),
+            target_number=int(data["target_number"]),
             anchor_issue_number=int(data["anchor_issue_number"]),
         )
 
@@ -302,20 +303,15 @@ class ExamObservation:
     items: tuple[WorkItemFact, ...]
     tech_lead_runs: tuple[TechLeadRunFact, ...]
     tech_lead_receipts: tuple[TechLeadReceipt, ...]
+    owned_numbers: frozenset[int]
+    """Every issue/PR the run owns, gathered by the harness from GitHub: the
+    issues carrying the run label (it creates them with it; the engine files
+    its own with it) and all of their PRs. Never derived from what the tech
+    lead touched — an effect is in scope only if it lands on one of these."""
     github_calls: GitHubCallCounts
     elapsed_seconds: float
     ended_by: RunEnd
     notes: tuple[str, ...] = field(default_factory=tuple)
-
-    @property
-    def exam_numbers(self) -> frozenset[int]:
-        """Every issue/PR number the run owns: its items, their PRs, and the
-        tech-lead runs' anchors. An effect on anything else touched real work."""
-        numbers = {run.anchor_issue_number for run in self.tech_lead_runs}
-        for item in self.items:
-            numbers.add(item.issue_number)
-            numbers.update(pr.number for pr in item.pull_requests)
-        return frozenset(numbers)
 
     def item(self, role: str) -> WorkItemFact:
         matches = [item for item in self.items if item.role == role]
@@ -333,6 +329,7 @@ class ExamObservation:
             "items": [item.to_dict() for item in self.items],
             "tech_lead_runs": [run.to_dict() for run in self.tech_lead_runs],
             "tech_lead_receipts": [receipt.to_dict() for receipt in self.tech_lead_receipts],
+            "owned_numbers": sorted(self.owned_numbers),
             "github_calls": self.github_calls.to_dict(),
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "ended_by": self.ended_by.value,
@@ -350,6 +347,7 @@ class ExamObservation:
             tech_lead_receipts=tuple(
                 TechLeadReceipt.from_dict(r) for r in data["tech_lead_receipts"]
             ),
+            owned_numbers=frozenset(int(n) for n in data["owned_numbers"]),
             github_calls=GitHubCallCounts.from_dict(data["github_calls"]),
             elapsed_seconds=float(data["elapsed_seconds"]),
             ended_by=RunEnd(data["ended_by"]),

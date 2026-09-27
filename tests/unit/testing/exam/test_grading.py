@@ -398,3 +398,47 @@ def test_a_merged_pr_whose_branch_was_auto_deleted_is_not_lost_work() -> None:
     lost = pr(state=PullRequestState.READY, labels=("code-reviewed",), branch_exists=False)
     card = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, item(prs=(lost,))))
     assert any(f.startswith("goal subject.published_work_survives") for f in card.failures)
+
+
+
+class TestRoundThreeFindings:
+    def test_a_live_parked_screen_fails_an_otherwise_passing_card(self) -> None:
+        from dataclasses import replace
+
+        done = item(prs=(pr(state=PullRequestState.READY, labels=("code-reviewed",)),))
+        parked = replace(done, stall=replace(done.stall, parked_screen="issue-901 silent 900s on screen: 'no, exit'"))
+        card = grade(CASE_A, observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, parked))
+
+        assert all(goal.passed for goal in card.goals)
+        assert card.passed is False
+        assert card.failures == (f"parked: subject #{ISSUE}: issue-901 silent 900s on screen: 'no, exit'",)
+
+    def test_an_effect_on_a_real_issue_fails_even_when_a_run_was_anchored_there(self) -> None:
+        """A run anchored on real issue #9000 must not make #9000 'owned'."""
+        stray = run(action("post_comment", "hello", target=9000), summary=GOOD_DIAGNOSIS, run_id="stray", anchor=9000)
+        good = run(action("escalate_to_human", GOOD_ESCALATION), summary=GOOD_DIAGNOSIS)
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(good, stray),
+                receipts=(TechLeadReceipt("post_comment", 9000, 9000),),
+            ),
+        )
+
+        assert card.out_of_scope == ("post_comment executed on #9000, outside the exam's issues/PRs (anchor #9000)",)
+        assert not card.passed
+
+    def test_a_filing_the_run_owns_is_in_scope(self) -> None:
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                item(issue_labels=("blocked-failed",), prs=(pr(),)),
+                runs=(run(action("escalate_to_human", GOOD_ESCALATION), summary=GOOD_DIAGNOSIS),),
+                receipts=(TechLeadReceipt("create_issue", 9100, ISSUE),),
+                owned=frozenset({ISSUE, PR, 9100}),
+            ),
+        )
+        assert card.out_of_scope == () and card.passed, card.failures

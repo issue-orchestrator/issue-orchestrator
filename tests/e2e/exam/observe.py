@@ -82,32 +82,26 @@ def item_events(
     ]
 
 
-PULLS_PAGE = 100
-
-
 def linked_pull_requests(repo: str, issue_number: int, *, state: str) -> list[PRInfo]:
-    """The item's PRs, linked the way the engine links them — or raise.
+    """The item's PRs, linked the way the engine links them, from COMPLETE reads.
 
     Not the search API ``get_prs_for_issue`` uses: the harness shares the
     engine's token, and a probe a minute would spend the 30/minute search
     budget the engine under test needs (#7298 was that budget running out).
 
-    * ``open``: the complete open-PR walk, which raises rather than truncate.
-    * otherwise: the newest page of ``/pulls``. PR numbers share the issue
-      sequence, so every PR of the item is numbered above the issue; if a
-      FULL page's oldest PR is still above it, the item's PRs may be on a
-      later page and the read raises instead of silently missing them.
+    * ``open``: the complete open-PR walk.
+    * ``all``: every PR numbered above the issue (PR numbers share the issue
+      sequence, so every PR of the item is numbered above it).
+
+    Both raise rather than return a partial list.
     """
     adapter = _github_adapter(repo)
     if state == "open":
         prs = adapter.list_open_prs_complete()
+    elif state == "all":
+        prs = adapter.list_prs_numbered_above(issue_number)
     else:
-        prs = adapter.list_prs(state=state, limit=PULLS_PAGE)
-        if len(prs) >= PULLS_PAGE and min(pr.number for pr in prs) > issue_number:
-            raise RuntimeError(
-                f"the newest {PULLS_PAGE} PRs are all newer than issue #{issue_number};"
-                " its PRs may be on a later page, so the exam cannot prove it saw them"
-            )
+        raise ValueError(f"unsupported PR state {state!r}")
     return [pr for pr in prs if extract_issue_number_from_pr(pr) == issue_number]
 
 
@@ -332,6 +326,21 @@ def observe_tech_lead_runs(
     return tuple(runs)
 
 
+def owned_numbers(repo: str, run_label: str, extra_prs: Iterable[int]) -> frozenset[int]:
+    """Every issue/PR the run owns, read from GitHub (complete reads only).
+
+    The harness creates its issues WITH the run label and the engine files
+    its own issues with it (``filtering.label``), so "carries the run label"
+    is ownership — plus every PR of those issues, and the PRs the harness
+    seeded itself.
+    """
+    issues = [issue.number for issue in _github_adapter(repo).list_issues(labels=[run_label], state="all")]
+    owned = set(issues) | set(extra_prs)
+    for number in issues:
+        owned.update(pr.number for pr in linked_pull_requests(repo, number, state="all"))
+    return frozenset(owned)
+
+
 def build_observation(
     *,
     case_id: str,
@@ -339,6 +348,7 @@ def build_observation(
     items: tuple[WorkItemFact, ...],
     tech_lead_runs: tuple[TechLeadRunFact, ...],
     events: Iterable[Mapping[str, Any]],
+    owned: frozenset[int],
     gh_audit_report: Mapping[str, Any],
     elapsed_seconds: float,
     ended_by: RunEnd,
@@ -350,6 +360,7 @@ def build_observation(
         items=items,
         tech_lead_runs=tech_lead_runs,
         tech_lead_receipts=executed_receipts(events),
+        owned_numbers=owned,
         # The engine is a fresh process per run, so its report IS the run's calls.
         github_calls=GitHubCallCounts.between(None, gh_audit_report),
         elapsed_seconds=elapsed_seconds,

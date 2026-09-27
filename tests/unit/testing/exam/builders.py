@@ -111,14 +111,19 @@ def observation(
     *,
     runs: tuple[TechLeadRunFact, ...] = (),
     receipts: tuple[TechLeadReceipt, ...] = (),
+    owned: frozenset[int] | None = None,
     ended_by: RunEnd = RunEnd.GOAL_REACHED,
 ) -> ExamObservation:
+    """``owned`` defaults to the subject and its PRs, as the harness gathers it."""
     return ExamObservation(
         case_id=case_id,
         engine_commit="c3784fe0000000000000000000000000000000000",
         items=(subject,),
         tech_lead_runs=runs,
         tech_lead_receipts=receipts,
+        owned_numbers=owned
+        if owned is not None
+        else frozenset({subject.issue_number, *(p.number for p in subject.pull_requests)}),
         github_calls=GitHubCallCounts.between(None, AUDIT),
         elapsed_seconds=321.0,
         ended_by=ended_by,

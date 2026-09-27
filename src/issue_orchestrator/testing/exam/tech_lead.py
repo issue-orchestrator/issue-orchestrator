@@ -116,23 +116,31 @@ def resolve_dispositions(
     return tuple(resolved)
 
 
+def _int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def executed_receipts(events: Iterable[Mapping[str, Any]]) -> tuple[TechLeadReceipt, ...]:
-    """Every ``tech_lead.action_executed`` event, unattributed."""
+    """Every ``tech_lead.action_executed`` event, unattributed, with the
+    issue/PR its effect LANDED on resolved from the emitter's own fields:
+
+    * act-level executors name it: ``target_number``;
+    * ``create_issue`` names the issue it filed: ``created_issue_number``;
+    * ``post_comment`` / ``escalate_to_human`` record the issue they wrote
+      to as ``issue_number`` (``control/required_issue_comment.py``,
+      ``control/tech_lead_human_disposition.py``).
+    """
     receipts: list[TechLeadReceipt] = []
     for event in events:
         if event.get("type") != EXECUTED:
             continue
         payload = _payload(event)
-        anchor = payload.get("issue_number")
+        anchor = _int(payload.get("issue_number"))
         action_type = _event_action_type(payload)
-        if not isinstance(anchor, int) or isinstance(anchor, bool) or action_type is None:
+        if anchor is None or action_type is None:
             raise ValueError(f"tech-lead execution receipt without anchor/action: {event!r}")
-        target = payload.get("target_number")
+        target = _int(payload.get("target_number")) or _int(payload.get("created_issue_number")) or anchor
         receipts.append(
-            TechLeadReceipt(
-                action_type=action_type,
-                target_number=target if isinstance(target, int) and not isinstance(target, bool) else None,
-                anchor_issue_number=anchor,
-            )
+            TechLeadReceipt(action_type=action_type, target_number=target, anchor_issue_number=anchor)
         )
     return tuple(receipts)
