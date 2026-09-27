@@ -58,7 +58,11 @@ from .actions import (
 from .provider_impact import ApplyProviderImpactAction
 from .action_results import ActionResult, ActionResultType
 from .action_liveness import ActionLivenessOwner
-from .reconciliation import ReconciliationRequired, get_pause_label
+from .reconciliation import (
+    ReconciliationRequired,
+    get_pause_label,
+    is_paused_for_reconciliation,
+)
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -226,11 +230,12 @@ def outcome_of_error(error: Exception) -> ActionOutcome:
     way until a person reconciles it and removes the label (census loop #4).
     Any other drift, a lost claim, or an unexpected error may heal.
     """
-    pause_label = get_pause_label()
-    if isinstance(error, ReconciliationRequired) and pause_label in error.actual.labels:
+    if isinstance(error, ReconciliationRequired) and is_paused_for_reconciliation(
+        error.actual.labels
+    ):
         return ActionOutcome.needs_human(
-            f"subject is paused behind {pause_label}; every planned mutation is"
-            " refused until a person reconciles it and removes the label"
+            f"subject is paused behind {get_pause_label()}; every planned mutation"
+            " is refused until a person reconciles it and removes the label"
         )
     return _transient(f"{type(error).__name__}: {error}", host_rate_limit_of(error))
 

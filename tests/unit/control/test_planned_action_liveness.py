@@ -109,6 +109,7 @@ class _Engine:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         self.tick_count = 0
 
@@ -261,8 +262,9 @@ def _refused_for_pause(action):
 def test_a_paused_subject_parks_its_mutations_and_stops_halting_the_plan(sample_config) -> None:
     """Census #4: every tick planned the stale-label removal first, it was
     refused for the pause label, and the refusal halted the rest of the plan -
-    133 ticks of starved review launches. Now it is refused ONCE, parks as
-    needs-human, and the actions planned after it run on the very next tick."""
+    133 ticks of starved review launches. #7349 withholds only the refused
+    subject; the liveness owner makes the refusal happen ONCE: it parks as
+    needs-human and is not attempted again while the facts stand still."""
     stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
     review = AddLabelAction(issue_number=381, label="code-reviewed", reason="unrelated work")
     engine = _Engine(
@@ -277,8 +279,8 @@ def test_a_paused_subject_parks_its_mutations_and_stops_halting_the_plan(sample_
         engine.tick()
 
     assert engine.attempts_of(stale.action_type) == 1
-    assert engine.pauses == [410]
-    assert engine.attempts_of(review.action_type) == 5
+    assert engine.pauses == [], "already paused: #7349 does not pause it again"
+    assert engine.attempts_of(review.action_type) == 6, "every tick, the refusal's included"
     [parked] = engine.escalation.parked
     assert parked.last_outcome.value == "needs_human"
     assert parked.key.escalation_issue == 410

@@ -541,10 +541,14 @@ def test_terminate_tech_lead_terminal_failure_does_not_abort_other_effects(
     outcome = orchestrator.terminate_tech_lead_session(tech_lead)
 
     assert outcome.terminal_stopped is False
-    # ...yet claim + worktree still handled, and the session reconciled.
+    # ...yet claim + worktree still handled. The session record is KEPT: a
+    # terminal that would not stop may still be running, and the record is what
+    # stops the recovery sweep re-admitting its work beside it (#7348 r2); the
+    # ordinary completion path reconciles it once the terminal is gone.
     cm.release_claim.assert_called_once_with(77, "lease-1")
     wtm.remove_checkout_and_branch.assert_called_once_with(scratch, force=True)
-    assert orchestrator.state.active_sessions == []
+    assert orchestrator.state.active_sessions == [tech_lead]
+    assert outcome.clean is False
 
 
 def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
@@ -575,8 +579,13 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
     object.__setattr__(orchestrator.deps, "repository_host", repository_host)
 
+    from tests.unit.session_run_helpers import make_session_run_assets
+
     scratch = tmp_path / "repo-tech-lead-77-abc"
     session = SimpleNamespace(
+        # The real facade's stop preserves the exact run, so the session needs
+        # one; without it the stop failed and termination kept the record.
+        run_assets=make_session_run_assets(scratch, session_name="tech-lead-77"),
         terminal_id="tech-lead-77",
         key=SimpleNamespace(stable_id=lambda: "tech_lead:77"),
         issue=SimpleNamespace(number=77),
