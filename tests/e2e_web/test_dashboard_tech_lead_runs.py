@@ -124,7 +124,7 @@ class TechLeadWebOrchestrator(FlowWebMockOrchestrator):
             Session(
                 key=SessionKey(
                     issue=GitHubIssueKey(repo="test/repo", external_id=str(ANCHOR)),
-                    kind=SessionKind.CODE,
+                    kind=SessionKind.TECH_LEAD,
                 ),
                 issue=anchor,
                 agent_config=self.config.agents["agent:web"],
