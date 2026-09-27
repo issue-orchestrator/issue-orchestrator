@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
     from types import FrameType
+    from .action_liveness import ActionLivenessOwner
     from ..domain.models import OrchestratorState
     from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 
 from ..events import EventName, EventContext
 from ..ports import EventSink, make_trace_event, RepositoryHost
-from .actions import AddLabelAction
 from .stale_detection import _detect_stale_claims, _detect_stale_in_progress
 from .queue_cache import (
     QueueCache,
@@ -49,7 +49,7 @@ from .tech_lead_run_ownership import TechLeadRunOwnership, single_instance_run_o
 from .tech_lead_run_wiring import tech_lead_state_handlers
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
-from .reconciliation import ReconciliationRequired, ReconciliationResponse, get_pause_label, response_to
+from .reconciliation import ReconciliationRequired, ReconciliationResponse, response_to
 from .planned_action_liveness import PlannedActionLiveness, outcome_of_error, outcome_of_result
 from ..domain.action_liveness import ActionOutcome
 from .tick_telemetry import report_slow_tick
@@ -519,36 +519,27 @@ class OrchestratorSupport:
 
 def pause_issue_for_reconciliation(
     events: EventSink,
-    action_applier: "ActionApplier",
+    pauses: "ActionLivenessOwner",
     event_context: EventContext,
     issue_number: int,
     reason: str,
 ) -> None:
-    """Pause an issue due to reconciliation failure (state drift)."""
-    pause_label = get_pause_label()
+    """Pause an issue due to reconciliation failure (state drift).
+
+    The pause is owed to the liveness owner, the one owner of every GitHub
+    write the orchestrator owes: a refusal (a rate limit, a 502) is retried
+    there each cycle until the label lands, rather than being reported once
+    and forgotten while the action that found the drift parks. The owner
+    announces a pause that lands; one that did not land now is a visible
+    failed step.
+    """
     try:
-        result = action_applier.apply(AddLabelAction(
-            issue_number=issue_number,
-            label=pause_label,
-            reason="reconciliation drift detected",
-        ))
-        if not result.success:
-            _report_pause_not_applied(events, event_context, issue_number, result.error or "unknown error")
-            return
-        logger.warning(
-            "[RECONCILIATION] Paused issue #%d with label '%s': %s",
-            issue_number, pause_label, reason
-        )
-        events.publish(make_trace_event(
-            EventName.ISSUE_PAUSED_RECONCILE,
-            event_context.enrich({
-                "issue_number": issue_number,
-                "pause_label": pause_label,
-                "reason": reason,
-            }),
-        ))
+        result = pauses.owe_pause(issue_number, reason)
     except Exception as e:
         _report_pause_not_applied(events, event_context, issue_number, str(e))
+        return
+    if not result.committed:
+        _report_pause_not_applied(events, event_context, issue_number, result.error)
 
 
 def _report_pause_not_applied(

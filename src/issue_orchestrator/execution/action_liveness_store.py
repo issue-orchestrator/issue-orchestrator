@@ -26,7 +26,8 @@ from ..domain.action_liveness import (
     OutcomeKind,
 )
 from ..infra.sqlite_connection import open_sqlite
-from ..ports.action_liveness import PendingRelease
+from ..domain.owed_write import EffectDebt
+from ..ports.action_liveness import PendingPause, PendingRelease
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS action_liveness (
@@ -45,6 +46,8 @@ CREATE TABLE IF NOT EXISTS action_liveness (
     escalation_attempts INTEGER NOT NULL DEFAULT 0 CHECK (escalation_attempts >= 0),
     escalation_attempted_at TEXT,
     last_planned_at TEXT,
+    escalation_retry_at TEXT,
+    escalation_first_failed_at TEXT,
     PRIMARY KEY (subject, action, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS action_liveness_escalation_issue
@@ -71,14 +74,42 @@ CREATE TABLE IF NOT EXISTS action_liveness_progress (
 CREATE TABLE IF NOT EXISTS action_liveness_release (
     issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-    attempted_at TEXT
+    attempted_at TEXT,
+    retry_at TEXT,
+    first_failed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS action_liveness_pause (
+    issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0),
+    reason TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    attempted_at TEXT,
+    retry_at TEXT,
+    first_failed_at TEXT
 );
 """
+
+#: Columns added after a table first shipped: (table, column, ALTER statement).
+#: Additive only, applied when missing, so an existing database keeps its rows.
+_ADDED_COLUMNS = (
+    ("action_liveness", "escalation_retry_at",
+     "ALTER TABLE action_liveness ADD COLUMN escalation_retry_at TEXT"),
+    ("action_liveness", "escalation_first_failed_at",
+     "ALTER TABLE action_liveness ADD COLUMN escalation_first_failed_at TEXT"),
+    ("action_liveness_release", "retry_at",
+     "ALTER TABLE action_liveness_release ADD COLUMN retry_at TEXT"),
+    ("action_liveness_release", "first_failed_at",
+     "ALTER TABLE action_liveness_release ADD COLUMN first_failed_at TEXT"),
+)
+_TABLE_COLUMNS = {
+    "action_liveness": "SELECT name FROM pragma_table_info('action_liveness')",
+    "action_liveness_release": "SELECT name FROM pragma_table_info('action_liveness_release')",
+}
 
 _SELECT = (
     "SELECT subject, action, fingerprint, escalation_issue, attempts, first_failed_at,"
     " last_failed_at, last_outcome, last_reason, next_attempt_at, escalated,"
-    " explained, escalation_attempts, escalation_attempted_at, last_planned_at"
+    " explained, escalation_attempts, escalation_attempted_at, last_planned_at,"
+    " escalation_retry_at, escalation_first_failed_at"
     " FROM action_liveness"
 )
 _ORDER = " ORDER BY last_failed_at, subject, action, fingerprint"
@@ -102,8 +133,9 @@ _UPSERT = (
     "INSERT OR REPLACE INTO action_liveness (subject, action, fingerprint,"
     " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
     " last_reason, next_attempt_at, escalated, explained, escalation_attempts,"
-    " escalation_attempted_at, last_planned_at)"
-    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " escalation_attempted_at, last_planned_at, escalation_retry_at,"
+    " escalation_first_failed_at)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _TOUCH = (
     "UPDATE action_liveness SET last_planned_at=?"
@@ -124,7 +156,8 @@ _NOTE_PROGRESS = (
 )
 _UPDATE_ESCALATION = (
     "UPDATE action_liveness SET escalated=?, explained=?, escalation_attempts=?,"
-    " escalation_attempted_at=? WHERE subject=? AND action=? AND fingerprint=?"
+    " escalation_attempted_at=?, escalation_retry_at=?, escalation_first_failed_at=?"
+    " WHERE subject=? AND action=? AND fingerprint=?"
     " AND first_failed_at=? AND next_attempt_at IS NULL"
 )
 _DELETE_KEY = "DELETE FROM action_liveness WHERE subject=? AND action=? AND fingerprint=?"
@@ -149,6 +182,25 @@ _ANNOUNCEMENTS = (
 )
 _FORGET_ANNOUNCEMENT = "DELETE FROM action_liveness_announcement WHERE announcement_id=?"
 _OWE_RELEASE = "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)"
+_RELEASES = (
+    "SELECT issue_number, attempts, attempted_at, retry_at, first_failed_at"
+    " FROM action_liveness_release ORDER BY issue_number"
+)
+_SET_RELEASE_DEBT = (
+    "UPDATE action_liveness_release SET attempts=?, attempted_at=?, retry_at=?,"
+    " first_failed_at=? WHERE issue_number=?"
+)
+_OWE_PAUSE = (
+    "INSERT OR IGNORE INTO action_liveness_pause (issue_number, reason) VALUES (?, ?)"
+)
+_PAUSE_COLUMNS = "SELECT issue_number, reason, attempts, attempted_at, retry_at, first_failed_at"
+_PAUSES = _PAUSE_COLUMNS + " FROM action_liveness_pause ORDER BY issue_number"
+_PAUSE = _PAUSE_COLUMNS + " FROM action_liveness_pause WHERE issue_number=?"
+_SET_PAUSE_DEBT = (
+    "UPDATE action_liveness_pause SET attempts=?, attempted_at=?, retry_at=?,"
+    " first_failed_at=? WHERE issue_number=?"
+)
+_FORGET_PAUSE = "DELETE FROM action_liveness_pause WHERE issue_number=?"
 
 
 class SQLiteActionLivenessStore:
@@ -160,6 +212,11 @@ class SQLiteActionLivenessStore:
         self._write_lock = threading.Lock()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection().executescript(_SCHEMA)
+        with self._write() as conn:
+            for table, column, statement in _ADDED_COLUMNS:
+                present = {found["name"] for found in conn.execute(_TABLE_COLUMNS[table])}
+                if column not in present:
+                    conn.execute(statement)
 
     def _connection(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -211,8 +268,7 @@ class SQLiteActionLivenessStore:
             updated = conn.execute(
                 _UPDATE_ESCALATION,
                 (
-                    int(row.escalated), int(row.explained), row.escalation_attempts,
-                    _iso(row.escalation_attempted_at),
+                    int(row.escalated), int(row.explained), *_debt_columns(row.escalation),
                     key.identity.subject, key.identity.action, key.fingerprint,
                     row.first_failed_at.isoformat(),
                 ),
@@ -325,6 +381,7 @@ class SQLiteActionLivenessStore:
             rows = tuple(_row(found) for found in conn.execute(_BY_ISSUE, (issue_number,)))
             conn.execute(_DELETE_ISSUE, (issue_number,))
             conn.execute(_FORGET_RELEASE, (issue_number,))
+            conn.execute(_FORGET_PAUSE, (issue_number,))
             for row in rows:
                 if row.parked:
                     _owe_announcement(conn, row, LivenessAnnouncement.RELEASED)
@@ -351,22 +408,30 @@ class SQLiteActionLivenessStore:
             conn.execute(_OWE_RELEASE, (issue_number,))
 
     def pending_releases(self) -> tuple[PendingRelease, ...]:
-        rows = self._connection().execute(
-            "SELECT issue_number, attempts, attempted_at FROM action_liveness_release"
-            " ORDER BY issue_number"
-        ).fetchall()
         return tuple(
-            PendingRelease(row["issue_number"], row["attempts"], _parse(row["attempted_at"]))
-            for row in rows
+            PendingRelease(found["issue_number"], _debt(found))
+            for found in self._connection().execute(_RELEASES).fetchall()
         )
 
-    def record_release_attempt(self, issue_number: int, attempted_at: datetime) -> None:
+    def set_release_debt(self, issue_number: int, debt: EffectDebt) -> None:
         with self._write() as conn:
-            conn.execute(
-                "UPDATE action_liveness_release SET attempts=attempts+1, attempted_at=?"
-                " WHERE issue_number=?",
-                (attempted_at.isoformat(), issue_number),
-            )
+            conn.execute(_SET_RELEASE_DEBT, (*_debt_columns(debt), issue_number))
+
+    def request_pause(self, issue_number: int, reason: str) -> PendingPause:
+        with self._write() as conn:
+            conn.execute(_OWE_PAUSE, (issue_number, reason))
+            return _pause(conn.execute(_PAUSE, (issue_number,)).fetchone())
+
+    def pending_pauses(self) -> tuple[PendingPause, ...]:
+        return tuple(_pause(found) for found in self._connection().execute(_PAUSES).fetchall())
+
+    def set_pause_debt(self, issue_number: int, debt: EffectDebt) -> None:
+        with self._write() as conn:
+            conn.execute(_SET_PAUSE_DEBT, (*_debt_columns(debt), issue_number))
+
+    def clear_pause(self, issue_number: int) -> None:
+        with self._write() as conn:
+            conn.execute(_FORGET_PAUSE, (issue_number,))
 
     def clear_release(self, issue_number: int) -> None:
         with self._write() as conn:
@@ -401,9 +466,11 @@ def _upsert(conn: sqlite3.Connection, row: LivenessRow) -> None:
             _iso(row.next_attempt_at),
             int(row.escalated),
             int(row.explained),
-            row.escalation_attempts,
-            _iso(row.escalation_attempted_at),
+            row.escalation.attempts,
+            _iso(row.escalation.attempted_at),
             _iso(row.last_planned_at),
+            _iso(row.escalation.retry_at),
+            _iso(row.escalation.first_failed_at),
         ),
     )
 
@@ -446,10 +513,35 @@ def _row(found: sqlite3.Row) -> LivenessRow:
         next_attempt_at=_parse(found["next_attempt_at"]),
         escalated=bool(found["escalated"]),
         explained=bool(found["explained"]),
-        escalation_attempts=found["escalation_attempts"],
-        escalation_attempted_at=_parse(found["escalation_attempted_at"]),
+        escalation=EffectDebt(
+            attempts=found["escalation_attempts"],
+            attempted_at=_parse(found["escalation_attempted_at"]),
+            retry_at=_parse(found["escalation_retry_at"]),
+            first_failed_at=_parse(found["escalation_first_failed_at"]),
+        ),
         last_planned_at=_parse(found["last_planned_at"]),
     )
+
+
+def _debt_columns(debt: EffectDebt) -> tuple[object, ...]:
+    """(attempts, attempted_at, retry_at, first_failed_at), in column order."""
+    return (
+        debt.attempts, _iso(debt.attempted_at), _iso(debt.retry_at),
+        _iso(debt.first_failed_at),
+    )
+
+
+def _debt(found: sqlite3.Row) -> EffectDebt:
+    return EffectDebt(
+        attempts=found["attempts"],
+        attempted_at=_parse(found["attempted_at"]),
+        retry_at=_parse(found["retry_at"]),
+        first_failed_at=_parse(found["first_failed_at"]),
+    )
+
+
+def _pause(found: sqlite3.Row) -> PendingPause:
+    return PendingPause(found["issue_number"], found["reason"], _debt(found))
 
 
 __all__ = ["SQLiteActionLivenessStore"]

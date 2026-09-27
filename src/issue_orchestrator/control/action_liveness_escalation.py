@@ -14,6 +14,11 @@ The block goes through the action applier like every other orchestrator write
 (orchestrator-authoritative, and the shared-block owner records the cause), but
 straight to the applier rather than through a plan, so an escalation is never
 itself subject to the liveness gate it reports on.
+
+The same adapter lands the reconciliation pause observed drift calls for: one
+owner (the liveness owner) for every GitHub write the orchestrator owes. Every
+write reports a typed :class:`~..domain.owed_write.EffectResult`, keeping the
+host's rate limit so the owner waits for its reset instead of spending.
 """
 
 from __future__ import annotations
@@ -23,10 +28,13 @@ from dataclasses import dataclass
 
 from ..domain.action_liveness import LivenessRow
 from ..domain.human_block import NeedsHumanCause
+from ..domain.owed_write import EffectResult
 from ..events import EventName
 from ..ports.event_sink import EventSink, make_trace_event
+from ..ports.repository_host import host_rate_limit_of
 from .action_results import SupportsApplyAction
 from .actions import AddCommentAction, AddLabelAction, RemoveLabelAction
+from .reconciliation import get_pause_label
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +92,7 @@ class ActionLivenessEscalation:
         for row in rows:
             self.events.publish(make_trace_event(EventName.ACTION_RELEASED, _payload(row)))
 
-    def block(self, row: LivenessRow) -> bool:
+    def block(self, row: LivenessRow) -> EffectResult:
         issue = row.key.escalation_issue
         if issue is None:
             raise ValueError("a block needs the row's escalation issue")
@@ -96,13 +104,13 @@ class ActionLivenessEscalation:
         )
         return self._apply(block)
 
-    def explain(self, row: LivenessRow) -> bool:
+    def explain(self, row: LivenessRow) -> EffectResult:
         issue = row.key.escalation_issue
         if issue is None:
             raise ValueError("an explanation needs the row's escalation issue")
         return self._apply(AddCommentAction(number=issue, comment=parked_comment(row)))
 
-    def unblock(self, issue_number: int) -> bool:
+    def unblock(self, issue_number: int) -> EffectResult:
         return self._apply(
             RemoveLabelAction(
                 issue_number=issue_number,
@@ -112,23 +120,46 @@ class ActionLivenessEscalation:
             )
         )
 
-    def _apply(self, action: AddLabelAction | AddCommentAction | RemoveLabelAction) -> bool:
-        # A failed escalation write must not abort the tick that parked the
-        # action: the park itself is already durable and on the timeline.
+    def pause(self, issue_number: int, reason: str) -> EffectResult:
+        pause_label = get_pause_label()
+        result = self._apply(
+            AddLabelAction(
+                issue_number=issue_number,
+                label=pause_label,
+                reason="reconciliation drift detected",
+            )
+        )
+        if result.committed:
+            logger.warning(
+                "[RECONCILIATION] Paused issue #%d with label '%s': %s",
+                issue_number, pause_label, reason,
+            )
+            self.events.publish(make_trace_event(
+                EventName.ISSUE_PAUSED_RECONCILE,
+                {"issue_number": issue_number, "pause_label": pause_label, "reason": reason},
+            ))
+        return result
+
+    def _apply(
+        self, action: AddLabelAction | AddCommentAction | RemoveLabelAction
+    ) -> EffectResult:
+        # A failed write must not abort the tick that owes it: the debt itself
+        # is already durable, and the owner retries it.
         try:
             result = self.applier.apply(action)
-        except Exception:
-            logger.exception(
-                "[LIVENESS] Escalation write %s failed", action.action_type.value
+        except Exception as error:
+            logger.exception("[LIVENESS] Owed write %s failed", action.action_type.value)
+            return EffectResult.refused(
+                f"{type(error).__name__}: {error}", host_rate_limit_of(error)
             )
-            return False
-        if not result.success:
-            logger.warning(
-                "[LIVENESS] Escalation write %s did not commit: %s",
-                action.action_type.value,
-                result.error,
-            )
-        return result.success
+        if result.success:
+            return EffectResult.landed()
+        logger.warning(
+            "[LIVENESS] Owed write %s did not commit: %s",
+            action.action_type.value,
+            result.error,
+        )
+        return EffectResult.refused(result.error or "unknown error", result.host_rate_limit)
 
 
 __all__ = ["ActionLivenessEscalation", "parked_comment"]

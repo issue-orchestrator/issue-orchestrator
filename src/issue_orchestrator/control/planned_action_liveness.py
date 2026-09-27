@@ -317,7 +317,9 @@ class PlannedActionLiveness:
                 )
             )
         # Once per planning cycle, AFTER this plan's keys were asked (and so
-        # marked live): retire what nobody asks about, retry owed effects.
+        # marked live): retire what nobody asks about, retry owed effects. An
+        # owed pause this tick observed on its issue is already there.
+        self.owner.settle_observed_pauses(labels)
         self.owner.reconcile_effects()
         return Plan(
             actions=tuple(admitted),

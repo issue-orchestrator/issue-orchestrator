@@ -36,6 +36,7 @@ from enum import Enum, StrEnum
 from pathlib import PurePath
 
 from .host_rate_limit import RATE_LIMIT_DEFERRAL_BOUND
+from .owed_write import NO_DEBT, EffectDebt, EffectResult
 
 
 class OutcomeKind(StrEnum):
@@ -196,9 +197,9 @@ class LivenessRow:
     does not appear in it. ``next_attempt_at`` is ``None`` exactly when parked.
     ``escalated`` records that the human-visible block for this park committed,
     and ``explained`` that its explanatory comment did. Until both have,
-    ``escalation_attempts`` and ``escalation_attempted_at`` pace the owner's
-    retries of the one still owed (:meth:`LivenessPolicy.effect_due`); the
-    count restarts when the block lands and the comment becomes the debt.
+    ``escalation`` paces the owner's retries of the one still owed
+    (:meth:`LivenessPolicy.effect_due`); it restarts when the block lands and
+    the comment becomes the debt.
     """
 
     key: LivenessKey
@@ -210,8 +211,7 @@ class LivenessRow:
     next_attempt_at: datetime | None
     escalated: bool = False
     explained: bool = False
-    escalation_attempts: int = 0
-    escalation_attempted_at: datetime | None = None
+    escalation: EffectDebt = NO_DEBT
     #: When a replanning path last asked this exact question (admitted or
     #: held). ``None`` until it is asked again after its own attempt. A row
     #: nobody has asked about for :attr:`LivenessPolicy.stale_after` is no
@@ -232,18 +232,11 @@ class LivenessRow:
         if self.next_attempt_at is not None:
             _require_aware(self.next_attempt_at, "next_attempt_at")
         if self.next_attempt_at is not None and (
-            self.escalated or self.explained or self.escalation_attempts
-            or self.escalation_attempted_at
+            self.escalated or self.explained or self.escalation != NO_DEBT
         ):
             raise ValueError("only a parked row can have been escalated")
         if self.explained and not self.escalated:
             raise ValueError("only an escalated park can have been explained")
-        if self.escalation_attempts < 0:
-            raise ValueError("escalation_attempts cannot be negative")
-        if (self.escalation_attempts == 0) != (self.escalation_attempted_at is None):
-            raise ValueError("an escalation attempt count needs its attempt time")
-        if self.escalation_attempted_at is not None:
-            _require_aware(self.escalation_attempted_at, "escalation_attempted_at")
         if self.last_planned_at is not None:
             _require_aware(self.last_planned_at, "last_planned_at")
 
@@ -321,16 +314,51 @@ class LivenessPolicy:
         if self.declared_wait_bound < timedelta(0):
             raise ValueError("declared_wait_bound cannot be negative")
 
-    def effect_due(self, attempts: int, last: datetime | None, now: datetime) -> bool:
-        """May the owner try an escalation effect (a block, a release) again?
+    def effect_due(self, debt: EffectDebt, now: datetime, *, capped: bool = True) -> bool:
+        """May the owner try an owed write (a block, a comment, a withdrawal,
+        a pause) again?
 
-        The same budget as an action, paced at ``max_backoff``: a person is
-        still shown the park on the timeline and the board when GitHub keeps
-        refusing the label, so the write itself does not retry forever.
+        Not before its ``retry_at`` -- a rate limit's reset, or ``max_backoff``
+        after a refusal. A ``capped`` debt stops after ``max_attempts`` spent
+        refusals: a person is still shown the park on the timeline and the
+        board. An uncapped one (a pause observed drift calls for) is retried at
+        that pace until it lands: dropping it is the failure it prevents.
         """
-        if attempts >= self.max_attempts:
+        if debt.retry_at is not None and now < debt.retry_at:
             return False
-        return last is None or now - last >= self.max_backoff
+        return not (capped and debt.attempts >= self.max_attempts)
+
+    def effect_after(
+        self, debt: EffectDebt, result: EffectResult, now: datetime
+    ) -> EffectDebt | None:
+        """The debt one attempt leaves behind; ``None`` once it committed.
+
+        A typed rate limit whose reset is still ahead waits until then and
+        spends nothing -- for up to ``declared_wait_bound`` since the debt's
+        first refusal, and never past it. Any other refusal, or a limit past
+        the bound, spends an attempt and waits ``max_backoff``.
+        """
+        _require_aware(now, "now")
+        if result.committed:
+            return None
+        first = debt.first_failed_at or now
+        limit = result.rate_limit
+        if (
+            limit is not None
+            and limit.resets_at > now
+            and now - first < self.declared_wait_bound
+        ):
+            return replace(
+                debt,
+                retry_at=min(limit.resets_at, first + self.declared_wait_bound),
+                first_failed_at=first,
+            )
+        return EffectDebt(
+            attempts=debt.attempts + 1,
+            attempted_at=now,
+            retry_at=now + self.max_backoff,
+            first_failed_at=first,
+        )
 
     def backoff(self, attempts: int) -> timedelta:
         exponent = max(attempts - 1, 0)
@@ -372,8 +400,7 @@ class LivenessPolicy:
                 attempts=spent + 1,
                 escalated=previous.escalated,
                 explained=previous.explained,
-                escalation_attempts=previous.escalation_attempts,
-                escalation_attempted_at=previous.escalation_attempted_at,
+                escalation=previous.escalation,
             )
         if outcome.kind is OutcomeKind.WAITING:
             return _backing_off(row, next_attempt_at=now + self.max_backoff)
@@ -416,8 +443,7 @@ def _backing_off(
         next_attempt_at=next_attempt_at,
         escalated=False,
         explained=False,
-        escalation_attempts=0,
-        escalation_attempted_at=None,
+        escalation=NO_DEBT,
     )
 
 

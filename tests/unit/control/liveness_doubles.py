@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from issue_orchestrator.control.action_liveness import ActionLivenessOwner
 from issue_orchestrator.control.planned_action_liveness import PlannedActionLiveness
 from issue_orchestrator.control.planner_types import OrchestratorSnapshot, Plan
-from issue_orchestrator.ports.action_liveness import PendingRelease
+from issue_orchestrator.domain.owed_write import EffectDebt, EffectResult
+from issue_orchestrator.ports.action_liveness import PendingPause, PendingRelease
 from issue_orchestrator.domain.action_liveness import (
     ActionIdentity,
     LivenessKey,
@@ -23,6 +24,7 @@ class InMemoryActionLivenessStore:
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], LivenessRow] = {}
         self.releases: dict[int, PendingRelease] = {}
+        self.pauses: dict[int, PendingPause] = {}
         self.announcements: dict = {}
         self._next_announcement = 0
         self.progress: dict[ActionIdentity, datetime] = {}
@@ -68,8 +70,7 @@ class InMemoryActionLivenessStore:
             current,
             escalated=row.escalated,
             explained=row.explained,
-            escalation_attempts=row.escalation_attempts,
-            escalation_attempted_at=row.escalation_attempted_at,
+            escalation=row.escalation,
         )
         return True
 
@@ -128,6 +129,7 @@ class InMemoryActionLivenessStore:
         from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
 
         self.releases.pop(issue_number, None)
+        self.pauses.pop(issue_number, None)
         gone = self._pop(lambda row: row.key.escalation_issue == issue_number)
         for row in gone:
             if row.parked:
@@ -159,16 +161,28 @@ class InMemoryActionLivenessStore:
         return tuple(row for row in self.parked_rows() if row.owes_escalation)
 
     def request_release(self, issue_number: int) -> None:
-        self.releases.setdefault(issue_number, PendingRelease(issue_number, 0, None))
+        self.releases.setdefault(issue_number, PendingRelease(issue_number))
 
     def pending_releases(self) -> tuple[PendingRelease, ...]:
         return tuple(self.releases[number] for number in sorted(self.releases))
 
-    def record_release_attempt(self, issue_number: int, attempted_at: datetime) -> None:
-        pending = self.releases[issue_number]
-        self.releases[issue_number] = PendingRelease(
-            issue_number, pending.attempts + 1, attempted_at
-        )
+    def set_release_debt(self, issue_number: int, debt: EffectDebt) -> None:
+        if issue_number in self.releases:
+            self.releases[issue_number] = PendingRelease(issue_number, debt)
+
+    def request_pause(self, issue_number: int, reason: str) -> PendingPause:
+        return self.pauses.setdefault(issue_number, PendingPause(issue_number, reason))
+
+    def pending_pauses(self) -> tuple[PendingPause, ...]:
+        return tuple(self.pauses[number] for number in sorted(self.pauses))
+
+    def set_pause_debt(self, issue_number: int, debt: EffectDebt) -> None:
+        if issue_number in self.pauses:
+            pending = self.pauses[issue_number]
+            self.pauses[issue_number] = PendingPause(issue_number, pending.reason, debt)
+
+    def clear_pause(self, issue_number: int) -> None:
+        self.pauses.pop(issue_number, None)
 
     def clear_release(self, issue_number: int) -> None:
         self.releases.pop(issue_number, None)
@@ -203,21 +217,32 @@ class RecordingEscalation:
     def announce_released(self, rows: tuple[LivenessRow, ...]) -> None:
         self.released.append(rows)
 
-    def block(self, row: LivenessRow) -> bool:
+    pause_commits: bool = True
+    pauses: list[tuple[int, bool]] = field(default_factory=list)
+
+    def block(self, row: LivenessRow) -> EffectResult:
         self.blocks.append((row, self.commits))
-        return self.commits
+        return _result(self.commits)
 
-    def explain(self, row: LivenessRow) -> bool:
+    def explain(self, row: LivenessRow) -> EffectResult:
         self.explanations.append((row, self.explain_commits))
-        return self.explain_commits
+        return _result(self.explain_commits)
 
-    def unblock(self, issue_number: int) -> bool:
+    def unblock(self, issue_number: int) -> EffectResult:
         self.unblocks.append((issue_number, self.unblock_commits))
-        return self.unblock_commits
+        return _result(self.unblock_commits)
+
+    def pause(self, issue_number: int, reason: str) -> EffectResult:
+        self.pauses.append((issue_number, self.pause_commits))
+        return _result(self.pause_commits)
 
     @property
     def committed_blocks(self) -> list[LivenessRow]:
         return [row for row, committed in self.blocks if committed]
+
+
+def _result(committed: bool) -> EffectResult:
+    return EffectResult.landed() if committed else EffectResult.refused("refused")
 
 
 @dataclass
@@ -294,4 +319,19 @@ def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None):
     return RecoveryDrainLiveness(
         owner=owner or liveness_owner(),
         records=records if records is not None else QueuedOnIssueOne(),
+    )
+
+
+def applier_owner(applier, events, *, store=None, clock=None, policy=LivenessPolicy()):
+    """A liveness owner whose owed writes go through a real
+    ``ActionLivenessEscalation`` over ``applier`` (#7350)."""
+    from issue_orchestrator.control.action_liveness_escalation import ActionLivenessEscalation
+
+    return ActionLivenessOwner(
+        store=store if store is not None else InMemoryActionLivenessStore(),
+        escalation=ActionLivenessEscalation(
+            events=events, applier=applier, needs_human_label="needs-human"
+        ),
+        policy=policy,
+        clock=clock if clock is not None else ManualClock(),
     )

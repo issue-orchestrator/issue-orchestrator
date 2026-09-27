@@ -176,8 +176,12 @@ def _support_over(reader, events):
         pending_work_claims=MagicMock(),
     )
 
+    from tests.unit.control.liveness_doubles import applier_owner
+
+    pauses = applier_owner(applier, events)
+
     def pause(number, reason):
-        pause_issue_for_reconciliation(events, applier, context, number, reason)
+        pause_issue_for_reconciliation(events, pauses, context, number, reason)
 
     return support, labels, pause
 

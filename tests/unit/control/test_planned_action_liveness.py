@@ -1059,3 +1059,30 @@ def test_a_wrapped_stable_operation_supersedes_its_old_park(sample_config) -> No
 
     assert engine.owner.parked() == ()
     assert engine.escalation.unblocks == [(229, True)]
+
+
+def test_an_owed_pause_observed_on_its_issue_is_not_written_again() -> None:
+    """The planning cycle's snapshot shows the pause label on the issue the
+    pause is owed to: the debt is settled before owed writes are retried."""
+    escalation = RecordingEscalation(pause_commits=False)
+    store = InMemoryActionLivenessStore()
+    clock = ManualClock()
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock)
+    owner.owe_pause(410, "drift")
+    assert escalation.pauses == [(410, False)]
+    clock.advance(owner.policy.max_backoff)  # due again
+    snapshot = OrchestratorSnapshot(
+        issues=(Issue(number=410, title="#410", labels=["blocked", PAUSE]),),
+        active_sessions=(),
+        pending_reviews=(),
+        pending_reworks=(),
+        pending_tech_lead=(),
+        paused=False,
+    )
+
+    PlannedActionLiveness(owner, escalation_label="needs-human").admit(
+        Plan(actions=(), skipped=()), snapshot
+    )
+
+    assert store.pauses == {}
+    assert escalation.pauses == [(410, False)], "not written again"

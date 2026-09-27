@@ -1048,7 +1048,7 @@ class Orchestrator:
         return diagnosis.to_dict()
 
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None:
-        pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
+        pause_issue_for_reconciliation(self.deps.events, self.deps.action_liveness.owner, self._event_context, issue_number, reason)
 
     def _apply_plan(self, plan: "Plan") -> None:
         self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)

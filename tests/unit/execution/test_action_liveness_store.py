@@ -270,3 +270,57 @@ def test_a_settlement_owns_the_database_from_its_read(tmp_path) -> None:
     assert after.row(expected.key) is None
     kinds = [kind for _id, kind, _row_ in after.pending_announcements()]
     assert kinds.count(LivenessAnnouncement.PARKED) == kinds.count(LivenessAnnouncement.RELEASED)
+
+
+def test_an_existing_database_gains_the_owed_write_columns(tmp_path) -> None:
+    """A database from before owed writes carried their pacing keeps its rows
+    and gains the new columns additively (never a schema-version drop)."""
+    import sqlite3
+
+    from issue_orchestrator.domain.owed_write import EffectDebt
+
+    path = tmp_path / "l.sqlite"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        CREATE TABLE action_liveness (
+            subject TEXT NOT NULL, action TEXT NOT NULL, fingerprint TEXT NOT NULL,
+            escalation_issue INTEGER, attempts INTEGER NOT NULL,
+            first_failed_at TEXT NOT NULL, last_failed_at TEXT NOT NULL,
+            last_outcome TEXT NOT NULL, last_reason TEXT NOT NULL, next_attempt_at TEXT,
+            escalated INTEGER NOT NULL DEFAULT 0, explained INTEGER NOT NULL DEFAULT 0,
+            escalation_attempts INTEGER NOT NULL DEFAULT 0, escalation_attempted_at TEXT,
+            last_planned_at TEXT, PRIMARY KEY (subject, action, fingerprint));
+        CREATE TABLE action_liveness_release (
+            issue_number INTEGER PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0,
+            attempted_at TEXT);
+        INSERT INTO action_liveness_release (issue_number) VALUES (410);
+        """
+    )
+    old.commit()
+    old.close()
+
+    store = SQLiteActionLivenessStore(path)
+    debt = EffectDebt(1, NOW, NOW + timedelta(minutes=30), NOW)
+    parked = replace(_row(), escalation=debt)
+    store.put(parked)
+    store.set_release_debt(410, debt)
+
+    reopened = SQLiteActionLivenessStore(path)
+    assert reopened.row(parked.key) == parked
+    assert [(p.issue_number, p.debt) for p in reopened.pending_releases()] == [(410, debt)]
+
+
+def test_an_owed_pause_keeps_its_pacing_when_owed_again(tmp_path) -> None:
+    from issue_orchestrator.domain.owed_write import EffectDebt
+
+    store = SQLiteActionLivenessStore(tmp_path / "l.sqlite")
+    store.request_pause(410, "drift")
+    debt = EffectDebt(0, None, NOW + timedelta(hours=1), NOW)
+    store.set_pause_debt(410, debt)
+
+    again = store.request_pause(410, "drift seen again")
+
+    assert (again.reason, again.debt) == ("drift", debt)
+    store.clear_escalation_issue(410)
+    assert store.pending_pauses() == ()

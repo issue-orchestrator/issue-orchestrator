@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.owed_write import EffectDebt
 from issue_orchestrator.domain.action_liveness import (
     ActionIdentity,
     ActionOutcome,
@@ -127,13 +128,13 @@ def test_a_park_ends_only_by_success(outcome) -> None:
     accounted for (review B r6)."""
     parked = POLICY.after(None, KEY, ActionOutcome.permanent("stuck"), NOW)
     assert parked is not None and parked.parked
-    escalated = replace(parked, escalated=True, explained=True, escalation_attempts=1,
-                        escalation_attempted_at=NOW)
+    escalated = replace(parked, escalated=True, explained=True,
+                        escalation=EffectDebt(1, NOW, NOW, NOW))
 
     row = POLICY.after(escalated, KEY, outcome, NOW + timedelta(minutes=5))
 
     assert row is not None and row.parked
-    assert (row.escalated, row.explained, row.escalation_attempts) == (True, True, 1)
+    assert (row.escalated, row.explained, row.escalation.attempts) == (True, True, 1)
     assert row.first_failed_at == NOW
 
 
