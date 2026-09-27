@@ -21,8 +21,9 @@ registered site that no longer compares (a stale entry would silently license
 the next one). To add a site, first ask whether a capability answers the
 question; register it only if the behaviour belongs to one kind alone.
 
-Limits: it sees ``SessionKind.X`` under any import alias and through its
-module (``session_kind.SessionKind.X``). A kind compared as a bare string
+Limits: it sees a named member - ``SessionKind.X``, ``SessionKind["X"]``,
+``SessionKind("x")`` - under any import alias and through its module
+(``session_kind.SessionKind.X``). A kind compared as a bare string
 (``kind.value == "code"``) is not seen.
 """
 
@@ -72,6 +73,10 @@ _PER_KIND_HANDLERS: dict[tuple[str, str], int] = {
 }
 
 
+def _is_str_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
 def _kind_names(tree: ast.AST) -> frozenset[str]:
     """Every local name ``SessionKind`` is bound to in a module (#7347 PR 2
     review r3): ``from ... import SessionKind as SK`` names it ``SK``."""
@@ -88,15 +93,23 @@ class _KindComparisons(ast.NodeVisitor):
         self._kind_names = kind_names
         self.found: collections.Counter[str] = collections.Counter()
 
+    def _is_kind(self, node: ast.AST) -> bool:
+        """``SessionKind`` itself: under an import alias, or through its module."""
+        if isinstance(node, ast.Name):
+            return node.id in self._kind_names
+        return isinstance(node, ast.Attribute) and node.attr == "SessionKind"
+
     def _is_member(self, node: ast.AST) -> bool:
-        """``<SessionKind>.X``, whether ``SessionKind`` is reached by an import
-        alias or through its module (``session_kind.SessionKind.X``)."""
-        if not (isinstance(node, ast.Attribute) and node.attr.isupper()):
-            return False
-        owner = node.value
-        if isinstance(owner, ast.Name):
-            return owner.id in self._kind_names
-        return isinstance(owner, ast.Attribute) and owner.attr == "SessionKind"
+        """One named member: ``<SessionKind>.X``, ``<SessionKind>["X"]`` or
+        ``<SessionKind>("x")`` with a literal (#7347 PR 2 review r3, r4). A
+        decode of a variable (``SessionKind(value)``) is not a member."""
+        if isinstance(node, ast.Attribute):
+            return node.attr.isupper() and self._is_kind(node.value)
+        if isinstance(node, ast.Subscript):
+            return self._is_kind(node.value) and _is_str_literal(node.slice)
+        if isinstance(node, ast.Call):
+            return self._is_kind(node.func) and len(node.args) == 1 and _is_str_literal(node.args[0])
+        return False
 
     def _count(self) -> None:
         self.found[".".join(self._scope) or "<module>"] += 1
@@ -203,7 +216,13 @@ def h(kind):
     return kind is SK.CODE
 def i(kind):
     return kind is session_kind.SessionKind.TECH_LEAD
+def j(kind):
+    return kind is SessionKind["CODE"]
+def k(kind):
+    return kind is SessionKind("code")
+def decode(value):
+    return SessionKind(value).capabilities.capturable
 '''
     assert _direct_kind_comparisons(source) == collections.Counter(
-        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1, "h": 1, "i": 1}
+        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1, "h": 1, "i": 1, "j": 1, "k": 1}
     )
