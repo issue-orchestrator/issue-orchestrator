@@ -480,7 +480,8 @@ def _apply_completion_action_batch(
         if links is not None:
             # What landed before the raise stands; the raise is the next one's.
             links.applied(actions, landed)
-            links.raised(actions[len(landed)], exc)
+            if len(landed) < len(actions):
+                links.raised(actions[len(landed)], exc)
         logger.warning(
             issue_log(
                 issue_number,

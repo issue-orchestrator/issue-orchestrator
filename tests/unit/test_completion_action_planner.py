@@ -2515,6 +2515,40 @@ def test_a_batch_that_raises_keeps_what_landed_before_the_raise():
     assert "ReconciliationRequired" in (rows["A6"].execution_reason or "")
 
 
+def test_a_batch_that_raises_after_every_result_landed_still_links_them():
+    """#7362 review r2: apply_all can raise after its last action (the label
+    summary in its ``finally``); every landed result is still linked."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from issue_orchestrator.events import EventName
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decision = _decision("A5", "post_comment", target=5)
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions([decision])
+    summary_down = RuntimeError("event sink down")
+    events = MagicMock()
+
+    def publish(event):
+        if event.name == EventName.LABEL_MUTATION_SUMMARY:
+            raise summary_down
+
+    events.publish.side_effect = publish
+    labels = MagicMock()
+    labels.get_labels.return_value = []
+    applier = ActionApplier(labels=labels, sessions=MagicMock(), events=events, repository_host=MagicMock())
+    applier.tech_lead_ops = store
+    action = AddLabelAction(issue_number=5, label="tech-lead-diagnosed",
+                            charter_decisions=(decision.decision_id,))
+
+    _results, error = apply_completion_actions_gated(applier, [action], issue_number=1)
+
+    assert error is summary_down
+    [row] = store.charter_ledger.list_recent()
+    assert row.execution is CharterExecutionResult.APPLIED and row.took_effect
+
+
 def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):
     """A ledger write that fails is loud: nothing applies unaudited (#7330)."""
     from unittest.mock import MagicMock

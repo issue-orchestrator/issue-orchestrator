@@ -121,9 +121,16 @@ class TechLeadCharterDecision:
     execution_at: str | None = None
 
     def __post_init__(self) -> None:
+        # What became of a decision is told by the path its verdict took: an
+        # approval lifecycle only for a gated verdict, an applier result only
+        # for an executed one, so neither can vouch for the other (#7362).
         if self.execution is not None and self.outcome is not CharterOutcome.EXECUTED:
             raise ValueError(
                 f"only an executed decision has an execution result, not {self.outcome.value}"
+            )
+        if self.lifecycle is not None and not self.outcome.awaits_approval:
+            raise ValueError(
+                f"only a gated decision has a proposal lifecycle, not {self.outcome.value}"
             )
 
     @classmethod

@@ -176,7 +176,11 @@ def keep_linked_lifecycle(
             execution_reason=existing.execution_reason,
             execution_at=existing.execution_at,
         )
-    if existing.lifecycle in (None, CharterProposalLifecycle.AWAITING_APPROVAL):
+    if (
+        existing.lifecycle in (None, CharterProposalLifecycle.AWAITING_APPROVAL)
+        # A verdict that is no longer gated has no approval to keep (#7362).
+        or not incoming.outcome.awaits_approval
+    ):
         return incoming
     return replace(
         incoming,

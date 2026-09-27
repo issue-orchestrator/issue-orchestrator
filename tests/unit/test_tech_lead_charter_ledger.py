@@ -546,6 +546,32 @@ def test_an_executed_decision_links_what_its_applier_did(store) -> None:
     assert row.execution is None and not row.took_effect
 
 
+def test_an_approval_never_vouches_for_a_replay_that_executed_directly(store) -> None:
+    """#7362 review r2: a decision approved and applied, replayed under a
+    charter that now executes it directly, then refused at apply time, did not
+    take effect - the old approval is not carried onto the new verdict."""
+    ledger = _ledger(store)
+    gated = _decision("A1", "kill_hung_session", target=40, at="2026-09-26T08:00:00+00:00")
+    ledger.record_decisions([gated])
+    ledger.link_proposal_outcome(
+        run_id="run-1", action_id="A1", proposal_issue_number=800,
+        lifecycle=CharterProposalLifecycle.APPROVED_APPLIED, at="2026-09-26T09:00:00+00:00",
+    )
+    ledger.record_decisions([replace(gated, outcome=CharterOutcome.EXECUTED, lifecycle=None,
+                                     lifecycle_updated_at=None)])
+    ledger.link_execution_outcomes(
+        [CharterExecutionLink(gated.decision_id, CharterExecutionResult.REFUSED, "stale")],
+        at="2026-09-26T10:00:00+00:00",
+    )
+
+    [row] = ledger.list_recent()
+    assert row.lifecycle is None and row.execution is CharterExecutionResult.REFUSED
+    assert not row.took_effect and row.effect_at == "2026-09-26T10:00:00+00:00"
+    assert ledger.list_remedies_on_issue(40) == ()
+    with pytest.raises(ValueError, match="gated decision"):
+        replace(row, lifecycle=CharterProposalLifecycle.APPROVED_APPLIED)
+
+
 def test_an_advice_only_promotion_files_nothing_but_is_recorded() -> None:
     from issue_orchestrator.control.tech_lead_charter_records import audit_promotions
     from issue_orchestrator.control.tech_lead_finding_promotion import plan_finding_promotions
