@@ -4501,6 +4501,87 @@ def test_a_claim_naming_another_pr_than_the_recorded_rework_is_quarantined(
     assert "PR #70" in quarantined.error and "PR #71" in quarantined.error
 
 
+def _routed_rework(tmp_path: Path):
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    harness = _ready_harness(tmp_path)
+    harness.launcher.repository_host.prs[7] = [PRInfo(
+        number=70, url="u", title="PR", branch="7-rework", labels=[], body="", state="open",
+    )]
+    state = _pending_state("rework")
+    state.pending_reworks[0].pr_number = 70
+    state.pending_reworks[0].rework_cycle = 3
+    session = _route("rework", state, harness)
+    assert session is not None
+    return harness, session
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"agent_label": "agent:other"}, "recorded for 'agent:other'"),
+        ({"rework_cycle": 4}, "cycle 3 but the run was recorded for PR #70 cycle 4"),
+        ({"pr_number": 71}, "PR #70 cycle 3 but the run was recorded for PR #71"),
+    ],
+    ids=["agent", "cycle", "pr"],
+)
+def test_a_rework_claim_that_disagrees_with_its_recorded_run_is_quarantined(
+    tmp_path: Path, change, reason
+) -> None:
+    """#7347 review r6: the claim must agree with the ledger on the whole
+    recorded identity - role, PR and cycle - or a provider deferral requeues
+    the claim's version of the work."""
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+
+    harness, session = _routed_rework(tmp_path)
+    recorded = replace(session, **change)
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate([recorded])
+
+    assert restoration.admitted == ()
+    [quarantined] = restoration.quarantined
+    assert reason in quarantined.error
+
+
+def test_a_rework_retry_claim_of_another_cycle_is_quarantined(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    retry = state.pending_validation_retries[0]
+    retry.source_kind, retry.pr_number, retry.rework_cycle = SessionKind.REWORK, 70, 2
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate(
+        [replace(session, rework_cycle=3)]
+    )
+
+    assert restoration.admitted == ()
+    assert "cycle 2 but the run was recorded for PR #70 cycle 3" in (
+        restoration.quarantined[0].error
+    )
+
+
+def test_a_matching_rework_claim_is_admitted(tmp_path: Path) -> None:
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+
+    harness, session = _routed_rework(tmp_path)
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate([session])
+
+    assert restoration.quarantined == ()
+    assert list(restoration.admitted) == [session]
+
+
 def test_a_live_retry_with_unverified_authority_is_quarantined(
     tmp_path: Path,
 ) -> None:
