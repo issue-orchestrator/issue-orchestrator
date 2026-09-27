@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,6 +24,7 @@ from issue_orchestrator.control.actions import (
     RemoveLabelAction,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.control.published_review_custody import PublishedReviewHold
 from issue_orchestrator.control.published_review_release import ReviewReleaseWrites
 from issue_orchestrator.control.review_exchange_lifecycle import (
@@ -58,9 +61,12 @@ BEFORE = datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
 AFTER = datetime(2026, 9, 27, 14, 30, tzinfo=timezone.utc)
 
 
-def _config() -> Config:
+def _config(filter_label: str | None = None) -> Config:
     config = Config()
+    config.repo = "owner/repo"
+    config.code_review_agent = "agent:reviewer"
     config.code_review_label = REVIEW_LABEL
+    config.filtering.label = filter_label
     return config
 
 
@@ -128,6 +134,7 @@ class Board:
     claims: list[UnresolvedClaim] = field(default_factory=list)
     unreadable: list[UnreadableClaim] = field(default_factory=list)
     discoverable: bool = True
+    filter_label: str | None = None
     history: list[SessionHistoryEntry] = field(default_factory=list)
     holds: tuple[PublishedReviewHold, ...] = ()
     fail_writes: frozenset[type] = frozenset()
@@ -156,7 +163,12 @@ class Board:
         return tuple(self.unreadable)
 
     def executor(self) -> TechLeadReviewReleaseExecutor:
-        config = _config()
+        config = _config(self.filter_label)
+        # Review discovery's REAL per-PR gate, over this board's issue.
+        scanner = PRScanner(
+            config=config, repository=SimpleNamespace(get_issue=lambda number: self.issue),  # type: ignore[arg-type]
+            events=MagicMock(), issue_branches_fn=lambda: self.branches,
+        )
         labels = LabelManager(config)
         history = SessionHistoryOwner(self.history)
         custody = self
@@ -174,6 +186,7 @@ class Board:
             list_open_prs=lambda: [replace(pr, labels=[], draft=None) for pr in self.prs],
             read_pr=self.read_pr,
             issue_branches=lambda: self.branches,
+            review_admission=scanner.review_admission,
             read_checks=lambda number: self.checks,
             runtime_activity=lambda number: self.activity,
             claims_on_issue=lambda number: claims_on_issue(self, number),  # type: ignore[arg-type]
@@ -264,6 +277,14 @@ def _refused(board: Board, action: ReleaseWithheldReviewAction | None = None) ->
         # Closed (or gone) between the listing and the fresh read.
         (Board(live={PR: replace(_pr(), state="closed")}), ReviewReleaseRefusal.NO_OPEN_PR),
         (Board(live={PR: None}), ReviewReleaseRefusal.NO_OPEN_PR),
+        # Review discovery's own gate judges the fresh PR: out of scope ...
+        (Board(filter_label="io:e2e:run"), ReviewReleaseRefusal.REVIEW_NOT_DISCOVERABLE),
+        # ... moved to another branch than the active one since the listing ...
+        (Board(branches={ISSUE: f"{ISSUE}-green"}, live={PR: _pr(branch=f"{ISSUE}-renamed")}),
+         ReviewReleaseRefusal.REVIEW_NOT_DISCOVERABLE),
+        # ... or relinked to another issue.
+        (Board(live={PR: _pr(branch="1-other", body="Closes #1")}),
+         ReviewReleaseRefusal.REVIEW_NOT_DISCOVERABLE),
         # The fresh read is what validity judges: a block that landed on the PR.
         (Board(live={PR: _pr(labels=(REVIEW_LABEL, "blocked-failed"))}),
          ReviewReleaseRefusal.WITHHELD_BY_MORE_THAN_THE_BLOCK),
@@ -358,8 +379,6 @@ def test_stale_reason_is_the_same_verification_without_writes() -> None:
 
 
 def test_the_applier_hands_the_action_to_the_wired_release_owner() -> None:
-    from unittest.mock import MagicMock
-
     from issue_orchestrator.control.action_applier import ActionApplier
 
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),
@@ -376,8 +395,6 @@ def test_the_applier_hands_the_action_to_the_wired_release_owner() -> None:
 
 
 def test_an_unwired_release_owner_fails_loudly() -> None:
-    from unittest.mock import MagicMock
-
     from issue_orchestrator.control.action_applier import ActionApplier
 
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),
@@ -409,3 +426,9 @@ def test_a_mandated_release_that_did_not_commit_is_routed_to_a_human_by_name() -
     assert isinstance(label, AddLabelAction) and label.issue_number == ISSUE
     assert "- Action: `release_withheld_review`" in comment.comment  # type: ignore[attr-defined]
     assert f"withheld review of issue #{ISSUE}'s PR" in comment.comment  # type: ignore[attr-defined]
+
+
+def test_an_issue_inside_the_configured_scope_is_released() -> None:
+    board = Board(filter_label="io:e2e:run", issue=_issue("blocked-failed", "pr-pending", "io:e2e:run"))
+
+    assert board.executor().apply(_action()).success

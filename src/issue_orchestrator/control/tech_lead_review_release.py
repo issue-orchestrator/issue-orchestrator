@@ -20,9 +20,11 @@ that already answers it, and never re-derives one:
 3. **no newer failure** — the session history owner has no failed session for
    the issue that it cannot place before the tech lead's observation;
 4. **the issue is open**, read fresh;
-5. **exactly one open PR** is the issue's, linked and branch-scoped exactly as
-   review discovery links it (one complete, uncached listing), then read fresh
-   (the listing carries no labels);
+5. **exactly one open PR** is the issue's, linked and branch-scoped as review
+   discovery links it (one complete, uncached listing), then read fresh (the
+   listing carries no labels) and admitted by review discovery's own per-PR
+   gate (``PRScanner.review_admission``: configured scope, active branch) as
+   it is NOW, still linked to this issue;
 6. **published-review custody agrees** — when an open PR carries the issue's
    published validated work, the PR released must be that one;
 7. **the block is the only thing withholding the review** — the review
@@ -70,6 +72,7 @@ if TYPE_CHECKING:
     from .issue_work_claims import IssueWorkClaim
     from ..ports.pull_request_tracker import PRInfo, StatusCheckRollupRead
     from .label_manager import LabelManager
+    from .pr_scanner import ReviewAdmission
     from .review_exchange_lifecycle import IssueRuntimeActivity
 
 logger = logging.getLogger(__name__)
@@ -94,6 +97,7 @@ class ReviewReleaseRefusal(StrEnum):
     WITHHELD_BY_MORE_THAN_THE_BLOCK = "withheld_by_more_than_the_block"
     CHECKS_UNREADABLE = "checks_unreadable"
     CHECKS_NOT_GREEN = "checks_not_green"
+    REVIEW_NOT_DISCOVERABLE = "review_not_discoverable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +148,9 @@ class TechLeadReviewReleaseExecutor:
     #: labels or draft flag, and review validity must judge the live PR.
     read_pr: Callable[[int], "PRInfo | None"]
     issue_branches: Callable[[], Mapping[int, str]]
+    #: Review discovery's own per-PR gate (scope, active branch), asked of the
+    #: fresh PR so a release can never lift a block discovery would ignore.
+    review_admission: Callable[["PRInfo", Mapping[int, str]], "ReviewAdmission"]
     read_checks: Callable[[int], "StatusCheckRollupRead"]
     runtime_activity: Callable[[int], "IssueRuntimeActivity"]
     claims_on_issue: Callable[[int], Sequence["IssueWorkClaim"]]
@@ -215,16 +222,15 @@ class TechLeadReviewReleaseExecutor:
         return None
 
     def _the_open_pr(self, issue_number: int) -> "PRInfo | RefusedRelease":
+        branches = self.issue_branches()
         linked = [
             pr for pr in self.list_open_prs()
             if extract_issue_number_from_pr(pr, repo_slug=self.repo_slug) == issue_number
         ]
-        scoped = scope_prs_to_active_issue_branch(
-            issue_number, linked, issue_branches=self.issue_branches()
-        ).matching
+        scoped = scope_prs_to_active_issue_branch(issue_number, linked, issue_branches=branches).matching
         match scoped:
             case (only,):
-                return self._fresh(issue_number, only.number)
+                return self._fresh(issue_number, only.number, branches)
             case ():
                 return RefusedRelease(ReviewReleaseRefusal.NO_OPEN_PR,
                                       f"issue #{issue_number} has no open PR on its active branch")
@@ -233,11 +239,25 @@ class TechLeadReviewReleaseExecutor:
                                       f"issue #{issue_number} has several open PRs:"
                                       f" {sorted(pr.number for pr in scoped)}")
 
-    def _fresh(self, issue_number: int, pr_number: int) -> "PRInfo | RefusedRelease":
+    def _fresh(
+        self, issue_number: int, pr_number: int, branches: Mapping[int, str]
+    ) -> "PRInfo | RefusedRelease":
+        """The listed PR read fresh, and admitted by review discovery AS IT IS NOW.
+
+        The listing only nominates the PR; its branch or link can change before
+        this read, and the issue can leave the configured scope, so discovery's
+        gate judges the fresh PR and it must still be this issue's.
+        """
         pr = self.read_pr(pr_number)
         if pr is None or pr.state.lower() != "open":
             return RefusedRelease(ReviewReleaseRefusal.NO_OPEN_PR,
                                   f"issue #{issue_number}'s PR #{pr_number} is no longer open")
+        admission = self.review_admission(pr, branches)
+        if not admission.admitted or admission.issue_number != issue_number:
+            return RefusedRelease(ReviewReleaseRefusal.REVIEW_NOT_DISCOVERABLE,
+                                  f"review discovery would not review PR #{pr_number} for"
+                                  f" issue #{issue_number}: {admission.why}"
+                                  f" (linked to #{admission.issue_number})")
         return pr
 
     def _review_refusal(self, issue: "Issue", pr: "PRInfo") -> RefusedRelease | None:

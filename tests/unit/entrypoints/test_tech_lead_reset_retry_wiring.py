@@ -24,6 +24,7 @@ from issue_orchestrator.control.background_job_supervisor import (
     BackgroundJobSupervisor,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.control.tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.entrypoints import web_retry_history_routes as web_mod
@@ -254,6 +255,7 @@ def _build_release(*, job_supervisor=None, history=(), unreadable=()):
     config = Config()
     config.repo = "owner/repo"
     config.code_review_label = "needs-code-review"
+    config.code_review_agent = "agent:reviewer"
     state = OrchestratorState()
     state.session_history = [
         SessionHistoryEntry(issue_number=17, title="t", agent_type="agent:test", status=status,
@@ -273,7 +275,9 @@ def _build_release(*, job_supervisor=None, history=(), unreadable=()):
     applier.apply.side_effect = ActionResult.ok
     deps = SimpleNamespace(
         label_manager=LabelManager(config), events=MagicMock(), action_applier=applier,
-        pr_scanner=SimpleNamespace(load_issue_branches=lambda: {}, reviews_discoverable=True),
+        # The real scanner: its discovery gate and branch map are what the
+        # release asks.
+        pr_scanner=PRScanner(config=config, repository=host, events=MagicMock()),
         pending_work_claims=SimpleNamespace(
             list_unresolved_claims=lambda: (), list_unreadable_claims=lambda: unreadable),
         runtime_lifecycle=runtime_owners(active_sessions=state.active_sessions, job_supervisor=job_supervisor),

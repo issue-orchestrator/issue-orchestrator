@@ -86,6 +86,7 @@ def build_tech_lead_review_release_executor(
         list_open_prs=host.list_open_prs_complete,
         read_pr=host.get_pr,
         issue_branches=deps.pr_scanner.load_issue_branches,
+        review_admission=deps.pr_scanner.review_admission,
         read_checks=host.read_pr_status_check_rollup,
         runtime_activity=deps.runtime_lifecycle.probe,
         claims_on_issue=lambda number: claims_on_issue(deps.pending_work_claims, number),
