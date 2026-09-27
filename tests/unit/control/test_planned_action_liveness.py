@@ -798,3 +798,37 @@ def test_an_engine_park_is_released_by_the_operator_cli(sample_config, tmp_path,
     restarted.reconcile_effects()
     assert len(escalation.released) == 1, "announced once"
     assert restarted.admit(key).admitted
+
+
+def test_a_long_planning_gap_does_not_refresh_a_budget(sample_config) -> None:
+    """Planning cycles hours apart (an engine pause) with unchanged facts are
+    still the same question (review r10)."""
+    engine = _Engine(
+        sample_config, planned=lambda: [_settle()],
+        apply=lambda a: ActionResult.fail(a, "boom"),
+    )
+    for _ in range(12):
+        engine.tick(advance=timedelta(hours=3))
+
+    assert engine.attempts_of(_settle().action_type) == POLICY.max_attempts
+    assert len(engine.owner.parked()) == 1
+
+
+def test_a_sibling_success_across_a_long_gap_does_not_refresh_a_budget(sample_config) -> None:
+    """[A, B] every few hours with B succeeding: A is asked again before
+    anything is retired, so B's progress cannot supersede it (review r10)."""
+    from issue_orchestrator.control.actions import AddCommentAction
+
+    failing = AddCommentAction(number=410, comment="first finding")
+    fine = AddCommentAction(number=410, comment="second finding")
+    def apply(action):
+        engine.clock.advance(timedelta(seconds=1))  # real applies take time
+        return ActionResult.fail(action, "422") if action is failing else ActionResult.ok(action)
+
+    engine = _Engine(sample_config, planned=lambda: [failing, fine], apply=lambda a: None)
+    engine.applier.apply.side_effect = apply
+    for _ in range(12):
+        engine.tick(advance=timedelta(hours=3))
+
+    applied = [call.args[0] for call in engine.applier.apply.call_args_list]
+    assert sum(1 for a in applied if a is failing) == POLICY.max_attempts

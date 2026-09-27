@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS action_liveness_announcement (
     last_outcome TEXT NOT NULL,
     last_reason TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS action_liveness_progress (
+    subject TEXT NOT NULL,
+    action TEXT NOT NULL,
+    last_done_at TEXT NOT NULL,
+    PRIMARY KEY (subject, action)
+);
 CREATE TABLE IF NOT EXISTS action_liveness_release (
     issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -98,7 +104,24 @@ _TOUCH = (
     "UPDATE action_liveness SET last_planned_at=?"
     " WHERE subject=? AND action=? AND fingerprint=?"
 )
-_UNPLANNED_SINCE = _SELECT + " WHERE COALESCE(last_planned_at, last_failed_at) < ?"
+_RETIRABLE_WHERE = (
+    " WHERE COALESCE(last_planned_at, last_failed_at) < ?"
+    " OR (COALESCE(last_planned_at, last_failed_at) < ? AND EXISTS ("
+    "SELECT 1 FROM action_liveness_progress p WHERE p.subject = action_liveness.subject"
+    " AND p.action = action_liveness.action"
+    " AND p.last_done_at > COALESCE(action_liveness.last_planned_at,"
+    " action_liveness.last_failed_at)))"
+)
+_RETIRABLE = _SELECT + _RETIRABLE_WHERE
+_NOTE_PROGRESS = (
+    "INSERT OR REPLACE INTO action_liveness_progress (subject, action, last_done_at)"
+    " VALUES (?, ?, ?)"
+)
+_UPDATE_ESCALATION = (
+    "UPDATE action_liveness SET escalated=?, explained=?, escalation_attempts=?,"
+    " escalation_attempted_at=? WHERE subject=? AND action=? AND fingerprint=?"
+    " AND first_failed_at=? AND next_attempt_at IS NULL"
+)
 _DELETE_KEY = "DELETE FROM action_liveness WHERE subject=? AND action=? AND fingerprint=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
 _FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
@@ -175,8 +198,27 @@ class SQLiteActionLivenessStore:
                 ),
             )
 
-    def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
+    def clear_key(self, key: LivenessKey, *, done_at: datetime) -> tuple[LivenessRow, ...]:
+        with self._write() as conn:
+            conn.execute(
+                _NOTE_PROGRESS,
+                (key.identity.subject, key.identity.action, done_at.isoformat()),
+            )
         return self._forget(_BY_KEY, (key.identity.subject, key.identity.action, key.fingerprint))
+
+    def update_escalation(self, row: LivenessRow) -> bool:
+        key = row.key
+        with self._write() as conn:
+            updated = conn.execute(
+                _UPDATE_ESCALATION,
+                (
+                    int(row.escalated), int(row.explained), row.escalation_attempts,
+                    _iso(row.escalation_attempted_at),
+                    key.identity.subject, key.identity.action, key.fingerprint,
+                    row.first_failed_at.isoformat(),
+                ),
+            ).rowcount
+        return updated == 1
 
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
         rows = self._forget(
@@ -209,8 +251,12 @@ class SQLiteActionLivenessStore:
         with self._write() as conn:
             conn.execute(_FORGET_ANNOUNCEMENT, (announcement_id,))
 
-    def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
-        return self._forget(_UNPLANNED_SINCE, (before.isoformat(),))
+    def retire_unplanned(
+        self, *, abandoned_before: datetime, superseded_before: datetime
+    ) -> tuple[LivenessRow, ...]:
+        return self._forget(
+            _RETIRABLE, (abandoned_before.isoformat(), superseded_before.isoformat())
+        )
 
     def touch(self, key: LivenessKey, planned_at: datetime) -> None:
         with self._write() as conn:

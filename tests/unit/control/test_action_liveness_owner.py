@@ -156,11 +156,32 @@ def test_a_park_nobody_asks_about_any_more_is_retired_and_released() -> None:
     owner.reconcile_effects()
     assert owner.admit(KEY).admission is Admission.PARKED, "asked again: still parked"
 
-    clock.advance(POLICY.stale_after + timedelta(minutes=1))
-    owner.reconcile_effects()
+    # The new facts keep succeeding; the old question is not asked again.
+    for _ in range(3):
+        clock.advance(POLICY.stale_after / 2)
+        owner.admit(changed)
+        owner.record(changed, ActionOutcome.done())
+        owner.reconcile_effects()
 
     assert owner.parked() == ()
     assert escalation.unblocks == [(229, True)]
+
+
+def test_a_park_on_a_slow_cadence_keeps_its_budget() -> None:
+    """Asked only every few hours (the stuck sweep's cadence) or after a long
+    engine pause, with unchanged facts: still the same question (review r10)."""
+    clock = ManualClock()
+    owner = liveness_owner(clock=clock, policy=POLICY)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+
+    for _ in range(12):
+        clock.advance(timedelta(hours=4))
+        owner.reconcile_effects()
+        assert owner.admit(KEY).admission is Admission.PARKED
+
+    clock.advance(POLICY.abandon_after + timedelta(hours=1))
+    owner.reconcile_effects()
+    assert owner.parked() == (), "abandoned once nobody asks for abandon_after"
 
 
 def test_a_sibling_operations_success_never_clears_a_park_still_asked_about() -> None:
@@ -251,7 +272,7 @@ def test_a_release_is_owed_durably_the_moment_the_park_is_forgotten(tmp_path) ->
     owner.record(KEY, ActionOutcome.permanent("stuck"))
 
     # The store's half of success, with no owner afterwards (the crash).
-    SQLiteActionLivenessStore(path).clear_key(KEY)
+    SQLiteActionLivenessStore(path).clear_key(KEY, done_at=ManualClock().now)
 
     escalation = RecordingEscalation()
     restarted = liveness_owner(
@@ -299,3 +320,29 @@ def test_an_operator_release_forgets_an_owed_withdrawal_in_the_same_step(tmp_pat
     )
     restarted.reconcile_effects()
     assert after.unblocks == []
+
+
+def test_a_release_during_the_block_write_cannot_resurrect_the_park(tmp_path) -> None:
+    """The engine is writing the block when an operator releases the park from
+    the CLI (a second connection). The park stays released, and the block that
+    landed anyway is owed its withdrawal (review r10)."""
+    from issue_orchestrator.control.action_liveness import release_parked_action
+
+    path = tmp_path / "action_liveness.sqlite"
+
+    class _ReleasedMidWrite(RecordingEscalation):
+        def block(self, row):
+            release_parked_action(SQLiteActionLivenessStore(path), row.key.identity)
+            return super().block(row)
+
+    escalation = _ReleasedMidWrite()
+    owner = liveness_owner(store=SQLiteActionLivenessStore(path), escalation=escalation)
+
+    owner.record(KEY, ActionOutcome.permanent("403"))
+
+    store = SQLiteActionLivenessStore(path)
+    assert store.parked_rows() == ()
+    assert escalation.unblocks == [(229, True)]
+    assert store.pending_releases() == ()
+    owner.reconcile_effects()
+    assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]

@@ -211,9 +211,6 @@ class PlannedActionLiveness:
     def admit(self, plan: "Plan", snapshot: "OrchestratorSnapshot") -> "Plan":
         from .planner_types import Plan, SkippedItem
 
-        # Escalation effects that did not commit last time are retried once
-        # per planning cycle, before anything new is attempted.
-        self.owner.reconcile_effects()
         labels = observed_labels(snapshot)
         admitted: list[Action] = []
         keys: list[LivenessKey | None] = []
@@ -260,6 +257,9 @@ class PlannedActionLiveness:
                     reason=decision.describe(),
                 )
             )
+        # Once per planning cycle, AFTER this plan's keys were asked (and so
+        # marked live): retire what nobody asks about, retry owed effects.
+        self.owner.reconcile_effects()
         return Plan(
             actions=tuple(admitted),
             skipped=plan.skipped + tuple(held),

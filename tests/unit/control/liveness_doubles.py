@@ -24,6 +24,7 @@ class InMemoryActionLivenessStore:
         self.rows: dict[tuple[str, str, str], LivenessRow] = {}
         self.releases: dict[int, PendingRelease] = {}
         self.announcements: dict[int, LivenessRow] = {}
+        self.progress: dict[ActionIdentity, datetime] = {}
 
     @staticmethod
     def _id(key: LivenessKey) -> tuple[str, str, str]:
@@ -48,8 +49,24 @@ class InMemoryActionLivenessStore:
                 self.request_release(row.key.escalation_issue)
         return gone
 
-    def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
+    def clear_key(self, key: LivenessKey, *, done_at: datetime) -> tuple[LivenessRow, ...]:
+        self.progress[key.identity] = done_at
         return self._forget(lambda row: row.key == key)
+
+    def update_escalation(self, row: LivenessRow) -> bool:
+        current = self.rows.get(self._id(row.key))
+        if current is None or not current.parked or current.first_failed_at != row.first_failed_at:
+            return False
+        from dataclasses import replace
+
+        self.rows[self._id(row.key)] = replace(
+            current,
+            escalated=row.escalated,
+            explained=row.explained,
+            escalation_attempts=row.escalation_attempts,
+            escalation_attempted_at=row.escalation_attempted_at,
+        )
+        return True
 
     def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
         gone = self._forget(lambda row: row.key.identity == identity)
@@ -64,8 +81,17 @@ class InMemoryActionLivenessStore:
     def clear_announcement(self, announcement_id: int) -> None:
         del self.announcements[announcement_id]
 
-    def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
-        return self._forget(lambda row: row.planned_at < before)
+    def retire_unplanned(
+        self, *, abandoned_before: datetime, superseded_before: datetime
+    ) -> tuple[LivenessRow, ...]:
+        def retirable(row: LivenessRow) -> bool:
+            done = self.progress.get(row.key.identity)
+            superseded = done is not None and done > row.planned_at
+            return row.planned_at < abandoned_before or (
+                superseded and row.planned_at < superseded_before
+            )
+
+        return self._forget(retirable)
 
     def touch(self, key: LivenessKey, planned_at: datetime) -> None:
         from dataclasses import replace

@@ -279,10 +279,15 @@ class LivenessPolicy:
     #: The same bound the launch gate holds a GitHub rate limit for (#7303):
     #: one answer to "how long may a declared wait spend nothing".
     declared_wait_bound: timedelta = RATE_LIMIT_DEFERRAL_BOUND
-    #: A row no replanning path has asked about for this long is retired: its
-    #: facts changed (the action now plans under a new fingerprint) or the
-    #: action is no longer wanted. Retiring releases its block.
+    #: A row is SUPERSEDED once its operation has succeeded since the row was
+    #: last asked about, and it has not been asked about for this long: its
+    #: facts changed and the action now plans (and succeeds) under a new
+    #: fingerprint. A sibling operation still being asked is never superseded.
     stale_after: timedelta = timedelta(hours=1)
+    #: A row nobody has asked about for this long is ABANDONED: the action is no
+    #: longer wanted. Long, so an action planned on a slow cadence (the stuck
+    #: sweep runs every few hours) or across an engine pause keeps its budget.
+    abandon_after: timedelta = timedelta(days=7)
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:

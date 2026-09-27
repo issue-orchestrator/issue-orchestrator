@@ -90,3 +90,33 @@ def test_escalation_queries_and_release_by_issue(tmp_path) -> None:
     assert store.escalated_rows_for_issue(410) == (escalated,)
     assert set(store.clear_escalation_issue(410)) == {escalated, silent}
     assert set(store.parked_rows()) == {elsewhere, no_issue}
+
+
+def test_retirement_supersedes_only_after_progress_and_abandons_only_after_long(tmp_path) -> None:
+    store = SQLiteActionLivenessStore(tmp_path / "l.sqlite")
+    asked_long_ago = _row(fingerprint="a" * 32)
+    other_operation = _row(action="add_label", fingerprint="c" * 32)
+    store.put(asked_long_ago)
+    store.put(other_operation)
+    later = NOW + timedelta(hours=3)
+
+    # No progress on the identity: an hours-old question is kept.
+    assert store.retire_unplanned(
+        abandoned_before=NOW - timedelta(days=7), superseded_before=later
+    ) == ()
+
+    # Its operation then succeeds under other facts: the old row is superseded,
+    # the unrelated operation is not.
+    store.clear_key(
+        LivenessKey(asked_long_ago.key.identity, "b" * 32, 410), done_at=later
+    )
+    retired = store.retire_unplanned(
+        abandoned_before=NOW - timedelta(days=7), superseded_before=later
+    )
+    assert retired == (asked_long_ago,)
+    assert store.row(other_operation.key) == other_operation
+
+    # Nobody asks for long enough: abandoned regardless of progress.
+    assert store.retire_unplanned(
+        abandoned_before=later, superseded_before=NOW - timedelta(days=7)
+    ) == (other_operation,)

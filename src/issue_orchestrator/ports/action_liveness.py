@@ -36,13 +36,22 @@ class ActionLivenessStore(Protocol):
         """Create or replace the row for ``row.key``."""
         ...
 
-    def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
-        """Delete exactly ``key``'s row; return it.
+    def clear_key(self, key: LivenessKey, *, done_at: datetime) -> tuple[LivenessRow, ...]:
+        """The operation succeeded: note its progress and delete exactly ``key``'s row.
 
-        Every ``clear_*`` and ``retire_*`` owes, in the same transaction, a
-        release (:meth:`request_release`) to the issue of every deleted row
-        whose block had committed, so no crash can forget a block that has to
-        come off.
+        Every ``clear_*``, ``release_*`` and ``retire_*`` owes, in the same
+        transaction, a release (:meth:`request_release`) to the issue of every
+        deleted row whose block had committed, so no crash can forget a block
+        that has to come off.
+        """
+        ...
+
+    def update_escalation(self, row: LivenessRow) -> bool:
+        """Write ``row``'s escalation state onto the SAME park it was read from.
+
+        Conditional on that park still existing (same key and first failure,
+        still parked): False when an operator released it meanwhile, so an
+        escalation can never resurrect a released park.
         """
         ...
 
@@ -64,8 +73,12 @@ class ActionLivenessStore(Protocol):
         """The announcement was published."""
         ...
 
-    def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
-        """Delete every row no replanning path has asked about since ``before``."""
+    def retire_unplanned(
+        self, *, abandoned_before: datetime, superseded_before: datetime
+    ) -> tuple[LivenessRow, ...]:
+        """Delete every row nobody has asked about since ``abandoned_before``, and
+        every row not asked since ``superseded_before`` whose operation has
+        succeeded since it was last asked."""
         ...
 
     def touch(self, key: LivenessKey, planned_at: datetime) -> None:

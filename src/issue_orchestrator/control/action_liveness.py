@@ -127,7 +127,7 @@ class ActionLivenessOwner:
         now = self._clock()
         row = self._policy.after(previous, key, outcome, now)
         if row is None:
-            self._resolve(self._store.clear_key(key))
+            self._resolve(self._store.clear_key(key, done_at=self._clock()))
             return None
         self._store.put(row)
         if not row.parked or (previous is not None and previous.parked):
@@ -156,7 +156,12 @@ class ActionLivenessOwner:
             self._store.clear_announcement(announcement_id)
         # A question nobody asks any more is not parked: its facts changed or
         # the action is no longer wanted. Retiring it owes its block's release.
-        self._resolve(self._store.retire_unplanned(now - self._policy.stale_after))
+        self._resolve(
+            self._store.retire_unplanned(
+                abandoned_before=now - self._policy.abandon_after,
+                superseded_before=now - self._policy.stale_after,
+            )
+        )
         for row in self._store.rows_owing_escalation():
             if self._policy.effect_due(row.escalation_attempts, row.escalation_attempted_at, now):
                 self._escalate(row, now)
@@ -200,16 +205,23 @@ class ActionLivenessOwner:
         Each is a separate durable debt. The comment is owed only once the block
         has landed, and its attempts are paced from that moment.
         """
-        if row.key.escalation_issue is None:
+        issue = row.key.escalation_issue
+        if issue is None:
             return row
         if not row.escalated:
             if not self._escalation.block(row):
                 return self._put_attempt(row, now)
             row = replace(row, escalated=True, escalation_attempts=0, escalation_attempted_at=None)
+            if not self._store.update_escalation(row):
+                # Released while the block was being written: the park is gone,
+                # so the block that just landed is owed its withdrawal.
+                self._store.request_release(issue)
+                self._unblock(issue, now)
+                return row
         if not self._escalation.explain(row):
             return self._put_attempt(row, now)
         row = replace(row, explained=True, escalation_attempts=0, escalation_attempted_at=None)
-        self._store.put(row)
+        self._store.update_escalation(row)
         return row
 
     def _put_attempt(self, row: LivenessRow, now: datetime) -> LivenessRow:
@@ -218,7 +230,7 @@ class ActionLivenessOwner:
             escalation_attempts=row.escalation_attempts + 1,
             escalation_attempted_at=now,
         )
-        self._store.put(row)
+        self._store.update_escalation(row)
         return row
 
     def _resolve(self, cleared: tuple[LivenessRow, ...]) -> None:
