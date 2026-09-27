@@ -32,24 +32,25 @@ from tests.e2e.exam.engine import (
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
+    linked_pull_requests,
     observe_item,
     observe_tech_lead_runs,
     terminal_tech_lead_runs,
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
-from tests.e2e.fixtures import _github_adapter, fetch_gh_audit_report
+from tests.e2e.fixtures import fetch_gh_audit_report
 from tests.e2e.flows import E2EFlow, close_pr
 
 logger = logging.getLogger(__name__)
 
 
-#: Production tech-lead authority (the operator's io/porchpin configs), so a
-#: destructive remedy is really executed — and really graded — as it would be.
 #: Title ids (``[M0-760]``): e2e issues must carry one, and the engine keys
 #: an item's snapshot and some of its events by it.
 CASE_A_EXTERNAL_ID = "M0-760"
 CASE_B_EXTERNAL_ID = "M0-761"
 
+#: Production tech-lead authority (the operator's io/porchpin configs), so a
+#: destructive remedy is really executed — and really graded — as it would be.
 PRODUCTION_TECH_LEAD_AUTHORITY = {
     "reset_retry": "execute",
     "kill_hung_session": "execute",
@@ -122,9 +123,14 @@ async def drive(
     done: Callable[[], Awaitable[bool]],
     quiet_s: float,
     timeout_s: float,
+    reached: RunEnd = RunEnd.GOAL_REACHED,
     poll_s: float = 20.0,
 ) -> RunEnd:
-    """Let the real engine work until the goal, quiescence, or the deadline."""
+    """Let the real engine work until ``done``, quiescence, or the deadline.
+
+    ``reached`` names what ``done`` means, so the scorecard says which one
+    ended the run.
+    """
     started = time.monotonic()
     last_count = -1
     last_change = started
@@ -132,7 +138,7 @@ async def drive(
         if not engine.is_running():
             return RunEnd.ENGINE_EXITED
         if await done():
-            return RunEnd.GOAL_REACHED
+            return reached
         now = time.monotonic()
         count = _progress_events(engine)
         if count != last_count:
@@ -190,9 +196,8 @@ def teardown_items(repo: str, issue_numbers: list[int]) -> None:
     Recovery-published PRs need not carry the e2e cleanup labels, so the
     generic label-based reconciliation cannot be relied on to find them.
     """
-    adapter = _github_adapter(repo)
     for number in issue_numbers:
-        for pr in adapter.get_prs_for_issue(number, state="open"):
+        for pr in linked_pull_requests(repo, number, state="open"):
             close_pr(repo, pr.number)
             logger.info("[EXAM] closed PR #%d of exam issue #%d", pr.number, number)
 
@@ -334,8 +339,14 @@ async def run_case_b(
             async def concluded() -> bool:
                 return bool(terminal_tech_lead_runs(checkout.state_dir))
 
-            ended_by = await drive(engine, done=concluded, quiet_s=600, timeout_s=60 * 60)
-            if ended_by is RunEnd.GOAL_REACHED:
+            ended_by = await drive(
+                engine,
+                done=concluded,
+                quiet_s=600,
+                timeout_s=60 * 60,
+                reached=RunEnd.TECH_LEAD_CONCLUDED,
+            )
+            if ended_by is RunEnd.TECH_LEAD_CONCLUDED:
                 # Let the engine apply the decision it just accepted.
                 await asyncio.sleep(120)
             return await _finish(

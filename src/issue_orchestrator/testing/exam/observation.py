@@ -187,6 +187,7 @@ class RunEnd(str, Enum):
     """Why the harness stopped driving the system."""
 
     GOAL_REACHED = "goal_reached"
+    TECH_LEAD_CONCLUDED = "tech_lead_concluded"
     QUIESCENT = "quiescent"
     TIMEOUT = "timeout"
     ENGINE_EXITED = "engine_exited"

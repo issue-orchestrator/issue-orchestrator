@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.review_scope import extract_issue_number_from_pr
 from issue_orchestrator.control.review_validity import evaluate_review_validity
 from issue_orchestrator.domain.tech_lead_artifacts import (
     TECH_LEAD_DECISION_FILENAME,
@@ -39,12 +40,12 @@ from issue_orchestrator.testing.exam import (
     PullRequestFact,
     PullRequestState,
     RunEnd,
-    TechLeadActionDisposition,
     TechLeadActionFact,
     TechLeadRunFact,
     WorkItemFact,
 )
 from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
+from issue_orchestrator.testing.exam.tech_lead import ProposedAction, resolve_dispositions
 
 from tests.e2e.fixtures import _github_adapter
 from tests.e2e.exam.seeding import describe_rollup
@@ -72,6 +73,22 @@ def item_events(
             issue_number=item.issue_number,
             pr_numbers=frozenset(pr_numbers),
         )
+    ]
+
+
+def linked_pull_requests(repo: str, issue_number: int, *, state: str) -> list[PRInfo]:
+    """The item's PRs, linked the way the engine links them.
+
+    Read from the newest page of ``/pulls`` (core API), not the search API
+    ``get_prs_for_issue`` uses: the harness shares the engine's token, and a
+    probe a minute would otherwise spend the 30/minute search budget the
+    engine under test needs (#7298 was exactly that budget running out).
+    Exam PRs are minutes old, so they are on the newest page.
+    """
+    return [
+        pr
+        for pr in _github_adapter(repo).list_prs(state=state, limit=100)
+        if extract_issue_number_from_pr(pr) == issue_number
     ]
 
 
@@ -122,7 +139,7 @@ def observe_item(
     issue = adapter.get_issue(item.issue_number)
     if issue is None:
         raise RuntimeError(f"issue #{item.issue_number} vanished while observing")
-    linked = {pr.number: pr for pr in adapter.get_prs_for_issue(item.issue_number, state="all")}
+    linked = {pr.number: pr for pr in linked_pull_requests(repo, item.issue_number, state="all")}
     for number in extra_pr_numbers:
         if number not in linked:
             pr = adapter.get_pr(number)
@@ -174,32 +191,19 @@ def terminal_tech_lead_runs(state_dir: Path) -> list[Mapping[str, Any]]:
     return [row for row in _run_rows(state_dir) if row["phase"] != "running"]
 
 
-def _dispositions(events: Iterable[Mapping[str, Any]]) -> dict[str, TechLeadActionDisposition]:
-    """Action type -> what the engine reported doing with it.
-
-    Receipts carry the action TYPE and the anchor, not the proposal id, so
-    they are matched by type; the GitHub outcome, not this, is the ground
-    truth for destruction.
-    """
-    by_type: dict[str, TechLeadActionDisposition] = {}
-    for event in events:
-        payload = event.get("payload") or {}
-        action = payload.get("action") or payload.get("action_type")
-        if not isinstance(action, str):
-            continue
-        if event.get("type") == "tech_lead.action_executed":
-            by_type[action] = TechLeadActionDisposition.EXECUTED
-        elif event.get("type") == "tech_lead.action_proposed":
-            by_type.setdefault(action, TechLeadActionDisposition.PROPOSED)
-    return by_type
+def _anchor(row: Mapping[str, Any]) -> int:
+    """The issue a run's events are published against (its anchor)."""
+    for key in ("anchor_issue_number", "subject_issue_number"):
+        value = row.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    raise RuntimeError(f"tech-lead run {row.get('run_id')!r} records no anchor or subject issue")
 
 
 def observe_tech_lead_runs(
     state_dir: Path, watcher: OrchestratorWatcher
 ) -> tuple[TechLeadRunFact, ...]:
     events = list(watcher.view.global_events)
-    rejected = any(e.get("type") == "tech_lead.decision_rejected" for e in events)
-    dispositions = _dispositions(events)
     runs: list[TechLeadRunFact] = []
     for row in _run_rows(state_dir):
         data_dir = Path(str(row.get("artifact_dir") or "")) / TECH_LEAD_DATA_DIRNAME
@@ -210,18 +214,24 @@ def observe_tech_lead_runs(
             loaded = json.loads(decision_path.read_text(encoding="utf-8"))
             decision = loaded.get("decision", loaded) if isinstance(loaded, dict) else {}
         report = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
-        run_rejected = rejected or row["phase"] == "failed"
+        raw_actions = [a for a in decision.get("proposed_actions", []) if isinstance(a, dict)]
+        dispositions = resolve_dispositions(
+            events,
+            anchor_issue_number=_anchor(row),
+            run_failed=row["phase"] == "failed",
+            actions=[
+                ProposedAction(str(a.get("id", "")), str(a.get("action_type", "")))
+                for a in raw_actions
+            ],
+        )
         actions = tuple(
             TechLeadActionFact(
                 action_type=str(action.get("action_type", "")),
                 target_number=action.get("target_number"),
                 body=str(action.get("body", "")),
-                disposition=TechLeadActionDisposition.REJECTED
-                if run_rejected
-                else dispositions.get(str(action.get("action_type", "")), TechLeadActionDisposition.UNKNOWN),
+                disposition=disposition,
             )
-            for action in decision.get("proposed_actions", [])
-            if isinstance(action, dict)
+            for action, disposition in zip(raw_actions, dispositions, strict=True)
         )
         findings = "\n".join(
             f"{f.get('title', '')}: {f.get('details', '')} {' '.join(map(str, f.get('evidence', [])))}"
