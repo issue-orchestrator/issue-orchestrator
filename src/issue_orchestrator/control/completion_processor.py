@@ -23,19 +23,18 @@ from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.review_validation import ReviewValidationEvidence
-from ..domain.publication_remote import attributed_publication_body
 from ..infra.repo_scope import require_repo
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
 from .retained_completion_policy import prepare_retained_completion
 from .completion_manual_settlement import settle_manual_publication
 from .completion_preparation import PreparedActionPlan, PreparedCompletion, PreparedPullRequest, record_from_prepared_evidence, context_from_prepared_evidence
+from .pull_request_preparation import PullRequestPreparation, PullRequestPreparationRefusal
 
 import logging
 import os
 import time
 import traceback
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,7 +101,6 @@ from .completion_record_validation import (
     WorktreeValidationResult,
 )
 from .completion_result_artifacts import (
-    build_pr_body,
     build_processing_result,
     cleanup_completion_record,
     preserve_completion_record,
@@ -116,7 +114,6 @@ from .completion_types import (
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
     ProcessingResult,
-    REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .publish_failure import route_despite_publish_failure
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
@@ -326,6 +323,14 @@ class CompletionProcessor:
         # blocked publish gate (e.g. an incompatible base-branch rule or a stale
         # successor) fails fast with a diagnostic. Absent -> non-stack behavior.
         self._stack_publish_gate: "StackBaseGate | None" = None
+        self._pull_requests = PullRequestPreparation(
+            stack_gate=lambda: self._stack_publish_gate,
+            base_branch=self._base_branch,
+            partial_delivery=self._partial_delivery,
+            review_exchange=self._review_exchange,
+            runtime_identity=self._runtime_identity,
+            emit_publish_failed=self._emit_publish_failed,
+        )
 
     def _emit(
         self,
@@ -2107,97 +2112,26 @@ class CompletionProcessor:
         })
         return None
 
-    def _resolve_publish_base(
-        self,
-        issue_number: int,
-        worktree: Path,
-        errors: list[str],
-    ) -> tuple[bool, Callable[[], str], "StackBaseDecision | None"]:
-        """Resolve the PR base for a (possibly stacked) successor (#6596).
-
-        Returns ``(halt, base_resolver, decision)``. ``halt`` is True when the
-        stack publish gate blocked publish (the diagnostic is already emitted),
-        so the caller aborts PR creation. Otherwise ``base_resolver`` is the
-        callable to pass as the PR base: the predecessor branch for a stack
-        successor whose gate is open, or the processor's normal base for a
-        non-stack issue (or when no gate is wired). ``decision`` is the raw gate
-        verdict (``None`` when no gate is wired) so the reuse path can confirm an
-        existing PR targets the same base the gate requires.
-
-        The halt keys off ``not decision.allowed`` (not ``is_stack``): a
-        fail-closed read error blocks publish even though the gate could not
-        confirm the slice is a stack successor.
-        """
-        if self._stack_publish_gate is None:
-            return False, self._base_branch, None
-        decision = self._stack_publish_gate.decide_publish(issue_number, worktree)
-        if not decision.allowed:
-            reason = decision.reason or "stack publish gate blocked"
-            errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
-            logger.error("Stack publish blocked for #%d: %s", issue_number, reason)
-            self._emit_publish_failed(
-                issue_number=issue_number,
-                stage=ERROR_PREFIX_CREATE_PR,
-                error=reason,
-                retryable=decision.retryable,
-            )
-            return True, self._base_branch, decision
-        if decision.base_branch:
-            stacked_base = decision.base_branch
-            logger.info(
-                "Stack successor #%d PR will base on predecessor branch %s",
-                issue_number,
-                stacked_base,
-            )
-            return False, (lambda: stacked_base), decision
-        return False, self._base_branch, decision
+    @property
+    def pull_requests(self) -> PullRequestPreparation:
+        """The typed PR preparation owner, for callers that keep its refusal."""
+        return self._pull_requests
 
     def prepare_pull_request(
         self, *, worktree: Path, record: CompletionRecord, issue_number: int,
         issue_title: str, branch: str, agent_label: str | None, errors: list[str],
         exchange_mode: str | None, exchange_result: Any | None,
     ) -> PreparedPullRequest | None:
-        """Share stack, review authority and PR content across publication paths."""
-        # Stack publish gate (ADR-0029 / #6596): for a Stack-after: successor,
-        # base the PR on the predecessor branch and fail fast when the publish
-        # gate is blocked. Non-stack issues keep the default base selection.
-        halt, base_branch_resolver, stack_decision = self._resolve_publish_base(
-            issue_number, worktree, errors
+        """The shared preparation, reporting a refusal on the pipeline's error lines."""
+        prepared = self._pull_requests.prepare(
+            worktree=worktree, record=record, issue_number=issue_number,
+            issue_title=issue_title, branch=branch, agent_label=agent_label,
+            exchange_mode=exchange_mode, exchange_result=exchange_result,
         )
-        if halt:
+        if isinstance(prepared, PullRequestPreparationRefusal):
+            errors.extend(prepared.errors)
             return None
-        # Resolve the base once: it is both the base a fresh PR is created on and
-        # the base an existing PR must already target before it can be reused.
-        expected_base = base_branch_resolver()
-
-        pr_title = f"#{issue_number}: {issue_title}"
-        pr_body = build_pr_body(
-            record,
-            issue_number,
-            runtime_identity=self._runtime_identity,
-        )
-        pr_body = attributed_publication_body(pr_body, issue_number, branch)
-        if self._refuse_partial_delivery_break(
-            record=record, worktree=worktree, issue_number=issue_number,
-            branch=branch, errors=errors,
-        ):
-            return None
-        exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
-            exchange_mode=exchange_mode,
-            agent_label=agent_label,
-            errors=errors,
-        )
-        if exchange_resolution_failed:
-            return None
-        if self._review_exchange.missing_review_exchange_outcome(exchange_mode, exchange_result):
-            errors.append(
-                f"{REVIEW_EXCHANGE_ERROR_PREFIX} missing exchange outcome before PR creation"
-            )
-            return None
-
-        return PreparedPullRequest(
-            pr_title, pr_body, expected_base, stack_decision, exchange_mode, record.partial_pr
-        )
+        return prepared
 
     def _partial_claim_repo_slug(self) -> str:
         """The repository a partial claim's issue links are judged by (#7288)."""
@@ -2211,33 +2145,12 @@ class CompletionProcessor:
         branch = self.git_adapter.get_current_branch(worktree)
         if branch is None:
             raise ValueError(f"cannot push #{issue_number}: worktree {worktree} has no branch")
-        return self._refuse_partial_delivery_break(
-            record=record, worktree=worktree, issue_number=issue_number,
-            branch=branch, errors=errors,
-        )
-
-    def _refuse_partial_delivery_break(
-        self, *, record: CompletionRecord, worktree: Path, issue_number: int,
-        branch: str, errors: list[str],
-    ) -> bool:
-        """Run the partial-delivery guard before a branch write; record a refusal.
-
-        Not retryable when the agent's words, or the existing PR's reference
-        line, have to change first (#7288). Retryable when the guard only failed
-        to read GitHub (a rate limit, #7297): the delivery itself is not at fault.
-        """
-        refusal = self._partial_delivery.refusal(
-            worktree, issue_number=issue_number, branch=branch,
-            claimed=record.partial_pr, claim_body=build_pr_body(record, issue_number),
+        refusal = self._pull_requests.partial_delivery_refusal(
+            record=record, worktree=worktree, issue_number=issue_number, branch=branch,
         )
         if refusal is None:
             return False
-        errors.append(f"{ERROR_PREFIX_CREATE_PR}: {refusal.reason}")
-        logger.error("Partial publication refused for #%d: %s", issue_number, refusal.reason)
-        self._emit_publish_failed(
-            issue_number=issue_number, stage=ERROR_PREFIX_CREATE_PR,
-            error=refusal.reason, retryable=refusal.retryable, branch=branch,
-        )
+        errors.extend(refusal.errors)
         return True
 
     def _execute_create_pr_action(

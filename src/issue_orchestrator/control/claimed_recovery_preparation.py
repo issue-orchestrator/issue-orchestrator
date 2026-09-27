@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from functools import partial
 
 from ..domain.completion_intake import CompletionIntakeError
-from ..domain.completion_processing import ProcessingResult
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_entry import RecoveryRecordRequest
@@ -93,6 +92,6 @@ class ClaimedRecoveryPreparation:
                 return RecoveryAttemptPending(str(error), ValidatedWorkFailure.WORKSPACE_INTEGRITY,
                                               rate_limit=host_rate_limit_of(error))
         prepared = perform(lambda: self._preparation.prepare(record.current_evidence, workspace, issue.title))
-        if isinstance(prepared, ProcessingResult):
-            return RecoveryAttemptPending(prepared.message)
+        if isinstance(prepared, RecoveryAttemptPending):
+            return prepared
         return ReadyRecoveryPublication(prepared, issue.title)
