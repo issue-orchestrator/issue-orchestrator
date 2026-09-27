@@ -27,6 +27,7 @@ its facts change, it recovers, or an operator retries the issue.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -46,6 +47,11 @@ from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshReque
 from ..ports.validated_work_drain import ValidatedWorkDrainRequest
 from ..ports.repository_host import host_rate_limit_of
 from .action_liveness import ActionLivenessOwner, LivenessDecision, transient_outcome
+
+logger = logging.getLogger(__name__)
+
+#: The scope facts of a record whose attached evidence could not be read.
+_UNREADABLE = "unreadable"
 
 RECOVER_ACTION = "recover_validated_work"
 REFRESH_ACTION = "refresh_remote_authority"
@@ -117,10 +123,21 @@ class RecoveryDrainLiveness:
 
     def scope_key(self, request: RecoveryRecordRequest) -> LivenessKey:
         """The scope sweep's judgement of one record (#7323's lane), over every
-        evidence row it reads: newly attached evidence is a new question."""
+        evidence row it reads: newly attached evidence is a new question.
+
+        Attached evidence that cannot be read is itself a fact (the judgement
+        would fail reading it too), so the key stays stable and the failure is
+        bounded under it; once readable, the real set is a new question.
+        """
+        try:
+            attached: object = self.attached_evidence(request.record_id)
+        except Exception:
+            logger.warning(
+                "Attached evidence of record %s is unreadable", request.record_id, exc_info=True
+            )
+            attached = _UNREADABLE
         return self._record_key(
-            SCOPE_ACTION, request.record_id, request.evidence_id,
-            attached=self.attached_evidence(request.record_id),
+            SCOPE_ACTION, request.record_id, request.evidence_id, attached=attached
         )
 
     def _record_key(

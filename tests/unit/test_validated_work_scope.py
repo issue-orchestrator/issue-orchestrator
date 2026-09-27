@@ -565,7 +565,7 @@ class _SwitchableExecution:
         return getattr(self._real, name)
 
 
-def _scope_rig(tmp_path, proof):
+def _scope_rig(tmp_path, proof, *, issues=(6914,)):
     """A real sweep over a real store with one parked record and a real owner;
     the scope proof is *proof*, recorded in ``rig.proofs``."""
     from datetime import timedelta
@@ -583,15 +583,20 @@ def _scope_rig(tmp_path, proof):
     store = Rig(tmp_path / "work.sqlite").open()
     execution = _SwitchableExecution(LocalValidatedWorkExecutionOwner(store))
     effects = FencedValidatedWorkEffects(execution=execution, fence=store)
-    admission = capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.PR_BRANCH_MISMATCH,
-                        reason="admitted before the scope rule")
-    store.admit(admission)
+    admissions = [
+        capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.PR_BRANCH_MISMATCH,
+                reason="admitted before the scope rule", issue=issue)
+        for issue in issues
+    ]
+    for admission in admissions:
+        store.admit(admission)
     retirement = OutOfScopeRecordRetirement(
         intake=owned_intake(TaskKind.TECH_LEAD), store=store, effects=effects,
         blocks=Mock(spec=RecoveryBlockIssueReconciler), events=InMemoryEventSink(),
     )
     rig = SimpleNamespace(
-        store=store, execution=execution, record_id=admission.evidence.record_id,
+        store=store, execution=execution, record_id=admissions[0].evidence.record_id,
+        record_ids=[admission.evidence.record_id for admission in admissions],
         proofs=[], attached=frozenset(), clock=ManualClock(), escalation=RecordingEscalation(),
         rows=InMemoryActionLivenessStore(), policy=LivenessPolicy(max_attempts=3),
     )
@@ -601,6 +606,7 @@ def _scope_rig(tmp_path, proof):
         return proof(record)
 
     retirement.recovery_owns_record = recorded_proof
+    rig.attached_evidence = lambda _rid: rig.attached
     owner = liveness_owner(store=rig.rows, escalation=rig.escalation, clock=rig.clock,
                            policy=rig.policy)
     rig.sweep = OutOfScopeRetirementSweep(
@@ -608,7 +614,7 @@ def _scope_rig(tmp_path, proof):
         liveness=drain_liveness(
             owner,
             record_disposition=lambda rid: store.record_for_id(rid).disposition,
-            attached_evidence=lambda _rid: rig.attached,
+            attached_evidence=lambda rid: rig.attached_evidence(rid),
         ),
     )
 
@@ -678,6 +684,43 @@ def test_a_retirement_the_store_keeps_refusing_is_bounded(tmp_path):
     [parked] = rig.escalation.parked
     assert parked.key.identity.action == "judge_record_scope"
     assert "refused" in parked.last_reason
+
+
+def test_unreadable_attached_evidence_is_bounded_and_never_starves_the_sweep(tmp_path):
+    """The first record's attached evidence cannot be read, by the key and by
+    the proof alike. That record is judged max_attempts times and parked; the
+    second record is still judged; once readable, the first is judged again
+    (review B r5)."""
+    unreadable: set[str] = set()
+
+    def attached_evidence(record_id):
+        if record_id in unreadable:
+            raise OSError("evidence store unreadable")
+        return frozenset()
+
+    def proof(record):
+        attached_evidence(record.disposition.record_id)
+        return True
+
+    rig = _scope_rig(tmp_path, proof=proof, issues=(6914, 6915))
+    rig.attached_evidence = attached_evidence
+    first, second = rig.record_ids
+    unreadable.add(first)
+    # A proof that succeeds is cached per evidence; forget it each pass so
+    # the second record keeps being judged.
+    for _ in range(10):
+        rig.sweep._owned.clear()
+        rig.passes(1)
+
+    assert rig.proofs.count(first) == rig.policy.max_attempts
+    assert rig.proofs.count(second) == 10
+    [parked] = rig.escalation.parked
+    assert parked.key.identity.subject == f"validated_work:{first}"
+    assert "evidence store unreadable" in parked.last_reason
+
+    unreadable.clear()
+    rig.passes(1)
+    assert rig.proofs.count(first) == rig.policy.max_attempts + 1
 
 
 def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
