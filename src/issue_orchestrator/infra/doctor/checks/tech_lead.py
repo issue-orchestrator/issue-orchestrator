@@ -18,7 +18,10 @@ target then means losing the actuation the lane exists to provide.
 from typing import TYPE_CHECKING
 
 from ..types import Check
-from ...tech_lead_promotion_activation import promotion_lane_readiness
+from ...tech_lead_promotion_activation import (
+    PromotionLaneReadiness,
+    promotion_lane_readiness,
+)
 
 if TYPE_CHECKING:
     from ....ports.promotion_target import PromotionTargetHost
@@ -98,22 +101,9 @@ def check_tech_lead_finding_routes(
     """
     if config is None:
         return []
-    readiness = promotion_lane_readiness(config)
-    if not readiness.active:
-        return []
-    if readiness.problems:
-        # An active-but-unready lane cannot even be routed, so there is nothing
-        # to probe yet. Report the same strings startup validation reports.
-        return [
-            Check(
-                name="Tech Lead Finding Routes",
-                status="error",
-                detail=(
-                    "tech_lead.findings is configured but not startable: "
-                    + "; ".join(readiness.problems)
-                ),
-            )
-        ]
+    settled = _routes_settled_by_readiness(promotion_lane_readiness(config))
+    if settled is not None:
+        return settled
     try:
         from ....control.tech_lead_finding_promotion import promotion_filing_contracts
 
@@ -195,3 +185,38 @@ def check_tech_lead_finding_routes(
             ),
         )
     ]
+
+
+def _routes_settled_by_readiness(
+    readiness: "PromotionLaneReadiness",
+) -> list[Check] | None:
+    """The route check's answer when readiness alone decides it, else None.
+
+    Inactive lane: nothing to check. Unready lane: report its problems. A lane
+    the charter keeps as advice only (#7330): nothing is ever filed, so there is
+    no filing capability to prove.
+    """
+    if not readiness.active:
+        return []
+    if readiness.problems:
+        # An active-but-unready lane cannot even be routed, so there is nothing
+        # to probe yet. Report the same strings startup validation reports.
+        return [
+            Check(
+                name="Tech Lead Finding Routes",
+                status="error",
+                detail=(
+                    "tech_lead.findings is configured but not startable: "
+                    + "; ".join(readiness.problems)
+                ),
+            )
+        ]
+    if not readiness.can_file:
+        return [
+            Check(
+                name="Tech Lead Finding Routes",
+                status="ok",
+                detail="Promotions are advice only under tech_lead.charter; no filing to verify",
+            )
+        ]
+    return None

@@ -491,3 +491,77 @@ def test_an_advice_only_promotion_lane_needs_no_filing_dependency_and_still_reco
     # Once learning may fix, filing is possible again and the dependency returns.
     config.tech_lead.charter.learning.depth = "fix"
     assert promotion_lane_readiness(config).problems
+
+
+def test_an_advice_only_lane_records_every_candidate_not_just_the_capped_one() -> None:
+    """The in-flight cap bounds FILED work; with nothing filed, every eligible
+    signature is selected and recorded, every tick (review r5 F1)."""
+    from issue_orchestrator.control.tech_lead_finding_promotion import (
+        plan_finding_promotion_actions,
+        select_promotable_findings,
+    )
+    from dataclasses import replace as dc_replace
+    from issue_orchestrator.domain.models import TechLeadFacts
+
+    config = Config()
+    config.repo = "o/r"
+    config.tech_lead.findings.max_open_promoted = 1
+    store = InMemoryTechLeadAuthorityStore()
+    for number, signature in ((65, "sig-a"), (66, "sig-b")):
+        store.record_pattern(
+            signature=signature, issue_number=number, observation_id=f"{signature}:1",
+            fix_class="code", area="", diagnosis="d",
+        )
+        store.note_pattern_observation(signature=signature, observation_id=f"{signature}:2")
+
+    def tick() -> set[str]:
+        promotable = select_promotable_findings(
+            config, evidence=store.list_pattern_evidence(), promotions=store.list_promotions()
+        )
+        actions = plan_finding_promotion_actions(
+            config, dc_replace(TechLeadFacts(), promotable_findings=promotable)
+        )
+        assert all(isinstance(a, RecordTechLeadCharterDecisionsAction) for a in actions)
+        for action in actions:
+            store.charter_ledger.record_decisions(action.decisions)
+        return {row.action_id for row in store.charter_ledger.list_recent()}
+
+    # Filing possible: the cap holds to ONE candidate per target.
+    assert len(select_promotable_findings(
+        config, evidence=store.list_pattern_evidence(), promotions=store.list_promotions()
+    )) == 1
+    config.tech_lead.charter.learning.depth = "workaround"
+    assert tick() == {"sig-a", "sig-b"}
+    assert tick() == {"sig-a", "sig-b"}
+    assert all(
+        row.outcome is CharterOutcome.ADVICE_ONLY for row in store.charter_ledger.list_recent()
+    )
+
+
+def test_doctor_proves_no_filing_capability_for_an_advice_only_lane() -> None:
+    """Nothing is filed, so no filing probe runs; once learning may fix, the
+    foreign route's filing capability is probed again (review r5 F2)."""
+    from issue_orchestrator.infra.config_models_tech_lead import PromotionRouteTarget
+    from issue_orchestrator.infra.doctor.checks.tech_lead import check_tech_lead_finding_routes
+
+    config = Config()
+    config.repo = "o/r"
+    config.agents = {"agent:web": MagicMock()}
+    config.tech_lead_review_agent = "agent:tech-lead"
+    config.tech_lead_follow_up_agent = "agent:web"
+    config.tech_lead.findings.route = {
+        "default": PromotionRouteTarget(repo="other/repo", agent_label="agent:web"),
+    }
+    config.tech_lead.charter.learning.depth = "workaround"
+    host = MagicMock()
+    host.check_filing_ready.return_value = "token cannot create issues in other/repo"
+
+    [check] = check_tech_lead_finding_routes(config, target_host=host)
+
+    assert check.status == "ok" and "advice only" in check.detail
+    host.check_filing_ready.assert_not_called()
+
+    config.tech_lead.charter.learning.depth = "fix"
+    [check] = check_tech_lead_finding_routes(config, target_host=host)
+    assert check.status == "error" and "cannot create issues" in check.detail
+    host.check_filing_ready.assert_called()

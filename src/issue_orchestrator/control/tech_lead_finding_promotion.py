@@ -74,6 +74,7 @@ from .actions import (
     ReportPromotedFindingEvidenceAction,
     SettleTechLeadPromotionAction,
 )
+from ..infra.config_models_tech_lead_charter import promotion_can_file
 from ..infra.tech_lead_promotion_activation import promotion_lane_readiness
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_issue_policy import tech_lead_follow_up_agent_label
@@ -251,6 +252,9 @@ def select_promotable_findings(
     # finalized as well as a settled one — and survives restart, resync, and a
     # cold second client exactly as the promotion ledger does (#7248 rounds 7
     # and 8, F9/F11).
+    # The charter's filing decision itself, not lane activation: selection is
+    # pure ledger policy and is also used where the lane is not yet armed.
+    can_file = promotion_can_file(config.tech_lead)
     in_flight: dict[str, int] = {}
     for row in promotions:
         if row.is_open:
@@ -272,7 +276,9 @@ def select_promotable_findings(
     for row in candidates:
         target = promotion_target_repo(config, area=row.area)
         target_key = target.casefold()
-        if in_flight.get(target_key, 0) >= findings.max_open_promoted:
+        # The cap bounds FILED work in flight; a lane the charter keeps as
+        # advice files nothing, so every candidate is selected to be recorded.
+        if can_file and in_flight.get(target_key, 0) >= findings.max_open_promoted:
             logger.info(
                 "[tech_lead] Promotion of %r deferred: %s already has %d in-flight"
                 " promoted issue(s) (tech_lead.findings.max_open_promoted=%d)",
