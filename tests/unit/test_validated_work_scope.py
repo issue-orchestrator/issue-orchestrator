@@ -603,7 +603,7 @@ def _scope_rig(tmp_path, proof, *, issues=(6914,)):
     for admission in admissions:
         store.admit(admission)
     retirement = OutOfScopeRecordRetirement(
-        intake=owned_intake(TaskKind.TECH_LEAD), store=store, effects=effects,
+        intake=owned_intake(SessionKind.TECH_LEAD), store=store, effects=effects,
         blocks=Mock(spec=RecoveryBlockIssueReconciler), events=InMemoryEventSink(),
     )
     rig = SimpleNamespace(
