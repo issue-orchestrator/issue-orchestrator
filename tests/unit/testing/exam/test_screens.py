@@ -55,20 +55,41 @@ def test_a_recording_that_never_sized_a_terminal_is_refused() -> None:
         render_recording([])
 
 
-def test_the_engines_own_round_signal_wins_over_a_parked_screen() -> None:
+def test_round_history_and_a_live_parked_screen_are_kept_apart() -> None:
     events = [ItemEvent("review_exchange.role_timeout", "t", {"role": "reviewer", "failure_reason": "prompt_not_accepted"})]
 
     facts = stall_facts(events, refusing_gate="", blocking_labels=(), parked_screen="issue-1 silent 300s on screen: 'x'")
     assert facts.unanswered_screen == "reviewer never took its prompt (prompt_not_accepted)"
-    facts = stall_facts([], refusing_gate="", blocking_labels=(), parked_screen="issue-1 silent 300s on screen: 'x'")
-    assert facts.unanswered_screen == "issue-1 silent 300s on screen: 'x'"
+    assert facts.parked_screen == "issue-1 silent 300s on screen: 'x'"
+
+
+def test_a_finished_item_with_only_round_history_is_not_a_stall() -> None:
+    """Seen live: Case A passed, yet its planted reviewer fault (a round the
+    engine moved past) listed the finished item as stalled."""
+    from dataclasses import replace
+
+    from issue_orchestrator.testing.exam.cases import (
+        HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+        halted_exchange_with_validated_work,
+    )
+    from issue_orchestrator.testing.exam import PullRequestState
+
+    done = item(prs=(pr(state=PullRequestState.READY, labels=("code-reviewed",)),))
+    history = replace(done, stall=replace(done.stall, unanswered_screen="reviewer never took its prompt (prompt_write_failed)"))
+    card = grade(
+        halted_exchange_with_validated_work(
+            code_reviewed_label="code-reviewed", blocked_failed_label="blocked-failed", needs_human_label="needs-human"
+        ),
+        observation(HALTED_EXCHANGE_WITH_VALIDATED_WORK, history),
+    )
+    assert card.passed and card.stalls == ()
 
 
 def test_an_item_parked_on_a_screen_is_reported_even_when_its_goals_held() -> None:
     from dataclasses import replace
 
     subject = item(issue_labels=("blocked-failed",), prs=(pr(),))
-    parked = replace(subject, stall=replace(subject.stall, unanswered_screen="issue-901 silent 2100s on screen: 'no, exit'"))
+    parked = replace(subject, stall=replace(subject.stall, parked_screen="issue-901 silent 2100s on screen: 'no, exit'"))
     card = grade(
         blocked_issue_green_pr_awaiting_review(blocked_failed_label="blocked-failed"),
         observation(BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW, parked),
@@ -76,4 +97,4 @@ def test_an_item_parked_on_a_screen_is_reported_even_when_its_goals_held() -> No
 
     assert all(goal.passed for goal in card.goals)
     assert [stall.role for stall in card.stalls] == ["subject"]
-    assert "unanswered screen: issue-901 silent 2100s on screen" in render_summary(card)
+    assert "parked on screen now: issue-901 silent 2100s on screen" in render_summary(card)

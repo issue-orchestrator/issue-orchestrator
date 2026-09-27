@@ -110,6 +110,7 @@ def test_stall_names_the_last_transition_ignoring_housekeeping() -> None:
     assert facts.blocking_labels == ("blocked-failed", "recovery-pending")
     assert facts.refusing_gate == "review_validity:issue_blocked (blocked-failed)"
     assert facts.unanswered_screen == ""
+    assert facts.parked_screen == ""
 
 
 def test_an_agent_that_never_took_its_prompt_is_an_unanswered_screen() -> None:

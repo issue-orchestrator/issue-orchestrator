@@ -108,8 +108,10 @@ def stall_facts(
     parked_screen: str,
 ) -> StallFacts:
     """``parked_screen`` is a live session of the item sitting silent on a
-    screen (see :mod:`.screens`); the engine publishes no event for that, so
-    it is only reported when the engine's own round-failure signal is absent.
+    screen (see :mod:`.screens`); the engine publishes no event for that.
+    It is kept apart from ``unanswered_screen``, which is HISTORY — a round
+    the engine already failed and moved past — so only a live one can mark
+    an otherwise finished item as stalled.
     """
     progress = [e for e in events if not e.name.startswith(_NOISE_PREFIXES)]
     last = progress[-1] if progress else None
@@ -118,5 +120,6 @@ def stall_facts(
         last_transition_at=last.at if last else "",
         refusing_gate=refusing_gate,
         blocking_labels=tuple(sorted(blocking_labels)),
-        unanswered_screen=unanswered_screen(events) or parked_screen,
+        unanswered_screen=unanswered_screen(events),
+        parked_screen=parked_screen,
     )

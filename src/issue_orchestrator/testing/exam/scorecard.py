@@ -196,6 +196,21 @@ def render_summary(card: Scorecard) -> str:
     lines.extend(
         f"    [{_mark(goal.passed)}] {goal.description} — {goal.evidence}" for goal in card.goals
     )
+    lines.extend(_answer_lines(card))
+    lines.extend(_effect_lines(card))
+    for stall in card.stalls:
+        lines.extend(_stall_lines(stall))
+    for run in card.tech_lead_runs:
+        if run.last_screen:
+            lines.append(f"  tech-lead run {run.run_id} ({run.phase}) left no decision; last screen:")
+            lines.append(f"    {run.last_screen}")
+    lines.extend(f"  note: {note}" for note in card.notes)
+    return "\n".join(lines)
+
+
+def _answer_lines(card: Scorecard) -> list[str]:
+    """The tech lead's diagnosis and remedy, against the known answer."""
+    lines: list[str] = []
     if card.diagnosis is not None:
         diagnosis = card.diagnosis
         detail = (
@@ -213,11 +228,16 @@ def render_summary(card: Scorecard) -> str:
             f"  remedy [{_mark(remedy.verdict.passed)}] {remedy.verdict.value}{gap}: {remedy.evidence}"
         )
         lines.append(f"    expected: {remedy.expected}")
+    return lines
+
+
+def _effect_lines(card: Scorecard) -> list[str]:
+    """What the run did to the world: destruction, scope, GitHub budget."""
     destructive_ok = not card.destructive or card.expects_destructive
-    lines.append(
+    lines = [
         f"  destructive actions [{_mark(destructive_ok)}]: "
         + ("; ".join(action.what for action in card.destructive) or "none")
-    )
+    ]
     if card.out_of_scope:
         lines.append("  out-of-scope effects [FAIL]: " + "; ".join(card.out_of_scope))
     calls = card.github_calls
@@ -226,18 +246,19 @@ def render_summary(card: Scorecard) -> str:
         + ", ".join(f"{c.value} {calls.count(c)}" for c in EndpointClass)
         + ")"
     )
-    for stall in card.stalls:
-        facts = stall.stall
-        lines.append(f"  stalled: {stall.role} #{stall.issue_number}")
-        lines.append(f"    last transition: {facts.last_transition or '(none)'} {facts.last_transition_at}".rstrip())
-        lines.append(f"    refusing gate: {facts.refusing_gate or '(none)'}")
-        lines.append(f"    blocking labels: {', '.join(facts.blocking_labels) or '(none)'}")
-        if facts.unanswered_screen:
-            lines.append(f"    unanswered screen: {facts.unanswered_screen}")
-    for run in card.tech_lead_runs:
-        if run.last_screen:
-            lines.append(f"  tech-lead run {run.run_id} ({run.phase}) left no decision; last screen:")
-            lines.append(f"    {run.last_screen}")
-    for note in card.notes:
-        lines.append(f"  note: {note}")
-    return "\n".join(lines)
+    return lines
+
+
+def _stall_lines(stall: ItemStall) -> list[str]:
+    facts = stall.stall
+    lines = [
+        f"  stalled: {stall.role} #{stall.issue_number}",
+        f"    last transition: {facts.last_transition or '(none)'} {facts.last_transition_at}".rstrip(),
+        f"    refusing gate: {facts.refusing_gate or '(none)'}",
+        f"    blocking labels: {', '.join(facts.blocking_labels) or '(none)'}",
+    ]
+    if facts.parked_screen:
+        lines.append(f"    parked on screen now: {facts.parked_screen}")
+    if facts.unanswered_screen:
+        lines.append(f"    last prompt never taken: {facts.unanswered_screen}")
+    return lines

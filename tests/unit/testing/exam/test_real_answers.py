@@ -82,6 +82,7 @@ def _observation(runs: tuple[TechLeadRunFact, ...]) -> ExamObservation:
             refusing_gate="review_validity:issue_blocked (blocked-failed, needs-human)",
             blocking_labels=("blocked-failed", "needs-human"),
             unanswered_screen="",
+            parked_screen="",
         ),
         events=("tech_lead.run_requested", "tech_lead.action_executed"),
     )

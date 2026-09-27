@@ -91,6 +91,9 @@ class StallFacts:
     refusing_gate: str
     blocking_labels: tuple[str, ...]
     unanswered_screen: str
+    """The last agent round that never took its prompt (engine history)."""
+    parked_screen: str
+    """A session of the item that is, right now, silent on a screen."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +102,7 @@ class StallFacts:
             "refusing_gate": self.refusing_gate,
             "blocking_labels": list(self.blocking_labels),
             "unanswered_screen": self.unanswered_screen,
+            "parked_screen": self.parked_screen,
         }
 
     @classmethod
@@ -109,6 +113,7 @@ class StallFacts:
             refusing_gate=str(data["refusing_gate"]),
             blocking_labels=tuple(data["blocking_labels"]),
             unanswered_screen=str(data["unanswered_screen"]),
+            parked_screen=str(data["parked_screen"]),
         )
 
 

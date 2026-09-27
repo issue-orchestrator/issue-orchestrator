@@ -36,12 +36,13 @@ def grade(case: ExamCase, observation: ExamObservation) -> Scorecard:
         for check in (goal.evaluate(observation),)
     )
     unmet_roles = {result.role for result in goals if not result.passed}
-    # An item left parked on a screen is a stall even when its goals held:
-    # something of it is still waiting on an answer nobody will give.
+    # An item LIVE-parked on a screen is a stall even when its goals held:
+    # something of it is still waiting on an answer nobody will give. A round
+    # it failed and moved past (unanswered_screen) is history, not a stall.
     stalls = tuple(
         ItemStall(role=item.role, issue_number=item.issue_number, stall=item.stall)
         for item in observation.items
-        if item.role in unmet_roles or item.stall.unanswered_screen
+        if item.role in unmet_roles or item.stall.parked_screen
     )
     return Scorecard(
         case_id=case.case_id,

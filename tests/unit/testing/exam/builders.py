@@ -53,6 +53,7 @@ def stall(*, gate: str = "", labels: tuple[str, ...] = ()) -> StallFacts:
         refusing_gate=gate,
         blocking_labels=labels,
         unanswered_screen="",
+        parked_screen="",
     )
 
 
