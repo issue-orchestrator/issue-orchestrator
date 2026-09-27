@@ -343,6 +343,7 @@ class Orchestrator:
             cleanup_manager=self._cleanup_manager,
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
+            pending_work_claims=self.deps.pending_work_claims,
             queue_cache_store=self.deps.queue_cache_store,
             tech_lead_authority=self.deps.tech_lead_authority,
             run_ownership=self.deps.run_ownership,
@@ -473,6 +474,7 @@ class Orchestrator:
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
             tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
+            pending_work_claims=self.deps.pending_work_claims,
         )
 
     @cached_property

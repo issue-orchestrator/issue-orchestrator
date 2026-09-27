@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock
 
 from issue_orchestrator.control.tech_lead_launch_authority import (
     TechLeadLaunchAuthority,
@@ -197,6 +198,7 @@ class _Harness:
             events=self.events,  # type: ignore[arg-type]
             launch=self._launch,
             activity=self.activity,
+            claims=MagicMock(),
         )
 
     def launch(self, tech_lead: PendingTechLeadReview):

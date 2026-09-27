@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, Session
     from ..infra.config import Config
     from ..ports import EventSink, Issue, RepositoryHost
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from .tech_lead_run_activity import TechLeadRunActivity
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
@@ -104,6 +105,7 @@ class TechLeadLaunchAuthority:
         events: "EventSink",
         launch: "Callable[[PendingTechLeadReview], Optional[Session]]",
         activity: "TechLeadRunActivity",
+        claims: "PendingWorkClaimStore",
     ) -> None:
         self._state = state
         self._config = config
@@ -113,6 +115,7 @@ class TechLeadLaunchAuthority:
         self._events = events
         self._launch = launch
         self._activity = activity
+        self._claims = claims
 
     def launch(self, tech_lead: PendingTechLeadReview) -> "Optional[Session]":
         """Start ``tech_lead`` if — and only if — it may still start."""
@@ -305,21 +308,24 @@ class TechLeadLaunchAuthority:
     def _withdraw(
         self, tech_lead: PendingTechLeadReview, refusal: TechLeadLaunchRefusal
     ) -> None:
-        """Remove a run whose subject stopped being worth investigating."""
-        from .pending_session_queues import PendingSessionQueues
+        """Remove a run whose subject stopped being worth investigating.
 
-        PendingSessionQueues(self._state).remove_tech_lead(tech_lead.issue_number)
-        self._ownership.release(refusal.run_key)
-        self._events.publish(
-            make_trace_event(
-                EventName.TECH_LEAD_RUN_WITHDRAWN,
-                {
-                    "run_key": refusal.run_key,
-                    "issue_number": refusal.issue_number,
-                    "reason": refusal.reason,
-                    "detail": refusal.detail,
-                },
-            )
+        Through the same owner as plan-time withdrawal, so the run's durable
+        claim is retired with its queue entry (#7348).
+        """
+        from .tech_lead_run_retirement import (
+            TechLeadRunRetirement,
+            withdraw_queued_tech_lead_run,
+        )
+
+        withdraw_queued_tech_lead_run(
+            TechLeadRunRetirement(self._state, self._claims),
+            self._ownership,
+            self._events,
+            run_key=refusal.run_key,
+            issue_number=tech_lead.issue_number,
+            reason=refusal.reason,
+            detail=refusal.detail,
         )
 
     def _report(self, refusal: TechLeadLaunchRefusal) -> None:

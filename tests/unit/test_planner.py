@@ -3357,6 +3357,7 @@ class TestStormCohortCleanupLifecycle:
             state,
             None,
             authority,
+            claims=MagicMock(),
         )
         clear_discovered_facts(state, config, authority, tick_paused=False)
 

@@ -1378,6 +1378,7 @@ class TestOrchestratorSupportApplyPlan:
             cleanup_manager=mock_cleanup_manager,
             get_review_machine=Mock(),
             kill_session=Mock(),
+            pending_work_claims=MagicMock(),
         )
 
     def test_apply_plan_launch_releases_blocked_front_by_issue_identity(self, support):
@@ -1637,6 +1638,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
+            pending_work_claims=MagicMock(),
         )
 
     def test_clears_immediate_cleanups_via_method(self, support, sample_orchestrator_state):
@@ -1779,6 +1781,7 @@ class TestUpdateStateAfterAction:
             get_review_machine=Mock(),
             kill_session=Mock(),
             tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+            pending_work_claims=MagicMock(),
         )
 
     @staticmethod
@@ -2826,6 +2829,7 @@ class TestRequestRefresh:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
+            pending_work_claims=MagicMock(),
         )
 
     def test_adds_inflight_ids_with_expiry(self, support):

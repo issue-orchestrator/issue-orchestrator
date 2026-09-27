@@ -34,7 +34,7 @@ from typing import Any
 from ..control.claim_gate import ClaimLostError
 from ..control.label_manager import LabelManager
 from ..control.reconciliation import ReconciliationRequired
-from ..control.validation_retry_retirement import ValidationRetryRetirement
+from ..control.abandoned_queued_work import retire_abandoned_queued_work
 from ..control.review_exchange_lifecycle import ValidatedWorkCustodyUnproven
 from ..execution.label_ops import LabelOperation, apply_label_operations
 
@@ -144,11 +144,18 @@ def terminate_issue_and_hold(
     # active-session row would tell the operator "may still be running" in the
     # same breath as deleting the only record of it -- the agent goes invisible
     # to the dashboard and a retry 404s on the session lookup (#7255 review).
-    ValidationRetryRetirement(
+    retire_abandoned_queued_work(
         state=state,
         claims=orchestrator.deps.pending_work_claims,
         tech_lead_authority=orchestrator.deps.tech_lead_authority,
-    ).retire_issue(issue_number)
+        issue_number=issue_number,
+        # Every terminal this command ended; one it could not stop keeps its
+        # claim, exactly as it keeps its active-session row below.
+        stopped_sessions=tuple(
+            session for session in sessions
+            if session.terminal_id not in {terminal_id for terminal_id, _ in outcome.failures}
+        ),
+    )
     state.release_issue(
         issue_number,
         keep_terminals=frozenset(terminal_id for terminal_id, _ in outcome.failures),

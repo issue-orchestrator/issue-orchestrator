@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock
 
 from issue_orchestrator.control.tech_lead_run_activity import (
     in_memory_run_activity,
@@ -187,6 +188,7 @@ class _Engine:
             events=SimpleNamespace(publish=lambda _e: None),  # type: ignore[arg-type]
             launch=self._start,
             activity=in_memory_run_activity(),
+            claims=MagicMock(),
         )
 
     def _start(self, tech_lead: PendingTechLeadReview):

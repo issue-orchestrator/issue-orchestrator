@@ -281,6 +281,59 @@ class TestKillSessionEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_kill_settles_the_claims_of_the_terminals_it_stopped(self):
+        """#7348: a stopped terminal's HELD claim must not outlive the kill.
+
+        Termination drops the session record without settling its claim, and
+        the per-tick recovery sweep re-admits any held row no live run holds --
+        so a terminated tech-lead investigation came straight back. The claim
+        is consumed for every terminal the kill stopped; a terminal that would
+        not stop keeps its claim along with its session record.
+        """
+        from issue_orchestrator.domain.models import (
+            DiscoveredFailure,
+            PendingTechLeadReview,
+        )
+        from issue_orchestrator.domain.pending_work import (
+            InFlightWork,
+            PendingWorkClaim,
+            PendingWorkKind,
+        )
+        from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
+
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(1, "Investigated issue")
+        stopped = create_session(issue)
+        stopped.terminal_id = "tech-lead-1"
+        alive = create_session(issue)
+        alive.terminal_id = "review-4124"
+        mock_orch.state.active_sessions = [stopped, alive]
+        investigation = PendingWorkClaim(
+            PendingWorkKind.TECH_LEAD,
+            PendingTechLeadReview(
+                1, "Investigate #1",
+                flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION,
+                failure=DiscoveredFailure(1, "Investigated issue", "failed"),
+            ),
+        )
+        mock_orch.state.in_flight_work = [
+            InFlightWork("tech-lead-1", investigation),
+            InFlightWork("review-4124", investigation),
+        ]
+        _arm_terminate(
+            mock_orch, 1, ("tech-lead-1",), failures=(("review-4124", "tmux is gone"),)
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            TestClient(app).post("/api/kill/1")
+        finally:
+            set_orchestrator(None)
+
+        consume = mock_orch.deps.pending_work_claims.consume_pending_work_claim
+        consume.assert_called_once_with(stopped.run_assets)
+        assert [w.terminal_id for w in mock_orch.state.in_flight_work] == ["review-4124"]
+
     def test_kill_session_reports_a_partial_teardown_as_a_failure(self):
         """A terminal that would not stop is still ALIVE.
 

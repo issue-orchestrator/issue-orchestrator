@@ -4590,6 +4590,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         support.apply_plan(
             Plan(actions=tuple(actions), skipped=()), MagicMock()
@@ -5518,6 +5519,7 @@ class TestTechLeadProducerToLaunchBoundary:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         support.apply_plan(
             Plan(actions=tuple(actions), skipped=()), MagicMock()
@@ -5841,6 +5843,7 @@ class TestTechLeadProducerToLaunchBoundary:
             pre_crash_state,
             None,
             authority_store,
+            claims=MagicMock(),
         )
 
         # ---- CRASH: everything in memory is lost. ----
@@ -5887,6 +5890,7 @@ class TestTechLeadProducerToLaunchBoundary:
             config=config,
             session_exists=lambda name: False,
             tech_lead_authority=authority_store,
+            claims=MagicMock(),
         )
 
         (queued,) = state.pending_tech_lead_reviews
@@ -5967,6 +5971,7 @@ class TestTechLeadProducerToLaunchBoundary:
             config=config,
             session_exists=lambda name: False,
             tech_lead_authority=authority_store,
+            claims=MagicMock(),
         )
 
         (queued,) = state.pending_tech_lead_reviews

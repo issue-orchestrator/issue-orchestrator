@@ -159,6 +159,7 @@ def startup_manager(
         issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         startup_worktree_reconciler=_startup_worktree_reconciler(),
         label_store=mock_label_store,
+        pending_work_claims=MagicMock(),
     )
 
 
@@ -381,6 +382,7 @@ class TestStartupManagerInProgressIssues:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=queue_cache_store,
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         mock_state = MagicMock()
@@ -566,6 +568,7 @@ class TestStartupManagerLabelStoreReconcile:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=store,
+            pending_work_claims=MagicMock(),
         )
 
         # Warm cache snapshot captured before recovery: still in-progress.
@@ -638,6 +641,7 @@ class TestStartupManagerLabelStoreReconcile:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=queue_cache_store,
             label_store=store,
+            pending_work_claims=MagicMock(),
         )
         return sm, store, mock_repository_host
 
@@ -1338,6 +1342,7 @@ class TestStartupManagerResumePartialWork:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         await manager.run_startup(sample_state)
@@ -1398,6 +1403,7 @@ class TestStartupManagerResumePartialWork:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         await manager.run_startup(sample_state)
@@ -1725,6 +1731,7 @@ class TestStartupGitHubCallBudget:
             update_queue_cache_fn=lambda: None,
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1758,6 +1765,7 @@ class TestStartupGitHubCallBudget:
             update_queue_cache_fn=lambda: None,
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1784,6 +1792,7 @@ class TestStartupGitHubCallBudget:
             update_queue_cache_fn=lambda: None,
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1837,6 +1846,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1875,6 +1885,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         state = OrchestratorState()
@@ -1907,6 +1918,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         state = OrchestratorState()
@@ -1945,6 +1957,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         caplog.clear()
@@ -2049,6 +2062,7 @@ class TestStartupSweepsThePendingWorkLedger:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         await manager.run_startup(sample_state)

@@ -14,6 +14,8 @@ affordance lit on an issue that has nothing left to investigate.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from pathlib import Path
 
 from issue_orchestrator.control.actions import ActionType, DropTechLeadAction
@@ -281,6 +283,7 @@ def _apply_withdrawal(state: OrchestratorState, action: DropTechLeadAction) -> l
     tick = _Tick()
     tick.state = state  # type: ignore[attr-defined]
     tick.events = events  # type: ignore[attr-defined]
+    tick.pending_work_claims = MagicMock()  # type: ignore[attr-defined]
     # The apply seam hands the run's shared claim back; a real ownership owner
     # over the single-instance store keeps that observable without a fake.
     tick.run_ownership = TechLeadRunOwnership(  # type: ignore[attr-defined]
