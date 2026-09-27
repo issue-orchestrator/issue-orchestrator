@@ -10,6 +10,7 @@ translation from verdict to action and does not grow the record format.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, ProposedTechLeadAction
 from ..domain.tech_lead_charter import CharterReason, CharterVerdict
@@ -63,6 +64,21 @@ class CharterDecisionLog:
     def note_reused_proposal(self, action_id: str, proposal_issue_number: int) -> None:
         """A re-proposal commented onto an existing gated proposal issue."""
         self._reused_proposals[action_id] = proposal_issue_number
+
+    def acted_on_targets(self, kind: str) -> frozenset[int]:
+        """Targets of *kind* proposals the charter did NOT keep as advice.
+
+        What a proposal effectively does is the charter's call, so a caller that
+        needs "which PRs are going back for rework" reads it here rather than
+        re-reading the agent's raw intent.
+        """
+        return frozenset(
+            proposed.target_number
+            for proposed, verdict in self._verdicts.values()
+            if proposed.action_type == kind
+            and proposed.target_number is not None
+            and not verdict.advice_only
+        )
 
     def records(self) -> tuple[TechLeadCharterDecision, ...]:
         return tuple(
@@ -156,3 +172,13 @@ def promotion_charter_record(
             reason=f"tech_lead charter: record {len(records)} promotion decision(s)",
         )
     ]
+
+
+def partition_charter_records(
+    actions: "Sequence[Action]",
+) -> tuple[list[Action], list[Action]]:
+    """Split charter-record actions (the audit) from every other action."""
+    records: list[Action] = [
+        a for a in actions if isinstance(a, RecordTechLeadCharterDecisionsAction)
+    ]
+    return records, [a for a in actions if not isinstance(a, RecordTechLeadCharterDecisionsAction)]

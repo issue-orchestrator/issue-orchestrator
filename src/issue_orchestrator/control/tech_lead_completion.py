@@ -478,15 +478,22 @@ def generate_tech_lead_completion_actions(
     load_result = load_validated_tech_lead_pair(session.run_dir, authority, config=config, labels=labels) if completed_ok else None
     succeeded = load_result is not None and load_result.ok
 
-    if authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW:
-        rework_pr_numbers = frozenset(
-            action.target_number for action in load_result.decision.proposed_actions
-            if action.action_type == "request_rework" and action.target_number is not None
-        ) if load_result is not None and load_result.decision is not None else frozenset()
-        actions.extend(_manifest_label_actions(config, authority, expected, success=succeeded, rework_pr_numbers=rework_pr_numbers))
+    # Manifest labels go HERE in the list, but which PRs are held back for
+    # rework is the planner's effective outcome, known only after planning: a
+    # request_rework the charter kept as advice sends no rework, so its PR must
+    # still be marked reviewed (#7330 review F1).
+    manifest_at = len(actions)
+    rework_pr_numbers: frozenset[int] = frozenset()
+
+    def with_manifest_labels() -> list[Action]:
+        if authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW:
+            actions[manifest_at:manifest_at] = _manifest_label_actions(
+                config, authority, expected, success=succeeded,
+                rework_pr_numbers=rework_pr_numbers)
+        return actions
 
     if load_result is None:
-        return actions
+        return with_manifest_labels()
     if load_result.decision is not None:
         # The op ledger (one open gated proposal per (op, target), #6778)
         # and the pattern ledger (one case file per signature, #6781) come
@@ -528,6 +535,7 @@ def generate_tech_lead_completion_actions(
                 obligation=obligation)
         actions.extend(decision_actions)
         actions.extend(charter_log.record_action())
+        rework_pr_numbers = charter_log.acted_on_targets("request_rework")
     else:
         # Belt-and-braces: the processing path (finding 3) should already have
         # classified this session FAILED before the planner sees it; still
@@ -573,7 +581,7 @@ def generate_tech_lead_completion_actions(
                 expected=expected,
             )
         )
-    return actions
+    return with_manifest_labels()
 
 
 def generate_tech_lead_decision_failure_actions(
