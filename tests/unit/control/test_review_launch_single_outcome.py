@@ -280,14 +280,14 @@ async def test_a_restart_that_finds_the_review_twice_queues_and_launches_it_once
     _assert_one_launch_one_success(engine)
 
 
-def test_a_duplicate_review_in_a_plan_is_refused_not_applied_as_a_failure(
+def test_a_queue_holding_one_pr_twice_plans_and_applies_one_launch(
     launcher_bundle: LauncherTestBundle,
 ) -> None:
-    """A queue that holds one PR twice must still cost one launch.
+    """A queue that holds one PR twice must still cost one launch, and no failure.
 
-    The queue owner no longer admits the duplicate; this pins the second line
-    of defence: the plan refuses a second launch of a subject it already
-    launches, reports it as skipped, and spends no capacity on it.
+    The queue owner no longer admits the duplicate; this pins the planner's
+    own defence for a queue built some other way: one launch action, one
+    terminal, one applied step and no failed one.
     """
     state = OrchestratorState()
     state.pending_reviews[:] = [_review(agent_label="agent:web"), _review(agent_label=None)]
@@ -296,9 +296,6 @@ def test_a_duplicate_review_in_a_plan_is_refused_not_applied_as_a_failure(
     plan = engine.plan()
 
     assert [a.action_type.value for a in plan.actions] == ["launch_session"]
-    refused = [s for s in plan.skipped if s.number == PR]
-    assert len(refused) == 1
-    assert "duplicate launch" in refused[0].reason
 
     engine.apply(plan)
 

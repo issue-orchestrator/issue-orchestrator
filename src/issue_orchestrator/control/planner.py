@@ -91,7 +91,7 @@ from .reconciliation import build_expected_for_mutation, without_paused_subjects
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
-from .plan_launches import PlanLaunches
+from .plan_launches import PlanLaunches, first_per_subject
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,
 )
@@ -551,7 +551,8 @@ class Planner:
                     tech_lead_launch_count, capacity,
                 )
             issue_actions, issue_skipped, _ = self._plan_issues(
-                snapshot, capacity, worker_active_count, plan_context
+                snapshot, capacity, worker_active_count, plan_context,
+                launching=launches.subjects(),
             )
             skipped.extend(issue_skipped)
             launches.admit(issue_actions, into=actions)
@@ -1133,8 +1134,14 @@ class Planner:
         capacity: int,
         worker_active_count: int,
         plan_context: PlanContext,
+        *,
+        launching: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem], int]:
         """Plan which issues to launch.
+
+        ``launching`` holds the issues/PRs earlier stages of this plan already
+        launch (a queued tech-lead run of an anchor, a validation retry): they
+        are excluded before the scheduler picks, so they cost no slot (#7454).
 
         ``worker_active_count`` is the active-session count charged against the
         worker budget for the scheduler's own slot gate. It equals
@@ -1233,6 +1240,7 @@ class Planner:
         )
         excluded_issues = (
             snapshot.active_issue_numbers |
+            launching |
             issues_with_reviews |
             issues_with_retrospective_reviews |
             issues_with_reworks |
@@ -1247,7 +1255,10 @@ class Planner:
         # Log per-issue exclusion reasons for diagnostics.
         skip_reason_by_issue: dict[int, str] = {}
         for issue in available:
-            if issue.number in snapshot.active_issue_numbers:
+            if issue.number in launching:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="other work for it launches this tick"))
+                skip_reason_by_issue[issue.number] = "launching_this_tick"
+            elif issue.number in snapshot.active_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
                 logger.info(issue_log(issue.number, "Skipped: reason=active_session"))
                 skip_reason_by_issue[issue.number] = "active_session"
@@ -1350,7 +1361,7 @@ class Planner:
             return actions, skipped
 
         decision: ReviewDecision = self.review_workflow.should_launch_reviews(
-            pending_reviews=list(snapshot.pending_reviews),
+            pending_reviews=first_per_subject(snapshot.pending_reviews, lambda r: r.pr_number),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
@@ -1411,7 +1422,7 @@ class Planner:
             return actions, skipped
 
         decision: RetrospectiveReviewDecision = workflow.should_launch_reviews(
-            pending_reviews=list(snapshot.pending_retrospective_reviews),
+            pending_reviews=first_per_subject(snapshot.pending_retrospective_reviews, lambda r: r.issue_number),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )
@@ -1469,7 +1480,7 @@ class Planner:
             return actions, skipped
 
         decision: ReworkDecision = self.rework_workflow.should_launch_reworks(
-            pending_reworks=list(snapshot.pending_reworks),
+            pending_reworks=first_per_subject(snapshot.pending_reworks, lambda r: r.resolve_issue_number()),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )

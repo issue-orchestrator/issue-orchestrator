@@ -33,13 +33,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Iterable, Sequence, TypeVar
 
 from .action_base import Action
 from .actions import ActionType, LaunchSessionAction, LaunchValidationRetryAction, SessionType
 from .planner_types import SkippedItem
 
 logger = logging.getLogger(__name__)
+
+_Request = TypeVar("_Request")
 
 #: Launch action kinds that occupy a worker slot when planned - the single
 #: source of truth the capacity counter uses so a new launch kind can't
@@ -71,6 +73,27 @@ def _kind(action: Action) -> str:
 
 def _describe(action: Action) -> str:
     return f"{_kind(action)} launch"
+
+
+def first_per_subject(
+    requests: Iterable[_Request], subject: Callable[[_Request], int | None]
+) -> list[_Request]:
+    """``requests`` in order, keeping only the first request per subject.
+
+    A stage's workflow slices its queue to the free capacity; a duplicate that
+    reached the slice would take a slot :class:`PlanLaunches` then refuses,
+    starving the next distinct request. A request with no subject is kept.
+    """
+    seen: set[int] = set()
+    kept: list[_Request] = []
+    for request in requests:
+        key = subject(request)
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(request)
+    return kept
 
 
 @dataclass
@@ -110,6 +133,10 @@ class PlanLaunches:
             launches += 1
         return launches
 
+    def subjects(self) -> frozenset[int]:
+        """Every issue/PR this plan already launches a session for."""
+        return frozenset(self._by_subject)
+
     @staticmethod
     def _conflict(action: Action, earlier: list[Action]) -> Action | None:
         """The admitted launch ``action`` would duplicate, if any."""
@@ -126,5 +153,6 @@ class PlanLaunches:
 __all__ = [
     "CAPACITY_CONSUMING_LAUNCH_TYPES",
     "PlanLaunches",
+    "first_per_subject",
     "launch_subject",
 ]

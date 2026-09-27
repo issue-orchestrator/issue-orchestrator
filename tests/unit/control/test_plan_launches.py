@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock
 
 from issue_orchestrator.control.action_base import Action
 from issue_orchestrator.control.actions import (
@@ -120,3 +121,96 @@ def test_every_pending_queue_admission_goes_through_its_owner() -> None:
         if _DIRECT_ADMISSION.search(line)
     ]
     assert offenders == []
+
+
+def _retry(issue_number: int):
+    from issue_orchestrator.domain.models import PendingValidationRetry
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    return PendingValidationRetry(
+        issue_number=issue_number,
+        issue_title="Retry me",
+        agent_label="agent:developer",
+        worktree_path=f"/tmp/repo-{issue_number}",
+        branch_name=f"{issue_number}-retry",
+        original_prompt="original task",
+        validation_error="dirty worktree",
+        validation_error_file=None,
+        retry_count=1,
+        source_kind=SessionKind.CODE,
+        validation_cmd="make test",
+    )
+
+
+def _launched(plan) -> list[tuple[str, int]]:
+    return [
+        (launch_kind, subject)
+        for action in plan.actions
+        if (subject := launch_subject(action)) is not None
+        for launch_kind in [
+            action.session_type.value
+            if isinstance(action, LaunchSessionAction)
+            else action.action_type.value
+        ]
+    ]
+
+
+def test_an_issue_another_stage_launches_costs_the_issue_pipeline_no_slot() -> None:
+    """The issue pipeline excludes what the plan already launches BEFORE it picks.
+
+    One worker slot is left after the validation retry of #1. Refusing an
+    issue launch of #1 after the scheduler picked it would leave that slot
+    empty and #2 unplanned.
+    """
+    from issue_orchestrator.control.planner import Planner
+    from issue_orchestrator.control.scheduler import Scheduler
+    from tests.unit.test_planner import make_config, make_issue, make_snapshot
+
+    config = make_config(max_concurrent_sessions=2)
+    planner = Planner(config=config, scheduler=Scheduler(config))
+
+    plan = planner.plan(
+        make_snapshot(
+            issues=[make_issue(1), make_issue(2)],
+            pending_validation_retries=[_retry(1)],
+        )
+    )
+
+    assert _launched(plan) == [("launch_validation_retry", 1), ("issue", 2)]
+    assert not any("duplicate launch" in s.reason for s in plan.skipped)
+
+
+def test_a_queue_holding_one_pr_twice_does_not_crowd_out_the_next_review() -> None:
+    from issue_orchestrator.control.planner import Planner
+    from issue_orchestrator.control.scheduler import Scheduler
+    from issue_orchestrator.control.workflows import ReviewWorkflow
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.models import PendingReview
+    from tests.unit.test_planner import make_config, make_snapshot
+
+    def review(pr: int, agent_label: str | None) -> PendingReview:
+        return PendingReview(
+            issue_key=FakeIssueKey(name=str(pr - 60)),
+            pr_number=pr,
+            pr_url="url",
+            branch_name="branch",
+            _issue_number=pr - 60,
+            agent_label=agent_label,
+        )
+
+    config = make_config(max_concurrent_sessions=2)
+    config.code_review_agent = "agent:developer"
+    events = MagicMock()
+    planner = Planner(
+        config=config,
+        scheduler=Scheduler(config),
+        review_workflow=ReviewWorkflow(config=config, events=events),
+    )
+
+    plan = planner.plan(
+        make_snapshot(
+            pending_reviews=[review(70, "agent:developer"), review(70, None), review(71, None)]
+        )
+    )
+
+    assert _launched(plan) == [("review", 70), ("review", 71)]
