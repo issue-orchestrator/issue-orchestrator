@@ -323,3 +323,26 @@ def test_a_closing_claim_stays_a_nonretryable_refusal() -> None:
     )
 
     assert refusal is not None and refusal.retryable is False
+
+
+class _UnreadableBranchCommits:
+    def branch_commit_messages(self, worktree: Path) -> tuple[tuple[str, ...], str | None]:
+        return (), "Could not read branch commit messages against origin/main: bad ref"
+
+
+def test_unreadable_branch_commits_are_a_retryable_refusal() -> None:
+    """Codex r12 (#7297): unread is not unsafe - the delivery is not at fault."""
+    from issue_orchestrator.control.partial_delivery_guard import PartialDeliveryGuard
+
+    guard = PartialDeliveryGuard(
+        source=_UnreadableBranchCommits(),  # type: ignore[arg-type]
+        prs=_RateLimitedBranchPRs(),
+        repo_slug=lambda: "owner/repo",
+    )
+
+    refusal = guard.refusal(
+        Path("/tmp/wt"), issue_number=123, branch="123-feature",
+        claimed=True, claim_body="Refs #123\n\nOne slice",
+    )
+
+    assert refusal is not None and refusal.retryable is True

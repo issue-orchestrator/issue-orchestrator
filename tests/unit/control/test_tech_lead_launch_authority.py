@@ -508,6 +508,32 @@ def test_a_rate_limited_run_ledger_holds_the_run_on_the_shared_window():
     ) is not None
 
 
+def test_a_past_bound_ledger_refusal_reports_the_bound_not_a_counted_failure():
+    """Codex r12: the held run spends nothing, so the event must not say it did."""
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    shared = SharedRunLedger()
+    shared.unavailable = True
+    shared.rate_limit = HostRateLimit(resets_at=now - timedelta(seconds=1), kind="primary")
+    harness = _Harness(
+        pending=[anchor], issues={900: FakeIssue(900, labels=())}, shared=shared
+    )
+    harness.state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now - timedelta(seconds=1), kind="primary"),
+        now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead:900",
+        live=live_episode_keys(harness.state),
+    )
+
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == []
+    assert harness.state.pending_tech_lead_reviews == [anchor]
+    deferral = harness.events.payloads(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)[-1]
+    assert deferral["past_deferral_bound"] is True
+    assert "counted_as_failure" not in deferral
+
+
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():
     """An anchor is not a blocked work item — but it MUST still be open (F9)."""
     anchor = _health_anchor()

@@ -9864,7 +9864,7 @@ class TestLaunchDefersOnGitHubRateLimit:
             e.data for e in mock_events.events
             if str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
         ]
-        assert deferral["counted_as_failure"] is False
+        assert deferral["past_deferral_bound"] is False
 
     def test_rate_limited_review_read_is_deferred_not_raised(
         self, launcher_bundle, mock_repo_host, mock_events

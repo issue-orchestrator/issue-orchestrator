@@ -39,9 +39,10 @@ class PartialDeliveryRefusal:
 
     ``retryable`` is False when the words themselves close the issue - the
     agent's text or an existing PR's reference line must change first. It is
-    True when the guard simply could not read what it needed: that says
-    nothing about the delivery, so the publication stays retryable, and
-    ``host_rate_limit`` names the reset when GitHub refused the read (#7297).
+    True when the guard simply could not read what it needed (the branch's
+    commit messages, or its open PR): that says nothing about the delivery,
+    so the publication stays retryable, and ``host_rate_limit`` names the
+    reset when GitHub refused the read (#7297).
     """
 
     reason: str
@@ -86,8 +87,10 @@ class PartialDeliveryGuard:
         """
         messages, unreadable = self._source.branch_commit_messages(worktree)
         if unreadable is not None:
+            # Unread, not unsafe: the same retryable refusal as a failed PR read.
             return PartialDeliveryRefusal(
-                f"{unreadable}; refusing to publish without the partial-delivery check"
+                f"{unreadable}; refusing to publish without the partial-delivery check",
+                retryable=True,
             )
         may_close = [m for m in messages if _closes_some_repos_issue(m, issue_number)]
         if not claimed and not may_close:
