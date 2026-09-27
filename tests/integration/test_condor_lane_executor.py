@@ -131,7 +131,12 @@ _ESCAPE_SCRIPT = (
     "if os.fork() == 0:\n"
     "    os.setsid()\n"
     "    if os.fork() == 0:\n"
-    "        open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+    # Publish the pid atomically: the test polls for the marker's
+    # EXISTENCE, so a plain open()+write() lets it read the created-but-
+    # still-empty file (int('') under emulated execution, 2026-09-27).
+    "        with open(sys.argv[1] + '.tmp', 'w') as f:\n"
+    "            f.write(str(os.getpid()))\n"
+    "        os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
     "        while time.monotonic() < deadline:\n"
     "            time.sleep(0.5)\n"
     "        os._exit(0)\n"

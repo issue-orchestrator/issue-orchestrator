@@ -595,23 +595,32 @@ def test_completion_outcome_needs_human_sets_label_and_event(scenario_repo: Path
         .run()
 
 
-def test_reconciliation_drift_pauses_issue(scenario_repo: Path):
+def test_a_subject_already_paused_for_reconciliation_is_withheld_not_repaused(scenario_repo: Path):
+    """#7349: GitHub already carries ``io:needs-reconcile``, so the gate refuses
+    the stale in-progress removal. That refusal is the pause working, not new
+    drift: it is published (``already_paused``), the issue is NOT paused again
+    every tick, and its remaining action this tick -- the launch -- is withheld
+    as a visible failed step instead of halting everyone else's plan."""
     pause_label = "io:needs-reconcile"
-    scenario("reconciliation_drift", scenario_repo) \
+    scenario("reconciliation_already_paused", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
         .issue(labels=["simulated-scenario", "agent:coder", "in-progress"]) \
         .reconciliation(enabled=True, fresh_labels={1: {pause_label}}) \
-        .expect_issue_label(pause_label) \
         .expect_latest_event(
             EventName.RECONCILIATION_REQUIRED,
-            predicate=lambda data: data.get("issue_number") == 1 and pause_label in set(data.get("actual_labels", [])),
+            predicate=lambda data: data.get("issue_number") == 1
+            and pause_label in set(data.get("actual_labels", []))
+            and data.get("already_paused") is True,
         ) \
         .expect_latest_event(
-            EventName.ISSUE_PAUSED_RECONCILE,
-            predicate=lambda data: data.get("issue_number") == 1 and data.get("pause_label") == pause_label,
+            EventName.APPLY_FAILED,
+            predicate=lambda data: data.get("issue_number") == 1
+            and data.get("step_type") == "launch_session"
+            and "withheld" in str(data.get("error", "")),
         ) \
+        .expect_no_event(EventName.ISSUE_PAUSED_RECONCILE) \
         .run()
 
 

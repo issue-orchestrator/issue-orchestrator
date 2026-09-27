@@ -19,6 +19,16 @@ FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 # ADR-0007's reproducible version contract: the exact LTS point release
 # is a build argument, so today's build and next month's build resolve
 # identically unless someone deliberately edits the pin.
+#
+# The pin covers the whole condor source-package family, not just the
+# `htcondor` metapackage: `htcondor` depends on `condor (= <exact>)`,
+# and apt resolves a dependency against its CANDIDATE version (the
+# newest in the repo), never backtracking to an older one. Pinning only
+# `htcondor` therefore breaks the build the day htcondor.org publishes
+# the next point release ("condor ... but it is not going to be
+# installed", 24.0.24 on 2026-09-27). `condor-upgrade-checks` is an
+# unversioned dependency of `condor` from the same source; it is pinned
+# too so the build does not silently drift.
 ARG CONDOR_PACKAGE_VERSION=24.0.23-1+ubu24
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,7 +46,10 @@ RUN apt-get update \
     && echo "deb [signed-by=/etc/apt/keyrings/htcondor.gpg] https://research.cs.wisc.edu/htcondor/repo/ubuntu/24.0 noble main" \
         > /etc/apt/sources.list.d/htcondor.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends "htcondor=${CONDOR_PACKAGE_VERSION}" \
+    && apt-get install -y --no-install-recommends \
+        "htcondor=${CONDOR_PACKAGE_VERSION}" \
+        "condor=${CONDOR_PACKAGE_VERSION}" \
+        "condor-upgrade-checks=${CONDOR_PACKAGE_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 # uv builds the repo's Linux venv inside the container (the mounted

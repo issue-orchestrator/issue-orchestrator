@@ -9,6 +9,8 @@ healthy in isolation and only misbehaves when a second Repository Engine exists.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Optional
@@ -103,6 +105,7 @@ class _Tick:
         self.queue_cache_store = None
         self.tech_lead_authority = None
         self.run_ownership = store.ownership()
+        self.pending_work_claims = MagicMock()
 
 
 def _failure(number: int) -> DiscoveredFailure:
