@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS validated_work_publish_attempts (
     outcome               TEXT NOT NULL DEFAULT '',   -- '' = no outcome yet (in flight or crashed)
     failure               TEXT NOT NULL DEFAULT '',
     finished_at           TEXT NOT NULL DEFAULT '',
+    -- 1 = the host refused under a typed rate limit; spends no publish budget.
+    rate_limited          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (record_id, attempt_no)
 );
 

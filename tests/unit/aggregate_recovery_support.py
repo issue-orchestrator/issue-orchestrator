@@ -10,7 +10,7 @@ import sys
 from issue_orchestrator.adapters.issue_disposition_gate import (
     FileIssueDispositionMutationGate,
 )
-from issue_orchestrator.control.actions import ActionResult, AddLabelAction
+from issue_orchestrator.control.actions import ActionResult, AddLabelAction, RemoveLabelAction
 from issue_orchestrator.control.aggregate_recovery_block import AggregateRecoveryBlocks
 from issue_orchestrator.control.operator_validated_work_abandonment import (
     OperatorValidatedWorkAbandonment,
@@ -42,6 +42,10 @@ class RecoveryRemote:
     crash_after: str = ""
     fail_remove: str = ""
     fail_add: str = ""
+    #: A label whose removal the applier reports as rate limited (a typed
+    #: ``HostRateLimit`` on its failed result, as ``ActionApplier`` returns it).
+    limit_remove: str = ""
+    limit: object = None
     after_read: Callable[[], None] = lambda: None
     before_remove: Callable[[], None] = lambda: None
 
@@ -69,6 +73,8 @@ class RecoveryRemote:
             raise Crash()
 
     def apply(self, action):
+        if isinstance(action, RemoveLabelAction) and action.label == self.limit_remove:
+            return ActionResult.fail_limited(action, "API rate limit exceeded", self.limit)
         if isinstance(action, AddLabelAction):
             self.add_label(action.issue_number, action.label)
         else:

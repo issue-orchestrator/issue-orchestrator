@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .publication_branch_policy import is_protected_publication_branch, require_short_publication_branch
 from .exact_git import ExactPushOutcome
+from .host_rate_limit import HostRateLimit, require_limit_only_on_failure
 from .validated_work import (
     PublishValidatedHeadStatus,
     ValidatedWorkFailure,
@@ -105,10 +106,17 @@ class BranchWriteOutcome:
     push_outcome: ExactPushOutcome | None
     failure: ValidatedWorkFailure | None
     message: str
+    #: The host's typed rate limit behind a failed remote read (#7350).
+    rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
         if type(self.status) is not BranchWriteStatus:
             raise ValueError("branch status must be typed")
+        require_limit_only_on_failure(
+            self.rate_limit,
+            failed=self.status is BranchWriteStatus.TRANSIENT_FAILURE,
+            result="branch stage",
+        )
         if (
             self.push_outcome is not None
             and type(self.push_outcome) is not ExactPushOutcome
@@ -185,12 +193,19 @@ class PrEnsureOutcome:
     failure: ValidatedWorkFailure | None
     message: str
     attribution: PullRequestAttribution
+    #: The host's typed rate limit behind a failed remote read (#7350).
+    rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
         if type(self.status) is not PrEnsureStatus:
             raise ValueError("PR status must be typed")
         if type(self.attribution) is not PullRequestAttribution:
             raise ValueError("PR attribution must be typed")
+        require_limit_only_on_failure(
+            self.rate_limit,
+            failed=self.status is PrEnsureStatus.TRANSIENT_FAILURE,
+            result="PR stage",
+        )
         self._validate_observed_metadata()
         self._validate_status_contract()
 
@@ -254,10 +269,17 @@ class PublishValidatedHeadOutcome:
     message: str
     pr_attribution: PullRequestAttribution
     superseded_stage: SupersededStage | None = None
+    #: The host's typed rate limit behind the failed stage, if any (#7350).
+    rate_limit: HostRateLimit | None = None
 
     def __post_init__(self) -> None:
         if type(self.pr_attribution) is not PullRequestAttribution:
             raise ValueError("PR attribution must be typed")
+        require_limit_only_on_failure(
+            self.rate_limit,
+            failed=self.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE,
+            result="publication",
+        )
         if self.pr_number is None and self.pr_attribution is not PullRequestAttribution.NONE:
             raise ValueError("PR attribution requires observed PR metadata")
 
@@ -282,18 +304,20 @@ def compose_publication_outcome(
         raise ValueError("PR stage must be typed")
     if pr is None:
         status = PublishValidatedHeadStatus(branch.status.value)
-        failure, message = branch.failure, branch.message
+        failure, message, rate_limit = branch.failure, branch.message, branch.rate_limit
     elif pr.status is PrEnsureStatus.REFUSED:
-        status, failure, message = (
+        status, failure, message, rate_limit = (
             PublishValidatedHeadStatus.REJECTED,
             pr.failure,
             pr.message,
+            pr.rate_limit,
         )
     elif pr.status is PrEnsureStatus.TRANSIENT_FAILURE:
-        status, failure, message = (
+        status, failure, message, rate_limit = (
             PublishValidatedHeadStatus.TRANSIENT_FAILURE,
             pr.failure,
             pr.message,
+            pr.rate_limit,
         )
     else:
         if pr.pr_head_sha != branch.observed_remote_head_sha:
@@ -303,7 +327,7 @@ def compose_publication_outcome(
             if branch.status is BranchWriteStatus.PUSHED
             else PublishValidatedHeadStatus.ALREADY_AT_TARGET
         )
-        failure, message = None, pr.message
+        failure, message, rate_limit = None, pr.message, None
     return PublishValidatedHeadOutcome(
         status,
         branch.observed_remote_head_sha,
@@ -314,6 +338,7 @@ def compose_publication_outcome(
         failure,
         message,
         pr.attribution if pr else PullRequestAttribution.NONE,
+        rate_limit=rate_limit,
     )
 
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from .host_rate_limit import HostRateLimit
+from .host_rate_limit import HostRateLimit, require_limit_only_on_failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,10 @@ class EffectResult:
     error: str = ""
 
     def __post_init__(self) -> None:
-        if self.committed and (self.rate_limit is not None or self.error):
+        require_limit_only_on_failure(
+            self.rate_limit, failed=not self.committed, result="owed write"
+        )
+        if self.committed and self.error:
             raise ValueError("a committed write has no refusal")
         if not self.committed and not self.error.strip():
             raise ValueError("a refused write needs its reason")

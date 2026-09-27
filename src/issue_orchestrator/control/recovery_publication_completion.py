@@ -62,7 +62,8 @@ class RecoveryPublicationCompletion:
         )
         finalized = self._finalizer.finalize(request)
         if finalized.status is not FinalizationStatus.FINALIZED:
-            return RecoveryAttemptPending(finalized.message, finalized.failure)
+            return RecoveryAttemptPending(finalized.message, finalized.failure,
+                                          rate_limit=finalized.rate_limit)
         observed = perform(lambda: self._verifier.confirm_target(command))
         if target_from_verification(prepared, observed) != target:
             return RecoveryAttemptPending("Publication changed before durable resolution",

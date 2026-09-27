@@ -343,3 +343,16 @@ def applier_owner(applier, events, *, store=None, clock=None, policy=LivenessPol
         policy=policy,
         clock=clock if clock is not None else ManualClock(),
     )
+
+
+def rate_limited(resets_at: datetime | None = None):
+    """A host error carrying a typed GitHub rate limit, as adapters raise it."""
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    error = RepositoryHostRateLimitedError("API rate limit exceeded")
+    error.rate_limit = HostRateLimit(
+        resets_at=resets_at or datetime(2026, 9, 27, 15, 5, tzinfo=timezone.utc),
+        kind="primary",
+    )
+    return error

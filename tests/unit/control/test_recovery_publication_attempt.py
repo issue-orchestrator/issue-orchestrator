@@ -11,7 +11,10 @@ from issue_orchestrator.control.validated_work_effects import FencedValidatedWor
 from issue_orchestrator.domain.published_work_finalization import PublishedWorkTarget
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
 from issue_orchestrator.domain.validated_work import ValidatedWorkState, PublishValidatedHeadStatus
-from issue_orchestrator.domain.publication_remote import PublicationPullRequest, PublicationPrState
+from issue_orchestrator.domain.publication_remote import (
+    PublicationPullRequest, PublicationPrState, PublicationRemoteError,
+)
+from issue_orchestrator.domain.validated_work import ValidatedWorkFailure
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
 from issue_orchestrator.execution.git_validated_head_executor import GitValidatedHeadExecutor
@@ -22,6 +25,7 @@ from issue_orchestrator.infra.validated_work_store import SqliteValidatedWorkSto
 from tests.unit.control.test_retained_completion_preparation import retained as retained, prepare
 from tests.unit.test_git_validated_head_executor import Remote
 from tests.unit.validated_work_support import Liveness
+from tests.unit.control.liveness_doubles import rate_limited
 from tests.unit.test_validated_work_preservation import custody as custody
 
 
@@ -152,3 +156,68 @@ def test_completed_attempt_never_republishes_a_branch_that_moved(publication):
         assert rig.store.publish_attempts(claim.record_id) == before
         assert rig.remote.read_branch(rig.prepared.command) == base
         assert rig.remote.created == 1
+
+
+def test_a_rate_limited_publication_read_reaches_the_pending_result(publication):
+    """The executor catches the host error into its outcome; the attempt must
+    hand that limit on, or liveness spends an attempt before the reset (#7350)."""
+    rig = publication
+    limited = rate_limited()
+
+    def create_pr(command):
+        raise PublicationRemoteError("API rate limit exceeded") from limited
+
+    rig.remote.create_pr = create_pr
+    with held(rig) as (token, claim):
+        result = rig.worker.advance(token, claim, rig.prepared, approved=rig.authority)
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert result.rate_limit == limited.rate_limit
+
+
+def test_a_rate_limited_destination_check_waits_instead_of_failing_the_record(publication):
+    """A limit means the host has not answered yet; a REJECTED branch stage
+    would durably fail the record before the reset could help (#7350)."""
+    rig = publication
+    limited = rate_limited()
+
+    def refused(command, destination):
+        raise PublicationRemoteError("API rate limit exceeded") from limited
+
+    rig.remote.accepts_push_destination = refused
+    with held(rig) as (token, claim):
+        result = rig.worker.advance(token, claim, rig.prepared, approved=rig.authority)
+        assert isinstance(result, RecoveryAttemptPending)
+        assert result.rate_limit == limited.rate_limit
+        assert rig.store.get(claim.record_id).state is ValidatedWorkState.PUBLISHING
+        [attempt] = rig.store.publish_attempts(claim.record_id)
+        assert attempt.rate_limited
+
+
+def test_an_unrecorded_limited_outcome_still_names_its_reset(publication):
+    rig = publication
+    limited = rate_limited()
+
+    def create_pr(command):
+        raise PublicationRemoteError("API rate limit exceeded") from limited
+
+    class RefusingStore:
+        def __init__(self, store):
+            self._store = store
+
+        def __getattr__(self, name):
+            return getattr(self._store, name)
+
+        def record_attempt_outcome(self, *args, **kwargs):
+            return False
+
+    rig.remote.create_pr = create_pr
+    worker = RecoveryPublicationAttempt(store=RefusingStore(rig.store), effects=rig.effects,
+                                        publisher=rig.publisher, verifier=rig.verifier)
+    with held(rig) as (token, claim):
+        result = worker.advance(token, claim, rig.prepared, approved=rig.authority)
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.message == "Publication outcome awaits durable reconciliation"
+    assert result.rate_limit == limited.rate_limit

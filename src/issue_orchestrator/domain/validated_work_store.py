@@ -218,6 +218,10 @@ class PublishAttempt:
     outcome: PublishValidatedHeadStatus | None = None
     failure: ValidatedWorkFailure | None = None
     finished_at: str = ""
+    #: The host refused this attempt under a typed rate limit (#7350). Such an
+    #: attempt stays in the append-only history but spends no publish budget:
+    #: the action liveness owner bounds how long a limit may be waited out.
+    rate_limited: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -272,7 +276,7 @@ class PublishAttempt:
 
     def _validate_outcome(self) -> None:
         if self.outcome is None:
-            if self.failure is not None or self.finished_at:
+            if self.failure is not None or self.finished_at or self.rate_limited:
                 raise ValueError("an outcome-less attempt cannot have completion facts")
             return
         if (
@@ -285,6 +289,8 @@ class PublishAttempt:
             raise ValueError("successful attempts cannot carry failure")
         if not self.succeeded and type(self.failure) is not ValidatedWorkFailure:
             raise ValueError("unsuccessful attempts require enumerated failure")
+        if self.rate_limited and self.outcome is not PublishValidatedHeadStatus.TRANSIENT_FAILURE:
+            raise ValueError("only a transient attempt outcome can be rate limited")
 
 
 class AncestryRelation(StrEnum):

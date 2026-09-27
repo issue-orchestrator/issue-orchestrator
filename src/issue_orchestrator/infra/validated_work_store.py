@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.retention_clock import retention_instant
 from ..domain.recovery_block import RecoveryBlockSnapshot, RecoveryCleanupKey
 from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
@@ -427,6 +428,7 @@ class SqliteValidatedWorkStore:
         outcome: PublishValidatedHeadStatus,
         failure: ValidatedWorkFailure | None,
         finished_at: str,
+        rate_limit: HostRateLimit | None,
     ) -> bool:
         with self._db.transaction(write=True) as conn:
             return self._attempts.outcome(
@@ -436,6 +438,7 @@ class SqliteValidatedWorkStore:
                 outcome=outcome,
                 failure=failure,
                 finished_at=finished_at,
+                rate_limit=rate_limit,
             )
 
     def read_finalization_checkpoint(

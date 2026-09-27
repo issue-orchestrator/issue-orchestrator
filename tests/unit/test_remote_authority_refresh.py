@@ -316,7 +316,7 @@ def test_publishing_unobserved_refresh_preserves_in_flight_lifecycle(tmp_path):
     assert store.record_attempt_outcome(
         owned,
         attempt,
-        outcome=PublishValidatedHeadStatus.PUBLISHED,
+        rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
         failure=None,
         finished_at=AT,
     )
@@ -369,7 +369,7 @@ def test_migrated_success_with_nonempty_baseline_finalizes_after_exact_refresh(
     assert store.record_attempt_outcome(
         owned,
         attempt,
-        outcome=PublishValidatedHeadStatus.PUBLISHED,
+        rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
         failure=None,
         finished_at=AT,
     )
