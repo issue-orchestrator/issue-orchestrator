@@ -206,7 +206,7 @@ def _release_issue_runtime(
     is supplied, any in-flight/stored publish retry for the issue is abandoned in
     the same boundary so a late republish cannot repopulate a terminated issue.
     """
-    refs = tuple(_issue_runtime_session_refs(issue_number, session_types))
+    refs = _issue_runtime_session_refs(issue_number, session_types, active_sessions)
     active_names = _active_session_names(active_sessions)
     matching_active = active_names.intersection(ref.name for ref in refs)
     if session_manager is None and matching_active:
@@ -434,12 +434,17 @@ def _issue_runtime_session_active(
 
     Reads ``active_sessions`` (the registry ``terminate_issue_runtime`` clears)
     and, when supplied, the ``SessionManager`` it stops, so the visible-session
-    activity signal matches the terminals the reset would tear down.
+    activity signal matches the terminals the reset would tear down. A
+    recorded tech-lead run is never issue runtime (#7347): it reads its
+    subject from its own checkout, and neither counts nor is stopped here -
+    also when a pre-#7347 one still runs under ``issue-N``. Every other
+    recorded session on the issue still counts, as before.
     """
     registry_active = any(
-        session.issue.number == issue_number for session in (active_sessions or ())
+        session.issue.number == issue_number and not _is_tech_lead_run(session)
+        for session in (active_sessions or ())
     )
-    refs = _issue_runtime_session_refs(issue_number, session_types)
+    refs = _issue_runtime_session_refs(issue_number, session_types, active_sessions)
     manager_active = session_manager is not None and any(
         session_manager.exists(ref) for ref in refs
     )
@@ -449,14 +454,33 @@ def _issue_runtime_session_active(
 def _issue_runtime_session_refs(
     issue_number: int,
     session_types: Iterable[SessionType],
-) -> list["SessionRef"]:
+    active_sessions: list["Session"] | None,
+) -> tuple["SessionRef", ...]:
+    """The issue-runtime terminals of ``issue_number``: ONE selector for the
+    activity probe and the teardown.
+
+    The issue and rework lanes, minus a name a recorded tech-lead run holds
+    (a pre-#7347 tech lead runs as ``issue-N``). A live lane terminal no
+    recorded session accounts for stays in: its owner is unknown, so it is
+    still guarded and torn down.
+    """
     from .session_manager import SessionRef
 
-    return [
+    tech_lead_names = {
+        session.terminal_id
+        for session in (active_sessions or ())
+        if _is_tech_lead_run(session)
+    }
+    lanes = (
         SessionRef(session_type=session_type, number=issue_number)
         for session_type in session_types
         if session_type in ISSUE_RUNTIME_SESSION_TYPES
-    ]
+    )
+    return tuple(ref for ref in lanes if ref.name not in tech_lead_names)
+
+
+def _is_tech_lead_run(session: "Session") -> bool:
+    return session.key.kind is SessionKind.TECH_LEAD
 
 
 def _active_session_names(active_sessions: list["Session"] | None) -> set[str]:
