@@ -25,6 +25,7 @@ from ..domain.publication_workspace import PublicationWorkspace
 from ..domain.review_validation import ReviewValidationEvidence
 from ..domain.publication_remote import attributed_publication_body
 from ..domain.pr_issue_reference import declares_partial_delivery, honors_partial_claim
+from ..infra.repo_scope import require_repo
 from ..domain.manual_publication import PreparedManualPublication
 from ..domain.validated_head_publication import PublishValidatedHeadOutcome
 from .retained_completion_policy import prepare_retained_completion
@@ -2189,6 +2190,12 @@ class CompletionProcessor:
             pr_title, pr_body, expected_base, stack_decision, exchange_mode, record.partial_pr
         )
 
+    def _partial_claim_repo_slug(self) -> str:
+        """The repository a partial claim's issue links are judged by (#7288)."""
+        if self._config is None:
+            raise ValueError("a partial completion needs the configured repository")
+        return require_repo(self._config)
+
     def _refuse_unkeepable_partial_claim(
         self, *, record: CompletionRecord, pr_body: str, worktree: Path,
         issue_number: int, errors: list[str],
@@ -2203,8 +2210,11 @@ class CompletionProcessor:
         """
         if not record.partial_pr:
             return False
-        if declares_partial_delivery(pr_body, issue_number):
-            refusal = self._publication_source_guards.partial_delivery(worktree, issue_number)
+        repo_slug = self._partial_claim_repo_slug()
+        if declares_partial_delivery(pr_body, issue_number, repo_slug=repo_slug):
+            refusal = self._publication_source_guards.partial_delivery(
+                worktree, issue_number, repo_slug=repo_slug
+            )
         else:
             refusal = (
                 f"completion declared partial delivery of #{issue_number}, but its "
@@ -2453,7 +2463,9 @@ class CompletionProcessor:
         PR's reference line or drops the partial claim. Not retryable: nothing
         changes until someone does.
         """
-        if honors_partial_claim(pr.body, issue_number, partial=partial):
+        if not partial or honors_partial_claim(
+            pr.body, issue_number, partial=partial, repo_slug=self._partial_claim_repo_slug()
+        ):
             return None
         reason = (
             f"completion declared partial delivery of #{issue_number}, but "

@@ -306,6 +306,7 @@ class AwaitingMergeReconciler:
                             self.repository_host.issue_closed_on_or_after
                         ),
                         state=state, entry=entry, pr=pr, now=self.clock(),
+                        repo_slug=self._repo_slug(),
                     )
                     if reconciliation is None:
                         return AwaitingMergeEntryDiscovery("skipped")
@@ -481,7 +482,7 @@ class AwaitingMergeReconciler:
             return None
         # The drift policy owns the open/merged/closed precedence, so the
         # "latest terminal PR decides" rule lives in exactly one place.
-        return label_drift_finding(issue.number, prs)
+        return label_drift_finding(issue.number, prs, repo_slug=self._repo_slug())
 
     def _discover_post_publish_followup(
         self,
@@ -838,6 +839,12 @@ class AwaitingMergeReconciler:
                 f"human attention."
             ),
         )
+
+    def _repo_slug(self) -> str:
+        """The repository whose issue links count (#7288); required to judge them."""
+        if not self.repo:
+            raise ValueError("awaiting-merge reconciliation needs the repository slug")
+        return self.repo
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
         # REST-only; decisive open PRs read check rollup lazily through the gate.

@@ -59,6 +59,7 @@ from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchErr
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
+from ..infra.repo_scope import require_repo
 from .retrospective_review import discover_retrospective_review_issues
 from .validation_retry_recovery import ValidationRetryRecovery
 from .worker_budget import worker_slot_free
@@ -634,7 +635,7 @@ class StartupManager:
             pr_url = pr.url
             pr_body = pr.body
 
-            issue_number = extract_issue_number_from_pr(pr)
+            issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
 
             # Check if PR was created by orchestrator
             if ORCHESTRATOR_PR_MARKER not in pr_body:

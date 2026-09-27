@@ -33,7 +33,7 @@ class PrSetDriftClassification:
 
 
 def classify_pr_set_drift(
-    prs: list[PRInfo], *, issue_number: int
+    prs: list[PRInfo], *, issue_number: int, repo_slug: str
 ) -> PrSetDriftClassification:
     """Own the ``blocked:pr-closed`` precedence policy for a PR set.
 
@@ -52,7 +52,7 @@ def classify_pr_set_drift(
     latest = max(prs, key=lambda item: item.number)
     if latest.is_closed_unmerged:
         return PrSetDriftClassification(drifting=True, pr=latest)
-    if declares_partial_delivery(latest.body, issue_number):
+    if declares_partial_delivery(latest.body, issue_number, repo_slug=repo_slug):
         return PrSetDriftClassification(drifting=False, partial_merge=latest)
     return PrSetDriftClassification(drifting=False)
 
@@ -62,7 +62,7 @@ def _normalized_state(state: str | None) -> str:
 
 
 def label_drift_finding(
-    issue_number: int, prs: list[PRInfo]
+    issue_number: int, prs: list[PRInfo], *, repo_slug: str
 ) -> DiscoveredAwaitingMergeDrift | DiscoveredAwaitingMergeReconciliation | None:
     """The fact a pr-pending issue's PR set produces, if any.
 
@@ -70,7 +70,7 @@ def label_drift_finding(
     latest merged partial PR produces a terminal recovery that sheds the stale
     ``pr-pending`` label and leaves the issue open for its next slice.
     """
-    decision = classify_pr_set_drift(prs, issue_number=issue_number)
+    decision = classify_pr_set_drift(prs, issue_number=issue_number, repo_slug=repo_slug)
     if decision.partial_merge is not None:
         return partial_merge_label_recovery(issue_number, decision.partial_merge)
     if not decision.drifting:

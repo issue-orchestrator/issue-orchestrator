@@ -25,13 +25,16 @@ class OpenPullRequestIndex:
     match PRs that merely mention the issue (#7293).
     """
 
-    def __init__(self, listing: OpenPullRequestListing) -> None:
+    def __init__(self, listing: OpenPullRequestListing, *, repo_slug: str) -> None:
         self._listing = listing
+        self._repo_slug = repo_slug
         self._issues: frozenset[int] | None = None
 
     def has_open_pr(self, issue_number: int) -> bool:
         if self._issues is None:
-            self._issues = issues_with_open_prs(self._listing.list_open_prs_complete())
+            self._issues = issues_with_open_prs(
+                self._listing.list_open_prs_complete(), repo_slug=self._repo_slug
+            )
         return issue_number in self._issues
 
 

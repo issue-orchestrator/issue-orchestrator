@@ -41,6 +41,8 @@ from issue_orchestrator.entrypoints.cli_tools import agent_done, coding_done
 from issue_orchestrator.history import issues_held_by_session_history
 from issue_orchestrator.infra.config import Config
 
+REPO = "porchpin/porchpin"
+
 
 # --- the reference line -----------------------------------------------------
 
@@ -60,13 +62,21 @@ def test_the_reference_line_closes_a_whole_delivery_and_refs_a_partial_one() -> 
         ("Refs #320\nCloses #1", 320),
         ("Closes #320\n\nAlso Refs #1", 320),
         ("No reference here, see #320", None),
+        # Every GitHub closing form links; the first in body order owns.
+        ("Fixes #320\nCloses #1", 320),
+        ("resolved: #320", 320),
+        ("Closes https://github.com/porchpin/porchpin/issues/320", 320),
+        ("Closes porchpin/porchpin#320", 320),
+        # Another repository's issue is not a local link.
+        ("Closes other/repo#320", None),
+        ("Closes https://github.com/other/repo/issues/320\nRefs #320", 320),
         # A word-boundary-defeated reference links nothing, as before.
         ("done.\\n\\nCloses #45.", None),
     ],
 )
 def test_a_body_links_the_issue_it_closes_or_refs(body: str, linked: int | None) -> None:
-    assert linked_issue_number(body) == linked
-    assert body_links_issue(body, [320]) is (linked == 320)
+    assert linked_issue_number(body, repo_slug=REPO) == linked
+    assert body_links_issue(body, [320], repo_slug=REPO) is (linked == 320)
 
 
 @pytest.mark.parametrize(
@@ -83,6 +93,9 @@ def test_a_body_links_the_issue_it_closes_or_refs(body: str, linked: int | None)
         # A reference to another issue says nothing about this one.
         ("Refs #321", False),
         ("Refs #320\nCloses #321", True),
+        # Another repository's #320 closing on merge does not close ours.
+        ("Refs #320\nCloses other/repo#320", True),
+        ("Refs #320\nCloses https://github.com/porchpin/porchpin/issues/320", False),
         # No reference at all is a broken close, not a declared partial.
         ("", False),
     ],
@@ -90,7 +103,7 @@ def test_a_body_links_the_issue_it_closes_or_refs(body: str, linked: int | None)
 def test_partial_delivery_is_a_refs_line_with_no_closing_keyword(
     body: str, partial: bool
 ) -> None:
-    assert declares_partial_delivery(body, 320) is partial
+    assert declares_partial_delivery(body, 320, repo_slug=REPO) is partial
 
 
 # --- the completion record --------------------------------------------------
@@ -167,6 +180,9 @@ def test_coding_done_without_partial_records_a_whole_delivery() -> None:
         ("Split package A. Refs #320.", False),
         # Another issue's closing keyword does not close this one.
         ("Split package A. Closes #321.", False),
+        # The agent side cannot know the repository slug, so any repository's
+        # #320 counts: it errs toward rewording, never toward a close.
+        ("Split package A. Closes owner/repo#320.", True),
     ],
 )
 def test_coding_done_partial_refuses_text_that_would_close_the_issue(

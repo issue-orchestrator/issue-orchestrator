@@ -604,6 +604,24 @@ class TestPartialPRReference:
     that makes no partial claim keeps whatever the PR says.
     """
 
+    @pytest.fixture
+    def processor(self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus):
+        """A processor for a configured repository: issue links are judged
+        against its slug (#7288 round 5)."""
+        return make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=Config(
+                repo="owner/repo", worktree_base_branch_override="main",
+                review_exchange_mode="via-draft-pr",
+            ),
+        )
+
     @staticmethod
     def _record(*, partial: bool) -> CompletionRecord:
         return make_record(

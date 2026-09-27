@@ -53,7 +53,7 @@ RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
 from ...domain.artifact_contracts import ValidationFailed, ValidationPassed
-from ...domain.pr_issue_reference import names_issue_in_closing_keyword
+from ...domain.pr_issue_reference import issue_links
 from ...domain.session_run import ValidationArtifactPaths
 from ...execution.run_evidence import RunEvidenceRecorder
 from ...execution.session_output_adapter import FileSystemSessionOutput
@@ -321,12 +321,17 @@ def _refuse_closing_keyword_in_partial_text(args: argparse.Namespace) -> None:
     The implementation and problems text goes into the PR body. A closing
     keyword for the issue there makes GitHub close it on merge despite the
     "Refs" line, and the orchestrator refuses to publish it (#7288).
+
+    The agent side does not know the repository slug, so a closing link to
+    ``#N`` in ANY repository counts here. That errs toward asking the agent
+    to reword, never toward letting a close through; the orchestrator's
+    repository-scoped check makes the final call.
     """
     issue_number = get_issue_number()
     if issue_number is None:
         return
     text = "\n".join(part for part in (args.implementation, args.problems) if part)
-    if names_issue_in_closing_keyword(text, issue_number):
+    if any(link.closes and link.number == issue_number for link in issue_links(text)):
         die(
             f"--partial: your --implementation/--problems text closes #{issue_number} "
             f"with a closing keyword (Closes/Fixes/Resolves), so merging would close "

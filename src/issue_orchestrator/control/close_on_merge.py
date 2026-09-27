@@ -151,6 +151,7 @@ def merged_pr_reconciliation(
     entry: "SessionHistoryEntry",
     pr: "PRInfo",
     now: float,
+    repo_slug: str,
 ) -> DiscoveredAwaitingMergeReconciliation | None:
     """The terminal fact for a history entry whose PR merged.
 
@@ -159,7 +160,7 @@ def merged_pr_reconciliation(
     check. Returns None when that evidence cannot be read; the caller leaves
     the entry reconcilable.
     """
-    partial = declares_partial_delivery(pr.body, entry.issue_number)
+    partial = declares_partial_delivery(pr.body, entry.issue_number, repo_slug=repo_slug)
     issue_open = False
     if not partial:
         close_check = should_close_merged_issue(

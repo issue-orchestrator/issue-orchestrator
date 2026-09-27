@@ -19,7 +19,8 @@ def publication_pr_identity_failure(command: PublishValidatedHeadCommand,
     # A PR opened earlier with "Closes #N" must not carry a partial claim:
     # merging it would close an unfinished issue (#7288).
     if not honors_partial_claim(
-        pr.body, command.issue_number, partial=command.content.partial_pr
+        pr.body, command.issue_number, partial=command.content.partial_pr,
+        repo_slug=command.repo_slug,
     ):
         return ValidatedWorkFailure.PR_ISSUE_REFERENCE_MISMATCH
     return None

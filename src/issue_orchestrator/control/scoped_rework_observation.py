@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 def observe_rework_targets(
     repository: RepositoryHost,
     *,
+    repo_slug: str,
     pr_numbers: Sequence[int],
     issue_numbers: Sequence[int],
     expected_heads: Mapping[int, str] | None = None,
@@ -43,7 +44,7 @@ def observe_rework_targets(
         numbers.update(
             pr.number
             for pr in repository.list_open_prs_complete()
-            if extract_issue_number_from_pr(pr) in wanted
+            if extract_issue_number_from_pr(pr, repo_slug=repo_slug) in wanted
         )
         numbers.update(repository.merged_prs_referencing_issues(sorted(wanted)))
     targets: list[ReworkTarget] = []
@@ -60,9 +61,10 @@ def observe_rework_targets(
                 number,
             )
             continue
-        linked = extract_issue_number_from_pr(pr)
+        linked = extract_issue_number_from_pr(pr, repo_slug=repo_slug)
         if not pr_fields_reference_issue(
-            branch=pr.branch, title="", body=pr.body, issue_numbers=[linked]
+            branch=pr.branch, title="", body=pr.body, issue_numbers=[linked],
+            repo_slug=repo_slug,
         ):
             continue
         if number not in pr_numbers and linked not in issue_numbers:

@@ -18,23 +18,65 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 _CLOSES_KEYWORD = "Closes"
 _REFS_KEYWORD = "Refs"
 
-# The two forms the orchestrator writes. Each links a PR to its issue.
-_LINK_RE = re.compile(r"\b(?:Closes|Refs)\s+#(\d+)\b", re.IGNORECASE)
-_REFS_RE = re.compile(r"\bRefs\s+#(\d+)\b", re.IGNORECASE)
-
-# Every keyword GitHub accepts as a closing reference, with or without the colon
-# it also accepts, naming the issue as ``#N`` or ``owner/repo#N``. A body that
-# uses any of them for the issue is closed by GitHub on merge, so it is never
-# partial, whatever else the body says. (An ``owner/repo#N`` for another
-# repository errs toward "not partial", which keeps the close check.)
-_GITHUB_CLOSING_RE = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(?:[\w.-]+/[\w.-]+)?#(\d+)\b",
+# ONE grammar for every issue link in PR text (#7288 round 5). A link is a
+# keyword, an optional colon, then the issue as ``#N``, ``owner/repo#N`` or
+# ``https://github.com/owner/repo/issues/N``. The keyword is either one GitHub
+# closes the issue by (close/closes/closed, fix/fixes/fixed, resolve/resolves/
+# resolved) or ``Refs`` for a partial delivery. A bare ``#N`` mention is never a
+# link. Every question below (which issue owns the PR, which issues a PR is
+# working on, whether it closes or only refs an issue) reads these same
+# tokens, filtered to THIS repository, so no two paths can disagree about what
+# a local issue reference is.
+_LINK_RE = re.compile(
+    r"\b(?P<keyword>close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs):?\s+"
+    r"(?:(?P<repo>[\w.-]+/[\w.-]+)#|https?://github\.com/(?P<url_repo>[\w.-]+/[\w.-]+)/issues/|#)"
+    r"(?P<number>\d+)\b",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class IssueLink:
+    """One issue link found in PR text."""
+
+    number: int
+    closes: bool  # a GitHub closing keyword; False for ``Refs``
+    repo: str | None  # the qualifying ``owner/repo``, None when unqualified
+
+
+def issue_links(text: str) -> tuple[IssueLink, ...]:
+    """Every issue link in ``text``, in text order, for any repository."""
+    links: list[IssueLink] = []
+    for match in _LINK_RE.finditer(text):
+        repo = match.group("repo") or match.group("url_repo")
+        links.append(IssueLink(
+            number=int(match.group("number")),
+            closes=match.group("keyword").lower() != "refs",
+            repo=repo,
+        ))
+    return tuple(links)
+
+
+def _require_slug(repo_slug: str) -> str:
+    if "/" not in repo_slug.strip():
+        raise ValueError(f"issue links need an owner/repo slug, got {repo_slug!r}")
+    return repo_slug.strip().casefold()
+
+
+def local_issue_links(text: str, *, repo_slug: str) -> tuple[IssueLink, ...]:
+    """The links in ``text`` that name an issue of ``repo_slug``: unqualified,
+    or qualified with this repository. ``Closes other/repo#200`` is not a
+    link to local #200."""
+    slug = _require_slug(repo_slug)
+    return tuple(
+        link for link in issue_links(text)
+        if link.repo is None or link.repo.casefold() == slug
+    )
 
 
 def issue_reference_line(issue_number: int, *, partial: bool) -> str:
@@ -43,64 +85,64 @@ def issue_reference_line(issue_number: int, *, partial: bool) -> str:
     return f"{keyword} #{issue_number}"
 
 
-def linked_issue_number(body: str) -> int | None:
-    """The issue a PR body links to, or None when it names none.
+def linked_issue_number(body: str, *, repo_slug: str) -> int | None:
+    """The local issue that OWNS a PR, from its body, or None.
 
-    The first link in body order wins. The orchestrator's own reference is
-    the body's first line, so text further down (the agent's implementation
-    notes, or a second "Closes #M") cannot take the PR away from its issue.
+    The first local link in body order wins. The orchestrator's own reference
+    is the body's first line, so text further down cannot take the PR away
+    from its issue.
     """
-    match = _LINK_RE.search(body)
-    return int(match.group(1)) if match else None
+    links = local_issue_links(body, repo_slug=repo_slug)
+    return links[0].number if links else None
 
 
-def linked_issue_numbers(body: str) -> frozenset[int]:
-    """EVERY issue a PR body links: each GitHub closing reference and each
-    partial ``Refs #N``, but never a bare ``#N`` mention.
+def linked_issue_numbers(body: str, *, repo_slug: str) -> frozenset[int]:
+    """EVERY local issue a PR body links, closing or partial.
 
-    Not :func:`linked_issue_number`, which answers the single issue that OWNS
+    Not :func:`linked_issue_number`, which answers the single issue that owns
     the PR. This answers which issues an open PR is still working on, so a
     gate kept over them (Retry's pr-pending) covers all of them.
     """
-    return frozenset(
-        int(match.group(1))
-        for pattern in (_GITHUB_CLOSING_RE, _REFS_RE)
-        for match in pattern.finditer(body)
-    )
+    return frozenset(link.number for link in local_issue_links(body, repo_slug=repo_slug))
 
 
-def body_links_issue(body: str, issue_numbers: Iterable[int]) -> bool:
+def body_links_issue(body: str, issue_numbers: Iterable[int], *, repo_slug: str) -> bool:
     """Whether the body links (closing or partial) any of ``issue_numbers``."""
-    wanted = set(issue_numbers)
-    return any(int(match.group(1)) in wanted for match in _LINK_RE.finditer(body))
+    return not linked_issue_numbers(body, repo_slug=repo_slug).isdisjoint(set(issue_numbers))
 
 
-def names_issue_in_closing_keyword(text: str, issue_number: int) -> bool:
-    """Whether ``text`` names the issue in a keyword GitHub closes it by.
+def names_issue_in_closing_keyword(text: str, issue_number: int, *, repo_slug: str) -> bool:
+    """Whether ``text`` closes local ``issue_number`` by a GitHub keyword.
 
     GitHub applies these in a PR body when the PR merges, and in a commit
     message when the commit reaches the default branch. A partial delivery
     must not contain one anywhere.
     """
-    return any(int(m.group(1)) == issue_number for m in _GITHUB_CLOSING_RE.finditer(text))
+    return any(
+        link.closes and link.number == issue_number
+        for link in local_issue_links(text, repo_slug=repo_slug)
+    )
 
 
-def declares_partial_delivery(body: str, issue_number: int) -> bool:
-    """Whether a PR body says it delivers only part of ``issue_number``.
+def declares_partial_delivery(body: str, issue_number: int, *, repo_slug: str) -> bool:
+    """Whether a PR body says it delivers only part of local ``issue_number``.
 
-    True when the body refers to the issue with ``Refs #N`` and names it in
-    no GitHub closing reference. A merged PR like this does not finish its
-    issue, so the orchestrator must neither close the issue nor treat it as
-    done. A body that names the issue in no form at all is not partial: that
-    is a broken closing reference, and the close-on-merge fallback still
-    handles it.
+    True when the body refs the issue and closes it by no keyword. A merged
+    PR like this does not finish its issue, so the orchestrator must neither
+    close the issue nor treat it as done. A body that names the issue in no
+    form at all is not partial: that is a broken closing reference, and the
+    close-on-merge fallback still handles it.
     """
-    if names_issue_in_closing_keyword(body, issue_number):
-        return False
-    return any(int(m.group(1)) == issue_number for m in _REFS_RE.finditer(body))
+    links = [
+        link for link in local_issue_links(body, repo_slug=repo_slug)
+        if link.number == issue_number
+    ]
+    return bool(links) and not any(link.closes for link in links)
 
 
-def honors_partial_claim(body: str, issue_number: int, *, partial: bool) -> bool:
+def honors_partial_claim(
+    body: str, issue_number: int, *, partial: bool, repo_slug: str
+) -> bool:
     """Whether an existing PR's body can carry a completion's partial claim.
 
     Publication can reuse a PR that an earlier session opened. Only a partial
@@ -109,4 +151,4 @@ def honors_partial_claim(body: str, issue_number: int, *, partial: bool) -> bool
     completion that makes no partial claim keeps whatever the PR already
     says, because leaving an issue open is recoverable and closing it is not.
     """
-    return not partial or declares_partial_delivery(body, issue_number)
+    return not partial or declares_partial_delivery(body, issue_number, repo_slug=repo_slug)

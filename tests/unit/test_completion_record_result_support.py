@@ -251,9 +251,9 @@ def test_a_partial_completion_refs_its_issue_instead_of_closing_it() -> None:
     partial = build_pr_body(replace(_record(), partial_pr=True), issue_number=123)
 
     assert whole.splitlines()[0] == "Closes #123"
-    assert not declares_partial_delivery(whole, 123)
+    assert not declares_partial_delivery(whole, 123, repo_slug="owner/repo")
     assert partial.splitlines()[0] == "Refs #123"
-    assert declares_partial_delivery(partial, 123)
+    assert declares_partial_delivery(partial, 123, repo_slug="owner/repo")
 
 
 def test_every_pr_body_links_the_issue_that_scoped_rework_resolves_it_by() -> None:
@@ -275,7 +275,7 @@ def test_every_pr_body_links_the_issue_that_scoped_rework_resolves_it_by() -> No
     for record in (_record(), replace(_record(), partial_pr=True)):
         body = build_pr_body(record, issue_number=123)
 
-        assert extract_issue_number(body, fallback=0) == 123
+        assert extract_issue_number(body, fallback=0, repo_slug="owner/repo") == 123
         assert pr_fields_reference_issue(
-            branch=None, title="", body=body, issue_numbers=[123]
+            branch=None, title="", body=body, issue_numbers=[123], repo_slug="owner/repo"
         )

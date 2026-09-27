@@ -16,12 +16,13 @@ def rework_target_stale_reason(
     if issue.key.scope() != target.repository:
         return "target repository no longer matches the approved repository"
     if extract_issue_number_from_pr(
-        pr
+        pr, repo_slug=target.repository
     ) != target.issue_number or not pr_fields_reference_issue(
         branch=pr.branch,
         title="",
         body=pr.body,
         issue_numbers=[target.issue_number],
+        repo_slug=target.repository,
     ):
         return "PR no longer links the approved issue"
     if pr.state == "closed":

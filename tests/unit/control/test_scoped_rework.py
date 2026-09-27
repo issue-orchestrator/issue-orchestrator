@@ -298,7 +298,7 @@ def test_ui_approval_uses_same_stored_op_and_discovery_deduplicates(lane):
     )
     assert len(actions) == 1
     assert executor.apply(actions[0]).success
-    config = Config(code_review_agent="agent:reviewer")
+    config = Config(code_review_agent="agent:reviewer", repo="porchpin/porchpin")
     host.get_prs_with_label.return_value = [pr]
     host.create_issue_key.return_value = issue.key
     scanner = PRScanner(
@@ -383,12 +383,14 @@ def test_launch_fact_scope_and_head_download_race(lane):
     executor, _, host, _, pr, _, request, _, _ = lane
     assert (
         observe_rework_targets(
-            host, pr_numbers=[94], issue_numbers=[], expected_heads={94: "other"}
+            host, repo_slug="porchpin/porchpin", pr_numbers=[94], issue_numbers=[],
+            expected_heads={94: "other"}
         )
         == ()
     )
     targets = observe_rework_targets(
-        host, pr_numbers=[94], issue_numbers=[], expected_heads={94: pr.head_sha}
+        host, repo_slug="porchpin/porchpin", pr_numbers=[94], issue_numbers=[],
+        expected_heads={94: pr.head_sha}
     )
     assert targets == (request.target,)
     authority = TechLeadLaunchAuthority(
@@ -1172,7 +1174,7 @@ def test_problem_issues_resolve_through_one_listing_not_a_search_each():
     ])
 
     targets = observe_rework_targets(
-        host, pr_numbers=[], issue_numbers=list(range(1, 61))
+        host, repo_slug="owner/repo", pr_numbers=[], issue_numbers=list(range(1, 61))
     )
 
     assert host.listings == 1
@@ -1201,7 +1203,7 @@ def test_a_merged_partial_pr_stays_in_the_rework_grant():
 
     host = _ReferencingHost([partial])
 
-    targets = observe_rework_targets(host, pr_numbers=[], issue_numbers=[10])
+    targets = observe_rework_targets(host, repo_slug="owner/repo", pr_numbers=[], issue_numbers=[10])
 
     assert [(t.pr_number, t.issue_number) for t in targets] == [(904, 10)]
 
@@ -1228,7 +1230,7 @@ def test_a_partial_pr_that_also_closes_another_issue_stays_with_its_own():
             return frozenset({905})
 
     targets = observe_rework_targets(
-        _ReferencingHost([partial]), pr_numbers=[], issue_numbers=[320]
+        _ReferencingHost([partial]), repo_slug="owner/repo", pr_numbers=[], issue_numbers=[320]
     )
 
     assert [(t.pr_number, t.issue_number) for t in targets] == [(905, 320)]
@@ -1241,7 +1243,7 @@ def test_no_problem_issues_means_no_listing():
 
     host = _NoSearchHost([_pr(900, 7)])
 
-    assert observe_rework_targets(host, pr_numbers=[], issue_numbers=[]) == ()
+    assert observe_rework_targets(host, repo_slug="owner/repo", pr_numbers=[], issue_numbers=[]) == ()
     assert host.listings == 0
     assert host.reference_lookups == []
 
@@ -1258,4 +1260,4 @@ def test_an_incomplete_listing_fails_the_observation_instead_of_shortening_it():
     )
 
     with pytest.raises(GitHubScanIncompleteError):
-        observe_rework_targets(host, pr_numbers=[], issue_numbers=[7])
+        observe_rework_targets(host, repo_slug="owner/repo", pr_numbers=[], issue_numbers=[7])

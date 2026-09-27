@@ -44,7 +44,9 @@ class PublicationSourceGuards:
         forbidden = forbidden_branch_runtime_artifacts(paths.paths)
         return build_forbidden_runtime_artifact_reason(forbidden) if forbidden else None
 
-    def partial_delivery(self, worktree: Path, issue_number: int) -> str | None:
+    def partial_delivery(
+        self, worktree: Path, issue_number: int, *, repo_slug: str
+    ) -> str | None:
         """Why the branch's commits would close an issue declared partly delivered.
 
         GitHub closes an issue named by a closing keyword in any commit
@@ -62,7 +64,7 @@ class PublicationSourceGuards:
         closing = [
             message.splitlines()[0]
             for message in commits.messages
-            if names_issue_in_closing_keyword(message, issue_number)
+            if names_issue_in_closing_keyword(message, issue_number, repo_slug=repo_slug)
         ]
         if not closing:
             return None
