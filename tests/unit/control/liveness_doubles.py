@@ -40,16 +40,28 @@ class InMemoryActionLivenessStore:
             del self.rows[self._id(row.key)]
         return gone
 
-    def clear_identity(
-        self, identity: ActionIdentity, *, keep: frozenset[str] = frozenset()
-    ) -> tuple[LivenessRow, ...]:
-        gone = self._pop(
-            lambda row: row.key.identity == identity and row.key.fingerprint not in keep
-        )
+    def _forget(self, matches) -> tuple[LivenessRow, ...]:
+        gone = self._pop(matches)
         for row in gone:
             if row.escalated and row.key.escalation_issue is not None:
                 self.request_release(row.key.escalation_issue)
         return gone
+
+    def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
+        return self._forget(lambda row: row.key == key)
+
+    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        return self._forget(lambda row: row.key.identity == identity)
+
+    def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
+        return self._forget(lambda row: row.planned_at < before)
+
+    def touch(self, key: LivenessKey, planned_at: datetime) -> None:
+        from dataclasses import replace
+
+        row = self.rows.get(self._id(key))
+        if row is not None:
+            self.rows[self._id(key)] = replace(row, last_planned_at=planned_at)
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         self.releases.pop(issue_number, None)

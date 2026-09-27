@@ -191,19 +191,10 @@ class PlanLiveness:
         if len(self.resolves) != len(self.keys):
             raise ValueError("a gated plan needs one resolution entry per action")
 
-    #: Every key this plan names, admitted or held: a sibling operation's
-    #: success must not clear a row the same plan still asks about.
-    planned: frozenset[LivenessKey] = frozenset()
-
     def settle(self, index: int, outcome: ActionOutcome) -> None:
         key = self.keys[index]
         if key is not None:
-            siblings = frozenset(
-                other.fingerprint
-                for other in self.planned
-                if other.identity == key.identity and other.fingerprint != key.fingerprint
-            )
-            self.owner.record(key, outcome, still_planned=siblings)
+            self.owner.record(key, outcome)
         resolved = self.resolves[index]
         if resolved is not None and outcome.kind is OutcomeKind.DONE:
             self.owner.release_issue(resolved)
@@ -226,7 +217,6 @@ class PlannedActionLiveness:
         labels = observed_labels(snapshot)
         admitted: list[Action] = []
         keys: list[LivenessKey | None] = []
-        planned: set[LivenessKey] = set()
         resolves: list[int | None] = []
         admitted_keys: set[LivenessKey] = set()
         held: list[SkippedItem] = []
@@ -239,7 +229,6 @@ class PlannedActionLiveness:
                 keys.append(None)
                 resolves.append(_resolved_issue(action))
                 continue
-            planned.add(key)
             decision = self.owner.admit(key)
             if decision.admitted and key not in admitted_keys:
                 admitted.append(action)
@@ -274,9 +263,7 @@ class PlannedActionLiveness:
         return Plan(
             actions=tuple(admitted),
             skipped=plan.skipped + tuple(held),
-            liveness=PlanLiveness(
-                self.owner, tuple(keys), tuple(resolves), frozenset(planned)
-            ),
+            liveness=PlanLiveness(self.owner, tuple(keys), tuple(resolves)),
         )
 
 

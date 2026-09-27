@@ -195,6 +195,15 @@ class LivenessRow:
     explained: bool = False
     escalation_attempts: int = 0
     escalation_attempted_at: datetime | None = None
+    #: When a replanning path last asked this exact question (admitted or
+    #: held). ``None`` until it is asked again after its own attempt. A row
+    #: nobody has asked about for :attr:`LivenessPolicy.stale_after` is no
+    #: longer a question, and the owner retires it.
+    last_planned_at: datetime | None = None
+
+    @property
+    def planned_at(self) -> datetime:
+        return self.last_planned_at or self.last_failed_at
 
     def __post_init__(self) -> None:
         if self.last_outcome is OutcomeKind.DONE:
@@ -218,6 +227,8 @@ class LivenessRow:
             raise ValueError("an escalation attempt count needs its attempt time")
         if self.escalation_attempted_at is not None:
             _require_aware(self.escalation_attempted_at, "escalation_attempted_at")
+        if self.last_planned_at is not None:
+            _require_aware(self.last_planned_at, "last_planned_at")
 
     @property
     def parked(self) -> bool:
@@ -268,6 +279,10 @@ class LivenessPolicy:
     #: The same bound the launch gate holds a GitHub rate limit for (#7303):
     #: one answer to "how long may a declared wait spend nothing".
     declared_wait_bound: timedelta = RATE_LIMIT_DEFERRAL_BOUND
+    #: A row no replanning path has asked about for this long is retired: its
+    #: facts changed (the action now plans under a new fingerprint) or the
+    #: action is no longer wanted. Retiring releases its block.
+    stale_after: timedelta = timedelta(hours=1)
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:

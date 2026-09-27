@@ -52,9 +52,10 @@ def test_budget_exhaustion_parks_and_escalates_exactly_once() -> None:
     assert len(escalation.parked) == 1
     assert len(escalation.blocks) == 1
     assert store.row(KEY).escalated is True
-    clock.advance(timedelta(days=30))
-    owner.reconcile_effects()
-    assert owner.admit(KEY).admission is Admission.PARKED
+    for _ in range(30):  # still planned every day for a month
+        clock.advance(timedelta(days=1))
+        assert owner.admit(KEY).admission is Admission.PARKED
+        owner.reconcile_effects()
     assert len(escalation.blocks) == 1
 
 
@@ -87,6 +88,7 @@ def test_a_block_github_never_accepts_stops_being_retried() -> None:
     owner.record(KEY, ActionOutcome.permanent("422"))
     for _ in range(20):
         clock.advance(POLICY.max_backoff)
+        owner.admit(KEY)  # still planned
         owner.reconcile_effects()
 
     assert len(escalation.blocks) == POLICY.max_attempts
@@ -124,19 +126,71 @@ def test_changed_facts_are_a_new_question() -> None:
     assert owner.admit(changed).admitted
 
 
-def test_success_under_any_fingerprint_clears_the_identity_and_releases_the_block() -> None:
+def test_success_clears_its_own_key_and_releases_the_block() -> None:
     escalation = RecordingEscalation()
     store = InMemoryActionLivenessStore()
     owner = liveness_owner(store=store, escalation=escalation)
     owner.record(KEY, ActionOutcome.permanent("stuck"))
-    changed = LivenessKey(KEY.identity, "b" * 32, 229)
 
-    owner.record(changed, ActionOutcome.done())
+    owner.record(KEY, ActionOutcome.done())
 
     assert owner.admit(KEY).admitted
     assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]
     assert escalation.unblocks == [(229, True)]
     assert store.releases == {}
+
+
+def test_a_park_nobody_asks_about_any_more_is_retired_and_released() -> None:
+    """Its facts changed (the action now plans under a new fingerprint) or it
+    is no longer wanted: either way it is not a question, so it leaves the
+    board and its block is withdrawn (review r8)."""
+    clock = ManualClock()
+    escalation = RecordingEscalation()
+    owner = liveness_owner(escalation=escalation, clock=clock, policy=POLICY)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+    changed = LivenessKey(KEY.identity, "b" * 32, 229)
+
+    clock.advance(POLICY.stale_after / 2)
+    owner.admit(changed)
+    owner.record(changed, ActionOutcome.done())
+    owner.reconcile_effects()
+    assert owner.admit(KEY).admission is Admission.PARKED, "asked again: still parked"
+
+    clock.advance(POLICY.stale_after + timedelta(minutes=1))
+    owner.reconcile_effects()
+
+    assert owner.parked() == ()
+    assert escalation.unblocks == [(229, True)]
+
+
+def test_a_sibling_operations_success_never_clears_a_park_still_asked_about() -> None:
+    """Two comments on one issue share an identity: B's success clears only B,
+    whether or not A is in the same plan (review r8)."""
+    clock = ManualClock()
+    owner = liveness_owner(clock=clock, policy=POLICY)
+    sibling = LivenessKey(KEY.identity, "b" * 32, 229)
+    owner.record(KEY, ActionOutcome.permanent("still broken"))
+
+    for _ in range(10):
+        clock.advance(POLICY.stale_after / 3)
+        owner.admit(sibling)
+        owner.record(sibling, ActionOutcome.done())
+        if _ % 2 == 0:
+            assert owner.admit(KEY).admission is Admission.PARKED
+        owner.reconcile_effects()
+
+    assert [row.key for row in owner.parked()] == [KEY]
+
+
+def test_an_operator_can_release_a_park_no_issue_carries() -> None:
+    engine_key = LivenessKey(ActionIdentity("engine", "create_tech_lead_issue"), "c" * 32)
+    owner = liveness_owner(policy=POLICY)
+    owner.record(engine_key, ActionOutcome.permanent("403"))
+
+    released = owner.release_identity(engine_key.identity)
+
+    assert [row.key for row in released] == [engine_key]
+    assert owner.admit(engine_key).admitted
 
 
 def test_a_release_github_refused_is_retried_until_it_lands() -> None:
@@ -245,13 +299,3 @@ def test_an_operator_release_forgets_an_owed_withdrawal_in_the_same_step(tmp_pat
     )
     restarted.reconcile_effects()
     assert after.unblocks == []
-
-
-def test_success_keeps_the_rows_of_operations_still_planned() -> None:
-    owner = liveness_owner()
-    sibling = LivenessKey(KEY.identity, "b" * 32, 229)
-    owner.record(sibling, ActionOutcome.permanent("still broken"))
-
-    owner.record(KEY, ActionOutcome.done(), still_planned=frozenset({"b" * 32}))
-
-    assert owner.admit(sibling).admission is Admission.PARKED

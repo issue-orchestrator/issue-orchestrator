@@ -277,7 +277,9 @@ def _held_actions_section(held: Sequence[TechLeadBoardHeldAction]) -> list[str]:
     lines.extend(
         [
             f"{len(held)} action(s) stopped retrying. Each runs again when its"
-            " facts change or when an operator retries its issue.",
+            " facts change, when an operator retries its issue, or when released"
+            " with `issue-orchestrator action-liveness release --subject <subject>"
+            " --action <action>`.",
             "",
             "| Issue | Subject | Action | Outcome | Parked since | Reason |",
             "|---|---|---|---|---|---|",

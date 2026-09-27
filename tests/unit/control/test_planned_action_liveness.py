@@ -49,7 +49,7 @@ from issue_orchestrator.control.reconciliation import (
     build_expected_for_mutation,
     get_pause_label,
 )
-from issue_orchestrator.domain.action_liveness import LivenessPolicy
+from issue_orchestrator.domain.action_liveness import ActionOutcome, LivenessPolicy
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.infra.config import Config
 from tests.unit.control.liveness_doubles import (
@@ -306,8 +306,11 @@ def test_a_person_removing_the_pause_label_releases_the_park(sample_config) -> N
     engine.tick()
 
     assert engine.attempts_of(stale.action_type) == 2
-    # The new fingerprint succeeded: the identity is clean and the block
-    # this owner put on #410 is released.
+    # The new fingerprint succeeded. The park under the paused facts is no
+    # longer asked about, so the next cycle past stale_after retires it and
+    # withdraws the block this owner put on #410.
+    engine.tick(advance=POLICY.stale_after + timedelta(minutes=1))
+    engine.tick()
     assert engine.store.rows == {}
     assert engine.escalation.unblocks == [(410, True)]
 
@@ -737,3 +740,48 @@ def test_two_comments_on_one_issue_keep_separate_budgets(sample_config) -> None:
     assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
     assert sum(1 for a in applied if a is fine) == 20
     assert [row.key.identity.action for row in engine.owner.parked()] == ["add_comment"]
+
+
+def test_alternating_plans_cannot_launder_a_sibling_failure(sample_config) -> None:
+    """[A, B] then [B] alternately: B's success on the [B] ticks must not
+    clear A's failures (review r8)."""
+    from issue_orchestrator.control.actions import AddCommentAction
+
+    failing = AddCommentAction(number=410, comment="first finding")
+    fine = AddCommentAction(number=410, comment="second finding")
+    ticks = iter(range(1000))
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [failing, fine] if next(ticks) % 2 == 0 else [fine],
+        apply=lambda a: ActionResult.fail(a, "422") if a is failing else ActionResult.ok(a),
+    )
+    for _ in range(40):
+        engine.tick(advance=timedelta(minutes=10))
+
+    applied = [call.args[0] for call in engine.applier.apply.call_args_list]
+    assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
+    assert [row.key.identity.action for row in engine.owner.parked()] == ["add_comment"]
+
+
+def test_an_engine_park_is_released_by_the_operator_cli(sample_config, tmp_path) -> None:
+    """A park no issue carries (authoring a new anchor) is released by the
+    operator command, then runs on the next tick (review r8)."""
+    from issue_orchestrator.entrypoints.bootstrap_action_liveness import ACTION_LIVENESS_DB
+    from issue_orchestrator.entrypoints.cli_tools.action_liveness import main as cli
+    from issue_orchestrator.execution.action_liveness_store import SQLiteActionLivenessStore
+    from issue_orchestrator.infra.repo_identity import state_dir
+
+    store = SQLiteActionLivenessStore(state_dir(tmp_path) / ACTION_LIVENESS_DB)
+    engine = _Engine(sample_config, planned=lambda: [], apply=lambda a: ActionResult.ok(a))
+    engine.owner = liveness_owner(store=store, escalation=engine.escalation, clock=engine.clock, policy=POLICY)
+    key = planned_action_key(
+        RemoveLabelAction(issue_number=0, label="x"), {}, escalation_label=NEEDS_HUMAN
+    )
+    assert key.identity.subject == "engine"
+    engine.owner.record(key, ActionOutcome.permanent("403"))
+    assert not engine.owner.admit(key).admitted
+
+    assert cli(["--repo-root", str(tmp_path), "release", "--subject", "engine",
+                "--action", key.identity.action]) == 0
+
+    assert engine.owner.admit(key).admitted

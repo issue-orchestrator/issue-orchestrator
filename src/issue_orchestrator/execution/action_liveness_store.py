@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS action_liveness (
     explained INTEGER NOT NULL DEFAULT 0,
     escalation_attempts INTEGER NOT NULL DEFAULT 0 CHECK (escalation_attempts >= 0),
     escalation_attempted_at TEXT,
+    last_planned_at TEXT,
     PRIMARY KEY (subject, action, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS action_liveness_escalation_issue
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS action_liveness_release (
 _SELECT = (
     "SELECT subject, action, fingerprint, escalation_issue, attempts, first_failed_at,"
     " last_failed_at, last_outcome, last_reason, next_attempt_at, escalated,"
-    " explained, escalation_attempts, escalation_attempted_at FROM action_liveness"
+    " explained, escalation_attempts, escalation_attempted_at, last_planned_at"
+    " FROM action_liveness"
 )
 _ORDER = " ORDER BY last_failed_at, subject, action, fingerprint"
 _BY_KEY = _SELECT + " WHERE subject=? AND action=? AND fingerprint=?"
@@ -77,8 +79,14 @@ _UPSERT = (
     "INSERT OR REPLACE INTO action_liveness (subject, action, fingerprint,"
     " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
     " last_reason, next_attempt_at, escalated, explained, escalation_attempts,"
-    " escalation_attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " escalation_attempted_at, last_planned_at)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+_TOUCH = (
+    "UPDATE action_liveness SET last_planned_at=?"
+    " WHERE subject=? AND action=? AND fingerprint=?"
+)
+_UNPLANNED_SINCE = _SELECT + " WHERE COALESCE(last_planned_at, last_failed_at) < ?"
 _DELETE_KEY = "DELETE FROM action_liveness WHERE subject=? AND action=? AND fingerprint=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
 _FORGET_RELEASE = "DELETE FROM action_liveness_release WHERE issue_number=?"
@@ -140,28 +148,38 @@ class SQLiteActionLivenessStore:
                     int(row.explained),
                     row.escalation_attempts,
                     _iso(row.escalation_attempted_at),
+                    _iso(row.last_planned_at),
                 ),
             )
 
-    def clear_identity(
-        self, identity: ActionIdentity, *, keep: frozenset[str] = frozenset()
-    ) -> tuple[LivenessRow, ...]:
-        """Forget the identity's rows (all but ``keep``) and owe their releases, atomically.
+    def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
+        return self._forget(_BY_KEY, (key.identity.subject, key.identity.action, key.fingerprint))
+
+    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        return self._forget(_BY_IDENTITY, (identity.subject, identity.action))
+
+    def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
+        return self._forget(_UNPLANNED_SINCE, (before.isoformat(),))
+
+    def touch(self, key: LivenessKey, planned_at: datetime) -> None:
+        with self._write() as conn:
+            conn.execute(
+                _TOUCH,
+                (planned_at.isoformat(), key.identity.subject, key.identity.action,
+                 key.fingerprint),
+            )
+
+    def _forget(self, select: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
+        """Delete the selected rows and owe their blocks' release, atomically.
 
         A crash between forgetting an escalated park and recording that its
         block must come off would leave the block on the issue with nothing
         left to take it off.
         """
         with self._write() as conn:
-            rows = tuple(
-                row
-                for row in (
-                    _row(found)
-                    for found in conn.execute(_BY_IDENTITY, (identity.subject, identity.action))
-                )
-                if row.key.fingerprint not in keep
-            )
+            rows = tuple(_row(found) for found in conn.execute(select, params))
             for row in rows:
+                identity = row.key.identity
                 conn.execute(_DELETE_KEY, (identity.subject, identity.action, row.key.fingerprint))
             for issue in sorted(
                 {
@@ -244,6 +262,7 @@ def _row(found: sqlite3.Row) -> LivenessRow:
         explained=bool(found["explained"]),
         escalation_attempts=found["escalation_attempts"],
         escalation_attempted_at=_parse(found["escalation_attempted_at"]),
+        last_planned_at=_parse(found["last_planned_at"]),
     )
 
 

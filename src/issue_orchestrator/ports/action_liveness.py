@@ -36,16 +36,26 @@ class ActionLivenessStore(Protocol):
         """Create or replace the row for ``row.key``."""
         ...
 
-    def clear_identity(
-        self, identity: ActionIdentity, *, keep: frozenset[str] = frozenset()
-    ) -> tuple[LivenessRow, ...]:
-        """Delete every fingerprint's row for ``identity`` but those in ``keep``;
-        return what was deleted.
+    def clear_key(self, key: LivenessKey) -> tuple[LivenessRow, ...]:
+        """Delete exactly ``key``'s row; return it.
 
-        In the same transaction, owe a release (:meth:`request_release`) to the
-        issue of every deleted row whose block had committed, so no crash can
-        forget a block that has to come off.
+        Every ``clear_*`` and ``retire_*`` owes, in the same transaction, a
+        release (:meth:`request_release`) to the issue of every deleted row
+        whose block had committed, so no crash can forget a block that has to
+        come off.
         """
+        ...
+
+    def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        """Delete every fingerprint's row for ``identity`` (an operator's release)."""
+        ...
+
+    def retire_unplanned(self, before: datetime) -> tuple[LivenessRow, ...]:
+        """Delete every row no replanning path has asked about since ``before``."""
+        ...
+
+    def touch(self, key: LivenessKey, planned_at: datetime) -> None:
+        """Record that a replanning path asked ``key``'s question again."""
         ...
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:

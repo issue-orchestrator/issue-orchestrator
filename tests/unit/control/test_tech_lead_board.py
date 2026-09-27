@@ -274,8 +274,9 @@ follow-up or promoted finding); approving it releases the issue for scheduling.
 
 ## Held — waiting on you
 
-2 action(s) stopped retrying. Each runs again when its facts change or when an \
-operator retries its issue.
+2 action(s) stopped retrying. Each runs again when its facts change, when an \
+operator retries its issue, or when released with `issue-orchestrator \
+action-liveness release --subject <subject> --action <action>`.
 
 | Issue | Subject | Action | Outcome | Parked since | Reason |
 |---|---|---|---|---|---|

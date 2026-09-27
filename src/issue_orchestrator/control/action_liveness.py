@@ -30,6 +30,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from ..domain.action_liveness import (
+    ActionIdentity,
     ActionOutcome,
     Admission,
     LivenessKey,
@@ -90,22 +91,21 @@ class ActionLivenessOwner:
         return self._policy
 
     def admit(self, key: LivenessKey) -> LivenessDecision:
+        """May ``key`` run now? Asking also marks its row as still a live question."""
         row = self._store.row(key)
-        return LivenessDecision(admission(row, self._clock()), row)
+        now = self._clock()
+        if row is not None:
+            self._store.touch(key, now)
+        return LivenessDecision(admission(row, now), row)
 
-    def record(
-        self,
-        key: LivenessKey,
-        outcome: ActionOutcome,
-        *,
-        still_planned: frozenset[str] = frozenset(),
-    ) -> LivenessRow | None:
+    def record(self, key: LivenessKey, outcome: ActionOutcome) -> LivenessRow | None:
         """Fold one attempt's outcome into the key's durable row.
 
-        Success clears every fingerprint of the identity - the operation works -
-        except ``still_planned``: fingerprints of the same identity the same
-        plan also carries, which are different operations still being asked
-        (two comments on one issue), not older facts of this one.
+        Success clears exactly this key. Rows under OTHER fingerprints of the
+        same identity may be older facts of this operation or a different
+        operation on the same subject (two comments on one issue), and nothing
+        here can tell them apart; so they are left to :meth:`reconcile_effects`,
+        which retires any row no path has asked about for ``stale_after``.
 
         Returns the row left behind (``None`` after success). A row that parks
         on this call is announced and its block attempted before returning;
@@ -115,7 +115,7 @@ class ActionLivenessOwner:
         now = self._clock()
         row = self._policy.after(previous, key, outcome, now)
         if row is None:
-            self._resolve(self._store.clear_identity(key.identity, keep=still_planned))
+            self._resolve(self._store.clear_key(key))
             return None
         self._store.put(row)
         if not row.parked or (previous is not None and previous.parked):
@@ -139,6 +139,9 @@ class ActionLivenessOwner:
         refusing is neither lost nor hammered. Called once per planning cycle.
         """
         now = self._clock()
+        # A question nobody asks any more is not parked: its facts changed or
+        # the action is no longer wanted. Retiring it owes its block's release.
+        self._resolve(self._store.retire_unplanned(now - self._policy.stale_after))
         for row in self._store.rows_owing_escalation():
             if self._policy.effect_due(row.escalation_attempts, row.escalation_attempted_at, now):
                 self._escalate(row, now)
@@ -160,6 +163,18 @@ class ActionLivenessOwner:
         parked = tuple(row for row in released if row.parked)
         if parked:
             self._escalation.announce_released(parked)
+        return released
+
+    def release_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
+        """An operator releases one action on one subject, whatever its facts.
+
+        The route for a park no issue carries (an ``engine`` subject), or one
+        a person wants retried without touching its issue. Blocks the released
+        rows escalated are owed their release, which :meth:`reconcile_effects`
+        settles.
+        """
+        released = self._store.clear_identity(identity)
+        self._resolve(released)
         return released
 
     def parked(self) -> tuple[LivenessRow, ...]:
