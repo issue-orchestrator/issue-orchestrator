@@ -65,6 +65,24 @@ class RepositoryHostRateLimitedError(RepositoryHostError):
     rate_limit: HostRateLimit
 
 
+def is_transient_host_failure(exc: BaseException) -> bool:
+    """Whether the host is expected to answer this request again shortly (#7379).
+
+    Transient: a rate limit (the host named when), a transport failure (no HTTP
+    response at all), a 5xx, or a 429. Everything else -- auth (401/403), not
+    found, a malformed answer, a non-host fault -- will not clear by itself and
+    must stay on its caller's escalation path.
+    """
+    if host_rate_limit_of(exc) is not None:
+        return True
+    if not isinstance(exc, RepositoryHostError):
+        return False
+    if exc.kind == "transport":
+        return True
+    status = getattr(exc, "status_code", None)
+    return exc.kind == "http" and isinstance(status, int) and (status >= 500 or status == 429)
+
+
 def host_rate_limit_of(exc: BaseException) -> HostRateLimit | None:
     """The rate limit behind ``exc`` or anything it was explicitly raised from.
 

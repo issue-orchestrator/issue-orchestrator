@@ -393,9 +393,11 @@ def reset_and_retry_issue(  # noqa: PLR0913
                 claims=deps.pending_work_claims,
                 tech_lead_authority=deps.tech_lead_authority,
                 issue_number=issue_number,
-                # The reset's runtime termination stops issue/rework/exchange
-                # terminals only, never a tech-lead run.
+                # The reset's runtime termination already settled the claims of
+                # the issue/rework terminals it ended (#7380); it never stops a
+                # tech-lead run.
                 ended_sessions=(),
+                superseded_prs=result.superseded_prs or (),
             )
             _clear_scratch_retry_pending_state(state, issue_number, result)
 

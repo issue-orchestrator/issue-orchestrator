@@ -1,11 +1,11 @@
-"""Retire every run an operator explicitly abandoned (#7348).
+"""Retire every run an operator explicitly abandoned (#7348, #7380).
 
 Terminate, cancel-from-queue and scratch reset all end an issue's work for
 good. Neither an in-memory queue entry nor an active-session record is the
 whole of that work:
 
-* a QUEUED validation retry or tech-lead run can also hold a DEFERRED row in
-  the durable pending-work ledger;
+* a QUEUED validation retry, review, rework or tech-lead run can also hold a
+  DEFERRED row in the durable pending-work ledger;
 * a terminal the operator ENDED still holds its claim as a HELD row, and
   termination drops the session record without settling it.
 
@@ -18,10 +18,10 @@ tick.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Iterable, Sequence
 
 from .in_flight_work import InFlightWorkLedger, SettlementOutcome
-from .tech_lead_run_retirement import TechLeadRunRetirement
+from .queued_work_retirement import QueuedWorkRetirement
 from .validation_retry_retirement import ValidationRetryRetirement
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ def retire_abandoned_queued_work(
     tech_lead_authority: "TechLeadAuthorityStore",
     issue_number: int,
     ended_sessions: Sequence["Session"],
+    superseded_prs: Iterable[int] = (),
 ) -> None:
     """End this issue's queued and stopped work, durably.
 
@@ -52,7 +53,9 @@ def retire_abandoned_queued_work(
     ValidationRetryRetirement(
         state=state, claims=claims, tech_lead_authority=tech_lead_authority
     ).retire_issue(issue_number)
-    TechLeadRunRetirement(state, claims).retire_issue(issue_number)
+    QueuedWorkRetirement(state, claims).retire_issue(
+        issue_number, superseded_prs=superseded_prs
+    )
 
 
 __all__ = ["retire_abandoned_queued_work"]
