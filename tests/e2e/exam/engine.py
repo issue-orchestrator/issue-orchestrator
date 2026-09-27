@@ -204,6 +204,18 @@ class ExamEngine:
             1 for event in self.runtime.watcher.view.global_events if event.get("type") == "tick.completed"
         )
 
+    def event_history(self) -> list[dict[str, Any]]:
+        """Every event this process has buffered, from its first.
+
+        The watcher only sees events published after it connects; a
+        restart's startup work happens before that.
+        """
+        payload = self._get_json(self.config.control_api_port, "/api/events_since?after=0")
+        events = payload.get("events")
+        if not isinstance(events, list):
+            raise RuntimeError(f"/api/events_since has no events list: {payload!r}")
+        return events
+
     def gh_audit_report(self) -> dict[str, Any]:
         """This process's GitHub calls so far, by command."""
         report = fetch_gh_audit_report(self.config.control_api_port)

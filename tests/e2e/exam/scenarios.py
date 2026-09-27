@@ -33,8 +33,10 @@ from issue_orchestrator.testing.exam.cases import (
 )
 from issue_orchestrator.testing.exam.upgrade import (
     UpgradeFacts,
+    complete_history,
     hazard_events,
     label_changes,
+    merged_by_id,
     writes_by_kind,
 )
 
@@ -520,8 +522,10 @@ async def run_case_u(
                 timeout_s=CASE_U_WINDOW_S,
                 poll_s=2.0,
             )
-            early_events = list(runtime.watcher.view.global_events)
-            early_ticks = candidate.ticks_completed()
+            # From the engine's own buffer, not the watcher: startup restore
+            # publishes its hazards before any watcher connects.
+            early_events = complete_history(candidate.event_history())
+            early_ticks = sum(1 for event in early_events if event.get("type") == "tick.completed")
             early_writes = (
                 writes_by_kind(candidate.gh_audit_report()["by_command"])
                 if candidate.is_running()
@@ -541,7 +545,9 @@ async def run_case_u(
                 early_ticks=early_ticks,
                 early_writes=early_writes,
                 early_label_changes=label_changes(early_events),
-                hazards=hazard_events(runtime.watcher.view.global_events),
+                hazards=hazard_events(
+                    merged_by_id(early_events, runtime.watcher.view.global_events)
+                ),
             )
             return await _finish(
                 run,

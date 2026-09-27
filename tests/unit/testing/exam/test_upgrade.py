@@ -21,9 +21,11 @@ from issue_orchestrator.testing.exam.upgrade import (
     UpgradeSpec,
     WriteKind,
     classify_write,
+    complete_history,
     grade_upgrade,
     hazard_events,
     label_changes,
+    merged_by_id,
     writes_by_kind,
 )
 from tests.unit.testing.exam.builders import item, observation, pr
@@ -192,3 +194,34 @@ class TestCaseU:
         again = ExamObservation.from_dict(obs.to_dict())
         assert again == obs
         assert grade(CASE_U, again).failures == grade(CASE_U, obs).failures
+
+
+class TestEventHistory:
+    def test_a_complete_history_is_accepted(self) -> None:
+        events = [{"event_id": i, "type": "tick.completed"} for i in (1, 2, 3)]
+        assert complete_history(events) == events
+
+    @pytest.mark.parametrize(
+        "ids",
+        [[], [4, 5, 6], [1, 2, 4]],
+        ids=["empty", "buffer dropped its oldest", "hole"],
+    )
+    def test_a_truncated_history_cannot_be_graded(self, ids: list[int]) -> None:
+        with pytest.raises(ValueError, match="incomplete"):
+            complete_history([{"event_id": i} for i in ids])
+
+    def test_startup_hazards_seen_only_in_the_replay_are_kept(self) -> None:
+        replayed = [
+            {"event_id": 1, "type": "session.run_unrestorable", "payload": {"issue_number": 921, "cause": "X"}},
+            {"event_id": 2, "type": "tick.completed", "payload": {}},
+        ]
+        live = [
+            {"event_id": 2, "type": "tick.completed", "payload": {}},
+            {"event_id": 3, "type": "session.claim_unreadable", "payload": {"issue_number": 911, "cause": "Y"}},
+        ]
+        merged = merged_by_id(live, replayed)  # live first: order comes from ids
+        assert [event["event_id"] for event in merged] == [1, 2, 3]
+        assert hazard_events(merged) == (
+            "session.run_unrestorable on #921 (X)",
+            "session.claim_unreadable on #911 (Y)",
+        )

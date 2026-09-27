@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 #: Events the restore path publishes when it cannot take a run over
 #: (``events/catalog.py``): each one means a needs-human escalation.
@@ -123,6 +123,36 @@ def label_changes(events: Iterable[Mapping[str, Any]]) -> tuple[LabelChange, ...
         if event.get("type") == "issue.labels_changed"
         for payload in (_payload(event),)
     )
+
+
+def complete_history(events: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+    """``events`` (an engine's buffered history from id 0), checked complete.
+
+    A restart's hazards are published during startup, before any watcher has
+    connected, so they are read from the engine's replay buffer. A buffer
+    that has already dropped its oldest events cannot prove there were none.
+    """
+    ids = [event.get("event_id") for event in events]
+    if not events or ids[0] != 1 or ids != list(range(1, len(ids) + 1)):
+        head = ids[:3]
+        raise ValueError(
+            f"engine event history is incomplete (first ids {head} of {len(ids)});"
+            " a restart window cannot be graded from a truncated buffer"
+        )
+    return events
+
+
+def merged_by_id(*streams: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """One ordered stream from overlapping ones (the replayed history and the
+    watcher's live stream), each event once."""
+    seen: dict[int, Mapping[str, Any]] = {}
+    for stream in streams:
+        for event in stream:
+            event_id = event.get("event_id")
+            if not isinstance(event_id, int) or isinstance(event_id, bool):
+                raise ValueError(f"engine event without an integer event_id: {event!r}")
+            seen.setdefault(event_id, event)
+    return [seen[event_id] for event_id in sorted(seen)]
 
 
 def hazard_events(events: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
