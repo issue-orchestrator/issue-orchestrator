@@ -5,6 +5,7 @@ from typing import Protocol, runtime_checkable
 
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import (
+    BranchCommitMessagesResult,
     BranchPathsResult,
     BranchTextFilesResult,
     DiffResult,
@@ -61,4 +62,7 @@ class GitAdapter(Protocol):
     def branch_post_image_paths_against_base(
         self, worktree: Path, base_ref: str
     ) -> BranchPathsResult: ...
+    def branch_commit_messages_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchCommitMessagesResult: ...
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...

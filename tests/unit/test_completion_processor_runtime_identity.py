@@ -21,6 +21,7 @@ from issue_orchestrator.domain.runtime_identity import RuntimeIdentity
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.working_copy import (
+    BranchCommitMessagesResult,
     BranchPathsResult,
     BranchTextFilesResult,
     DiffResult,
@@ -52,6 +53,9 @@ def _make_git_adapter() -> Mock:
     )
     adapter.branch_post_image_paths_against_base = Mock(
         return_value=BranchPathsResult(success=True, paths=())
+    )
+    adapter.branch_commit_messages_against_base = Mock(
+        return_value=BranchCommitMessagesResult(success=True, messages=())
     )
     return adapter
 

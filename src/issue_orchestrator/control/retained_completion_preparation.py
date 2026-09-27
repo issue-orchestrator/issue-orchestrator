@@ -60,7 +60,9 @@ class RetainedCompletionPreparation:
             expected_remote_head_sha=observation.expected_remote_head_sha,
             source_workspace=workspace.checkout, pr_number=observation.pr_number,
             pr_base_branch=publication.base_branch,
-            content=PublicationContent(publication.title, publication.body, True),
+            content=PublicationContent(
+                publication.title, publication.body, True, publication.partial_pr
+            ),
         )
         return PreparedRecoveryPublication(command, workspace, completion, prepared.processing_policy,
                                            admitted.identity.review_disposition)

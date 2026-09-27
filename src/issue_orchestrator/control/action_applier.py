@@ -1378,6 +1378,7 @@ class ActionApplier:
                 source=action.source,
                 issue_key=action.issue_key,
                 reason=action.status_reason,
+                partial_pr=action.partial_pr,
             )
         )
         if not history_result.success:

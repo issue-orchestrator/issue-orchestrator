@@ -132,12 +132,15 @@ def _is_e2e_cleanup_label(label: str) -> bool:
     )
 
 
-def _pr_matches_issue(branch: str | None, title: str, body: str, issue_numbers: set[int]) -> bool:
+def _pr_matches_issue(
+    branch: str | None, title: str, body: str, issue_numbers: set[int], repo: str
+) -> bool:
     return pr_fields_reference_issue(
         branch=branch,
         title=title,
         body=body,
         issue_numbers=issue_numbers,
+        repo_slug=repo,
     )
 
 
@@ -167,7 +170,7 @@ def cleanup_test_prs_for_issues(
             pr_num = pr.number
             if not pr_num or pr_num in closed_prs:
                 continue
-            if not _pr_matches_issue(pr.branch, pr.title, pr.body, issue_number_set):
+            if not _pr_matches_issue(pr.branch, pr.title, pr.body, issue_number_set, repo):
                 continue
             try:
                 adapter.close_pr(pr_num)

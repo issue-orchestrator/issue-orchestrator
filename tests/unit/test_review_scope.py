@@ -39,7 +39,7 @@ def _pr(number: int, branch: str = "", body: str = "") -> PRInfo:
 def test_extract_issue_number_prefers_branch_over_body() -> None:
     pr = _pr(99, branch="123-feature", body="Closes #456")
 
-    assert extract_issue_number_from_pr(pr) == 123
+    assert extract_issue_number_from_pr(pr, repo_slug="owner/repo") == 123
 
 
 def test_review_scope_with_no_filters_does_not_fetch_issue() -> None:
@@ -124,16 +124,38 @@ def test_pr_fields_reference_issue_uses_exact_issue_boundaries() -> None:
         title="#999: Other PR",
         body="Closes #999",
         issue_numbers=[123],
+        repo_slug="owner/repo",
     )
     assert pr_fields_reference_issue(
         branch="feature",
         title="#999: Other PR",
         body="closes   #123",
         issue_numbers=[123],
+        repo_slug="owner/repo",
     )
     assert not pr_fields_reference_issue(
         branch="feature",
         title="#1234: Other PR",
         body="Closes #1234",
         issue_numbers=[123],
+        repo_slug="owner/repo",
     )
+
+
+def test_an_open_partial_pr_still_belongs_to_its_issue() -> None:
+    """#7293 x #7288: Retry keeps pr-pending while the issue has an open PR.
+
+    A partial PR links its issue with ``Refs #N`` instead of ``Closes #N``; it
+    is still that issue's PR, so Retry must not strip the gate over it. A PR
+    that merely mentions ``#N`` is not that issue's PR.
+    """
+    from issue_orchestrator.control.review_scope import issues_with_open_prs
+
+    prs = [
+        _pr(1, branch="feature-x", body="Refs #320\n\nsplits test/money"),
+        _pr(2, branch="feature-y", body="Closes #321"),
+        _pr(3, branch="322-slice", body=""),
+        _pr(4, branch="feature-z", body="unrelated; see #999 for context"),
+    ]
+
+    assert issues_with_open_prs(prs, repo_slug="owner/repo") == frozenset({320, 321, 322})

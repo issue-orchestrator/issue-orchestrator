@@ -11,7 +11,7 @@ from typing import Any, Callable, assert_never
 from ..domain.issue_key import format_issue_label, parse_external_id
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
 from ..domain.session_key import TaskKind
-from ..history import latest_history_entries_by_issue
+from ..history import issues_held_by_session_history, latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra import gh_audit
@@ -333,7 +333,7 @@ def _queue_wait_reason(
     if issue_number in state.failed_this_cycle:
         return "Waiting: previous launch/action failed (manual retry may be needed)"
 
-    if any(entry.issue_number == issue_number for entry in state.session_history):
+    if issue_number in issues_held_by_session_history(state.session_history):
         return "Waiting: previous run state"
 
     if queue_position <= 1:
@@ -836,9 +836,14 @@ def _history_status_belongs_in_completed_lane(
     status: SessionHistoryStatus,
     *,
     merge_pending: bool,
+    partial_pr_merged: bool,
 ) -> bool:
-    """Only terminal done rows that are no longer awaiting merge enter Completed."""
-    return status in DONE_HISTORY_STATUSES and not merge_pending
+    """Only terminal done rows that are no longer awaiting merge enter Completed.
+
+    A merged partial PR is terminal for its PR, not for its issue (#7288):
+    the issue stays open for its next slice, so it is never Completed.
+    """
+    return status in DONE_HISTORY_STATUSES and not merge_pending and not partial_pr_merged
 
 
 def _build_history_items(state, config) -> HistoryLaneProjection:
@@ -855,7 +860,10 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
         if not status_reason:
             status_reason = _history_status_label(entry.status)
 
-        if entry.status in DONE_HISTORY_STATUSES:
+        if entry.partial_pr_merged:
+            # One slice merged; the issue is back in the queue for the next one.
+            flow_stage = "queued"
+        elif entry.status in DONE_HISTORY_STATUSES:
             flow_stage = "done"
         elif entry.status in BLOCKED_HISTORY_STATUSES:
             flow_stage = "blocked"
@@ -908,6 +916,7 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
             if _history_status_belongs_in_completed_lane(
                 entry.status,
                 merge_pending=merge_pending,
+                partial_pr_merged=entry.partial_pr_merged,
             ):
                 completed_items.append(item)
 

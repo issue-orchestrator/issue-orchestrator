@@ -1166,6 +1166,50 @@ class TestPlanAwaitingMergeReconciliations:
         assert isinstance(action, RecoverTerminalIssueAction)
         assert action.close_issue is False
 
+    def test_merged_partial_pr_plans_recovery_that_carries_partial(self):
+        """#7288: the owner command for a merged partial PR carries
+        ``partial_pr`` so the applier releases the issue for its next slice
+        and records no shipped fix, and it orders no close."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        discovered = DiscoveredAwaitingMergeReconciliation(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            status_reason="Partial PR merged; issue stays open for its remaining work",
+            source="pull_request",
+            issue_key="M1-228",
+            merged_at="2026-08-03T13:52:09Z",
+            partial_pr=True,
+        )
+
+        plan = planner.plan(make_snapshot(
+            discovered_awaiting_merge_reconciliations=(discovered,),
+        ))
+
+        [action] = plan.actions_of_type(ActionType.RECOVER_TERMINAL_ISSUE)
+        assert isinstance(action, RecoverTerminalIssueAction)
+        assert action.partial_pr is True
+        assert action.close_issue is False
+        assert action.status_reason == discovered.status_reason
+
+    def test_a_partial_merge_fact_refuses_to_request_a_close(self):
+        """The close-on-merge fallback is destructive. A partial PR's fact
+        cannot carry ``issue_open``, so no planner branch can close it."""
+        with pytest.raises(ValueError, match="partial PR"):
+            DiscoveredAwaitingMergeReconciliation(
+                issue_number=228,
+                pr_number=318,
+                pr_url="u",
+                status="merged",
+                status_reason="r",
+                source="pull_request",
+                issue_open=True,
+                partial_pr=True,
+            )
+
     def test_closed_status_never_plans_close_even_if_issue_open(self):
         """Only a MERGED PR earns the close fallback: a closed-unmerged PR
         with an open issue is the drift path's territory (blocked:pr-closed),

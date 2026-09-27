@@ -43,5 +43,16 @@ class PublicationSourceGuards:
         forbidden = forbidden_branch_runtime_artifacts(paths.paths)
         return build_forbidden_runtime_artifact_reason(forbidden) if forbidden else None
 
+    def branch_commit_messages(self, worktree: Path) -> tuple[tuple[str, ...], str | None]:
+        """The full messages of the branch's own commits, or why they are unreadable."""
+        base_ref = f"origin/{self._base_branch()}"
+        commits = self._working_copy.branch_commit_messages_against_base(worktree, base_ref)
+        if not commits.success:
+            return (), (
+                f"Could not read branch commit messages against {base_ref}: "
+                f"{commits.error or 'unknown git error'}"
+            )
+        return commits.messages, None
+
     def check(self, worktree: Path) -> str | None:
         return self.test_skips(worktree) or self.runtime_artifacts(worktree)

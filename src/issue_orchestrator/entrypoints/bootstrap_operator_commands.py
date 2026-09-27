@@ -40,6 +40,7 @@ def build_operator_issue_command_factory(
     from ..control.operator_issue_command_runner import OperatorIssueCommandRunner
     from ..control.operator_unblock import OperatorUnblocker
     from ..control.retry_policy import OpenPullRequestIndex
+    from ..infra.repo_scope import require_repo
 
     unblocker = OperatorUnblocker(
         repository_host=repository_host,
@@ -58,7 +59,7 @@ def build_operator_issue_command_factory(
             run_locked=run_locked,
             # A fresh index per command: one operator request lists open PRs
             # at most once, however many issues it retries (#7293).
-            open_prs=OpenPullRequestIndex(repository_host),
+            open_prs=OpenPullRequestIndex(repository_host, repo_slug=require_repo(config)),
         )
 
     return factory

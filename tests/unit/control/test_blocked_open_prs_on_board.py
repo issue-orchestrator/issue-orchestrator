@@ -86,6 +86,7 @@ def _pr(
     *labels: str,
     branch: str | None = None,
     draft: bool | None = False,
+    body: str | None = None,
 ) -> None:
     head = branch or f"{issue}-work"
     github.prs.setdefault(head, []).append(
@@ -94,7 +95,7 @@ def _pr(
             title=f"PR {number}",
             url=f"https://github.com/owner/repo/pull/{number}",
             branch=head,
-            body=f"Closes #{issue}",
+            body=f"Closes #{issue}" if body is None else body,
             state="open",
             labels=list(labels),
             draft=draft,
@@ -438,3 +439,63 @@ def test_a_pr_block_can_mask_an_issue_block_behind_it(
     (then,) = _snapshot(state).blocked_open_prs or []
     assert (first.skip_reason, then.skip_reason) == ("pr_blocked", "issue_blocked")
     assert state.discovered_reviews == []
+
+
+@pytest.mark.parametrize("keyword", ["Fixes", "Resolves", "Closes", "Refs"])
+def test_a_generic_branch_pr_belongs_to_the_issue_its_body_links(
+    config: Config, github: CountingGitHub, keyword: str
+) -> None:
+    """#7302 round 5: one rule for "which local issue a PR links".
+
+    A PR on a generic branch whose body says ``Fixes #200`` is #200's PR in
+    every path: review is queued under #200, the blocked-open-PR ledger
+    records it under #200, and Retry keeps #200's pr-pending. When only the
+    Retry gate knew GitHub's full closing grammar, this PR was gated under
+    #200 but reviewed and ledgered under its own number.
+    """
+    from issue_orchestrator.control.retry_policy import OpenPullRequestIndex
+
+    _issue(github, 200)
+    _pr(github, 376, 200, "needs-code-review", branch="feature/generic",
+        body=f"{keyword} #200\n\nwork")
+
+    scan = PRScanner(config, github, MockEventSink()).scan_for_reviews(
+        [], [], issue_branches={}
+    )
+
+    assert [(r.issue_number, r.pr_number) for r in scan.reviews] == [(200, 376)]
+    assert OpenPullRequestIndex(github, repo_slug=config.repo).has_open_pr(200)
+
+    github.issues[0].labels.append("blocked-failed")
+    blocked = PRScanner(config, github, MockEventSink()).scan_for_reviews(
+        [], [], issue_branches={}
+    )
+    assert [(o.issue_number, o.pr_number) for o in blocked.blocked] == [(200, 376)]
+
+
+@pytest.mark.parametrize(
+    ("reference", "linked"),
+    [
+        ("Closes other/repo#200", False),
+        ("Closes https://github.com/other/repo/issues/200", False),
+        ("Closes owner/repo#200", True),
+        ("Closes https://github.com/owner/repo/issues/200", True),
+    ],
+)
+def test_only_this_repository_s_references_link_a_local_issue(
+    config: Config, github: CountingGitHub, reference: str, linked: bool
+) -> None:
+    """#7302 round 5: ``Closes other/repo#200`` is another repository's
+    issue. It neither gates local #200 nor makes the PR local #200's."""
+    from issue_orchestrator.control.retry_policy import OpenPullRequestIndex
+
+    _issue(github, 200)
+    _pr(github, 376, 200, "needs-code-review", branch="feature/generic", body=reference)
+
+    scan = PRScanner(config, github, MockEventSink()).scan_for_reviews(
+        [], [], issue_branches={}
+    )
+
+    assert OpenPullRequestIndex(github, repo_slug=config.repo).has_open_pr(200) is linked
+    # Unlinked, the PR falls back to its own number, as any unlinked PR does.
+    assert [r.issue_number for r in scan.reviews] == ([200] if linked else [376])
