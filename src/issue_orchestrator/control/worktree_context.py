@@ -452,3 +452,24 @@ class WorktreeContext:
         """Update the session run manifest with additional data."""
         if self.run:
             self._session_output.update_manifest(self.run.run_dir, updates)
+
+
+def worktree_reuse_options(
+    config: Config,
+    *,
+    allow_remote_branch_delete: bool = True,
+    force_fresh: bool = False,
+    preserve_branch: bool = False,
+) -> WorktreeReuseOptions:
+    """The configured reuse options for one launch, with its per-launch overrides."""
+    options = WorktreeReuseOptions(
+        reuse_push_preflight=config.reuse_push_preflight,
+        worktree_branch_on_recreate=config.worktree_branch_on_recreate,
+        allow_no_verify_dry_run_preflight=config.allow_no_verify_dry_run_preflight,
+        allow_remote_branch_delete=allow_remote_branch_delete,
+        preserve_branch=preserve_branch,
+    )
+    if force_fresh:
+        options.disable_reuse = True
+        options.worktree_branch_on_recreate = "create_new_branch"
+    return options

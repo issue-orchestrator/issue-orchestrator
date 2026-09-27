@@ -474,3 +474,21 @@ def test_an_unreadable_subject_keeps_its_run_rather_than_cancelling_it():
 
     assert _tech_lead_launches(plan) == [42]
     assert _withdrawals(plan) == []
+
+
+def test_a_subject_whose_published_pr_is_under_review_is_withdrawn_not_launched():
+    """#7293: a queued failure investigation of an issue whose validated work
+    an open PR now carries would only escalate or reset reviewable work."""
+    plan = _planner().plan(
+        make_snapshot(
+            issues=[_blocked(42), _blocked(43)],
+            pending_tech_lead=[_investigation(42), _investigation(43)],
+            published_review_subjects=frozenset({42}),
+        )
+    )
+
+    assert [(w.issue_number, w.reason) for w in _withdrawals(plan)] == [
+        (42, "published_validated_work_under_review")
+    ]
+    assert 42 not in _tech_lead_launches(plan)
+    assert 43 in _tech_lead_launches(plan)

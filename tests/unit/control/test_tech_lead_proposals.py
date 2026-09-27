@@ -1,4 +1,5 @@
 """Tests for gated tech_lead proposal issues (#6778, amends ADR-0031 §2)."""
+from tests.runtime_lifecycle_helpers import unexpected_review_release
 
 from tests.runtime_lifecycle_helpers import make_action_applier
 
@@ -1435,6 +1436,7 @@ def test_applier_reset_op_executes_once_and_finalizes() -> None:
         read_issue=lambda number: _issue(number, ["blocked-failed"]),
         runtime_snapshot=reset_snapshot,
         run_reset=run_reset,
+        release_review=unexpected_review_release,
     )
     [action] = plan_approved_tech_lead_op_executions(
         (ApprovedTechLeadOp(proposal_issue_number=500, op=_op()),)
@@ -1464,6 +1466,7 @@ def test_applier_stale_reset_op_downgrades_with_zero_target_mutations() -> None:
         read_issue=lambda number: _issue(number, ["agent:test"]),
         runtime_snapshot=reset_snapshot,
         run_reset=run_reset,
+        release_review=unexpected_review_release,
     )
     [action] = plan_approved_tech_lead_op_executions(
         (ApprovedTechLeadOp(proposal_issue_number=500, op=_op()),)
@@ -1559,6 +1562,7 @@ def _wired_reset_applier(
         read_issue=lambda number: _issue(number, ["blocked-failed"]),
         runtime_snapshot=reset_snapshot,
         run_reset=run_reset,
+        release_review=unexpected_review_release,
     )
     return applier
 
@@ -1821,6 +1825,7 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         read_issue=lambda number: _issue(number, ["blocked-failed"]),
         runtime_snapshot=reset_snapshot,
         run_reset=run_reset,
+        release_review=unexpected_review_release,
     )
     assert applier.apply(execution).success
     run_reset.assert_called_once()

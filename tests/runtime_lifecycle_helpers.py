@@ -6,10 +6,19 @@ from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidence, Issue
 from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch
 from issue_orchestrator.ports.issue_run_evidence import IssueRunEvidenceSource
 from issue_orchestrator.ports.validated_work_preservation import ValidatedWorkPreservation
+from issue_orchestrator.control.published_review_custody import BranchPullRequestReader, PublishedReviewCustody
+
+
+def no_open_pull_requests():
+    """A PR reader for fixtures whose issues have no PRs at all."""
+    reader = Mock(spec=BranchPullRequestReader)
+    reader.get_open_prs_for_branch_complete.return_value = []
+    return reader
 
 
 def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=None,
-                   job_supervisor=None, publish_recovery=None, completion_intake=None):
+                   job_supervisor=None, publish_recovery=None, completion_intake=None,
+                   published_review=None):
     source = Mock(spec=IssueRunEvidenceSource)
     source.evidence_for_issue.side_effect = lambda issue: IssueRunEvidence(issue,
         IssueRunEvidenceStatus.NO_RUNS_RECORDED, (), IssueRunEvidenceOrigin.RUN_LEDGER, "2026-09-07")
@@ -32,7 +41,8 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
         retry.has_active_retry.return_value = False
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(session_manager,
         [] if active_sessions is None else active_sessions, pair_registry, job_supervisor, retry),
-        preservation, source, Mock())
+        preservation, source, Mock(),
+        published_review or PublishedReviewCustody(preservation, no_open_pull_requests()))
 
 
 def reset_snapshot(issue_number: int, busy: bool = False):
@@ -62,3 +72,8 @@ def bind_action_runtime(applier):
 
 def cancel_empty_exchange(issue_number: int, reason: str) -> ReviewExchangeCancellation:
     return ReviewExchangeCancellation(issue_number, (), ValidatedWorkDispositionBatch.no_work(issue_number, reason))
+
+
+def unexpected_review_release(issue_number: int):
+    """For executors whose tests never refuse a reset over published work."""
+    raise AssertionError(f"issue #{issue_number}: no published-review release expected")

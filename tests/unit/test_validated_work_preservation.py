@@ -1,4 +1,5 @@
 """Real Git/SQLite/intake/escrow preservation across destructive boundaries."""
+from tests.runtime_lifecycle_helpers import unexpected_review_release
 
 from issue_orchestrator.control.validated_work_admission import RankedEvidenceAdmission
 
@@ -16,6 +17,7 @@ from issue_orchestrator.control.completion_intake import CompletionEvidenceIntak
 from issue_orchestrator.control.completion_intake_validation import ConfiguredCompletionEvidenceValidator
 from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
 from issue_orchestrator.control.issue_run_evidence import IssueRunEvidenceService
+from issue_orchestrator.control.published_review_custody import PublishedReviewCustody
 from issue_orchestrator.control.review_exchange_lifecycle import (
     CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners, OtherRuntimeActivity,
     IssueRuntimeOwnerKind, UnresolvedValidatedWork,
@@ -50,6 +52,7 @@ from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
 from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from tests.unit.test_completion_evidence_intake import completion, command
 from tests.unit.validated_work_support import Liveness
+from tests.runtime_lifecycle_helpers import no_open_pull_requests
 
 
 @pytest.fixture
@@ -93,7 +96,8 @@ def custody(tmp_path):
     pair, jobs, retry = Mock(), Mock(), Mock()
     jobs.cancel_matching.return_value = ()
     core = CoreIssueRuntimeOwners(sessions, [], pair, jobs, retry)
-    lifecycle = IssueRuntimeLifecycleOwners(core, preservation, source, Mock())
+    lifecycle = IssueRuntimeLifecycleOwners(core, preservation, source, Mock(),
+        PublishedReviewCustody(preservation, no_open_pull_requests()))
     return SimpleNamespace(repo=repo, git=git, worktree=worktree, ledger=ledger, run=run,
         capability=ledger.submission_capability(run), intake=intake, escrow=escrow,
         store=store, lifecycle=lifecycle, state=state, wc=wc, repair=repair,
@@ -338,7 +342,8 @@ def test_reset_snapshot_and_downgrade_keep_each_retained_member(custody):
     run_reset = Mock()
     events = Mock()
     executor = TechLeadResetRetryExecutor(events, LabelManager(Config()),
-        lambda issue: make_issue(number=issue), custody.lifecycle.reset_snapshot, run_reset)
+        lambda issue: make_issue(number=issue), custody.lifecycle.reset_snapshot, run_reset,
+        unexpected_review_release)
     result = executor.apply(make_action(issue_number=42))
     run_reset.assert_not_called()
     observed = result.details["boundary"]["validated_work"]["dispositions"]
