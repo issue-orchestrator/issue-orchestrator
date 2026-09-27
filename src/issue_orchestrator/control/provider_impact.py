@@ -242,6 +242,25 @@ class ApplyProviderImpactAction(Action):
                 f"{list(self.assessment.open_providers)} (issue #{self.issue_number})"
             )
 
+    def liveness_facts(self) -> object:
+        """The provider partition, not the moment it was sampled (#7350).
+
+        ``assessed_at`` and ``cooldown_remaining_seconds`` change on every tick
+        while the circuits stay exactly as they were; the absolute
+        ``next_retry_at`` does not. Fingerprinting the sample would give every
+        failed write a fresh retry budget.
+        """
+        assessment = self.assessment
+        return {
+            "issue_number": self.issue_number,
+            "transition": self.transition,
+            "label": self.label,
+            "open_providers": assessment.open_providers,
+            "recovering_providers": assessment.recovering_providers,
+            "healthy_providers": assessment.healthy_providers,
+            "next_retry_at": assessment.next_retry_at,
+        }
+
     @property
     def providers(self) -> tuple[str, ...]:
         """The providers this transition is *about*.

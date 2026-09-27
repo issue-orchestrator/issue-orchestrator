@@ -238,6 +238,27 @@ class TestTheGitHubSideSettlesFirst:
         assert owner.admit(key).admitted
         assert owner.parked() == ()
 
+    def test_dismiss_also_releases_every_action_parked_on_the_issue(
+        self, sample_config, state
+    ):
+        """Dismiss is a person's answer too: its parks leave the board."""
+        from issue_orchestrator.domain.action_liveness import (
+            ActionIdentity,
+            ActionOutcome,
+            LivenessKey,
+        )
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner = liveness_owner()
+        key = LivenessKey(ActionIdentity(f"issue:{ISSUE}", "remove_label"), "a" * 32, ISSUE)
+        owner.record(key, ActionOutcome.needs_human("paused"))
+        _labels, runner = _runner(sample_config, state, live, liveness=owner)
+
+        assert runner.dismiss(ISSUE).committed
+        assert owner.parked() == ()
+        assert owner.admit(key).admitted
+
     def test_a_retry_that_did_not_commit_keeps_the_park(self, sample_config, state):
         from issue_orchestrator.domain.action_liveness import (
             ActionIdentity,

@@ -44,23 +44,53 @@ def test_budget_exhaustion_parks_and_escalates_exactly_once() -> None:
         assert owner.admit(KEY).admitted
         owner.record(KEY, ActionOutcome.transient("registry is terminal"))
         clock.advance(timedelta(hours=1))
+        owner.reconcile_effects()
 
     decision = owner.admit(KEY)
     assert decision.admission is Admission.PARKED
     assert "registry is terminal" in decision.describe()
-    assert len(escalation.escalated) == 1
+    assert len(escalation.parked) == 1
+    assert len(escalation.blocks) == 1
     assert store.row(KEY).escalated is True
     clock.advance(timedelta(days=30))
+    owner.reconcile_effects()
     assert owner.admit(KEY).admission is Admission.PARKED
+    assert len(escalation.blocks) == 1
 
 
-def test_an_uncommitted_escalation_is_recorded_as_such() -> None:
+def test_a_block_github_refused_is_retried_until_it_lands() -> None:
+    """The park is durable; so is the debt of showing it to a person."""
+    clock = ManualClock()
+    escalation = RecordingEscalation(commits=False)
     store = InMemoryActionLivenessStore()
-    owner = liveness_owner(store=store, escalation=RecordingEscalation(commits=False))
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock, policy=POLICY)
 
     owner.record(KEY, ActionOutcome.permanent("422"))
+    assert store.row(KEY).escalated is False
 
-    assert store.row(KEY).parked and store.row(KEY).escalated is False
+    owner.reconcile_effects()  # not yet due: paced at max_backoff
+    assert len(escalation.blocks) == 1
+    escalation.commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+
+    assert store.row(KEY).escalated is True
+    assert [committed for _row, committed in escalation.blocks] == [False, True]
+    assert len(escalation.parked) == 1, "announced once, however often the block is retried"
+
+
+def test_a_block_github_never_accepts_stops_being_retried() -> None:
+    clock = ManualClock()
+    escalation = RecordingEscalation(commits=False)
+    owner = liveness_owner(escalation=escalation, clock=clock, policy=POLICY)
+
+    owner.record(KEY, ActionOutcome.permanent("422"))
+    for _ in range(20):
+        clock.advance(POLICY.max_backoff)
+        owner.reconcile_effects()
+
+    assert len(escalation.blocks) == POLICY.max_attempts
+    assert [row.key for row in owner.parked()] == [KEY], "still held and on the board"
 
 
 def test_changed_facts_are_a_new_question() -> None:
@@ -82,8 +112,27 @@ def test_success_under_any_fingerprint_clears_the_identity_and_releases_the_bloc
     owner.record(changed, ActionOutcome.done())
 
     assert owner.admit(KEY).admitted
-    [(rows, release)] = escalation.resolved
-    assert [row.key for row in rows] == [KEY] and release is True
+    assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]
+    assert escalation.unblocks == [(229, True)]
+    assert store.releases == {}
+
+
+def test_a_release_github_refused_is_retried_until_it_lands() -> None:
+    clock = ManualClock()
+    escalation = RecordingEscalation(unblock_commits=False)
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock, policy=POLICY)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+
+    owner.record(KEY, ActionOutcome.done())
+    assert store.rows == {} and 229 in store.releases
+
+    escalation.unblock_commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+
+    assert escalation.unblocks == [(229, False), (229, True)]
+    assert store.releases == {}
 
 
 def test_success_keeps_the_block_while_another_park_stands_on_the_issue() -> None:
@@ -95,25 +144,28 @@ def test_success_keeps_the_block_while_another_park_stands_on_the_issue() -> Non
 
     owner.record(KEY, ActionOutcome.done())
 
-    [(rows, release)] = escalation.resolved
-    assert [row.key for row in rows] == [KEY] and release is False
+    assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]
+    assert escalation.unblocks == []
     assert owner.admit(other).admission is Admission.PARKED
 
 
 def test_operator_release_gives_every_key_on_the_issue_a_fresh_budget() -> None:
-    escalation = RecordingEscalation()
-    owner = liveness_owner(escalation=escalation)
+    escalation = RecordingEscalation(unblock_commits=False)
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=escalation)
     owner.record(KEY, ActionOutcome.permanent("stuck"))
     unrelated = LivenessKey(ActionIdentity("issue:7", "add_label"), "d" * 32, 7)
     owner.record(unrelated, ActionOutcome.permanent("stuck"))
+    store.request_release(229)
 
     released = owner.release_issue(229)
 
     assert [row.key for row in released] == [KEY]
     assert owner.admit(KEY).admitted
     assert owner.admit(unrelated).admission is Admission.PARKED
-    # The operator command settled the label itself; this only announces.
-    assert escalation.resolved[-1][1] is False
+    # The operator command settled the label itself: nothing is withdrawn
+    # here, and no withdrawal is left owed.
+    assert escalation.unblocks == [] and store.releases == {}
 
 
 def test_the_budget_survives_an_engine_restart(tmp_path) -> None:

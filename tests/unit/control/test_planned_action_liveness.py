@@ -61,6 +61,7 @@ from tests.unit.control.liveness_doubles import (
 
 POLICY = LivenessPolicy(max_attempts=3)
 PAUSE = get_pause_label()
+NEEDS_HUMAN = "needs-human"
 
 
 def _settle() -> SettleTechLeadPromotionAction:
@@ -153,7 +154,7 @@ class _Engine:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
-            action_liveness=PlannedActionLiveness(self.owner),
+            action_liveness=PlannedActionLiveness(self.owner, escalation_label=NEEDS_HUMAN),
         )
         self.clock.advance(advance)
         self.tick_count += 1
@@ -199,7 +200,7 @@ def test_an_unchanged_failing_action_is_attempted_at_most_max_attempts_times(
     plans = [engine.tick() for _ in range(40)]
 
     assert engine.attempts_of(action.action_type) == POLICY.max_attempts
-    assert len(engine.escalation.escalated) == 1
+    assert len(engine.escalation.parked) == 1
     held = plans[-1].skipped[-1]
     assert held.item_type == f"action:{action.action_type.value}"
     assert held.reason.startswith("parked after transient: 3 attempts failed")
@@ -278,7 +279,7 @@ def test_a_paused_subject_parks_its_mutations_and_stops_halting_the_plan(sample_
     assert engine.attempts_of(stale.action_type) == 1
     assert engine.pauses == [410]
     assert engine.attempts_of(review.action_type) == 5
-    [parked] = engine.escalation.escalated
+    [parked] = engine.escalation.parked
     assert parked.last_outcome.value == "needs_human"
     assert parked.key.escalation_issue == 410
 
@@ -308,7 +309,7 @@ def test_a_person_removing_the_pause_label_releases_the_park(sample_config) -> N
     # The new fingerprint succeeded: the identity is clean and the block
     # this owner put on #410 is released.
     assert engine.store.rows == {}
-    assert engine.escalation.resolved[-1][1] is True
+    assert engine.escalation.unblocks == [(410, True)]
 
 
 # --- Scope boundaries ------------------------------------------------------
@@ -339,15 +340,23 @@ def test_an_ungated_plan_cannot_be_applied(sample_config) -> None:
 
 
 def test_subjects_and_escalation_issues() -> None:
-    settle_key = planned_action_key(_settle(), {})
+    settle_key = planned_action_key(_settle(), {}, escalation_label=NEEDS_HUMAN)
     assert settle_key.identity.subject == "issue:229"
     assert settle_key.escalation_issue == 229
     label_key = planned_action_key(
-        RemoveLabelAction(issue_number=410, label="x"), {410: ("a",)}
+        RemoveLabelAction(issue_number=410, label="x"), {410: ("a",)},
+        escalation_label=NEEDS_HUMAN,
     )
     assert label_key.identity.subject == "issue:410"
     assert label_key.fingerprint != planned_action_key(
-        RemoveLabelAction(issue_number=410, label="x"), {410: ("a", PAUSE)}
+        RemoveLabelAction(issue_number=410, label="x"), {410: ("a", PAUSE)},
+        escalation_label=NEEDS_HUMAN,
+    ).fingerprint
+    # The owner's own escalation label is not a fact: its park must not look
+    # like progress.
+    assert label_key.fingerprint == planned_action_key(
+        RemoveLabelAction(issue_number=410, label="x"), {410: ("a", NEEDS_HUMAN)},
+        escalation_label=NEEDS_HUMAN,
     ).fingerprint
 
 
@@ -457,9 +466,111 @@ def test_a_plan_naming_the_same_action_twice_escalates_it_once(sample_config) ->
         # copies are attempted in the same tick.
         patch.setattr(
             engine.support, "_handle_reconciliation_error",
-            lambda rr, cb: OrchestratorSupport._ActionApplyResult(success=False),
+            lambda rr, cb: types.SimpleNamespace(success=False, halt=False),
         )
         engine.tick()
 
     assert engine.attempts_of(stale.action_type) == 2
-    assert len(engine.escalation.escalated) == 1
+    assert len(engine.escalation.parked) == 1
+
+
+# --- Round 1 review: facts that move without the problem moving -------------
+
+
+def test_a_provider_impact_write_resampled_every_tick_is_still_bounded(sample_config) -> None:
+    """The assessment is re-sampled each tick (a new ``assessed_at`` and a
+    shrinking countdown) while the circuit is exactly as it was."""
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.control.provider_impact import (
+        ApplyProviderImpactAction,
+        ProviderImpactAssessment,
+        ProviderImpactTransition,
+    )
+
+    ticks = iter(range(1000))
+
+    def planned():
+        tick = next(ticks)
+        return [
+            ApplyProviderImpactAction(
+                issue_number=410,
+                transition=ProviderImpactTransition.BLOCKED,
+                label="blocked:provider-unavailable",
+                assessment=ProviderImpactAssessment(
+                    assessed_at=datetime(2026, 9, 27, tzinfo=timezone.utc)
+                    + timedelta(seconds=tick),
+                    open_providers=("claude",),
+                    next_retry_at="2026-09-27T13:00:00+00:00",
+                    cooldown_remaining_seconds=3600 - tick,
+                ),
+            )
+        ]
+
+    engine = _Engine(sample_config, planned=planned, apply=lambda a: ActionResult.fail(a, "403"))
+    for _ in range(20):
+        engine.tick()
+
+    assert engine.attempts_of(planned()[0].action_type) == POLICY.max_attempts
+
+
+def test_the_owners_own_block_does_not_look_like_progress(sample_config) -> None:
+    """When the park's needs-human label lands, the next snapshot shows it on
+    the issue. That is the owner's own write, not a fact the refused mutation
+    depends on, so the mutation stays parked: one attempt, one park."""
+    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    engine = _Engine(
+        sample_config, planned=lambda: [stale], apply=_refused_for_pause,
+        labels={410: ("in-progress", PAUSE)},
+    )
+    block = engine.escalation.block
+
+    def block_and_label(row):
+        engine.labels[410] = (*engine.labels[410], NEEDS_HUMAN)
+        return block(row)
+
+    engine.escalation.block = block_and_label
+    for _ in range(6):
+        engine.tick()
+
+    assert engine.attempts_of(stale.action_type) == 1
+    assert len(engine.escalation.parked) == 1
+
+
+def test_a_request_for_a_human_is_never_parked(sample_config) -> None:
+    """The stuck sweep re-emits its needs-human write until the label is
+    observed. If GitHub refuses it for longer than any budget, the write must
+    still land once GitHub recovers."""
+    from issue_orchestrator.control.stuck_sweep import build_stuck_sweep_escalation_actions
+
+    [escalate] = build_stuck_sweep_escalation_actions((410,), NEEDS_HUMAN)
+    refusing = {"on": True}
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [escalate],
+        apply=lambda a: ActionResult.fail(a, "502") if refusing["on"] else ActionResult.ok(a),
+    )
+    for _ in range(POLICY.max_attempts * 3):
+        engine.tick()
+    refusing["on"] = False
+    engine.tick()
+
+    assert engine.attempts_of(escalate.action_type) == POLICY.max_attempts * 3 + 1
+    assert engine.store.rows == {}
+
+
+def test_each_planning_cycle_retries_a_block_that_did_not_land(sample_config) -> None:
+    engine = _Engine(
+        sample_config, planned=lambda: [_settle()],
+        apply=lambda a: ActionResult.fail(a, "boom"),
+    )
+    engine.escalation.commits = False
+    for _ in range(POLICY.max_attempts):
+        engine.tick()
+    assert engine.escalation.committed_blocks == []
+
+    engine.escalation.commits = True
+    engine.tick()
+
+    [blocked] = engine.escalation.committed_blocks
+    assert blocked.key.escalation_issue == 229

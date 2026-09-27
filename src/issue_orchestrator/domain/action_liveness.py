@@ -175,7 +175,9 @@ class LivenessRow:
 
     ``attempts`` counts failed attempts that SPENT budget, so a declared wait
     does not appear in it. ``next_attempt_at`` is ``None`` exactly when parked.
-    ``escalated`` records that the human-visible block for this park committed.
+    ``escalated`` records that the human-visible block for this park committed;
+    until it has, ``escalation_attempts`` and ``escalation_attempted_at`` pace
+    the owner's retries of that block (:meth:`LivenessPolicy.effect_due`).
     """
 
     key: LivenessKey
@@ -186,6 +188,8 @@ class LivenessRow:
     last_reason: str
     next_attempt_at: datetime | None
     escalated: bool = False
+    escalation_attempts: int = 0
+    escalation_attempted_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.last_outcome is OutcomeKind.DONE:
@@ -196,8 +200,16 @@ class LivenessRow:
         _require_aware(self.last_failed_at, "last_failed_at")
         if self.next_attempt_at is not None:
             _require_aware(self.next_attempt_at, "next_attempt_at")
-        if self.escalated and self.next_attempt_at is not None:
+        if self.next_attempt_at is not None and (
+            self.escalated or self.escalation_attempts or self.escalation_attempted_at
+        ):
             raise ValueError("only a parked row can have been escalated")
+        if self.escalation_attempts < 0:
+            raise ValueError("escalation_attempts cannot be negative")
+        if (self.escalation_attempts == 0) != (self.escalation_attempted_at is None):
+            raise ValueError("an escalation attempt count needs its attempt time")
+        if self.escalation_attempted_at is not None:
+            _require_aware(self.escalation_attempted_at, "escalation_attempted_at")
 
     @property
     def parked(self) -> bool:
@@ -246,6 +258,17 @@ class LivenessPolicy:
         if self.declared_wait_bound < timedelta(0):
             raise ValueError("declared_wait_bound cannot be negative")
 
+    def effect_due(self, attempts: int, last: datetime | None, now: datetime) -> bool:
+        """May the owner try an escalation effect (a block, a release) again?
+
+        The same budget as an action, paced at ``max_backoff``: a person is
+        still shown the park on the timeline and the board when GitHub keeps
+        refusing the label, so the write itself does not retry forever.
+        """
+        if attempts >= self.max_attempts:
+            return False
+        return last is None or now - last >= self.max_backoff
+
     def backoff(self, attempts: int) -> timedelta:
         exponent = max(attempts - 1, 0)
         # Cap the exponent before multiplying: 2**attempts overflows timedelta.
@@ -274,14 +297,22 @@ class LivenessPolicy:
             last_outcome=outcome.kind,
             last_reason=outcome.reason,
             next_attempt_at=None,
-            escalated=previous.escalated if previous is not None else False,
         )
+        if previous is not None and previous.parked:
+            # Recording onto a row that is already parked (two copies of one
+            # action admitted in the same plan) keeps its escalation state.
+            row = replace(
+                row,
+                escalated=previous.escalated,
+                escalation_attempts=previous.escalation_attempts,
+                escalation_attempted_at=previous.escalation_attempted_at,
+            )
         if outcome.kind is not OutcomeKind.TRANSIENT:
             return replace(row, attempts=spent + 1)
         declared = outcome.retry_at is not None and now - first < self.declared_wait_bound
         if declared:
             assert outcome.retry_at is not None
-            return replace(row, next_attempt_at=outcome.retry_at, escalated=False)
+            return _backing_off(row, next_attempt_at=outcome.retry_at)
         spent += 1
         if spent >= self.max_attempts:
             return replace(
@@ -294,7 +325,21 @@ class LivenessPolicy:
         retry_at = now + self.backoff(spent)
         if outcome.retry_at is not None:
             retry_at = max(retry_at, outcome.retry_at)
-        return replace(row, attempts=spent, next_attempt_at=retry_at, escalated=False)
+        return _backing_off(row, attempts=spent, next_attempt_at=retry_at)
+
+
+def _backing_off(
+    row: LivenessRow, *, next_attempt_at: datetime, attempts: int | None = None
+) -> LivenessRow:
+    """A row waiting to be retried: nothing about it has been escalated."""
+    return replace(
+        row,
+        attempts=row.attempts if attempts is None else attempts,
+        next_attempt_at=next_attempt_at,
+        escalated=False,
+        escalation_attempts=0,
+        escalation_attempted_at=None,
+    )
 
 
 def _require_aware(value: datetime, name: str) -> None:

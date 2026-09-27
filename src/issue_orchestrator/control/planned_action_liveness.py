@@ -21,17 +21,20 @@ The key:
 * subject - the issue the action reconciles against, else the issue/PR it
   names, else ``engine`` for the handful of engine-wide actions;
 * action - the :class:`ActionType` value;
-* fingerprint - every field of the action except its free-text ``reason``,
-  plus the subject's labels as this tick observed them. The labels are what let
-  a person release a park by acting on the issue: removing ``io:needs-reconcile``
-  or ``needs-human`` changes the facts, so the next plan is a new question.
+* fingerprint - the action's own :meth:`~.action_base.Action.liveness_facts`
+  (by default every field but the free-text ``reason``), plus the subject's
+  labels as this tick observed them, minus the owner's own escalation label.
+  The labels are what let a person release a park by acting on the issue:
+  removing ``io:needs-reconcile`` changes the facts, so the next plan is a new
+  question. An action whose ``liveness_facts`` is ``None`` (launches, requests
+  for a human) is governed by its own owner and passes through ungated.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..domain.action_liveness import (
@@ -40,7 +43,7 @@ from ..domain.action_liveness import (
     LivenessKey,
     fact_fingerprint,
 )
-from .action_base import Action, ActionType
+from .action_base import Action
 from .action_results import ActionResult, ActionResultType
 from .action_liveness import ActionLivenessOwner
 from .reconciliation import ReconciliationRequired, get_pause_label
@@ -54,20 +57,6 @@ logger = logging.getLogger(__name__)
 #: Subject of an action that names no issue or PR (anchor creation, ledger-only
 #: discards). One identity per action type: still bounded, still visible.
 ENGINE_SUBJECT = "engine"
-
-#: Actions whose liveness another owner already governs, with facts an
-#: ``ActionResult`` flattens away. A launch's :class:`LaunchSettlement` sees the
-#: typed disposition - provider-deferred, host-rate-limited, claim-unrecorded,
-#: retryable, permanent - and spends the pending-work claim's durable budget;
-#: here every one of those would read as the same "failed to launch".
-SELF_GOVERNED_ACTIONS = frozenset(
-    {ActionType.LAUNCH_SESSION, ActionType.LAUNCH_VALIDATION_RETRY}
-)
-
-#: The one field excluded from the fingerprint: audit prose, often carrying a
-#: count or a timestamp that would make every tick look like new facts.
-_UNFINGERPRINTED_FIELDS = frozenset({"reason"})
-
 
 def _subject_number(action: Action) -> tuple[str, int] | None:
     subject = getattr(action, "reconciliation_subject", None)
@@ -88,21 +77,23 @@ def _subject_number(action: Action) -> tuple[str, int] | None:
 
 
 def planned_action_key(
-    action: Action, labels_by_number: Mapping[int, tuple[str, ...]]
+    action: Action,
+    labels_by_number: Mapping[int, tuple[str, ...]],
+    *,
+    escalation_label: str,
 ) -> LivenessKey | None:
-    """The liveness key of one planned action, from its fields and the tick's labels.
+    """The liveness key of one planned action, from its facts and the tick's labels.
 
-    ``None`` for a :data:`SELF_GOVERNED_ACTIONS` action.
+    ``None`` when the action's own :meth:`~.action_base.Action.liveness_facts`
+    says another owner governs it. The owner's own ``escalation_label`` is not
+    a fact: the park that put it on the issue must not look like progress.
     """
-    if action.action_type in SELF_GOVERNED_ACTIONS:
+    facts = action.liveness_facts()
+    if facts is None:
         return None
     subject = _subject_number(action)
-    facts = {
-        field.name: getattr(action, field.name)
-        for field in fields(action)
-        if field.name not in _UNFINGERPRINTED_FIELDS
-    }
-    labels = None if subject is None else labels_by_number.get(subject[1])
+    observed = None if subject is None else labels_by_number.get(subject[1])
+    labels = None if observed is None else frozenset(observed) - {escalation_label}
     return LivenessKey(
         identity=ActionIdentity(
             subject=ENGINE_SUBJECT if subject is None else f"{subject[0]}:{subject[1]}",
@@ -111,7 +102,7 @@ def planned_action_key(
         fingerprint=fact_fingerprint(
             {
                 "action": facts,
-                "subject_labels": None if labels is None else frozenset(labels),
+                "subject_labels": labels,
             }
         ),
         escalation_issue=None if subject is None else subject[1],
@@ -179,16 +170,23 @@ class PlannedActionLiveness:
     """Gates each plan through the owner before it is applied."""
 
     owner: ActionLivenessOwner
+    #: The label the owner's escalation puts on an issue; never a fact.
+    escalation_label: str
 
     def admit(self, plan: "Plan", snapshot: "OrchestratorSnapshot") -> "Plan":
         from .planner_types import Plan, SkippedItem
 
+        # Escalation effects that did not commit last time are retried once
+        # per planning cycle, before anything new is attempted.
+        self.owner.reconcile_effects()
         labels = observed_labels(snapshot)
         admitted: list[Action] = []
         keys: list[LivenessKey | None] = []
         held: list[SkippedItem] = []
         for action in plan.actions:
-            key = planned_action_key(action, labels)
+            key = planned_action_key(
+                action, labels, escalation_label=self.escalation_label
+            )
             if key is None:
                 admitted.append(action)
                 keys.append(None)
@@ -220,7 +218,6 @@ class PlannedActionLiveness:
 
 __all__ = [
     "ENGINE_SUBJECT",
-    "SELF_GOVERNED_ACTIONS",
     "PlanLiveness",
     "PlannedActionLiveness",
     "observed_labels",

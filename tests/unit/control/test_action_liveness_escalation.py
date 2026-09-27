@@ -54,48 +54,53 @@ def _escalation(mock_event_sink, applier):
     )
 
 
-def test_a_park_labels_comments_and_publishes(mock_event_sink) -> None:
+def test_a_block_labels_under_its_own_cause_and_comments(mock_event_sink) -> None:
     applier = _Applier()
 
-    committed = _escalation(mock_event_sink, applier).escalate(_row())
+    assert _escalation(mock_event_sink, applier).block(_row()) is True
 
-    assert committed is True
     label, comment = applier.applied
     assert isinstance(label, AddLabelAction)
     assert (label.issue_number, label.label) == (410, "needs-human")
     assert label.needs_human_cause is NeedsHumanCause.ACTION_LIVENESS
     assert isinstance(comment, AddCommentAction) and comment.number == 410
     assert "`remove_label` on `issue:410`" in comment.comment
-    [event] = mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)
-    assert event.data["issue_number"] == 410
-    assert event.data["outcome"] == "needs_human"
 
 
 def test_an_uncommitted_block_is_reported_and_posts_no_comment(mock_event_sink) -> None:
     applier = _Applier(fail=frozenset({AddLabelAction}))
 
-    assert _escalation(mock_event_sink, applier).escalate(_row()) is False
+    assert _escalation(mock_event_sink, applier).block(_row()) is False
     assert [type(action) for action in applier.applied] == [AddLabelAction]
-    assert mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)
 
 
-def test_a_park_with_no_issue_is_still_on_the_timeline(mock_event_sink) -> None:
+def test_a_raising_write_is_an_uncommitted_one(mock_event_sink) -> None:
+    class _Raising:
+        def apply(self, action):
+            raise RuntimeError("claim lost")
+
+    assert _escalation(mock_event_sink, _Raising()).block(_row()) is False
+    assert _escalation(mock_event_sink, _Raising()).unblock(410) is False
+
+
+def test_announcements_reach_the_timeline(mock_event_sink) -> None:
+    escalation = _escalation(mock_event_sink, _Applier())
+
+    escalation.announce_parked(_row())
+    escalation.announce_released((_row(), _row(issue=None)))
+
+    [parked] = mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)
+    assert parked.data["issue_number"] == 410
+    assert parked.data["outcome"] == "needs_human"
+    released = mock_event_sink.get_events_by_name(EventName.ACTION_RELEASED)
+    assert len(released) == 2 and "issue_number" not in released[1].data
+
+
+def test_unblock_withdraws_only_this_cause(mock_event_sink) -> None:
     applier = _Applier()
 
-    assert _escalation(mock_event_sink, applier).escalate(_row(issue=None)) is False
-    assert applier.applied == []
-    assert mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)
-
-
-def test_resolve_releases_only_this_cause_and_only_when_asked(mock_event_sink) -> None:
-    applier = _Applier()
-    escalation = _escalation(mock_event_sink, applier)
-
-    escalation.resolve((_row(escalated=True),), release_issue=False)
-    assert applier.applied == []
-
-    escalation.resolve((_row(escalated=True), _row(escalated=False)), release_issue=True)
+    assert _escalation(mock_event_sink, applier).unblock(410) is True
     [release] = applier.applied
     assert isinstance(release, RemoveLabelAction)
+    assert release.issue_number == 410
     assert release.needs_human_cause is NeedsHumanCause.ACTION_LIVENESS
-    assert len(mock_event_sink.get_events_by_name(EventName.ACTION_RELEASED)) == 3

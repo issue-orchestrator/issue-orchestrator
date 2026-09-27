@@ -9,9 +9,20 @@ the owner records whether it committed rather than assuming it did.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from ..domain.action_liveness import ActionIdentity, LivenessKey, LivenessRow
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRelease:
+    """A withdrawal of the owner's block cause that has not committed yet."""
+
+    issue_number: int
+    attempts: int
+    attempted_at: datetime | None
 
 
 class ActionLivenessStore(Protocol):
@@ -41,28 +52,51 @@ class ActionLivenessStore(Protocol):
         """Every parked row, oldest park first."""
         ...
 
+    def unescalated_parked_rows(self) -> tuple[LivenessRow, ...]:
+        """Parked rows with an escalation issue whose block has not committed."""
+        ...
+
+    def request_release(self, issue_number: int) -> None:
+        """Durably owe ``issue_number`` a withdrawal of this owner's block cause."""
+        ...
+
+    def pending_releases(self) -> tuple[PendingRelease, ...]:
+        """Every owed withdrawal, with how often it has been tried."""
+        ...
+
+    def record_release_attempt(self, issue_number: int, attempted_at: datetime) -> None:
+        """Count one withdrawal attempt that did not commit."""
+        ...
+
+    def clear_release(self, issue_number: int) -> None:
+        """The withdrawal committed, or is no longer owed."""
+        ...
+
 
 class LivenessEscalation(Protocol):
-    """Make a park visible to a person, and withdraw that when it resolves."""
+    """Make a park visible to a person, and withdraw that when it resolves.
 
-    def escalate(self, row: LivenessRow) -> bool:
-        """Announce a newly parked row. True when the human-visible block committed.
+    Announcements are local and cannot fail. The block and its withdrawal are
+    writes to the outside world, so each reports whether it committed and the
+    owner keeps retrying an uncommitted one from its durable rows.
+    """
 
-        The timeline event is always published. The needs-human block and its
-        comment need ``row.key.escalation_issue``; without one, or when the
-        write does not commit, this returns False and the park is still shown
-        on the timeline and the tech-lead board.
-        """
+    def announce_parked(self, row: LivenessRow) -> None:
+        """Publish the park on the timeline."""
         ...
 
-    def resolve(self, rows: tuple[LivenessRow, ...], *, release_issue: bool) -> None:
-        """Announce that ``rows`` stopped being parked.
+    def announce_released(self, rows: tuple[LivenessRow, ...]) -> None:
+        """Publish that ``rows`` stopped being parked."""
+        ...
 
-        ``release_issue`` withdraws this owner's cause of the needs-human block
-        on their escalation issue; the caller passes it only when no other
-        escalated row still stands on that issue.
-        """
+    def block(self, row: LivenessRow) -> bool:
+        """Put the needs-human block, under this owner's cause, on the row's
+        escalation issue with one explanatory comment. True when the block committed."""
+        ...
+
+    def unblock(self, issue_number: int) -> bool:
+        """Withdraw this owner's cause of the block. True when that committed."""
         ...
 
 
-__all__ = ["ActionLivenessStore", "LivenessEscalation"]
+__all__ = ["ActionLivenessStore", "LivenessEscalation", "PendingRelease"]

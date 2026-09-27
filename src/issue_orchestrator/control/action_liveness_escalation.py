@@ -75,11 +75,17 @@ class ActionLivenessEscalation:
     applier: SupportsApplyAction
     needs_human_label: str
 
-    def escalate(self, row: LivenessRow) -> bool:
+    def announce_parked(self, row: LivenessRow) -> None:
         self.events.publish(make_trace_event(EventName.ACTION_PARKED, _payload(row)))
+
+    def announce_released(self, rows: tuple[LivenessRow, ...]) -> None:
+        for row in rows:
+            self.events.publish(make_trace_event(EventName.ACTION_RELEASED, _payload(row)))
+
+    def block(self, row: LivenessRow) -> bool:
         issue = row.key.escalation_issue
         if issue is None:
-            return False
+            raise ValueError("a block needs the row's escalation issue")
         block = AddLabelAction(
             issue_number=issue,
             label=self.needs_human_label,
@@ -93,29 +99,15 @@ class ActionLivenessEscalation:
         self._apply(AddCommentAction(number=issue, comment=parked_comment(row)))
         return True
 
-    def resolve(self, rows: tuple[LivenessRow, ...], *, release_issue: bool) -> None:
-        for row in rows:
-            self.events.publish(
-                make_trace_event(EventName.ACTION_RELEASED, _payload(row))
+    def unblock(self, issue_number: int) -> bool:
+        return self._apply(
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=self.needs_human_label,
+                needs_human_cause=NeedsHumanCause.ACTION_LIVENESS,
+                reason="parked action made progress",
             )
-        if not release_issue:
-            return
-        issues = sorted(
-            {
-                row.key.escalation_issue
-                for row in rows
-                if row.escalated and row.key.escalation_issue is not None
-            }
         )
-        for issue in issues:
-            self._apply(
-                RemoveLabelAction(
-                    issue_number=issue,
-                    label=self.needs_human_label,
-                    needs_human_cause=NeedsHumanCause.ACTION_LIVENESS,
-                    reason="parked action made progress",
-                )
-            )
 
     def _apply(self, action: AddLabelAction | AddCommentAction | RemoveLabelAction) -> bool:
         # A failed escalation write must not abort the tick that parked the

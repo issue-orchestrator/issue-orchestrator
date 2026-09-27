@@ -41,7 +41,7 @@ def build_action_liveness(
             needs_human_label=label_manager.needs_human,
         ),
     )
-    return PlannedActionLiveness(owner)
+    return PlannedActionLiveness(owner, escalation_label=label_manager.needs_human)
 
 
 __all__ = ["ACTION_LIVENESS_DB", "action_liveness_store", "build_action_liveness"]

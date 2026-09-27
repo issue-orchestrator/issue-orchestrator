@@ -97,11 +97,12 @@ class ActionLivenessOwner:
         """Fold one attempt's outcome into the key's durable row.
 
         Returns the row left behind (``None`` after success). A row that parks
-        on this call is escalated before returning; whether that committed is
-        written back onto the row.
+        on this call is announced and its block attempted before returning;
+        a block that does not commit is retried by :meth:`reconcile_effects`.
         """
         previous = self._store.row(key)
-        row = self._policy.after(previous, key, outcome, self._clock())
+        now = self._clock()
+        row = self._policy.after(previous, key, outcome, now)
         if row is None:
             self._resolve(self._store.clear_identity(key.identity))
             return None
@@ -115,45 +116,83 @@ class ActionLivenessOwner:
             key.fingerprint,
             row.last_reason,
         )
-        if self._escalation.escalate(row):
-            row = replace(row, escalated=True)
-            self._store.put(row)
-        return row
+        self._escalation.announce_parked(row)
+        return self._block(row, now)
+
+    def reconcile_effects(self) -> None:
+        """Retry every escalation effect that has not committed yet.
+
+        A park whose block did not land, and a release owed to an issue whose
+        withdrawal did not land, are both durable here; each is retried at the
+        policy's pace and bounded by its budget, so a label GitHub keeps
+        refusing is neither lost nor hammered. Called once per planning cycle.
+        """
+        now = self._clock()
+        for row in self._store.unescalated_parked_rows():
+            if self._policy.effect_due(row.escalation_attempts, row.escalation_attempted_at, now):
+                self._block(row, now)
+        for pending in self._store.pending_releases():
+            if self._policy.effect_due(pending.attempts, pending.attempted_at, now):
+                self._unblock(pending.issue_number, now)
 
     def release_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         """An operator acted on ``issue_number``: every key it escalates gets a fresh budget.
 
         The operator command already settled the needs-human block itself, so
-        this withdraws nothing from GitHub - it only lets the planner and the
-        drain try again, and announces that on the timeline.
+        this withdraws nothing from GitHub and forgets any withdrawal still
+        owed - it only lets the planner and the drain try again, and announces
+        that on the timeline.
         """
         released = self._store.clear_escalation_issue(issue_number)
-        if released:
-            self._escalation.resolve(released, release_issue=False)
+        self._store.clear_release(issue_number)
+        parked = tuple(row for row in released if row.parked)
+        if parked:
+            self._escalation.announce_released(parked)
         return released
 
     def parked(self) -> tuple[LivenessRow, ...]:
         """Every parked row, for the tech-lead board and diagnostics."""
         return self._store.parked_rows()
 
+    def _block(self, row: LivenessRow, now: datetime) -> LivenessRow:
+        if row.key.escalation_issue is None:
+            return row
+        committed = self._escalation.block(row)
+        row = replace(
+            row,
+            escalated=committed,
+            escalation_attempts=row.escalation_attempts + 1,
+            escalation_attempted_at=now,
+        )
+        self._store.put(row)
+        return row
+
     def _resolve(self, cleared: tuple[LivenessRow, ...]) -> None:
+        """Announce parks that ended, and owe each freed issue its release."""
         parked = tuple(row for row in cleared if row.parked)
         if not parked:
             return
-        issues = {
-            row.key.escalation_issue
-            for row in parked
-            if row.escalated and row.key.escalation_issue is not None
-        }
-        still_held = {
-            issue for issue in issues if self._store.escalated_rows_for_issue(issue)
-        }
-        released = tuple(row for row in parked if row.key.escalation_issue not in still_held)
-        held = tuple(row for row in parked if row.key.escalation_issue in still_held)
-        if released:
-            self._escalation.resolve(released, release_issue=True)
-        if held:
-            self._escalation.resolve(held, release_issue=False)
+        self._escalation.announce_released(parked)
+        now = self._clock()
+        for issue in sorted(
+            {
+                row.key.escalation_issue
+                for row in parked
+                if row.escalated and row.key.escalation_issue is not None
+            }
+        ):
+            self._store.request_release(issue)
+            self._unblock(issue, now)
+
+    def _unblock(self, issue_number: int, now: datetime) -> None:
+        if self._store.escalated_rows_for_issue(issue_number):
+            # Another park still stands on the issue and needs the block.
+            self._store.clear_release(issue_number)
+            return
+        if self._escalation.unblock(issue_number):
+            self._store.clear_release(issue_number)
+            return
+        self._store.record_release_attempt(issue_number, now)
 
 
 __all__ = ["ActionLivenessOwner", "LivenessDecision"]

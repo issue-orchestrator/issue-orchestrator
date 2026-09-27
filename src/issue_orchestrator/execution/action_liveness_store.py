@@ -25,6 +25,7 @@ from ..domain.action_liveness import (
     OutcomeKind,
 )
 from ..infra.sqlite_connection import open_sqlite
+from ..ports.action_liveness import PendingRelease
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS action_liveness (
@@ -39,16 +40,45 @@ CREATE TABLE IF NOT EXISTS action_liveness (
     last_reason TEXT NOT NULL,
     next_attempt_at TEXT,
     escalated INTEGER NOT NULL DEFAULT 0,
+    escalation_attempts INTEGER NOT NULL DEFAULT 0 CHECK (escalation_attempts >= 0),
+    escalation_attempted_at TEXT,
     PRIMARY KEY (subject, action, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS action_liveness_escalation_issue
     ON action_liveness (escalation_issue);
+CREATE TABLE IF NOT EXISTS action_liveness_release (
+    issue_number INTEGER PRIMARY KEY CHECK (issue_number > 0),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    attempted_at TEXT
+);
 """
 
-_COLUMNS = (
-    "subject, action, fingerprint, escalation_issue, attempts, first_failed_at,"
-    " last_failed_at, last_outcome, last_reason, next_attempt_at, escalated"
+_SELECT = (
+    "SELECT subject, action, fingerprint, escalation_issue, attempts, first_failed_at,"
+    " last_failed_at, last_outcome, last_reason, next_attempt_at, escalated,"
+    " escalation_attempts, escalation_attempted_at FROM action_liveness"
 )
+_ORDER = " ORDER BY last_failed_at, subject, action, fingerprint"
+_BY_KEY = _SELECT + " WHERE subject=? AND action=? AND fingerprint=?"
+_BY_IDENTITY = _SELECT + " WHERE subject=? AND action=?"
+_BY_ISSUE = _SELECT + " WHERE escalation_issue=?"
+_ESCALATED_ON_ISSUE = (
+    _SELECT + " WHERE escalation_issue=? AND escalated=1 AND next_attempt_at IS NULL" + _ORDER
+)
+_PARKED = _SELECT + " WHERE next_attempt_at IS NULL" + _ORDER
+_UNESCALATED_PARKED = (
+    _SELECT
+    + " WHERE next_attempt_at IS NULL AND escalated=0 AND escalation_issue IS NOT NULL"
+    + _ORDER
+)
+_UPSERT = (
+    "INSERT OR REPLACE INTO action_liveness (subject, action, fingerprint,"
+    " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
+    " last_reason, next_attempt_at, escalated, escalation_attempts,"
+    " escalation_attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+_DELETE_IDENTITY = "DELETE FROM action_liveness WHERE subject=? AND action=?"
+_DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
 
 
 class SQLiteActionLivenessStore:
@@ -82,9 +112,7 @@ class SQLiteActionLivenessStore:
 
     def row(self, key: LivenessKey) -> LivenessRow | None:
         found = self._connection().execute(
-            f"SELECT {_COLUMNS} FROM action_liveness"
-            " WHERE subject=? AND action=? AND fingerprint=?",
-            (key.identity.subject, key.identity.action, key.fingerprint),
+            _BY_KEY, (key.identity.subject, key.identity.action, key.fingerprint)
         ).fetchone()
         return None if found is None else _row(found)
 
@@ -92,8 +120,7 @@ class SQLiteActionLivenessStore:
         key = row.key
         with self._write() as conn:
             conn.execute(
-                f"INSERT OR REPLACE INTO action_liveness ({_COLUMNS})"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                _UPSERT,
                 (
                     key.identity.subject,
                     key.identity.action,
@@ -104,49 +131,82 @@ class SQLiteActionLivenessStore:
                     row.last_failed_at.isoformat(),
                     row.last_outcome.value,
                     row.last_reason,
-                    None if row.next_attempt_at is None else row.next_attempt_at.isoformat(),
+                    _iso(row.next_attempt_at),
                     int(row.escalated),
+                    row.escalation_attempts,
+                    _iso(row.escalation_attempted_at),
                 ),
             )
 
     def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        return self._delete_where(
-            "subject=? AND action=?", (identity.subject, identity.action)
-        )
+        params = (identity.subject, identity.action)
+        return self._delete(_BY_IDENTITY, _DELETE_IDENTITY, params)
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        return self._delete_where("escalation_issue=?", (issue_number,))
+        return self._delete(_BY_ISSUE, _DELETE_ISSUE, (issue_number,))
 
     def escalated_rows_for_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
-        return self._select(
-            "escalation_issue=? AND escalated=1 AND next_attempt_at IS NULL",
-            (issue_number,),
-        )
+        return self._select(_ESCALATED_ON_ISSUE, (issue_number,))
 
     def parked_rows(self) -> tuple[LivenessRow, ...]:
-        return self._select("next_attempt_at IS NULL", ())
+        return self._select(_PARKED, ())
 
-    def _select(self, where: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
+    def unescalated_parked_rows(self) -> tuple[LivenessRow, ...]:
+        return self._select(_UNESCALATED_PARKED, ())
+
+    def request_release(self, issue_number: int) -> None:
+        with self._write() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)",
+                (issue_number,),
+            )
+
+    def pending_releases(self) -> tuple[PendingRelease, ...]:
         rows = self._connection().execute(
-            f"SELECT {_COLUMNS} FROM action_liveness WHERE {where}"
-            " ORDER BY last_failed_at, subject, action, fingerprint",
-            params,
+            "SELECT issue_number, attempts, attempted_at FROM action_liveness_release"
+            " ORDER BY issue_number"
         ).fetchall()
+        return tuple(
+            PendingRelease(row["issue_number"], row["attempts"], _parse(row["attempted_at"]))
+            for row in rows
+        )
+
+    def record_release_attempt(self, issue_number: int, attempted_at: datetime) -> None:
+        with self._write() as conn:
+            conn.execute(
+                "UPDATE action_liveness_release SET attempts=attempts+1, attempted_at=?"
+                " WHERE issue_number=?",
+                (attempted_at.isoformat(), issue_number),
+            )
+
+    def clear_release(self, issue_number: int) -> None:
+        with self._write() as conn:
+            conn.execute(
+                "DELETE FROM action_liveness_release WHERE issue_number=?", (issue_number,)
+            )
+
+    def _select(self, query: str, params: tuple[object, ...]) -> tuple[LivenessRow, ...]:
+        rows = self._connection().execute(query, params).fetchall()
         return tuple(_row(found) for found in rows)
 
-    def _delete_where(
-        self, where: str, params: tuple[object, ...]
+    def _delete(
+        self, select: str, delete: str, params: tuple[object, ...]
     ) -> tuple[LivenessRow, ...]:
         with self._write() as conn:
-            rows = conn.execute(
-                f"SELECT {_COLUMNS} FROM action_liveness WHERE {where}", params
-            ).fetchall()
-            conn.execute(f"DELETE FROM action_liveness WHERE {where}", params)
+            rows = conn.execute(select, params).fetchall()
+            conn.execute(delete, params)
         return tuple(_row(found) for found in rows)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def _parse(value: str | None) -> datetime | None:
+    return None if value is None else datetime.fromisoformat(value)
 
 
 def _row(found: sqlite3.Row) -> LivenessRow:
-    next_attempt_at = found["next_attempt_at"]
     return LivenessRow(
         key=LivenessKey(
             identity=ActionIdentity(found["subject"], found["action"]),
@@ -158,10 +218,10 @@ def _row(found: sqlite3.Row) -> LivenessRow:
         last_failed_at=datetime.fromisoformat(found["last_failed_at"]),
         last_outcome=OutcomeKind(found["last_outcome"]),
         last_reason=found["last_reason"],
-        next_attempt_at=(
-            None if next_attempt_at is None else datetime.fromisoformat(next_attempt_at)
-        ),
+        next_attempt_at=_parse(found["next_attempt_at"]),
         escalated=bool(found["escalated"]),
+        escalation_attempts=found["escalation_attempts"],
+        escalation_attempted_at=_parse(found["escalation_attempted_at"]),
     )
 
 

@@ -6,7 +6,7 @@ layer, ``tech_lead_actions`` imports it, and ``actions`` imports both and
 re-exports everything. Importers keep using ``control.actions``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
@@ -139,3 +139,22 @@ class Action:
     def __post_init__(self):
         # Validate that subclasses set the correct action_type
         pass
+
+    def liveness_facts(self) -> object | None:
+        """The facts this action was derived from, for the action liveness owner (#7350).
+
+        Two attempts with equal facts are the same question asked again, so
+        their failures spend one bounded budget. The default is every field but
+        the free-text ``reason`` (audit prose that often carries a count or a
+        time). An action overrides this when a field changes every tick without
+        the underlying facts changing - a sample time, a countdown - because
+        such a field would give each failure a fresh budget and defeat the bound.
+
+        ``None`` means another owner already governs this action's retries with
+        facts the liveness owner cannot see, so it is neither gated nor counted.
+        """
+        return {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.name != "reason"
+        }
