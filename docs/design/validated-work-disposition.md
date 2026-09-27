@@ -1377,8 +1377,12 @@ records, one stranded in `PUBLISHING`). Review runs publish nothing.
   only while the claim holds and the record's current+attached evidence set is
   exactly the one proved. The aggregate block projection then withdraws
   `recovery-pending`; the drain's block sweep heals a projection that was busy.
-  `PARKED` (other than remote-unreadable) and `FAILED` records, which the drain
-  does not select, keep the existing operator abandonment path.
+  Records neither lane selects (`PARKED` awaiting approval, `FAILED`, non-HEAD
+  lineage peers) are reached by `OutOfScopeRetirementSweep`, a bounded
+  round-robin lane the drain runs before publication. It proves scope read-only
+  and claims only an out-of-scope record, so it never contends with an in-scope
+  record's publication or operator abandonment; a record proven in scope is
+  remembered by its immutable current evidence id.
 
 ## 3. Composition and control flow
 

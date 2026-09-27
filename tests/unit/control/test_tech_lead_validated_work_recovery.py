@@ -16,6 +16,7 @@ from issue_orchestrator.control.validated_work_recovery_authority import (
     ValidatedWorkRecoveryAuthority,
 )
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
@@ -160,6 +161,7 @@ def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
         authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=1,
     )
@@ -231,6 +233,7 @@ def test_shared_preflight_reports_exact_changed_authority_without_claim(tmp_path
         authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=1,
     )

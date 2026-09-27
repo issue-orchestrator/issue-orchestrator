@@ -23,7 +23,7 @@ from issue_orchestrator.control.completion_intake_validation import ConfiguredCo
 from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
 from issue_orchestrator.control.issue_run_evidence import IssueRunEvidenceService
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.control.needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES
+from issue_orchestrator.control.needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES, NeedsHumanBlock
 from issue_orchestrator.control.published_review_custody import PublishedReviewCustody
 from issue_orchestrator.control.recovery_publication_attempt import RecoveryPublicationAttempt
 from issue_orchestrator.control.recovery_publication_completion import RecoveryPublicationCompletion
@@ -40,7 +40,7 @@ from issue_orchestrator.control.validated_work_effects import FencedValidatedWor
 from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
 from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
 from issue_orchestrator.control.validated_work_scope_retirement import (
-    RETIREMENT_ACTOR, OutOfScopeRecordRetirement,
+    RETIREMENT_ACTOR, OutOfScopeRecordRetirement, OutOfScopeRetirementSweep,
 )
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
@@ -80,6 +80,7 @@ from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
 from issue_orchestrator.ports.retained_claim_maintenance import NullRetainedClaimMaintenance
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from tests.runtime_lifecycle_helpers import no_open_pull_requests
 from tests.unit.test_completion_evidence_intake import command, completion
@@ -102,6 +103,16 @@ class Labels:
     def read_issue_labels(self, issue_number):
         assert issue_number == self.issue
         return sorted(self.labels)
+
+    def add_label(self, issue_number, label):
+        assert issue_number == self.issue
+        self.labels.add(label)
+        self.operations.append(("add", label))
+
+    def remove_label(self, issue_number, label):
+        assert issue_number == self.issue
+        self.labels.discard(label)
+        self.operations.append(("remove", label))
 
     def apply(self, action):
         assert action.issue_number == self.issue
@@ -423,6 +434,7 @@ def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_r
         authority_refresh=RemoteAuthorityRefreshOperation(execution=execution, effects=effects, store=store,
                                                           observer=remote, scope=scope),
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),  # the refresh lane alone must retire it
         batch_size=5, interval_seconds=1,
     )
 
@@ -438,3 +450,59 @@ def test_drain_retires_an_unobserved_parked_tech_lead_record_before_any_remote_r
         assert record.disposition.state is ValidatedWorkState.PARKED
         assert remote.reads == 1
         assert labels.labels == {RECOVERY_PENDING}
+
+
+@pytest.mark.parametrize("task", [TaskKind.TECH_LEAD, TaskKind.CODE])
+@pytest.mark.parametrize("state, failure", [
+    (ValidatedWorkState.PARKED, ValidatedWorkFailure.PR_BRANCH_MISMATCH),
+    (ValidatedWorkState.FAILED, ValidatedWorkFailure.ARTIFACT_MISSING),
+])
+def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path, task, state, failure):
+    """PARKED-with-observed-authority and FAILED records are drained by neither lane."""
+    store = Rig(tmp_path / "work.sqlite").open()
+    execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
+    labels = Labels(issue=6914)
+    intake = owned_intake(task)
+    human = NeedsHumanBlock("needs-human", "tech-lead-needs-human", labels, labels.read_issue_labels,
+                            frozenset, SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"))
+    aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
+        admission=RankedEvidenceAdmission(store, intake), phases=store, authority=effects,
+        gate=FileIssueDispositionMutationGate(tmp_path), labels=LabelManager(Config(repo="owner/repo")),
+        reader=labels, applier=labels, human_block=human)
+    admission = capture(state=state, failure=failure, reason="admitted before the scope rule")
+    aggregate.admit(admission)
+    assert store.drain_requests(after_record_id="", limit=10) == ()
+    assert RECOVERY_PENDING in labels.labels
+    assert ("needs-human" in labels.labels) is (state is ValidatedWorkState.FAILED)
+    fence = store.record_for_id(admission.evidence.record_id).owner_fence
+    retirement = OutOfScopeRecordRetirement(intake=intake, store=store, effects=effects,
+                                            blocks=aggregate, events=InMemoryEventSink())
+    drain = RecoveryDrain(
+        queue=store, operation=Mock(), authority_refresh=Mock(),
+        claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
+                                              retirement=retirement, batch_size=5),
+        batch_size=5, interval_seconds=1,
+    )
+
+    report = drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    record = store.record_for_id(admission.evidence.record_id)
+    assert store.owner_of(admission.evidence.record_id) is None
+    if task is TaskKind.TECH_LEAD:
+        assert report.scope_sweep.retired == (admission.evidence.record_id,)
+        assert record.disposition.state is ValidatedWorkState.ABANDONED
+        assert record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE
+        assert RECOVERY_PENDING not in labels.labels
+        assert "needs-human" not in labels.labels
+    else:
+        assert report.scope_sweep.retired == ()
+        assert record.disposition.state is state
+        assert record.owner_fence == fence  # proven in scope without ever being claimed
+        assert RECOVERY_PENDING in labels.labels
+        # Proven once: the next tick does not re-read custody for the same evidence.
+        calls = intake.prepare_evidence.call_count
+        drain._next_at = float("-inf")
+        drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+        assert intake.prepare_evidence.call_count == calls

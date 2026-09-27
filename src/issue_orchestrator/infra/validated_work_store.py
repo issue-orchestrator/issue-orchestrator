@@ -18,6 +18,7 @@ from ..domain.retention_clock import retention_instant
 from ..domain.recovery_block import RecoveryBlockSnapshot, RecoveryCleanupKey
 from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
 
+from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import (
     ResolutionKind,
     ValidatedWorkFailure,
@@ -141,6 +142,11 @@ class SqliteValidatedWorkStore:
         self, *, after_record_id: str, limit: int
     ) -> tuple[ValidatedWorkDrainRequest, ...]:
         return self._snapshots.drain_requests(after_record_id=after_record_id, limit=limit)
+
+    def unresolved_records(
+        self, *, after_record_id: str, limit: int
+    ) -> tuple[RecoveryRecordRequest, ...]:
+        return self._snapshots.unresolved_records(after_record_id=after_record_id, limit=limit)
 
     def get(self, record_id: str) -> ValidatedWorkDisposition:
         with self._db.transaction() as conn:

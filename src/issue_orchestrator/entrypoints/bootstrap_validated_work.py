@@ -275,6 +275,7 @@ def build_validated_work_recovery(
     from ..control.remote_authority_refresh import RemoteAuthorityRefreshOperation
     from ..control.retained_completion_preparation import RetainedCompletionPreparation
     from ..control.retry_review_routing import RetryReviewPolicy
+    from ..control.validated_work_scope_retirement import OutOfScopeRetirementSweep
     from ..control.review_exchange_lifecycle import OtherRuntimeActivity
     from ..control.staged_published_work_finalizer import StagedPublishedWorkFinalizer
     from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
@@ -355,6 +356,13 @@ def build_validated_work_recovery(
         claim_maintenance=RetainedClaimMaintenance(
             store=owners.records,
             execution=owners.execution,
+        ),
+        scope_sweep=OutOfScopeRetirementSweep(
+            source=owners.records,
+            store=owners.records,
+            execution=owners.execution,
+            retirement=owners.scope_retirement,
+            batch_size=config.validated_work.drain_batch_size,
         ),
         block_sweep=AggregateRecoveryBlockSweep(
             source=owners.records,
