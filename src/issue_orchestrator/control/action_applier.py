@@ -40,6 +40,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
+from .action_results import FailureCollector
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
@@ -851,7 +852,7 @@ class ActionApplier:
         if not should_proceed:
             return ActionResult.fail(action, f"Reconciliation failed: {msg}")
 
-        errors = []
+        errors = FailureCollector()
 
         # Add labels. A collection is exactly where the governed block could be
         # smuggled past its owner, so the capability refuses it by value and the
@@ -864,7 +865,7 @@ class ActionApplier:
                 self._record_label_stat(action.issue_number, "label_add_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"add {label}: {e}")
+                errors.add(f"add {label}: {e}", e)
 
         # Remove labels
         for label in action.remove_labels:
@@ -875,10 +876,10 @@ class ActionApplier:
                 self._record_label_stat(action.issue_number, "label_remove_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"remove {label}: {e}")
+                errors.add(f"remove {label}: {e}", e)
 
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return errors.result(action)
 
         self._emit_issue_labels_changed(
             action.issue_number,
@@ -921,7 +922,7 @@ class ActionApplier:
         to_remove = self.label_manager.recovered_workflow_labels(sorted(current))
 
         removed: list[str] = []
-        errors: list[str] = []
+        errors = FailureCollector()
         for label in to_remove:
             self._record_label_stat(action.issue_number, "label_remove_attempted")
             try:
@@ -961,14 +962,14 @@ class ActionApplier:
                 removed.append(label)
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"remove {label}: {e}")
+                errors.add(f"remove {label}: {e}", e)
 
         if removed:
             self._emit_issue_labels_changed(
                 action.issue_number, [], removed, issue_key=action.issue_key
             )
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return errors.result(action)
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,

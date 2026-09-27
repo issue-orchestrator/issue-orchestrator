@@ -202,7 +202,7 @@ def test_an_unchanged_failing_action_is_attempted_at_most_max_attempts_times(
     assert engine.attempts_of(action.action_type) == POLICY.max_attempts
     assert len(engine.escalation.parked) == 1
     held = plans[-1].skipped[-1]
-    assert held.item_type == f"action:{action.action_type.value}"
+    assert held.item_type.startswith(f"action:{action.action_type.value}")
     assert held.reason.startswith("parked after transient: 3 attempts failed")
 
 
@@ -739,7 +739,7 @@ def test_two_comments_on_one_issue_keep_separate_budgets(sample_config) -> None:
     applied = [call.args[0] for call in engine.applier.apply.call_args_list]
     assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
     assert sum(1 for a in applied if a is fine) == 20
-    assert [row.key.identity.action for row in engine.owner.parked()] == ["add_comment"]
+    assert [row.key.identity.action.split("#")[0] for row in engine.owner.parked()] == ["add_comment"]
 
 
 def test_alternating_plans_cannot_launder_a_sibling_failure(sample_config) -> None:
@@ -760,7 +760,7 @@ def test_alternating_plans_cannot_launder_a_sibling_failure(sample_config) -> No
 
     applied = [call.args[0] for call in engine.applier.apply.call_args_list]
     assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
-    assert [row.key.identity.action for row in engine.owner.parked()] == ["add_comment"]
+    assert [row.key.identity.action.split("#")[0] for row in engine.owner.parked()] == ["add_comment"]
 
 
 def test_an_engine_park_is_released_by_the_operator_cli(sample_config, tmp_path, monkeypatch) -> None:
@@ -888,3 +888,108 @@ def test_no_applier_flattens_a_caught_exception_to_its_text() -> None:
         if flattened.search(line)
     ]
     assert offenders == []
+
+
+def test_a_sibling_on_intervening_ticks_cannot_supersede_a_failing_operation(sample_config) -> None:
+    """A every two hours, B on the ticks between (review r13): two comments
+    are two operations, so B's successes never mark A superseded."""
+    from issue_orchestrator.control.actions import AddCommentAction
+
+    failing = AddCommentAction(number=410, comment="first finding")
+    fine = AddCommentAction(number=410, comment="second finding")
+    ticks = iter(range(1000))
+
+    def apply(action):
+        engine.clock.advance(timedelta(seconds=1))
+        return ActionResult.fail(action, "422") if action is failing else ActionResult.ok(action)
+
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [failing] if next(ticks) % 3 == 0 else [fine],
+        apply=lambda a: None,
+    )
+    engine.applier.apply.side_effect = apply
+    for _ in range(60):
+        engine.tick(advance=timedelta(hours=1))
+
+    applied = [call.args[0] for call in engine.applier.apply.call_args_list]
+    assert sum(1 for a in applied if a is failing) == POLICY.max_attempts
+    [parked] = engine.owner.parked()
+    assert parked.attempts == POLICY.max_attempts
+
+
+def test_composite_appliers_forward_a_typed_rate_limit() -> None:
+    """Provider impact and the multi-label appliers wrap other failures; they
+    keep the typed limit for the owner (review r13)."""
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.action_results import FailureCollector
+    from issue_orchestrator.control.planned_action_liveness import outcome_of_result
+    from issue_orchestrator.control.provider_impact import (
+        ApplyProviderImpactAction,
+        ProviderImpactAssessment,
+        ProviderImpactTransition,
+        apply_provider_impact,
+    )
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    early = datetime(2026, 9, 27, 12, 30, tzinfo=timezone.utc)
+    late = datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
+
+    def limited(reset):
+        error = RepositoryHostRateLimitedError("API rate limit exceeded")
+        error.rate_limit = HostRateLimit(resets_at=reset, kind="primary")
+        return error
+
+    impact = ApplyProviderImpactAction(
+        issue_number=410, transition=ProviderImpactTransition.BLOCKED,
+        label="blocked:provider-unavailable",
+        assessment=ProviderImpactAssessment(
+            assessed_at=early, open_providers=("claude",), next_retry_at=None,
+        ),
+    )
+    result = apply_provider_impact(
+        impact,
+        apply_label=lambda label_action: ActionResult.fail_from(label_action, limited(late)),
+        publish=MagicMock(),
+    )
+    assert outcome_of_result(result).retry_at == late
+
+    collected = FailureCollector()
+    collected.add("add a: limited", limited(early))
+    collected.add("remove b: limited", limited(late))
+    collected.add("remove c: boom", RuntimeError("boom"))
+    assert outcome_of_result(collected.result(impact)).retry_at == late
+
+
+def test_a_question_asked_again_after_a_gap_is_not_superseded_first(sample_config) -> None:
+    """The same operation fails under facts F1 and parks, succeeds once under
+    F2, then F1 comes back after hours. Its park is asked about before anything
+    is retired, so F1 does not get a fresh budget (review r10)."""
+    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    phase = {"labels": ("in-progress",)}
+
+    def apply(action):
+        engine.clock.advance(timedelta(seconds=1))
+        if phase["labels"] == ("in-progress",):
+            return ActionResult.fail(action, "boom")
+        return ActionResult.ok(action)
+
+    engine = _Engine(sample_config, planned=lambda: [stale], apply=lambda a: None,
+                     labels={410: ("in-progress",)})
+    engine.applier.apply.side_effect = apply
+    for _ in range(POLICY.max_attempts):
+        engine.tick()
+    assert len(engine.owner.parked()) == 1
+
+    phase["labels"] = ("in-progress", "other")
+    engine.labels[410] = phase["labels"]
+    engine.tick(advance=timedelta(hours=3))
+    phase["labels"] = ("in-progress",)
+    engine.labels[410] = phase["labels"]
+    before = engine.attempts_of(stale.action_type)
+    engine.tick()
+
+    assert engine.attempts_of(stale.action_type) == before

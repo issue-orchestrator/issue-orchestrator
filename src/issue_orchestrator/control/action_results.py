@@ -95,6 +95,20 @@ class ActionResult:
         )
 
     @classmethod
+    def fail_limited(
+        cls, action: "Action", error: str, host_rate_limit: HostRateLimit | None
+    ) -> "ActionResult":
+        """A failure forwarding a typed GitHub rate limit a composite applier
+        observed in a result or exception it wrapped (#7350), so the liveness
+        owner waits for its reset instead of spending an attempt."""
+        return cls(
+            action=action,
+            result_type=ActionResultType.FAILURE,
+            error=error,
+            host_rate_limit=host_rate_limit,
+        )
+
+    @classmethod
     def fail_from(
         cls, action: "Action", error: Exception, **details: str | int | bool | list[str] | None
     ) -> "ActionResult":
@@ -143,3 +157,29 @@ class SupportsApplyAction(Protocol):
     """
 
     def apply(self, action: "Action") -> ActionResult: ...
+
+
+@dataclass
+class FailureCollector:
+    """The failures of a composite applier's several writes, as ONE result.
+
+    Keeps each caught exception's typed GitHub rate limit (#7350): the result
+    carries the one that lifts last, since before it at least one write would
+    be refused again, so the liveness owner waits instead of spending attempts.
+    """
+
+    messages: list[str] = field(default_factory=list)
+    limits: list[HostRateLimit] = field(default_factory=list)
+
+    def add(self, message: str, error: Exception) -> None:
+        self.messages.append(message)
+        limit = host_rate_limit_of(error)
+        if limit is not None:
+            self.limits.append(limit)
+
+    def __bool__(self) -> bool:
+        return bool(self.messages)
+
+    def result(self, action: "Action") -> ActionResult:
+        latest = max(self.limits, key=lambda limit: limit.resets_at) if self.limits else None
+        return ActionResult.fail_limited(action, "; ".join(self.messages), latest)

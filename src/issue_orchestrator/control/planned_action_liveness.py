@@ -33,7 +33,7 @@ The key:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -47,6 +47,15 @@ from ..domain.action_liveness import (
 from ..domain.host_rate_limit import HostRateLimit
 from ..ports.repository_host import host_rate_limit_of
 from .action_base import Action
+from .actions import (
+    AddLabelAction,
+    PromoteTechLeadFindingAction,
+    RemoveLabelAction,
+    ReportPromotedFindingEvidenceAction,
+    SettleTechLeadPromotionAction,
+    SyncLabelsAction,
+)
+from .provider_impact import ApplyProviderImpactAction
 from .action_results import ActionResult, ActionResultType
 from .action_liveness import ActionLivenessOwner
 from .reconciliation import ReconciliationRequired, get_pause_label
@@ -79,6 +88,45 @@ def _subject_number(action: Action) -> tuple[str, int] | None:
     return None
 
 
+def _labels(action: Action) -> str:
+    return str(getattr(action, "label"))
+
+
+def _label_sets(action: Action) -> str:
+    adds = ",".join(sorted(getattr(action, "add_labels")))
+    removes = ",".join(sorted(getattr(action, "remove_labels")))
+    return f"+{adds}-{removes}"
+
+
+def _signature(action: Action) -> str:
+    return str(getattr(action, "signature"))
+
+
+#: Operations that stay the SAME operation while the facts behind them change,
+#: with what names them. Only for these can a success under new facts
+#: supersede a park under old ones (retired after ``stale_after``). Every other
+#: action's operation IS its facts: two different comments on one issue are two
+#: operations, so one's success can never launder the other's failures; an old
+#: park of such an action is released by an operator or abandoned.
+_STABLE_OPERATIONS: dict[type[Action], Callable[[Action], str]] = {
+    AddLabelAction: _labels,
+    RemoveLabelAction: _labels,
+    ApplyProviderImpactAction: _labels,
+    SyncLabelsAction: _label_sets,
+    PromoteTechLeadFindingAction: _signature,
+    ReportPromotedFindingEvidenceAction: _signature,
+    SettleTechLeadPromotionAction: _signature,
+}
+
+
+def liveness_operation(action: Action) -> str:
+    """WHICH operation this action is on its subject (the identity's ``action``)."""
+    stable = _STABLE_OPERATIONS.get(type(action))
+    if stable is not None:
+        return f"{action.action_type.value}:{stable(action)}"
+    return f"{action.action_type.value}#{fact_fingerprint(action.liveness_facts())[:12]}"
+
+
 def planned_action_key(
     action: Action,
     labels_by_number: Mapping[int, tuple[str, ...]],
@@ -100,7 +148,7 @@ def planned_action_key(
     return LivenessKey(
         identity=ActionIdentity(
             subject=ENGINE_SUBJECT if subject is None else f"{subject[0]}:{subject[1]}",
-            action=action.action_type.value,
+            action=liveness_operation(action),
         ),
         fingerprint=fact_fingerprint(
             {

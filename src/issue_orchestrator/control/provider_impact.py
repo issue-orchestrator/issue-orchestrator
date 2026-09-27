@@ -374,8 +374,10 @@ def apply_provider_impact(
     """
     label_result = apply_label(action.label_action())
     if not label_result.success:
-        return ActionResult.fail(
-            action, label_result.error or "provider blocked-label transition failed"
+        return ActionResult.fail_limited(
+            action,
+            label_result.error or "provider blocked-label transition failed",
+            label_result.host_rate_limit,
         )
     if bool(label_result.details.get("no_op")):
         return ActionResult.ok(
