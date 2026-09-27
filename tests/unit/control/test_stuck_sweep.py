@@ -842,3 +842,24 @@ def test_unobserved_target_read_failure_retains_incident_budget():
     assert result.recovered == ()
     assert state.recovery_attempts == {6410: 2}
     assert store.load_disposition(issue_number=6410).phase == "waiting"
+
+
+def test_a_tech_lead_anchor_labelled_blocked_is_machinery_not_stuck_work():
+    """#7347 blind spot 7: a tech-lead run holds its anchor's claim, so its
+    failure labels the anchor blocked like any claimed issue. The anchor is
+    tech-lead machinery - a launch of it stamps a kind that is not the issue's
+    deliverable - so the sweep must not launch an investigation of the tech
+    lead's own anchor. A coder's issue with the same label still is stuck work."""
+    config = _config()
+    state = OrchestratorState()
+    labels = LabelManager(config)
+    host = _RecordingHost(
+        [
+            _issue(410, labels=["agent:tech-lead", labels.blocked_failed]),
+            _issue(411, labels=["agent:backend", labels.blocked_failed]),
+        ]
+    )
+
+    result = run_stuck_sweep(config, state, host, labels, now=1.0)
+
+    assert [failure.issue_number for failure in result.recovered] == [411]

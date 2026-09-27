@@ -69,3 +69,92 @@ def test_only_coding_and_rework_runs_are_killable_generations() -> None:
 
 def test_reviewers_report_a_verdict() -> None:
     assert {k for k in SessionKind if k.capabilities.reports_verdict} == {R, RR}
+
+
+# ---------------------------------------------------------------------------
+# The consumers ask the table: one test per migrated question
+# ---------------------------------------------------------------------------
+
+
+def test_the_completion_protocol_picks_the_completion_instructions() -> None:
+    from issue_orchestrator.resources import (
+        get_coding_done_instructions,
+        get_completion_instructions,
+        get_reviewer_done_instructions,
+    )
+
+    assert get_completion_instructions(TL.value) == get_coding_done_instructions()
+    assert get_completion_instructions(RW.value) == get_coding_done_instructions()
+    assert get_completion_instructions(RR.value) == get_reviewer_done_instructions()
+    with pytest.raises(ValueError, match="no agent completion protocol"):
+        get_completion_instructions(H.value)
+
+
+@pytest.mark.parametrize(
+    ("task_kind", "role"),
+    [
+        (C.value, SandboxRole.CODER),
+        (RW.value, SandboxRole.CODER),
+        (R.value, SandboxRole.REVIEWER),
+        (TL.value, SandboxRole.TECH_LEAD),
+        (H.value, SandboxRole.CODER),  # no agent: the most bounded floor
+        ("review_exchange_reviewer", SandboxRole.REVIEWER),
+        ("mystery", SandboxRole.CODER),
+    ],
+)
+def test_the_sandbox_role_comes_from_the_row(task_kind: str, role: SandboxRole) -> None:
+    from issue_orchestrator.domain.sandbox_scope import _role_for_task_kind
+
+    assert _role_for_task_kind(task_kind) is role
+
+
+def test_the_review_prompt_default_follows_the_protocol(tmp_path) -> None:
+    from issue_orchestrator.domain.models import DEFAULT_REVIEW_INITIAL_PROMPT, AgentConfig
+
+    config = AgentConfig(prompt_path=tmp_path / "p.md")
+    assert config._initial_prompt_template(RR.value) == DEFAULT_REVIEW_INITIAL_PROMPT
+    assert config._initial_prompt_template(TL.value) != DEFAULT_REVIEW_INITIAL_PROMPT
+
+
+def test_only_a_killable_generation_may_be_killed_by_the_tech_lead() -> None:
+    from issue_orchestrator.control.tech_lead_kill_session import kill_hung_session_stale_reason
+
+    def reason(kind: SessionKind) -> str | None:
+        return kill_hung_session_stale_reason(
+            issue_number=7, target_session_id="run-1", target_terminal_id="t-7",
+            target_session_type=kind.value,
+        )
+
+    assert reason(C) is None and reason(RW) is None
+    assert "non-killable" in (reason(TL) or "")
+    assert "non-killable" in (reason(R) or "")
+
+
+def test_the_issue_runtime_lanes_are_the_killable_kinds_lanes() -> None:
+    from issue_orchestrator.control.review_exchange_lifecycle import ISSUE_RUNTIME_SESSION_TYPES
+    from issue_orchestrator.domain.session_kind import SessionType
+
+    assert ISSUE_RUNTIME_SESSION_TYPES == (SessionType.ISSUE, SessionType.REWORK)
+
+
+@pytest.mark.parametrize(
+    ("kind", "optional"), [(C, False), (RW, False), (TL, True), (None, False)]
+)
+def test_only_a_non_deliverable_completion_may_publish_nothing(kind, optional) -> None:
+    from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+
+    assert CompletionProcessingPolicy("agent:x", kind).publication_is_optional is optional
+
+
+@pytest.mark.parametrize(
+    ("agent", "work_item"),
+    [("agent:tech-lead", False), ("agent:backend", True), (None, True)],
+)
+def test_a_tech_lead_anchor_is_not_a_work_item(agent, work_item) -> None:
+    assert SessionKind.issue_is_work_item(agent, "agent:tech-lead") is work_item
+
+
+def test_a_retry_decodes_a_pre_7347_tech_lead_stamp() -> None:
+    assert SessionKind.from_retry_stamp("code", carries_authority=True) is TL
+    assert SessionKind.from_retry_stamp("code", carries_authority=False) is C
+    assert SessionKind.from_retry_stamp("rework", carries_authority=False) is RW

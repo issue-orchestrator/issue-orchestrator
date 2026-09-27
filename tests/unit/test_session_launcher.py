@@ -9765,3 +9765,95 @@ def test_startup_does_not_requeue_an_anchor_whose_tech_lead_run_is_live(
     )
 
     assert bool(state.pending_tech_lead_reviews) is requeued
+
+
+class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
+    """#7343 through the real launch: the observer asks ``open_pr_means_done``.
+
+    Each session below is produced by the production launcher, so its kind is
+    the one the launch stamped - not a fixture's. Every one of them runs on a
+    branch that has an open PR; only the coding session's PR is its own output.
+    """
+
+    @staticmethod
+    def _observer(config, runner, host):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.observation.observer import SessionObserver
+
+        return SessionObserver(
+            config,
+            session_runner=runner,
+            repository_host=host,
+            fresh_issue_reader=MagicMock(),
+            session_output=FileSystemSessionOutput(),
+        )
+
+    @staticmethod
+    def _launched(kind: str, launcher_bundle, sample_config, sample_issue, tmp_path):
+        launcher = launcher_bundle.launcher
+        if kind == "code":
+            return launcher.launch_issue_session(sample_issue, active_sessions=[]).session
+        if kind == "review":
+            return launcher.launch_review_session(
+                PendingReview(
+                    issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+                    pr_number=456,
+                    pr_url="https://github.com/test/repo/pull/456",
+                    branch_name="123-feature",
+                    _issue_number=123,
+                ),
+                active_sessions=[],
+            ).session
+        if kind == "rework-retry":
+            return launcher.launch_validation_retry_session(
+                TestTheLaunchStampsOneKind._retry(SessionKind.REWORK), active_sessions=[]
+            ).session
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        return launcher.launch_issue_session(
+            Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo"),
+            active_sessions=[],
+        ).session
+
+    @pytest.mark.parametrize(
+        ("kind", "exited"),
+        [("code", True), ("review", False), ("rework-retry", False), ("tech-lead", False)],
+    )
+    def test_the_running_session_is_exited_only_for_its_own_pr(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, exited
+    ) -> None:
+        session = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert session is not None
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = True
+        runner.send_to_session_by_name.return_value = True
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+
+        status = self._observer(sample_config, runner, host).check_session(session)
+
+        assert status is SessionStatus.RUNNING
+        assert runner.send_to_session_by_name.called is exited
+        assert session.exit_sent is exited
+
+    @pytest.mark.parametrize(
+        ("kind", "completed"),
+        [("code", True), ("review", False), ("rework-retry", False), ("tech-lead", False)],
+    )
+    def test_an_exited_session_is_completed_by_an_open_pr_only_if_it_is_its_own(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, completed
+    ) -> None:
+        """The exit-path twin (observer.py ``_determine_exited_session_outcome``)."""
+        session = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert session is not None
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = False
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+
+        status = self._observer(sample_config, runner, host).check_session(session)
+
+        assert (status is SessionStatus.COMPLETED) is completed

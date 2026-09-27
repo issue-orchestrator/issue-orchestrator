@@ -1144,6 +1144,31 @@ class TestCleanupStrategy:
         assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
         assert result.cleanup.pending_cleanup is None
 
+    def test_tech_lead_session_does_not_defer_cleanup(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Only a session whose own PR is its output waits for that PR's review
+        (``open_pr_means_done``); a tech-lead run's branch is not the issue's
+        deliverable (#7347), so its worktree is not held for a review."""
+        config.tech_lead_review_agent = "agent:tech-lead"
+        issue = make_issue()
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="tech-lead-42",
+            task_kind=SessionKind.TECH_LEAD,
+        )
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[], branch="published-branch")]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
+
+        assert result.cleanup.disposition is CleanupDisposition.IMMEDIATE
+
     def test_rework_session_does_not_defer_cleanup(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

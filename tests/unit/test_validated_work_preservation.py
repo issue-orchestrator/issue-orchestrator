@@ -578,3 +578,42 @@ def test_a_faulted_capture_holds_no_recovery_custody(custody, monkeypatch):
 
     assert custody.lifecycle.preserve_completed_run(
         42, "issue-42", "session-completion", run=custody.run) is False
+
+
+@pytest.mark.parametrize(
+    ("kind", "agent", "terminal", "captured"),
+    [
+        (SessionKind.CODE, "agent:test", "issue-42", True),
+        (SessionKind.REWORK, "agent:test", "rework-42", True),
+        # #7323 / #7346 (enrollment): a tech-lead run's validated, publication-
+        # requesting completion is its own - never the subject's deliverable.
+        (SessionKind.TECH_LEAD, "agent:tech-lead", "tech-lead-42", False),
+        (SessionKind.REVIEW, "agent:test", "review-42", False),
+    ],
+)
+def test_termination_captures_only_a_capturable_kinds_completion(
+    custody, kind, agent, terminal, captured
+):
+    """Through the real allocation -> intake -> termination capture path.
+
+    The run is allocated by the production allocator (the launch's durable
+    stamp), its completion is submitted and validated by the real intake, and
+    termination runs the real capture. Only the capability decides.
+    """
+    config = Config(repo="owner/repo")
+    config.tech_lead_review_agent = "agent:tech-lead"
+    run = IssueRunAllocationService(
+        FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=config
+    ).allocate(IssueRunAllocation(
+        custody.worktree, f"{kind.value}-1", 42,
+        SessionKey(GitHubIssueKey("owner/repo", "42"), kind), agent, "test", terminal_id=terminal,
+    ))
+    receipt = custody.intake.submit(
+        custody.ledger.submission_capability(run), command(completion(), f"{kind.value}-receipt")
+    )
+    custody.intake.prepare_receipt(receipt, run)
+
+    batch = custody.lifecycle.preserve_terminal(42, terminal, "completed", run=run)
+
+    assert bool(batch.unresolved) is captured
+    assert bool(custody.store.for_issue(42).unresolved) is captured
