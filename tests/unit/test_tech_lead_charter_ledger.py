@@ -565,3 +565,24 @@ def test_doctor_proves_no_filing_capability_for_an_advice_only_lane() -> None:
     [check] = check_tech_lead_finding_routes(config, target_host=host)
     assert check.status == "error" and "cannot create issues" in check.detail
     host.check_filing_ready.assert_called()
+
+
+def test_list_about_issue_filters_before_its_limit(store) -> None:
+    """#7331: decisions a run anchored on #99 took about OTHER issues never
+    crowd #99's own decisions out of a bounded read."""
+    own = _decision("A0", target=99, anchor=99, at="2026-09-26T09:00:00+00:00")
+    untargeted = _decision(
+        "A1", "create_issue", target=None, anchor=99, at="2026-09-26T09:30:00+00:00"
+    )
+    others = [
+        _decision(f"B{i}", target=500 + i, anchor=99, at=f"2026-09-26T1{i}:00:00+00:00")
+        for i in range(5)
+    ]
+    elsewhere = _decision("C0", target=None, anchor=7)
+    _ledger(store).record_decisions([own, untargeted, *others, elsewhere])
+
+    about = _ledger(store).list_about_issue(99, limit=2)
+
+    assert [d.decision_id for d in about] == [untargeted.decision_id, own.decision_id]
+    assert all(d.is_about_issue(99) for d in about)
+    assert not others[0].is_about_issue(99)

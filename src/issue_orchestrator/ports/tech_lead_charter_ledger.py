@@ -47,6 +47,18 @@ class TechLeadCharterDecisionReader(Protocol):
         """Decisions that target, anchor on, or were filed as *issue_number*."""
         ...
 
+    def list_about_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        """Decisions ABOUT *issue_number* (#7331), filtered before the limit.
+
+        Aimed at it, or made by a run anchored on it with no other target
+        (:meth:`TechLeadCharterDecision.is_about_issue`). Unlike
+        :meth:`list_for_issue`, a busy run anchored on the issue cannot crowd
+        the issue's own decisions out of the window.
+        """
+        ...
+
     def list_for_role(
         self, role: CharterRole, *, limit: int = 100
     ) -> tuple[TechLeadCharterDecision, ...]:
@@ -196,6 +208,13 @@ class InMemoryTechLeadCharterLedger:
                 if issue_number
                 in (row.target_number, row.anchor_issue_number, row.proposal_issue_number)
             ]
+        return _newest_first(rows, limit)
+
+    def list_about_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        with self._lock:
+            rows = [row for row in self._rows.values() if row.is_about_issue(issue_number)]
         return _newest_first(rows, limit)
 
     def list_for_role(

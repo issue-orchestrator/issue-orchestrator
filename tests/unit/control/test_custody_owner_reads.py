@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from issue_orchestrator.control.needs_human_block import (
     NO_OTHER_NEEDS_HUMAN_CAUSES,
@@ -36,7 +37,9 @@ class _NoLabels:
         raise AssertionError("a display read must not write labels")
 
 
-def _block(store: SqlitePendingWorkClaimStore, quarantined: frozenset[int]) -> NeedsHumanBlock:
+def _block(
+    store: SqlitePendingWorkClaimStore, quarantined: Callable[[], frozenset[int]]
+) -> NeedsHumanBlock:
     def no_fresh_read(_number: int) -> list[str]:
         raise AssertionError("a display read must not read labels from the host")
 
@@ -45,7 +48,7 @@ def _block(store: SqlitePendingWorkClaimStore, quarantined: frozenset[int]) -> N
         labels=_NoLabels(),
         tech_lead_marker="tech-lead-needs-human",
         read_labels=no_fresh_read,
-        quarantined_issue_numbers=lambda: quarantined,
+        quarantined_issue_numbers=quarantined,
         causes=store,
     )
 
@@ -57,14 +60,23 @@ def test_the_needs_human_block_names_its_recorded_causes(tmp_path: Path) -> None
         5, f"{NeedsHumanCause.VALIDATED_WORK_DISPOSITION.value}:record-1", reason="failed"
     )
 
-    block = _block(store, quarantined=frozenset({6}))
+    scans: list[int] = []
 
-    assert block.recorded_causes(5) == frozenset(
-        {NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.VALIDATED_WORK_DISPOSITION}
-    )
-    assert block.recorded_causes(6) == frozenset({NeedsHumanCause.CLAIM_QUARANTINE})
-    assert block.recorded_causes(7) == frozenset()
-    assert NO_OTHER_NEEDS_HUMAN_CAUSES.recorded_causes(5) == frozenset()
+    def quarantined() -> frozenset[int]:
+        scans.append(1)
+        return frozenset({6})
+
+    block = _block(store, quarantined=quarantined)
+
+    assert block.recorded_causes([5, 6, 7]) == {
+        5: frozenset(
+            {NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.VALIDATED_WORK_DISPOSITION}
+        ),
+        6: frozenset({NeedsHumanCause.CLAIM_QUARANTINE}),
+        7: frozenset(),
+    }
+    assert len(scans) == 1  # one quarantine scan for the whole board, not one per item
+    assert NO_OTHER_NEEDS_HUMAN_CAUSES.recorded_causes([5]) == {5: frozenset()}
 
 
 def test_an_unknown_recorded_cause_is_a_defect_not_a_silent_skip(tmp_path: Path) -> None:
@@ -72,7 +84,7 @@ def test_an_unknown_recorded_cause_is_a_defect_not_a_silent_skip(tmp_path: Path)
     store.record_needs_human_cause(8, "no_such_cause", reason="?")
 
     try:
-        _block(store, quarantined=frozenset()).recorded_causes(8)
+        _block(store, quarantined=frozenset).recorded_causes([8])
     except ValueError as error:
         assert "no_such_cause" in str(error)
     else:  # pragma: no cover - the assertion is the point

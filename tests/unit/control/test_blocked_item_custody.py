@@ -208,11 +208,29 @@ def test_a_policy_escalation_is_held_not_waiting_on_you() -> None:
     assert custody.reason.startswith("Escalated by policy")
 
 
-def test_a_needs_human_nobody_recorded_is_a_person_s_hold() -> None:
+def test_a_needs_human_nobody_recorded_is_waiting_on_you() -> None:
+    """Nobody but a person set it; the sweep may still re-examine it."""
     custody = _derive(_item(labels=NEEDS_HUMAN))
 
-    assert custody.state is CustodyState.HELD
-    assert "A person put it on hold" in custody.reason
+    assert custody.state is CustodyState.WAITING_ON_YOU
+    assert "no orchestrator cause on record" in custody.reason
+    assert "stuck sweep may re-examine it" in custody.reason
+
+
+def test_a_bare_needs_human_the_sweep_is_re_checking_is_the_tech_lead_s() -> None:
+    """Agree with the stuck sweep: it treats a bare needs-human as eligible."""
+    custody = _derive(_item(labels=NEEDS_HUMAN, sweep_attempts=1))
+
+    assert custody.state is CustodyState.QUEUED_FOR_TECH_LEAD
+
+
+def test_a_sweep_budget_is_no_queue_once_the_sweep_is_off() -> None:
+    board = replace(BOARD, sweep=replace(SWEEP_ON, enabled=False, next_due_at=None))
+
+    custody = _derive(_item(sweep_attempts=1), board)
+
+    assert custody.state is CustodyState.UNOWNED
+    assert "stuck sweep is off" in custody.reason
 
 
 def test_an_exhausted_stuck_sweep_is_held() -> None:

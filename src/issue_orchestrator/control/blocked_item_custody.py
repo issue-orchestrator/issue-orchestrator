@@ -390,9 +390,29 @@ def _held(
             "Escalated by policy: the orchestrator stopped on it and set needs-human.",
             _clock(item.last_activity_at, "last issue activity", lower_bound=True),
         )
+    return None
+
+
+def _needs_human_on_its_own(
+    item: ItemCustodyFacts, labels: ObservedLabels, board: BoardCustodyFacts
+) -> _Claim | None:
+    """A needs-human no orchestrator lifecycle recorded: a person asked for one.
+
+    Checked after the tech lead's own queue, because the stuck sweep treats
+    such an issue as eligible for re-examination (#6824 F2): while it is queued
+    or being re-checked, that is who holds it.
+    """
+    if not labels.needs_human:
+        return None
+    sweep = (
+        " The stuck sweep may re-examine it."
+        if board.sweep.enabled
+        else " The stuck sweep is off, so only a person will."
+    )
     return _Claim(
-        CustodyState.HELD,
-        "A person put it on hold (needs-human with no orchestrator cause recorded).",
+        CustodyState.WAITING_ON_YOU,
+        "needs-human is set with no orchestrator cause on record, so a person"
+        f" asked for one.{sweep}",
         _clock(item.last_activity_at, "last issue activity", lower_bound=True),
     )
 
@@ -477,7 +497,9 @@ def _queued_for_tech_lead(
             board,
         )
     attempts = item.sweep_attempts
-    if attempts is not None and attempts < board.sweep.max_attempts:
+    # A recorded budget is only a queue while a sweep will run again: with the
+    # sweep off, nothing re-checks the item, and saying so would be a promise.
+    if board.sweep.enabled and attempts is not None and attempts < board.sweep.max_attempts:
         return _Claim(
             CustodyState.QUEUED_FOR_TECH_LEAD,
             "The stuck sweep is tracking its recovery (failed cycles"
@@ -599,6 +621,7 @@ _LABEL_RULES: tuple[_LabelRule, ...] = (
     _fix_pending,
     _world,
     _queued_for_tech_lead,
+    _needs_human_on_its_own,
     _latest_remedy,
 )
 

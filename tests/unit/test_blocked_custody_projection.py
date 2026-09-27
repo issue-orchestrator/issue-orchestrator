@@ -285,7 +285,7 @@ def test_the_engine_s_own_reader_feeds_the_dashboard_end_to_end() -> None:
         state=lambda: state,
         labels=LabelManager(config),
         authority=InMemoryTechLeadAuthorityStore(),
-        needs_human_causes=lambda _n: frozenset(),
+        needs_human_causes=lambda numbers: {n: frozenset() for n in numbers},
         provider_lanes=lambda _a: (),
         provider_circuits=StaticProviderCircuitStatusReader(),
         parked_actions=NO_ACTION_LIVENESS_OWNER,

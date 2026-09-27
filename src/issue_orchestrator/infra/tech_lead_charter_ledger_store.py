@@ -131,6 +131,19 @@ class SqliteTechLeadCharterLedger:
             )
         )
 
+    def list_about_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        # Mirrors TechLeadCharterDecision.is_about_issue; filtered BEFORE the limit.
+        return _decode(
+            self._connection().execute(
+                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+                " OR (target_number IS NULL AND anchor_issue_number = ?)"
+                " ORDER BY decided_at DESC, decision_id DESC LIMIT ?",
+                (issue_number, issue_number, check_read_limit(limit)),
+            )
+        )
+
     def list_for_role(
         self, role: CharterRole, *, limit: int = 100
     ) -> tuple[TechLeadCharterDecision, ...]:
