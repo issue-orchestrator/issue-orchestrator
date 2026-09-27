@@ -17,9 +17,11 @@ from issue_orchestrator.domain.issue_run_evidence import (
     IssueRunEvidenceStatus,
     IssueRunEvidenceUnavailable,
     IssueRunRecord,
+    ReworkTarget,
     RunTerminalBinding,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -34,7 +36,7 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
     worktree = tmp_path / "worktree"
     run_dir = worktree / ".issue-orchestrator" / "sessions" / f"{run_id}__coding-1"
     return IssueRunRecord(
-        session_key=SessionKey(FakeIssueKey("42", "example/repo"), TaskKind.CODE),
+        session_key=SessionKey(FakeIssueKey("42", "example/repo"), SessionKind.CODE),
         run=SessionRunAssets.from_paths(
             session_name="coding-1", run_id=run_id, started_at=NOW,
             worktree_path=worktree, run_dir=run_dir,
@@ -45,7 +47,6 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
         branch_name="feature",
         terminal_binding=RunTerminalBinding("issue-42"),
         agent_label="agent:claude",
-        completion_task=TaskKind.CODE,
     )
 
 
@@ -124,8 +125,7 @@ def test_repeated_registration_is_idempotent_but_cannot_rebind_a_run(tmp_path):
     for issue_number, conflict in (
         (43, record),
         (42, replace(record, agent_label="agent:other")),
-        (42, replace(record, completion_task=TaskKind.TECH_LEAD)),
-        (42, replace(record, session_key=SessionKey(record.session_key.issue, TaskKind.REWORK))),
+        (42, replace(record, session_key=SessionKey(record.session_key.issue, SessionKind.REWORK))),
         (42, replace(record, run=run_record(tmp_path / "other").run)),
     ):
         with pytest.raises(IssueRunEvidenceUnavailable, match="Conflicting ownership"):
@@ -328,3 +328,61 @@ def test_legacy_terminal_binding_is_unknown_and_phase_is_not_a_terminal(tmp_path
     fresh = run_record(tmp_path, "new-run")
     reopened.record_run(42, fresh)
     assert fresh in SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").recorded_runs(42)
+
+
+def _rework_record(tmp_path: Path, target: "ReworkTarget | None") -> IssueRunRecord:
+    record = run_record(tmp_path)
+    return replace(
+        record,
+        session_key=replace(record.session_key, kind=SessionKind.REWORK),
+        rework_target=target,
+    )
+
+
+def test_a_rework_runs_pr_and_cycle_are_durable(tmp_path):
+    """#7347 review r4: the ledger, not an agent-writable manifest, says which
+    PR a rework run fixes - so a restart restores it onto that PR."""
+    path = tmp_path / "runs.sqlite"
+    record = _rework_record(tmp_path, ReworkTarget(500, 2))
+    SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").record_run(42, record)
+
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
+
+    assert reopened.recorded_runs(42) == (record,)
+    assert reopened.recorded_run(record.run).rework_target == ReworkTarget(500, 2)
+
+
+def test_a_ledger_from_before_rework_targets_reopens_with_them_unknown(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    record = _rework_record(tmp_path, ReworkTarget(500, 2))
+    SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo").record_run(42, record)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN rework_pr_number")
+        conn.execute("ALTER TABLE issue_runs DROP COLUMN rework_cycle")
+
+    reopened = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
+
+    assert reopened.recorded_runs(42) == (replace(record, rework_target=None),)
+
+
+def test_half_a_rework_target_is_corruption(tmp_path):
+    path = tmp_path / "runs.sqlite"
+    record = _rework_record(tmp_path, ReworkTarget(500, 2))
+    ledger = SqliteIssueRunLedger(path, repo_slug="test-owner/test-repo")
+    ledger.record_run(42, record)
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE issue_runs SET rework_cycle=NULL")
+
+    with pytest.raises(IssueRunEvidenceUnavailable):
+        ledger.recorded_run(record.run)
+
+
+@pytest.mark.parametrize("kind", [k for k in SessionKind if k is not SessionKind.REWORK])
+def test_only_a_rework_run_records_a_rework_target(tmp_path, kind):
+    record = run_record(tmp_path)
+    with pytest.raises(ValueError, match="cannot record a rework target"):
+        replace(
+            record,
+            session_key=replace(record.session_key, kind=kind),
+            rework_target=ReworkTarget(500, 2),
+        )

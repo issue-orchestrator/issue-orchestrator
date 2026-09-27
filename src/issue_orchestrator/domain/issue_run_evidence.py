@@ -4,7 +4,8 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
-from .session_key import SessionKey, TaskKind
+from .session_key import SessionKey
+from .session_kind import SessionKind
 from .session_run import SessionRunAssets
 
 
@@ -16,6 +17,32 @@ class IssueRunEvidenceOrigin(StrEnum):
 class IssueRunEvidenceStatus(StrEnum):
     RUNS_RECORDED = "runs_recorded"
     NO_RUNS_RECORDED = "no_runs_recorded"
+
+
+@dataclass(frozen=True, slots=True)
+class ReworkTarget:
+    """The PR a rework run is fixing, and the review cycle it answers.
+
+    Recorded by the launch that allocated the run (#7347 review r4), so a
+    restart restores a rework - and a rework's validation retry - onto its PR
+    from the orchestrator's own ledger, never from an agent-writable manifest.
+    """
+
+    pr_number: int
+    cycle: int
+
+    def __post_init__(self) -> None:
+        for name in ("pr_number", "cycle"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"rework target {name} must be a positive int, got {value!r}")
+
+    @classmethod
+    def of(cls, pr_number: int | None, cycle: int | None) -> "ReworkTarget | None":
+        """The target when both halves are known; ``None`` (unknown) otherwise."""
+        if pr_number is None or cycle is None:
+            return None
+        return cls(pr_number, cycle)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,12 +63,20 @@ class IssueRunRecord:
     branch_name: str | None  # None only for explicitly unbound pre-migration rows.
     terminal_binding: RunTerminalBinding | None  # None means unknown legacy ownership.
     # None denotes a legacy allocation whose role was never durably recorded.
+    # The run's KIND is ``session_key.kind``: the launch-stamped authority
+    # (#7347), decoded for pre-#7347 rows by ``SessionKind.from_ledger_stamps``.
     agent_label: str | None = field(default=None, kw_only=True)
-    completion_task: TaskKind | None = field(default=None, kw_only=True)
+    # The PR a REWORK run fixes; None for every other kind, and for a rework
+    # recorded before #7347 (unknown, never guessed).
+    rework_target: ReworkTarget | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.terminal_binding is not None and type(self.terminal_binding) is not RunTerminalBinding:
             raise TypeError("run requires typed terminal ownership")
+        if self.rework_target is not None and self.session_key.kind is not SessionKind.REWORK:
+            raise ValueError(
+                f"a {self.session_key.kind.value} run cannot record a rework target"
+            )
         if not self.recorded_at.strip():
             raise ValueError("run record requires recorded_at")
 

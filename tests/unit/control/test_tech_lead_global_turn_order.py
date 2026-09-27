@@ -47,6 +47,7 @@ from issue_orchestrator.domain.tech_lead_run import (
     IssueInvestigationScope,
     global_run_precedence,
 )
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
@@ -77,6 +78,7 @@ class FakeSession:
     def __init__(self, issue_number: int, flavor: TechLeadSessionFlavor) -> None:
         self.issue = FakeIssue(issue_number)
         self.agent_label = TECH_LEAD_AGENT
+        self.key = SimpleNamespace(kind=SessionKind.TECH_LEAD)  # stamped at launch (#7347)
         self.terminal_id = f"tech-lead-{issue_number}"
         self.tech_lead_scope = TechLeadLaunchScope(flavor=flavor)
         # The launch authority opens the run's LOCAL record from these

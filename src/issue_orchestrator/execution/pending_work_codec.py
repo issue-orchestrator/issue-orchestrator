@@ -37,7 +37,7 @@ from ..domain.pending_work import (
     PendingWorkKind,
     PendingWorkRequest,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunIdentity
 from ..domain.tech_lead_scratch_identity import names_one_scratch_checkout
 from ..domain.tech_lead_session import TechLeadSessionFlavor
@@ -232,7 +232,8 @@ def _encode_validation_retry(request: PendingWorkRequest) -> dict[str, Any]:
         "validation_error": request.validation_error,
         "validation_error_file": request.validation_error_file,
         "retry_count": request.retry_count,
-        "source_task": request.source_task.value,
+        # Persisted under its pre-#7347 key; the value is the source KIND.
+        "source_task": request.source_kind.value,
         "validation_cmd": request.validation_cmd,
         "authority_run": (
             {
@@ -244,6 +245,8 @@ def _encode_validation_retry(request: PendingWorkRequest) -> dict[str, Any]:
             else None
         ),
         "recovery_error": request.recovery_error,
+        "pr_number": request.pr_number,
+        "rework_cycle": request.rework_cycle,
     }
 
 
@@ -258,11 +261,38 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
         validation_error=str(payload["validation_error"]),
         validation_error_file=payload["validation_error_file"],
         retry_count=int(payload["retry_count"]),
-        source_task=TaskKind(payload["source_task"]),
+        source_kind=_decode_retry_source_kind(payload),
         validation_cmd=payload["validation_cmd"],
         authority_run=_decode_run_identity(payload.get("authority_run")),
         recovery_error=payload.get("recovery_error"),
+        # Absent from payloads written before #7347: unknown, not guessed.
+        pr_number=_optional_int(payload.get("pr_number")),
+        rework_cycle=_optional_int(payload.get("rework_cycle")),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PendingWorkClaimDecodeError(f"expected an integer or null, got {value!r}")
+    return value
+
+
+def _decode_retry_source_kind(payload: dict[str, Any]) -> SessionKind:
+    """The kind a queued validation retry relaunches as, including pre-#7347 rows.
+
+    Before #7347 a tech-lead run was stamped ``code``, so the retry of one was
+    queued with ``source_task: "code"``. It is still recognisable without
+    guessing: only a tech-lead retry inherits launch authority, so a ``code``
+    retry that carries an ``authority_run`` is a tech-lead retry. Every other
+    stored value is read as stamped. (A rework's retry of a retry was queued
+    ``code`` and ran as coding work; it is read as what it ran as.)
+    """
+    stamped = SessionKind(payload["source_task"])
+    if stamped is SessionKind.CODE and payload.get("authority_run") is not None:
+        return SessionKind.TECH_LEAD
+    return stamped
 
 
 def _decode_run_identity(payload: object) -> SessionRunIdentity | None:

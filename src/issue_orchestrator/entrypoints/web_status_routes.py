@@ -37,7 +37,7 @@ async def get_status(
             "issue_number": session.issue.number,
             "title": session.issue.title,
             "runtime_minutes": session.runtime_minutes,
-            "agent_type": session.issue.agent_type,
+            "agent_type": session.agent_label,
             "status": "running" if session.runtime_minutes < session.agent_config.timeout_minutes else "slow",
             "branch": session.branch_name,
             # Control Center worktree audits consume this server-to-server as

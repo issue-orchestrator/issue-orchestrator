@@ -48,7 +48,7 @@ from .launch_transaction import (
 )
 from .session_launch_types import LaunchDisposition
 from .session_launcher import SessionLauncher
-from .session_manager import SessionManager, SessionRef
+from .session_manager import SessionManager
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -86,10 +86,10 @@ def orchestrator_launch_review_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_review(review.pr_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=review.issue_number,
-                session_name=f"review-{review.pr_number}",
+                session_name=terminal,
                 is_review=True,
                 tab_name=f"Review PR #{review.pr_number}",
             ),
@@ -123,12 +123,10 @@ def orchestrator_launch_retrospective_review_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_retrospective_review(review.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=review.issue_number,
-                session_name=SessionRef.for_retrospective_review(
-                    review.issue_number
-                ).name,
+                session_name=terminal,
                 is_review=True,
             ),
             state=state,
@@ -157,7 +155,7 @@ def orchestrator_launch_rework_session(
         issue_number=rework.resolve_issue_number(),
         work=PendingWorkKind.REWORK.value,
     )
-    def _restore_rework() -> Optional[Session]:
+    def _restore_rework(terminal: str) -> Optional[Session]:
         issue_number = rework.resolve_issue_number()
         if issue_number is None:
             logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
@@ -165,7 +163,7 @@ def orchestrator_launch_rework_session(
         return _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=issue_number,
-                session_name=f"rework-{issue_number}",
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -202,10 +200,10 @@ def orchestrator_launch_validation_retry_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_validation_retry(retry.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=retry.issue_number,
-                session_name=f"issue-{retry.issue_number}",
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -314,10 +312,10 @@ def orchestrator_launch_tech_lead_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_tech_lead(tech_lead.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=tech_lead.issue_number,
-                session_name=f"issue-{tech_lead.issue_number}",
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -475,11 +473,7 @@ def restore_running_sessions(
 
     ledger = InFlightWorkLedger(state, claims)
     restored = session_restorer.restore_sessions(running, state.active_sessions)
-    restoration = ledger.rehydrate(
-        restored,
-        agent_configs=session_restorer.config.agents,
-        tech_lead_label=session_restorer.config.tech_lead_review_agent,
-    )
+    restoration = ledger.rehydrate(restored)
     for quarantined in restoration.quarantined:
         quarantine.quarantine(
             QuarantineSubject.live_run_with_unreadable_claim(quarantined)
@@ -599,10 +593,11 @@ def orchestrator_launch_session(
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.disposition is LaunchDisposition.EXISTING_TERMINAL and session_restorer is not None:
+        assert result.existing_terminal is not None  # the result type's invariant
         restored = _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=issue.number,
-                session_name=f"issue-{issue.number}",
+                session_name=result.existing_terminal,
                 is_review=False,
             ),
             state=state,

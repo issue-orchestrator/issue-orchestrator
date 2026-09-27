@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import PendingValidationRetry
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_scratch_identity import names_one_scratch_checkout
 from ..infra.validation_state import ValidationRetryArtifacts, find_pending_retry_artifacts
 from .recovered_run_identity import registered_run
@@ -46,6 +47,9 @@ if TYPE_CHECKING:
     from .worktree_reconciliation import StartupWorktreeReconciler
 
 logger = logging.getLogger(__name__)
+
+# The kinds a validation retry relaunches as: every kind that makes commits.
+_RETRYABLE_KINDS = (SessionKind.CODE, SessionKind.REWORK, SessionKind.TECH_LEAD)
 
 
 class ValidationRetryRecovery:
@@ -104,14 +108,18 @@ class ValidationRetryRecovery:
             # ordinary session suppress an investigation retry in a different
             # checkout -- and reconciliation then saw activity evidence only for
             # the ordinary one and deleted the scratch branch (round 10
-            # finding 2). Identity here is the CHECKOUT.
-            session_name = f"issue-{issue_number}"
-            running = self._session_exists(session_name)
+            # finding 2). Identity here is the CHECKOUT. A retry runs as its
+            # source kind (#7347), so it may live under any retryable kind's
+            # terminal name; ``issue-N`` also covers pre-#7347 retries.
+            session_names = {
+                kind.terminal_name(issue_number) for kind in _RETRYABLE_KINDS
+            }
+            running = any(self._session_exists(name) for name in session_names)
             active = next(
                 (
                     session
                     for session in state.active_sessions
-                    if session.terminal_id == session_name
+                    if session.terminal_id in session_names
                 ),
                 None,
             )
@@ -130,7 +138,9 @@ class ValidationRetryRecovery:
             artifacts = find_pending_retry_artifacts(checkout)
             if artifacts is None or not artifacts.state.can_retry:
                 continue
-            retry = self._queue_entry(issue_number, checkout, branch_name, artifacts)
+            retry = self._queue_entry(
+                issue_number, checkout, branch_name, artifacts
+            ).keeping_rework_target_of(existing)
             if running and active is None:
                 # The terminal exists but no restored session names it, so this
                 # retry is held rather than launched: queued keeps the
@@ -221,6 +231,7 @@ class ValidationRetryRecovery:
             ledger=self._issue_run_ledger,
             authority=self._tech_lead_authority,
         )
+        target = recovered_run.rework_target if recovered_run is not None else None
         return PendingValidationRetry(
             issue_number=issue_number,
             issue_title=f"Issue #{issue_number}",  # The full title is not on disk
@@ -236,16 +247,21 @@ class ValidationRetryRecovery:
             validation_error=state.last_error or "Unknown validation error",
             validation_error_file=state.last_error_file,
             retry_count=state.retry_count,
-            source_task=(
-                recovered_run.source_task
+            source_kind=(
+                recovered_run.source_kind
                 if recovered_run is not None
-                else artifacts.source_task
+                else artifacts.source_kind
             ),
             validation_cmd=state.validation_cmd,
             authority_run=(
                 recovered_run.authority_run if recovered_run is not None else None
             ),
             recovery_error=recovery_error,
+            # A rework's PR and cycle, from the run's own ledger row: the
+            # published-review gate lets a rework resume on its own PR only
+            # (#7347 review r4). Unknown (None) for a legacy row.
+            pr_number=target.pr_number if target is not None else None,
+            rework_cycle=target.cycle if target is not None else None,
         )
 
     @staticmethod

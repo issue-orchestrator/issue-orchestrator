@@ -33,7 +33,7 @@ from ..ports.coder_prompt import (
     NO_CODER_PROMPT_ADDENDUM,
 )
 from ..domain.coder_prompt import CoderPromptAddendumUnavailable
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
 )
@@ -182,10 +182,7 @@ class PersistentReviewExchangeRunner:
             )
             return wt.path
 
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(
-            task=TaskKind.REWORK,
-            agent_label=coder_label,
-        )
+        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=SessionKind.REWORK)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
             raise RuntimeError(
                 "Required coder prompt addendum unavailable: "

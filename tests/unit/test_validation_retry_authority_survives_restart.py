@@ -13,7 +13,7 @@ import pytest
 
 from issue_orchestrator.domain.models import PendingValidationRetry
 from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunIdentity
 from issue_orchestrator.execution.pending_work_codec import decode_claim, encode_claim
 
@@ -33,7 +33,9 @@ def _retry(authority_run: SessionRunIdentity | None) -> PendingValidationRetry:
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        # Only a tech-lead retry inherits launch authority (#7347); one that
+        # names none is read as the pre-#7273 "code" stamp it was queued under.
+        source_kind=SessionKind.TECH_LEAD if authority_run is not None else SessionKind.CODE,
         validation_cmd="make test",
         authority_run=authority_run,
     )
@@ -69,3 +71,80 @@ def test_a_payload_that_is_not_an_object_is_refused() -> None:
 
     with pytest.raises(Exception, match="authority_run"):
         decode_claim(payload)
+
+
+def test_a_tech_lead_retry_round_trips_as_a_tech_lead() -> None:
+    """The retry relaunches AS its source kind (#7347), so the kind must survive."""
+    restored = _round_trip(_retry(SOURCE))
+    assert restored.source_kind is SessionKind.TECH_LEAD
+
+
+def test_a_reworks_retry_round_trips_as_rework() -> None:
+    from dataclasses import replace
+
+    rework = replace(_retry(None), source_kind=SessionKind.REWORK, agent_label="agent:web")
+    assert _round_trip(rework).source_kind is SessionKind.REWORK
+
+
+def test_a_pre_7347_tech_lead_retry_decodes_as_a_tech_lead() -> None:
+    """Before #7347 a tech-lead run was stamped "code", and so was its retry.
+
+    Only a tech-lead retry carries an ``authority_run``, so a queued "code"
+    retry that names one is a tech lead's -- read without guessing.
+    """
+    payload = encode_claim(
+        PendingWorkClaim(kind=PendingWorkKind.VALIDATION_RETRY, request=_retry(SOURCE))
+    )
+    assert payload["request"]["source_task"] == "tech-lead"
+    payload["request"]["source_task"] = "code"
+
+    restored = decode_claim(payload).request
+
+    assert isinstance(restored, PendingValidationRetry)
+    assert restored.source_kind is SessionKind.TECH_LEAD
+    assert restored.authority_run == SOURCE
+
+
+def test_only_a_tech_lead_retry_may_inherit_authority() -> None:
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="cannot inherit tech-lead launch authority"):
+        replace(_retry(SOURCE), source_kind=SessionKind.REWORK)
+    with pytest.raises(ValueError, match="names no launch authority"):
+        replace(_retry(SOURCE), authority_run=None)
+    # A tech-lead retry already refused for a recovery inconsistency is held,
+    # not rejected: its checkout and artifact holds still protect the work.
+    held = replace(_retry(SOURCE), authority_run=None, recovery_error="authority lost")
+    assert held.source_kind is SessionKind.TECH_LEAD
+
+
+@pytest.mark.parametrize("kind", [SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW, SessionKind.HISTORICAL])
+def test_work_that_makes_no_launched_commits_is_never_retried(kind: SessionKind) -> None:
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="only a launched session that makes commits"):
+        replace(_retry(None), source_kind=kind)
+
+
+def test_a_reworks_retry_keeps_its_pr_and_cycle_across_a_restart() -> None:
+    from dataclasses import replace
+
+    rework = replace(
+        _retry(None), source_kind=SessionKind.REWORK, agent_label="agent:web",
+        pr_number=456, rework_cycle=2,
+    )
+    restored = _round_trip(rework)
+    assert (restored.pr_number, restored.rework_cycle) == (456, 2)
+
+
+def test_a_pre_7347_retry_payload_has_no_pr_or_cycle_and_is_not_guessed() -> None:
+    payload = encode_claim(
+        PendingWorkClaim(kind=PendingWorkKind.VALIDATION_RETRY, request=_retry(None))
+    )
+    payload["request"].pop("pr_number")
+    payload["request"].pop("rework_cycle")
+
+    restored = decode_claim(payload).request
+
+    assert isinstance(restored, PendingValidationRetry)
+    assert (restored.pr_number, restored.rework_cycle) == (None, None)

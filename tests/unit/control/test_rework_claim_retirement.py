@@ -168,7 +168,7 @@ def _terminate_generation(tmp_path, *, stop_raises_after_commit: bool):
             raise RuntimeError("tmux answered late")  # ...but reported failure
 
     target = TechLeadSessionGeneration(
-        SUBJECT, session.key.task, session.terminal_id, session.run_assets.run_id
+        SUBJECT, session.key.kind, session.terminal_id, session.run_assets.run_id
     )
     try:
         lifecycle.terminate_generation(

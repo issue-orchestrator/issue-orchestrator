@@ -25,7 +25,8 @@ from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationSer
 from issue_orchestrator.domain.completion_intake import SubmitCompletionEvidence
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.git_tools import create_git
@@ -153,7 +154,7 @@ def coding_command_environment(worktree: Path, supplied: dict[str, str] | None):
                     session_name="issue-123",
                     issue_number=123,
                     session_key=SessionKey(
-                        FakeIssueKey("123", "example/repo"), TaskKind.CODE
+                        FakeIssueKey("123", "example/repo"), SessionKind.CODE
                     ),
                     agent_label="agent:contract",
                     backend="subprocess",

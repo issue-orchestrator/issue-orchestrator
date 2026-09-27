@@ -6,6 +6,8 @@ the tech lead's reserved additive sessions are excluded from the worker budget
 when ``tech_lead.max_concurrent`` is set, otherwise every active session counts.
 """
 
+from dataclasses import replace
+
 from issue_orchestrator.control.worker_budget import (
     active_tech_lead_session_count,
     active_worker_session_count,
@@ -13,12 +15,15 @@ from issue_orchestrator.control.worker_budget import (
     worker_slot_free,
 )
 
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.test_planner import make_config, make_issue, make_session
 
 
 def _tech_lead_session(number: int, agent_label: str):
     session = make_session(make_issue(number, labels=[agent_label]))
     session.agent_label = agent_label
+    # The launcher stamps a tech-lead agent's session TECH_LEAD (#7347).
+    session.key = replace(session.key, kind=SessionKind.TECH_LEAD)
     return session
 
 
@@ -42,7 +47,7 @@ class TestActiveWorkerSessionCount:
             make_session(make_issue(1)),
             _tech_lead_session(2, "agent:tech-lead"),
         ]
-        assert active_tech_lead_session_count(config, sessions) == 1
+        assert active_tech_lead_session_count(sessions) == 1
         assert active_worker_session_count(config, sessions) == 1
 
     def test_empty_is_zero(self):

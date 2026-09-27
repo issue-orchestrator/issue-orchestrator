@@ -12,7 +12,7 @@ from issue_orchestrator.control.retained_completion_preparation import RetainedC
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.completion_processing import ProcessingResult
 from issue_orchestrator.domain.recovery_publication import PreparedRecoveryPublication
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.validated_work import (
     EvidenceRole, RemoteBaselineStatus, ReviewDisposition,
 )
@@ -76,7 +76,7 @@ def test_removed_coding_worktree_still_prepares_exact_draft_with_recorded_role(r
     assert "Retained feature" in result.command.content.title
     assert "change" in result.command.content.body
     assert result.processing_policy.agent_label == "agent:test"
-    assert result.processing_policy.task is TaskKind.CODE
+    assert result.processing_policy.kind is SessionKind.CODE
     assert result.review_disposition is ReviewDisposition.ROUTE_TO_PR_REVIEW
     assert result.completion.run.run == retained.run
     assert result.completion.run.run.worktree_path != rig.workspace.checkout
@@ -177,7 +177,7 @@ def test_create_pr_only_cannot_authorize_an_exact_push_to_master(retained):
     allocator = IssueRunAllocationService(FileSystemSessionOutput(), retained.ledger, retained.wc,
         configuration=Config(repo="owner/repo"))
     retained.run = allocator.allocate(IssueRunAllocation(retained.worktree, "coding-master", 42,
-        SessionKey(GitHubIssueKey("owner/repo", "42"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-42"))
+        SessionKey(GitHubIssueKey("owner/repo", "42"), SessionKind.CODE), "agent:test", "test", terminal_id="issue-42"))
     retained.capability = retained.ledger.submission_capability(retained.run)
     raw = json.loads(completion())
     raw["requested_actions"] = []  # prepare adds CREATE_PR alone

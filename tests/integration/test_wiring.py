@@ -22,7 +22,8 @@ from issue_orchestrator.domain.models import (
     CommentHeadings
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 # Import MockGitHubAdapter from conftest (it's available as fixture)
 
@@ -343,7 +344,7 @@ class TestObserverWiring:
 
         issue = Issue(number=789, title="Test", labels=["agent:test"])
         issue_key = FakeIssueKey(name="789")
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
         worktree = tmp_path / "worktree-789"
         worktree.mkdir(parents=True)
         terminal_id = "orchestrator"
@@ -383,7 +384,7 @@ class TestObserverWiring:
 
         issue = Issue(number=101, title="Test", labels=["agent:test"])
         issue_key = FakeIssueKey(name="101")
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
         worktree = tmp_path / "worktree-101"
         worktree.mkdir(parents=True)
         terminal_id = "orchestrator"

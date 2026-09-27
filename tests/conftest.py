@@ -57,7 +57,8 @@ from issue_orchestrator.ports.pull_request_tracker import (
 )
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 TEST_ADMIN_TOKEN = "test-admin-token"
@@ -1111,6 +1112,7 @@ def build_test_orchestrator_deps(
         config=config,
         repository_host=repo_host,
         working_copy=working_copy,
+        run_ledger=issue_run_ledger,
     )
 
     _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)
@@ -1588,13 +1590,13 @@ def make_session(sample_agent_config, tmp_path):
     Usage:
         def test_something(make_session):
             session = make_session(issue_number=123)
-            session = make_session(issue_number=456, task=TaskKind.REVIEW)
+            session = make_session(issue_number=456, task=SessionKind.REVIEW)
     """
     def _make_session(
         issue_number: int = 123,
         issue_title: str = "Test Issue",
         issue_labels: list[str] | None = None,
-        task: TaskKind = TaskKind.CODE,
+        task: SessionKind = SessionKind.CODE,
         repo: str = "test/repo",
         terminal_id: str | None = None,
         branch_name: str | None = None,
@@ -1607,13 +1609,13 @@ def make_session(sample_agent_config, tmp_path):
             labels=issue_labels or [],
         )
         issue_key = FakeIssueKey(name=str(issue_number))
-        session_key = SessionKey(issue=issue_key, task=task)
+        session_key = SessionKey(issue=issue_key, kind=task)
 
         # Generate defaults based on task type
         if terminal_id is None:
-            if task == TaskKind.REVIEW:
+            if task == SessionKind.REVIEW:
                 terminal_id = f"review-{issue_number}"
-            elif task == TaskKind.REWORK:
+            elif task == SessionKind.REWORK:
                 terminal_id = f"rework-{issue_number}"
             else:
                 terminal_id = f"issue-{issue_number}"

@@ -8,14 +8,14 @@ import pytest
 from issue_orchestrator.control.review_exchange_lifecycle import (
     GenerationTerminationPartialFailure,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
 
 
-def _session(*, task: TaskKind, terminal_id: str, run_id: str):
+def _session(*, task: SessionKind, terminal_id: str, run_id: str):
     return SimpleNamespace(
         issue=SimpleNamespace(number=14),
-        key=SimpleNamespace(task=task),
+        key=SimpleNamespace(kind=task),
         terminal_id=terminal_id,
         run_assets=SimpleNamespace(run_id=run_id),
     )
@@ -24,7 +24,7 @@ def _session(*, task: TaskKind, terminal_id: str, run_id: str):
 def _target(run_id: str = "RUN-14") -> TechLeadSessionGeneration:
     return TechLeadSessionGeneration(
         issue_number=14,
-        task_kind=TaskKind.CODE,
+        task_kind=SessionKind.CODE,
         terminal_id="issue-14",
         run_id=run_id,
     )
@@ -38,7 +38,7 @@ def _terminate(active_sessions, *, exists=True):
 
 
 def test_review_only_target_fails_closed_without_stopping_anything() -> None:
-    active = [_session(task=TaskKind.REVIEW, terminal_id="review-99", run_id="RUN-14")]
+    active = [_session(task=SessionKind.REVIEW, terminal_id="review-99", run_id="RUN-14")]
 
     result, kill_session, publish_recovery = _terminate(active)
 
@@ -52,7 +52,7 @@ def test_review_only_target_fails_closed_without_stopping_anything() -> None:
 
 def test_replacement_generation_fails_closed_without_stopping_it() -> None:
     replacement = _session(
-        task=TaskKind.CODE,
+        task=SessionKind.CODE,
         terminal_id="issue-14",
         run_id="RUN-REPLACEMENT",
     )
@@ -68,7 +68,7 @@ def test_replacement_generation_fails_closed_without_stopping_it() -> None:
 
 
 def test_exact_generation_is_the_terminal_stopped_and_cleared() -> None:
-    observed = _session(task=TaskKind.CODE, terminal_id="issue-14", run_id="RUN-14")
+    observed = _session(task=SessionKind.CODE, terminal_id="issue-14", run_id="RUN-14")
     active = [observed]
 
     result, kill_session, publish_recovery = _terminate(active)
@@ -83,7 +83,7 @@ def test_exact_generation_is_the_terminal_stopped_and_cleared() -> None:
 
 
 def test_pair_failure_attempts_all_hidden_owners_and_keeps_kill_retryable() -> None:
-    observed = _session(task=TaskKind.CODE, terminal_id="issue-14", run_id="RUN-14")
+    observed = _session(task=SessionKind.CODE, terminal_id="issue-14", run_id="RUN-14")
     active = [observed]
     pair_registry = MagicMock()
     pair_registry.release.side_effect = RuntimeError("pair registry unavailable")
@@ -102,7 +102,7 @@ def test_pair_failure_attempts_all_hidden_owners_and_keeps_kill_retryable() -> N
 
 
 def test_publish_failure_keeps_terminal_and_active_row_retryable() -> None:
-    observed = _session(task=TaskKind.CODE, terminal_id="issue-14", run_id="RUN-14")
+    observed = _session(task=SessionKind.CODE, terminal_id="issue-14", run_id="RUN-14")
     active = [observed]
     pair_registry = MagicMock()
     job_supervisor = MagicMock()
@@ -121,7 +121,7 @@ def test_publish_failure_keeps_terminal_and_active_row_retryable() -> None:
 
 
 def test_terminal_stop_failure_retains_exact_active_row_for_retry() -> None:
-    observed = _session(task=TaskKind.CODE, terminal_id="issue-14", run_id="RUN-14")
+    observed = _session(task=SessionKind.CODE, terminal_id="issue-14", run_id="RUN-14")
     active = [observed]
     publish_recovery = MagicMock()
     kill_session = MagicMock(side_effect=RuntimeError("terminal stop failed"))
@@ -137,7 +137,7 @@ def test_terminal_stop_failure_retains_exact_active_row_for_retry() -> None:
 def test_stop_then_raise_reconciles_exact_active_row_and_surfaces_partial_failure() -> (
     None
 ):
-    observed = _session(task=TaskKind.CODE, terminal_id="issue-14", run_id="RUN-14")
+    observed = _session(task=SessionKind.CODE, terminal_id="issue-14", run_id="RUN-14")
     active = [observed]
     running = True
 
@@ -159,8 +159,8 @@ def test_stop_then_raise_reconciles_exact_active_row_and_surfaces_partial_failur
 
 def test_multiple_killable_sessions_for_issue_are_ambiguous() -> None:
     active = [
-        _session(task=TaskKind.CODE, terminal_id="issue-14", run_id="RUN-14"),
-        _session(task=TaskKind.REWORK, terminal_id="rework-14", run_id="RUN-R"),
+        _session(task=SessionKind.CODE, terminal_id="issue-14", run_id="RUN-14"),
+        _session(task=SessionKind.REWORK, terminal_id="rework-14", run_id="RUN-R"),
     ]
 
     result, kill_session, publish_recovery = _terminate(active)

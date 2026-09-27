@@ -10,6 +10,7 @@ to prevent.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from issue_orchestrator.domain.pause_state import PauseActor, PauseReason, PauseState
@@ -18,6 +19,7 @@ from issue_orchestrator.domain.models import (
     OrchestratorState,
     PendingTechLeadReview,
 )
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
@@ -57,6 +59,10 @@ class FakeSession:
     ) -> None:
         self.issue = FakeIssue(issue_number)
         self.agent_label = agent_label
+        # A session launched under the tech-lead agent is stamped TECH_LEAD (#7347).
+        self.key = SimpleNamespace(
+            kind=SessionKind.TECH_LEAD if agent_label == TECH_LEAD_AGENT else SessionKind.CODE
+        )
         self.lease_id = None
         self.tech_lead_scope = (
             TechLeadLaunchScope(flavor=flavor) if flavor is not None else None

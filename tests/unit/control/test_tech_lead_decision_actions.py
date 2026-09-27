@@ -29,7 +29,7 @@ from issue_orchestrator.control.tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
 )
 from issue_orchestrator.domain.models import Issue
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_artifacts import (
     ProposedTechLeadAction,
     TechLeadDecision,
@@ -1590,7 +1590,7 @@ def test_kill_hung_session_execute_plans_generation_bound_kill_action() -> None:
         observed_session_generation=lambda number: (
             TechLeadSessionGeneration(
                 issue_number=13,
-                task_kind=TaskKind.CODE,
+                task_kind=SessionKind.CODE,
                 terminal_id="issue-13",
                 run_id="RUN-13",
             )
@@ -1749,8 +1749,8 @@ class TestCreateIssueExpediteProducer:
 def test_reused_kill_proposal_carries_current_launch_generation_obligation():
     from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
-    from issue_orchestrator.domain.session_key import TaskKind
-    observed = TechLeadSessionGeneration(issue_number=13, task_kind=TaskKind.CODE,
+    from issue_orchestrator.domain.session_kind import SessionKind
+    observed = TechLeadSessionGeneration(issue_number=13, task_kind=SessionKind.CODE,
         terminal_id="worker-13", run_id="new-run")
     proposed = ProposedTechLeadAction(id="A5", action_type="kill_hung_session", target_number=13, body="Again")
     [action] = _plan(_decision(proposed), op_ledger={("kill_hung_session", 13): 321},

@@ -11,74 +11,10 @@ import pytest
 
 from issue_orchestrator.domain import (
     SessionKey,
-    TaskKind,
+    SessionKind,
     FakeIssueKey,
     GitHubIssueKey,
 )
-
-
-class TestTaskKind:
-    """Tests for the TaskKind enum."""
-
-    def test_task_kind_values(self):
-        """TaskKind has expected values."""
-        assert TaskKind.CODE.value == "code"
-        assert TaskKind.REVIEW.value == "review"
-        assert TaskKind.REWORK.value == "rework"
-        assert TaskKind.TECH_LEAD.value == "tech-lead"
-        assert TaskKind.RETROSPECTIVE_REVIEW.value == "retrospective-review"
-
-    def test_task_kind_all_members(self):
-        """TaskKind has exactly the expected members."""
-        assert set(TaskKind) == {
-            TaskKind.CODE,
-            TaskKind.REVIEW,
-            TaskKind.REWORK,
-            TaskKind.TECH_LEAD,
-            TaskKind.RETROSPECTIVE_REVIEW,
-        }
-
-    def test_review_only_kinds_make_no_commits(self):
-        """Review tasks are read-only: they make no commits and publish nothing."""
-        assert TaskKind.REVIEW.is_review_only is True
-        assert TaskKind.RETROSPECTIVE_REVIEW.is_review_only is True
-
-    def test_commit_producing_kinds_are_not_review_only(self):
-        """Coding-style tasks produce commits and may publish a PR."""
-        assert TaskKind.CODE.is_review_only is False
-        assert TaskKind.REWORK.is_review_only is False
-        assert TaskKind.TECH_LEAD.is_review_only is False
-
-    @pytest.mark.parametrize(
-        "session_name, expected",
-        [
-            ("issue-42", TaskKind.CODE),
-            ("coding-2", TaskKind.CODE),  # validation-retry phase label
-            ("rework-42", TaskKind.REWORK),
-            ("tech-lead-42", TaskKind.TECH_LEAD),
-            ("review-7", TaskKind.REVIEW),
-            ("retrospective-review-42", TaskKind.RETROSPECTIVE_REVIEW),
-        ],
-    )
-    def test_from_session_name_classifies_known_identities(self, session_name, expected):
-        """Session/run identities map back to the task that produced them."""
-        assert TaskKind.from_session_name(session_name) == expected
-
-    def test_from_session_name_retrospective_not_shadowed_by_review(self):
-        """'retrospective-review-' must classify as retrospective review, not review."""
-        task = TaskKind.from_session_name("retrospective-review-42")
-        assert task is TaskKind.RETROSPECTIVE_REVIEW
-        assert task.is_review_only is True
-
-    def test_from_session_name_unknown_returns_none(self):
-        """Unrecognized identities fail safe as None rather than misclassifying."""
-        assert TaskKind.from_session_name("mystery-1") is None
-        assert TaskKind.from_session_name("") is None
-
-    def test_from_session_name_review_identities_are_review_only(self):
-        """Both review identities classify as review-only work."""
-        assert TaskKind.from_session_name("review-7").is_review_only is True
-        assert TaskKind.from_session_name("retrospective-review-7").is_review_only is True
 
 
 class TestSessionKeyEquality:
@@ -87,23 +23,23 @@ class TestSessionKeyEquality:
     def test_same_issue_same_task_are_equal(self):
         """Two keys with same issue and task are equal."""
         issue = FakeIssueKey("M1-011")
-        key1 = SessionKey(issue=issue, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue, kind=SessionKind.CODE)
         assert key1 == key2
 
     def test_same_issue_different_task_not_equal(self):
         """Two keys with same issue but different task are not equal."""
         issue = FakeIssueKey("M1-011")
-        key1 = SessionKey(issue=issue, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue, task=TaskKind.REVIEW)
+        key1 = SessionKey(issue=issue, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue, kind=SessionKind.REVIEW)
         assert key1 != key2
 
     def test_different_issue_same_task_not_equal(self):
         """Two keys with different issue but same task are not equal."""
         issue1 = FakeIssueKey("M1-011")
         issue2 = FakeIssueKey("M1-012")
-        key1 = SessionKey(issue=issue1, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue2, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue1, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue2, kind=SessionKind.CODE)
         assert key1 != key2
 
     def test_equality_uses_stable_id_not_object_identity(self):
@@ -113,8 +49,8 @@ class TestSessionKeyEquality:
         issue2 = FakeIssueKey("M1-011")
         assert issue1 is not issue2  # Different objects
 
-        key1 = SessionKey(issue=issue1, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue2, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue1, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue2, kind=SessionKind.CODE)
         assert key1 == key2  # But equal keys
 
     def test_equality_considers_scope(self):
@@ -122,14 +58,14 @@ class TestSessionKeyEquality:
         issue1 = FakeIssueKey("M1-011", test_scope="repo-a")
         issue2 = FakeIssueKey("M1-011", test_scope="repo-b")
 
-        key1 = SessionKey(issue=issue1, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue2, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue1, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue2, kind=SessionKind.CODE)
         assert key1 != key2
 
     def test_not_equal_to_non_session_key(self):
         """SessionKey is not equal to non-SessionKey objects."""
         issue = FakeIssueKey("M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
 
         assert key != "code:M1-011"
         assert key != 123
@@ -143,7 +79,7 @@ class TestSessionKeyHashing:
     def test_can_be_used_as_dict_key(self):
         """SessionKey can be used as a dictionary key."""
         issue = FakeIssueKey("M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
 
         d = {key: "value"}
         assert d[key] == "value"
@@ -153,8 +89,8 @@ class TestSessionKeyHashing:
         issue1 = FakeIssueKey("M1-011")
         issue2 = FakeIssueKey("M1-011")
 
-        key1 = SessionKey(issue=issue1, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue2, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue1, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue2, kind=SessionKind.CODE)
 
         assert key1 == key2
         assert hash(key1) == hash(key2)
@@ -162,8 +98,8 @@ class TestSessionKeyHashing:
     def test_can_be_added_to_set(self):
         """SessionKey can be used in sets."""
         issue = FakeIssueKey("M1-011")
-        key1 = SessionKey(issue=issue, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue, kind=SessionKind.CODE)
 
         s = {key1, key2}
         assert len(s) == 1  # Only one because they're equal
@@ -171,8 +107,8 @@ class TestSessionKeyHashing:
     def test_different_keys_in_set(self):
         """Different SessionKeys are separate in sets."""
         issue = FakeIssueKey("M1-011")
-        key_code = SessionKey(issue=issue, task=TaskKind.CODE)
-        key_review = SessionKey(issue=issue, task=TaskKind.REVIEW)
+        key_code = SessionKey(issue=issue, kind=SessionKind.CODE)
+        key_review = SessionKey(issue=issue, kind=SessionKind.REVIEW)
 
         s = {key_code, key_review}
         assert len(s) == 2
@@ -182,8 +118,8 @@ class TestSessionKeyHashing:
         issue1 = FakeIssueKey("M1-011")
         issue2 = FakeIssueKey("M1-011")
 
-        key1 = SessionKey(issue=issue1, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue2, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue1, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue2, kind=SessionKind.CODE)
 
         d = {key1: "found"}
         assert d[key2] == "found"  # Lookup with different but equal key
@@ -195,19 +131,19 @@ class TestSessionKeyStableId:
     def test_stable_id_format(self):
         """stable_id returns {task}:{issue_stable_id}."""
         issue = FakeIssueKey("M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
         assert key.stable_id() == "code:M1-011"
 
     def test_stable_id_for_each_task_kind(self):
         """stable_id works for all task kinds."""
         issue = FakeIssueKey("M1-011")
 
-        assert SessionKey(issue=issue, task=TaskKind.CODE).stable_id() == "code:M1-011"
-        assert SessionKey(issue=issue, task=TaskKind.REVIEW).stable_id() == "review:M1-011"
-        assert SessionKey(issue=issue, task=TaskKind.REWORK).stable_id() == "rework:M1-011"
-        assert SessionKey(issue=issue, task=TaskKind.TECH_LEAD).stable_id() == "tech-lead:M1-011"
+        assert SessionKey(issue=issue, kind=SessionKind.CODE).stable_id() == "code:M1-011"
+        assert SessionKey(issue=issue, kind=SessionKind.REVIEW).stable_id() == "review:M1-011"
+        assert SessionKey(issue=issue, kind=SessionKind.REWORK).stable_id() == "rework:M1-011"
+        assert SessionKey(issue=issue, kind=SessionKind.TECH_LEAD).stable_id() == "tech-lead:M1-011"
         assert (
-            SessionKey(issue=issue, task=TaskKind.RETROSPECTIVE_REVIEW).stable_id()
+            SessionKey(issue=issue, kind=SessionKind.RETROSPECTIVE_REVIEW).stable_id()
             == "retrospective-review:M1-011"
         )
 
@@ -218,7 +154,7 @@ class TestSessionKeyStr:
     def test_str_includes_scope(self):
         """__str__ includes the full issue representation."""
         issue = FakeIssueKey("M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
         result = str(key)
         assert "code" in result
         assert "M1-011" in result
@@ -230,18 +166,18 @@ class TestSessionKeyWithGitHubIssueKey:
     def test_with_github_issue_key(self):
         """SessionKey works with GitHubIssueKey."""
         issue = GitHubIssueKey(repo="owner/repo", external_id="M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
 
         assert key.stable_id() == "code:M1-011"
-        assert key.task == TaskKind.CODE
+        assert key.kind == SessionKind.CODE
 
     def test_github_keys_different_repos_not_equal(self):
         """GitHubIssueKeys from different repos produce different SessionKeys."""
         issue1 = GitHubIssueKey(repo="owner/repo-a", external_id="M1-011")
         issue2 = GitHubIssueKey(repo="owner/repo-b", external_id="M1-011")
 
-        key1 = SessionKey(issue=issue1, task=TaskKind.CODE)
-        key2 = SessionKey(issue=issue2, task=TaskKind.CODE)
+        key1 = SessionKey(issue=issue1, kind=SessionKind.CODE)
+        key2 = SessionKey(issue=issue2, kind=SessionKind.CODE)
 
         assert key1 != key2  # Different scope (repo)
 
@@ -252,15 +188,15 @@ class TestSessionKeyImmutability:
     def test_cannot_modify_task(self):
         """SessionKey.task cannot be modified."""
         issue = FakeIssueKey("M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
 
         with pytest.raises(AttributeError):
-            key.task = TaskKind.REVIEW
+            key.kind = SessionKind.REVIEW
 
     def test_cannot_modify_issue(self):
         """SessionKey.issue cannot be modified."""
         issue = FakeIssueKey("M1-011")
-        key = SessionKey(issue=issue, task=TaskKind.CODE)
+        key = SessionKey(issue=issue, kind=SessionKind.CODE)
 
         with pytest.raises(AttributeError):
             key.issue = FakeIssueKey("M1-012")

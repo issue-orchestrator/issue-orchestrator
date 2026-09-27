@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .issue_run_evidence import ReworkTarget
 from .session_key import SessionKey
 
 
@@ -20,6 +21,7 @@ class IssueRunAllocation:
     retention_tier: str = "hot"
     retention_days: int = 7
     retention_pinned: bool = False
+    rework_target: ReworkTarget | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

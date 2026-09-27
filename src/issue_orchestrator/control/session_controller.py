@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from ..domain.models import CompletionRecord
     from ..domain.attempt import AttemptKey
     from ..domain.issue_key import IssueKey
-    from ..domain.session_key import TaskKind
+    from ..domain.session_kind import SessionKind
     from ..ports.attempt_store import AttemptStore
     from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
 
@@ -207,14 +207,14 @@ class SessionController:
     def _load_terminal_completion(
         self,
         run: SessionRunAssets,
-        task_kind: "TaskKind | None",
+        task_kind: "SessionKind | None",
         worktree: Path,
         completion_path: str | None,
     ) -> tuple[CompletionRecordLoadResult, CompletionIntakeReceipt | None]:
         """Coding completion is selected by the run owner before decision policy."""
-        from ..domain.session_key import TaskKind
+        from ..domain.session_kind import SessionKind
 
-        if task_kind not in (TaskKind.CODE, TaskKind.REWORK, TaskKind.TECH_LEAD):
+        if task_kind not in (SessionKind.CODE, SessionKind.REWORK, SessionKind.TECH_LEAD):
             return self.completion_processor.read_completion_record_result(
                 worktree, completion_path
             ), None
@@ -243,7 +243,7 @@ class SessionController:
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
-        task_kind: "TaskKind | None" = None,
+        task_kind: "SessionKind | None" = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -841,7 +841,7 @@ class SessionController:
         retry_prompt_template: str | None,
         repo_root: Path | None,
         issue_key: "IssueKey | None",
-        task_kind: "TaskKind | None" = None,
+        task_kind: "SessionKind | None" = None,
     ) -> ValidationGateDecision | None:
         if not (
             status == SessionStatus.COMPLETED

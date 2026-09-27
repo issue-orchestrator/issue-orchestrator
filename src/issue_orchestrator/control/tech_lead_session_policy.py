@@ -1,12 +1,11 @@
 """ADR-0031 owner boundary for tech_lead session identity and completion effects.
 
-Both tech_lead variants (batch PR review and failure investigation) launch as
-``issue-{N}`` sessions under the configured tech lead agent, so nothing about a
-session's name distinguishes them. This module is the single owner for:
+Every tech_lead flavor (batch PR review, health review, failure investigation)
+launches as a ``SessionKind.TECH_LEAD`` session (``tech-lead-{N}``); the kind is
+stamped at launch by ``SessionKind.for_issue_launch`` (#7347), so WHETHER a
+session is a tech lead is the kind's answer, not this module's. This module is
+the single owner for:
 
-- **identity**: what makes a session a tech_lead session (the config-declared
-  tech lead agent), consolidating the checks previously duplicated in
-  ``SessionLauncher`` and ``CompletionActionPlanner``;
 - **flavor**: reading the launch-time :class:`TechLeadAssignment` that says
   which variant a session was given (manifest selection keys off it);
 - **launch preparation**: per-flavor session inputs (PR manifest download,
@@ -27,7 +26,7 @@ from collections.abc import Callable
 from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from .recovered_run_identity import unlaunchable_recovery_refusal
 from ..domain.tech_lead_scratch_identity import (
@@ -83,61 +82,6 @@ if TYPE_CHECKING:
     from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
-
-
-def is_tech_lead_session(
-    tech_lead_review_agent: str | None, agent_type: str | None
-) -> bool:
-    """True when ``agent_type`` is the configured tech_lead review agent."""
-    return bool(tech_lead_review_agent and agent_type == tech_lead_review_agent)
-
-
-def recover_tech_lead_launch_scope(
-    config: "Config",
-    issue: "Issue",
-    tech_lead_authority: "TechLeadAuthorityStore | None",
-) -> "TechLeadLaunchScope | None":
-    """Rebuild a RESTORED tech-lead session's launch grant from durable truth.
-
-    A session that survives an orchestrator restart has no in-memory producer to
-    hand it a :class:`TechLeadLaunchScope`, and before #6994 round 1 F3 it was
-    restored without one — which quietly downgraded a running whole-board review
-    to "issue-scoped", so the global barrier lifted and targeted work launched
-    alongside an exclusive review, and the dashboard reported the anchor as a
-    targeted running issue.
-
-    Everything needed to rebuild the grant is already durable, and this reads it
-    in the SAME order the launch path resolves flavor
-    (:func:`prepare_tech_lead_session_data`), so a restored run and a fresh one
-    can never be classified differently:
-
-    1. the ADR-0031 §4 marker label on the anchor -> ``HEALTH_REVIEW``, whose
-       owned cohort comes back from the durable authority ledger;
-    2. the batch anchor's title signature -> ``BATCH_REVIEW``;
-    3. anything else is an ordinary board issue the tech lead was aimed at, so
-       it is a ``FAILURE_INVESTIGATION``.
-
-    Returns ``None`` for a session that is not a tech-lead run at all.
-    """
-    from .health_review_trigger import is_batch_anchor_title
-
-    if not is_tech_lead_session(config.tech_lead_review_agent, issue.agent_type):
-        return None
-    if health_review_flavor_if_anchored(issue.labels) is not None:
-        cohort = (
-            tech_lead_authority.load_storm_cohort(anchor_issue_number=issue.number)
-            if tech_lead_authority is not None
-            else None
-        )
-        return TechLeadLaunchScope(
-            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
-            problem_issue_numbers=tuple(
-                sorted({problem.issue_number for problem in cohort or ()})
-            ),
-        )
-    if is_batch_anchor_title(issue.title):
-        return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.BATCH_REVIEW)
-    return TechLeadLaunchScope(flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION)
 
 
 def resumes_an_investigation(retry: "PendingValidationRetry") -> bool:
@@ -540,6 +484,7 @@ def tech_lead_prep_failure(
 
 def prepare_tech_lead_session_data(
     *,
+    kind: SessionKind,
     config: "Config",
     repository_host: "RepositoryHost",
     manifest_downloader: "ManifestDownloader",
@@ -572,7 +517,7 @@ def prepare_tech_lead_session_data(
     (labels are the crash-safe truth a restart recovers from); otherwise
     BATCH_REVIEW.
     """
-    if not is_tech_lead_session(config.tech_lead_review_agent, issue.agent_type):
+    if kind is not SessionKind.TECH_LEAD:
         return ()
     flavor = (
         (tech_lead_scope.flavor if tech_lead_scope is not None else None)
@@ -624,12 +569,12 @@ def prepare_tech_lead_session_data(
             (
                 TechLeadSessionGeneration(
                     issue_number=session.issue_number,
-                    task_kind=TaskKind(session.session_type),
+                    task_kind=SessionKind(session.session_type),
                     terminal_id=session.terminal_id,
                     run_id=session.run_id,
                 )
                 for session in board_snapshot.sessions
-                if session.session_type in {TaskKind.CODE.value, TaskKind.REWORK.value}
+                if session.session_type in {SessionKind.CODE.value, SessionKind.REWORK.value}
             ),
             key=TechLeadSessionGeneration.sort_key,
         )

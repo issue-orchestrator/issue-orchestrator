@@ -26,7 +26,8 @@ from issue_orchestrator.domain.models import (
     SessionHistoryEntry,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -232,7 +233,7 @@ class TestFactGathererCreateSnapshot:
     ):
         """Test snapshot includes active sessions."""
         issue_key = FakeIssueKey(name=str(sample_issues[0].number))
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
         session = Session(
             key=session_key,
             issue=sample_issues[0],

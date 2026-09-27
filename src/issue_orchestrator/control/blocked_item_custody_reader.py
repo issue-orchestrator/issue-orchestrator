@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
 from ..domain.host_rate_limit import episode_key
 from ..domain.models import BLOCKED_HISTORY_STATUSES
-from ..domain.session_key import TaskKind
 from .blocked_item_custody import (
     ActiveWork,
     BoardCustodyFacts,
@@ -52,7 +51,6 @@ from .blocked_item_custody import (
 )
 from .host_rate_limit_launch_gate import live_episode_keys
 from .stuck_sweep import stuck_sweep_next_due_at
-from .tech_lead_session_policy import is_tech_lead_session
 
 if TYPE_CHECKING:
     from ..domain.human_block import NeedsHumanCause
@@ -79,18 +77,6 @@ DECISIONS_PER_ITEM = 50
 #: consults the latest; a few more keep ties deterministic.
 EFFECTS_PER_ITEM = 5
 
-#: What a live session is doing, in the words a card shows. Keyed on the task
-#: kind the session was launched as; tech-lead sessions are recognised
-#: separately (see :func:`_session_work`).
-_FIX_WORK: Mapping[TaskKind, str] = {
-    TaskKind.CODE: "coding session",
-    TaskKind.REWORK: "rework session",
-    TaskKind.REVIEW: "code review",
-    TaskKind.RETROSPECTIVE_REVIEW: "retrospective review",
-    TaskKind.TECH_LEAD: "tech-lead session",
-}
-
-
 @dataclass(frozen=True)
 class _SessionWork:
     tech_lead: bool
@@ -99,23 +85,19 @@ class _SessionWork:
     since: datetime
 
 
-def _session_work(session: "Session", tech_lead_agent: str | None) -> _SessionWork:
+def _session_work(session: "Session") -> _SessionWork:
     """What one live session is doing, and to which issues.
 
-    THE one place custody identifies a tech-lead session. Tech leads launch as
-    ``TaskKind.CODE`` today and are recognised by their launch scope or agent
-    label, exactly as the rest of the engine does; #7347 replaces that with one
-    authoritative ``SessionKind``, and only this function changes when it lands.
+    THE one place custody identifies a tech-lead session: by the session's
+    launch-stamped kind (#7347), whose owner also names the work. A tech lead
+    is working on its issue and every problem its launch scope owns.
     """
-    scope = session.tech_lead_scope
-    since = _aware(session.started_at)
-    if scope is not None or is_tech_lead_session(tech_lead_agent, session.agent_label):
-        issues = {session.issue.number}
-        if scope is not None:
-            issues.update(scope.problem_issue_numbers)
-        return _SessionWork(True, "tech-lead session", frozenset(issues), since)
+    kind = session.key.kind
+    issues = {session.issue.number}
+    if kind.is_tech_lead and session.tech_lead_scope is not None:
+        issues.update(session.tech_lead_scope.problem_issue_numbers)
     return _SessionWork(
-        False, _FIX_WORK[session.key.task], frozenset({session.issue.number}), since
+        kind.is_tech_lead, kind.work_description, frozenset(issues), _aware(session.started_at)
     )
 
 
@@ -297,7 +279,7 @@ class StateBlockedItemCustodyReader:
         investigations: dict[int, ActiveWork] = {}
         fixes: dict[int, ActiveWork] = {}
         for session in state.active_sessions:
-            work = _session_work(session, self._config.tech_lead_review_agent)
+            work = _session_work(session)
             target = investigations if work.tech_lead else fixes
             for number in work.issues:
                 target.setdefault(number, ActiveWork(work.what, work.since))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from ..domain.coder_prompt import (
     CoderPromptAddendumPreparation,
@@ -12,7 +12,7 @@ from ..domain.coder_prompt import (
     PreparedCoderPromptAddendum,
     build_internal_review_addendum,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..ports.coder_prompt import CoderPromptAddendumProvider
 
 if TYPE_CHECKING:
@@ -27,16 +27,10 @@ class FileInternalReviewPromptAddendum:
     enabled: bool
     max_rounds: int
     instructions_path: str
-    tech_lead_agent_label_supplier: Callable[[], str | None]
 
-    def prepare(
-        self,
-        *,
-        task: TaskKind,
-        agent_label: str,
-    ) -> CoderPromptAddendumPreparation:
-        """Resolve the addendum once, centrally excluding all non-coder roles."""
-        if not self._applies_to(task=task, agent_label=agent_label):
+    def prepare(self, *, kind: SessionKind) -> CoderPromptAddendumPreparation:
+        """Resolve the addendum once, centrally excluding all non-coder kinds."""
+        if not self._applies_to(kind):
             return PreparedCoderPromptAddendum(None)
         try:
             instructions_path = self._contained_instructions_path()
@@ -55,15 +49,14 @@ class FileInternalReviewPromptAddendum:
             return CoderPromptAddendumUnavailable(str(exc))
         return PreparedCoderPromptAddendum(addendum)
 
-    def _applies_to(self, *, task: TaskKind, agent_label: str) -> bool:
-        """Own the complete internal-review role policy in one place."""
-        if not self.enabled or task not in {TaskKind.CODE, TaskKind.REWORK}:
-            return False
-        tech_lead_labels = {"agent:tech-lead"}
-        configured_tech_lead_label = self.tech_lead_agent_label_supplier()
-        if configured_tech_lead_label is not None:
-            tech_lead_labels.add(configured_tech_lead_label)
-        return agent_label not in tech_lead_labels
+    def _applies_to(self, kind: SessionKind) -> bool:
+        """Own the complete internal-review policy in one place.
+
+        Coding and rework sessions get it. A tech-lead run is its own kind
+        since #7347, so it is excluded by kind; before that it launched stamped
+        CODE and had to be subtracted again by agent label here.
+        """
+        return self.enabled and kind in {SessionKind.CODE, SessionKind.REWORK}
 
     def _contained_instructions_path(self) -> Path:
         """Resolve instructions from the trusted, non-mutating repository root."""
@@ -95,5 +88,4 @@ def build_coder_prompt_addendum_provider(
         enabled=config.internal_review_enabled,
         max_rounds=config.internal_review_max_rounds,
         instructions_path=config.internal_review_instructions,
-        tech_lead_agent_label_supplier=lambda: config.tech_lead_review_agent,
     )

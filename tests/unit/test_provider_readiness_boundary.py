@@ -16,7 +16,7 @@ from __future__ import annotations
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.runtime_lifecycle_helpers import make_action_applier
 
-from tests.run_allocation_helpers import make_session_launcher
+from tests.run_allocation_helpers import MemoryIssueRunLedger, make_session_launcher
 
 import ast
 import importlib.util
@@ -598,8 +598,10 @@ class _LauncherHarness:
         # through this applier, so it is the only place a test can see whether
         # a failed launch nevertheless committed a destructive transition.
         self.action_applier = MagicMock()
+        # The durable run ledger a restart restores kinds and roles from (#7347).
+        self.run_ledger = MemoryIssueRunLedger()
         self.launcher = make_session_launcher(
-            issue_run_ledger=MagicMock(),
+            issue_run_ledger=self.run_ledger,
             config=config,
             events=self.events,
             repository_host=MockRepositoryHost(),
@@ -1142,7 +1144,6 @@ class TestDistinctAuthOutcome:
         record_completed_session_problem(
             status=SessionStatus.BLOCKED,
             session=make_session(issue_labels=["agent:backend"]),
-            tech_lead_agent="agent:tech-lead",
             blocking_label="blocked:provider-unavailable",
             artifact_hints=lambda: (),
             record=recorded.append,
@@ -1158,7 +1159,6 @@ class TestDistinctAuthOutcome:
         record_completed_session_problem(
             status=SessionStatus.BLOCKED,
             session=make_session(issue_labels=["agent:backend"]),
-            tech_lead_agent="agent:tech-lead",
             blocking_label="blocked:needs-human",
             artifact_hints=lambda: (),
             record=recorded.append,
@@ -1529,7 +1529,7 @@ def _queue_snapshot(queue: str):
         PendingTechLeadReview,
         PendingValidationRetry,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
     from tests.unit.test_planner import make_issue, make_snapshot
 
@@ -1589,7 +1589,7 @@ def _queue_snapshot(queue: str):
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
         )
         return make_snapshot(pending_validation_retries=[retry]), {}
     if queue == "tech_lead":
@@ -3236,7 +3236,7 @@ def _pending_state(queue: str):
         PendingTechLeadReview,
         PendingValidationRetry,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
     state = OrchestratorState()
@@ -3280,7 +3280,7 @@ def _pending_state(queue: str):
                 validation_error="boom",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
             )
         )
     elif queue == "tech_lead":
@@ -3533,7 +3533,7 @@ def test_a_provider_deferral_touches_neither_restoration_nor_the_retry_budget(
 
     calls: list[str] = []
 
-    def _spy_restore_existing():
+    def _spy_restore_existing(_terminal):
         calls.append("restore_existing")
         return None
 
@@ -4303,7 +4303,9 @@ def _restart(state, session, harness):
     repo_host.issues[session.issue.number] = session.issue
     working_copy = MockWorkingCopy()
     working_copy.branches[session.worktree_path] = session.branch_name or "branch"
-    restorer = SessionRestorer(harness.launcher.config, repo_host, working_copy)
+    restorer = SessionRestorer(
+        harness.launcher.config, repo_host, working_copy, run_ledger=harness.run_ledger
+    )
     discovered = [
         DiscoveredSession(
             issue_number=session.issue.number,
@@ -4400,44 +4402,33 @@ def test_a_restarted_failure_investigation_keeps_its_typed_trigger(
 def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     tmp_path: Path,
 ) -> None:
-    """Prompt, error, attempt count and ROLE cannot be rebuilt from a terminal.
+    """Prompt, error, attempt count and KIND cannot be rebuilt from a terminal.
 
-    Restoration reads the focus issue's own label, which for an investigation is
-    the CODER label. The restored run was therefore classified as ordinary work
-    and the next retry queued with no `authority_run` at all -- the original
-    #7273 defect, reached through a restart instead of a relaunch (round 13
-    finding 1).
+    A rework's validation retry relaunches AS REWORK (#7347). After a restart
+    its kind comes back from the durable run ledger - not from the terminal
+    name, and not from the issue's current agent label - and the claim supplies
+    only what only it holds (the prompt, error and attempt count). Before #7347
+    the relaunch dropped the source kind and restoration re-derived the kind
+    from the ``issue-`` terminal name, so the rework came back as coding work.
     """
-    from issue_orchestrator.control.session_completion import (
-        unprocessed_session_policy,
-    )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
 
     harness = _ready_harness(tmp_path)
     state = _pending_state("validation_retry")
-    state.pending_validation_retries[0].original_prompt = "the original prompt"
-    state.pending_validation_retries[0].agent_label = "agent:tech-lead"
+    retry = state.pending_validation_retries[0]
+    retry.original_prompt = "the original prompt"
+    retry.source_kind = SessionKind.REWORK
     session = _route("validation_retry", state, harness)
     assert session is not None
-    # The durable focus issue still carries its coder label. Only the in-flight
-    # claim knows which role the resumed run was actually launched under.
-    session.issue.labels[:] = ["agent:backend"]
+    assert session.key.kind is SessionKind.REWORK
+    assert session.terminal_id == "rework-7"
+    # The tracker's labels change under a live run; they are not its role.
+    session.issue.labels[:] = ["agent:other"]
     restarted, restored = _restart(state, session, harness)
 
-    assert restored.agent_label == "agent:tech-lead"
-    assert (
-        restored.agent_config is harness.launcher.config.agents["agent:tech-lead"]
-    )
+    assert restored.key.kind is SessionKind.REWORK
+    assert restored.agent_label == "agent:backend"
     assert restored.validation_retry_count == 1
-    policy = unprocessed_session_policy(restored, harness.launcher.config)
-    assert policy.is_tech_lead, (
-        "the restored run was classified as ordinary work, so its next retry "
-        "would inherit no launch authority"
-    )
-    assert (
-        policy.inheritable_launch_authority(restored.run_assets.identity)
-        == restored.run_assets.identity
-    )
 
     _terminate_on_provider(restarted, restored, ProviderErrorType.AUTH, harness)
 
@@ -4445,7 +4436,150 @@ def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     assert returned.original_prompt == "the original prompt"
     assert returned.validation_error == "boom"
     assert returned.retry_count == 1
-    assert returned.source_task is TaskKind.CODE
+    assert returned.source_kind is SessionKind.REWORK
+
+
+def test_a_claim_that_contradicts_the_recorded_kind_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    """The ledger and the claim store must agree on what a live run is (#7347).
+
+    Restoration used to PATCH the session's kind and role from its claim, because
+    it could only read them off the terminal name and the issue's labels. It now
+    reads them from the run ledger, so the claim is a second witness: when the two
+    describe different work, neither can be trusted over the other.
+    """
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    state.pending_validation_retries[0].source_kind = SessionKind.REWORK
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+    recorded_as_code = replace(session, key=replace(session.key, kind=SessionKind.CODE))
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate(
+        [recorded_as_code]
+    )
+
+    assert restoration.admitted == ()
+    [quarantined] = restoration.quarantined
+    assert quarantined.session is recorded_as_code
+    assert "kind rework" in quarantined.error and "recorded as code" in quarantined.error
+
+
+def test_a_claim_naming_another_pr_than_the_recorded_rework_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    """A rework's PR is recorded with its run (#7347 review r4); the claim is a
+    witness that must agree, not a patch that overwrites it."""
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    retry = state.pending_validation_retries[0]
+    retry.source_kind, retry.pr_number, retry.rework_cycle = SessionKind.REWORK, 70, 2
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+    assert harness.run_ledger.recorded_run(session.run_assets).rework_target is not None
+    recorded_for_another_pr = replace(session, pr_number=71)
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate(
+        [recorded_for_another_pr]
+    )
+
+    assert restoration.admitted == ()
+    [quarantined] = restoration.quarantined
+    assert "PR #70" in quarantined.error and "PR #71" in quarantined.error
+
+
+def _routed_rework(tmp_path: Path):
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    harness = _ready_harness(tmp_path)
+    harness.launcher.repository_host.prs[7] = [PRInfo(
+        number=70, url="u", title="PR", branch="7-rework", labels=[], body="", state="open",
+    )]
+    state = _pending_state("rework")
+    state.pending_reworks[0].pr_number = 70
+    state.pending_reworks[0].rework_cycle = 3
+    session = _route("rework", state, harness)
+    assert session is not None
+    return harness, session
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"agent_label": "agent:other"}, "recorded for 'agent:other'"),
+        ({"rework_cycle": 4}, "cycle 3 but the run was recorded for PR #70 cycle 4"),
+        ({"pr_number": 71}, "PR #70 cycle 3 but the run was recorded for PR #71"),
+    ],
+    ids=["agent", "cycle", "pr"],
+)
+def test_a_rework_claim_that_disagrees_with_its_recorded_run_is_quarantined(
+    tmp_path: Path, change, reason
+) -> None:
+    """#7347 review r6: the claim must agree with the ledger on the whole
+    recorded identity - role, PR and cycle - or a provider deferral requeues
+    the claim's version of the work."""
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+
+    harness, session = _routed_rework(tmp_path)
+    recorded = replace(session, **change)
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate([recorded])
+
+    assert restoration.admitted == ()
+    [quarantined] = restoration.quarantined
+    assert reason in quarantined.error
+
+
+def test_a_rework_retry_claim_of_another_cycle_is_quarantined(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    retry = state.pending_validation_retries[0]
+    retry.source_kind, retry.pr_number, retry.rework_cycle = SessionKind.REWORK, 70, 2
+    session = _route("validation_retry", state, harness)
+    assert session is not None
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate(
+        [replace(session, rework_cycle=3)]
+    )
+
+    assert restoration.admitted == ()
+    assert "cycle 2 but the run was recorded for PR #70 cycle 3" in (
+        restoration.quarantined[0].error
+    )
+
+
+def test_a_matching_rework_claim_is_admitted(tmp_path: Path) -> None:
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.models import OrchestratorState
+
+    harness, session = _routed_rework(tmp_path)
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate([session])
+
+    assert restoration.quarantined == ()
+    assert list(restoration.admitted) == [session]
 
 
 def test_a_live_retry_with_unverified_authority_is_quarantined(
@@ -4492,11 +4626,7 @@ def test_a_live_retry_with_unverified_authority_is_quarantined(
     )
 
     restarted = OrchestratorState()
-    restoration = InFlightWorkLedger(restarted, harness.claims).rehydrate(
-        [session],
-        agent_configs=harness.launcher.config.agents,
-        tech_lead_label=harness.launcher.config.tech_lead_review_agent,
-    )
+    restoration = InFlightWorkLedger(restarted, harness.claims).rehydrate([session])
 
     assert restoration.admitted == ()
     assert [item.session for item in restoration.quarantined] == [session]
@@ -4514,9 +4644,14 @@ def test_a_restarted_rework_can_still_restore_its_durable_label(
     on the PR. Without the claim the label is unrecoverable too, so BOTH the
     queue item and its crash-safe trigger were lost.
     """
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
     harness = _ready_harness(tmp_path)
+    harness.launcher.repository_host.prs[7] = [PRInfo(
+        number=70, url="u", title="PR", branch="7-rework", labels=[], body="", state="open",
+    )]
     state = _pending_state("rework")
     state.pending_reworks[0].pr_number = 70
     state.pending_reworks[0].rework_cycle = 3
@@ -4525,9 +4660,10 @@ def test_a_restarted_rework_can_still_restore_its_durable_label(
 
     _restarted, restored = _restart(state, session, harness)
 
-    # Identity the terminal name could not supply, taken from the claim.
+    # Identity the terminal name could not supply: from the run's ledger row
+    # (#7347), which its claim agrees with.
     assert restored.pr_number == 70
-    assert restored.key.task is TaskKind.REWORK
+    assert restored.key.kind is SessionKind.REWORK
     assert restored.rework_cycle == 3
 
 
@@ -4984,7 +5120,9 @@ def _restore_pair(state, sessions, harness):
     added = restore_running_sessions(
         discovered,
         restarted,
-        SessionRestorer(harness.launcher.config, repo_host, working_copy),
+        SessionRestorer(
+            harness.launcher.config, repo_host, working_copy, run_ledger=harness.run_ledger
+        ),
         harness.claims,
         _quarantine(harness),
     )
@@ -5716,11 +5854,7 @@ def test_a_still_discovered_run_whose_claim_is_deferred_is_not_admitted(
     assert session is not None
     harness.claims.defer_pending_work_claim(session.run_assets)
 
-    restoration = InFlightWorkLedger(state, harness.claims).rehydrate(
-        [session],
-        agent_configs=harness.launcher.config.agents,
-        tech_lead_label=harness.launcher.config.tech_lead_review_agent,
-    )
+    restoration = InFlightWorkLedger(state, harness.claims).rehydrate([session])
 
     assert restoration.admitted == ()
     assert [s.session.terminal_id for s in restoration.stale] == [session.terminal_id]
@@ -6310,7 +6444,10 @@ def _restore_with_raw_discovery(harness, discovered):
         discovered,
         restarted,
         SessionRestorer(
-            harness.launcher.config, MockRepositoryHost(), MockWorkingCopy()
+            harness.launcher.config,
+            MockRepositoryHost(),
+            MockWorkingCopy(),
+            run_ledger=harness.run_ledger,
         ),
         harness.claims,
         _quarantine(harness),
@@ -7393,7 +7530,7 @@ def test_an_unwritable_ledger_never_spends_a_budget_it_cannot_record(
     # ...and once the store is writable again the very next launch proceeds
     # with the full budget the fault never spent.
     assert _route("tech_lead", state, harness) is not None
-    assert harness.created == ["issue-7"]
+    assert harness.created == ["tech-lead-7"]
 
 
 def test_a_settlement_will_not_project_a_spend_the_ledger_did_not_take(
@@ -7436,3 +7573,25 @@ def test_a_settlement_will_not_project_a_spend_the_ledger_did_not_take(
     assert projected == []
     assert queued.retryable_launch_failures == 0
     assert _pending_count(state, "tech_lead") == 1
+
+
+def test_an_existing_terminal_is_restored_under_the_name_the_launcher_found(tmp_path: Path) -> None:
+    """#7347 review round 1 finding 2: a kind can find its work under more than
+    one name (a pre-upgrade tech lead runs as ``issue-N``), so the settlement
+    restores the terminal the launcher FOUND, never a re-derived name."""
+    from issue_orchestrator.control.launch_transaction import LaunchSettlement
+    from issue_orchestrator.control.session_launch_types import LaunchResult
+
+    asked: list[str] = []
+
+    def restore(terminal: str):
+        asked.append(terminal)
+        return None
+
+    LaunchSettlement(
+        work=_launch_work("tech_lead", _pending_state("tech_lead"), tmp_path),
+        remove=lambda: None,
+        restore_existing=restore,
+    ).settle(LaunchResult.terminal_already_running("issue-7"), _pending_state("tech_lead"))
+
+    assert asked == ["issue-7"]

@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-from .tech_lead_session_policy import is_tech_lead_session
+from ..domain.session_kind import SessionKind
 
 if TYPE_CHECKING:
     from ..domain.models import Session
@@ -96,7 +96,7 @@ def tech_lead_slot_availability(
 
     reserved = config.tech_lead.max_concurrent
     if reserved is not None:
-        active_tl = active_tech_lead_session_count(config, active_sessions)
+        active_tl = active_tech_lead_session_count(active_sessions)
         available = reserved - active_tl
         if available > 0:
             return TechLeadSlotAvailability(available, None)
@@ -130,20 +130,14 @@ def tech_lead_slot_availability(
     )
 
 
-def active_tech_lead_session_count(
-    config: "Config", active_sessions: "Sequence[Session]"
-) -> int:
-    """Number of active sessions launched under the configured tech lead agent.
+def active_tech_lead_session_count(active_sessions: "Sequence[Session]") -> int:
+    """Number of active tech-lead runs: sessions whose stamped kind is TECH_LEAD.
 
-    Tech Lead identity is the ADR-0031 owner rule (agent label == the configured
-    ``tech_lead_review_agent``); both tech_lead variants launch as ``issue-{N}``
-    sessions under that agent, so the agent label is what distinguishes them.
+    The kind is stamped once at launch (#7347). Before that, every tech-lead
+    flavor launched as a CODE ``issue-{N}`` session and was recognisable only by
+    its agent label.
     """
-    return sum(
-        1
-        for session in active_sessions
-        if is_tech_lead_session(config.tech_lead_review_agent, session.agent_label)
-    )
+    return sum(1 for session in active_sessions if session.key.kind is SessionKind.TECH_LEAD)
 
 
 def active_worker_session_count(
@@ -157,7 +151,7 @@ def active_worker_session_count(
     """
     if config.tech_lead.max_concurrent is None:
         return len(active_sessions)
-    return len(active_sessions) - active_tech_lead_session_count(config, active_sessions)
+    return len(active_sessions) - active_tech_lead_session_count(active_sessions)
 
 
 def worker_slot_availability(

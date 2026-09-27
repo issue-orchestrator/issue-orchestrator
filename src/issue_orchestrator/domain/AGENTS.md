@@ -5,7 +5,7 @@
 **Boundaries**:
 - Infrastructure-agnostic: no GitHub, tmux, file paths, or external system concepts
 - Only depends on Python stdlib
-- Identity types (`SessionKey`, `IssueKey`, `TaskKind`) live here
+- Identity types (`SessionKey`, `IssueKey`, `SessionKind`) live here
 - State machines define valid transitions, not how to execute them
 
 ## Run-Asset Value Objects

@@ -28,7 +28,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..ports import EventSink, TraceEvent, NullEventSink
 from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
@@ -124,19 +124,6 @@ class SessionObserver:
             from ..control.label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
-
-    def _extract_session_number(self, session_name: str) -> int:
-        """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
-        if session_name.startswith("issue-"):
-            return int(session_name.replace("issue-", ""))
-        elif session_name.startswith("review-"):
-            return int(session_name.replace("review-", ""))
-        elif session_name.startswith("rework-"):
-            return int(session_name.replace("rework-", ""))
-        elif session_name.startswith("tech-lead-"):
-            return int(session_name.replace("tech-lead-", ""))
-        else:
-            raise ValueError(f"Unknown session name format: {session_name}")
 
     def _session_exists_by_name(self, session_name: str) -> bool:
         """Check if a session exists by its full name (e.g., 'review-456')."""
@@ -287,11 +274,11 @@ class SessionObserver:
         Only a coding session's branch acquiring an open PR means its job is
         finished. A review, rework or retrospective review starts with that PR
         already open - it is the thing under review - so applying this there
-        /exited every reviewer ~24 s after launch (#7343). Tech-lead sessions
-        still launch stamped CODE, so they are not yet excluded here; #7347
-        replaces this kind check with a capability on an authoritative kind.
+        /exited every reviewer ~24 s after launch (#7343). A tech-lead run is
+        stamped TECH_LEAD since #7347, so it is excluded too; the capability
+        table (#7347 step 2) replaces this kind check.
         """
-        if session.exit_sent or session.key.task is not TaskKind.CODE:
+        if session.exit_sent or session.key.kind is not SessionKind.CODE:
             return
         try:
             prs = self._get_open_prs_for_branch(session.branch_name)

@@ -7,7 +7,8 @@ import pytest
 from issue_orchestrator.control.snapshot_builder import SnapshotBuilder, _select_primary_pr
 from issue_orchestrator.domain.models import Issue, OrchestratorState, Session, AgentConfig
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -143,7 +144,7 @@ class TestIdleStateCalculation:
         mock_repository_host.list_issues.return_value = [issue]
         agent_config = AgentConfig(prompt_path=tmp_path / "prompt.md")
 
-        session_key = SessionKey(issue=FakeIssueKey(name="1"), task=TaskKind.CODE)
+        session_key = SessionKey(issue=FakeIssueKey(name="1"), kind=SessionKind.CODE)
         session = Session(
             key=session_key,
             issue=issue,

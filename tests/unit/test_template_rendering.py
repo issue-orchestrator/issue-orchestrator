@@ -12,7 +12,8 @@ from jinja2 import Environment, FileSystemLoader
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, Session, SessionHistoryEntry
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
 from issue_orchestrator.ports.tech_lead_run_record_store import (
@@ -66,10 +67,10 @@ def make_agent_config() -> AgentConfig:
     return AgentConfig(prompt_path=Path("/tmp/prompt.txt"), model="sonnet", timeout_minutes=45)
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
+def make_session(issue: Issue, task: SessionKind = SessionKind.CODE) -> Session:
     agent_config = make_agent_config()
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=task),
+        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=task),
         issue=issue,
         agent_config=agent_config,
         terminal_id=f"issue-{issue.number}",

@@ -23,7 +23,7 @@ from ..ports.event_sink import EventSink, make_trace_event
 from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
@@ -208,7 +208,7 @@ def _release_issue_runtime(
     is supplied, any in-flight/stored publish retry for the issue is abandoned in
     the same boundary so a late republish cannot repopulate a terminated issue.
     """
-    refs = tuple(_issue_runtime_session_refs(issue_number, session_types))
+    refs = _issue_runtime_session_refs(issue_number, session_types, active_sessions)
     active_names = _active_session_names(active_sessions)
     matching_active = active_names.intersection(ref.name for ref in refs)
     if session_manager is None and matching_active:
@@ -281,7 +281,7 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         session
         for session in active_sessions
         if session.issue.number == target.issue_number
-        and session.key.task in {TaskKind.CODE, TaskKind.REWORK}
+        and session.key.kind in {SessionKind.CODE, SessionKind.REWORK}
     ]
     if not candidates:
         return (
@@ -295,13 +295,13 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         )
     current = candidates[0]
     if (
-        current.key.task is not target.task_kind
+        current.key.kind is not target.task_kind
         or current.terminal_id != target.terminal_id
         or current.run_assets.run_id != target.run_id
     ):
         return (
             f"issue #{target.issue_number}'s live generation "
-            f"({current.key.task.value} terminal {current.terminal_id}, "
+            f"({current.key.kind.value} terminal {current.terminal_id}, "
             f"run {current.run_assets.run_id}) is not the observed generation "
             f"({target.task_kind.value} terminal {target.terminal_id}, "
             f"run {target.run_id}); refusing to kill a replacement"
@@ -426,7 +426,7 @@ def _drop_exact_generation(
         active_sessions,
         lambda session: (
             session.issue.number == target.issue_number
-            and session.key.task is target.task_kind
+            and session.key.kind is target.task_kind
             and session.terminal_id == target.terminal_id
             and session.run_assets.run_id == target.run_id
         ),
@@ -472,12 +472,17 @@ def _issue_runtime_session_active(
 
     Reads ``active_sessions`` (the registry ``terminate_issue_runtime`` clears)
     and, when supplied, the ``SessionManager`` it stops, so the visible-session
-    activity signal matches the terminals the reset would tear down.
+    activity signal matches the terminals the reset would tear down. A
+    recorded tech-lead run is never issue runtime (#7347): it reads its
+    subject from its own checkout, and neither counts nor is stopped here -
+    also when a pre-#7347 one still runs under ``issue-N``. Every other
+    recorded session on the issue still counts, as before.
     """
     registry_active = any(
-        session.issue.number == issue_number for session in (active_sessions or ())
+        session.issue.number == issue_number and not _is_tech_lead_run(session)
+        for session in (active_sessions or ())
     )
-    refs = _issue_runtime_session_refs(issue_number, session_types)
+    refs = _issue_runtime_session_refs(issue_number, session_types, active_sessions)
     manager_active = session_manager is not None and any(
         session_manager.exists(ref) for ref in refs
     )
@@ -487,14 +492,33 @@ def _issue_runtime_session_active(
 def _issue_runtime_session_refs(
     issue_number: int,
     session_types: Iterable[SessionType],
-) -> list["SessionRef"]:
+    active_sessions: list["Session"] | None,
+) -> tuple["SessionRef", ...]:
+    """The issue-runtime terminals of ``issue_number``: ONE selector for the
+    activity probe and the teardown.
+
+    The issue and rework lanes, minus a name a recorded tech-lead run holds
+    (a pre-#7347 tech lead runs as ``issue-N``). A live lane terminal no
+    recorded session accounts for stays in: its owner is unknown, so it is
+    still guarded and torn down.
+    """
     from .session_manager import SessionRef
 
-    return [
+    tech_lead_names = {
+        session.terminal_id
+        for session in (active_sessions or ())
+        if _is_tech_lead_run(session)
+    }
+    lanes = (
         SessionRef(session_type=session_type, number=issue_number)
         for session_type in session_types
         if session_type in ISSUE_RUNTIME_SESSION_TYPES
-    ]
+    )
+    return tuple(ref for ref in lanes if ref.name not in tech_lead_names)
+
+
+def _is_tech_lead_run(session: "Session") -> bool:
+    return session.key.kind is SessionKind.TECH_LEAD
 
 
 def _active_session_names(active_sessions: list["Session"] | None) -> set[str]:

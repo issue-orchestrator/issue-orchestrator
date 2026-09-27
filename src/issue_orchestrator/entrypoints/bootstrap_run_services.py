@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from ..control.issue_run_allocator import IssueRunAllocationService
+from ..control.session_restorer import SessionRestorer
 from ..execution.issue_run_ledger import SqliteIssueRunLedger
 from ..execution.worktree_adapter import GitWorktreeManager
 from ..execution.git_working_copy import GitWorkingCopy
@@ -15,6 +16,8 @@ from ..ports.command_runner import CommandRunner
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.issue_run_allocator import IssueRunAllocator
 from ..ports.issue_run_evidence import IssueRunLedger
+from ..ports.repository_host import RepositoryHost
+from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from ..ports.working_copy import WorkingCopy
 from ..infra.config import Config
 from ..infra.repo_scope import require_repo
@@ -113,3 +116,25 @@ def build_completion_intake(
     )
     owner.pump()
     return owner
+
+
+def build_session_restorer(
+    config: Config,
+    repository_host: RepositoryHost,
+    working_copy: WorkingCopy,
+    ledger: IssueRunLedger,
+    tech_lead_authority: TechLeadAuthorityStore,
+) -> SessionRestorer:
+    """The ONE restorer wiring for both composition roots.
+
+    A surviving session's kind and agent role come back from the durable run
+    ledger that recorded its allocation (#7347), so the restorer is built from
+    the same ledger the run allocator writes.
+    """
+    return SessionRestorer(
+        config=config,
+        repository_host=repository_host,
+        working_copy=working_copy,
+        run_ledger=ledger,
+        tech_lead_authority=tech_lead_authority,
+    )

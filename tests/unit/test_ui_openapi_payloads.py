@@ -46,7 +46,8 @@ from issue_orchestrator.domain.models import (
     Session,
     SessionHistoryEntry,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.dependencies import (
     Dependency,
     DependencyMode,
@@ -812,7 +813,7 @@ def test_dashboard_view_model_matches_ui_openapi() -> None:
     config.agents = {"agent:web": agent_config}
 
     issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
-    session_key = SessionKey(issue=FakeIssueKey("12"), task=TaskKind.REVIEW)
+    session_key = SessionKey(issue=FakeIssueKey("12"), kind=SessionKind.REVIEW)
     session = Session(
         key=session_key,
         issue=issue,

@@ -78,7 +78,8 @@ from issue_orchestrator.domain.models import (
     SessionHistoryStatus,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
@@ -185,10 +186,10 @@ def make_history_entry(issue_number: int, status: SessionHistoryStatus) -> Sessi
     )
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:
+def make_session(issue: Issue, task: SessionKind = SessionKind.CODE, tmp_path: Path = None) -> Session:
     """Create a test session for an issue."""
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     worktree = tmp_path or Path("/tmp/test-worktree")
 
     return Session(
@@ -2045,7 +2046,7 @@ class TestUpdateStateAfterAction:
             Session(
                 key=SessionKey(
                     issue=FakeIssueKey("42"),
-                    task=TaskKind.RETROSPECTIVE_REVIEW,
+                    kind=SessionKind.RETROSPECTIVE_REVIEW,
                 ),
                 issue=issue,
                 agent_config=AgentConfig(prompt_path=Path("/tmp/prompt.md")),

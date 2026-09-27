@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.control.actions import ActionResultType, ResetRetryIssueAction
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.maintenance import ResetResult, reset_issue
@@ -58,7 +59,10 @@ def _custody(pr_state: str = "open"):
 
 
 def _live_session():
-    return SimpleNamespace(terminal_id=f"issue-{ISSUE}", issue=SimpleNamespace(number=ISSUE))
+    return SimpleNamespace(
+        terminal_id=f"issue-{ISSUE}", issue=SimpleNamespace(number=ISSUE),
+        key=SimpleNamespace(kind=SessionKind.CODE),
+    )
 
 
 def _dashboard(pr_state: str):

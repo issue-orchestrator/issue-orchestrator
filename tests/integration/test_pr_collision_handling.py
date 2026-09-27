@@ -516,6 +516,7 @@ class TestLaunchDispositionRetainsPendingWork:
             success=False,
             reason="launch did not start a session",
             disposition=LaunchDisposition[disposition],
+            existing_terminal="review-42" if disposition == "EXISTING_TERMINAL" else None,
         )
 
         pending_reviews = ["review_42"]

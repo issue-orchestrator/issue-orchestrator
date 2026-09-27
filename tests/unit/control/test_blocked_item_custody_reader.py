@@ -33,7 +33,7 @@ from issue_orchestrator.domain.models import (
     PendingValidationRetry,
     SessionHistoryEntry,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_charter import (
     CharterAuthority,
     TechLeadCharter,
@@ -173,9 +173,11 @@ def _decision(
 # -- live sessions: the one place a tech-lead session is recognised ------------
 
 
-def test_a_tech_lead_session_by_agent_label_is_investigating(make_session) -> None:
+def test_a_tech_lead_session_is_investigating(make_session) -> None:
+    """Recognised by its stamped kind (#7347), not its agent label."""
     session = replace(
-        make_session(issue_number=5), agent_label=TECH_LEAD, started_at=NOW - 30 * timedelta(minutes=1)
+        make_session(issue_number=5, task=SessionKind.TECH_LEAD),
+        agent_label=TECH_LEAD, started_at=NOW - 30 * timedelta(minutes=1),
     )
     state = OrchestratorState(
         active_sessions=[session], cached_scope_issues=[_blocked(5, "blocked-failed")]
@@ -189,7 +191,7 @@ def test_a_tech_lead_session_by_agent_label_is_investigating(make_session) -> No
 
 def test_a_health_review_cohort_is_investigating_every_problem_it_owns(make_session) -> None:
     review = replace(
-        make_session(issue_number=900),
+        make_session(issue_number=900, task=SessionKind.TECH_LEAD),
         agent_label=TECH_LEAD,
         started_at=NOW - HOUR,
         tech_lead_scope=TechLeadLaunchScope(
@@ -208,13 +210,25 @@ def test_a_health_review_cohort_is_investigating_every_problem_it_owns(make_sess
 
 
 def test_a_coding_session_is_being_fixed_not_investigated(make_session) -> None:
-    session = replace(make_session(issue_number=6, task=TaskKind.REWORK), started_at=NOW - HOUR)
+    session = replace(make_session(issue_number=6, task=SessionKind.REWORK), started_at=NOW - HOUR)
     state = OrchestratorState(active_sessions=[session], cached_scope_issues=[_blocked(6, "blocked-failed")])
 
     custody = _reader(state).read([6]).for_issue(6)
 
     assert custody.state is CustodyState.BEING_FIXED
     assert custody.reason == "A rework session is working on it now."
+
+
+def test_a_coder_under_the_tech_lead_agent_label_is_being_fixed(make_session) -> None:
+    """#7347: tech-lead identity is the stamped kind. A CODE session is a fix,
+    whatever label its agent carries."""
+    session = replace(make_session(issue_number=6), agent_label=TECH_LEAD, started_at=NOW - HOUR)
+    state = OrchestratorState(active_sessions=[session], cached_scope_issues=[_blocked(6, "blocked-failed")])
+
+    custody = _reader(state).read([6]).for_issue(6)
+
+    assert custody.state is CustodyState.BEING_FIXED
+    assert custody.reason == "A coding session is working on it now."
 
 
 # -- queues ----------------------------------------------------------------------
@@ -256,7 +270,7 @@ def test_a_queued_validation_retry_is_being_fixed(tmp_path: Path) -> None:
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_kind=SessionKind.CODE,
     )
     state = OrchestratorState(pending_validation_retries=[retry], cached_scope_issues=[_blocked(31, "blocked-failed")])
 
