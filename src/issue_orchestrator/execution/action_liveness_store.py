@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS action_liveness (
     last_reason TEXT NOT NULL,
     next_attempt_at TEXT,
     escalated INTEGER NOT NULL DEFAULT 0,
+    explained INTEGER NOT NULL DEFAULT 0,
     escalation_attempts INTEGER NOT NULL DEFAULT 0 CHECK (escalation_attempts >= 0),
     escalation_attempted_at TEXT,
     PRIMARY KEY (subject, action, fingerprint)
@@ -56,7 +57,7 @@ CREATE TABLE IF NOT EXISTS action_liveness_release (
 _SELECT = (
     "SELECT subject, action, fingerprint, escalation_issue, attempts, first_failed_at,"
     " last_failed_at, last_outcome, last_reason, next_attempt_at, escalated,"
-    " escalation_attempts, escalation_attempted_at FROM action_liveness"
+    " explained, escalation_attempts, escalation_attempted_at FROM action_liveness"
 )
 _ORDER = " ORDER BY last_failed_at, subject, action, fingerprint"
 _BY_KEY = _SELECT + " WHERE subject=? AND action=? AND fingerprint=?"
@@ -66,19 +67,21 @@ _ESCALATED_ON_ISSUE = (
     _SELECT + " WHERE escalation_issue=? AND escalated=1 AND next_attempt_at IS NULL" + _ORDER
 )
 _PARKED = _SELECT + " WHERE next_attempt_at IS NULL" + _ORDER
-_UNESCALATED_PARKED = (
+_OWING_ESCALATION = (
     _SELECT
-    + " WHERE next_attempt_at IS NULL AND escalated=0 AND escalation_issue IS NOT NULL"
+    + " WHERE next_attempt_at IS NULL AND escalation_issue IS NOT NULL"
+    + " AND (escalated=0 OR explained=0)"
     + _ORDER
 )
 _UPSERT = (
     "INSERT OR REPLACE INTO action_liveness (subject, action, fingerprint,"
     " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
-    " last_reason, next_attempt_at, escalated, escalation_attempts,"
-    " escalation_attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " last_reason, next_attempt_at, escalated, explained, escalation_attempts,"
+    " escalation_attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _DELETE_IDENTITY = "DELETE FROM action_liveness WHERE subject=? AND action=?"
 _DELETE_ISSUE = "DELETE FROM action_liveness WHERE escalation_issue=?"
+_OWE_RELEASE = "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)"
 
 
 class SQLiteActionLivenessStore:
@@ -133,6 +136,7 @@ class SQLiteActionLivenessStore:
                     row.last_reason,
                     _iso(row.next_attempt_at),
                     int(row.escalated),
+                    int(row.explained),
                     row.escalation_attempts,
                     _iso(row.escalation_attempted_at),
                 ),
@@ -140,7 +144,7 @@ class SQLiteActionLivenessStore:
 
     def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
         params = (identity.subject, identity.action)
-        return self._delete(_BY_IDENTITY, _DELETE_IDENTITY, params)
+        return self._delete(_BY_IDENTITY, _DELETE_IDENTITY, params, owe_releases=True)
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         return self._delete(_BY_ISSUE, _DELETE_ISSUE, (issue_number,))
@@ -151,15 +155,12 @@ class SQLiteActionLivenessStore:
     def parked_rows(self) -> tuple[LivenessRow, ...]:
         return self._select(_PARKED, ())
 
-    def unescalated_parked_rows(self) -> tuple[LivenessRow, ...]:
-        return self._select(_UNESCALATED_PARKED, ())
+    def rows_owing_escalation(self) -> tuple[LivenessRow, ...]:
+        return self._select(_OWING_ESCALATION, ())
 
     def request_release(self, issue_number: int) -> None:
         with self._write() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO action_liveness_release (issue_number) VALUES (?)",
-                (issue_number,),
-            )
+            conn.execute(_OWE_RELEASE, (issue_number,))
 
     def pending_releases(self) -> tuple[PendingRelease, ...]:
         rows = self._connection().execute(
@@ -190,12 +191,32 @@ class SQLiteActionLivenessStore:
         return tuple(_row(found) for found in rows)
 
     def _delete(
-        self, select: str, delete: str, params: tuple[object, ...]
+        self,
+        select: str,
+        delete: str,
+        params: tuple[object, ...],
+        *,
+        owe_releases: bool = False,
     ) -> tuple[LivenessRow, ...]:
+        """Delete rows, and in the SAME transaction owe their blocks' withdrawal.
+
+        A crash between forgetting an escalated park and recording that its
+        block must come off would leave the block on the issue with nothing
+        left to take it off.
+        """
         with self._write() as conn:
-            rows = conn.execute(select, params).fetchall()
+            rows = tuple(_row(found) for found in conn.execute(select, params).fetchall())
             conn.execute(delete, params)
-        return tuple(_row(found) for found in rows)
+            if owe_releases:
+                for issue in sorted(
+                    {
+                        row.key.escalation_issue
+                        for row in rows
+                        if row.escalated and row.key.escalation_issue is not None
+                    }
+                ):
+                    conn.execute(_OWE_RELEASE, (issue,))
+        return rows
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -220,6 +241,7 @@ def _row(found: sqlite3.Row) -> LivenessRow:
         last_reason=found["last_reason"],
         next_attempt_at=_parse(found["next_attempt_at"]),
         escalated=bool(found["escalated"]),
+        explained=bool(found["explained"]),
         escalation_attempts=found["escalation_attempts"],
         escalation_attempted_at=_parse(found["escalation_attempted_at"]),
     )

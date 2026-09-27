@@ -93,6 +93,28 @@ def test_a_block_github_never_accepts_stops_being_retried() -> None:
     assert [row.key for row in owner.parked()] == [KEY], "still held and on the board"
 
 
+def test_a_comment_github_refused_is_retried_without_relabelling() -> None:
+    """The block landed, its explanation did not: only the comment is owed."""
+    clock = ManualClock()
+    escalation = RecordingEscalation(explain_commits=False)
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock, policy=POLICY)
+
+    owner.record(KEY, ActionOutcome.permanent("422"))
+    row = store.row(KEY)
+    assert row.escalated is True and row.explained is False
+
+    escalation.explain_commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+
+    assert len(escalation.blocks) == 1
+    assert [committed for _row, committed in escalation.explanations] == [False, True]
+    assert store.row(KEY).explained is True
+
+
 def test_changed_facts_are_a_new_question() -> None:
     owner = liveness_owner(policy=POLICY)
     owner.record(KEY, ActionOutcome.needs_human("paused"))
@@ -166,6 +188,24 @@ def test_operator_release_gives_every_key_on_the_issue_a_fresh_budget() -> None:
     # The operator command settled the label itself: nothing is withdrawn
     # here, and no withdrawal is left owed.
     assert escalation.unblocks == [] and store.releases == {}
+
+
+def test_a_release_is_owed_durably_the_moment_the_park_is_forgotten(tmp_path) -> None:
+    """A crash right after success forgets the park; the debt must survive it."""
+    path = tmp_path / "action_liveness.sqlite"
+    owner = liveness_owner(store=SQLiteActionLivenessStore(path), policy=POLICY)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+
+    # The store's half of success, with no owner afterwards (the crash).
+    SQLiteActionLivenessStore(path).clear_identity(KEY.identity)
+
+    escalation = RecordingEscalation()
+    restarted = liveness_owner(
+        store=SQLiteActionLivenessStore(path), escalation=escalation, policy=POLICY
+    )
+    restarted.reconcile_effects()
+    assert escalation.unblocks == [(229, True)]
+    assert SQLiteActionLivenessStore(path).pending_releases() == ()
 
 
 def test_the_budget_survives_an_engine_restart(tmp_path) -> None:

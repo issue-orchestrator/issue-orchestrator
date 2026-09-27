@@ -117,7 +117,7 @@ class ActionLivenessOwner:
             row.last_reason,
         )
         self._escalation.announce_parked(row)
-        return self._block(row, now)
+        return self._escalate(row, now)
 
     def reconcile_effects(self) -> None:
         """Retry every escalation effect that has not committed yet.
@@ -128,9 +128,9 @@ class ActionLivenessOwner:
         refusing is neither lost nor hammered. Called once per planning cycle.
         """
         now = self._clock()
-        for row in self._store.unescalated_parked_rows():
+        for row in self._store.rows_owing_escalation():
             if self._policy.effect_due(row.escalation_attempts, row.escalation_attempted_at, now):
-                self._block(row, now)
+                self._escalate(row, now)
         for pending in self._store.pending_releases():
             if self._policy.effect_due(pending.attempts, pending.attempted_at, now):
                 self._unblock(pending.issue_number, now)
@@ -154,13 +154,27 @@ class ActionLivenessOwner:
         """Every parked row, for the tech-lead board and diagnostics."""
         return self._store.parked_rows()
 
-    def _block(self, row: LivenessRow, now: datetime) -> LivenessRow:
+    def _escalate(self, row: LivenessRow, now: datetime) -> LivenessRow:
+        """Land whichever escalation effect is still owed: the block, then its comment.
+
+        Each is a separate durable debt. The comment is owed only once the block
+        has landed, and its attempts are paced from that moment.
+        """
         if row.key.escalation_issue is None:
             return row
-        committed = self._escalation.block(row)
+        if not row.escalated:
+            if not self._escalation.block(row):
+                return self._put_attempt(row, now)
+            row = replace(row, escalated=True, escalation_attempts=0, escalation_attempted_at=None)
+        if not self._escalation.explain(row):
+            return self._put_attempt(row, now)
+        row = replace(row, explained=True, escalation_attempts=0, escalation_attempted_at=None)
+        self._store.put(row)
+        return row
+
+    def _put_attempt(self, row: LivenessRow, now: datetime) -> LivenessRow:
         row = replace(
             row,
-            escalated=committed,
             escalation_attempts=row.escalation_attempts + 1,
             escalation_attempted_at=now,
         )
@@ -174,6 +188,8 @@ class ActionLivenessOwner:
             return
         self._escalation.announce_released(parked)
         now = self._clock()
+        # ``clear_identity`` already owed each freed issue its release in the
+        # same transaction that forgot the parks; try to settle them now.
         for issue in sorted(
             {
                 row.key.escalation_issue
@@ -181,7 +197,6 @@ class ActionLivenessOwner:
                 if row.escalated and row.key.escalation_issue is not None
             }
         ):
-            self._store.request_release(issue)
             self._unblock(issue, now)
 
     def _unblock(self, issue_number: int, now: datetime) -> None:

@@ -175,9 +175,11 @@ class LivenessRow:
 
     ``attempts`` counts failed attempts that SPENT budget, so a declared wait
     does not appear in it. ``next_attempt_at`` is ``None`` exactly when parked.
-    ``escalated`` records that the human-visible block for this park committed;
-    until it has, ``escalation_attempts`` and ``escalation_attempted_at`` pace
-    the owner's retries of that block (:meth:`LivenessPolicy.effect_due`).
+    ``escalated`` records that the human-visible block for this park committed,
+    and ``explained`` that its explanatory comment did. Until both have,
+    ``escalation_attempts`` and ``escalation_attempted_at`` pace the owner's
+    retries of the one still owed (:meth:`LivenessPolicy.effect_due`); the
+    count restarts when the block lands and the comment becomes the debt.
     """
 
     key: LivenessKey
@@ -188,6 +190,7 @@ class LivenessRow:
     last_reason: str
     next_attempt_at: datetime | None
     escalated: bool = False
+    explained: bool = False
     escalation_attempts: int = 0
     escalation_attempted_at: datetime | None = None
 
@@ -201,9 +204,12 @@ class LivenessRow:
         if self.next_attempt_at is not None:
             _require_aware(self.next_attempt_at, "next_attempt_at")
         if self.next_attempt_at is not None and (
-            self.escalated or self.escalation_attempts or self.escalation_attempted_at
+            self.escalated or self.explained or self.escalation_attempts
+            or self.escalation_attempted_at
         ):
             raise ValueError("only a parked row can have been escalated")
+        if self.explained and not self.escalated:
+            raise ValueError("only an escalated park can have been explained")
         if self.escalation_attempts < 0:
             raise ValueError("escalation_attempts cannot be negative")
         if (self.escalation_attempts == 0) != (self.escalation_attempted_at is None):
@@ -214,6 +220,15 @@ class LivenessRow:
     @property
     def parked(self) -> bool:
         return self.next_attempt_at is None
+
+    @property
+    def owes_escalation(self) -> bool:
+        """A parked row with an issue whose block or comment has not landed."""
+        return (
+            self.parked
+            and self.key.escalation_issue is not None
+            and not (self.escalated and self.explained)
+        )
 
 
 class Admission(StrEnum):
@@ -304,6 +319,7 @@ class LivenessPolicy:
             row = replace(
                 row,
                 escalated=previous.escalated,
+                explained=previous.explained,
                 escalation_attempts=previous.escalation_attempts,
                 escalation_attempted_at=previous.escalation_attempted_at,
             )
@@ -337,6 +353,7 @@ def _backing_off(
         attempts=row.attempts if attempts is None else attempts,
         next_attempt_at=next_attempt_at,
         escalated=False,
+        explained=False,
         escalation_attempts=0,
         escalation_attempted_at=None,
     )

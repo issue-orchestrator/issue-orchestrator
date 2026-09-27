@@ -62,7 +62,9 @@ def parked_comment(row: LivenessRow) -> str:
             "",
             "It is parked, not dropped: nothing it was protecting has been"
             " deleted. It is tried again when the facts it was derived from"
-            " change, or when an operator retries or dismisses this issue.",
+            " change, or when an operator retries or dismisses this issue."
+            " Once the cause is fixed (for example `io:needs-reconcile`"
+            " removed after reconciling), **Retry** this issue to release it.",
         ]
     )
 
@@ -92,12 +94,13 @@ class ActionLivenessEscalation:
             needs_human_cause=NeedsHumanCause.ACTION_LIVENESS,
             reason=f"parked {row.key.identity.action}: {row.last_reason}",
         )
-        if not self._apply(block):
-            return False
-        # The block is what a person acts on; the comment only explains it, so
-        # a failed comment does not make the escalation uncommitted.
-        self._apply(AddCommentAction(number=issue, comment=parked_comment(row)))
-        return True
+        return self._apply(block)
+
+    def explain(self, row: LivenessRow) -> bool:
+        issue = row.key.escalation_issue
+        if issue is None:
+            raise ValueError("an explanation needs the row's escalation issue")
+        return self._apply(AddCommentAction(number=issue, comment=parked_comment(row)))
 
     def unblock(self, issue_number: int) -> bool:
         return self._apply(

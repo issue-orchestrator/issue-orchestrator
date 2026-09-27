@@ -37,7 +37,12 @@ class ActionLivenessStore(Protocol):
         ...
 
     def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        """Delete every fingerprint's row for ``identity``; return what was deleted."""
+        """Delete every fingerprint's row for ``identity``; return what was deleted.
+
+        In the same transaction, owe a release (:meth:`request_release`) to the
+        issue of every deleted row whose block had committed, so no crash can
+        forget a block that has to come off.
+        """
         ...
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
@@ -52,8 +57,8 @@ class ActionLivenessStore(Protocol):
         """Every parked row, oldest park first."""
         ...
 
-    def unescalated_parked_rows(self) -> tuple[LivenessRow, ...]:
-        """Parked rows with an escalation issue whose block has not committed."""
+    def rows_owing_escalation(self) -> tuple[LivenessRow, ...]:
+        """Parked rows with an escalation issue whose block or comment has not landed."""
         ...
 
     def request_release(self, issue_number: int) -> None:
@@ -91,7 +96,11 @@ class LivenessEscalation(Protocol):
 
     def block(self, row: LivenessRow) -> bool:
         """Put the needs-human block, under this owner's cause, on the row's
-        escalation issue with one explanatory comment. True when the block committed."""
+        escalation issue. True when it committed."""
+        ...
+
+    def explain(self, row: LivenessRow) -> bool:
+        """Post the one comment explaining the block. True when it committed."""
         ...
 
     def unblock(self, issue_number: int) -> bool:

@@ -41,7 +41,11 @@ class InMemoryActionLivenessStore:
         return gone
 
     def clear_identity(self, identity: ActionIdentity) -> tuple[LivenessRow, ...]:
-        return self._pop(lambda row: row.key.identity == identity)
+        gone = self._pop(lambda row: row.key.identity == identity)
+        for row in gone:
+            if row.escalated and row.key.escalation_issue is not None:
+                self.request_release(row.key.escalation_issue)
+        return gone
 
     def clear_escalation_issue(self, issue_number: int) -> tuple[LivenessRow, ...]:
         return self._pop(lambda row: row.key.escalation_issue == issue_number)
@@ -59,11 +63,8 @@ class InMemoryActionLivenessStore:
             key=lambda row: row.last_failed_at,
         ))
 
-    def unescalated_parked_rows(self) -> tuple[LivenessRow, ...]:
-        return tuple(
-            row for row in self.parked_rows()
-            if not row.escalated and row.key.escalation_issue is not None
-        )
+    def rows_owing_escalation(self) -> tuple[LivenessRow, ...]:
+        return tuple(row for row in self.parked_rows() if row.owes_escalation)
 
     def request_release(self, issue_number: int) -> None:
         self.releases.setdefault(issue_number, PendingRelease(issue_number, 0, None))
@@ -90,11 +91,13 @@ class RecordingEscalation:
     """
 
     commits: bool = True
+    explain_commits: bool = True
     unblock_commits: bool = True
     parked: list[LivenessRow] = field(default_factory=list)
     released: list[tuple[LivenessRow, ...]] = field(default_factory=list)
     blocks: list[tuple[LivenessRow, bool]] = field(default_factory=list)
     unblocks: list[tuple[int, bool]] = field(default_factory=list)
+    explanations: list[tuple[LivenessRow, bool]] = field(default_factory=list)
 
     def announce_parked(self, row: LivenessRow) -> None:
         self.parked.append(row)
@@ -105,6 +108,10 @@ class RecordingEscalation:
     def block(self, row: LivenessRow) -> bool:
         self.blocks.append((row, self.commits))
         return self.commits
+
+    def explain(self, row: LivenessRow) -> bool:
+        self.explanations.append((row, self.explain_commits))
+        return self.explain_commits
 
     def unblock(self, issue_number: int) -> bool:
         self.unblocks.append((issue_number, self.unblock_commits))

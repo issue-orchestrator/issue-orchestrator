@@ -57,7 +57,9 @@ def _escalation(mock_event_sink, applier):
 def test_a_block_labels_under_its_own_cause_and_comments(mock_event_sink) -> None:
     applier = _Applier()
 
-    assert _escalation(mock_event_sink, applier).block(_row()) is True
+    escalation = _escalation(mock_event_sink, applier)
+    assert escalation.block(_row()) is True
+    assert escalation.explain(_row()) is True
 
     label, comment = applier.applied
     assert isinstance(label, AddLabelAction)
@@ -67,11 +69,12 @@ def test_a_block_labels_under_its_own_cause_and_comments(mock_event_sink) -> Non
     assert "`remove_label` on `issue:410`" in comment.comment
 
 
-def test_an_uncommitted_block_is_reported_and_posts_no_comment(mock_event_sink) -> None:
-    applier = _Applier(fail=frozenset({AddLabelAction}))
+def test_uncommitted_writes_are_reported(mock_event_sink) -> None:
+    applier = _Applier(fail=frozenset({AddLabelAction, AddCommentAction}))
+    escalation = _escalation(mock_event_sink, applier)
 
-    assert _escalation(mock_event_sink, applier).block(_row()) is False
-    assert [type(action) for action in applier.applied] == [AddLabelAction]
+    assert escalation.block(_row()) is False
+    assert escalation.explain(_row()) is False
 
 
 def test_a_raising_write_is_an_uncommitted_one(mock_event_sink) -> None:
