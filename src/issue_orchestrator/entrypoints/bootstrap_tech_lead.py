@@ -228,10 +228,12 @@ def create_tech_lead_board_publisher(
     if not config.tech_lead_enabled:
         return None
     from ..control.tech_lead_board import TechLeadBoardPublisher, tech_lead_board_path
+    from ..control.tech_lead_charter_policy import TechLeadCharterPolicy
 
     return TechLeadBoardPublisher(
         board_path=tech_lead_board_path(config.repo_root),
         authority=authority,
+        charter_policy=lambda: TechLeadCharterPolicy.from_config(config),
     )
 
 
@@ -380,9 +382,11 @@ def create_pattern_registry(
         MirroredPatternCaseFileRegistry,
     )
 
+    from ..control.tech_lead_charter_policy import TechLeadCharterPolicy
+
+    policy = TechLeadCharterPolicy.from_config(config)
     pattern_consumers_active = (
-        config.tech_lead.authority.flag_pattern == "execute"
-        or config.tech_lead.findings.promote != "off"
+        policy.executes("flag_pattern") or policy.promotion_lane_enabled
     )
     if (
         not shared_required

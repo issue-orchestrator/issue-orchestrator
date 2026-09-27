@@ -59,6 +59,7 @@ from ..ports.event_sink import make_trace_event
 from .session_launch_types import LaunchResult
 from .scoped_rework_observation import observe_rework_targets
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
+from .tech_lead_charter_prompt import stage_tech_lead_charter
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
@@ -606,6 +607,7 @@ def prepare_tech_lead_session_data(
     assignment_path = run_dir / TECH_LEAD_DATA_DIRNAME / TECH_LEAD_ASSIGNMENT_FILENAME
     assignment.write(assignment_path)
     ctx.update_manifest({"tech_lead_assignment": str(assignment_path)})
+    stage_tech_lead_charter(config, run_dir, ctx)
     focus_issue = issue.number if focused else None
     problem_issue_numbers = (
         _resolve_health_review_cohort(

@@ -51,6 +51,10 @@ from .tech_lead_actions import (
     reconciliation_subject_for,
 )
 from .tech_lead_case_files import apply_append_pattern_observation
+from .tech_lead_charter_policy import (
+    apply_charter_audited_action,
+    apply_record_tech_lead_charter_decisions,
+)
 from .tech_lead_dispositions import apply_record_tech_lead_disposition
 from .tech_lead_human_disposition import apply_human_disposition
 from .tech_lead_finding_promotion import (
@@ -93,6 +97,8 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.PROMOTE_TECH_LEAD_FINDING,
             ActionType.REPORT_PROMOTED_FINDING_EVIDENCE,
             ActionType.SETTLE_TECH_LEAD_PROMOTION,
+            ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS,
+            ActionType.APPLY_CHARTER_AUDITED_ACTION,
         }
     )
 )
@@ -202,6 +208,15 @@ def tech_lead_action_handlers(
                 repository_host=repository_host, apply_action=apply_action,
                 require_expected=require_expected, verify_claim=verify_claim,
                 clock=lambda: datetime.now(timezone.utc))
+        ),
+        # Charter decisions: orchestrator-owned ledger rows only (#7330).
+        ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS: lambda action: (
+            apply_record_tech_lead_charter_decisions(action, authority=authority)
+        ),
+        ActionType.APPLY_CHARTER_AUDITED_ACTION: lambda action: (
+            apply_charter_audited_action(
+                action, authority=authority, apply_action=apply_action
+            )
         ),
         # Finding promotion: file in the routed repo, then close the loop
         # (#6957). All three reconcile against the SOURCE repo's case file —

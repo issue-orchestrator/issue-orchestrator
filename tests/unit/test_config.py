@@ -3878,15 +3878,36 @@ tech_lead:
         with pytest.raises(ValueError, match="tech_lead.authority.post_comment"):
             Config.load(config_file)
 
-    @pytest.mark.parametrize("key", ["reset_retry", "kill_hung_session"])
-    def test_tech_lead_authority_act_level_execute_is_valid_at_startup(self, key):
-        """Both current act-level actions have direct executors."""
+    def test_tech_lead_authority_kill_execute_is_valid_at_startup(self):
+        """kill_hung_session has a direct, generation-bound executor."""
         config = Config()
-        setattr(config.tech_lead.authority, key, "execute")
+        config.tech_lead.authority.kill_hung_session = "execute"
 
         errors = config.validate()
 
-        assert not any(f"tech_lead.authority.{key}" in e for e in errors), errors
+        assert not any("tech_lead.authority.kill_hung_session" in e for e in errors), errors
+
+    def test_tech_lead_authority_reset_retry_execute_is_a_startup_error(self):
+        """Reset from scratch is destructive: 'execute' would be a silent no-op
+        because the charter never runs it unattended, so it is refused (#7330)."""
+        config = Config()
+        config.tech_lead.authority.reset_retry = "execute"
+
+        errors = config.validate()
+
+        assert any(
+            "tech_lead.authority.reset_retry" in e and "destructive" in e for e in errors
+        ), errors
+
+    def test_tech_lead_authority_reset_retry_execute_is_rejected_on_load(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "repo:\n  root: /tmp/repo\n"
+            "tech_lead:\n  authority:\n    reset_retry: execute\n"
+        )
+
+        with pytest.raises(ValueError, match="reset_retry.*destructive"):
+            Config.load(config_file)
 
     def test_tech_lead_authority_mode_for_floor_and_unknown(self):
         """escalate_to_human always executes; unknown action types raise."""

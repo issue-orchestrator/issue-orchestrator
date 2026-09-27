@@ -398,10 +398,20 @@ def apply_completion_actions_gated(
     outcome, then re-raise. With no mandated action the whole list applies in one
     pass — behavior for ordinary completions is unchanged.
     """
+    from .tech_lead_charter_records import partition_charter_records
+
+    # The charter decisions are an audit of what was DECIDED, so they land
+    # before the gate and whatever the mandated outcome; a failed audit write
+    # withholds every effect (#7330 review F2).
+    audit, actions = partition_charter_records(actions)
+    audited, error = _apply_completion_action_batch(action_applier, audit, issue_number)
+    if error is not None or not all(result.success for result in audited):
+        return audited, error or RuntimeError("tech-lead charter decisions were not recorded")
     mandated, remainder = partition_required_act_level_actions(actions)
     applied, error = _apply_completion_action_batch(
         action_applier, mandated or list(actions), issue_number
     )
+    applied = audited + applied
     if (
         not mandated
         or error is not None
