@@ -12,7 +12,7 @@ from issue_orchestrator.control.review_exchange_lifecycle import OtherRuntimeAct
 from issue_orchestrator.control.validated_work_scope_retirement import OutOfScopeRecordRetirement
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.models import OrchestratorState
-from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from issue_orchestrator.domain.recovery_completion import RecoveryCompleted
 from issue_orchestrator.domain.recovery_entry import RecoveryIssue, RecoveryIssueState, RecoveryRecordRequest
 from issue_orchestrator.domain.validated_work import ValidatedWorkFailure, ValidatedWorkState
@@ -106,6 +106,11 @@ def test_other_runtime_activity_blocks_publication(operation, unverifiable):
     result = op.owner.run(op.request, OrchestratorState())
     assert isinstance(result, RecoveryAttemptPending)
     assert result.failure is ValidatedWorkFailure.RUNTIME_ACTIVE
+    # A confirmed owner is a visible wait; a probe that cannot answer is a
+    # bounded failure, or a broken probe would hold the record forever (#7350).
+    assert result.kind is (
+        RecoveryPendingKind.FAILED if unverifiable else RecoveryPendingKind.WAITING
+    )
     assert_retained_without_publication(op)
 
 

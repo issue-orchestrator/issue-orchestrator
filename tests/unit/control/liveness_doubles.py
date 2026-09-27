@@ -147,6 +147,14 @@ class InMemoryActionLivenessStore:
             key=lambda row: row.last_failed_at,
         ))
 
+    def waiting_rows(self) -> tuple[LivenessRow, ...]:
+        from issue_orchestrator.domain.action_liveness import OutcomeKind
+
+        return tuple(
+            row for row in self.rows.values()
+            if not row.parked and row.last_outcome is OutcomeKind.WAITING
+        )
+
     def rows_owing_escalation(self) -> tuple[LivenessRow, ...]:
         return tuple(row for row in self.parked_rows() if row.owes_escalation)
 
@@ -261,3 +269,29 @@ class _PassthroughLiveness:
 
 
 PASSTHROUGH_LIVENESS = _PassthroughLiveness()
+
+
+class QueuedOnIssueOne:
+    """Record facts for drain tests that do not look at them: every record is
+    queued on issue 1 with no attached evidence."""
+
+    def get(self, _record_id: str):
+        from types import SimpleNamespace
+
+        from issue_orchestrator.domain.validated_work import ValidatedWorkState
+
+        return SimpleNamespace(key=SimpleNamespace(issue_number=1), state=ValidatedWorkState.QUEUED)
+
+    def attached_evidence(self, _record_id: str) -> tuple:
+        return ()
+
+
+def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None):
+    """A recovery-drain liveness over an in-memory owner (#7350); ``records``
+    is the validated-work store (or a stand-in for its two fact reads)."""
+    from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
+
+    return RecoveryDrainLiveness(
+        owner=owner or liveness_owner(),
+        records=records if records is not None else QueuedOnIssueOne(),
+    )

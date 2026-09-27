@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .pr_issue_reference import honors_partial_claim
 from .publication_remote import PublicationPullRequest, PublicationPrState, publication_marker
 from .validated_head_publication import PublishValidatedHeadCommand, RemoteHeadExpectation
+from .host_rate_limit import HostRateLimit
 from .validated_work import DispositionPhase, ValidatedWorkFailure
 
 
@@ -53,6 +54,8 @@ class PublicationVerification:
     pull_request: PublicationPullRequest | None
     failure: ValidatedWorkFailure | None
     message: str
+    #: The host's typed rate limit behind an unreadable remote, if any (#7350).
+    rate_limit: HostRateLimit | None = None
 
     @property
     def verified(self) -> bool:

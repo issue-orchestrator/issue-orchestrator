@@ -40,6 +40,7 @@ from ..domain.action_liveness import (
     LivenessRow,
     admission,
 )
+from ..domain.host_rate_limit import HostRateLimit
 from ..ports.action_liveness import ActionLivenessStore, LivenessEscalation
 from ..ports.blocked_item_custody import ParkedActionFact
 
@@ -64,6 +65,21 @@ def release_parked_action(
     :meth:`ActionLivenessOwner.reconcile_effects` settles both.
     """
     return store.release_identity(identity)
+
+
+def transient_outcome(reason: str, limit: HostRateLimit | None) -> ActionOutcome:
+    """A transient failure, waiting out a GitHub rate limit when one is behind it.
+
+    #7303's typed ``HostRateLimit`` says when the host answers again, so the
+    failure waits until then and spends nothing, within the policy's
+    declared-wait bound. Every replanning path classifies through this one.
+    """
+    if limit is None:
+        return ActionOutcome.transient(reason)
+    return ActionOutcome.transient(
+        f"{reason} (GitHub rate limit until {limit.resets_at.isoformat()})",
+        retry_at=limit.resets_at,
+    )
 
 
 def _utc_now() -> datetime:
@@ -314,4 +330,4 @@ class ActionLivenessOwner:
         self._store.record_release_attempt(issue_number, now)
 
 
-__all__ = ["ActionLivenessOwner", "LivenessDecision", "release_parked_action"]
+__all__ = ["ActionLivenessOwner", "LivenessDecision", "release_parked_action", "transient_outcome"]

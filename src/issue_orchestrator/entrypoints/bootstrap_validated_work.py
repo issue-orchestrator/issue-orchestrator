@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..control.completion_processor import CompletionProcessor
     from ..control.label_manager import LabelManager
     from ..control.needs_human_block import SharedNeedsHumanBlock
+    from ..control.action_liveness import ActionLivenessOwner
     from ..control.recovery_drain import RecoveryDrain
     from ..control.review_exchange_lifecycle import CoreIssueRuntimeOwners
     from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
@@ -261,12 +262,14 @@ def build_validated_work_recovery(
     fresh_issue_reader: "FreshIssueReader",
     action_applier: "ActionApplier",
     label_manager: "LabelManager",
+    action_liveness: "ActionLivenessOwner",
 ) -> "RecoveryDrain":
     """Close the exact-head publication graph over the live process owners."""
     from ..control.claimed_recovery_preparation import ClaimedRecoveryPreparation
     from ..control.fenced_validated_head_publisher import FencedValidatedHeadPublisher
     from ..control.recovery_block_sweep import AggregateRecoveryBlockSweep
     from ..control.recovery_drain import RecoveryDrain
+    from ..control.recovery_drain_liveness import RecoveryDrainLiveness
     from ..control.retained_claim_maintenance import RetainedClaimMaintenance
     from ..control.recovery_publication_attempt import RecoveryPublicationAttempt
     from ..control.recovery_publication_cleanup import RecoveryPublicationCleanup
@@ -343,6 +346,12 @@ def build_validated_work_recovery(
         completion=completion,
         scope=owners.scope_retirement,
     )
+    # One liveness for every lane the drain replans: publication, refresh
+    # and the scope sweep.
+    liveness = RecoveryDrainLiveness(
+        owner=action_liveness,
+        records=owners.records,
+    )
     return RecoveryDrain(
         queue=owners.records,
         operation=operation,
@@ -363,6 +372,7 @@ def build_validated_work_recovery(
             execution=owners.execution,
             retirement=owners.scope_retirement,
             batch_size=config.validated_work.drain_batch_size,
+            liveness=liveness,
         ),
         block_sweep=AggregateRecoveryBlockSweep(
             source=owners.records,
@@ -371,4 +381,5 @@ def build_validated_work_recovery(
         ),
         batch_size=config.validated_work.drain_batch_size,
         interval_seconds=config.validated_work.drain_interval_seconds,
+        liveness=liveness,
     )

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from tests.conftest import MockSessionRunner
 from tests.conftest import operator_paused_state
 from tests.unit.control.liveness_doubles import gated
+from tests.unit.control.liveness_doubles import drain_liveness
 from issue_orchestrator.domain.pause_state import PauseActor, PauseReason
 from issue_orchestrator.infra.orchestrator import Orchestrator
 from issue_orchestrator.entrypoints.run_orchestrator import run_orchestrator
@@ -306,6 +307,7 @@ def test_public_pause_requested_during_recovery_stops_the_next_record(
             scope_sweep=NullValidatedWorkScopeSweep(),
             batch_size=2,
             interval_seconds=60,
+            liveness=drain_liveness(),
         ),
     )
     state_lock = _ObservedRLock()

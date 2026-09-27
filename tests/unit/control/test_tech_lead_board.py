@@ -602,3 +602,34 @@ def test_publish_clears_case_files_when_scan_observed_none(tmp_path: Path) -> No
     assert "#700" not in content
     # The case-file section collapses to the empty marker.
     assert "## Open pattern case files\n\nNone." in content
+
+
+def test_waiting_actions_render_in_their_own_section() -> None:
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.domain.action_liveness import (
+        ActionIdentity,
+        LivenessKey,
+        LivenessRow,
+        OutcomeKind,
+    )
+
+    now = datetime(2026, 9, 27, tzinfo=timezone.utc)
+
+    def row(outcome, next_attempt_at):
+        return LivenessRow(
+            key=LivenessKey(ActionIdentity("validated_work:r1", "recover_validated_work"), "f" * 32, 410),
+            attempts=0, first_failed_at=now, last_failed_at=now, last_outcome=outcome,
+            last_reason="runtime active", next_attempt_at=next_attempt_at,
+        )
+
+    view = build_tech_lead_board_view(
+        ops=(), gated_proposals=(), case_files=(), area_counts=(),
+        last_health_review_at=0.0, now=now,
+        held_actions=(row(OutcomeKind.WAITING, now), row(OutcomeKind.PERMANENT, None)),
+    )
+    assert [item.outcome for item in view.held_actions] == ["permanent"]
+    assert [item.outcome for item in view.waiting_actions] == ["waiting"]
+    rendered = render_tech_lead_board_md(view)
+    assert "## Waiting on another owner" in rendered
+    assert "| #410 | `validated_work:r1` | `recover_validated_work`" in rendered

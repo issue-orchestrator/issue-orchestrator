@@ -5,6 +5,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from datetime import timedelta
+
+from tests.unit.control.liveness_doubles import ManualClock, drain_liveness, liveness_owner
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
@@ -107,6 +110,7 @@ def test_queue_routes_unobserved_remote_authority_to_refresh(tmp_path):
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=2,
         interval_seconds=10,
+        liveness=drain_liveness(records=store),
     ).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
     assert len(report.items) == 2
     assert operations.called == []
@@ -121,6 +125,7 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
     now = SimpleNamespace(value=0.0)
     operations = Operations()
     operations.raise_for.add(ordered[0].record_id)
+    liveness_clock = ManualClock()
     drain = RecoveryDrain(
         queue=store,
         operation=operations,
@@ -131,6 +136,7 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
         batch_size=2,
         interval_seconds=10,
         clock=lambda: now.value,
+        liveness=drain_liveness(liveness_owner(clock=liveness_clock), records=store),
     )
     state = OrchestratorState()
     active = lambda: RecoveryDrainMode.ACTIVE
@@ -144,8 +150,17 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
     assert len(drain.tick(state, active).items) == 1
     assert operations.called == [request.record_id for request in ordered]
     now.value = 30
+    # The first pass's failures back off through the action liveness owner
+    # (#7350): the next round-robin pass holds them rather than retrying...
     assert len(drain.tick(state, active).items) == 2
-    assert operations.called[-2:] == [request.record_id for request in ordered[:2]]
+    assert len(operations.called) == len(ordered)
+    # ...until their backoff has elapsed.
+    liveness_clock.advance(timedelta(minutes=1))
+    for tick in range(4, 8):
+        now.value = tick * 10
+        drain.tick(state, active)
+    retried = operations.called[len(ordered):]
+    assert {request.record_id for request in ordered[:2]} <= set(retried)
 
 
 def test_interval_starts_after_synchronous_work_finishes(tmp_path):
@@ -164,6 +179,7 @@ def test_interval_starts_after_synchronous_work_finishes(tmp_path):
         batch_size=1,
         interval_seconds=10,
         clock=lambda: now.value,
+        liveness=drain_liveness(records=store),
     )
     active = lambda: RecoveryDrainMode.ACTIVE
     assert len(drain.tick(OrchestratorState(), active).items) == 1
@@ -188,6 +204,7 @@ def test_stopped_mode_cannot_select_or_start_recovery_work():
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
+        liveness=drain_liveness(),
     )
 
     report = drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.STOPPED)
@@ -215,6 +232,7 @@ def test_due_drain_reports_block_sweep_even_when_no_recovery_record_is_selected(
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
+        liveness=drain_liveness(),
     )
 
     report = drain.tick(
@@ -244,6 +262,7 @@ def test_due_drain_runs_claim_maintenance_before_projection_and_selection():
         scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
+        liveness=drain_liveness(),
     )
 
     drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
@@ -272,6 +291,7 @@ def test_lifecycle_stop_during_batch_prevents_another_operation_and_preserves_cu
         batch_size=3,
         interval_seconds=10,
         clock=lambda: now.value,
+        liveness=drain_liveness(records=store),
     )
 
     first = drain.tick(OrchestratorState(), lambda: mode.value)

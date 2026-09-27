@@ -51,6 +51,10 @@ class OutcomeKind(StrEnum):
     PERMANENT = "permanent"
     #: It cannot proceed until a person acts. Parked on the first occurrence.
     NEEDS_HUMAN = "needs_human"
+    #: It cannot run yet because another owner holds a legitimate precondition
+    #: (an issue's runtime is active). Not a failure: it spends nothing and
+    #: never parks, but it is paced at ``max_backoff`` and stays visible.
+    WAITING = "waiting"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +99,10 @@ class ActionOutcome:
     @classmethod
     def needs_human(cls, reason: str) -> "ActionOutcome":
         return cls(OutcomeKind.NEEDS_HUMAN, reason)
+
+    @classmethod
+    def waiting(cls, reason: str) -> "ActionOutcome":
+        return cls(OutcomeKind.WAITING, reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +375,8 @@ class LivenessPolicy:
                 escalation_attempts=previous.escalation_attempts,
                 escalation_attempted_at=previous.escalation_attempted_at,
             )
+        if outcome.kind is OutcomeKind.WAITING:
+            return _backing_off(row, next_attempt_at=now + self.max_backoff)
         if outcome.kind is not OutcomeKind.TRANSIENT:
             return replace(row, attempts=spent + 1)
         # A declared wait spends nothing only while it is still ahead: a

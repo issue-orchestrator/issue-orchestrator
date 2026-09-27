@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from functools import partial
 
 from ..domain.publication_remote import PublicationRemoteError
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_execution import RecordExecutionBusy
 from ..domain.validated_work_capture import ValidatedWorkRemoteRequest
@@ -13,6 +13,7 @@ from ..domain.validated_work_remote_authority import (
     RemoteAuthorityRefreshRequest,
     refreshed_remote_authority,
 )
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
@@ -43,10 +44,10 @@ class RemoteAuthorityRefreshOperation:
     def run(self, request: RemoteAuthorityRefreshRequest) -> RecoveryAttemptPending:
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return RecoveryAttemptPending("Remote authority refresh is already executing")
+            return RecoveryAttemptPending("Remote authority refresh is already executing", kind=RecoveryPendingKind.CONTENDED)
         with lease as token:
             if not self._execution.relinquish(token):
-                return RecoveryAttemptPending("Record awaits its reserved stop operation")
+                return RecoveryAttemptPending("Record awaits its reserved stop operation", kind=RecoveryPendingKind.CONTENDED)
             record = self._store.record_for_id(request.record_id)
             refusal = request.refusal(record)
             if refusal is not None:
@@ -58,7 +59,8 @@ class RemoteAuthorityRefreshOperation:
             )
             if claim is None:
                 return RecoveryAttemptPending(
-                    "Remote authority refresh belongs to another owner or changed"
+                    "Remote authority refresh belongs to another owner or changed",
+                    kind=RecoveryPendingKind.CONTENDED,
                 )
             self._execution.remember_claim(token, claim)
             try:
@@ -83,7 +85,9 @@ class RemoteAuthorityRefreshOperation:
                     )
                 except PublicationRemoteError as error:
                     return RecoveryAttemptPending(
-                        str(error), ValidatedWorkFailure.REMOTE_UNREADABLE
+                        str(error),
+                        ValidatedWorkFailure.REMOTE_UNREADABLE,
+                        rate_limit=host_rate_limit_of(error),
                     )
                 decision = refreshed_remote_authority(record, facts)
                 updated = perform(
@@ -98,6 +102,10 @@ class RemoteAuthorityRefreshOperation:
                     return RecoveryAttemptPending(
                         "Remote authority refresh changed before settlement"
                     )
-                return RecoveryAttemptPending(decision.reason, decision.failure)
+                # Committed: the refresh is done, whatever it decided; the
+                # record's recovery continues in its own lane.
+                return RecoveryAttemptPending(
+                    decision.reason, decision.failure, kind=RecoveryPendingKind.ADVANCED
+                )
             finally:
                 self._execution.relinquish(token)

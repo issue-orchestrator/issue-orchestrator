@@ -44,7 +44,6 @@ from ..domain.action_liveness import (
     OutcomeKind,
     fact_fingerprint,
 )
-from ..domain.host_rate_limit import HostRateLimit
 from ..ports.repository_host import host_rate_limit_of
 from .action_base import Action
 from .actions import (
@@ -57,7 +56,7 @@ from .actions import (
 )
 from .provider_impact import ApplyProviderImpactAction
 from .action_results import ActionResult, ActionResultType
-from .action_liveness import ActionLivenessOwner
+from .action_liveness import ActionLivenessOwner, transient_outcome
 from .reconciliation import (
     ReconciliationRequired,
     ReconciliationResponse,
@@ -211,16 +210,7 @@ def outcome_of_result(result: ActionResult) -> ActionOutcome:
     if result.result_type is not ActionResultType.FAILURE:
         return ActionOutcome.done()
     reason = result.error or "action failed without an error"
-    return _transient(reason, result.host_rate_limit)
-
-
-def _transient(reason: str, limit: HostRateLimit | None) -> ActionOutcome:
-    if limit is None:
-        return ActionOutcome.transient(reason)
-    return ActionOutcome.transient(
-        f"{reason} (GitHub rate limit until {limit.resets_at.isoformat()})",
-        retry_at=limit.resets_at,
-    )
+    return transient_outcome(reason, result.host_rate_limit)
 
 
 def outcome_of_error(error: Exception) -> ActionOutcome:
@@ -242,7 +232,7 @@ def outcome_of_error(error: Exception) -> ActionOutcome:
             f"subject is paused behind {get_pause_label()}; every planned mutation"
             " is refused until a person reconciles it and removes the label"
         )
-    return _transient(f"{type(error).__name__}: {error}", host_rate_limit_of(error))
+    return transient_outcome(f"{type(error).__name__}: {error}", host_rate_limit_of(error))
 
 
 @dataclass(frozen=True, slots=True)

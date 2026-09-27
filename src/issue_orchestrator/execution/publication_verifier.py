@@ -7,6 +7,7 @@ from ..domain.publication_verification import (
 from ..domain.validated_head_publication import PublishValidatedHeadCommand
 from ..domain.validated_work import DispositionPhase, ValidatedWorkFailure as Failure
 from ..ports.publication_remote import PublicationRemote
+from ..ports.repository_host import host_rate_limit_of
 
 
 class RemotePublicationVerifier:
@@ -52,4 +53,6 @@ class RemotePublicationVerifier:
                 return PublicationVerification(after, pr, Failure.PUBLISH_TARGET_MISMATCH, "Remote observations disagree")
             return PublicationVerification(after, pr, None, "Fresh publication facts verified")
         except PublicationRemoteError as error:
-            return PublicationVerification(None, None, Failure.REMOTE_UNREADABLE, str(error))
+            return PublicationVerification(
+                None, None, Failure.REMOTE_UNREADABLE, str(error), host_rate_limit_of(error)
+            )

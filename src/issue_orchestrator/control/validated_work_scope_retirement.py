@@ -15,9 +15,11 @@ holds is outside scope, and the store refuses if that set changed meanwhile.
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 from functools import partial
 
-from ..domain.recovery_attempt import RecoveryAttemptPending
+from ..domain.action_liveness import ActionOutcome
+from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_drain import RecoveryDrainMode, RecoveryScopeSweepReport
 from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import UNRESOLVED_STATES, ResolutionKind, require_positive
@@ -33,6 +35,9 @@ from ..ports.validated_work_drain import RecoveryDrainAdmission, ValidatedWorkSc
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
 from ..ports.validated_work_store import ValidatedWorkStore
+
+if TYPE_CHECKING:
+    from .recovery_drain_liveness import RecoveryDrainLiveness
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,8 @@ class ScopeRetirement:
         """The drain lanes' answer for a record they must not publish or refresh."""
         if not self.outside_scope:
             raise ValueError("an in-scope record continues through recovery")
+        if self.status is ScopeRetirementStatus.RETIRED:
+            return RecoveryAttemptPending(self.message, kind=RecoveryPendingKind.RESOLVED)
         return RecoveryAttemptPending(self.message)
 
 RETIREMENT_ACTOR = "orchestrator:validated-work-scope"
@@ -121,6 +128,34 @@ class OutOfScopeRecordRetirement:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _Judgement:
+    """What judging one record came to, as the liveness owner counts it."""
+
+    outcome: ActionOutcome
+    retired: bool = False
+
+    @classmethod
+    def held(cls, reason: str) -> "_Judgement":
+        """Another owner holds the record: not a failure, but shown and paced,
+        since some records the sweep judges no publication lane selects."""
+        return cls(ActionOutcome.waiting(reason))
+
+
+#: The record moved on (new evidence, or resolved) before it was judged: the
+#: question is answered.
+_MOVED_ON = _Judgement(ActionOutcome.done())
+#: The retirement owner's typed outcome. A refused retirement (CHANGED)
+#: repeated under unchanged facts is a loop, so it spends a budget.
+_BY_STATUS = {
+    ScopeRetirementStatus.IN_SCOPE: _Judgement(ActionOutcome.done()),
+    ScopeRetirementStatus.RETIRED: _Judgement(ActionOutcome.done(), retired=True),
+    ScopeRetirementStatus.CHANGED: _Judgement(ActionOutcome.transient(
+        "Scope retirement was refused: evidence or claim moved"
+    )),
+}
+
+
 class OutOfScopeRetirementSweep:
     """Judge EVERY unresolved record's scope, not just the publication lanes'.
 
@@ -135,10 +170,11 @@ class OutOfScopeRetirementSweep:
 
     def __init__(self, *, source: ValidatedWorkScopeSource, store: ValidatedWorkStore,
                  execution: ValidatedWorkExecutionOwner, retirement: OutOfScopeRecordRetirement,
-                 batch_size: int) -> None:
+                 batch_size: int, liveness: "RecoveryDrainLiveness") -> None:
         require_positive(batch_size, "scope sweep batch size")
         self._source, self._store, self._execution = source, store, execution
         self._retirement, self._batch_size = retirement, batch_size
+        self._liveness = liveness
         self._owned: set[str] = set()
         self._after = ""
 
@@ -154,11 +190,8 @@ class OutOfScopeRetirementSweep:
             self._after = request.record_id
             if request.evidence_id in self._owned:
                 continue
-            try:
-                if self._judge(request):
-                    retired.append(request.record_id)
-            except Exception:
-                logger.exception("Recovery scope judgement failed for record %s", request.record_id)
+            if self._judge_bounded(request):
+                retired.append(request.record_id)
         if len(requests) < self._batch_size:
             self._after = ""
         return RecoveryScopeSweepReport(tuple(retired))
@@ -170,33 +203,54 @@ class OutOfScopeRetirementSweep:
             requests = self._source.unresolved_records(after_record_id="", limit=self._batch_size)
         return requests
 
-    def _judge(self, request: RecoveryRecordRequest) -> bool:
+    def _judge_bounded(self, request: RecoveryRecordRequest) -> bool:
+        """Judge one record through the drain's liveness (#7350); whether it
+        was retired. A judgement that fails the same way every pass is held,
+        then parked, like any other replanned action."""
+        key = self._liveness.scope_key(request)
+        if key is None or not self._liveness.admit(key).admitted:
+            return False
+        try:
+            judgement = self._judge(request)
+        except Exception as error:
+            logger.exception("Recovery scope judgement failed for record %s", request.record_id)
+            # A retirement that committed before a later step raised has still
+            # resolved the record: settle_error then releases every lane.
+            return self._liveness.settle_error(key, error)
+        self._liveness.record(key, judgement.outcome)
+        if judgement.retired:
+            # Resolved: no lane's question about this record is still open.
+            self._liveness.resolve_record(request.record_id)
+        return judgement.retired
+
+    def _judge(self, request: RecoveryRecordRequest) -> "_Judgement":
+        """What judging the record came to, in the liveness owner's terms."""
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return False
+            return _Judgement.held("Record is executing under another owner")
         with lease as token:
             if not self._execution.relinquish(token):
-                return False
+                return _Judgement.held("Record awaits its reserved stop operation")
             try:
                 record = self._store.record_for_id(request.record_id)
                 if (record.current_evidence.evidence_id != request.evidence_id
                         or record.disposition.state not in UNRESOLVED_STATES):
-                    return False
+                    return _MOVED_ON
                 # Prove before claiming: an in-scope record is never claimed here,
                 # so this lane cannot contend with its publication or abandonment.
                 if self._retirement.recovery_owns_record(record):
                     self._owned.add(request.evidence_id)
-                    return False
+                    return _BY_STATUS[ScopeRetirementStatus.IN_SCOPE]
                 claim = self._store.acquire_claim(
                     request.record_id, expected_states=frozenset({record.disposition.state}),
                     evidence_id=request.evidence_id,
                 )
                 if claim is None:
-                    return False
+                    return _Judgement.held("Record's claim is held by another owner")
                 self._execution.remember_claim(token, claim)
                 outcome = self._retirement.retire_if_outside(token, claim, record)
                 if outcome.status is ScopeRetirementStatus.IN_SCOPE:
                     self._owned.add(request.evidence_id)
-                return outcome.status is ScopeRetirementStatus.RETIRED
+                return _BY_STATUS[outcome.status]
             finally:
                 self._execution.relinquish(token)

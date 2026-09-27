@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.unit.control.liveness_doubles import drain_liveness
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.control.validated_work_scope_retirement import (
     OutOfScopeRecordRetirement,
@@ -122,6 +123,7 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
     # must end it.
     assert scope.recovery_owns_record(rig.store.record_for_id(op.request.record_id))
     now = SimpleNamespace(value=0.0)
+    liveness = drain_liveness(records=rig.store)
     drain = RecoveryDrain(
         queue=rig.store,
         operation=op.owner,
@@ -137,9 +139,11 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
             execution=rig.execution,
             retirement=scope,
             batch_size=5,
+            liveness=liveness,
         ),
         batch_size=5,
         interval_seconds=10,
+        liveness=liveness,
         clock=lambda: now.value,
     )
 
