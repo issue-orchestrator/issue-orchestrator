@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.recovery_drain import RecoveryDrain
     from ..control.review_exchange_lifecycle import CoreIssueRuntimeOwners
+    from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.publication_remote import PublicationRemote
     from ..ports.recovery_issue_reader import RecoveryIssueReader
@@ -90,6 +91,7 @@ class ValidatedWorkRecoveryOwners(ValidatedWorkAdmissionOwners):
     effects: ValidatedWorkEffectAuthority
     blocks: "AggregateRecoveryBlocks"
     abandonment: ValidatedWorkAbandonmentOwner
+    scope_retirement: "OutOfScopeRecordRetirement"
     workspaces: PublicationWorkspaces
     remote: "PublicationRemote"
     issues: "RecoveryIssueReader"
@@ -130,7 +132,7 @@ def build_validated_work_admission(config: Config, working_copy: ExactGit, intak
     store = RankedEvidenceAdmission(SqliteValidatedWorkIntakeStore(root / "validated_work.sqlite", ancestry, escrow), intake)
     return ValidatedWorkAdmissionOwners(
         store, ValidatedWorkCustody(escrow, store),
-        EscrowReconciliation(escrow=escrow, store=store),
+        EscrowReconciliation(escrow=escrow, store=store, intake=intake),
         UnavailableValidatedWorkCaptureObserver(),
     )
 
@@ -154,6 +156,7 @@ def build_validated_work_runtime(
         OperatorValidatedWorkAbandonment,
     )
     from ..control.validated_work_effects import FencedValidatedWorkEffects
+    from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
     from ..control.worktree_context import prepare_worktree_environment
     from ..execution.publication_workspace import EscrowPublicationWorkspaces
     from ..execution.git_tools import create_git
@@ -211,8 +214,11 @@ def build_validated_work_runtime(
         blocks=blocks,
         events=events,
     )
+    scope_retirement = OutOfScopeRecordRetirement(
+        intake=intake, store=records, effects=effects, blocks=blocks, events=events,
+    )
     custody = ValidatedWorkCustody(escrow, blocks)
-    repair = EscrowReconciliation(escrow=escrow, store=blocks)
+    repair = EscrowReconciliation(escrow=escrow, store=blocks, intake=intake)
     workspaces = EscrowPublicationWorkspaces(
         root=root / "validated-work-publications",
         repository=config.repo_root,
@@ -237,6 +243,7 @@ def build_validated_work_runtime(
         effects=effects,
         blocks=blocks,
         abandonment=abandonment,
+        scope_retirement=scope_retirement,
         workspaces=workspaces,
         remote=external.remote,
         capture_observer=external.capture_observer,
@@ -268,6 +275,7 @@ def build_validated_work_recovery(
     from ..control.remote_authority_refresh import RemoteAuthorityRefreshOperation
     from ..control.retained_completion_preparation import RetainedCompletionPreparation
     from ..control.retry_review_routing import RetryReviewPolicy
+    from ..control.validated_work_scope_retirement import OutOfScopeRetirementSweep
     from ..control.review_exchange_lifecycle import OtherRuntimeActivity
     from ..control.staged_published_work_finalizer import StagedPublishedWorkFinalizer
     from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
@@ -333,11 +341,13 @@ def build_validated_work_recovery(
             verifier=verifier,
         ),
         completion=completion,
+        scope=owners.scope_retirement,
     )
     return RecoveryDrain(
         queue=owners.records,
         operation=operation,
         authority_refresh=RemoteAuthorityRefreshOperation(
+            scope=owners.scope_retirement,
             execution=owners.execution,
             effects=owners.effects,
             store=owners.records,
@@ -346,6 +356,13 @@ def build_validated_work_recovery(
         claim_maintenance=RetainedClaimMaintenance(
             store=owners.records,
             execution=owners.execution,
+        ),
+        scope_sweep=OutOfScopeRetirementSweep(
+            source=owners.records,
+            store=owners.records,
+            execution=owners.execution,
+            retirement=owners.scope_retirement,
+            batch_size=config.validated_work.drain_batch_size,
         ),
         block_sweep=AggregateRecoveryBlockSweep(
             source=owners.records,

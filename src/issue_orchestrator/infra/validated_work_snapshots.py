@@ -77,6 +77,20 @@ class DispositionSnapshots:
                 "SELECT e.* FROM validated_work_evidence e JOIN validated_work_records r USING(record_id) "
                 "WHERE r.issue_number=? AND e.released_at='' ORDER BY e.evidence_id", (issue_number,)))
 
+    def unresolved_records(self, *, after_record_id: str, limit: int) -> tuple[RecoveryRecordRequest, ...]:
+        require_positive(limit, "scope sweep batch size")
+        with self._db.transaction() as conn:
+            return tuple(
+                RecoveryRecordRequest(row["record_id"], row["evidence_id"])
+                for row in conn.execute(
+                    "SELECT r.record_id, e.evidence_id FROM validated_work_records r "
+                    "JOIN validated_work_evidence e ON e.record_id=r.record_id "
+                    "WHERE r.record_id>? AND e.role='current' AND e.released_at='' "
+                    "AND r.state IN ('queued','parked','publishing','failed') "
+                    "ORDER BY r.record_id LIMIT ?", (after_record_id, limit),
+                )
+            )
+
     def drain_requests(self, *, after_record_id: str, limit: int) -> tuple[ValidatedWorkDrainRequest, ...]:
         require_positive(limit, "recovery batch size")
         with self._db.transaction() as conn:
