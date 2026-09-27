@@ -34,7 +34,8 @@ from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 from tests.callback_endpoint_helpers import ready_callback_endpoint
 
@@ -198,7 +199,7 @@ def session_with_worktree(tmp_path):
             timeout_minutes=30,
         )
         issue_key = FakeIssueKey(name=str(issue_number))
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
         return Session(
             key=session_key,
             issue=issue,

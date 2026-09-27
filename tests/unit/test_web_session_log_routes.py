@@ -86,7 +86,7 @@ class TestKillSessionEndpoint:
                 validation_error="boom",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_task=SessionKind.CODE,
             )
         ]
         mock_orch.state.discovered_reviews = [
@@ -470,7 +470,7 @@ class TestKillSessionEndpoint:
             TechLeadLaunchAuthority,
             TechLeadSessionFlavor,
         )
-        from issue_orchestrator.domain.session_key import TaskKind
+        from issue_orchestrator.domain.session_kind import SessionKind
 
         mock_orch = create_mock_orchestrator()
         lm = LabelManager(mock_orch.config)
@@ -503,7 +503,7 @@ class TestKillSessionEndpoint:
             validation_error="provider unavailable",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             authority_run=authority_run,
         )
         mock_orch.state.pending_validation_retries = [retry]

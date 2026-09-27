@@ -26,7 +26,8 @@ from ..domain.historical_intake_policy import (
     completion_refusal,
     failed_historical_validation,
 )
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..ports.completion_intake import (
     CompletionEvidenceValidator,
     CompletionIntakeLedger,
@@ -87,7 +88,7 @@ class HistoricalCompletionIntake:
                 issue_number=command.issue_number,
                 session_key=SessionKey(
                     GitHubIssueKey(repo=command.repo_slug, external_id=str(command.issue_number)),
-                    TaskKind.CODE,
+                    SessionKind.CODE,
                 ),
                 worktree_path=worktree,
                 session_name="historical-" + uuid4().hex,

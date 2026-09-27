@@ -12,7 +12,7 @@ from ..domain.coder_prompt import (
     PreparedCoderPromptAddendum,
     build_internal_review_addendum,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..ports.coder_prompt import CoderPromptAddendumProvider
 
 if TYPE_CHECKING:
@@ -32,7 +32,7 @@ class FileInternalReviewPromptAddendum:
     def prepare(
         self,
         *,
-        task: TaskKind,
+        task: SessionKind,
         agent_label: str,
     ) -> CoderPromptAddendumPreparation:
         """Resolve the addendum once, centrally excluding all non-coder roles."""
@@ -55,9 +55,9 @@ class FileInternalReviewPromptAddendum:
             return CoderPromptAddendumUnavailable(str(exc))
         return PreparedCoderPromptAddendum(addendum)
 
-    def _applies_to(self, *, task: TaskKind, agent_label: str) -> bool:
+    def _applies_to(self, *, task: SessionKind, agent_label: str) -> bool:
         """Own the complete internal-review role policy in one place."""
-        if not self.enabled or task not in {TaskKind.CODE, TaskKind.REWORK}:
+        if not self.enabled or task not in {SessionKind.CODE, SessionKind.REWORK}:
             return False
         tech_lead_labels = {"agent:tech-lead"}
         configured_tech_lead_label = self.tech_lead_agent_label_supplier()

@@ -8,7 +8,7 @@ from issue_orchestrator.domain.coder_prompt import (
     CoderPromptAddendumUnavailable,
     PreparedCoderPromptAddendum,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.internal_review_prompt import (
     FileInternalReviewPromptAddendum,
     build_coder_prompt_addendum_provider,
@@ -38,7 +38,7 @@ def _provider(
 def _prepare(
     provider: FileInternalReviewPromptAddendum,
     *,
-    task: TaskKind = TaskKind.CODE,
+    task: SessionKind = SessionKind.CODE,
     agent_label: str = "agent:dev",
 ) -> PreparedCoderPromptAddendum | CoderPromptAddendumUnavailable:
     return provider.prepare(task=task, agent_label=agent_label)
@@ -99,7 +99,7 @@ def test_loaded_config_normalizes_instruction_path_before_runtime_read(
     config.repo_root = tmp_path
 
     preparation = build_coder_prompt_addendum_provider(config).prepare(
-        task=TaskKind.CODE,
+        task=SessionKind.CODE,
         agent_label="agent:dev",
     )
 
@@ -128,11 +128,11 @@ def test_built_provider_reads_live_tech_lead_agent_label(tmp_path: Path) -> None
     config.tech_lead_review_agent = "agent:new-tech-lead"
 
     assert provider.prepare(
-        task=TaskKind.CODE,
+        task=SessionKind.CODE,
         agent_label="agent:new-tech-lead",
     ) == PreparedCoderPromptAddendum(None)
     old_label_preparation = provider.prepare(
-        task=TaskKind.CODE,
+        task=SessionKind.CODE,
         agent_label="agent:old-tech-lead",
     )
     assert isinstance(old_label_preparation, PreparedCoderPromptAddendum)
@@ -191,16 +191,16 @@ def test_enabled_provider_rejects_symlink_escape(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("task", "agent_label"),
     [
-        (TaskKind.REVIEW, "agent:reviewer"),
-        (TaskKind.RETROSPECTIVE_REVIEW, "agent:reviewer"),
-        (TaskKind.TECH_LEAD, "agent:tech-lead"),
-        (TaskKind.CODE, "agent:tech-lead"),
-        (TaskKind.CODE, "agent:architecture"),
+        (SessionKind.REVIEW, "agent:reviewer"),
+        (SessionKind.RETROSPECTIVE_REVIEW, "agent:reviewer"),
+        (SessionKind.TECH_LEAD, "agent:tech-lead"),
+        (SessionKind.CODE, "agent:tech-lead"),
+        (SessionKind.CODE, "agent:architecture"),
     ],
 )
 def test_non_coder_roles_do_not_read_instruction_file(
     tmp_path: Path,
-    task: TaskKind,
+    task: SessionKind,
     agent_label: str,
 ) -> None:
     provider = _provider(tmp_path)

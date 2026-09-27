@@ -30,7 +30,8 @@ from ..domain.models import get_completion_path
 from ..domain.review_exchange_verdict import ExchangeVerdict
 from ..domain.issue_run_allocation import IssueRunAllocation
 from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
     OperatorCommandOutcome,
@@ -380,7 +381,7 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
             terminal_id=session_name,
             worktree_path=worktree,
             session_name=session_name,
-            session_key=SessionKey(issue.key, TaskKind.CODE),
+            session_key=SessionKey(issue.key, SessionKind.CODE),
             issue_number=issue_number,
             agent_label=agent_type,
             backend=config.terminal_adapter or "subprocess",

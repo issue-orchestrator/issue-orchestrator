@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 
 from ..infra.repo_scope import require_repo
 from ..domain.issue_key import GitHubIssueKey
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..domain.models import Issue, RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
 from ..domain.session_run import SessionRunAssets
 from ..ports import RepositoryHost, WorkingCopy
@@ -291,12 +292,12 @@ class SessionRestorer:
         # Create session with domain identity
         issue_key = GitHubIssueKey(repo=require_repo(self.config), external_id=str(issue_number))
         task_kind = _restored_task_kind(session_name, is_review)
-        session_key = SessionKey(issue=issue_key, task=task_kind)
+        session_key = SessionKey(issue=issue_key, kind=task_kind)
         # Use the agent type from issue labels, or the first available agent as fallback
         agent_label_val = issue_obj.agent_type or next(
             iter(self.config.agents.keys()), "unknown"
         )
-        if task_kind is TaskKind.REWORK and self.tech_lead_authority is not None:
+        if task_kind is SessionKind.REWORK and self.tech_lead_authority is not None:
             from .scoped_rework import note_scoped_rework_started
             note_scoped_rework_started(self.tech_lead_authority, run_assets.identity)
         return Session(
@@ -383,10 +384,10 @@ class SessionRestorer:
         return None
 
 
-def _restored_task_kind(session_name: str, is_review: bool) -> TaskKind:
+def _restored_task_kind(session_name: str, is_review: bool) -> SessionKind:
     """Preserve the worker lane when adopting a canonical terminal."""
     if session_name.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX):
-        return TaskKind.RETROSPECTIVE_REVIEW
+        return SessionKind.RETROSPECTIVE_REVIEW
     if session_name.startswith("rework-"):
-        return TaskKind.REWORK
-    return TaskKind.REVIEW if is_review else TaskKind.CODE
+        return SessionKind.REWORK
+    return SessionKind.REVIEW if is_review else SessionKind.CODE

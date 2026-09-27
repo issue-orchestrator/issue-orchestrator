@@ -81,13 +81,13 @@ def _proposal_reuse_stale_reason(
     if stored.op_type == "reset_retry" and reset is not None:
         return reset.stale_reason(stored.target_issue_number)
     if stored.op_type == "kill_hung_session" and kill is not None:
-        from ..domain.session_key import TaskKind
+        from ..domain.session_kind import SessionKind
         from ..domain.tech_lead_session import TechLeadSessionGeneration
 
         return kill.proposal_stale_reason(
             TechLeadSessionGeneration(
                 issue_number=stored.target_issue_number,
-                task_kind=TaskKind(stored.target_session_type),
+                task_kind=SessionKind(stored.target_session_type),
                 terminal_id=stored.target_terminal_id,
                 run_id=stored.target_session_id,
             )

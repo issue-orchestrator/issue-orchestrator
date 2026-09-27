@@ -39,7 +39,8 @@ from tests.conftest import make_provider_availability
 from issue_orchestrator.domain.board_snapshot import BoardFailure, BoardSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_manifest import PRToReview, TechLeadManifest
 from issue_orchestrator.domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from issue_orchestrator.domain.tech_lead_session import (
@@ -104,7 +105,7 @@ def make_session(
     """Create a session for planner tests."""
     issue = issue or make_issue()
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=SessionKind.CODE),
         issue=issue,
         agent_config=AgentConfig(
             prompt_path=tmp_path / "prompt.md", timeout_minutes=45
@@ -2331,7 +2332,7 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     config = make_tech_lead_config(tmp_path)
     config.tech_lead.authority.kill_hung_session = "execute"
     session = make_tech_lead_session(tmp_path)
-    observed = TechLeadSessionGeneration(issue_number=1, task_kind=TaskKind.CODE, terminal_id="worker-1", run_id="worker-run")
+    observed = TechLeadSessionGeneration(issue_number=1, task_kind=SessionKind.CODE, terminal_id="worker-1", run_id="worker-run")
     arm_investigation_session(config, session, generations=(observed,))
     _plant_decision_with_actions(session, [
         {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},

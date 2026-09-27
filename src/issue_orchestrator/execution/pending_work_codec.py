@@ -37,7 +37,7 @@ from ..domain.pending_work import (
     PendingWorkKind,
     PendingWorkRequest,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunIdentity
 from ..domain.tech_lead_scratch_identity import names_one_scratch_checkout
 from ..domain.tech_lead_session import TechLeadSessionFlavor
@@ -258,7 +258,7 @@ def _decode_validation_retry(payload: dict[str, Any]) -> PendingValidationRetry:
         validation_error=str(payload["validation_error"]),
         validation_error_file=payload["validation_error_file"],
         retry_count=int(payload["retry_count"]),
-        source_task=TaskKind(payload["source_task"]),
+        source_task=SessionKind(payload["source_task"]),
         validation_cmd=payload["validation_cmd"],
         authority_run=_decode_run_identity(payload.get("authority_run")),
         recovery_error=payload.get("recovery_error"),

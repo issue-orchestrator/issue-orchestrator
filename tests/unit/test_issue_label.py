@@ -18,7 +18,8 @@ from issue_orchestrator.domain.models import (
     Session,
     SessionHistoryEntry,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
@@ -98,7 +99,7 @@ def test_dashboard_view_model_active_card_carries_issue_label():
 
     issue = Issue(number=274, title="[M9-009] Add label everywhere", labels=["agent:web"])
     session = Session(
-        key=SessionKey(issue=FakeIssueKey("274"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("274"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=agent_config,
         terminal_id="issue-274",

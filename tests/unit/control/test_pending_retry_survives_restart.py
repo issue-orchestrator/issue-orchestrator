@@ -37,7 +37,8 @@ from issue_orchestrator.domain.issue_run_evidence import (
 )
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
 from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunAssets, SessionRunIdentity
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchAuthority,
@@ -107,7 +108,7 @@ def _retry(checkout: Path) -> PendingValidationRetry:
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_task=SessionKind.CODE,
         validation_cmd="make test",
         authority_run=SessionRunIdentity(
             session_name="issue-6410", run_id="run-original", started_at="2026-09-18"
@@ -206,12 +207,12 @@ def _run_assets(checkout: Path) -> SessionRunAssets:
     )
 
 
-def _ledger(checkout: Path, *, agent_label: str, completion_task: TaskKind):
+def _ledger(checkout: Path, *, agent_label: str, completion_task: SessionKind):
     """A durable issue-run ledger holding this retry's exact allocation."""
     ledger = MagicMock()
     ledger.recorded_runs.return_value = (
         IssueRunRecord(
-            session_key=SessionKey(FakeIssueKey("6410"), TaskKind.CODE),
+            session_key=SessionKey(FakeIssueKey("6410"), SessionKind.CODE),
             run=_run_assets(checkout),
             recorded_at="2026-09-18T12:00:00+00:00",
             branch_name=f"tech-lead-investigation-6410-{TOKEN}",
@@ -244,7 +245,7 @@ def _recover(
     state: OrchestratorState,
     *,
     agent_label: str = "agent:tech-lead",
-    completion_task: TaskKind = TaskKind.TECH_LEAD,
+    completion_task: SessionKind = SessionKind.TECH_LEAD,
     authority: "InMemoryTechLeadAuthorityStore | None" = None,
 ) -> int:
     """Run the startup recovery pass with no issue branches to lean on."""
@@ -362,7 +363,7 @@ def test_a_pre_recovered_ordinary_claim_does_not_hide_an_investigation(
                 validation_error="boom",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_task=SessionKind.CODE,
                 validation_cmd="make test",
             )
         ]
@@ -418,7 +419,7 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
         _Config(repo, investigation.parent),
         _reconciler(repo, investigation.parent, _Config),
         lambda _name: False,
-        _ledger(investigation, agent_label="agent:tech-lead", completion_task=TaskKind.TECH_LEAD),
+        _ledger(investigation, agent_label="agent:tech-lead", completion_task=SessionKind.TECH_LEAD),
         _authority_store(),
     ).recover(state, {6410: "6410-ordinary"})
 
@@ -452,7 +453,7 @@ def test_an_investigation_retry_wins_an_ordinary_checkout_collision(
         _Config(repo, investigation.parent),
         _reconciler(repo, investigation.parent, _Config),
         lambda _name: False,
-        _ledger(ordinary, agent_label="agent:coder", completion_task=TaskKind.CODE),
+        _ledger(ordinary, agent_label="agent:coder", completion_task=SessionKind.CODE),
         _authority_store(grant=False),
     ).recover(later_state, {})
 
@@ -496,7 +497,7 @@ def test_a_running_ordinary_session_does_not_hide_an_investigation_retry(
         _ledger(
             investigation,
             agent_label="agent:tech-lead",
-            completion_task=TaskKind.TECH_LEAD,
+            completion_task=SessionKind.TECH_LEAD,
         ),
         _authority_store(),
     ).recover(state, {})
@@ -525,7 +526,7 @@ def test_an_unrestored_live_terminal_keeps_the_retry_queued_but_unlaunchable(
         _ledger(
             investigation,
             agent_label="agent:tech-lead",
-            completion_task=TaskKind.TECH_LEAD,
+            completion_task=SessionKind.TECH_LEAD,
         ),
         _authority_store(),
     ).recover(state, {})
@@ -563,7 +564,7 @@ def test_a_scratch_like_checkout_without_an_ownership_marker_is_not_recovered(
         _ledger(
             checkout,
             agent_label="agent:tech-lead",
-            completion_task=TaskKind.TECH_LEAD,
+            completion_task=SessionKind.TECH_LEAD,
         ),
         _authority_store(),
     ).recover(state, {})
@@ -636,7 +637,7 @@ def test_an_ordinary_coder_retry_names_no_authority_run(
             investigation,
             state,
             agent_label="agent:coder",
-            completion_task=TaskKind.CODE,
+            completion_task=SessionKind.CODE,
             authority=_authority_store(grant=False),
         )
         == 1
@@ -768,7 +769,7 @@ def test_the_join_is_exact_not_merely_the_first_run_of_the_issue(
     other_recording = other_dir / "terminal-recording.jsonl"
     other_recording.write_text("")
     other = IssueRunRecord(
-        session_key=SessionKey(FakeIssueKey("6410"), TaskKind.CODE),
+        session_key=SessionKey(FakeIssueKey("6410"), SessionKind.CODE),
         run=SessionRunAssets.from_paths(
             session_name=SESSION_NAME,
             run_id="20260101T000000000000Z",
@@ -782,10 +783,10 @@ def test_the_join_is_exact_not_merely_the_first_run_of_the_issue(
         branch_name=f"tech-lead-investigation-6410-{TOKEN}",
         terminal_binding=RunTerminalBinding("issue-6410"),
         agent_label="agent:coder",
-        completion_task=TaskKind.CODE,
+        completion_task=SessionKind.CODE,
     )
     ledger = _ledger(
-        investigation, agent_label="agent:tech-lead", completion_task=TaskKind.TECH_LEAD
+        investigation, agent_label="agent:tech-lead", completion_task=SessionKind.TECH_LEAD
     )
     # The OTHER run first, so a loose match would take it.
     ledger.recorded_runs.return_value = (other,) + ledger.recorded_runs.return_value

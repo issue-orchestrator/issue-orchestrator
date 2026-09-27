@@ -46,7 +46,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
     get_completion_path,
 )
 from ..domain.coder_prompt import (
@@ -694,12 +694,12 @@ class SessionLauncher:
         agent_config = self.config.agents.get(issue.agent_type)
         assert agent_config is not None  # Validated in preconditions
         issue_key = issue.key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
 
         _identity_log_extra = log_context(issue_key=issue_key.stable_id(), session_id=session_name)
         logger.info(
             "[launch] Issue session identity: issue=%s issue_key=%s agent=%s task=%s session=%s",
-            issue.number, issue_key, issue.agent_type, TaskKind.CODE.value, session_name,
+            issue.number, issue_key, issue.agent_type, SessionKind.CODE.value, session_name,
             extra=_identity_log_extra,
         )
         logger.info(
@@ -710,7 +710,7 @@ class SessionLauncher:
         # Phase 2: Resolve required prompt input before any gate that may park
         # the issue by writing a shared label or durable provider record.
         prepared_coder_prompt = self._coder_prompt_addendum.prepare(
-            task=TaskKind.CODE,
+            task=SessionKind.CODE,
             agent_label=issue.agent_type,
         )
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
@@ -849,7 +849,7 @@ class SessionLauncher:
         # Write session metadata
         ctx.write_worktree_note()
         ctx.write_session_identity({
-            "task": TaskKind.CODE.value,
+            "task": SessionKind.CODE.value,
             "issue_key": issue_key.stable_id(),
             "session_key": session_key.stable_id(),
             "agent": issue.agent_type,
@@ -994,7 +994,7 @@ class SessionLauncher:
                 issue_number=issue.number,
                 issue_title=issue.title,
                 worktree=worktree_path,
-                task_kind=TaskKind.CODE.value,
+                task_kind=SessionKind.CODE.value,
                 evidence_read_roots=evidence_read_roots,
                 extra_provider_args=extra_args,
             )
@@ -1144,7 +1144,7 @@ class SessionLauncher:
         if result := self._check_launch_preconditions(issue, active_sessions, session_name):
             return result
         prepared_coder_prompt = self._coder_prompt_addendum.prepare(
-            task=TaskKind.CODE,
+            task=SessionKind.CODE,
             agent_label=agent_label,
         )
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
@@ -1180,14 +1180,14 @@ class SessionLauncher:
 
         retry_count = max(1, retry.retry_count)
         issue_key = issue.key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
         logger.info(
             "[launch] Validation retry identity: issue=%s issue_key=%s agent=%s "
             "task=%s session=%s retry_count=%s",
             issue.number,
             issue_key,
             agent_label,
-            TaskKind.CODE.value,
+            SessionKind.CODE.value,
             session_name,
             retry_count,
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
@@ -1293,7 +1293,7 @@ class SessionLauncher:
 
             ctx.write_worktree_note()
             ctx.write_session_identity({
-                "task": TaskKind.CODE.value,
+                "task": SessionKind.CODE.value,
                 "issue_key": issue_key.stable_id(),
                 "session_key": session_key.stable_id(),
                 "agent": agent_label,
@@ -1338,7 +1338,7 @@ class SessionLauncher:
                 issue_number=issue.number,
                 issue_title=issue.title,
                 worktree=worktree_path,
-                task_kind=TaskKind.CODE.value,
+                task_kind=SessionKind.CODE.value,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
@@ -1448,7 +1448,7 @@ class SessionLauncher:
         # EXACTLY the selected execution role. `Issue.agent_type` returns the
         # FIRST agent label, so APPENDING left an investigation's resumed run
         # reading as the focus issue's coder: authority bypassed, artifact hold
-        # released, run recorded as TaskKind.CODE (#7273 round 2 finding 1).
+        # released, run recorded as SessionKind.CODE (#7273 round 2 finding 1).
         carried = fresh_issue.labels if fresh_issue else []
         labels = [n for n in carried if not str(n).startswith("agent:")] + [agent_label]
         issue = Issue(
@@ -1586,7 +1586,7 @@ class SessionLauncher:
         ):
             return result
         issue_key = review.issue_key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.REVIEW)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.REVIEW)
         log_transition("review", review.pr_number, "QUEUED", "LAUNCHING", "no conflicts")
         logger.info(
             "[launch] Review session identity: issue=%s issue_key=%s pr=%s agent=%s task=%s session=%s branch=%s",
@@ -1594,7 +1594,7 @@ class SessionLauncher:
             issue_key,
             review.pr_number,
             agent_label,
-            TaskKind.REVIEW.value,
+            SessionKind.REVIEW.value,
             session_name,
             review.branch_name,
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
@@ -1673,7 +1673,7 @@ class SessionLauncher:
             # Write session metadata
             ctx.write_worktree_note()
             ctx.write_session_identity({
-                "task": TaskKind.REVIEW.value,
+                "task": SessionKind.REVIEW.value,
                 "issue_key": issue_key.stable_id(),
                 "pr_number": review.pr_number,
                 "session_key": session_key.stable_id(),
@@ -1725,7 +1725,7 @@ class SessionLauncher:
                 worktree=worktree_path,
                 pr_number=review.pr_number,
                 existing_work=existing_work,
-                task_kind=TaskKind.REVIEW.value,
+                task_kind=SessionKind.REVIEW.value,
             )
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command(
@@ -1734,7 +1734,7 @@ class SessionLauncher:
                 worktree=worktree_path,
                 pr_number=review.pr_number,
                 existing_work=existing_work,
-                task_kind=TaskKind.REVIEW.value,
+                task_kind=SessionKind.REVIEW.value,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(
@@ -1901,7 +1901,7 @@ class SessionLauncher:
         resolve_prior_pr_for_launch(review, self.repository_host)
 
         issue_key = review.issue_key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.RETROSPECTIVE_REVIEW)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.RETROSPECTIVE_REVIEW)
         log_transition(
             "retrospective-review",
             review.issue_number,
@@ -1963,7 +1963,7 @@ class SessionLauncher:
                 event_data={
                     "issue_number": review.issue_number,
                     "reason": str(ctx.error),
-                    "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                    "task": SessionKind.RETROSPECTIVE_REVIEW.value,
                 },
             )
             return LaunchResult(
@@ -1986,7 +1986,7 @@ class SessionLauncher:
 
             ctx.write_worktree_note()
             ctx.write_session_identity({
-                "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                "task": SessionKind.RETROSPECTIVE_REVIEW.value,
                 "issue_key": issue_key.stable_id(),
                 "session_key": session_key.stable_id(),
                 "agent": agent_label,
@@ -2024,7 +2024,7 @@ class SessionLauncher:
                 worktree=worktree_path,
                 pr_number=prompt_pr_number,
                 existing_work=existing_work,
-                task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+                task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
             )
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
@@ -2033,7 +2033,7 @@ class SessionLauncher:
                 issue_title=issue_title,
                 worktree=worktree_path,
                 pr_number=prompt_pr_number,
-                task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+                task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(
@@ -2121,7 +2121,7 @@ class SessionLauncher:
                 "prior_pr_url": review.prior_pr_url,
                 "agent": agent_label,
                 "source_agent": review.agent_label,
-                "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                "task": SessionKind.RETROSPECTIVE_REVIEW.value,
                 "session_name": session_name,
                 "run_id": run.run_id,
                 "run_dir": str(run.run_dir),

@@ -26,7 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
-from .session_key import TaskKind
+from .session_kind import SessionKind
 
 if TYPE_CHECKING:
     from .models import AgentConfig
@@ -128,7 +128,7 @@ DEFAULT_SANDBOX_DENY_READ_FILES: tuple[str, ...] = (
 # Review-exchange launches use per-role task kinds (built as
 # ``review_exchange_{role}`` in ``execution.persistent_session_exchange`` and
 # matched in ``resources.get_completion_instructions``). They are not
-# :class:`TaskKind` enum values, but the sandbox role policy recognizes them so
+# :class:`SessionKind` enum values, but the sandbox role policy recognizes them so
 # an opted-in exchange agent resolves to its true role instead of silently
 # landing on the unknown-task CODER fail-safe below.
 REVIEW_EXCHANGE_CODER_TASK_KIND = "review_exchange_coder"
@@ -138,7 +138,7 @@ REVIEW_EXCHANGE_REVIEWER_TASK_KIND = "review_exchange_reviewer"
 class SandboxRole(Enum):
     """The sandbox-relevant role a session plays.
 
-    Distinct from :class:`TaskKind`: several task kinds collapse to one sandbox
+    Distinct from :class:`SessionKind`: several task kinds collapse to one sandbox
     role (a ``CODE`` and a ``REWORK`` session are both a ``CODER``). The role is
     the axis the scope policy branches on, and the seam future policies extend
     (e.g. a tech-lead's evidence-map-driven read scope).
@@ -227,16 +227,16 @@ class SandboxScopeContext:
 
 
 _CODER_TASK_KINDS = frozenset(
-    {TaskKind.CODE.value, TaskKind.REWORK.value, REVIEW_EXCHANGE_CODER_TASK_KIND}
+    {SessionKind.CODE.value, SessionKind.REWORK.value, REVIEW_EXCHANGE_CODER_TASK_KIND}
 )
 _REVIEWER_TASK_KINDS = frozenset(
     {
-        TaskKind.REVIEW.value,
-        TaskKind.RETROSPECTIVE_REVIEW.value,
+        SessionKind.REVIEW.value,
+        SessionKind.RETROSPECTIVE_REVIEW.value,
         REVIEW_EXCHANGE_REVIEWER_TASK_KIND,
     }
 )
-_TECH_LEAD_TASK_KINDS = frozenset({TaskKind.TECH_LEAD.value})
+_TECH_LEAD_TASK_KINDS = frozenset({SessionKind.TECH_LEAD.value})
 
 
 def _role_for_task_kind(task_kind: str) -> SandboxRole:

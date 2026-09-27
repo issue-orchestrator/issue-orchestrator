@@ -15,7 +15,8 @@ from issue_orchestrator.domain.completion_intake import (
     IntakeClosed,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.command_runner import CommandResult, CommandRunner
@@ -46,7 +47,7 @@ class CompletionIntakeFixture:
         record = replace(
             record,
             session_key=SessionKey(
-                FakeIssueKey(str(issue_number), "example/repo"), TaskKind.CODE
+                FakeIssueKey(str(issue_number), "example/repo"), SessionKind.CODE
             ),
         )
         record.run.worktree_path.mkdir(parents=True)

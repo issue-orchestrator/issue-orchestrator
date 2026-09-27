@@ -10,7 +10,7 @@ from typing import Any, Callable, assert_never
 
 from ..domain.issue_key import format_issue_label, parse_external_id
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES, SessionHistoryStatus
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..history import issues_held_by_session_history, latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
@@ -498,15 +498,15 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             status_reason = f"Running for {runtime} min"
 
         seen_issues.add(session.issue.number)
-        if session.key.task == TaskKind.REVIEW:
+        if session.key.kind == SessionKind.REVIEW:
             flow_stage = "review"
-        elif session.key.task == TaskKind.RETROSPECTIVE_REVIEW:
+        elif session.key.kind == SessionKind.RETROSPECTIVE_REVIEW:
             flow_stage = "review"
             phase = "Retro review"
             status_reason = f"Reviewing existing implementation for {runtime} min"
-        elif session.key.task == TaskKind.REWORK:
+        elif session.key.kind == SessionKind.REWORK:
             flow_stage = "rework"
-        elif session.key.task == TaskKind.TECH_LEAD:
+        elif session.key.kind == SessionKind.TECH_LEAD:
             flow_stage = "tech_lead"
         else:
             flow_stage = "in_progress"

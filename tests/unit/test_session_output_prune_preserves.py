@@ -77,7 +77,7 @@ def test_an_ordinary_retry_preserves_the_run_that_makes_it_restartable(
     """
     from issue_orchestrator.control.tech_lead_run_inputs import preserved_source_run
     from issue_orchestrator.domain.models import PendingValidationRetry
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
 
     worktree = tmp_path / "checkout"
     worktree.mkdir()
@@ -102,7 +102,7 @@ def test_an_ordinary_retry_preserves_the_run_that_makes_it_restartable(
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_task=SessionKind.CODE,
         authority_run=None,
     )
 

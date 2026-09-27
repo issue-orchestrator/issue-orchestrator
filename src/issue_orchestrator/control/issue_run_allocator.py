@@ -3,7 +3,8 @@
 from ..domain.issue_run_allocation import IssueExchangeRunAllocation, IssueRunAllocation
 from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
 from ..domain.review_exchange_run import ReviewExchangeRun
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets, RunContainedFile
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.issue_run_allocator import IssueRunRoleConfiguration
@@ -88,8 +89,8 @@ class IssueRunAllocationService:
                 branch_name=status.branch,
                 terminal_binding=RunTerminalBinding(terminal_id),
                 agent_label=agent_label,
-                completion_task=TaskKind.TECH_LEAD
+                completion_task=SessionKind.TECH_LEAD
                 if agent_label == self._configuration.tech_lead_review_agent
-                else key.task,
+                else key.kind,
             ),
         )

@@ -14,7 +14,8 @@ from issue_orchestrator.entrypoints import web
 from issue_orchestrator.execution.orchestrator_http_api import OrchestratorHttpApi
 from issue_orchestrator.domain.models import Session, Issue, AgentConfig
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from tests.integration.conftest import xdist_timeout
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -82,7 +83,7 @@ def _make_session(worktree: Path, run_assets: SessionRunAssets) -> Session:
     issue = Issue(number=7, title="Test", labels=["agent:web"])
     agent_config = AgentConfig(prompt_path=worktree / "prompt.txt", model="sonnet", timeout_minutes=30)
     issue_key = FakeIssueKey(name="7")
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     return Session(
         key=session_key,
         issue=issue,

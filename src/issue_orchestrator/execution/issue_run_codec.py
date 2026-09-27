@@ -10,7 +10,8 @@ from typing import Any
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord, RunTerminalBinding
 from ..domain.registered_completion import CompletionRunRole
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets
 
 
@@ -53,7 +54,7 @@ class IssueRunRow:
                 "issue_number": issue_number,
                 "issue_scope": scope,
                 "issue_key": record.session_key.issue.stable_id(),
-                "task": record.session_key.task.value,
+                "task": record.session_key.kind.value,
                 "assets_json": json.dumps(
                     run.to_dict(), sort_keys=True, separators=(",", ":")
                 ),
@@ -135,14 +136,14 @@ class IssueRunRow:
         return IssueRunRecord(
             session_key=SessionKey(
                 GitHubIssueKey(repo=row["issue_scope"], external_id=row["issue_key"]),
-                TaskKind(row["task"]),
+                SessionKind(row["task"]),
             ),
             run=assets,
             recorded_at=row["recorded_at"],
             branch_name=row["branch_name"],
             terminal_binding=None if row["terminal_binding"] is None else RunTerminalBinding(**json.loads(row["terminal_binding"])),
             agent_label=row["agent_label"],
-            completion_task=TaskKind(row["completion_task"])
+            completion_task=SessionKind(row["completion_task"])
             if row["completion_task"] is not None
             else None,
         )

@@ -18,7 +18,8 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReadError
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -107,7 +108,7 @@ def sample_session(sample_agent_config, tmp_path):
         body="Test body",
     )
     issue_key = FakeIssueKey(name="123")
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     return Session(
         key=session_key,
         issue=issue,
@@ -340,7 +341,7 @@ class TestCheckAllSessions:
         session1 = sample_session
         issue2 = Issue(number=456, title="Issue 2", labels=["agent:web"])
         issue_key2 = FakeIssueKey(name="456")
-        session_key2 = SessionKey(issue=issue_key2, task=TaskKind.CODE)
+        session_key2 = SessionKey(issue=issue_key2, kind=SessionKind.CODE)
         session2 = Session(
             key=session_key2,
             issue=issue2,
@@ -927,7 +928,7 @@ class TestCheckSessionExceptionHandling:
             body="",
         )
         session = Session(
-            key=SessionKey(issue=FakeIssueKey(name="321"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey(name="321"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-321",
@@ -963,7 +964,7 @@ class TestCheckAllSessionsExceptionHandling:
 
         issue2 = Issue(number=456, title="Issue 2", labels=["agent:web"])
         issue_key2 = FakeIssueKey(name="456")
-        session_key2 = SessionKey(issue=issue_key2, task=TaskKind.CODE)
+        session_key2 = SessionKey(issue=issue_key2, kind=SessionKind.CODE)
         session2 = Session(
             key=session_key2,
             issue=issue2,

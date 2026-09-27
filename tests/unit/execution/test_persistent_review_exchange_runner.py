@@ -51,7 +51,7 @@ from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory imp
 )
 from issue_orchestrator.execution import persistent_review_exchange_runner as prer
 from issue_orchestrator.domain.coder_prompt import PreparedCoderPromptAddendum
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 
 
 @pytest.fixture
@@ -357,7 +357,7 @@ def test_run_resolves_coder_addendum_for_coder_worktree_only(
     _run(runner, tmp_path)
 
     provider.prepare.assert_called_once_with(
-        task=TaskKind.REWORK,
+        task=SessionKind.REWORK,
         agent_label="agent:coder",
     )
     assert captured["coder_prompt_addendum"] == "INTERNAL-CODER-ONLY"

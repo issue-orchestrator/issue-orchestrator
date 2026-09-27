@@ -19,7 +19,8 @@ from issue_orchestrator.domain.issue_run_evidence import (
     IssueRunRecord,
     RunTerminalBinding,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -34,7 +35,7 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
     worktree = tmp_path / "worktree"
     run_dir = worktree / ".issue-orchestrator" / "sessions" / f"{run_id}__coding-1"
     return IssueRunRecord(
-        session_key=SessionKey(FakeIssueKey("42", "example/repo"), TaskKind.CODE),
+        session_key=SessionKey(FakeIssueKey("42", "example/repo"), SessionKind.CODE),
         run=SessionRunAssets.from_paths(
             session_name="coding-1", run_id=run_id, started_at=NOW,
             worktree_path=worktree, run_dir=run_dir,
@@ -45,7 +46,7 @@ def run_record(tmp_path: Path, run_id: str = "run-1") -> IssueRunRecord:
         branch_name="feature",
         terminal_binding=RunTerminalBinding("issue-42"),
         agent_label="agent:claude",
-        completion_task=TaskKind.CODE,
+        completion_task=SessionKind.CODE,
     )
 
 
@@ -124,8 +125,8 @@ def test_repeated_registration_is_idempotent_but_cannot_rebind_a_run(tmp_path):
     for issue_number, conflict in (
         (43, record),
         (42, replace(record, agent_label="agent:other")),
-        (42, replace(record, completion_task=TaskKind.TECH_LEAD)),
-        (42, replace(record, session_key=SessionKey(record.session_key.issue, TaskKind.REWORK))),
+        (42, replace(record, completion_task=SessionKind.TECH_LEAD)),
+        (42, replace(record, session_key=SessionKey(record.session_key.issue, SessionKind.REWORK))),
         (42, replace(record, run=run_record(tmp_path / "other").run)),
     ):
         with pytest.raises(IssueRunEvidenceUnavailable, match="Conflicting ownership"):

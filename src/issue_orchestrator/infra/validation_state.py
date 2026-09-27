@@ -24,7 +24,7 @@ from ..domain.artifact_contracts import (
     ValidationRetry,
 )
 from ..domain.run_manifest import RunManifest
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 
 logger = logging.getLogger(__name__)
 _NO_CURRENT_RETRY = object()
@@ -140,14 +140,14 @@ class ValidationRetryArtifacts:
     retry queue never has to guess (see issue #6426):
 
     - Run-scoped artifacts are only constructed once the run directory's identity
-      classifies to a concrete non-review ``TaskKind`` (CODE/REWORK/...). An
+      classifies to a concrete non-review ``SessionKind`` (CODE/REWORK/...). An
       unrecognized or review-only run is refused upstream, never returned with an
       unknown source.
     - Legacy worktree-level state (no run directory, predates run-scoped
-      identity) is stamped ``TaskKind.CODE`` explicitly at construction, since
+      identity) is stamped ``SessionKind.CODE`` explicitly at construction, since
       that machinery only ever ran for coding work.
 
-    There is no ``None`` / ``or TaskKind.CODE`` fallback: the field is always a
+    There is no ``None`` / ``or SessionKind.CODE`` fallback: the field is always a
     valid coding-side task, so a review-only or unknown-provenance artifact can
     never be relaunched as coding work.
 
@@ -161,7 +161,7 @@ class ValidationRetryArtifacts:
 
     state: ValidationState
     state_path: Path
-    source_task: TaskKind
+    source_task: SessionKind
     retry_prompt_path: Path | None = None
     run_dir: Path | None = None
 
@@ -282,9 +282,9 @@ def _run_session_name(run_dir: Path) -> str:
     return run_dir.name.split("__", 1)[1]
 
 
-def _run_source_task(run_dir: Path) -> TaskKind | None:
+def _run_source_task(run_dir: Path) -> SessionKind | None:
     """Classify the task that produced this run directory from its identity."""
-    return TaskKind.from_session_name(_run_session_name(run_dir))
+    return SessionKind.from_phase_label(_run_session_name(run_dir))
 
 
 def _run_is_review_only(run_dir: Path) -> bool:
@@ -334,7 +334,7 @@ def _find_run_scoped_retry_artifacts(
         # publishes nothing. It must be fully transparent to coding-retry recovery:
         # any validation-state.json under such a run — e.g. left by the pre-fix
         # retrospective-review bug or a crash boundary — must never be recovered as
-        # a coding validation retry (it would relaunch as TaskKind.CODE and open a
+        # a coding validation retry (it would relaunch as SessionKind.CODE and open a
         # PR on an empty branch, issue #6426), and its terminal pass/fail status
         # must not suppress a genuine coding retry in an older run. Skip it entirely.
         if _run_is_review_only(run_dir):
@@ -351,7 +351,7 @@ def _find_run_scoped_retry_artifacts(
             if source_task is None:
                 # Unrecognized run identity (not in the classifier) with retry
                 # state. Provenance is unknown, so we fail safe: refuse to recover
-                # it as a coding retry rather than coerce it to TaskKind.CODE and
+                # it as a coding retry rather than coerce it to SessionKind.CODE and
                 # risk relaunching unknown work on an empty/wrong branch (#6426).
                 # Keep scanning older runs for a genuine, classifiable coding retry.
                 logger.warning(
@@ -435,7 +435,7 @@ def find_pending_retry_artifacts(worktree_path: Path) -> ValidationRetryArtifact
     return ValidationRetryArtifacts(
         state=legacy_state,
         state_path=legacy_state_path,
-        source_task=TaskKind.CODE,
+        source_task=SessionKind.CODE,
         retry_prompt_path=legacy_prompt_path if legacy_prompt_path.exists() else None,
     )
 

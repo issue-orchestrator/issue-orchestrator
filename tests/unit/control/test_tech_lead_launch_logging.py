@@ -40,7 +40,7 @@ from issue_orchestrator.domain.models import (
     PendingTechLeadReview,
     PendingValidationRetry,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
@@ -297,7 +297,7 @@ def _validation_retry(issue_number: int = 1) -> PendingValidationRetry:
         validation_error="dirty worktree",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_task=SessionKind.CODE,
         validation_cmd="make test",
     )
 

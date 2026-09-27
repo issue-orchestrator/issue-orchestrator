@@ -47,7 +47,8 @@ from issue_orchestrator.domain.models import (
     OrchestratorState,
     TechLeadFacts,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
     TechLeadSessionFlavor,
@@ -378,13 +379,13 @@ def _session(
     number: int,
     last_output_at: "float | None",
     *,
-    task: TaskKind = TaskKind.CODE,
+    task: SessionKind = SessionKind.CODE,
     started_at: "datetime | None" = None,
 ):
     """Stand-in exposing only what board_review_fingerprint reads on a session:
     ``key.stable_id()``, ``last_output_at``, and ``started_at``."""
     return SimpleNamespace(
-        key=SessionKey(issue=FakeIssueKey(str(number)), task=task),
+        key=SessionKey(issue=FakeIssueKey(str(number)), kind=task),
         last_output_at=last_output_at,
         started_at=started_at or datetime.fromtimestamp(0.0),
     )
@@ -512,8 +513,8 @@ class TestSessionHungFlag:
     def test_same_issue_different_task_is_a_distinct_session(self) -> None:
         # Sessions are keyed by SessionKey, not issue number: a coding session
         # replaced by a review session on the same issue is a real board change.
-        coding = _board(sessions=[_session(7, None, task=TaskKind.CODE)])
-        review = _board(sessions=[_session(7, None, task=TaskKind.REVIEW)])
+        coding = _board(sessions=[_session(7, None, task=SessionKind.CODE)])
+        review = _board(sessions=[_session(7, None, task=SessionKind.REVIEW)])
         assert board_review_fingerprint(coding, 1000.0) != board_review_fingerprint(
             review, 1000.0
         )

@@ -42,7 +42,7 @@ from ..domain.models import (
     session_history_status_from_session_status,
 )
 from ..domain.session_event_identity import SessionEventIdentity
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..ports import (
     EventSink,
     Issue,
@@ -644,7 +644,7 @@ class CompletionHandler:
         """Emit events for a completed session (coding/rework only)."""
         # Review sessions get their events from _publish_review_outcome().
         # Retrospective review sessions complete through label/state actions.
-        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}:
             return
 
         identity = SessionEventIdentity.of(session)
@@ -992,10 +992,10 @@ class CompletionHandler:
         if not self._cleanup_actions_requested():
             return CleanupDecision.none()
 
-        is_work_session = session.key.task not in {
-            TaskKind.REVIEW,
-            TaskKind.RETROSPECTIVE_REVIEW,
-            TaskKind.REWORK,
+        is_work_session = session.key.kind not in {
+            SessionKind.REVIEW,
+            SessionKind.RETROSPECTIVE_REVIEW,
+            SessionKind.REWORK,
         }
 
         if is_work_session and pr_url and pr_number and self._should_wait_for_review_before_cleanup():
@@ -1044,7 +1044,7 @@ class CompletionHandler:
         Note: This returns True even for dry-run PRs (so pr-pending label gets added).
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
-        is_review_session = session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}
+        is_review_session = session.key.kind in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}
         should_queue = should_queue_pr_review(
             has_pr=bool(pr_url),
             code_review_agent_configured=bool(self.config.code_review_agent),
@@ -1084,7 +1084,7 @@ class CompletionHandler:
         """Return label actions after an approved local review exchange."""
         if not review_exchange_completed or not pr_url:
             return ()
-        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind in {SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW}:
             return ()
         return (
             AddLabelAction(

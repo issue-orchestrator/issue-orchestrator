@@ -1529,7 +1529,7 @@ def _queue_snapshot(queue: str):
         PendingTechLeadReview,
         PendingValidationRetry,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
     from tests.unit.test_planner import make_issue, make_snapshot
 
@@ -1589,7 +1589,7 @@ def _queue_snapshot(queue: str):
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
         )
         return make_snapshot(pending_validation_retries=[retry]), {}
     if queue == "tech_lead":
@@ -3236,7 +3236,7 @@ def _pending_state(queue: str):
         PendingTechLeadReview,
         PendingValidationRetry,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 
     state = OrchestratorState()
@@ -3280,7 +3280,7 @@ def _pending_state(queue: str):
                 validation_error="boom",
                 validation_error_file=None,
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_task=SessionKind.CODE,
             )
         )
     elif queue == "tech_lead":
@@ -4411,7 +4411,7 @@ def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     from issue_orchestrator.control.session_completion import (
         unprocessed_session_policy,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
 
     harness = _ready_harness(tmp_path)
     state = _pending_state("validation_retry")
@@ -4445,7 +4445,7 @@ def test_a_restarted_validation_retry_keeps_its_prompt_and_budget(
     assert returned.original_prompt == "the original prompt"
     assert returned.validation_error == "boom"
     assert returned.retry_count == 1
-    assert returned.source_task is TaskKind.CODE
+    assert returned.source_task is SessionKind.CODE
 
 
 def test_a_live_retry_with_unverified_authority_is_quarantined(
@@ -4514,7 +4514,7 @@ def test_a_restarted_rework_can_still_restore_its_durable_label(
     on the PR. Without the claim the label is unrecoverable too, so BOTH the
     queue item and its crash-safe trigger were lost.
     """
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
 
     harness = _ready_harness(tmp_path)
     state = _pending_state("rework")
@@ -4527,7 +4527,7 @@ def test_a_restarted_rework_can_still_restore_its_durable_label(
 
     # Identity the terminal name could not supply, taken from the claim.
     assert restored.pr_number == 70
-    assert restored.key.task is TaskKind.REWORK
+    assert restored.key.kind is SessionKind.REWORK
     assert restored.rework_cycle == 3
 
 

@@ -13,7 +13,7 @@ import pytest
 from issue_orchestrator.control.lease_renewer import LeaseRenewer
 from issue_orchestrator.domain.claim import ClaimFetchError
 from issue_orchestrator.domain.lease_config import LeaseConfig
-from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
+from issue_orchestrator.domain.models import Issue, Session, SessionKey, SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -46,7 +46,7 @@ def create_session(
 ) -> Session:
     issue_key = MagicMock()
     issue_key.stable_id.return_value = f"issue-{issue_number}"
-    key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     now = datetime.now()
     return Session(
         key=key,

@@ -18,25 +18,15 @@ Usage:
 import logging
 import re
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from ..domain.session_kind import SessionType
 from ..infra.config import Config
 from ..events import EventName
 from ..ports import EventSink, SessionRunner,  make_trace_event
 
 logger = logging.getLogger(__name__)
-
-
-class SessionType(Enum):
-    """Types of agent sessions."""
-
-    ISSUE = "issue"
-    REVIEW = "review"
-    RETROSPECTIVE_REVIEW = "retrospective-review"
-    REWORK = "rework"
-    TECH_LEAD = "tech-lead"
 
 
 @dataclass(frozen=True)

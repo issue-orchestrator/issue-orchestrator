@@ -5,24 +5,24 @@ from dataclasses import dataclass
 from .completion_intake import CompletionIntakeError
 from .models import CompletionRecord, sanitize_agent_label
 from pathlib import Path
-from .session_key import TaskKind
+from .session_kind import SessionKind
 from .session_run import RunContainedFile, SessionRunIdentity
 
 
 @dataclass(frozen=True, slots=True)
 class CompletionRunRole:
     issue_number: int
-    task: TaskKind
+    task: SessionKind
     agent_label: str
 
     def __post_init__(self) -> None:
-        if type(self.task) is not TaskKind:
+        if type(self.task) is not SessionKind:
             raise CompletionIntakeError("recorded completion task is invalid")
         if (
             type(self.agent_label) is not str
             or not (
                 (self.agent_label.startswith("agent:") and self.agent_label.removeprefix("agent:").strip())
-                or (self.agent_label == "operator:historical" and self.task is TaskKind.CODE)
+                or (self.agent_label == "operator:historical" and self.task is SessionKind.CODE)
             )
         ):
             raise CompletionIntakeError(
@@ -33,7 +33,7 @@ class CompletionRunRole:
 
     @classmethod
     def from_recorded(
-        cls, issue_number: int, task: TaskKind | None, agent_label: str | None
+        cls, issue_number: int, task: SessionKind | None, agent_label: str | None
     ) -> "CompletionRunRole":
         if task is None or agent_label is None:
             raise CompletionIntakeError("recorded completion role is missing")
@@ -46,7 +46,7 @@ class CompletionRunRole:
             raise CompletionIntakeError("receipt does not bind processing issue")
         if supplied_label is not None and supplied_label != self.agent_label:
             raise CompletionIntakeError("caller role differs from recorded allocation")
-        if (self.task is TaskKind.TECH_LEAD) != (self.agent_label == tech_lead_label):
+        if (self.task is SessionKind.TECH_LEAD) != (self.agent_label == tech_lead_label):
             raise CompletionIntakeError(
                 "recorded Tech Lead role does not match configured launch policy"
             )
@@ -65,7 +65,7 @@ class CompletionProcessingPolicy:
     """Role selected once for an invocation, independent of later settings edits."""
 
     agent_label: str | None
-    task: TaskKind | None
+    task: SessionKind | None
 
     @classmethod
     def for_unprocessed_session(
@@ -80,12 +80,12 @@ class CompletionProcessingPolicy:
         work, and the carried launch authority was bypassed (#7273 round 2
         finding 1).
         """
-        task = TaskKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
+        task = SessionKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
         return cls(agent_label, task)
 
     @property
     def is_tech_lead(self) -> bool:
-        return self.task is TaskKind.TECH_LEAD
+        return self.task is SessionKind.TECH_LEAD
 
     def inheritable_launch_authority(
         self, run: "SessionRunIdentity | None"

@@ -23,7 +23,7 @@ from ..domain.models import (
     is_retrospective_review_session,
     resolve_retrospective_coder_agent,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink
@@ -141,7 +141,7 @@ def _queue_rework_after_retrospective_changes(
     Label/state effects live in CompletionHandler; this owns only the rework queue.
     """
 
-    if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
+    if session.key.kind != SessionKind.RETROSPECTIVE_REVIEW:
         return
     if status != SessionStatus.COMPLETED:
         return
@@ -334,7 +334,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
             retry_count=next_retry_count,
-            source_task=session.key.task,
+            source_task=session.key.kind,
             validation_cmd=config.validation.quick.cmd,
             authority_run=processing_policy.inheritable_launch_authority(session.run_assets.identity),
         )
@@ -674,7 +674,7 @@ def _completion_decider(
             repo_root=config.repo_root,
             issue_key=issue_key,
             session_run_assets=session.run_assets,
-            task_kind=session.key.task,
+            task_kind=session.key.kind,
         )
 
     return decide

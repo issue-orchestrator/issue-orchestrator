@@ -4,7 +4,8 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
-from .session_key import SessionKey, TaskKind
+from .session_key import SessionKey
+from .session_kind import SessionKind
 from .session_run import SessionRunAssets
 
 
@@ -37,7 +38,7 @@ class IssueRunRecord:
     terminal_binding: RunTerminalBinding | None  # None means unknown legacy ownership.
     # None denotes a legacy allocation whose role was never durably recorded.
     agent_label: str | None = field(default=None, kw_only=True)
-    completion_task: TaskKind | None = field(default=None, kw_only=True)
+    completion_task: SessionKind | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.terminal_binding is not None and type(self.terminal_binding) is not RunTerminalBinding:

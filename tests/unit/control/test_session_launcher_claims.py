@@ -383,12 +383,12 @@ class TestSessionCompletionClaimRelease:
     def test_completion_releases_claim(self, mock_claim_manager, mock_events):
         """Session completion releases the claim."""
         from issue_orchestrator.control.session_completion import handle_session_completion
-        from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
+        from issue_orchestrator.domain.models import Issue, Session, SessionKey, SessionKind
 
         # Create a session with a lease_id
         issue_key = MagicMock()
         issue_key.stable_id.return_value = "issue-42"
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
 
         issue = Issue(number=42, title="Test Issue", labels=["test-agent"])
 
@@ -455,12 +455,12 @@ class TestSessionCompletionClaimRelease:
     ):
         """Session without lease_id doesn't try to release."""
         from issue_orchestrator.control.session_completion import handle_session_completion
-        from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
+        from issue_orchestrator.domain.models import Issue, Session, SessionKey, SessionKind
 
         # Create session WITHOUT lease_id
         issue_key = MagicMock()
         issue_key.stable_id.return_value = "issue-42"
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
 
         issue = Issue(number=42, title="Test Issue", labels=["test-agent"])
 

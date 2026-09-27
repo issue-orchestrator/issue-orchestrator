@@ -23,7 +23,7 @@ from ..ports.event_sink import EventSink, make_trace_event
 from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
@@ -267,7 +267,7 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         session
         for session in active_sessions
         if session.issue.number == target.issue_number
-        and session.key.task in {TaskKind.CODE, TaskKind.REWORK}
+        and session.key.kind in {SessionKind.CODE, SessionKind.REWORK}
     ]
     if not candidates:
         return (
@@ -281,13 +281,13 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         )
     current = candidates[0]
     if (
-        current.key.task is not target.task_kind
+        current.key.kind is not target.task_kind
         or current.terminal_id != target.terminal_id
         or current.run_assets.run_id != target.run_id
     ):
         return (
             f"issue #{target.issue_number}'s live generation "
-            f"({current.key.task.value} terminal {current.terminal_id}, "
+            f"({current.key.kind.value} terminal {current.terminal_id}, "
             f"run {current.run_assets.run_id}) is not the observed generation "
             f"({target.task_kind.value} terminal {target.terminal_id}, "
             f"run {target.run_id}); refusing to kill a replacement"
@@ -390,7 +390,7 @@ def _drop_exact_generation(
         for session in active_sessions
         if not (
             session.issue.number == target.issue_number
-            and session.key.task is target.task_kind
+            and session.key.kind is target.task_kind
             and session.terminal_id == target.terminal_id
             and session.run_assets.run_id == target.run_id
         )

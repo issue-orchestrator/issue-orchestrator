@@ -19,7 +19,7 @@ from ..domain.models import (
     PendingRework,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
     get_completion_path,
 )
 from ..domain.session_run import SessionRunAssets
@@ -271,7 +271,7 @@ def _rework_launch_identity(
             None, False, f"Unresolved issue number for rework {rework.issue_key}"
         )
     prepared_coder_prompt = deps.coder_prompt_addendum.prepare(
-        task=TaskKind.REWORK,
+        task=SessionKind.REWORK,
         agent_label=rework.agent_type,
     )
     if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
@@ -295,7 +295,7 @@ def launch_rework_session(
     agent_config, issue_number, prepared_coder_prompt = resolved
 
     issue_key = rework.issue_key
-    session_key = SessionKey(issue=issue_key, task=TaskKind.REWORK)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.REWORK)
     pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
 
     scoped = deps.scoped_rework.admit(rework, pr_number, work_claim=work_claim)
@@ -327,7 +327,7 @@ def launch_rework_session(
         issue_key,
         pr_number,
         rework.agent_type,
-        TaskKind.REWORK.value,
+        SessionKind.REWORK.value,
         session_name,
         branch_name,
         rework.rework_cycle,
@@ -407,7 +407,7 @@ def launch_rework_session(
 
         ctx.write_worktree_note()
         ctx.write_session_identity({
-            "task": TaskKind.REWORK.value,
+            "task": SessionKind.REWORK.value,
             "issue_key": issue_key.stable_id(),
             "pr_number": pr_number,
             "session_key": session_key.stable_id(),
@@ -489,7 +489,7 @@ def launch_rework_session(
             issue_title=issue_title,
             worktree=worktree_path,
             pr_number=pr_number,
-            task_kind=TaskKind.REWORK.value,
+            task_kind=SessionKind.REWORK.value,
         )
         base_command = deps.wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(rework.agent_type, run_dir=run.run_dir.name)

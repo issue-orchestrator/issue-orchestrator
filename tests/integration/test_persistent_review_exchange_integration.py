@@ -26,7 +26,8 @@ from tests.integration.completion_intake_fixture import (
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.domain.issue_run_allocation import IssueExchangeRunAllocation
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 
 
 def make_completion_review_exchange(**kwargs):
@@ -240,7 +241,7 @@ def _run_review_exchange_for_test(
                 worktree_path=worktree,
                 issue_number=issue_number,
                 session_key=SessionKey(
-                    FakeIssueKey(str(issue_number), "local/test"), TaskKind.REWORK
+                    FakeIssueKey(str(issue_number), "local/test"), SessionKind.REWORK
                 ),
                 parent_session_name=session_name,
                 agent_label=agent_label,

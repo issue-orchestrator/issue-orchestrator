@@ -1546,7 +1546,7 @@ class TestStartupManagerValidationRetryRecovery:
 
         Regression for #6426: a validation-state.json left under a
         ``...__retrospective-review-<issue>`` run (pre-fix bug or crash boundary)
-        must not relaunch as TaskKind.CODE and open a PR on an empty branch.
+        must not relaunch as SessionKind.CODE and open a PR on an empty branch.
         """
         mock_config.worktree_base = tmp_path
         worktree = tmp_path / f"{mock_config.repo_root.name}-42"
@@ -1595,7 +1595,7 @@ class TestStartupManagerValidationRetryRecovery:
 
         Regression for #6426: provenance must be explicit. An unclassified
         ``...__mystery-<issue>`` run with retry state must not be silently
-        relaunched as a coding (TaskKind.CODE) validation retry.
+        relaunched as a coding (SessionKind.CODE) validation retry.
         """
         mock_config.worktree_base = tmp_path
         worktree = tmp_path / f"{mock_config.repo_root.name}-42"

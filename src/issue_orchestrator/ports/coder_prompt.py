@@ -8,7 +8,7 @@ from ..domain.coder_prompt import (
     CoderPromptAddendumPreparation,
     PreparedCoderPromptAddendum,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 
 
 class CoderPromptAddendumProvider(Protocol):
@@ -17,7 +17,7 @@ class CoderPromptAddendumProvider(Protocol):
     def prepare(
         self,
         *,
-        task: TaskKind,
+        task: SessionKind,
         agent_label: str,
     ) -> CoderPromptAddendumPreparation:
         """Resolve trusted addendum I/O before the caller mutates launch state."""
@@ -30,7 +30,7 @@ class NoCoderPromptAddendum:
     def prepare(
         self,
         *,
-        task: TaskKind,
+        task: SessionKind,
         agent_label: str,
     ) -> PreparedCoderPromptAddendum:
         _ = (task, agent_label)

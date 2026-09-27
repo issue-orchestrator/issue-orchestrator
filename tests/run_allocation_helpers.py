@@ -116,7 +116,8 @@ def _bind_no_published_review(action_applier) -> None:
 def make_worktree_context(**kwargs):
     from issue_orchestrator.control.worktree_context import WorktreeContext
     from issue_orchestrator.domain.issue_key import FakeIssueKey
-    from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+    from issue_orchestrator.domain.session_key import SessionKey
+    from issue_orchestrator.domain.session_kind import SessionKind
     kwargs.setdefault("run_allocator", allocation_for(kwargs["session_output"], kwargs.get("config")))
-    kwargs.setdefault("session_key", SessionKey(FakeIssueKey(str(kwargs["issue_number"])), TaskKind.CODE))
+    kwargs.setdefault("session_key", SessionKey(FakeIssueKey(str(kwargs["issue_number"])), SessionKind.CODE))
     return WorktreeContext.create(**kwargs)

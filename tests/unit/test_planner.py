@@ -52,7 +52,8 @@ from issue_orchestrator.domain.models import (
 )
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
@@ -99,7 +100,7 @@ def make_issue(number: int, title: str = "Test issue", **kwargs) -> Issue:
     return Issue(**defaults)
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
+def make_session(issue: Issue, task: SessionKind = SessionKind.CODE) -> Session:
     """Create a test session for an issue."""
     from pathlib import Path
     from datetime import datetime
@@ -108,7 +109,7 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         prompt_path=Path("/tmp/test.md"),
     )
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     return Session(
         key=session_key,
         issue=issue,
@@ -423,7 +424,7 @@ class TestPlanValidationRetries:
                     validation_error="dirty worktree",
                     validation_error_file=None,
                     retry_count=1,
-                    source_task=TaskKind.CODE,
+                    source_task=SessionKind.CODE,
                     validation_cmd="make test",
                 ),
             ],
@@ -463,7 +464,7 @@ class TestPlanValidationRetries:
                     validation_error="dirty worktree",
                     validation_error_file=None,
                     retry_count=1,
-                    source_task=TaskKind.CODE,
+                    source_task=SessionKind.CODE,
                     validation_cmd="make test",
                 ),
             ],
@@ -4307,7 +4308,7 @@ class TestSnapshotFromState:
             validation_error="dirty",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
         state.pending_validation_retries = [validation_retry]

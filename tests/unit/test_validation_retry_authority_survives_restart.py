@@ -13,7 +13,7 @@ import pytest
 
 from issue_orchestrator.domain.models import PendingValidationRetry
 from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunIdentity
 from issue_orchestrator.execution.pending_work_codec import decode_claim, encode_claim
 
@@ -33,7 +33,7 @@ def _retry(authority_run: SessionRunIdentity | None) -> PendingValidationRetry:
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_task=SessionKind.CODE,
         validation_cmd="make test",
         authority_run=authority_run,
     )

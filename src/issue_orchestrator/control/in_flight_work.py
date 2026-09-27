@@ -47,7 +47,8 @@ from ..domain.models import (
     Session,
 )
 from ..domain.pending_work import InFlightWork, PendingWorkClaim, PendingWorkKind
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..ports.pending_work_claim_store import ClaimState, PendingWorkClaimStore
 from ..ports.provider_resilience import ProviderErrorType
 
@@ -602,7 +603,7 @@ def _reconcile_restored_identity(
         return
     request = claim.request
     assert isinstance(request, PendingRework)
-    session.key = SessionKey(issue=session.key.issue, task=TaskKind.REWORK)
+    session.key = SessionKey(issue=session.key.issue, kind=SessionKind.REWORK)
     if request.pr_number is not None:
         session.pr_number = request.pr_number
     session.rework_cycle = request.rework_cycle

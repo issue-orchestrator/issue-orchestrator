@@ -33,7 +33,8 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
@@ -713,7 +714,7 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
     )
 
 
-def create_session(issue, worktree_path=None, branch_name="feature/test", task=TaskKind.CODE):
+def create_session(issue, worktree_path=None, branch_name="feature/test", task=SessionKind.CODE):
     """Helper to create Session objects for testing."""
     if worktree_path is None:
         worktree_path = tempfile.mkdtemp(prefix="io-worktree-")
@@ -723,7 +724,7 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
         timeout_minutes=45,
     )
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     from tests.unit.session_run_helpers import make_session_run_assets
 
     return Session(
@@ -1287,7 +1288,7 @@ class TestLaunchSession:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         from tests.unit.session_run_helpers import make_session_run_assets
 
-        existing = create_session(create_issue(100), sample_config.repo_root, task=TaskKind.REVIEW)
+        existing = create_session(create_issue(100), sample_config.repo_root, task=SessionKind.REVIEW)
         existing.terminal_id = "review-456"
         # An active session always carries typed run assets; the ledger sweep
         # that now runs on every reconcile reads its run key (#6999 F8).

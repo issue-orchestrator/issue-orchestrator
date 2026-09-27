@@ -27,7 +27,7 @@ from collections.abc import Callable
 from ..domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from ..domain.tech_lead_escalation import render_tech_lead_escalation_comment
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_manifest import TechLeadManifest
 from .recovered_run_identity import unlaunchable_recovery_refusal
 from ..domain.tech_lead_scratch_identity import (
@@ -580,12 +580,12 @@ def prepare_tech_lead_session_data(
             (
                 TechLeadSessionGeneration(
                     issue_number=session.issue_number,
-                    task_kind=TaskKind(session.session_type),
+                    task_kind=SessionKind(session.session_type),
                     terminal_id=session.terminal_id,
                     run_id=session.run_id,
                 )
                 for session in board_snapshot.sessions
-                if session.session_type in {TaskKind.CODE.value, TaskKind.REWORK.value}
+                if session.session_type in {SessionKind.CODE.value, SessionKind.REWORK.value}
             ),
             key=TechLeadSessionGeneration.sort_key,
         )

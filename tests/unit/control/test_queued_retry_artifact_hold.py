@@ -17,7 +17,7 @@ from issue_orchestrator.control.tech_lead_artifact_retention import (
     tech_lead_problem_artifact_hold_issue_numbers,
 )
 from issue_orchestrator.domain.models import OrchestratorState, PendingValidationRetry
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.session_run import SessionRunIdentity
 
 ORIGINAL = SessionRunIdentity(
@@ -47,7 +47,7 @@ def _retry(
         validation_error="boom",
         validation_error_file=None,
         retry_count=1,
-        source_task=TaskKind.CODE,
+        source_task=SessionKind.CODE,
         validation_cmd="make test",
         authority_run=authority_run,
     )

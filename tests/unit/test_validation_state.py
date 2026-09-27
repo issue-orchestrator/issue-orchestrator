@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.validation_state import (
     ValidationState,
     find_pending_retry_artifacts,
@@ -531,7 +531,7 @@ class TestRunScopedReviewOnlyRecovery:
 
         artifacts = find_pending_retry_artifacts(worktree)
         assert artifacts is not None
-        assert artifacts.source_task == TaskKind.CODE
+        assert artifacts.source_task == SessionKind.CODE
         assert artifacts.state.retry_count == 1
 
     def test_unrecognized_run_identity_is_not_recovered(self, tmp_path: Path):
@@ -545,7 +545,7 @@ class TestRunScopedReviewOnlyRecovery:
         )
 
         # Unknown provenance must never enter the coder retry pipeline, and must
-        # not be silently treated as TaskKind.CODE.
+        # not be silently treated as SessionKind.CODE.
         assert find_pending_retry_artifacts(worktree) is None
         assert has_pending_retry(worktree) is False
         assert read_validation_state(worktree) is None
@@ -561,7 +561,7 @@ class TestRunScopedReviewOnlyRecovery:
 
         artifacts = find_pending_retry_artifacts(worktree)
         assert artifacts is not None
-        assert artifacts.source_task == TaskKind.CODE
+        assert artifacts.source_task == SessionKind.CODE
 
     def test_coding_retry_recovered_despite_newer_review_only_run(self, tmp_path: Path):
         """A newer review-only run does not shadow an older genuine coding retry."""
@@ -581,4 +581,4 @@ class TestRunScopedReviewOnlyRecovery:
 
         artifacts = find_pending_retry_artifacts(worktree)
         assert artifacts is not None
-        assert artifacts.source_task == TaskKind.CODE
+        assert artifacts.source_task == SessionKind.CODE

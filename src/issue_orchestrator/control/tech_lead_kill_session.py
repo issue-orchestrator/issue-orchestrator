@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from ..events import EventName
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_session import TechLeadSessionGeneration
 from ..infra.logging_config import issue_log
 from ..ports import EventSink, make_trace_event
@@ -75,13 +75,13 @@ def kill_hung_session_stale_reason(
             f" #{issue_number}; refusing to kill an unverified runtime"
         )
     try:
-        task_kind = TaskKind(target_session_type)
+        task_kind = SessionKind(target_session_type)
     except ValueError:
         return (
             f"the proposal recorded unsupported session type"
             f" {target_session_type!r} for issue #{issue_number}"
         )
-    if task_kind not in {TaskKind.CODE, TaskKind.REWORK}:
+    if task_kind not in {SessionKind.CODE, SessionKind.REWORK}:
         return (
             f"the proposal targeted non-killable {task_kind.value!r} work"
             f" for issue #{issue_number}"
@@ -118,7 +118,7 @@ class TechLeadKillSessionExecutor:
             return self._downgrade(action, stale)
         target = TechLeadSessionGeneration(
             issue_number=action.issue_number,
-            task_kind=TaskKind(action.target_session_type),
+            task_kind=SessionKind(action.target_session_type),
             terminal_id=action.target_terminal_id,
             run_id=action.target_session_id,
         )

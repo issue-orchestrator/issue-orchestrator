@@ -123,7 +123,7 @@ from issue_orchestrator.domain.models import (
     PendingCleanup,
     OrchestratorState,
     SessionHistoryEntry,
-    TaskKind,
+    SessionKind,
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
@@ -921,7 +921,7 @@ class TestLaunchIssueSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "issue-123"
-        assert result.session.key.task == TaskKind.CODE
+        assert result.session.key.kind == SessionKind.CODE
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-1")
 
@@ -977,7 +977,7 @@ class TestLaunchIssueSession:
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
         provider.prepare.assert_called_once_with(
-            task=TaskKind.CODE,
+            task=SessionKind.CODE,
             agent_label=sample_issue.agent_type,
         )
 
@@ -1075,7 +1075,7 @@ class TestLaunchIssueSession:
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" not in bundle.create_session_calls[0]["cmd"]
         provider.prepare.assert_called_once_with(
-            task=TaskKind.CODE,
+            task=SessionKind.CODE,
             agent_label="agent:tech-lead",
         )
 
@@ -1470,7 +1470,7 @@ class TestLaunchIssueSession:
         """Verify skips when issue already active (lines 209-210)."""
         issue_key = FakeIssueKey(str(sample_issue.number))
         existing_session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -2049,7 +2049,7 @@ class TestLaunchValidationRetrySession:
             validation_error="Validation blocked before running command: dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2114,7 +2114,7 @@ class TestLaunchValidationRetrySession:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2166,7 +2166,7 @@ class TestLaunchValidationRetrySession:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2198,7 +2198,7 @@ class TestLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2210,7 +2210,7 @@ class TestLaunchValidationRetrySession:
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
         provider.prepare.assert_called_once_with(
-            task=TaskKind.CODE,
+            task=SessionKind.CODE,
             agent_label="agent:web",
         )
 
@@ -2236,7 +2236,7 @@ class TestLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2291,7 +2291,7 @@ class TestLaunchReviewSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "review-456"
-        assert result.session.key.task == TaskKind.REVIEW
+        assert result.session.key.kind == SessionKind.REVIEW
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__review-1")
 
@@ -2533,7 +2533,7 @@ class TestLaunchRetrospectiveReviewSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "retrospective-review-365"
-        assert result.session.key.task == TaskKind.RETROSPECTIVE_REVIEW
+        assert result.session.key.kind == SessionKind.RETROSPECTIVE_REVIEW
         assert result.session.pr_number == 512
         assert result.session.issue.labels == [
             "agent:web",
@@ -2552,7 +2552,7 @@ class TestLaunchRetrospectiveReviewSession:
         assert reuse_options.allow_remote_branch_delete is False
 
         event = next(e for e in mock_events.events if str(e.name) == str(EventName.REVIEW_STARTED))
-        assert event.data["task"] == TaskKind.RETROSPECTIVE_REVIEW.value
+        assert event.data["task"] == SessionKind.RETROSPECTIVE_REVIEW.value
         assert event.data["prior_pr_number"] == 512
         assert event.data["source_agent"] == "agent:web"
 
@@ -2776,7 +2776,7 @@ class TestLaunchReworkSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "rework-123"
-        assert result.session.key.task == TaskKind.REWORK
+        assert result.session.key.kind == SessionKind.REWORK
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-2")
         started = next(e for e in mock_events.events if str(e.name) == "rework.started")
@@ -3008,7 +3008,7 @@ class TestLaunchReworkSession:
         sessions = restorer.restore_known_terminal(issue_number=123, session_name="rework-123", run_dir=run_dir,
             is_review=False, already_tracked=[])
         assert len(sessions) == 1
-        assert sessions[0].key.task is TaskKind.REWORK
+        assert sessions[0].key.kind is SessionKind.REWORK
         assert store.load_rework_receipt(request.key).status == "active"
         assert store.load_rework_receipt(later.key).status == "queued"
         from issue_orchestrator.control.in_flight_work import SettlementOutcome
@@ -3032,7 +3032,7 @@ class TestLaunchReworkSession:
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
         provider.prepare.assert_called_once_with(
-            task=TaskKind.REWORK,
+            task=SessionKind.REWORK,
             agent_label="agent:web",
         )
 
@@ -3119,7 +3119,7 @@ class TestLaunchReworkSession:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = GitHubIssueKey(repo="test/repo", external_id="123")
         existing_session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.REWORK),
+            key=SessionKey(issue=issue_key, kind=SessionKind.REWORK),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="rework-123",
@@ -3519,7 +3519,7 @@ class TestOrchestratorLaunchSession:
     ):
         """Launch wrappers must not admit duplicate terminal IDs."""
         existing = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3531,7 +3531,7 @@ class TestOrchestratorLaunchSession:
             ),
         )
         duplicate = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3605,7 +3605,7 @@ class TestOrchestratorLaunchSession:
         ]
         state = OrchestratorState()
         restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3651,7 +3651,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
         other_retry = PendingValidationRetry(
@@ -3664,7 +3664,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry, other_retry])
@@ -3710,12 +3710,12 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry])
         restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3822,7 +3822,7 @@ class TestOrchestratorLaunchReviewSession:
         )
         state = OrchestratorState(pending_reviews=[review])
         restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.REVIEW),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.REVIEW),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="review-456",
@@ -4185,7 +4185,7 @@ class TestOrchestratorLaunchTechLeadSession:
         state = OrchestratorState()
         PendingSessionQueues(state).queue_batch_review(789, "Tech Lead batch")
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("789"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("789"), kind=SessionKind.CODE),
             issue=Issue(number=789, title="Tech Lead batch", labels=["agent:web"]),
             agent_config=AgentConfig(prompt_path=tmp_path / "p.md", timeout_minutes=45),
             terminal_id="issue-789",
@@ -5256,7 +5256,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
     def _restored_session(issue_number: int, labels: list[str], tmp_path: Path) -> Session:
         """Build the active-session shape restored after a process restart."""
         return Session(
-            key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=SessionKind.CODE),
             issue=Issue(
                 number=issue_number,
                 title=f"Issue {issue_number}",
@@ -6194,7 +6194,7 @@ class TestRestoreRunningSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         agent_config = AgentConfig(prompt_path=tmp_path / "prompt.txt")
         existing = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=agent_config,
             terminal_id="issue-123",
@@ -6206,7 +6206,7 @@ class TestRestoreRunningSessions:
             ),
         )
         duplicate = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=agent_config,
             terminal_id="issue-123",
@@ -6218,7 +6218,7 @@ class TestRestoreRunningSessions:
             ),
         )
         new_session = Session(
-            key=SessionKey(issue=FakeIssueKey("456"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("456"), kind=SessionKind.CODE),
             issue=Issue(number=456, title="Other", labels=["agent:web"]),
             agent_config=agent_config,
             terminal_id="issue-456",
@@ -6360,7 +6360,7 @@ class TestProcessActiveSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6403,7 +6403,7 @@ class TestProcessActiveSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6453,7 +6453,7 @@ class TestProcessActiveSessions:
 
         issue = Issue(number=392, title="Test", labels=["agent:backend"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("392"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-392",
@@ -6530,7 +6530,7 @@ class TestProcessActiveSessions:
         }))
 
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-359",
@@ -6600,7 +6600,7 @@ class TestProcessActiveSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6612,7 +6612,7 @@ class TestProcessActiveSessions:
             ),
         )
         duplicate = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6741,7 +6741,7 @@ class TestProcessActiveSessions:
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("392"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-392",
@@ -6888,7 +6888,7 @@ class TestProcessActiveSessions:
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("392"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-392",
@@ -7038,7 +7038,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7102,7 +7102,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7236,7 +7236,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7300,7 +7300,7 @@ class TestHandleSessionCompletion:
         """Completion diagnostics use the launch-recorded artifact path."""
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7365,7 +7365,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7434,7 +7434,7 @@ class TestHandleSessionCompletion:
         session = Session(
             key=SessionKey(
                 issue=FakeIssueKey("365"),
-                task=TaskKind.RETROSPECTIVE_REVIEW,
+                kind=SessionKind.RETROSPECTIVE_REVIEW,
             ),
             issue=issue,
             agent_config=sample_agent_config,
@@ -7507,7 +7507,7 @@ class TestHandleSessionCompletion:
         """Adapters may report already-gone sessions while completion cleanup runs."""
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7540,7 +7540,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7582,7 +7582,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7642,7 +7642,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7963,7 +7963,7 @@ class TestStackRelaunchGate:
             validation_error="boom",
             validation_error_file="/tmp/err.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8076,7 +8076,7 @@ class TestStackRelaunchGate:
             validation_error="boom",
             validation_error_file="/tmp/err.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8177,7 +8177,7 @@ class TestSetupRunsExactlyOncePerLaunch:
             validation_error="dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8561,7 +8561,7 @@ class TestLaunchRetryGuardClearing:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8736,7 +8736,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
             authority_run=source,
         )
@@ -9660,7 +9660,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
             validation_error="Validation failed",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_task=SessionKind.CODE,
             validation_cmd="make test",
         )
 

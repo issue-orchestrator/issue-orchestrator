@@ -10,7 +10,7 @@ from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable, RunTerminalBinding
 from issue_orchestrator.domain.registered_completion import CompletionRunRole
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
@@ -29,9 +29,9 @@ def test_prepared_role_is_frozen_at_allocation_not_current_settings(custody, tec
     config.tech_lead_review_agent = "agent:changed"
     receipt = custody.intake.submit(custody.ledger.submission_capability(run), command(completion()))
     candidate = custody.intake.prepare_receipt_for_issue(receipt, run, 42)
-    expected = CompletionRunRole(42, TaskKind.TECH_LEAD if tech_lead else TaskKind.CODE, "agent:test")
+    expected = CompletionRunRole(42, SessionKind.TECH_LEAD if tech_lead else SessionKind.CODE, "agent:test")
     assert candidate.role == expected
-    assert candidate.run.session_key.task is TaskKind.CODE
+    assert candidate.run.session_key.kind is SessionKind.CODE
     assert candidate.run.branch_name == "feature"
     assert candidate.run.terminal_binding == RunTerminalBinding("visible-worker")
     reopened = SqliteIssueRunLedger(custody.state / "runs.sqlite", repo_slug="test-owner/test-repo")
@@ -62,7 +62,7 @@ def test_schema_join_preserves_known_fields_without_inventing_missing_ones(custo
     {"branch_name": "different"},
     {"terminal_binding": RunTerminalBinding(None)},
     {"agent_label": "agent:different"},
-    {"completion_task": TaskKind.TECH_LEAD},
+    {"completion_task": SessionKind.TECH_LEAD},
 ])
 def test_registration_retry_cannot_rebind_any_frozen_authority(custody, change):
     original = custody.ledger.recorded_run(custody.run)
@@ -85,7 +85,7 @@ def test_unknown_role_refuses_before_processing_or_automatic_admission(custody):
     custody.pair.release.assert_not_called()
 
 
-@pytest.mark.parametrize("task", [TaskKind.REVIEW, TaskKind.TECH_LEAD])
+@pytest.mark.parametrize("task", [SessionKind.REVIEW, SessionKind.TECH_LEAD])
 def test_historical_operator_role_cannot_become_an_agent_authority(task):
     with pytest.raises(CompletionIntakeError, match="role is missing or invalid"):
         CompletionRunRole(42, task, "operator:historical")

@@ -16,15 +16,16 @@ from issue_orchestrator.domain.models import (
     PendingValidationRetry,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 from tests.conftest import operator_paused_state
 
 
-def _make_session_key(issue_number: int = 1, task: TaskKind = TaskKind.CODE) -> SessionKey:
+def _make_session_key(issue_number: int = 1, task: SessionKind = SessionKind.CODE) -> SessionKey:
     """Helper to create a SessionKey for testing."""
     issue_key = FakeIssueKey(name=str(issue_number))
-    return SessionKey(issue=issue_key, task=task)
+    return SessionKey(issue=issue_key, kind=task)
 
 
 class TestIssue:
@@ -234,7 +235,7 @@ class TestAgentConfig:
             issue_title="Title",
             worktree=tmp_path,
             pr_number=42,
-            task_kind=TaskKind.REVIEW.value,
+            task_kind=SessionKind.REVIEW.value,
         )
 
         assert "reviewer-done" in rendered
@@ -255,7 +256,7 @@ class TestAgentConfig:
             issue_title="Title",
             worktree=tmp_path,
             pr_number=42,
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
         )
 
         assert "reviewer-done" in rendered
@@ -272,7 +273,7 @@ class TestAgentConfig:
             issue_number=7,
             issue_title="Title",
             worktree=tmp_path,
-            task_kind=TaskKind.CODE.value,
+            task_kind=SessionKind.CODE.value,
         )
 
         assert "coding-done" in rendered
@@ -293,7 +294,7 @@ class TestAgentConfig:
             issue_title="Title",
             worktree=tmp_path,
             pr_number=42,
-            task_kind=TaskKind.REVIEW.value,
+            task_kind=SessionKind.REVIEW.value,
         )
 
         assert rendered == "Custom review flow for #7"
@@ -310,7 +311,7 @@ class TestAgentConfig:
             issue_title="Title",
             worktree=tmp_path,
             pr_number=42,
-            task_kind=TaskKind.REVIEW.value,
+            task_kind=SessionKind.REVIEW.value,
         )
 
         assert "use reviewer-done to report your verdict" in command
@@ -770,7 +771,7 @@ class TestOrchestratorState:
         """Retrospective review duplicate checks include queued, discovered, and active work."""
         active_issue = Issue(number=367, title="Active", labels=["agent:web"])
         active_session = Session(
-            key=_make_session_key(367, TaskKind.RETROSPECTIVE_REVIEW),
+            key=_make_session_key(367, SessionKind.RETROSPECTIVE_REVIEW),
             issue=active_issue,
             agent_config=sample_agent_config,
             terminal_id="retrospective-review-367",
@@ -783,7 +784,7 @@ class TestOrchestratorState:
         )
         restored_legacy_issue = Issue(number=368, title="Restored", labels=["agent:web"])
         restored_legacy_session = Session(
-            key=_make_session_key(368, TaskKind.CODE),
+            key=_make_session_key(368, SessionKind.CODE),
             issue=restored_legacy_issue,
             agent_config=sample_agent_config,
             terminal_id="retrospective-review-368",
@@ -888,7 +889,7 @@ class TestPendingValidationRetry:
     """Guard tests for the validation-retry queue/recovery owner boundary."""
 
     @staticmethod
-    def _build(source_task: TaskKind) -> PendingValidationRetry:
+    def _build(source_task: SessionKind) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=42,
             issue_title="Issue 42",
@@ -904,13 +905,13 @@ class TestPendingValidationRetry:
 
     def test_accepts_coding_source_tasks(self):
         """Coding-style sources produce a queueable retry."""
-        for task in (TaskKind.CODE, TaskKind.REWORK):
+        for task in (SessionKind.CODE, SessionKind.REWORK):
             retry = self._build(task)
             assert retry.source_task is task
 
     @pytest.mark.parametrize(
         "review_task",
-        [TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW],
+        [SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW],
     )
     def test_rejects_review_only_source_task(self, review_task):
         """A review-only session can never append a coding validation retry (#6426)."""

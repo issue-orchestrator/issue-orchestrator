@@ -9,7 +9,7 @@ from ..domain.models import (
     SessionStatus,
     resolve_retrospective_coder_agent,
 )
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from .actions import (
     Action,
     AddCommentAction,
@@ -38,7 +38,7 @@ def retrospective_review_completion_actions(
     session_completion._queue_rework_after_retrospective_changes.
     """
 
-    if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
+    if session.key.kind != SessionKind.RETROSPECTIVE_REVIEW:
         return ()
     if status != SessionStatus.COMPLETED:
         return ()

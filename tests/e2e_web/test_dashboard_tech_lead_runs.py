@@ -31,7 +31,8 @@ from issue_orchestrator.domain.models import (
     PendingTechLeadReview,
     Session,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_run import TechLeadRunAdmission
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
@@ -123,7 +124,7 @@ class TechLeadWebOrchestrator(FlowWebMockOrchestrator):
             Session(
                 key=SessionKey(
                     issue=GitHubIssueKey(repo="test/repo", external_id=str(ANCHOR)),
-                    task=TaskKind.CODE,
+                    kind=SessionKind.CODE,
                 ),
                 issue=anchor,
                 agent_config=self.config.agents["agent:web"],

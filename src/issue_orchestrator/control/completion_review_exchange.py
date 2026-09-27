@@ -4,7 +4,8 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from ..domain.review_subject import BranchSubject, CurrentBranchReader
 from ..domain.issue_run_allocation import IssueExchangeRunAllocation
 from ..domain.models import Issue
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 
 import logging
 from collections.abc import Callable
@@ -1112,7 +1113,7 @@ class CompletionReviewExchange:
                         repo=require_repo(self._config))
         return self._issue_run_allocator.allocate_exchange(IssueExchangeRunAllocation(
             worktree_path=worktree, issue_number=issue_number,
-            session_key=SessionKey(subject.key, TaskKind.CODE),
+            session_key=SessionKey(subject.key, SessionKind.CODE),
             parent_session_name=parent_session_name, agent_label=agent_label,
         ))
 

@@ -27,7 +27,7 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.domain.repository_launch_selection import (
     RepositoryLaunchSelection,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.session_runner import DiscoveredSession
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -243,7 +243,7 @@ class TestRestoreSessionsBasic:
         assert session.terminal_id == "issue-123"
         assert session.worktree_path == worktree
         assert session.branch_name == "123-test-branch"
-        assert session.key.task == TaskKind.CODE
+        assert session.key.kind == SessionKind.CODE
 
     def test_restores_review_session_with_pr_number_from_tab_name(self, tmp_path):
         """A discovered review session extracts PR number from tab name."""
@@ -282,7 +282,7 @@ class TestRestoreSessionsBasic:
         assert len(restored) == 1
         session = restored[0]
         assert session.terminal_id == "review-456"  # PR number from tab name
-        assert session.key.task == TaskKind.REVIEW
+        assert session.key.kind == SessionKind.REVIEW
 
     def test_skips_already_tracked_sessions(self, tmp_path):
         """Sessions that are already tracked are not restored again."""
@@ -858,7 +858,7 @@ class TestReviewSessionSpecifics:
         assert restored[0].terminal_id == "review-100"
 
     def test_review_session_has_correct_task_kind(self, tmp_path):
-        """Review sessions have TaskKind.REVIEW in their session key."""
+        """Review sessions have SessionKind.REVIEW in their session key."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         worktree = tmp_path / "repo-100"
@@ -882,7 +882,7 @@ class TestReviewSessionSpecifics:
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         assert len(restored) == 1
-        assert restored[0].key.task == TaskKind.REVIEW
+        assert restored[0].key.kind == SessionKind.REVIEW
 
 
 class TestRestoredTechLeadScope:
