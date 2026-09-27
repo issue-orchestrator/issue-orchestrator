@@ -25,6 +25,7 @@ from ..domain.scoped_rework import ReworkReceipt, ReworkRequest
 from ..domain.session_run import SessionRunIdentity
 from ..events import EventName
 from ..ports import EventSink, RepositoryHost, make_trace_event
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from .actions import Action, ActionResult, AddCommentAction, AddLabelAction, RemoveLabelAction, RequestReworkAction
 from .claim_gate import ClaimLostError
@@ -137,8 +138,12 @@ class RequestReworkExecutor:
         except (ClaimLostError, ReconciliationRequired):
             raise
         except Exception as exc:
-            return ActionResult.fail(
-                action, f"Scoped rework did not finish: {exc}", request_key=request.key
+            return replace(
+                ActionResult.fail(
+                    action, f"Scoped rework did not finish: {exc}", request_key=request.key
+                ),
+                # Kept typed (#7297): a launch reconciling a merged PR defers on it.
+                host_rate_limit=host_rate_limit_of(exc),
             )
 
     def stale_reason(self, request: ReworkRequest, pr: PRInfo | None, issue: Issue | None) -> str | None:

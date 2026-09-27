@@ -35,6 +35,7 @@ from ..ports.pattern_registry import (
     require_reviewed_population,
     require_resumable_retirement,
     require_reviewed_revision,
+    TerminalRetirementPolicy,
 )
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
@@ -194,6 +195,7 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
         issue_number: int,
         expected_revision: str | None = None,
         expected_signatures: frozenset[str] | None = None,
+        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
     ) -> PatternReservation:
         # Every retirement-path result is mirrored, because the fact promotion
         # eligibility needs is admitted HERE, at the reserving compare-and-swap,
@@ -207,6 +209,7 @@ class MirroredPatternCaseFileRegistry(PatternCaseFileRegistry):
             issue_number=issue_number,
             expected_signatures=expected_signatures,
             expected_revision=expected_revision,
+            already_terminal=already_terminal,
         )
         return self._mirrored(outcome)
 
@@ -574,6 +577,7 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
         issue_number: int,
         expected_revision: str | None = None,
         expected_signatures: frozenset[str] | None = None,
+        already_terminal: TerminalRetirementPolicy = TerminalRetirementPolicy.REFUSE,
     ) -> PatternReservation:
         with self._write_lock:
             if not transition.terminal:
@@ -582,12 +586,16 @@ class LocalPatternCaseFileRegistry(PatternCaseFileRegistry):
             desired = PendingPatternRetirement(transition=transition, comment=comment)
             current = self._require_committed(signature)
             require_canonical_case_file(current, issue_number)
-            if admit_lifecycle_transition(current, transition):
+            if admit_lifecycle_transition(
+                current, transition, already_terminal=already_terminal
+            ):
                 return PatternReservation(PatternReservationState.COMMITTED, current)
             existing = self._pending_retirements.get(signature)
             if existing is not None:
                 _reservation_id, _pending, started = existing
-                pending = require_resumable_retirement(current, desired)
+                pending = require_resumable_retirement(
+                    current, desired, already_terminal=already_terminal
+                )
                 state = (
                     PatternReservationState.RECOVERABLE
                     if pending.phase is PatternRetirementPhase.CLOSE

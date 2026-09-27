@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+from issue_orchestrator.domain.host_rate_limit import HostRateLimitWindow
 from issue_orchestrator.control.tech_lead_run_activity import (
     in_memory_run_activity,
 )
@@ -97,6 +98,14 @@ class _State:
         self.active_sessions: list[FakeSession] = []
         self.pending_tech_lead_reviews: list[PendingTechLeadReview] = []
         self.paused = False
+        # The launch authority holds runs while GitHub is rate limited (#7297),
+        # measuring episodes only for work that still exists.
+        self.host_rate_limit = HostRateLimitWindow()
+        self.pending_reviews: list = []
+        self.pending_retrospective_reviews: list = []
+        self.pending_reworks: list = []
+        self.pending_validation_retries: list = []
+        self.cached_queue_issues: list = []
 
     def drop_active_session(self, terminal_id: str) -> None:
         self.active_sessions = [
