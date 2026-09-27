@@ -286,6 +286,27 @@ def test_a_live_run_whose_issue_claim_was_lost_is_not_readmitted_on_the_next_tic
     assert state.pending_tech_lead_reviews == []
 
 
+def test_a_completion_whose_settlement_fails_keeps_the_run_tracked(tmp_path):
+    """#7348 review r4: completion dropped the session record BEFORE settling
+    its claim. When the claim store then raised, the claim stayed HELD with no
+    live holder and the next tick's sweep re-admitted the finished run."""
+    from tests.unit.test_provider_readiness_boundary import _complete_session
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("tech_lead")
+    session = _route("tech_lead", state, harness)
+    assert session is not None
+    failing = MagicMock(wraps=harness.claims)
+    failing.consume_pending_work_claim.side_effect = OSError("disk full")
+
+    with pytest.raises(OSError):
+        _complete_session(session, state, failing, provider_error_type=None)
+
+    assert [s.terminal_id for s in state.active_sessions] == [session.terminal_id]
+    assert _next_tick_sweep(state, harness) == 0
+    assert state.pending_tech_lead_reviews == []
+
+
 def test_the_sweep_still_readmits_a_run_nobody_ended(tmp_path):
     """The control: without a terminal decision the deferred row IS the work,
     and the sweep must keep bringing it back after the queue is lost."""
