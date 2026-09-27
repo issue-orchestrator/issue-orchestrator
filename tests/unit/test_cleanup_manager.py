@@ -129,35 +129,6 @@ def cleanup_manager(cleanup_manager_bundle):
     return cleanup_manager_bundle.manager
 
 
-# --- Test: Throttling ---
-
-
-class TestTechLeadIssueThrottling:
-    """Test throttling logic for tech_lead issue creation failures."""
-
-    def test_should_retry_returns_true_initially(self, cleanup_manager):
-        """First attempt always allowed before any failure."""
-        assert cleanup_manager.should_retry_tech_lead_issue() is True
-
-    def test_should_retry_returns_false_after_failure(self, cleanup_manager):
-        """Should not retry immediately after failure."""
-        cleanup_manager.mark_tech_lead_issue_failure()
-
-        assert cleanup_manager.should_retry_tech_lead_issue(cooldown_seconds=60) is False
-
-    def test_should_retry_returns_true_after_cooldown(self, cleanup_manager, monkeypatch):
-        """Should allow retry after cooldown expires."""
-        import time
-
-        cleanup_manager.mark_tech_lead_issue_failure()
-
-        # Simulate cooldown expiration by mocking time to be 2 minutes later
-        original_time = time.time
-        monkeypatch.setattr(time, "time", lambda: original_time() + 120)
-
-        assert cleanup_manager.should_retry_tech_lead_issue(cooldown_seconds=60) is True
-
-
 # --- Test: Process Deferred Cleanups ---
 
 

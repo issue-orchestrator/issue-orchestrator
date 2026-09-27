@@ -10,6 +10,7 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+from tests.unit.control.liveness_doubles import gated
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     parse_scratch_worktree_name,
@@ -4592,7 +4593,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             kill_session=MagicMock(),
         )
         support.apply_plan(
-            Plan(actions=tuple(actions), skipped=()), MagicMock()
+            gated(Plan(actions=tuple(actions), skipped=())), MagicMock()
         )
 
     def test_marker_label_derives_health_review_flavor(
@@ -5520,7 +5521,7 @@ class TestTechLeadProducerToLaunchBoundary:
             kill_session=MagicMock(),
         )
         support.apply_plan(
-            Plan(actions=tuple(actions), skipped=()), MagicMock()
+            gated(Plan(actions=tuple(actions), skipped=())), MagicMock()
         )
 
     @staticmethod

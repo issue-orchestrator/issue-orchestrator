@@ -32,6 +32,7 @@ from ..view_models.tech_lead_board import build_tech_lead_board_view, render_tec
 from .tech_lead_case_files import case_file_area_counts
 
 if TYPE_CHECKING:
+    from ..domain.action_liveness import LivenessRow
     from ..domain.models import TechLeadFacts
     from ..domain.tech_lead_session import TechLeadCaseFileSummary, TechLeadShippedFixSummary
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -55,10 +56,14 @@ class TechLeadBoardPublisher:
         *,
         board_path: Path,
         authority: "Optional[TechLeadAuthorityStore]",
+        held_actions: "Callable[[], tuple[LivenessRow, ...]]",
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._board_path = board_path
         self._authority = authority
+        # Parked actions from the action liveness owner (#7350): the board is
+        # where a person sees what the orchestrator stopped retrying.
+        self._held_actions = held_actions
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._last_rendered: str | None = None
         self._case_files: tuple[TechLeadCaseFileSummary, ...] = ()
@@ -128,4 +133,5 @@ class TechLeadBoardPublisher:
             area_counts=case_file_area_counts(self._case_files),
             last_health_review_at=last_health_review_at,
             now=self._clock(),
+            held_actions=self._held_actions(),
         )

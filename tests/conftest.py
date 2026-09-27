@@ -1289,6 +1289,10 @@ def build_test_orchestrator_deps(
         publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
+    from issue_orchestrator.entrypoints.bootstrap_action_liveness import build_action_liveness
+    action_liveness = build_action_liveness(
+        config, events=events, action_applier=_action_applier, label_manager=label_manager
+    )
 
     from issue_orchestrator.ports.validated_work_drain import (
         NullValidatedWorkRecoveryDrain,
@@ -1368,6 +1372,7 @@ def build_test_orchestrator_deps(
             fresh_issue_reader=fresh_reader,
             queue_cache_store=infra_services.queue_cache_store,
             published_review=runtime_lifecycle.published_review,
+            action_liveness=action_liveness.owner,
         ),
         repository_host=repo_host,
         e2e_issue_tracker=e2e_issue_tracker,
@@ -1413,6 +1418,7 @@ def build_test_orchestrator_deps(
         ),
         publish_recovery=publish_recovery,
         validated_work_recovery=NullValidatedWorkRecoveryDrain(),
+        action_liveness=action_liveness,
         services=infra_services,
     )
 

@@ -26,6 +26,7 @@ from issue_orchestrator.view_models.tech_lead_board import (
     TechLeadBoardCaseFile,
     TechLeadBoardProposal,
     TechLeadBoardProposalOp,
+    TechLeadBoardHeldAction,
     TechLeadBoardView,
     _proposal_age_hours,
     build_tech_lead_board_view,
@@ -95,6 +96,7 @@ def test_build_view_sorts_proposals_by_issue_number_with_ages() -> None:
     view = build_tech_lead_board_view(
         ops=ops, gated_proposals=(), case_files=(), area_counts=(),
         last_health_review_at=0.0, now=now,
+        held_actions=(),
     )
 
     assert [p.proposal_issue_number for p in view.open_proposals] == [500, 501]
@@ -119,6 +121,7 @@ def test_build_view_surfaces_gated_proposals_without_a_ledger_row() -> None:
         ),
         case_files=(), area_counts=(), last_health_review_at=0.0,
         now=datetime(2026, 7, 11, 5, 0, tzinfo=UTC),
+        held_actions=(),
     )
 
     [proposal] = view.open_proposals
@@ -137,6 +140,7 @@ def test_build_view_merges_a_ledger_op_with_its_observed_issue() -> None:
         ),
         case_files=(), area_counts=(), last_health_review_at=0.0,
         now=datetime(2026, 7, 11, 5, 0, tzinfo=UTC),
+        held_actions=(),
     )
 
     [proposal] = view.open_proposals
@@ -158,6 +162,7 @@ def test_build_view_ranks_case_files_by_comment_cadence() -> None:
     view = build_tech_lead_board_view(
         ops=(), gated_proposals=(), case_files=case_files, area_counts=(),
         last_health_review_at=0.0, now=now,
+        held_actions=(),
     )
 
     # The higher comment count (the severity signal) ranks first.
@@ -171,6 +176,7 @@ def test_build_view_breaks_comment_ties_by_most_recent_update() -> None:
             _summary(701, comments=3, updated_at="2026-07-10T00:00:00+00:00"),
         ), area_counts=(), last_health_review_at=0.0,
         now=datetime(2026, 7, 11, 5, 0, tzinfo=UTC),
+        held_actions=(),
     )
     assert [case.issue_number for case in view.case_files] == [701, 700]
 
@@ -182,6 +188,7 @@ def test_build_view_formats_last_health_review_from_epoch() -> None:
     view = build_tech_lead_board_view(
         ops=(), gated_proposals=(), case_files=(), area_counts=(),
         last_health_review_at=ts, now=now,
+        held_actions=(),
     )
 
     assert view.last_health_review == "2026-07-11T00:00:00+00:00"
@@ -191,6 +198,7 @@ def test_build_view_last_health_review_empty_when_never() -> None:
     view = build_tech_lead_board_view(
         ops=(), gated_proposals=(), case_files=(), area_counts=(),
         last_health_review_at=0.0, now=datetime.now(UTC),
+        held_actions=(),
     )
     assert view.last_health_review == ""
 
@@ -223,6 +231,24 @@ POPULATED_VIEW = TechLeadBoardView(
     ),
     area_counts=(("db", 2), ("api", 1)),
     last_health_review="2026-07-11T00:00:00+00:00",
+    held_actions=(
+        TechLeadBoardHeldAction(
+            subject="issue:410",
+            action="remove_label",
+            outcome="needs_human",
+            reason="subject is paused | reconcile it",
+            parked_since="2026-07-11T03:00:00+00:00",
+            issue_number=410,
+        ),
+        TechLeadBoardHeldAction(
+            subject="engine",
+            action="discard_terminal_tech_lead_proposal_ops",
+            outcome="transient",
+            reason="5 attempts failed",
+            parked_since="2026-07-11T04:00:00+00:00",
+            issue_number=0,
+        ),
+    ),
 )
 
 POPULATED_GOLDEN = """\
@@ -246,6 +272,16 @@ proposal to approve it.
 `—` operation: gated issue with no act-level operation recorded (a proposed \
 follow-up or promoted finding); approving it releases the issue for scheduling.
 
+## Held — waiting on you
+
+2 action(s) stopped retrying. Each runs again when its facts change or when an \
+operator retries its issue.
+
+| Issue | Subject | Action | Outcome | Parked since | Reason |
+|---|---|---|---|---|---|
+| #410 | `issue:410` | `remove_label` | needs_human | 2026-07-11T03:00:00+00:00 | subject is paused \\| reconcile it |
+| — | `engine` | `discard_terminal_tech_lead_proposal_ops` | transient | 2026-07-11T04:00:00+00:00 | 5 attempts failed |
+
 ## Open pattern case files
 
 | Case file | Title | Comments | Updated | Area |
@@ -267,6 +303,10 @@ approval gates (ADR-0031 / #6781, #7014).
 Last health review: never
 
 ## Open proposals
+
+None.
+
+## Held — waiting on you
 
 None.
 
@@ -343,6 +383,7 @@ def _publisher(tmp_path: Path, authority=None) -> TechLeadBoardPublisher:
     return TechLeadBoardPublisher(
         board_path=tech_lead_board_path(tmp_path),
         authority=authority if authority is not None else InMemoryTechLeadAuthorityStore(),
+        held_actions=lambda: (),
         clock=lambda: datetime(2026, 7, 11, 5, 0, tzinfo=UTC),
     )
 
@@ -470,6 +511,7 @@ def test_publish_swallows_render_failure(tmp_path: Path) -> None:
     publisher = TechLeadBoardPublisher(
         board_path=tech_lead_board_path(tmp_path),
         authority=InMemoryTechLeadAuthorityStore(),
+        held_actions=lambda: (),
         clock=boom,
     )
     facts = TechLeadFacts(open_case_files=(_summary(700),), case_files_scanned=True)
@@ -484,6 +526,7 @@ def test_publish_swallows_write_failure(tmp_path: Path) -> None:
     publisher = TechLeadBoardPublisher(
         board_path=blocker / "tech-lead-board.md",
         authority=InMemoryTechLeadAuthorityStore(),
+        held_actions=lambda: (),
         clock=lambda: datetime(2026, 7, 11, 5, 0, tzinfo=UTC),
     )
 

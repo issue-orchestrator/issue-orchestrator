@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.unit.control.liveness_doubles import liveness_owner
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.needs_human_block import BlockOutcome
 from issue_orchestrator.control.operator_issue_command_runner import (
@@ -102,7 +103,7 @@ def state() -> OrchestratorState:
 
 
 def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store=None,
-            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS):
+            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS, liveness=None):
     from unittest.mock import MagicMock
 
     labels = LabelManager(sample_config)
@@ -120,6 +121,7 @@ def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store
         state=lambda: state,
         run_locked=lambda fn: fn(),
         open_prs=OpenPullRequestIndex(host, repo_slug="owner/repo"),
+        liveness=liveness if liveness is not None else liveness_owner(),
     )
 
 
@@ -212,6 +214,48 @@ class TestTheGitHubSideSettlesFirst:
         assert live[ISSUE] == set()
         assert state.session_history == []
         assert state.failed_this_cycle == set()
+
+    def test_retry_gives_every_action_parked_on_the_issue_a_fresh_budget(
+        self, sample_config, state
+    ):
+        """An operator retrying an issue is the human answer to every action
+        the liveness owner parked against it (#7350)."""
+        from issue_orchestrator.domain.action_liveness import (
+            ActionIdentity,
+            ActionOutcome,
+            LivenessKey,
+        )
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner = liveness_owner()
+        key = LivenessKey(ActionIdentity(f"issue:{ISSUE}", "remove_label"), "a" * 32, ISSUE)
+        owner.record(key, ActionOutcome.needs_human("paused"))
+        _labels, runner = _runner(sample_config, state, live, liveness=owner)
+
+        runner.retry(ISSUE)
+
+        assert owner.admit(key).admitted
+        assert owner.parked() == ()
+
+    def test_a_retry_that_did_not_commit_keeps_the_park(self, sample_config, state):
+        from issue_orchestrator.domain.action_liveness import (
+            ActionIdentity,
+            ActionOutcome,
+            LivenessKey,
+        )
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner = liveness_owner()
+        key = LivenessKey(ActionIdentity(f"issue:{ISSUE}", "remove_label"), "a" * 32, ISSUE)
+        owner.record(key, ActionOutcome.needs_human("paused"))
+        _labels, runner = _runner(
+            sample_config, state, live, refuse=frozenset({labels.blocked}), liveness=owner
+        )
+
+        assert not runner.retry(ISSUE).committed
+        assert not owner.admit(key).admitted
 
     def test_dismiss_takes_the_issue_off_the_board_once_it_can(
         self, sample_config, state

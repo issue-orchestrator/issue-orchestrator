@@ -41,6 +41,11 @@ class NeedsHumanCause(Enum):
     SESSION_LIFECYCLE = "session_lifecycle"
     #: Independent failed validated-work records, projected by disposition.
     VALIDATED_WORK_DISPOSITION = "validated_work_disposition"
+    #: An action the liveness owner parked (#7350): it failed permanently,
+    #: needs a person, or spent its retry budget with unchanged facts. Its own
+    #: token because it IS released on its own terms - the parked action
+    #: succeeding - and that release must not erase any other lifecycle's block.
+    ACTION_LIVENESS = "action_liveness"
 
     def matches_key(self, key: str) -> bool:
         if self is NeedsHumanCause.VALIDATED_WORK_DISPOSITION:

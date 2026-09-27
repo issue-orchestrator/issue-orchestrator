@@ -13,6 +13,7 @@ importantly — pin that the boundary has exactly ONE owner per concern:
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import PASSTHROUGH_LIVENESS, gated
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from tests.runtime_lifecycle_helpers import make_action_applier
 
@@ -3060,6 +3061,7 @@ class _ProductionTick:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
             provider_launch_sampler=self.sampler,
         )
 

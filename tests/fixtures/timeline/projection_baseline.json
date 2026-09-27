@@ -5,6 +5,18 @@
     "status": "completed",
     "step": "action.end"
   },
+  "action.parked": {
+    "level": "phase",
+    "phase": "needs_human",
+    "status": "failed",
+    "step": "action_parked"
+  },
+  "action.released": {
+    "level": "detail",
+    "phase": "orchestrator",
+    "status": "completed",
+    "step": "action_released"
+  },
   "action.start": {
     "level": "detail",
     "phase": "system",

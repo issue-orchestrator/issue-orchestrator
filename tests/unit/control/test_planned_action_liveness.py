@@ -1,0 +1,465 @@
+"""The planner's liveness gate, driven through the real planning cycle (#7350).
+
+These tests run ``run_planning_cycle`` with the real gate and the real
+``OrchestratorSupport.apply_plan``. The planner is a fake that re-derives the
+same action every tick - the census loop shape - and the action applier is
+faked at its port, so what is under test is exactly the path between them.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import functools
+import importlib
+import inspect
+import pkgutil
+import time
+import types
+import typing
+from datetime import datetime, timedelta
+from pathlib import PurePath
+from unittest.mock import MagicMock
+
+import pytest
+
+import issue_orchestrator.control as control_package
+from issue_orchestrator.control.action_base import Action
+from issue_orchestrator.control.actions import (
+    ActionResult,
+    AddLabelAction,
+    LaunchSessionAction,
+    RemoveLabelAction,
+    ReportPromotedFindingEvidenceAction,
+    SessionType,
+    SettleTechLeadPromotionAction,
+)
+from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
+from issue_orchestrator.control.orchestrator_support import (
+    OrchestratorSupport,
+    run_planning_cycle,
+)
+from issue_orchestrator.control.planned_action_liveness import (
+    PlannedActionLiveness,
+    planned_action_key,
+)
+from issue_orchestrator.control.planner_types import OrchestratorSnapshot, Plan
+from issue_orchestrator.control.reconciliation import (
+    ExternalSnapshot,
+    ReconciliationRequired,
+    build_expected_for_mutation,
+    get_pause_label,
+)
+from issue_orchestrator.domain.action_liveness import LivenessPolicy
+from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.infra.config import Config
+from tests.unit.control.liveness_doubles import (
+    InMemoryActionLivenessStore,
+    ManualClock,
+    RecordingEscalation,
+    liveness_owner,
+)
+
+POLICY = LivenessPolicy(max_attempts=3)
+PAUSE = get_pause_label()
+
+
+def _settle() -> SettleTechLeadPromotionAction:
+    return SettleTechLeadPromotionAction(
+        signature="tech-lead-batch-manifest-diff-fetch-blocked-by-gh-guard",
+        case_file_issue_number=229,
+        target_repo="issue-orchestrator/issue-orchestrator",
+        target_issue_number=7289,
+        shipped=False,
+        reason="promoted finding closed (tick-varying prose: %s)",
+        expected=build_expected_for_mutation(),
+    )
+
+
+class _Engine:
+    """Ticks the real planning cycle; the planner and applier are port fakes."""
+
+    def __init__(self, sample_config: Config, planned, apply, *, labels=None, policy=POLICY):
+        self.clock = ManualClock()
+        self.escalation = RecordingEscalation()
+        self.store = InMemoryActionLivenessStore()
+        self.owner = liveness_owner(
+            store=self.store, escalation=self.escalation, clock=self.clock, policy=policy
+        )
+        self.labels = dict(labels or {})
+        self.planned = planned
+        self.config = sample_config
+        self.config.fetch_layer_network_sync_seconds = 10**9
+        self.state = OrchestratorState()
+        self.applier = MagicMock()
+        self.applier.apply.side_effect = apply
+        self.pauses: list[int] = []
+        self.support = OrchestratorSupport(
+            config=self.config,
+            events=MagicMock(),
+            repository_host=MagicMock(),
+            state=self.state,
+            event_context=MagicMock(enrich=lambda payload: payload),
+            session_manager=MagicMock(),
+            action_applier=self.applier,
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=MagicMock(),
+            kill_session=MagicMock(),
+        )
+        self.tick_count = 0
+
+    def _snapshot(self) -> OrchestratorSnapshot:
+        return OrchestratorSnapshot(
+            issues=tuple(
+                Issue(number=n, title=f"#{n}", labels=list(labels))
+                for n, labels in self.labels.items()
+            ),
+            active_sessions=(),
+            pending_reviews=(),
+            pending_reworks=(),
+            pending_tech_lead=(),
+            paused=False,
+        )
+
+    def tick(self, *, advance: timedelta = timedelta(hours=1)) -> Plan:
+        plans: list[Plan] = []
+        fact_gatherer = MagicMock()
+        fact_gatherer.create_snapshot.side_effect = lambda *a, **k: self._snapshot()
+        planner = MagicMock()
+        planner.plan.side_effect = lambda snapshot: Plan(
+            actions=tuple(self.planned()), skipped=()
+        )
+
+        def apply(plan: Plan) -> None:
+            plans.append(plan)
+            self.support.apply_plan(plan, lambda number, _reason: self.pauses.append(number))
+
+        run_planning_cycle(
+            config=self.config,
+            events=MagicMock(),
+            event_context=MagicMock(enrich=lambda payload: payload),
+            state=self.state,
+            fact_gatherer=fact_gatherer,
+            planner=planner,
+            repository_host=MagicMock(),
+            scheduler=MagicMock(),
+            github_workflow=MagicMock(),
+            apply_plan_fn=apply,
+            clear_discovered_facts_fn=MagicMock(),
+            last_network_sync=time.time(),
+            refresh_requested=False,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PlannedActionLiveness(self.owner),
+        )
+        self.clock.advance(advance)
+        self.tick_count += 1
+        return plans[0]
+
+    def attempts_of(self, action_type) -> int:
+        return sum(
+            1 for call in self.applier.apply.call_args_list
+            if call.args[0].action_type is action_type
+        )
+
+
+# --- The invariant --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        # Census loop #2 and the promotion appliers the #7345 fix listed as
+        # still unbounded: each returns ActionResult.fail and is replanned.
+        _settle(),
+        ReportPromotedFindingEvidenceAction(
+            signature="sig", case_file_issue_number=229, target_repo="o/r",
+            target_issue_number=7289, observation_count=4, comment="evidence",
+            reason="report", expected=build_expected_for_mutation(),
+        ),
+        RemoveLabelAction(issue_number=410, label="in-progress", reason="stale"),
+    ],
+    ids=["settle_promotion", "report_promoted_evidence", "stale_label_removal"],
+)
+def test_an_unchanged_failing_action_is_attempted_at_most_max_attempts_times(
+    sample_config, action
+) -> None:
+    """INVARIANT: no (subject, action) pair is attempted more than N times
+    with an unchanged fact fingerprint without a success. It parks, escalates
+    once, and every later tick reports it held instead of trying again."""
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [action],
+        apply=lambda a: ActionResult.fail(a, "raised every tick"),
+    )
+
+    plans = [engine.tick() for _ in range(40)]
+
+    assert engine.attempts_of(action.action_type) == POLICY.max_attempts
+    assert len(engine.escalation.escalated) == 1
+    held = plans[-1].skipped[-1]
+    assert held.item_type == f"action:{action.action_type.value}"
+    assert held.reason.startswith("parked after transient: 3 attempts failed")
+
+
+def test_the_same_holds_for_an_applier_that_raises(sample_config) -> None:
+    def explode(action):
+        raise RuntimeError("AmbiguousPatternPublicationError: mid-publish")
+
+    engine = _Engine(sample_config, planned=lambda: [_settle()], apply=explode)
+    for _ in range(20):
+        engine.tick()
+
+    assert engine.attempts_of(_settle().action_type) == POLICY.max_attempts
+
+
+def test_backoff_holds_the_action_between_attempts(sample_config) -> None:
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [_settle()],
+        apply=lambda a: ActionResult.fail(a, "503"),
+    )
+    for _ in range(10):
+        engine.tick(advance=timedelta(seconds=10))
+
+    # 10 ticks, 100 s: attempt at 0 s, backoff 60 s -> attempt at 60 s, then
+    # backoff 120 s runs past the window.
+    assert engine.attempts_of(_settle().action_type) == 2
+
+
+def test_the_free_text_reason_is_not_a_fact(sample_config) -> None:
+    ticks = iter(range(1000))
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [dataclasses.replace(_settle(), reason=f"tick {next(ticks)}")],
+        apply=lambda a: ActionResult.fail(a, "boom"),
+    )
+    for _ in range(10):
+        engine.tick()
+
+    assert engine.attempts_of(_settle().action_type) == POLICY.max_attempts
+
+
+# --- Census loop #4: a subject paused behind io:needs-reconcile ------------
+
+
+def _refused_for_pause(action):
+    if isinstance(action, RemoveLabelAction):
+        raise ReconciliationRequired(
+            "issue", 410,
+            ExternalSnapshot.for_issue(410, {"in-progress"}),
+            ExternalSnapshot.for_issue(410, {"in-progress", PAUSE}),
+            reason="Has forbidden labels",
+        )
+    return ActionResult.ok(action)
+
+
+def test_a_paused_subject_parks_its_mutations_and_stops_halting_the_plan(sample_config) -> None:
+    """Census #4: every tick planned the stale-label removal first, it was
+    refused for the pause label, and the refusal halted the rest of the plan -
+    133 ticks of starved review launches. Now it is refused ONCE, parks as
+    needs-human, and the actions planned after it run on the very next tick."""
+    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    review = AddLabelAction(issue_number=381, label="code-reviewed", reason="unrelated work")
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [stale, review],
+        apply=_refused_for_pause,
+        labels={410: ("in-progress", PAUSE), 381: ()},
+    )
+
+    engine.tick()
+    for _ in range(5):
+        engine.tick()
+
+    assert engine.attempts_of(stale.action_type) == 1
+    assert engine.pauses == [410]
+    assert engine.attempts_of(review.action_type) == 5
+    [parked] = engine.escalation.escalated
+    assert parked.last_outcome.value == "needs_human"
+    assert parked.key.escalation_issue == 410
+
+
+def test_a_person_removing_the_pause_label_releases_the_park(sample_config) -> None:
+    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    refuse = {"on": True}
+
+    def apply(action):
+        if refuse["on"]:
+            return _refused_for_pause(action)
+        return ActionResult.ok(action)
+
+    engine = _Engine(
+        sample_config, planned=lambda: [stale], apply=apply,
+        labels={410: ("in-progress", PAUSE)},
+    )
+    engine.tick()
+    engine.tick()
+    assert engine.attempts_of(stale.action_type) == 1
+
+    refuse["on"] = False
+    engine.labels[410] = ("in-progress",)
+    engine.tick()
+
+    assert engine.attempts_of(stale.action_type) == 2
+    # The new fingerprint succeeded: the identity is clean and the block
+    # this owner put on #410 is released.
+    assert engine.store.rows == {}
+    assert engine.escalation.resolved[-1][1] is True
+
+
+# --- Scope boundaries ------------------------------------------------------
+
+
+def test_launches_stay_with_their_own_settlement(sample_config) -> None:
+    """A launch's ActionResult flattens provider deferral, host rate limits and
+    retryable failures into one "failed"; LaunchSettlement owns those."""
+    launch = LaunchSessionAction(session_type=SessionType.ISSUE, number=7)
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [launch],
+        apply=lambda a: ActionResult.fail(a, "provider deferred"),
+    )
+    for _ in range(10):
+        engine.tick()
+
+    assert engine.attempts_of(launch.action_type) == 10
+    assert engine.store.rows == {}
+
+
+def test_an_ungated_plan_cannot_be_applied(sample_config) -> None:
+    engine = _Engine(sample_config, planned=lambda: [], apply=lambda a: ActionResult.ok(a))
+    with pytest.raises(ValueError, match="ungated"):
+        engine.support.apply_plan(
+            Plan(actions=(_settle(),), skipped=()), lambda *_: None
+        )
+
+
+def test_subjects_and_escalation_issues() -> None:
+    settle_key = planned_action_key(_settle(), {})
+    assert settle_key.identity.subject == "issue:229"
+    assert settle_key.escalation_issue == 229
+    label_key = planned_action_key(
+        RemoveLabelAction(issue_number=410, label="x"), {410: ("a",)}
+    )
+    assert label_key.identity.subject == "issue:410"
+    assert label_key.fingerprint != planned_action_key(
+        RemoveLabelAction(issue_number=410, label="x"), {410: ("a", PAUSE)}
+    ).fingerprint
+
+
+# --- Every action type can be fingerprinted --------------------------------
+
+_LEAVES = (str, int, float, bool, type(None), datetime, PurePath)
+
+
+def _all_action_classes() -> set[type]:
+    for module in pkgutil.walk_packages(control_package.__path__, "issue_orchestrator.control."):
+        importlib.import_module(module.name)
+    found: set[type] = set()
+    pending = [Action]
+    while pending:
+        cls = pending.pop()
+        for sub in cls.__subclasses__():
+            if sub not in found:
+                found.add(sub)
+                pending.append(sub)
+    return found
+
+
+@functools.cache
+def _type_namespace() -> dict[str, object]:
+    """Every class in the domain and control packages, by name.
+
+    Action modules import some field types only under TYPE_CHECKING, so the
+    annotations have to be resolved against the packages, not the module.
+    """
+    import issue_orchestrator.domain as domain_package
+
+    namespace: dict[str, object] = {}
+    for package in (domain_package, control_package):
+        for module in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+            for name, value in vars(importlib.import_module(module.name)).items():
+                if inspect.isclass(value):
+                    namespace.setdefault(name, value)
+    return namespace
+
+
+def _field_hints(cls: type) -> dict[str, object]:
+    """Each dataclass field's annotation, evaluated against the packages."""
+    import annotationlib
+
+    hints: dict[str, object] = {}
+    for owner in reversed(cls.__mro__):
+        if not dataclasses.is_dataclass(owner):
+            continue
+        namespace = {**_type_namespace(), **vars(importlib.import_module(owner.__module__))}
+        raw = annotationlib.get_annotations(owner, format=annotationlib.Format.STRING)
+        for name, text in raw.items():
+            hints[name] = eval(text, namespace)
+    names = {field.name for field in dataclasses.fields(cls)}
+    return {name: hint for name, hint in hints.items() if name in names}
+
+
+def _check_type(hint, where: str, seen: set) -> None:
+    if isinstance(hint, typing.ForwardRef):
+        hint = hint.__forward_arg__
+    if isinstance(hint, str):
+        hint = eval(hint, dict(_type_namespace()))
+    if hint in seen:
+        return
+    origin = typing.get_origin(hint)
+    if origin is typing.Literal:
+        return
+    if origin in (typing.Union, types.UnionType, tuple, frozenset, set, list, dict):
+        for arg in typing.get_args(hint):
+            if arg is not Ellipsis:
+                _check_type(arg, where, seen)
+        return
+    if hint is typing.Any or not inspect.isclass(hint):
+        raise AssertionError(f"{where}: un-fingerprintable annotation {hint!r}")
+    if issubclass(hint, _LEAVES) or issubclass(hint, __import__("enum").Enum):
+        return
+    if dataclasses.is_dataclass(hint):
+        seen.add(hint)
+        for name, field_hint in _field_hints(hint).items():
+            _check_type(field_hint, f"{hint.__name__}.{name}", seen)
+        return
+    raise AssertionError(f"{where}: {hint!r} is neither a leaf nor a dataclass")
+
+
+def test_every_planned_action_type_can_be_fingerprinted() -> None:
+    """The gate fingerprints every field of every planned action. A field type
+    it cannot canonicalize would raise in the tick, so prove statically that
+    none exists - including action types added after this test."""
+    classes = _all_action_classes()
+    assert len(classes) > 40
+    seen: set = set()
+    for cls in classes:
+        _check_type(cls, cls.__name__, seen)
+
+
+def test_a_plan_naming_the_same_action_twice_escalates_it_once(sample_config) -> None:
+    """Both copies are admitted before either is attempted, so the second
+    outcome lands on a row the first already parked: one park, one escalation."""
+    stale = RemoveLabelAction(issue_number=410, label="in-progress", reason="stale")
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [stale, stale],
+        apply=_refused_for_pause,
+        labels={410: ("in-progress", PAUSE)},
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        # A refusal halts the rest of the plan; make it return instead so both
+        # copies are attempted in the same tick.
+        patch.setattr(
+            engine.support, "_handle_reconciliation_error",
+            lambda rr, cb: OrchestratorSupport._ActionApplyResult(success=False),
+        )
+        engine.tick()
+
+    assert engine.attempts_of(stale.action_type) == 2
+    assert len(engine.escalation.escalated) == 1

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from tests.conftest import MockSessionRunner
 from tests.conftest import operator_paused_state
+from tests.unit.control.liveness_doubles import gated
 from issue_orchestrator.domain.pause_state import PauseActor, PauseReason
 from issue_orchestrator.infra.orchestrator import Orchestrator
 from issue_orchestrator.entrypoints.run_orchestrator import run_orchestrator
@@ -1622,7 +1623,7 @@ class TestHandleSessionCompletion:
         ]
         assert cleanup_actions == []
 
-        orchestrator._apply_plan(plan)  # noqa: SLF001 - behavior boundary
+        orchestrator._apply_plan(gated(plan))  # noqa: SLF001 - behavior boundary
 
         pair_registry.release.assert_not_called()
         background_jobs.cancel_matching.assert_not_called()

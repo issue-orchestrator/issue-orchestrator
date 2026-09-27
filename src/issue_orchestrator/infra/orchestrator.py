@@ -856,6 +856,7 @@ class Orchestrator:
             io_claimed_label=self.deps.label_manager.io_claimed,
             open_issue_corpus=self.deps.open_issue_corpus,
             provider_launch_sampler=self.deps.services.provider_launch_sampler,
+            action_liveness=self.deps.action_liveness,
         )
 
     def _clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None:
@@ -1066,9 +1067,6 @@ class Orchestrator:
 
     def update_queue_cache(self) -> None:
         self._plan_applier.update_queue_cache()
-
-    def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None:
-        self._github_workflow.update_dependency_problems(self.state, dep_blocked)
 
     @property
     def _github_workflow(self) -> GitHubWorkflow:

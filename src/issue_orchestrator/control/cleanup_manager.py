@@ -10,7 +10,6 @@ Cleanup is deferred when:
 """
 
 import logging
-import time
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
@@ -57,18 +56,6 @@ class CleanupManager:
         self._session_exists = session_exists_fn
         self._get_worktree_path = get_worktree_path_fn
         self._get_session_name = get_session_name_fn
-        self._tech_lead_issue_last_failure: float | None = None
-
-    def should_retry_tech_lead_issue(self, cooldown_seconds: int = 60) -> bool:
-        """Throttle tech_lead issue creation failures to avoid tight retry loops."""
-        now = time.time()
-        if self._tech_lead_issue_last_failure is None:
-            return True
-        return (now - self._tech_lead_issue_last_failure) >= cooldown_seconds
-
-    def mark_tech_lead_issue_failure(self) -> None:
-        """Record a tech_lead issue creation failure for throttling."""
-        self._tech_lead_issue_last_failure = time.time()
 
     def process_deferred_cleanups(
         self,

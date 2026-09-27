@@ -1654,6 +1654,7 @@ class TestCaseFileScanClassification:
         publisher = TechLeadBoardPublisher(
             board_path=tech_lead_board_path(tmp_path),
             authority=InMemoryTechLeadAuthorityStore(),
+            held_actions=lambda: (),
         )
         gatherer = FactGatherer(
             config=mock_config,
@@ -1833,6 +1834,7 @@ class TestApprovalBacklogFacts:
         publisher = TechLeadBoardPublisher(
             board_path=tech_lead_board_path(tmp_path),
             authority=InMemoryTechLeadAuthorityStore(),
+            held_actions=lambda: (),
         )
         gatherer = self._gatherer(
             mock_config, mock_repository_host, board_publisher=publisher

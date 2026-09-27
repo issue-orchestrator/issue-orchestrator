@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch, PropertyMock
 from typing import Optional
 
+from tests.unit.control.liveness_doubles import PASSTHROUGH_LIVENESS, gated
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.control.orchestrator_support import (
     OrchestratorSupport,
@@ -680,6 +681,7 @@ class TestQueueFetchPlanner:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
         )
 
         assert next_sync == last_sync
@@ -729,6 +731,7 @@ class TestQueueFetchPlanner:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
         )
 
         assert next_sync >= last_sync
@@ -777,6 +780,7 @@ class TestQueueFetchPlanner:
             refresh_requested=True,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
         )
 
         github_workflow.fetch_all_issues.assert_called_once()
@@ -821,6 +825,7 @@ class TestQueueFetchPlanner:
                 issue_fetch_resilience=IssueFetchResilience(
                     "owner/repo", repo_not_found_tolerance=1
                 ),
+                action_liveness=PASSTHROUGH_LIVENESS,
             )
 
         assert "owner/repo" in str(exc_info.value)
@@ -1361,7 +1366,6 @@ class TestOrchestratorSupportApplyPlan:
         mock_worktree_manager = MagicMock()
         mock_state_machine_manager = MagicMock()
         mock_cleanup_manager = MagicMock()
-        mock_cleanup_manager.should_retry_tech_lead_issue = Mock(return_value=True)
 
         return OrchestratorSupport(
             config=mock_config,
@@ -1411,7 +1415,7 @@ class TestOrchestratorSupportApplyPlan:
             return ActionResult.ok(action, issue_number=number)
 
         support.action_applier.apply.side_effect = apply
-        support.apply_plan(Plan(actions=(issue_launch, review_launch), skipped=()), MagicMock())
+        support.apply_plan(gated(Plan(actions=(issue_launch, review_launch), skipped=())), MagicMock())
 
         assert 7 not in support.state.priority_queue
         assert 7 not in support.state.blocked_front_prioritized
@@ -1436,7 +1440,7 @@ class TestOrchestratorSupportApplyPlan:
         support.action_applier.apply.side_effect = lambda action: ActionResult.fail(
             action, "worktree create failed"
         )
-        support.apply_plan(Plan(actions=(issue_launch,), skipped=()), MagicMock())
+        support.apply_plan(gated(Plan(actions=(issue_launch,), skipped=())), MagicMock())
 
         assert 7 in support.state.priority_queue
         assert 7 in support.state.blocked_front_prioritized
@@ -1530,27 +1534,6 @@ class TestOrchestratorSupportApplyPlan:
         # Should have emitted RECONCILIATION_REQUIRED event
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.RECONCILIATION_REQUIRED in event_names
-
-    def test_tech_lead_issue_skipped_on_cooldown(self, support, mock_event_sink):
-        """CREATE_TECH_LEAD_ISSUE action is skipped when on cooldown."""
-        mock_action = MagicMock()
-        mock_action.action_type = ActionType.CREATE_TECH_LEAD_ISSUE
-
-        plan = MagicMock()
-        plan.action_count = 1
-        plan.actions = [mock_action]
-
-        # Set cooldown active
-        support.cleanup_manager.should_retry_tech_lead_issue = Mock(return_value=False)
-
-        support.apply_plan(plan, Mock())
-
-        # Should not have called apply for this action
-        support.action_applier.apply.assert_not_called()
-
-        # Should have emitted APPLY_FAILED
-        event_names = [e.name for e in mock_event_sink.events]
-        assert EventName.APPLY_FAILED in event_names
 
     def test_failed_label_action_marks_failed_this_cycle(self, support, sample_orchestrator_state):
         """Label mutation failures mark the issue failed_this_cycle."""
@@ -1797,7 +1780,7 @@ class TestUpdateStateAfterAction:
         support.action_applier.apply.side_effect = lambda action: ActionResult.ok(
             action, **details
         )
-        support.apply_plan(Plan(actions=tuple(actions), skipped=()), MagicMock())
+        support.apply_plan(gated(Plan(actions=tuple(actions), skipped=())), MagicMock())
 
     def test_queue_review_adds_to_pending_reviews(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action adds PendingReview to state."""
@@ -2351,7 +2334,7 @@ class TestUpdateStateAfterAction:
             else ActionResult.ok(action)
         )
         support_with_state.apply_plan(
-            Plan(actions=tuple(plan.actions), skipped=()), MagicMock()
+            gated(Plan(actions=tuple(plan.actions), skipped=())), MagicMock()
         )
         clear_discovered_facts(support_with_state.state, config, tick_paused=False)
 

@@ -228,10 +228,12 @@ def create_tech_lead_board_publisher(
     if not config.tech_lead_enabled:
         return None
     from ..control.tech_lead_board import TechLeadBoardPublisher, tech_lead_board_path
+    from .bootstrap_action_liveness import action_liveness_store
 
     return TechLeadBoardPublisher(
         board_path=tech_lead_board_path(config.repo_root),
         authority=authority,
+        held_actions=action_liveness_store(config).parked_rows,
     )
 
 
