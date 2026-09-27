@@ -109,13 +109,21 @@ function renderBlockedCustodySummaryHtml(summary) {
         + (states ? `<ul class="custody-summary-states" aria-label="Blocked items by custody">${states}</ul>` : '');
 }
 
+// What makes one summary different from another. The server writes the same
+// key on first paint (templates/_blocked_custody.html), so the first refresh
+// does not rewrite -- and re-announce -- an unchanged line.
+function blockedCustodySummaryKey(summary) {
+    const states = summary.by_state.map((entry) => `${entry.state}:${entry.count}`).join(',');
+    return `${summary.total}|${summary.needs_attention}|${summary.unowned}|${summary.stale}|${summary.headline}|${states}`;
+}
+
 function syncBlockedCustodySummary(colEl, column) {
     const target = colEl.querySelector('.blocked-custody-summary');
     const summary = column && column.custody_summary;
     if (!target || !summary) return;
     // Rewrite only on a real change: this is a live region, and re-setting
     // identical markup every refresh would re-announce it.
-    const key = JSON.stringify(summary);
+    const key = blockedCustodySummaryKey(summary);
     if (target.dataset.custodyKey === key) return;
     target.dataset.custodyKey = key;
     target.innerHTML = renderBlockedCustodySummaryHtml(summary);
@@ -124,6 +132,7 @@ function syncBlockedCustodySummary(colEl, column) {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         renderCustodyHtml,
+        blockedCustodySummaryKey,
         renderBlockedCustodySummaryHtml,
         syncBlockedCustodySummary,
         syncCustodyAge,
