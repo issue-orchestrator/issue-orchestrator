@@ -353,6 +353,9 @@ def build_validated_work_recovery(
         record_disposition=lambda record_id: owners.records.record_for_id(
             record_id
         ).disposition,
+        attached_evidence=lambda record_id: frozenset(
+            row.evidence_id for row in owners.records.attached_evidence(record_id)
+        ),
     )
     return RecoveryDrain(
         queue=owners.records,

@@ -550,56 +550,128 @@ def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tm
     assert events.get_events(EventName.VALIDATED_WORK_ABANDONED.value) == []
 
 
-def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
-    """The scope sweep re-selects an unchanged record each interval. A proof
-    that raises every time is held, then parked on the record's issue, and the
-    retained work is untouched (#7350 review B r2)."""
+class _SwitchableExecution:
+    """The real execution owner, held by another owner while ``busy``."""
+
+    def __init__(self, real) -> None:
+        self._real, self.busy = real, False
+
+    def try_enter(self, record_id):
+        from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
+
+        return RecordExecutionBusy(record_id) if self.busy else self._real.try_enter(record_id)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _scope_rig(tmp_path, proof):
+    """A real sweep over a real store with one parked record and a real owner;
+    the scope proof is *proof*, recorded in ``rig.proofs``."""
     from datetime import timedelta
+    from types import SimpleNamespace
 
     from issue_orchestrator.domain.action_liveness import LivenessPolicy
     from issue_orchestrator.ports.recovery_block import RecoveryBlockIssueReconciler
     from tests.unit.control.liveness_doubles import (
+        InMemoryActionLivenessStore,
         ManualClock,
         RecordingEscalation,
         liveness_owner,
     )
 
     store = Rig(tmp_path / "work.sqlite").open()
-    execution = LocalValidatedWorkExecutionOwner(store)
+    execution = _SwitchableExecution(LocalValidatedWorkExecutionOwner(store))
     effects = FencedValidatedWorkEffects(execution=execution, fence=store)
     admission = capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.PR_BRANCH_MISMATCH,
                         reason="admitted before the scope rule")
     store.admit(admission)
-    record_id = admission.evidence.record_id
-    before = store.record_for_id(record_id)
     retirement = OutOfScopeRecordRetirement(
         intake=owned_intake(TaskKind.TECH_LEAD), store=store, effects=effects,
         blocks=Mock(spec=RecoveryBlockIssueReconciler), events=InMemoryEventSink(),
     )
-    proofs: list[int] = []
+    rig = SimpleNamespace(
+        store=store, execution=execution, record_id=admission.evidence.record_id,
+        proofs=[], attached=frozenset(), clock=ManualClock(), escalation=RecordingEscalation(),
+        rows=InMemoryActionLivenessStore(), policy=LivenessPolicy(max_attempts=3),
+    )
 
-    def unprovable(record):
-        proofs.append(record.disposition.key.issue_number)
-        raise RuntimeError("intake ledger unreadable")
+    def recorded_proof(record):
+        rig.proofs.append(record.disposition.record_id)
+        return proof(record)
 
-    retirement.recovery_owns_record = unprovable
-    clock, escalation = ManualClock(), RecordingEscalation()
-    policy = LivenessPolicy(max_attempts=3)
-    owner = liveness_owner(escalation=escalation, clock=clock, policy=policy)
-    sweep = OutOfScopeRetirementSweep(
+    retirement.recovery_owns_record = recorded_proof
+    owner = liveness_owner(store=rig.rows, escalation=rig.escalation, clock=rig.clock,
+                           policy=rig.policy)
+    rig.sweep = OutOfScopeRetirementSweep(
         source=store, store=store, execution=execution, retirement=retirement, batch_size=5,
         liveness=drain_liveness(
-            owner, record_disposition=lambda rid: store.record_for_id(rid).disposition
+            owner,
+            record_disposition=lambda rid: store.record_for_id(rid).disposition,
+            attached_evidence=lambda _rid: rig.attached,
         ),
     )
 
-    for _ in range(30):
-        sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
-        clock.advance(timedelta(hours=1))
+    def passes(count):
+        for _ in range(count):
+            rig.sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
+            rig.clock.advance(timedelta(hours=1))
 
-    assert len(proofs) == policy.max_attempts
-    [parked] = escalation.parked
+    rig.passes = passes
+    return rig
+
+
+def _unprovable(record):
+    raise RuntimeError("intake ledger unreadable")
+
+
+def test_a_scope_judgement_held_by_another_owner_is_a_visible_wait(tmp_path):
+    """A record no publication lane selects, whose lease stays held: shown as
+    a zero-attempt wait, never parked, and cleared once judged (review B r3)."""
+    rig = _scope_rig(tmp_path, proof=lambda record: True)
+    rig.execution.busy = True
+
+    rig.passes(10)
+
+    assert rig.proofs == []
+    [row] = rig.rows.waiting_rows()
+    assert row.key.identity.action == "judge_record_scope"
+    assert row.key.escalation_issue == rig.store.record_for_id(rig.record_id).disposition.key.issue_number
+    assert row.attempts == 0 and "another owner" in row.last_reason
+    assert rig.escalation.parked == []
+
+    rig.execution.busy = False
+    rig.passes(1)
+
+    assert rig.proofs == [rig.record_id]
+    assert rig.rows.rows == {}
+
+
+def test_newly_attached_evidence_is_a_new_scope_question(tmp_path):
+    """The judgement reads attached evidence too; a parked judgement is asked
+    again once new evidence attaches (review B r3)."""
+    rig = _scope_rig(tmp_path, proof=_unprovable)
+    rig.passes(10)
+    assert len(rig.proofs) == rig.policy.max_attempts
+
+    rig.attached = frozenset({"e-attached"})
+    rig.passes(1)
+
+    assert len(rig.proofs) == rig.policy.max_attempts + 1
+
+
+def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
+    """The scope sweep re-selects an unchanged record each interval. A proof
+    that raises every time is held, then parked on the record's issue, and the
+    retained work is untouched (#7350 review B r2)."""
+    rig = _scope_rig(tmp_path, proof=_unprovable)
+    before = rig.store.record_for_id(rig.record_id)
+
+    rig.passes(30)
+
+    assert len(rig.proofs) == rig.policy.max_attempts
+    [parked] = rig.escalation.parked
     assert parked.key.identity.action == "judge_record_scope"
     assert parked.key.escalation_issue == before.disposition.key.issue_number
     assert "intake ledger unreadable" in parked.last_reason
-    assert store.record_for_id(record_id) == before
+    assert rig.store.record_for_id(rig.record_id) == before

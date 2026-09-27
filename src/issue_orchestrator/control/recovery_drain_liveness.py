@@ -101,6 +101,9 @@ class RecoveryDrainLiveness:
     #: A record's current disposition: its issue (where a park is escalated)
     #: and its durable state (a fact of the question). One read, one owner.
     record_disposition: Callable[[str], ValidatedWorkDisposition]
+    #: The evidence ids attached to a record besides its current one: the
+    #: scope judgement reads them too, so they are facts of its question.
+    attached_evidence: Callable[[str], frozenset[str]]
 
     def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
         if isinstance(request, RemoteAuthorityRefreshRequest):
@@ -113,12 +116,21 @@ class RecoveryDrainLiveness:
         return self._record_key(RECOVER_ACTION, request.record_id, request.evidence_id)
 
     def scope_key(self, request: RecoveryRecordRequest) -> LivenessKey:
-        """The scope sweep's judgement of one record (#7323's lane)."""
-        return self._record_key(SCOPE_ACTION, request.record_id, request.evidence_id)
+        """The scope sweep's judgement of one record (#7323's lane), over every
+        evidence row it reads: newly attached evidence is a new question."""
+        return self._record_key(
+            SCOPE_ACTION, request.record_id, request.evidence_id,
+            attached=self.attached_evidence(request.record_id),
+        )
 
-    def _record_key(self, action: str, record_id: str, evidence_id: str) -> LivenessKey:
+    def _record_key(
+        self, action: str, record_id: str, evidence_id: str, **extra: object
+    ) -> LivenessKey:
         disposition = self.record_disposition(record_id)
-        facts = {"record_id": record_id, "evidence_id": evidence_id, "state": disposition.state}
+        facts = {
+            "record_id": record_id, "evidence_id": evidence_id,
+            "state": disposition.state, **extra,
+        }
         return self._key(action, record_id, disposition.key.issue_number, facts)
 
     @staticmethod
@@ -138,8 +150,12 @@ class RecoveryDrainLiveness:
         self._record(key, drain_outcome(result))
 
     def judged(self, key: LivenessKey) -> None:
-        """The scope sweep reached a judgement (retired, in scope, or held)."""
+        """The scope sweep reached a judgement (retired or in scope)."""
         self._record(key, ActionOutcome.done())
+
+    def waiting(self, key: LivenessKey, reason: str) -> None:
+        """Another owner holds the record: a visible, paced wait."""
+        self._record(key, ActionOutcome.waiting(reason))
 
     def _record(self, key: LivenessKey, outcome: ActionOutcome) -> None:
         self.owner.record(key, outcome)

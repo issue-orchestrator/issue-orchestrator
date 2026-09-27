@@ -14,7 +14,7 @@ holds is outside scope, and the store refuses if that set changed meanwhile.
 
 import logging
 from dataclasses import dataclass
-from enum import Enum, StrEnum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 from functools import partial
 
@@ -125,13 +125,11 @@ class OutOfScopeRecordRetirement:
         )
 
 
-class _HeldElsewhere(Enum):
+@dataclass(frozen=True, slots=True)
+class _HeldElsewhere:
     """Another owner holds the record, so the sweep reached no judgement."""
 
-    HELD = "held"
-
-
-_HELD_ELSEWHERE = _HeldElsewhere.HELD
+    reason: str
 
 
 class OutOfScopeRetirementSweep:
@@ -179,8 +177,10 @@ class OutOfScopeRetirementSweep:
                 logger.exception("Recovery scope judgement failed for record %s", request.record_id)
                 self._liveness.settle_error(key, error)
                 continue
-            if judged is _HELD_ELSEWHERE:
-                # Another owner holds the record; its own lane accounts for it.
+            if isinstance(judged, _HeldElsewhere):
+                # Not a failure, but shown and paced: a record no publication
+                # lane selects must not sit held without a signal.
+                self._liveness.waiting(key, judged.reason)
                 continue
             self._liveness.judged(key)
             if judged is True:
@@ -197,14 +197,14 @@ class OutOfScopeRetirementSweep:
         return requests
 
     def _judge(self, request: RecoveryRecordRequest) -> "bool | _HeldElsewhere":
-        """Whether the record was retired; :data:`_HELD_ELSEWHERE` when another
+        """Whether the record was retired; :class:`_HeldElsewhere` when another
         owner holds it, so no judgement was reached."""
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return _HELD_ELSEWHERE
+            return _HeldElsewhere("Record is executing under another owner")
         with lease as token:
             if not self._execution.relinquish(token):
-                return _HELD_ELSEWHERE
+                return _HeldElsewhere("Record awaits its reserved stop operation")
             try:
                 record = self._store.record_for_id(request.record_id)
                 if (record.current_evidence.evidence_id != request.evidence_id
@@ -220,7 +220,7 @@ class OutOfScopeRetirementSweep:
                     evidence_id=request.evidence_id,
                 )
                 if claim is None:
-                    return _HELD_ELSEWHERE
+                    return _HeldElsewhere("Record's claim is held by another owner")
                 self._execution.remember_claim(token, claim)
                 outcome = self._retirement.retire_if_outside(token, claim, record)
                 if outcome.status is ScopeRetirementStatus.IN_SCOPE:

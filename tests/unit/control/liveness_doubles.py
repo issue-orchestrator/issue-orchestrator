@@ -280,11 +280,16 @@ def _queued_on_issue_one(_record_id: str):
 
 
 def drain_liveness(
-    owner: ActionLivenessOwner | None = None, *, record_disposition=_queued_on_issue_one
+    owner: ActionLivenessOwner | None = None,
+    *,
+    record_disposition=_queued_on_issue_one,
+    attached_evidence=lambda _record_id: frozenset(),
 ):
     """A recovery-drain liveness over an in-memory owner (#7350)."""
     from issue_orchestrator.control.recovery_drain_liveness import RecoveryDrainLiveness
 
     return RecoveryDrainLiveness(
-        owner=owner or liveness_owner(), record_disposition=record_disposition
+        owner=owner or liveness_owner(),
+        record_disposition=record_disposition,
+        attached_evidence=attached_evidence,
     )
