@@ -17,6 +17,7 @@ from issue_orchestrator.domain.publication_remote import (
     PublicationPrState,
     PublicationRemoteError,
 )
+from issue_orchestrator.domain.recovery_attempt import RecoveryPendingKind
 from issue_orchestrator.domain.validated_work import (
     FinalizationPhase,
     PublishValidatedHeadStatus,
@@ -163,6 +164,8 @@ def test_exact_healthy_refresh_queues_and_preserves_capture_audit(tmp_path):
     disposition = store.get(admission.evidence.record_id)
     row, = store.retained_evidence(admission.evidence.identity.key.issue_number)
     assert outcome.failure is None
+    # The refresh itself is done; the record's recovery goes on in its lane.
+    assert outcome.kind is RecoveryPendingKind.ADVANCED
     assert disposition.state is ValidatedWorkState.QUEUED
     assert disposition.failure is None
     assert row.admission.initial_state is ValidatedWorkState.PARKED

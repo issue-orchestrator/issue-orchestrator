@@ -20,7 +20,8 @@ class RecoveryPendingKind(StrEnum):
     FAILED = "failed"
     #: Another owner holds the record right now (its execution lease, reserved
     #: stop, claim, or the issue's disposition gate). Nothing about THIS attempt
-    #: failed, so nothing is recorded.
+    #: failed, so it spends nothing; it is a visible, paced wait, because a
+    #: holder that never lets go must not hide the record.
     CONTENDED = "contended"
     #: A legitimate precondition held by another owner (the issue's runtime is
     #: active): a visible, paced wait that is not a failure.
@@ -28,6 +29,9 @@ class RecoveryPendingKind(StrEnum):
     #: Nothing proceeds until a person acts (the issue is paused for
     #: reconciliation): parked and escalated at once.
     NEEDS_HUMAN = "needs_human"
+    #: This attempt's own action finished and the record advanced (a remote
+    #: authority refresh committed); recovery continues in its own lane.
+    ADVANCED = "advanced"
 
 
 @dataclass(frozen=True, slots=True)

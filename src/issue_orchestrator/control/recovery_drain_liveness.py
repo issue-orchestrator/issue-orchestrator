@@ -34,10 +34,12 @@ from ..domain.action_liveness import (
     ActionIdentity,
     ActionOutcome,
     LivenessKey,
+    OutcomeKind,
     fact_fingerprint,
 )
 from ..domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from ..domain.recovery_completion import RecoveryCompleted
+from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_commands import ValidatedWorkDisposition
 from ..domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
@@ -47,16 +49,15 @@ from .action_liveness import ActionLivenessOwner, LivenessDecision, transient_ou
 
 RECOVER_ACTION = "recover_validated_work"
 REFRESH_ACTION = "refresh_remote_authority"
+SCOPE_ACTION = "judge_record_scope"
 
 
 def drain_subject(record_id: str) -> str:
     return f"validated_work:{record_id}"
 
 
-def drain_outcome(
-    result: RecoveryCompleted | RecoveryAttemptPending,
-) -> ActionOutcome | None:
-    """How one drain attempt ended; ``None`` when another owner held the record."""
+def drain_outcome(result: RecoveryCompleted | RecoveryAttemptPending) -> ActionOutcome:
+    """How one drain attempt ended, in the owner's vocabulary."""
     if isinstance(result, RecoveryCompleted):
         return ActionOutcome.done()
     failure = "" if result.failure is None else f" [{result.failure.value}]"
@@ -76,16 +77,19 @@ _DETERMINISTIC_REFUSALS = frozenset(
 #: One mapping from how a pending result says it should be counted to the
 #: owner's vocabulary. Every kind is named: a new one fails here, not silently.
 _OUTCOMES: dict[
-    RecoveryPendingKind, Callable[[str, RecoveryAttemptPending], ActionOutcome | None]
+    RecoveryPendingKind, Callable[[str, RecoveryAttemptPending], ActionOutcome]
 ] = {
     # A failed remote read keeps the host's typed rate limit, so it waits for
     # the reset instead of spending budget.
     RecoveryPendingKind.FAILED: lambda reason, result: transient_outcome(
         reason, result.rate_limit
     ),
-    RecoveryPendingKind.CONTENDED: lambda _reason, _result: None,
+    # Held by another owner: spends nothing, but is shown and paced, so a
+    # holder that never lets go cannot hide the record.
+    RecoveryPendingKind.CONTENDED: lambda reason, _result: ActionOutcome.waiting(reason),
     RecoveryPendingKind.WAITING: lambda reason, _result: ActionOutcome.waiting(reason),
     RecoveryPendingKind.NEEDS_HUMAN: lambda reason, _result: ActionOutcome.needs_human(reason),
+    RecoveryPendingKind.ADVANCED: lambda _reason, _result: ActionOutcome.done(),
 }
 
 
@@ -100,21 +104,27 @@ class RecoveryDrainLiveness:
 
     def key(self, request: ValidatedWorkDrainRequest) -> LivenessKey:
         if isinstance(request, RemoteAuthorityRefreshRequest):
-            action, issue, facts = REFRESH_ACTION, request.authority.issue_number, request
-        else:
-            # The record and its current evidence are the facts. An operator's
-            # approval is authority to run, not a fact: the explicit recovery
-            # of a parked selection is the same question, and its success
-            # must settle that park.
-            disposition = self.record_disposition(request.record_id)
-            action, issue = RECOVER_ACTION, disposition.key.issue_number
-            facts = {
-                "record_id": request.record_id,
-                "evidence_id": request.evidence_id,
-                "state": disposition.state,
-            }
+            return self._key(REFRESH_ACTION, request.record_id,
+                             request.authority.issue_number, request)
+        # The record, its current evidence and its durable state are the facts.
+        # An operator's approval is authority to run, not a fact: the explicit
+        # recovery of a parked selection is the same question, and its success
+        # must settle that park.
+        return self._record_key(RECOVER_ACTION, request.record_id, request.evidence_id)
+
+    def scope_key(self, request: RecoveryRecordRequest) -> LivenessKey:
+        """The scope sweep's judgement of one record (#7323's lane)."""
+        return self._record_key(SCOPE_ACTION, request.record_id, request.evidence_id)
+
+    def _record_key(self, action: str, record_id: str, evidence_id: str) -> LivenessKey:
+        disposition = self.record_disposition(record_id)
+        facts = {"record_id": record_id, "evidence_id": evidence_id, "state": disposition.state}
+        return self._key(action, record_id, disposition.key.issue_number, facts)
+
+    @staticmethod
+    def _key(action: str, record_id: str, issue: int, facts: object) -> LivenessKey:
         return LivenessKey(
-            identity=ActionIdentity(drain_subject(request.record_id), action),
+            identity=ActionIdentity(drain_subject(record_id), action),
             fingerprint=fact_fingerprint(facts),
             escalation_issue=issue,
         )
@@ -125,13 +135,17 @@ class RecoveryDrainLiveness:
     def settle(
         self, key: LivenessKey, result: RecoveryCompleted | RecoveryAttemptPending
     ) -> None:
-        outcome = drain_outcome(result)
-        if outcome is None:
-            return
+        self._record(key, drain_outcome(result))
+
+    def judged(self, key: LivenessKey) -> None:
+        """The scope sweep reached a judgement (retired, in scope, or held)."""
+        self._record(key, ActionOutcome.done())
+
+    def _record(self, key: LivenessKey, outcome: ActionOutcome) -> None:
         self.owner.record(key, outcome)
-        if isinstance(result, RecoveryCompleted) and key.identity.action == RECOVER_ACTION:
-            # Recovered: no question about this record is still open, including
-            # ones asked under its older evidence or state.
+        if outcome.kind is OutcomeKind.DONE:
+            # Done: no question this action asked about the record is still
+            # open, including ones asked under its older evidence or state.
             self.owner.release_identity(key.identity)
 
     def settle_error(self, key: LivenessKey, error: Exception) -> None:
@@ -144,6 +158,7 @@ class RecoveryDrainLiveness:
 __all__ = [
     "RECOVER_ACTION",
     "REFRESH_ACTION",
+    "SCOPE_ACTION",
     "RecoveryDrainLiveness",
     "drain_outcome",
     "drain_subject",

@@ -346,6 +346,14 @@ def build_validated_work_recovery(
         completion=completion,
         scope=owners.scope_retirement,
     )
+    # One liveness for every lane the drain replans: publication, refresh
+    # and the scope sweep.
+    liveness = RecoveryDrainLiveness(
+        owner=action_liveness,
+        record_disposition=lambda record_id: owners.records.record_for_id(
+            record_id
+        ).disposition,
+    )
     return RecoveryDrain(
         queue=owners.records,
         operation=operation,
@@ -366,6 +374,7 @@ def build_validated_work_recovery(
             execution=owners.execution,
             retirement=owners.scope_retirement,
             batch_size=config.validated_work.drain_batch_size,
+            liveness=liveness,
         ),
         block_sweep=AggregateRecoveryBlockSweep(
             source=owners.records,
@@ -374,10 +383,5 @@ def build_validated_work_recovery(
         ),
         batch_size=config.validated_work.drain_batch_size,
         interval_seconds=config.validated_work.drain_interval_seconds,
-        liveness=RecoveryDrainLiveness(
-            owner=action_liveness,
-            record_disposition=lambda record_id: owners.records.record_for_id(
-                record_id
-            ).disposition,
-        ),
+        liveness=liveness,
     )

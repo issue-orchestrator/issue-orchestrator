@@ -484,7 +484,8 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
         queue=store, operation=Mock(), authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
         scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
-                                              retirement=retirement, batch_size=5),
+                                              retirement=retirement, batch_size=5,
+                                              liveness=drain_liveness()),
         batch_size=5, interval_seconds=1,
         liveness=drain_liveness(),
     )
@@ -537,7 +538,8 @@ def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tm
 
     store.retire_outside_scope = evidence_lands_first
     sweep = OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
-                                      retirement=retirement, batch_size=5)
+                                      retirement=retirement, batch_size=5,
+                                      liveness=drain_liveness())
 
     report = sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
 
@@ -546,3 +548,58 @@ def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tm
     assert store.owner_of(admission.evidence.record_id) is None
     assert RECOVERY_PENDING in labels.labels
     assert events.get_events(EventName.VALIDATED_WORK_ABANDONED.value) == []
+
+
+def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
+    """The scope sweep re-selects an unchanged record each interval. A proof
+    that raises every time is held, then parked on the record's issue, and the
+    retained work is untouched (#7350 review B r2)."""
+    from datetime import timedelta
+
+    from issue_orchestrator.domain.action_liveness import LivenessPolicy
+    from issue_orchestrator.ports.recovery_block import RecoveryBlockIssueReconciler
+    from tests.unit.control.liveness_doubles import (
+        ManualClock,
+        RecordingEscalation,
+        liveness_owner,
+    )
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
+    admission = capture(state=ValidatedWorkState.PARKED, failure=ValidatedWorkFailure.PR_BRANCH_MISMATCH,
+                        reason="admitted before the scope rule")
+    store.admit(admission)
+    record_id = admission.evidence.record_id
+    before = store.record_for_id(record_id)
+    retirement = OutOfScopeRecordRetirement(
+        intake=owned_intake(TaskKind.TECH_LEAD), store=store, effects=effects,
+        blocks=Mock(spec=RecoveryBlockIssueReconciler), events=InMemoryEventSink(),
+    )
+    proofs: list[int] = []
+
+    def unprovable(record):
+        proofs.append(record.disposition.key.issue_number)
+        raise RuntimeError("intake ledger unreadable")
+
+    retirement.recovery_owns_record = unprovable
+    clock, escalation = ManualClock(), RecordingEscalation()
+    policy = LivenessPolicy(max_attempts=3)
+    owner = liveness_owner(escalation=escalation, clock=clock, policy=policy)
+    sweep = OutOfScopeRetirementSweep(
+        source=store, store=store, execution=execution, retirement=retirement, batch_size=5,
+        liveness=drain_liveness(
+            owner, record_disposition=lambda rid: store.record_for_id(rid).disposition
+        ),
+    )
+
+    for _ in range(30):
+        sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
+        clock.advance(timedelta(hours=1))
+
+    assert len(proofs) == policy.max_attempts
+    [parked] = escalation.parked
+    assert parked.key.identity.action == "judge_record_scope"
+    assert parked.key.escalation_issue == before.disposition.key.issue_number
+    assert "intake ledger unreadable" in parked.last_reason
+    assert store.record_for_id(record_id) == before

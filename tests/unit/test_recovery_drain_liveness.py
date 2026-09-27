@@ -139,8 +139,9 @@ def test_an_operation_that_raises_every_pass_parks(tmp_path) -> None:
     assert "missing_authority" in engine.escalation.parked[0].last_reason
 
 
-def test_contention_is_not_a_failure(tmp_path) -> None:
-    """A record another owner holds right now spends nothing."""
+def test_contention_spends_nothing_but_is_shown(tmp_path) -> None:
+    """A record another owner holds spends nothing, and it is a visible wait,
+    so a holder that never lets go cannot hide it (review B r2)."""
     engine = _Engine(
         tmp_path,
         RecoveryAttemptPending("Record recovery is already executing", kind=RecoveryPendingKind.CONTENDED),
@@ -149,7 +150,9 @@ def test_contention_is_not_a_failure(tmp_path) -> None:
     engine.passes(20)
 
     assert len(engine.operation.called) == 20
-    assert engine.rows.rows == {}
+    assert engine.escalation.parked == []
+    [row] = engine.rows.waiting_rows()
+    assert row.attempts == 0 and "already executing" in row.last_reason
 
 
 def test_a_parked_record_does_not_stall_the_round_robin(tmp_path) -> None:
@@ -248,6 +251,32 @@ def test_a_completed_recovery_releases_its_records_older_parks(tmp_path) -> None
     assert [row.key for rows in engine.escalation.released for row in rows] == [queued_park.key]
     assert engine.escalation.unblocks == [(410, True)]
     assert engine.rows.rows == {}
+
+
+def test_a_committed_refresh_is_done_and_releases_older_refresh_parks() -> None:
+    """A refresh parked on older facts; a later refresh commits. The refresh
+    question is answered: every refresh row goes, its block is withdrawn
+    (review B r2)."""
+    from issue_orchestrator.domain.action_liveness import ActionIdentity, ActionOutcome, LivenessKey
+
+    clock, escalation = ManualClock(), RecordingEscalation()
+    rows = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=rows, escalation=escalation, clock=clock, policy=POLICY)
+    liveness = drain_liveness(owner)
+    identity = ActionIdentity("validated_work:r1", "refresh_remote_authority")
+    old = LivenessKey(identity, "a" * 32, 410)
+    owner.record(old, ActionOutcome.permanent("remote unreadable"))
+    new = LivenessKey(identity, "b" * 32, 410)
+
+    liveness.settle(new, RecoveryAttemptPending(
+        "remote authority observed", kind=RecoveryPendingKind.ADVANCED
+    ))
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects()
+
+    assert rows.rows == {}
+    assert [row.key for batch in escalation.released for row in batch] == [old]
+    assert escalation.unblocks == [(410, True)]
 
 
 # --- The operations mark contention, which the drain then does not count ----

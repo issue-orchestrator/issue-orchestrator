@@ -102,6 +102,10 @@ class RemoteAuthorityRefreshOperation:
                     return RecoveryAttemptPending(
                         "Remote authority refresh changed before settlement"
                     )
-                return RecoveryAttemptPending(decision.reason, decision.failure)
+                # Committed: the refresh is done, whatever it decided; the
+                # record's recovery continues in its own lane.
+                return RecoveryAttemptPending(
+                    decision.reason, decision.failure, kind=RecoveryPendingKind.ADVANCED
+                )
             finally:
                 self._execution.relinquish(token)

@@ -14,7 +14,8 @@ holds is outside scope, and the store refuses if that set changed meanwhile.
 
 import logging
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum
+from typing import TYPE_CHECKING
 from functools import partial
 
 from ..domain.recovery_attempt import RecoveryAttemptPending
@@ -33,6 +34,9 @@ from ..ports.validated_work_drain import RecoveryDrainAdmission, ValidatedWorkSc
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
 from ..ports.validated_work_store import ValidatedWorkStore
+
+if TYPE_CHECKING:
+    from .recovery_drain_liveness import RecoveryDrainLiveness
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +125,15 @@ class OutOfScopeRecordRetirement:
         )
 
 
+class _HeldElsewhere(Enum):
+    """Another owner holds the record, so the sweep reached no judgement."""
+
+    HELD = "held"
+
+
+_HELD_ELSEWHERE = _HeldElsewhere.HELD
+
+
 class OutOfScopeRetirementSweep:
     """Judge EVERY unresolved record's scope, not just the publication lanes'.
 
@@ -135,10 +148,11 @@ class OutOfScopeRetirementSweep:
 
     def __init__(self, *, source: ValidatedWorkScopeSource, store: ValidatedWorkStore,
                  execution: ValidatedWorkExecutionOwner, retirement: OutOfScopeRecordRetirement,
-                 batch_size: int) -> None:
+                 batch_size: int, liveness: "RecoveryDrainLiveness") -> None:
         require_positive(batch_size, "scope sweep batch size")
         self._source, self._store, self._execution = source, store, execution
         self._retirement, self._batch_size = retirement, batch_size
+        self._liveness = liveness
         self._owned: set[str] = set()
         self._after = ""
 
@@ -154,11 +168,23 @@ class OutOfScopeRetirementSweep:
             self._after = request.record_id
             if request.evidence_id in self._owned:
                 continue
+            # A judgement that fails the same way every pass is bounded like
+            # any other replanned action (#7350): held, then parked.
+            key = self._liveness.scope_key(request)
+            if not self._liveness.admit(key).admitted:
+                continue
             try:
-                if self._judge(request):
-                    retired.append(request.record_id)
-            except Exception:
+                judged = self._judge(request)
+            except Exception as error:
                 logger.exception("Recovery scope judgement failed for record %s", request.record_id)
+                self._liveness.settle_error(key, error)
+                continue
+            if judged is _HELD_ELSEWHERE:
+                # Another owner holds the record; its own lane accounts for it.
+                continue
+            self._liveness.judged(key)
+            if judged is True:
+                retired.append(request.record_id)
         if len(requests) < self._batch_size:
             self._after = ""
         return RecoveryScopeSweepReport(tuple(retired))
@@ -170,13 +196,15 @@ class OutOfScopeRetirementSweep:
             requests = self._source.unresolved_records(after_record_id="", limit=self._batch_size)
         return requests
 
-    def _judge(self, request: RecoveryRecordRequest) -> bool:
+    def _judge(self, request: RecoveryRecordRequest) -> "bool | _HeldElsewhere":
+        """Whether the record was retired; :data:`_HELD_ELSEWHERE` when another
+        owner holds it, so no judgement was reached."""
         lease = self._execution.try_enter(request.record_id)
         if isinstance(lease, RecordExecutionBusy):
-            return False
+            return _HELD_ELSEWHERE
         with lease as token:
             if not self._execution.relinquish(token):
-                return False
+                return _HELD_ELSEWHERE
             try:
                 record = self._store.record_for_id(request.record_id)
                 if (record.current_evidence.evidence_id != request.evidence_id
@@ -192,7 +220,7 @@ class OutOfScopeRetirementSweep:
                     evidence_id=request.evidence_id,
                 )
                 if claim is None:
-                    return False
+                    return _HELD_ELSEWHERE
                 self._execution.remember_claim(token, claim)
                 outcome = self._retirement.retire_if_outside(token, claim, record)
                 if outcome.status is ScopeRetirementStatus.IN_SCOPE:
