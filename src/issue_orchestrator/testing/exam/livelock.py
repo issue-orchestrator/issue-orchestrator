@@ -26,13 +26,14 @@ from typing import Any, Iterable, Mapping
 
 LIVELOCK_THRESHOLD = 5
 
-#: Events that report something failing, refused or stuck.
+#: Events that report an action failing or being refused. Pure observations
+#: (``stale.in_progress_detected``: the engine noticing a claim that may
+#: legitimately stay paused) are not failures, however often they repeat.
 FAILURE_EVENTS: frozenset[str] = frozenset(
     {
         "apply.failed",
         "reconciliation.required",
         "issue.paused_reconcile",
-        "stale.in_progress_detected",
         "tech_lead.run_held",
         "tech_lead.decision_rejected",
         "review.skipped",
@@ -45,6 +46,20 @@ FAILURE_EVENTS: frozenset[str] = frozenset(
         "merge_queue.failed",
     }
 )
+
+#: Skip reasons that mean WAITING, not failing: capacity and an operator
+#: pause (``control/workflows/review_workflow.py``,
+#: ``retrospective_review_workflow.py``). A skip for any other reason (e.g.
+#: ``stale_pending_review:issue_blocked``) is a refusal and counts.
+_WAITING_SKIP_REASONS: frozenset[str] = frozenset(
+    {
+        "no_capacity",
+        "orchestrator_paused",
+        "retrospective_review_no_capacity",
+        "retrospective_review_orchestrator_paused",
+    }
+)
+_SKIP_EVENTS = frozenset({"review.skipped", "rework.skipped"})
 
 #: Events that change a subject's state; any of them resets its counts.
 STATE_CHANGES: frozenset[str] = frozenset(
@@ -138,6 +153,8 @@ def find_repeating_failures(
             for key in [key for key in running if key[1] == subject and key[2].startswith(step)]:
                 del running[key]
         elif name in FAILURE_EVENTS:
+            if name in _SKIP_EVENTS and _payload(event).get("reason") in _WAITING_SKIP_REASONS:
+                continue
             key = (name, subject, _detail(event))
             running[key] += 1
             peak[key] = max(peak[key], running[key])

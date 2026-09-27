@@ -320,7 +320,9 @@ class ExamObservation:
     issues carrying the run label (it creates them with it; the engine files
     its own with it) and all of their PRs. Never derived from what the tech
     lead touched — an effect is in scope only if it lands on one of these."""
-    github_calls: GitHubCallCounts
+    github_calls: GitHubCallCounts | None
+    """``None`` only when the engine exited mid-run and its audit report went
+    with it (``build_observation`` enforces that); never zeroed."""
     elapsed_seconds: float
     ended_by: RunEnd
     notes: tuple[str, ...] = field(default_factory=tuple)
@@ -343,7 +345,7 @@ class ExamObservation:
             "tech_lead_receipts": [receipt.to_dict() for receipt in self.tech_lead_receipts],
             "repeating_failures": [r.to_dict() for r in self.repeating_failures],
             "owned_numbers": sorted(self.owned_numbers),
-            "github_calls": self.github_calls.to_dict(),
+            "github_calls": None if self.github_calls is None else self.github_calls.to_dict(),
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "ended_by": self.ended_by.value,
             "notes": list(self.notes),
@@ -364,7 +366,9 @@ class ExamObservation:
                 RepeatingFailure.from_dict(r) for r in data["repeating_failures"]
             ),
             owned_numbers=frozenset(int(n) for n in data["owned_numbers"]),
-            github_calls=GitHubCallCounts.from_dict(data["github_calls"]),
+            github_calls=None
+            if data["github_calls"] is None
+            else GitHubCallCounts.from_dict(data["github_calls"]),
             elapsed_seconds=float(data["elapsed_seconds"]),
             ended_by=RunEnd(data["ended_by"]),
             notes=tuple(data["notes"]),

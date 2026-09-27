@@ -52,7 +52,6 @@ def test_the_porchpin_410_reconcile_loop_is_a_livelock() -> None:
     found = find_repeating_failures(events)
 
     assert {(r.event, r.subject, r.count) for r in found} == {
-        ("stale.in_progress_detected", "#410", 130),
         ("reconciliation.required", "#410", 130),
         ("issue.paused_reconcile", "#410", 130),
     }
@@ -141,3 +140,45 @@ def test_case_c_passes_only_when_the_pause_stays_and_nothing_loops() -> None:
 
     unpaused = grade(case, observation(STALE_CLAIM_PAUSED_FOR_RECONCILE, item(issue_labels=("in-progress",))))
     assert "goal subject.keeps_labels: issue #901 lost ['io:needs-reconcile']" in unpaused.failures
+
+
+
+def test_a_paused_claim_the_engine_only_notices_is_not_a_livelock() -> None:
+    """Round 7 F1: stale-claim DETECTION repeats while a pause legitimately
+    holds; only repeated refusals/re-pauses are the loop."""
+    from issue_orchestrator.testing.exam.cases import (
+        STALE_CLAIM_PAUSED_FOR_RECONCILE,
+        stale_claim_paused_for_reconcile,
+    )
+
+    noticing = [
+        {"type": "stale.in_progress_detected", "issue_key": "410", "payload": {"issue_number": 410}}
+        for _ in range(40)
+    ]
+    assert find_repeating_failures(noticing) == ()
+    case = stale_claim_paused_for_reconcile(needs_reconcile_label="io:needs-reconcile")
+    card = grade(
+        case,
+        observation(
+            STALE_CLAIM_PAUSED_FOR_RECONCILE,
+            item(issue_labels=("in-progress", "io:needs-reconcile")),
+            repeating=find_repeating_failures(noticing),
+        ),
+    )
+    assert card.passed, card.failures
+
+
+@pytest.mark.parametrize("reason", ["no_capacity", "orchestrator_paused", "retrospective_review_no_capacity"])
+def test_waiting_skips_are_not_livelocks(reason: str) -> None:
+    waiting = [{"type": "review.skipped", "issue_key": None, "payload": {"reason": reason}} for _ in range(20)]
+    assert find_repeating_failures(waiting) == ()
+
+
+def test_a_review_refused_every_scan_is_a_livelock() -> None:
+    """The #7291 veto shape: the same review dropped as stale, scan after scan."""
+    refused = [
+        {"type": "review.skipped", "issue_key": "7309",
+         "payload": {"issue_number": 7309, "reason": "stale_pending_review:issue_blocked"}}
+        for _ in range(6)
+    ]
+    assert [r.detail for r in find_repeating_failures(refused)] == ["stale_pending_review:issue_blocked"]

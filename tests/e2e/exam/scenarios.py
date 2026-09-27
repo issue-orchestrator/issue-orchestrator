@@ -179,10 +179,12 @@ async def _finish(
     ended_by: RunEnd,
 ) -> ExamResult:
     watcher = engine.runtime.watcher
-    active = engine.active_session_issues()
-    report = fetch_gh_audit_report(engine.config.control_api_port)
-    if report is None:
-        raise RuntimeError("engine returned no gh_audit report; GitHub calls cannot be graded")
+    alive = engine.is_running()
+    # A dead engine has no control API: no live sessions to inspect and no
+    # audit report to fetch. build_observation allows a missing report only
+    # for ENGINE_EXITED, and every scorecard fails on it.
+    active = engine.active_session_issues() if alive else ()
+    report = fetch_gh_audit_report(engine.config.control_api_port) if alive else None
     observation = build_observation(
         case_id=run.case.case_id,
         engine_commit=engine.checkout.commit,

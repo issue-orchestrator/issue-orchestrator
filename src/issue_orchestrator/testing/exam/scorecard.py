@@ -99,7 +99,7 @@ class Scorecard:
     out_of_scope: tuple[str, ...]
     repeating_failures: tuple[RepeatingFailure, ...]
     expects_destructive: bool
-    github_calls: GitHubCallCounts
+    github_calls: GitHubCallCounts | None
     stalls: tuple[ItemStall, ...]
     tech_lead_runs: tuple[TechLeadRunFact, ...]
     notes: tuple[str, ...]
@@ -108,6 +108,10 @@ class Scorecard:
     def failures(self) -> tuple[str, ...]:
         """Every graded part that failed, in report order."""
         failed = [f"goal {goal.name}: {goal.evidence}" for goal in self.goals if not goal.passed]
+        if self.ended_by is RunEnd.ENGINE_EXITED:
+            # A case the engine did not live through was not passed, whatever
+            # the partial state shows.
+            failed.insert(0, "engine exited before the case finished")
         if self.diagnosis is not None and not self.diagnosis.passed:
             if not self.diagnosis.tech_lead_ran:
                 failed.append("diagnosis: no tech-lead run completed")
@@ -190,7 +194,7 @@ class Scorecard:
             "expects_destructive": self.expects_destructive,
             "out_of_scope": list(self.out_of_scope),
             "repeating_failures": [r.to_dict() for r in self.repeating_failures],
-            "github_calls": self.github_calls.to_dict(),
+            "github_calls": None if self.github_calls is None else self.github_calls.to_dict(),
             "stalled_at": [
                 {"role": stall.role, "issue_number": stall.issue_number, **stall.stall.to_dict()}
                 for stall in self.stalls
@@ -272,11 +276,14 @@ def _effect_lines(card: Scorecard) -> list[str]:
         + ("; ".join(r.describe() for r in card.repeating_failures) or "none")
     )
     calls = card.github_calls
-    lines.append(
-        f"  github calls: {calls.total} total ("
-        + ", ".join(f"{c.value} {calls.count(c)}" for c in EndpointClass)
-        + ")"
-    )
+    if calls is None:
+        lines.append("  github calls: unavailable (the engine exited and took its audit report)")
+    else:
+        lines.append(
+            f"  github calls: {calls.total} total ("
+            + ", ".join(f"{c.value} {calls.count(c)}" for c in EndpointClass)
+            + ")"
+        )
     return lines
 
 

@@ -349,6 +349,17 @@ def owned_numbers(repo: str, run_label: str, extra_prs: Iterable[int]) -> frozen
     return frozenset(owned)
 
 
+def _github_calls(report: Mapping[str, Any] | None, ended_by: RunEnd) -> GitHubCallCounts | None:
+    """The run's calls; missing ONLY because the engine exited mid-run."""
+    if report is not None:
+        return GitHubCallCounts.between(None, report)
+    if ended_by is not RunEnd.ENGINE_EXITED:
+        raise RuntimeError(
+            f"engine returned no gh_audit report although it did not exit (ended by {ended_by.value})"
+        )
+    return None
+
+
 def build_observation(
     *,
     case_id: str,
@@ -357,7 +368,7 @@ def build_observation(
     tech_lead_runs: tuple[TechLeadRunFact, ...],
     events: list[Mapping[str, Any]],
     owned: frozenset[int],
-    gh_audit_report: Mapping[str, Any],
+    gh_audit_report: Mapping[str, Any] | None,
     elapsed_seconds: float,
     ended_by: RunEnd,
     notes: tuple[str, ...],
@@ -371,7 +382,7 @@ def build_observation(
         repeating_failures=find_repeating_failures(events),
         owned_numbers=owned,
         # The engine is a fresh process per run, so its report IS the run's calls.
-        github_calls=GitHubCallCounts.between(None, gh_audit_report),
+        github_calls=_github_calls(gh_audit_report, ended_by),
         elapsed_seconds=elapsed_seconds,
         ended_by=ended_by,
         notes=notes,

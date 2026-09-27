@@ -445,3 +445,49 @@ def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeyp
     assert ran == ["close issues"]
     assert [type(e) for e in caught.value.exceptions] == [cleanup.ExamCleanupError]
     assert "7-exam" in str(caught.value.exceptions[0])
+
+
+def _exit_observation(ended_by, report):
+    from issue_orchestrator.testing.exam.cases import STALE_CLAIM_PAUSED_FOR_RECONCILE
+    from tests.e2e.exam.observe import build_observation
+
+    from .builders import item
+
+    return build_observation(
+        case_id=STALE_CLAIM_PAUSED_FOR_RECONCILE,
+        engine_commit="c" * 40,
+        items=(item(issue_labels=("in-progress", "io:needs-reconcile")),),
+        tech_lead_runs=(),
+        events=[],
+        owned=frozenset({901}),
+        gh_audit_report=report,
+        elapsed_seconds=90.0,
+        ended_by=ended_by,
+        notes=(),
+    )
+
+
+def test_an_engine_that_died_mid_run_still_yields_a_failing_scorecard() -> None:
+    """Round 7 F2: no audit report because the engine is gone — the
+    observation says so explicitly and the case fails, instead of the run
+    producing no scorecard at all."""
+    import json
+
+    from issue_orchestrator.testing.exam import ExamObservation, RunEnd, grade, render_summary
+    from issue_orchestrator.testing.exam.cases import stale_claim_paused_for_reconcile
+
+    observation = _exit_observation(RunEnd.ENGINE_EXITED, None)
+    assert observation.github_calls is None
+    assert ExamObservation.from_dict(json.loads(json.dumps(observation.to_dict()))) == observation
+
+    card = grade(stale_claim_paused_for_reconcile(needs_reconcile_label="io:needs-reconcile"), observation)
+    assert card.failures[0] == "engine exited before the case finished"
+    assert json.loads(card.to_json())["github_calls"] is None
+    assert "github calls: unavailable (the engine exited" in render_summary(card)
+
+
+def test_a_missing_audit_report_from_a_live_engine_is_refused() -> None:
+    from issue_orchestrator.testing.exam import RunEnd
+
+    with pytest.raises(RuntimeError, match="no gh_audit report although it did not exit"):
+        _exit_observation(RunEnd.WINDOW_ELAPSED, None)
