@@ -43,7 +43,8 @@ from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.ports.pending_work_claim_store import UnresolvedClaim
+from issue_orchestrator.ports.pending_work_claim_store import UnreadableClaim, UnresolvedClaim
+from issue_orchestrator.control.issue_work_claims import claims_on_issue
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, StatusCheckRollupRead
 from issue_orchestrator.control.session_history import SessionHistoryOwner
@@ -81,7 +82,12 @@ def _pr(number: int = PR, *, branch: str = f"{ISSUE}-green", labels: tuple[str, 
     )
 
 
-def _claim(kind: PendingWorkKind) -> UnresolvedClaim:
+SOURCE_SESSION = "tech-lead-7395"
+
+
+def _claim(
+    kind: PendingWorkKind, *, session: str = "issue-7395", started_at: str = OBSERVED
+) -> UnresolvedClaim:
     if kind is PendingWorkKind.TECH_LEAD:
         request: object = PendingTechLeadReview(
             ISSUE, "investigation", flavor=TechLeadSessionFlavor.BATCH_REVIEW
@@ -94,7 +100,7 @@ def _claim(kind: PendingWorkKind) -> UnresolvedClaim:
             source_kind=SessionKind.CODE, validation_cmd="make test",
         )
     return UnresolvedClaim(
-        run_key="run", session_name="s", deferred=True, started_at=OBSERVED,
+        run_key="run", session_name=session, deferred=True, started_at=started_at,
         issue_number=ISSUE, claim=PendingWorkClaim(kind=kind, request=request),  # type: ignore[arg-type]
     )
 
@@ -112,12 +118,16 @@ class Board:
 
     issue: Issue | None = field(default_factory=_issue)
     prs: list[PRInfo] = field(default_factory=lambda: [_pr()])
+    #: What a fresh single-PR read returns, when it differs from ``prs``.
+    live: dict[int, PRInfo | None] = field(default_factory=dict)
     branches: dict[int, str] = field(default_factory=dict)
     checks: StatusCheckRollupRead = field(default_factory=lambda: StatusCheckRollupRead("SUCCESS"))
     activity: IssueRuntimeActivity = field(
         default_factory=lambda: IssueRuntimeActivity(frozenset(), frozenset())
     )
     claims: list[UnresolvedClaim] = field(default_factory=list)
+    unreadable: list[UnreadableClaim] = field(default_factory=list)
+    discoverable: bool = True
     history: list[SessionHistoryEntry] = field(default_factory=list)
     holds: tuple[PublishedReviewHold, ...] = ()
     fail_writes: frozenset[type] = frozenset()
@@ -132,6 +142,18 @@ class Board:
 
     def publish(self, event: TraceEvent) -> None:
         self.events.append(event)
+
+    def read_pr(self, number: int) -> PRInfo | None:
+        if number in self.live:
+            return self.live[number]
+        return next((pr for pr in self.prs if pr.number == number), None)
+
+    # The claim store's two listings, read through the real per-issue owner.
+    def list_unresolved_claims(self) -> tuple[UnresolvedClaim, ...]:
+        return tuple(self.claims)
+
+    def list_unreadable_claims(self) -> tuple[UnreadableClaim, ...]:
+        return tuple(self.unreadable)
 
     def executor(self) -> TechLeadReviewReleaseExecutor:
         config = _config()
@@ -148,13 +170,16 @@ class Board:
             config=config,
             labels=labels,
             read_issue=lambda number: self.issue,
-            list_open_prs=lambda: self.prs,
+            # Like the real complete listing: no labels, no draft flag.
+            list_open_prs=lambda: [replace(pr, labels=[], draft=None) for pr in self.prs],
+            read_pr=self.read_pr,
             issue_branches=lambda: self.branches,
             read_checks=lambda number: self.checks,
             runtime_activity=lambda number: self.activity,
-            unresolved_claims=lambda: self.claims,
+            claims_on_issue=lambda number: claims_on_issue(self, number),  # type: ignore[arg-type]
             failures_not_before=history.failures_not_before,
             custody=_Custody(),
+            reviews_discoverable=lambda: self.discoverable,
             writes=ReviewReleaseWrites(labels=labels, apply=self.apply, review_label=REVIEW_LABEL),
             repo_slug="owner/repo",
         )
@@ -164,7 +189,7 @@ def _action(**overrides: object) -> ReleaseWithheldReviewAction:
     fields: dict[str, object] = {
         "issue_number": ISSUE, "rationale": "only blocked-failed withholds it",
         "proposal_id": "A2", "finding_ids": ("T1",), "anchor_issue_number": ANCHOR,
-        "observed_at": OBSERVED,
+        "observed_at": OBSERVED, "source_session_name": SOURCE_SESSION,
     }
     fields.update(overrides)
     return ReleaseWithheldReviewAction(**fields)  # type: ignore[arg-type]
@@ -218,7 +243,16 @@ def _refused(board: Board, action: ReleaseWithheldReviewAction | None = None) ->
          ReviewReleaseRefusal.LIVE_SESSION),
         (Board(activity=IssueRuntimeActivity(frozenset(), frozenset({IssueRuntimeOwnerKind.EXCHANGE_JOBS}))),
          ReviewReleaseRefusal.LIVE_SESSION),
+        (Board(discoverable=False), ReviewReleaseRefusal.REVIEW_DISCOVERY_DISABLED),
         (Board(claims=[_claim(PendingWorkKind.VALIDATION_RETRY)]), ReviewReleaseRefusal.WORK_CLAIMED),
+        # Another tech lead's claim is not the proposer's (same session, other generation too).
+        (Board(claims=[_claim(PendingWorkKind.TECH_LEAD, session="tech-lead-7000")]),
+         ReviewReleaseRefusal.WORK_CLAIMED),
+        (Board(claims=[_claim(PendingWorkKind.TECH_LEAD, session=SOURCE_SESSION, started_at=AFTER.isoformat())]),
+         ReviewReleaseRefusal.WORK_CLAIMED),
+        # A row nobody can read proves nothing is owed.
+        (Board(unreadable=[UnreadableClaim("run", SOURCE_SESSION, ISSUE, "payload corrupt", OBSERVED)]),
+         ReviewReleaseRefusal.WORK_CLAIMED),
         (Board(history=[_history("failed", AFTER)]), ReviewReleaseRefusal.NEWER_FAILURE),
         (Board(history=[_history("blocked", None)]), ReviewReleaseRefusal.NEWER_FAILURE),
         (Board(issue=None), ReviewReleaseRefusal.ISSUE_UNREADABLE),
@@ -227,6 +261,12 @@ def _refused(board: Board, action: ReleaseWithheldReviewAction | None = None) ->
         (Board(prs=[_pr(body="Closes #1", branch="1-other")]), ReviewReleaseRefusal.NO_OPEN_PR),
         (Board(branches={ISSUE: f"{ISSUE}-newer-attempt"}), ReviewReleaseRefusal.NO_OPEN_PR),
         (Board(prs=[_pr(), _pr(7397, branch=f"{ISSUE}-green")]), ReviewReleaseRefusal.SEVERAL_OPEN_PRS),
+        # Closed (or gone) between the listing and the fresh read.
+        (Board(live={PR: replace(_pr(), state="closed")}), ReviewReleaseRefusal.NO_OPEN_PR),
+        (Board(live={PR: None}), ReviewReleaseRefusal.NO_OPEN_PR),
+        # The fresh read is what validity judges: a block that landed on the PR.
+        (Board(live={PR: _pr(labels=(REVIEW_LABEL, "blocked-failed"))}),
+         ReviewReleaseRefusal.WITHHELD_BY_MORE_THAN_THE_BLOCK),
         (Board(holds=(PublishedReviewHold(ISSUE, 7000, f"{ISSUE}-held", "rec", "b" * 40),)),
          ReviewReleaseRefusal.PUBLISHED_WORK_ON_ANOTHER_PR),
         (Board(issue=_issue("pr-pending")), ReviewReleaseRefusal.REVIEW_NOT_WITHHELD),
@@ -259,7 +299,11 @@ def test_every_failed_precondition_refuses_typed_and_writes_nothing(
 def test_the_proposing_tech_leads_own_claim_does_not_refuse() -> None:
     """The investigation that proposed the release holds a claim on its focus
     while its completion applies it; only other work's claims refuse."""
-    board = Board(claims=[_claim(PendingWorkKind.TECH_LEAD)])
+    board = Board(claims=[
+        _claim(PendingWorkKind.TECH_LEAD, session=SOURCE_SESSION, started_at=OBSERVED),
+        # Another issue's claims are not this issue's.
+        replace(_claim(PendingWorkKind.VALIDATION_RETRY), issue_number=ISSUE + 10),
+    ])
 
     assert board.executor().apply(_action()).success
 
@@ -303,11 +347,11 @@ def test_stale_reason_is_the_same_verification_without_writes() -> None:
     board = Board(checks=StatusCheckRollupRead("FAILURE"))
     executor = board.executor()
 
-    reason = executor.stale_reason(ISSUE, OBSERVED)
+    reason = executor.stale_reason(ISSUE, OBSERVED, SOURCE_SESSION)
 
     assert reason is not None and reason.startswith("checks_not_green")
     assert board.writes == [] and board.events == []
-    assert replace(board, checks=StatusCheckRollupRead("SUCCESS")).executor().stale_reason(ISSUE, OBSERVED) is None
+    assert replace(board, checks=StatusCheckRollupRead("SUCCESS")).executor().stale_reason(ISSUE, OBSERVED, SOURCE_SESSION) is None
 
 
 # -- the applier dispatches the action to this owner --------------------------

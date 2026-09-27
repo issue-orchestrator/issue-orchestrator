@@ -10,6 +10,7 @@ with no visible ``active_sessions`` entry.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -30,6 +31,7 @@ from issue_orchestrator.entrypoints.tech_lead_reset_retry_wiring import (
     build_tech_lead_reset_retry_executor,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.pending_work_claim_store import UnreadableClaim
 from tests.runtime_lifecycle_helpers import runtime_owners
 
 BLOCKED_FAILED = "blocked-failed"
@@ -239,7 +241,7 @@ def test_no_active_runtime_executes_reset(monkeypatch):
 # -- release_withheld_review through its production wiring (#7399) ------------
 
 
-def _build_release(*, job_supervisor=None, history=()):
+def _build_release(*, job_supervisor=None, history=(), unreadable=()):
     from datetime import datetime, timezone
 
     from issue_orchestrator.control.action_results import ActionResult
@@ -261,16 +263,19 @@ def _build_release(*, job_supervisor=None, history=()):
     host = MagicMock()
     host.get_issue.return_value = Issue(
         number=17, title="t", labels=[BLOCKED_FAILED, "pr-pending"], state="open", repo="owner/repo")
-    host.list_open_prs_complete.return_value = [PRInfo(
-        number=18, title="#17", url="u", branch="17-work", body="Closes #17", state="open",
-        labels=["needs-code-review"], head_sha="a" * 40)]
+    live = PRInfo(number=18, title="#17", url="u", branch="17-work", body="Closes #17", state="open",
+                  labels=["needs-code-review"], head_sha="a" * 40)
+    # The real complete listing carries no labels; the fresh read does.
+    host.list_open_prs_complete.return_value = [replace(live, labels=[])]
+    host.get_pr.side_effect = lambda number: live if number == 18 else None
     host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead("SUCCESS")
     applier = MagicMock()
     applier.apply.side_effect = ActionResult.ok
     deps = SimpleNamespace(
         label_manager=LabelManager(config), events=MagicMock(), action_applier=applier,
-        pr_scanner=SimpleNamespace(load_issue_branches=lambda: {}),
-        pending_work_claims=SimpleNamespace(list_unresolved_claims=lambda: ()),
+        pr_scanner=SimpleNamespace(load_issue_branches=lambda: {}, reviews_discoverable=True),
+        pending_work_claims=SimpleNamespace(
+            list_unresolved_claims=lambda: (), list_unreadable_claims=lambda: unreadable),
         runtime_lifecycle=runtime_owners(active_sessions=state.active_sessions, job_supervisor=job_supervisor),
     )
     orchestrator = SimpleNamespace(deps=deps, config=config, state=state)
@@ -281,7 +286,8 @@ def _release_action():
     from issue_orchestrator.control.actions import ReleaseWithheldReviewAction
 
     return ReleaseWithheldReviewAction(issue_number=17, proposal_id="A2", anchor_issue_number=17,
-                                       observed_at="2026-09-27T14:00:00+00:00")
+                                       observed_at="2026-09-27T14:00:00+00:00",
+                                       source_session_name="tech-lead-17")
 
 
 def test_release_wiring_releases_through_the_guarded_applier():
@@ -299,8 +305,12 @@ def test_release_wiring_sees_hidden_runtime_and_newer_history():
     assert supervisor.submit(HIDDEN_EXCHANGE_JOB_ID, lambda: None, timeout_seconds=600)
     busy, busy_applier = _build_release(job_supervisor=supervisor)
     failed, failed_applier = _build_release(history=("failed",))
+    claimed, claimed_applier = _build_release(unreadable=(UnreadableClaim(
+        "run", "rework-17", 17, "payload corrupt", "2026-09-27T13:00:00+00:00"),))
 
     assert busy.apply(_release_action()).details["refusal"] == "live_session"
     assert failed.apply(_release_action()).details["refusal"] == "newer_failure"
+    assert claimed.apply(_release_action()).details["refusal"] == "work_claimed"
     busy_applier.apply.assert_not_called()
     failed_applier.apply.assert_not_called()
+    claimed_applier.apply.assert_not_called()

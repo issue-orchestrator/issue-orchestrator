@@ -269,6 +269,6 @@ def test_release_proposal_reuse_asks_the_release_owner_whether_it_still_applies(
 
     result = applier.apply(action)
 
-    release.stale_reason.assert_called_with(6410, observed)
+    release.stale_reason.assert_called_with(6410, observed, "session")
     assert result.success is (stale is None)
     assert host.comments == ([(7000, action.comment)] if stale is None else [])

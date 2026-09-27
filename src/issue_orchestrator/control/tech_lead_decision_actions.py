@@ -532,6 +532,7 @@ class _DecisionActionPlanner:
                 issue_number=proposed.target_number, rationale=proposed.body or "",
                 proposal_id=proposed.id, finding_ids=proposed.finding_ids,
                 anchor_issue_number=self._anchor_number, observed_at=self.observed_at,
+                source_session_name=self.source_session_name,
                 reason=(f"tech_lead decision action {proposed.id}: release the withheld"
                         f" review of issue #{proposed.target_number}"),
                 expected=self.expected,

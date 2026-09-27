@@ -169,6 +169,7 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 proposal_id="A1",
                 anchor_issue_number=ANCHOR,
                 observed_at="2026-09-27T14:12:09+00:00",
+                source_session_name="tech-lead-12",
                 expected=expected,
             ),
             TARGET,

@@ -81,7 +81,8 @@ def _proposal_reuse_stale_reason(
     release: TechLeadReviewReleaseExecutor | None = None,
 ) -> str | None:
     if stored.op_type == "release_withheld_review" and release is not None:
-        return release.stale_reason(stored.target_issue_number, stored.observed_at)
+        return release.stale_reason(
+            stored.target_issue_number, stored.observed_at, stored.source_session_name)
     if stored.op_type == "reset_retry" and reset is not None:
         return reset.stale_reason(stored.target_issue_number)
     if stored.op_type == "kill_hung_session" and kill is not None:

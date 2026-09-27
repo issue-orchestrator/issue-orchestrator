@@ -131,6 +131,30 @@ def add_issue_with_agent(
 class TestScanForReviewsBasic:
     """Tests for basic review scanning behavior."""
 
+    @pytest.mark.parametrize(
+        ("agent", "label", "discoverable"),
+        [("agent:reviewer", "needs-code-review", True), (None, "needs-code-review", False),
+         ("agent:reviewer", None, False), ("agent:reviewer", "", False)],
+    )
+    def test_reviews_discoverable_is_whether_the_scan_can_queue_anything(
+        self, mock_repository, mock_events, agent, label, discoverable
+    ):
+        """The scanner's own answer the tech-lead review release asks (#7399):
+        it must agree with whether a labelled, valid PR is actually queued."""
+        config = Config()
+        config.repo = "owner/repo"
+        config.code_review_agent = agent
+        config.code_review_label = label
+        scanner = PRScanner(config=config, repository=mock_repository, events=mock_events)
+        mock_repository.prs["100-feature"] = [
+            make_pr_info(100, branch="100-feature", body="Closes #100", labels=["needs-code-review"])
+        ]
+
+        queued = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
+
+        assert scanner.reviews_discoverable is discoverable
+        assert bool(queued) is discoverable
+
     def test_returns_empty_when_no_code_review_agent(self, mock_repository, mock_events):
         """Returns empty list when code review is not configured."""
         config = Config()

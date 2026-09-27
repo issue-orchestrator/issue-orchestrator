@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 from ..control.published_review_release import ReviewReleaseWrites, published_review_release_for
+from ..control.issue_work_claims import claims_on_issue
 from ..control.session_history import SessionHistoryOwner
 from ..infra.repo_scope import require_repo
 from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
@@ -83,12 +84,14 @@ def build_tech_lead_review_release_executor(
         labels=labels,
         read_issue=host.get_issue,
         list_open_prs=host.list_open_prs_complete,
+        read_pr=host.get_pr,
         issue_branches=deps.pr_scanner.load_issue_branches,
         read_checks=host.read_pr_status_check_rollup,
         runtime_activity=deps.runtime_lifecycle.probe,
-        unresolved_claims=deps.pending_work_claims.list_unresolved_claims,
+        claims_on_issue=lambda number: claims_on_issue(deps.pending_work_claims, number),
         failures_not_before=history.failures_not_before,
         custody=deps.runtime_lifecycle.published_review,
+        reviews_discoverable=lambda: deps.pr_scanner.reviews_discoverable,
         writes=ReviewReleaseWrites(
             labels=labels, apply=deps.action_applier.apply,
             review_label=orchestrator.config.code_review_label or "",

@@ -311,7 +311,7 @@ def _release_results(outcome: str):
 
     release = ReleaseWithheldReviewAction(
         issue_number=FOCUS, proposal_id="A2", anchor_issue_number=FOCUS,
-        observed_at="2026-09-27T14:12:09+00:00",
+        observed_at="2026-09-27T14:12:09+00:00", source_session_name="tech-lead-6410",
     )
     from issue_orchestrator.control.required_issue_comment import RequiredTechLeadDiagnosisAction
 

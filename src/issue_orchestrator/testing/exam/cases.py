@@ -20,6 +20,7 @@ from .case import (
     pr_has_label,
     pr_in_state,
     pr_review_approved,
+    released_review_launches,
     published_work_survives,
     single_pull_request,
 )
@@ -74,8 +75,8 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
     code review that the block vetoes. Right answer: the tech lead diagnoses
     the veto and releases the review with ``release_withheld_review`` (#7399),
     which removes only the block, NOT ``reset_retry``, and nothing destroys
-    the PR. The live driver waits for the released review to launch and
-    notes it on the scorecard when it does not. Handing the release to a human
+    the PR. Once released, the PR's review must actually launch (a goal); the
+    live driver waits for that launch before it observes. Handing the release to a human
     stays acceptable (it is all a ``propose``-authority tech lead can do).
 
     The answer does not depend on which tech-lead run is asked. The live
@@ -117,6 +118,8 @@ def blocked_issue_green_pr_awaiting_review(*, blocked_failed_label: str) -> Exam
             pr_in_state(SUBJECT, PullRequestState.DRAFT, PullRequestState.READY, PullRequestState.MERGED),
             pr_checks_green(SUBJECT),
             published_work_survives(SUBJECT),
+            # A release is only worth grading if the review then RUNS (#7399).
+            released_review_launches(SUBJECT, blocked_failed_label),
         ),
         root_cause=RootCauseSpec(
             summary=(

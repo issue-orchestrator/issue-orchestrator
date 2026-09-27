@@ -1663,6 +1663,8 @@ def test_release_withheld_review_executes_by_default_as_an_owner_command() -> No
     assert planned.proposal_issue_number == 0
     assert planned.finding_ids == ("T1",)
     assert planned.observed_at == SOURCE_RUN["observed_at"]
+    # With observed_at (the run's start) it names the proposing run's own claim.
+    assert planned.source_session_name == SOURCE_RUN["source_session_name"]
     assert planned.expected is EXPECTED
 
 

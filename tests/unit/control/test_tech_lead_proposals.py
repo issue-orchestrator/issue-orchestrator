@@ -2048,6 +2048,7 @@ def test_approved_release_op_plans_the_release_with_its_observation() -> None:
     # "No newer failure" is judged against when the tech lead LOOKED, not when
     # the operator approved.
     assert action.observed_at == _OBSERVED
+    assert action.source_session_name == "issue-99"
     assert action.finding_ids == ("T1",)
 
 
@@ -2057,7 +2058,8 @@ def test_finalizing_an_approved_release_names_its_operation() -> None:
     ops.record_op(issue_number=502, op=_release_op(14))
     action = ReleaseWithheldReviewAction(
         issue_number=14, proposal_id="A4", anchor_issue_number=502,
-        proposal_issue_number=502, observed_at=_OBSERVED, expected=EXPECTED,
+        proposal_issue_number=502, observed_at=_OBSERVED, source_session_name="issue-99",
+        expected=EXPECTED,
     )
 
     finalize_tech_lead_op_execution(

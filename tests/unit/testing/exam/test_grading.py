@@ -113,12 +113,16 @@ class TestCaseBBlockedGreenPr:
         assert card.remedy.vocabulary_gap is False
         assert card.diagnosis is not None and card.diagnosis.passed
 
+    def _released(self, *events: str) -> object:
+        """The subject after a release: the block is gone, pr-pending stays."""
+        return item(issue_labels=("pr-pending",), prs=(pr(),), events=events)
+
     def test_an_executed_release_is_the_right_remedy(self) -> None:
         card = grade(
             CASE_B,
             observation(
                 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
-                self._subject(),
+                self._released("tech_lead.action_executed", "review.started"),
                 runs=(
                     run(
                         action("release_withheld_review", "only blocked-failed withholds it", target=ISSUE),
@@ -132,6 +136,26 @@ class TestCaseBBlockedGreenPr:
         assert card.remedy is not None
         assert card.remedy.verdict is RemedyVerdict.RIGHT
         assert card.remedy.evidence == f"release_withheld_review->#{ISSUE} (executed)"
+
+    def test_a_release_whose_review_never_launched_fails_the_case(self) -> None:
+        """The symptom is a review that never runs: releasing it is not enough."""
+        card = grade(
+            CASE_B,
+            observation(
+                BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+                self._released("tech_lead.action_executed"),
+                runs=(
+                    run(
+                        action("release_withheld_review", "only blocked-failed withholds it", target=ISSUE),
+                        summary=GOOD_DIAGNOSIS,
+                    ),
+                ),
+            ),
+        )
+
+        assert card.remedy is not None and card.remedy.verdict is RemedyVerdict.RIGHT
+        assert not card.passed
+        assert any(f.startswith("goal subject.released_review_launches") for f in card.failures)
 
     @pytest.mark.parametrize(
         "disposition",

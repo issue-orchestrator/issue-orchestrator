@@ -125,6 +125,17 @@ class PRScanner:
         """Load the current issue->branch map for scan-time scoping."""
         return self._issue_branches()
 
+    @property
+    def reviews_discoverable(self) -> bool:
+        """Whether review discovery runs at all: without it no PR is ever
+        queued for review, whatever its validity (#7399)."""
+        return bool(self._discovery_label())
+
+    def _discovery_label(self) -> str | None:
+        """The label review discovery lists PRs by, or ``None`` when it does
+        not run: it needs a review agent to launch and that label."""
+        return self.config.code_review_label if self.config.code_review_agent else None
+
     def scan_for_reviews(
         self,
         already_queued: Sequence[PendingReview],
@@ -145,14 +156,15 @@ class PRScanner:
             The PendingReviews to queue, plus every PR skipped for a blocking
             label on its issue or on itself.
         """
-        if not self.config.code_review_agent or not self.config.code_review_label:
+        review_label = self._discovery_label()
+        if not review_label:
             return ReviewScan(reviews=[], blocked=[])
 
         with gh_audit.context(
             reason=gh_audit.AuditReason.PR_SCAN,
             scope=gh_audit.AuditScope.PERIODIC,
         ):
-            prs = self.repository.get_prs_with_label(self.config.code_review_label)
+            prs = self.repository.get_prs_with_label(review_label)
         results: list[PendingReview] = []
         blocked: list[BlockedOpenPRObservation] = []
 

@@ -601,6 +601,7 @@ def plan_approved_tech_lead_op_executions(
                     anchor_issue_number=item.proposal_issue_number,
                     proposal_issue_number=item.proposal_issue_number,
                     observed_at=op.observed_at,
+                    source_session_name=op.source_session_name,
                     reason=reason,
                     expected=build_expected_for_mutation(),
                 )

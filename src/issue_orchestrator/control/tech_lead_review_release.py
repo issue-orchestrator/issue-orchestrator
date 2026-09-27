@@ -14,20 +14,23 @@ that already answers it, and never re-derives one:
 1. **no live session** — the issue-runtime owners the reset boundary probes
    (sessions, the persistent exchange pair, supervised exchange jobs, a
    pending publish retry); an unverifiable owner counts as live;
-2. **no claim** — the durable pending-work ledger holds no claim for the
-   issue other than a tech lead's own (the investigation that proposed this
-   holds one on its focus while it completes);
+2. **no claim** — the durable pending-work ledger holds no claim on the
+   issue, readable or not, except the proposing run's own (the investigation
+   that proposed this holds one on its focus while it completes);
 3. **no newer failure** — the session history owner has no failed session for
    the issue that it cannot place before the tech lead's observation;
 4. **the issue is open**, read fresh;
 5. **exactly one open PR** is the issue's, linked and branch-scoped exactly as
-   review discovery links it (one complete, uncached listing);
+   review discovery links it (one complete, uncached listing), then read fresh
+   (the listing carries no labels);
 6. **published-review custody agrees** — when an open PR carries the issue's
    published validated work, the PR released must be that one;
 7. **the block is the only thing withholding the review** — the review
    validity owner's own answer, as the labels stand and without
    ``blocked-failed``;
-8. **checks are green** — the PR's head-commit status rollup reads SUCCESS.
+8. **checks are green** — the PR's head-commit status rollup reads SUCCESS;
+9. **review discovery runs at all** — the review scanner's own answer: with no
+   review agent or review label, a released PR would never be queued.
 
 A failed precondition REFUSES the release with a typed
 :class:`ReviewReleaseRefusal` and no write: it is recorded as a stale-downgrade
@@ -49,7 +52,6 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from ..domain.pending_work import PendingWorkKind
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -65,7 +67,7 @@ if TYPE_CHECKING:
     from ..domain.models import SessionHistoryEntry
     from ..infra.config import Config
     from ..ports.issue import Issue
-    from ..ports.pending_work_claim_store import UnresolvedClaim
+    from .issue_work_claims import IssueWorkClaim
     from ..ports.pull_request_tracker import PRInfo, StatusCheckRollupRead
     from .label_manager import LabelManager
     from .review_exchange_lifecycle import IssueRuntimeActivity
@@ -79,6 +81,7 @@ _RATIONALE_PREVIEW_CHARS = 500
 class ReviewReleaseRefusal(StrEnum):
     """Why a release was refused before any write. Stable codes."""
 
+    REVIEW_DISCOVERY_DISABLED = "review_discovery_disabled"
     LIVE_SESSION = "live_session"
     WORK_CLAIMED = "work_claimed"
     NEWER_FAILURE = "newer_failure"
@@ -137,20 +140,34 @@ class TechLeadReviewReleaseExecutor:
     labels: "LabelManager"
     read_issue: Callable[[int], "Issue | None"]
     list_open_prs: Callable[[], Sequence["PRInfo"]]
+    #: One fresh read of the PR the listing named: the listing carries no
+    #: labels or draft flag, and review validity must judge the live PR.
+    read_pr: Callable[[int], "PRInfo | None"]
     issue_branches: Callable[[], Mapping[int, str]]
     read_checks: Callable[[int], "StatusCheckRollupRead"]
     runtime_activity: Callable[[int], "IssueRuntimeActivity"]
-    unresolved_claims: Callable[[], Sequence["UnresolvedClaim"]]
+    claims_on_issue: Callable[[int], Sequence["IssueWorkClaim"]]
     failures_not_before: Callable[[int, datetime], Sequence["SessionHistoryEntry"]]
     custody: PublishedReviewHolds
+    reviews_discoverable: Callable[[], bool]
     writes: ReviewReleaseWrites
     repo_slug: str
 
     # -- preconditions --------------------------------------------------------
 
-    def verify(self, issue_number: int, observed_at: str) -> RefusedRelease | ReleasableReview:
-        """Every precondition, cheapest first; the first that fails refuses."""
-        local = self._local_refusal(issue_number, observed_at)
+    def verify(
+        self, issue_number: int, observed_at: str, source_session_name: str
+    ) -> RefusedRelease | ReleasableReview:
+        """Every precondition, cheapest first; the first that fails refuses.
+
+        ``source_session_name`` and ``observed_at`` identify the proposing run:
+        its own claim on the issue is the only one that does not refuse.
+        """
+        if not self.reviews_discoverable():
+            return RefusedRelease(ReviewReleaseRefusal.REVIEW_DISCOVERY_DISABLED,
+                                  "no code-review agent and label are configured, so a"
+                                  " released PR would never be queued for review")
+        local = self._local_refusal(issue_number, observed_at, source_session_name)
         if local is not None:
             return local
         issue = self.read_issue(issue_number)
@@ -165,21 +182,23 @@ class TechLeadReviewReleaseExecutor:
             return pr_or_refusal
         return self._review_refusal(issue, pr_or_refusal) or ReleasableReview(issue_number, pr_or_refusal)
 
-    def stale_reason(self, issue_number: int, observed_at: str) -> str | None:
+    def stale_reason(self, issue_number: int, observed_at: str, source_session_name: str) -> str | None:
         """Read-only applicability, for handing off to an existing proposal."""
-        verdict = self.verify(issue_number, observed_at)
+        verdict = self.verify(issue_number, observed_at, source_session_name)
         return verdict.describe() if isinstance(verdict, RefusedRelease) else None
 
-    def _local_refusal(self, issue_number: int, observed_at: str) -> RefusedRelease | None:
+    def _local_refusal(
+        self, issue_number: int, observed_at: str, source_session_name: str
+    ) -> RefusedRelease | None:
         activity = self.runtime_activity(issue_number)
         if activity.busy:
             owners = sorted(kind.value for kind in activity.active | activity.unverifiable)
             return RefusedRelease(ReviewReleaseRefusal.LIVE_SESSION,
                                   f"issue #{issue_number} runtime owners active or unverifiable: {owners}")
         claimed = sorted(
-            claim.claim.work_key()
-            for claim in self.unresolved_claims()
-            if claim.issue_number == issue_number and claim.claim.kind is not PendingWorkKind.TECH_LEAD
+            claim.describe()
+            for claim in self.claims_on_issue(issue_number)
+            if not claim.held_by(source_session_name, observed_at)
         )
         if claimed:
             return RefusedRelease(ReviewReleaseRefusal.WORK_CLAIMED,
@@ -205,7 +224,7 @@ class TechLeadReviewReleaseExecutor:
         ).matching
         match scoped:
             case (only,):
-                return only
+                return self._fresh(issue_number, only.number)
             case ():
                 return RefusedRelease(ReviewReleaseRefusal.NO_OPEN_PR,
                                       f"issue #{issue_number} has no open PR on its active branch")
@@ -213,6 +232,13 @@ class TechLeadReviewReleaseExecutor:
                 return RefusedRelease(ReviewReleaseRefusal.SEVERAL_OPEN_PRS,
                                       f"issue #{issue_number} has several open PRs:"
                                       f" {sorted(pr.number for pr in scoped)}")
+
+    def _fresh(self, issue_number: int, pr_number: int) -> "PRInfo | RefusedRelease":
+        pr = self.read_pr(pr_number)
+        if pr is None or pr.state.lower() != "open":
+            return RefusedRelease(ReviewReleaseRefusal.NO_OPEN_PR,
+                                  f"issue #{issue_number}'s PR #{pr_number} is no longer open")
+        return pr
 
     def _review_refusal(self, issue: "Issue", pr: "PRInfo") -> RefusedRelease | None:
         holds = self.custody.holds(issue.number)
@@ -245,7 +271,7 @@ class TechLeadReviewReleaseExecutor:
     # -- apply ----------------------------------------------------------------
 
     def apply(self, action: ReleaseWithheldReviewAction) -> ActionResult:
-        verdict = self.verify(action.issue_number, action.observed_at)
+        verdict = self.verify(action.issue_number, action.observed_at, action.source_session_name)
         if isinstance(verdict, RefusedRelease):
             return self._refuse(action, verdict)
         status, detail = self.writes.release(

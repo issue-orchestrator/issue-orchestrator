@@ -185,6 +185,9 @@ class ReleaseWithheldReviewAction(Action):
     #: ISO-8601 instant the proposing tech lead observed the board. A failure
     #: recorded for the issue since then is newer than the block it diagnosed.
     observed_at: str = ""
+    #: The proposing run's session name. With ``observed_at`` (its start) it
+    #: identifies that run's own claim, the only claim that does not refuse.
+    source_session_name: str = ""
     requires_effective_disposition: bool = False
     action_type: ActionType = field(
         default=ActionType.RELEASE_WITHHELD_REVIEW, init=False
@@ -197,6 +200,8 @@ class ReleaseWithheldReviewAction(Action):
             raise ValueError("ReleaseWithheldReviewAction requires the proposal id")
         if not self.observed_at:
             raise ValueError("ReleaseWithheldReviewAction requires the observation instant")
+        if not self.source_session_name:
+            raise ValueError("ReleaseWithheldReviewAction requires the proposing session")
         if self.proposal_issue_number < 0:
             raise ValueError("proposal_issue_number cannot be negative")
 
