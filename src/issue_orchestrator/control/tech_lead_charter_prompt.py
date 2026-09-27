@@ -13,6 +13,7 @@ propose, so they are left out.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..domain.tech_lead_charter import (
     ORCHESTRATOR_CHARTER_ACTION_KINDS,
@@ -21,6 +22,10 @@ from ..domain.tech_lead_charter import (
 )
 from ..domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from .tech_lead_charter_policy import TechLeadCharterPolicy
+
+if TYPE_CHECKING:
+    from ..infra.config import Config
+    from .worktree_context import WorktreeContext
 
 TECH_LEAD_CHARTER_FILENAME = "tech-lead-charter.md"
 
@@ -87,4 +92,14 @@ def write_tech_lead_charter_prompt(
     path = run_dir / TECH_LEAD_DATA_DIRNAME / TECH_LEAD_CHARTER_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_tech_lead_charter_prompt(policy), encoding="utf-8")
+    return path
+
+
+def stage_tech_lead_charter(
+    config: "Config", run_dir: Path, ctx: "WorktreeContext"
+) -> Path:
+    """Launch step: write the charter from the LIVE config and list it in the
+    run manifest, next to the assignment it accompanies."""
+    path = write_tech_lead_charter_prompt(TechLeadCharterPolicy.from_config(config), run_dir)
+    ctx.update_manifest({"tech_lead_charter": str(path)})
     return path
