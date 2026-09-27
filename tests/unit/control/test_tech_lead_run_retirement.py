@@ -201,7 +201,7 @@ def test_a_live_run_the_operator_stopped_is_not_readmitted_on_the_next_tick(tmp_
     assert state.pending_tech_lead_reviews == []
 
 
-def _terminate_live_run(tmp_path, *, kill_fails: bool):
+def _terminate_live_run(tmp_path, *, kill_fails: bool = False, settle_fails: bool = False):
     """Terminate a LIVE investigation through ``terminate_tech_lead_session`` --
     the owner both an ownership LOSS and an on-demand timeout reach."""
     from issue_orchestrator.control.tech_lead_termination import (
@@ -220,9 +220,13 @@ def _terminate_live_run(tmp_path, *, kill_fails: bool):
         if kill_fails:
             raise RuntimeError("tmux is gone")
 
+    claims = harness.claims
+    if settle_fails:
+        claims = MagicMock(wraps=harness.claims)
+        claims.consume_pending_work_claim.side_effect = OSError("disk full")
     host = SimpleNamespace(
         state=state,
-        deps=SimpleNamespace(pending_work_claims=harness.claims, run_ownership=_ownership()),
+        deps=SimpleNamespace(pending_work_claims=claims, run_ownership=_ownership()),
         kill_session=kill,
         preserve_issue_work=lambda number, reason: ValidatedWorkDispositionBatch.no_work(number, reason),
     )
@@ -242,12 +246,20 @@ def test_a_live_run_terminated_by_its_owner_is_not_readmitted_on_the_next_tick(t
     assert state.pending_tech_lead_reviews == []
 
 
-def test_a_terminal_that_would_not_stop_keeps_its_claim(tmp_path):
-    harness, _state, outcome = _terminate_live_run(tmp_path, kill_fails=True)
+@pytest.mark.parametrize("failure", ["kill_fails", "settle_fails"])
+def test_a_run_that_did_not_end_cleanly_stays_tracked_and_is_not_duplicated(tmp_path, failure):
+    """A terminal that would not stop may still be running, and a claim that
+    could not be settled is still HELD. Either way the session record must stay:
+    it is what tells the sweep the run is live, so dropping it let the next
+    tick re-admit the run and launch a second one beside it."""
+    harness, state, outcome = _terminate_live_run(tmp_path, **{failure: True})
 
-    assert outcome.terminal_stopped is False
+    assert outcome.clean is False
     assert outcome.work_settled is False
+    assert [s.issue.number for s in state.active_sessions] == [SUBJECT]
     assert [u.deferred for u in harness.claims.list_unresolved_claims()] == [False]
+    assert _next_tick_sweep(state, harness) == 0
+    assert state.pending_tech_lead_reviews == []
 
 
 def test_a_live_run_whose_issue_claim_was_lost_is_not_readmitted_on_the_next_tick(tmp_path):

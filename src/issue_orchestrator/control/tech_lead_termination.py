@@ -90,7 +90,19 @@ def terminate_tech_lead_session(
     work_settled = terminal_stopped and attempt(
         _void(lambda: _settle_work_claim(host, session)), "settle the work claim"
     )
-    host.state.drop_active_session(session.terminal_id)  # pure in-memory owner op
+    if terminal_stopped and work_settled:
+        host.state.drop_active_session(session.terminal_id)  # pure in-memory owner op
+    else:
+        # The record is what tells the recovery sweep this run is still live.
+        # Dropping it beside a terminal that may still be running, or a claim
+        # still HELD, lets the next tick re-admit the run and start a second
+        # one next to it (#7348 review r2). The unclean outcome reports it.
+        logger.warning(
+            "[TECH_LEAD] Keeping %s tracked: terminal stopped=%s, work settled=%s",
+            session.terminal_id,
+            terminal_stopped,
+            work_settled,
+        )
 
     claims = getattr(deps, "claim_manager", None)
     lease_id = getattr(session, "lease_id", None)
