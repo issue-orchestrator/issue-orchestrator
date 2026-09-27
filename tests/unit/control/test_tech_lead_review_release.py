@@ -441,7 +441,7 @@ def test_an_issue_inside_the_configured_scope_is_released() -> None:
 
 
 def _block_issue(board: Board) -> None:
-    board.issue = _issue("blocked-failed", "pr-pending", "blocked")
+    board.issue = _issue("blocked-failed", "pr-pending", "blocked", "io:e2e:run")
 
 
 def _block_pr(board: Board) -> None:
@@ -452,13 +452,30 @@ def _close_pr(board: Board) -> None:
     board.live = {PR: replace(_pr(), state="closed")}
 
 
-@pytest.mark.parametrize("meanwhile", [_block_issue, _block_pr, _close_pr])
+def _leave_scope(board: Board) -> None:
+    board.issue = _issue("blocked-failed", "pr-pending")  # lost the scope label
+
+
+def _move_branch(board: Board) -> None:
+    board.branches = {ISSUE: f"{ISSUE}-green"}
+    board.live = {PR: _pr(branch=f"{ISSUE}-renamed")}
+
+
+def _claim_work(board: Board) -> None:
+    board.claims = [_claim(PendingWorkKind.VALIDATION_RETRY)]
+
+
+@pytest.mark.parametrize("meanwhile", [_block_issue, _block_pr, _close_pr, _leave_scope, _move_branch, _claim_work])
 def test_a_change_during_the_writes_withdraws_the_release_before_the_block_comes_off(
     meanwhile: "Callable[[Board], None]",
 ) -> None:
-    """#7399 review r3: the writes take time; review validity is asked again,
-    from fresh reads, right before blocked-failed would come off."""
-    board = Board(during_route=meanwhile)
+    """#7399 review r3/r4: the writes take time; every precondition is asked
+    again, from fresh reads, right before blocked-failed would come off."""
+    board = Board(
+        during_route=meanwhile,
+        filter_label="io:e2e:run",
+        issue=_issue("blocked-failed", "pr-pending", "io:e2e:run"),
+    )
 
     result = board.executor().apply(_action())
 

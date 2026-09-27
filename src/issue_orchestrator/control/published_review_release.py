@@ -207,7 +207,7 @@ class PublishedReviewRelease:
         target = next(hold for hold in holds if not self.labels.get_blocking(hold.pr_labels))
         status, detail = self.writes.release(
             issue_number, target.pr_number, f"published validated work is under review: {described}",
-            still_releasable=lambda: self._withdrawn(issue_number))
+            still_releasable=lambda: self._withdrawn(issue_number, target.pr_number))
         return self._outcome(issue_number, status, holds, detail)
 
     def _eligibility(
@@ -225,9 +225,14 @@ class PublishedReviewRelease:
                            f"its own block, or the issue's block is not only blocked-failed")
         return holds, None
 
-    def _withdrawn(self, issue_number: int) -> str | None:
-        _holds, refusal = self._eligibility(issue_number)
-        return None if refusal is None else refusal[1]
+    def _withdrawn(self, issue_number: int, pr_number: int) -> str | None:
+        """Eligibility read again, for the SAME PR the review was routed to."""
+        holds, refusal = self._eligibility(issue_number)
+        target = [hold for hold in holds if hold.pr_number == pr_number]
+        routable = [hold for hold in target if not self.labels.get_blocking(hold.pr_labels)]
+        if refusal is not None:
+            return refusal[1]
+        return None if routable else f"PR #{pr_number} no longer holds the work unblocked"
 
     @property
     def writes(self) -> "ReviewReleaseWrites":
