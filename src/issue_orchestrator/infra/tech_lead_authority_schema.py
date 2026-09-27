@@ -127,6 +127,8 @@ CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_target
     ON tech_lead_charter_decisions (target_number, decided_at);
 CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_anchor
     ON tech_lead_charter_decisions (anchor_issue_number, decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_proposal
+    ON tech_lead_charter_decisions (proposal_issue_number, decided_at);
 """
 
 # (table, column, DDL) added after that table first shipped. ``CREATE TABLE IF

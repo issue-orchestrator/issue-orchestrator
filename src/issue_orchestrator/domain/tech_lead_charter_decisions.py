@@ -156,6 +156,25 @@ class TechLeadCharterDecision:
             self.target_number is None and self.anchor_issue_number == issue_number
         )
 
+    @property
+    def is_remedy(self) -> bool:
+        """Whether the action meant to MOVE its target (not advice or a floor)."""
+        return self.binding in (CharterBinding.APPROVABLE, CharterBinding.DESTRUCTIVE)
+
+    @property
+    def took_effect(self) -> bool:
+        """Whether the action ran: executed outright, or approved and applied."""
+        return self.outcome is CharterOutcome.EXECUTED or (
+            self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
+        )
+
+    @property
+    def effect_at(self) -> str:
+        """When it took effect: its approval's application, else its decision."""
+        if self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED and self.lifecycle_updated_at:
+            return self.lifecycle_updated_at
+        return self.decided_at
+
     def with_lifecycle(
         self,
         lifecycle: CharterProposalLifecycle,

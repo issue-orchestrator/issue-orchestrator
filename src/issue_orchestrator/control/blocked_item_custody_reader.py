@@ -70,9 +70,14 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-#: How many recorded decisions per item the policy may consult. The newest
-#: few decide; a longer history changes nothing it reads.
-DECISIONS_PER_ITEM = 20
+#: How many of an item's most recent decisions the policy may consult. The
+#: decisions that decide custody - its latest effects and its open proposals'
+#: filings - are read directly as well, so this only bounds ordinary history.
+DECISIONS_PER_ITEM = 50
+
+#: The newest effects (and each proposal's filings) read directly. Custody
+#: consults the latest; a few more keep ties deterministic.
+EFFECTS_PER_ITEM = 5
 
 #: What a live session is doing, in the words a card shows. Keyed on the task
 #: kind the session was launched as; tech-lead sessions are recognised
@@ -170,7 +175,12 @@ class StateBlockedItemCustodyReader:
         now: datetime,
     ) -> ItemCustodyFacts:
         unreadable = list(shared.unreadable)
-        decisions = _guard(unreadable, "charter decision ledger", lambda: self._decisions(number), ())
+        decisions = _guard(
+            unreadable,
+            "charter decision ledger",
+            lambda: self._decisions(number, shared.proposals.get(number, ())),
+            (),
+        )
         causes = shared.needs_human_causes.get(number, frozenset())
         parked = _guard(
             unreadable, "action liveness owner", lambda: self._parked.parked_for_issue(number), ()
@@ -208,13 +218,33 @@ class StateBlockedItemCustodyReader:
             dependency_summary=problem.summary if problem is not None else None,
             sweep_attempts=sweep,
             sweep_escalation_pending=number in state.pending_stuck_sweep_escalations,
+            review_release_pending=(
+                number in state.review_release_budgets
+                or number in state.stuck_sweep_review_releases
+            ),
             unreadable=tuple(unreadable),
         )
 
-    def _decisions(self, number: int) -> tuple["TechLeadCharterDecision", ...]:
-        """Decisions ABOUT this item, filtered by the ledger before its limit."""
-        return self._authority.charter_ledger.list_about_issue(
-            number, limit=DECISIONS_PER_ITEM
+    def _decisions(
+        self, number: int, proposals: Sequence[OpenProposal]
+    ) -> tuple["TechLeadCharterDecision", ...]:
+        """The decisions custody may consult about this item, newest first.
+
+        Three ledger relationships, each asked directly so no amount of other
+        history can crowd one out: the item's recent decisions, the ones that
+        remedies that took effect on it (newest EFFECT first), and the ones that filed its
+        open proposals.
+        """
+        ledger = self._authority.charter_ledger
+        found = {d.decision_id: d for d in ledger.list_about_issue(number, limit=DECISIONS_PER_ITEM)}
+        for decision in ledger.list_remedies_on_issue(number, limit=EFFECTS_PER_ITEM):
+            found.setdefault(decision.decision_id, decision)
+        for proposal in proposals:
+            filed = ledger.list_filed_as_proposal(proposal.proposal_issue_number, limit=EFFECTS_PER_ITEM)
+            for decision in filed:
+                found.setdefault(decision.decision_id, decision)
+        return tuple(
+            sorted(found.values(), key=lambda d: (d.decided_at, d.decision_id), reverse=True)
         )
 
     def _observed_labels(self, raw: Iterable[str]) -> ObservedLabels:
@@ -239,11 +269,14 @@ class StateBlockedItemCustodyReader:
             for status in self._provider_circuits.snapshot(self._clock())
             if status.provider in lanes and status.is_open
         ]
+        if not statuses:
+            # The circuit closed between the two reads: nothing holds the item.
+            return None
         until = [status.open_until for status in statuses if status.open_until is not None]
         return ProviderWait(
-            provider=", ".join(lanes),
+            provider=", ".join(status.provider for status in statuses),
             open_until=max(until) if until else None,
-            since=min((status.updated_at for status in statuses), default=None),
+            since=min(status.updated_at for status in statuses),
         )
 
     def _sweep_schedule(self, state: "OrchestratorState") -> StuckSweepSchedule:

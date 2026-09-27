@@ -738,3 +738,201 @@ def test_a_bad_threshold_fails_at_composition_not_on_render() -> None:
 
     with pytest.raises(ValueError, match="stale_after_minutes.verify"):
         _reader(OrchestratorState(), config=config)
+
+
+def test_a_circuit_that_closed_between_reads_holds_nothing() -> None:
+    state = OrchestratorState(cached_scope_issues=[_blocked(150, "blocked:provider-unavailable")])
+    closed = ProviderCircuitStatus(
+        provider="codex",
+        is_open=False,
+        open_until=None,
+        cooldown_remaining_seconds=0,
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=NOW - HOUR,
+    )
+
+    custody = (
+        _reader(state, lanes=lambda _agent: ("codex",), circuits=(closed,))
+        .read([150])
+        .for_issue(150)
+    )
+
+    assert custody.state is CustodyState.UNOWNED
+    assert "nothing has picked it up" in custody.reason  # an orphan, not an unreadable source
+
+
+def test_a_provider_wait_is_dated_as_a_lower_bound() -> None:
+    state = OrchestratorState(cached_scope_issues=[_blocked(151, "blocked:provider-unavailable")])
+    open_ = ProviderCircuitStatus(
+        provider="codex",
+        is_open=True,
+        open_until=NOW + HOUR,
+        cooldown_remaining_seconds=3600,
+        consecutive_outages=3,
+        last_error_summary="quota",
+        updated_at=NOW - 5 * timedelta(minutes=1),
+    )
+
+    custody = (
+        _reader(state, lanes=lambda _agent: ("codex",), circuits=(open_,))
+        .read([151])
+        .for_issue(151)
+    )
+
+    assert custody.state is CustodyState.WAITING_ON_WORLD
+    assert custody.clock is not None and custody.clock.lower_bound
+
+
+def _comments(target: int, count: int, *, first: datetime) -> list[TechLeadCharterDecision]:
+    return [
+        replace(
+            _decision("post_comment", target=target, anchor=target, action_id=f"C{i}"),
+            decided_at=(first + i * timedelta(seconds=1)).isoformat(),
+        )
+        for i in range(count)
+    ]
+
+
+def test_an_old_decision_whose_approval_applied_later_still_explains_verify() -> None:
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterProposalLifecycle
+
+    authority = InMemoryTechLeadAuthorityStore()
+    filed = replace(
+        _decision(
+            "kill_hung_session",
+            target=160,
+            anchor=160,
+            ceiling=CharterAuthority.PROPOSE,
+            tracks_proposal=True,
+            action_id="A1",
+        ),
+        decided_at=(NOW - 4 * HOUR).isoformat(),
+    ).with_lifecycle(
+        CharterProposalLifecycle.APPROVED_APPLIED, at=(NOW - HOUR).isoformat(), proposal_issue_number=700
+    )
+    authority.charter_ledger.record_decisions([filed, *_comments(160, 20, first=NOW - 3 * HOUR)])
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(160, "blocked-failed")],
+        session_history=[_ended_blocked(160, NOW - 5 * HOUR)],
+    )
+
+    custody = _reader(state, authority=authority).read([160]).for_issue(160)
+
+    assert custody.state is CustodyState.VERIFY
+    assert custody.charter is not None and custody.charter.decision_id == filed.decision_id
+    assert custody.clock is not None and custody.clock.since == NOW - HOUR
+
+
+def test_an_open_proposal_keeps_its_filing_decision_however_much_came_after() -> None:
+    from issue_orchestrator.control.blocked_item_custody_reader import DECISIONS_PER_ITEM
+
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_op(
+        issue_number=701,
+        op=StoredTechLeadOp(
+            op_type="kill_hung_session",
+            target_issue_number=161,
+            rationale="hung",
+            source_run_id="run-1",
+            source_session_name="issue-161",
+            source_action_id="A1",
+            created_at=(NOW - 4 * HOUR).isoformat(),
+            target_session_id="s",
+            target_terminal_id="t",
+            target_session_type="issue",
+        ),
+    )
+    filed = replace(
+        _decision(
+            "kill_hung_session",
+            target=161,
+            anchor=161,
+            ceiling=CharterAuthority.PROPOSE,
+            tracks_proposal=True,
+            proposal_issue_number=701,
+        ),
+        decided_at=(NOW - 4 * HOUR).isoformat(),
+    )
+    newer = _comments(161, DECISIONS_PER_ITEM + 3, first=NOW - 3 * HOUR)
+    authority.charter_ledger.record_decisions([filed, *newer])
+    state = OrchestratorState(cached_scope_issues=[_blocked(161, "blocked-failed")])
+
+    custody = _reader(state, authority=authority).read([161]).for_issue(161)
+
+    assert custody.state is CustodyState.WAITING_ON_YOU
+    assert custody.charter is not None and custody.charter.decision_id == filed.decision_id
+
+
+def test_a_sweep_releasing_a_published_pr_s_review_is_being_fixed() -> None:
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(170, "blocked-failed")],
+        recovery_attempts={170: 0},
+        review_release_budgets={170},
+        stuck_sweep_review_releases=[170],
+    )
+
+    custody = _reader(state).read([170]).for_issue(170)
+
+    assert custody.state is CustodyState.BEING_FIXED
+    assert "releasing that PR's review" in custody.reason
+
+
+def test_an_applied_remedy_outlasts_any_amount_of_later_history() -> None:
+    from issue_orchestrator.control.blocked_item_custody_reader import DECISIONS_PER_ITEM
+
+    authority = InMemoryTechLeadAuthorityStore()
+    remedy = replace(
+        _decision("recover_validated_work", target=171, anchor=171, action_id="A0"),
+        decided_at=(NOW - 4 * HOUR).isoformat(),
+    )
+    later = _comments(171, DECISIONS_PER_ITEM + 10, first=NOW - 3 * HOUR)
+    authority.charter_ledger.record_decisions([remedy, *later])
+    state = OrchestratorState(
+        cached_scope_issues=[_blocked(171, "blocked-failed")],
+        session_history=[_ended_blocked(171, NOW - 5 * HOUR)],
+    )
+
+    custody = _reader(state, authority=authority).read([171]).for_issue(171)
+
+    assert custody.state is CustodyState.VERIFY
+    assert custody.charter is not None and custody.charter.decision_id == remedy.decision_id
+
+
+def test_an_open_proposal_s_filing_survives_history_about_the_proposal_itself() -> None:
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_op(
+        issue_number=702,
+        op=StoredTechLeadOp(
+            op_type="kill_hung_session",
+            target_issue_number=172,
+            rationale="hung",
+            source_run_id="run-1",
+            source_session_name="issue-172",
+            source_action_id="A1",
+            created_at=(NOW - 4 * HOUR).isoformat(),
+            target_session_id="s",
+            target_terminal_id="t",
+            target_session_type="issue",
+        ),
+    )
+    filed = replace(
+        _decision(
+            "kill_hung_session",
+            target=172,
+            anchor=172,
+            ceiling=CharterAuthority.PROPOSE,
+            tracks_proposal=True,
+            proposal_issue_number=702,
+        ),
+        decided_at=(NOW - 4 * HOUR).isoformat(),
+    )
+    about_proposal = _comments(702, 15, first=NOW - 3 * HOUR)
+    authority.charter_ledger.record_decisions([filed, *about_proposal])
+    state = OrchestratorState(cached_scope_issues=[_blocked(172, "blocked-failed")])
+
+    custody = _reader(state, authority=authority).read([172]).for_issue(172)
+
+    assert custody.state is CustodyState.WAITING_ON_YOU
+    assert custody.charter is not None and custody.charter.decision_id == filed.decision_id
+    assert custody.charter.action_ceiling == "propose"

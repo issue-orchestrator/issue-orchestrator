@@ -68,6 +68,22 @@ ABOUT_ISSUE_QUERY = (
 )
 
 
+#: Remedies aimed at one issue that TOOK EFFECT, newest effect first (#7331).
+#: Mirrors ``TechLeadCharterDecision.is_remedy`` / ``took_effect`` /
+#: ``effect_at`` over the persisted record; the target index narrows it to that
+#: issue's rows first.
+REMEDIES_ON_ISSUE_QUERY = (
+    "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+    " AND json_extract(record, '$.binding') IN ('approvable', 'destructive')"
+    " AND (json_extract(record, '$.outcome') = 'executed'"
+    " OR json_extract(record, '$.lifecycle') = 'approved_applied')"
+    " ORDER BY CASE WHEN json_extract(record, '$.lifecycle') = 'approved_applied'"
+    " AND json_extract(record, '$.lifecycle_updated_at') IS NOT NULL"
+    " THEN json_extract(record, '$.lifecycle_updated_at') ELSE decided_at END DESC,"
+    " decision_id DESC LIMIT ?"
+)
+
+
 class SqliteTechLeadCharterLedger:
     """Durable charter decisions over the authority store's connection."""
 
@@ -148,6 +164,27 @@ class SqliteTechLeadCharterLedger:
         return _decode(
             self._connection().execute(
                 ABOUT_ISSUE_QUERY, (issue_number, issue_number, check_read_limit(limit))
+            )
+        )
+
+    def list_remedies_on_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        return _decode(
+            self._connection().execute(
+                REMEDIES_ON_ISSUE_QUERY, (issue_number, check_read_limit(limit))
+            )
+        )
+
+    def list_filed_as_proposal(
+        self, proposal_issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        return _decode(
+            self._connection().execute(
+                "SELECT record FROM tech_lead_charter_decisions"
+                " WHERE proposal_issue_number = ?"
+                " ORDER BY decided_at DESC, decision_id DESC LIMIT ?",
+                (proposal_issue_number, check_read_limit(limit)),
             )
         )
 
