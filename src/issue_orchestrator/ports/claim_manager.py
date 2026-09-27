@@ -66,6 +66,11 @@ class ClaimManager(Protocol):
         Returns:
             True if convergence succeeded (we are the winner),
             False if we lost to another claimant or timed out.
+
+        Raises:
+            An error carrying a host rate limit (``host_rate_limit_of``) when
+            the backing store is rate limited: "we could not ask" must not be
+            reported as "we lost" (#7297).
         """
         ...
 
