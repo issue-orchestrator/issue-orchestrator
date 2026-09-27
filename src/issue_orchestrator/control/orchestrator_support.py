@@ -261,21 +261,25 @@ class OrchestratorSupport:
         pause_issue_callback: Callable[[int, str], None],
         settle: Callable[[ActionOutcome], None],
     ) -> "_ActionApplyResult":
-        """Apply a single action, settle its outcome with the liveness owner, and report it."""
+        """Apply a single action and its state handler, then settle the WHOLE attempt once.
+
+        The liveness outcome is the outcome of the complete path: an applied
+        action whose state handler raises did not succeed (#7350 review r5).
+        """
         try:
             result = self._aa.apply(action)
-            settle(outcome_of_result(result))
-            if result.success:
-                return self._handle_action_success(action, result)
-            return self._handle_action_failure(action, result)
+            handler = self._handle_action_success if result.success else self._handle_action_failure
+            applied, outcome = handler(action, result), outcome_of_result(result)
         except ReconciliationRequired as rr:
-            settle(outcome_of_error(rr))
-            return self._handle_reconciliation_error(rr, pause_issue_callback)
+            outcome = outcome_of_error(rr)
+            applied = self._handle_reconciliation_error(rr, pause_issue_callback)
         except Exception as e:
-            settle(outcome_of_error(e))
+            outcome = outcome_of_error(e)
             logger.exception("Failed to apply action %s: %s", action, e)
             self.events.publish(make_trace_event(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
-            return self._ActionApplyResult(success=False)
+            applied = self._ActionApplyResult(success=False)
+        settle(outcome)
+        return applied
 
     def _handle_action_success(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
         """Handle successful action application."""

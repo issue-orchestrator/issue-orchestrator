@@ -674,3 +674,18 @@ def test_a_rate_limit_whose_reset_has_passed_spends_like_any_failure(sample_conf
         engine.tick(advance=timedelta(minutes=1))
 
     assert engine.attempts_of(_settle().action_type) == POLICY.max_attempts
+
+
+def test_an_applied_action_whose_state_handler_fails_is_a_failure(sample_config) -> None:
+    """The applier succeeded but recording its effect raised: the attempt did
+    not succeed, and its failures must accumulate (review r5)."""
+    from issue_orchestrator.control.actions import QueueReviewAction
+
+    queue = QueueReviewAction(issue_number=42, pr_number=100, pr_url="u", branch_name="b")
+    engine = _Engine(sample_config, planned=lambda: [queue], apply=lambda a: ActionResult.ok(a))
+    engine.support.repository_host.create_issue_key.side_effect = RuntimeError("no key")
+    for _ in range(20):
+        engine.tick()
+
+    assert engine.attempts_of(queue.action_type) == POLICY.max_attempts
+    assert len(engine.escalation.parked) == 1

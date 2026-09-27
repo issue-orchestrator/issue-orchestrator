@@ -79,12 +79,26 @@ class TestTransient:
             row = POLICY.after(row, KEY, ActionOutcome.transient("rate limited", reset), later)
         assert row is not None and row.parked
 
-    def test_a_declared_wait_is_honoured_even_while_spending(self) -> None:
+    def test_past_the_bound_the_ladder_sets_the_pace_not_the_reset(self) -> None:
         row = POLICY.after(None, KEY, ActionOutcome.transient("x"), NOW)
         late = NOW + POLICY.declared_wait_bound
-        reset = late + timedelta(hours=1)
+        reset = late + timedelta(days=30)
         row = POLICY.after(row, KEY, ActionOutcome.transient("rate limited", reset), late)
-        assert row is not None and row.next_attempt_at == reset and row.attempts == 2
+        assert row is not None and row.attempts == 2
+        assert row.next_attempt_at == late + POLICY.backoff(2)
+
+    def test_a_declared_wait_never_outlives_the_bound(self) -> None:
+        """A reset declared a month ahead waits only until the bound (review r5)."""
+        reset = NOW + timedelta(days=30)
+        row = POLICY.after(None, KEY, ActionOutcome.transient("rate limited", reset), NOW)
+        assert row is not None and row.attempts == 0
+        assert row.next_attempt_at == NOW + POLICY.declared_wait_bound
+        now = row.next_attempt_at
+        for _ in range(POLICY.max_attempts):
+            row = POLICY.after(row, KEY, ActionOutcome.transient("rate limited", reset), now)
+            assert row is not None
+            now = row.next_attempt_at or now
+        assert row.parked
 
 
 @pytest.mark.parametrize(

@@ -338,7 +338,10 @@ class LivenessPolicy:
         )
         if declared:
             assert outcome.retry_at is not None
-            return _backing_off(row, next_attempt_at=outcome.retry_at)
+            # Never past the bound itself: a reset declared days ahead must not
+            # hide the action in a wait that outlives the bound.
+            bound = first + self.declared_wait_bound
+            return _backing_off(row, next_attempt_at=min(outcome.retry_at, bound))
         spent += 1
         if spent >= self.max_attempts:
             return replace(
@@ -348,10 +351,9 @@ class LivenessPolicy:
                     f"{spent} attempts failed with unchanged facts; last: {outcome.reason}"
                 ),
             )
-        retry_at = now + self.backoff(spent)
-        if outcome.retry_at is not None:
-            retry_at = max(retry_at, outcome.retry_at)
-        return _backing_off(row, attempts=spent, next_attempt_at=retry_at)
+        # Past the declared-wait bound a reset no longer sets the pace: the
+        # ordinary ladder does, so a limit that never lifts reaches a person.
+        return _backing_off(row, attempts=spent, next_attempt_at=now + self.backoff(spent))
 
 
 def _backing_off(
