@@ -72,6 +72,15 @@ class BlockedCodingAttemptPayload(BaseModel):
     session_recording: SessionRecordingEvidencePayload
     started_at: str | None = None
 
+class BlockedCustodySummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    by_state: list[CustodyStateCountPayload]
+    headline: str = Field(..., min_length=1)
+    needs_attention: int = Field(..., ge=0, strict=True)
+    stale: int = Field(..., ge=0, strict=True)
+    total: int = Field(..., ge=0, strict=True)
+    unowned: int = Field(..., ge=0, strict=True)
+
 class BlockedIssuePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_type: str
@@ -94,6 +103,22 @@ class BlockedIssuesDialogPayload(BaseModel):
 class BlockedIssuesPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blocked_issues: list[BlockedIssuePayload]
+
+class BlockedItemCustodyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    age_label: str = Field(..., min_length=1)
+    attention_text: str
+    charter: CustodyCharterPayload | None
+    label: str = Field(..., min_length=1)
+    needs_attention: bool = Field(..., strict=True)
+    owner: str = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1)
+    since: str
+    since_basis: str
+    stale: bool = Field(..., strict=True)
+    stale_after_label: str
+    state: Literal['unowned', 'queued_for_tech_lead', 'investigating', 'waiting_on_you', 'being_fixed', 'waiting_on_world', 'held', 'verify']
+    tone: Literal['attention', 'pending', 'active', 'you', 'world', 'held', 'verify']
 
 class CapturedOutputAvailabilityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -189,6 +214,30 @@ class CreateE2EUntriagedIssuesCommandPayload(BaseModel):
     kind: Literal['create_e2e_untriaged_issues']
     label: str
     run_id: int = Field(..., ge=1, strict=True)
+
+class CustodyCharterPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(..., min_length=1)
+    action_ceiling: Literal['propose', 'execute']
+    ceiling_source: str
+    decided_at: str
+    decision_id: str = Field(..., min_length=1)
+    lifecycle_label: str
+    outcome: Literal['executed', 'proposed', 'advice_only', 'refused_destructive']
+    outcome_label: str = Field(..., min_length=1)
+    proposal_issue_number: int = Field(..., ge=0, strict=True)
+    reason: str = Field(..., min_length=1)
+    required_depth: Literal['workaround', 'fix', 'restructure']
+    role: Literal['flow', 'review_loop', 'abstraction', 'platform', 'intake', 'learning', 'general']
+    role_authority: Literal['propose', 'execute']
+    role_depth: Literal['workaround', 'fix', 'restructure']
+    role_enabled: bool = Field(..., strict=True)
+
+class CustodyStateCountPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int = Field(..., ge=1, strict=True)
+    label: str = Field(..., min_length=1)
+    state: Literal['unowned', 'queued_for_tech_lead', 'investigating', 'waiting_on_you', 'being_fixed', 'waiting_on_world', 'held', 'verify']
 
 class CycleArtifactsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -623,6 +672,7 @@ class FailedE2ETestExecutionPayload(BaseModel):
 class FlowColumnPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     count: int
+    custody_summary: BlockedCustodySummaryPayload | None = None
     expandable: bool | None = Field(default=None, strict=True)
     hidden_count: int = Field(..., ge=0, strict=True)
     id: str
@@ -825,6 +875,8 @@ class IssueItemPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     action: str | None = None
     action_hint: str | None = None
+    custody: BlockedItemCustodyPayload | None = None
+    custody_signal: str | None = None
     issue_number: int | str | None = None
     issue_url: str | None = None
     open_run_command: OpenE2ERunCommandPayload | None = None

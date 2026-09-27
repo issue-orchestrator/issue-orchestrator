@@ -199,6 +199,11 @@ def create_mock_orchestrator():
     mock_orch.repository_host.update_label_cache = MagicMock()
 
 
+    # A real custody reader stands in for the engine's facade property (#7331):
+    # a MagicMock would answer every custody question with another mock.
+    from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
+    mock_orch.blocked_item_custody = NO_ENGINE_CUSTODY
+
     attach_real_pause_controller(mock_orch)
     return mock_orch
 

@@ -484,6 +484,20 @@ tech_lead:
   #   intake:      { depth: restructure, authority: execute }
   #   learning:    { depth: restructure, authority: execute }  # finding promotion
   #   general:     { depth: workaround,  authority: propose }  # catch-all role
+  # Blocked-item custody (#7331): every blocked card says who owns it now
+  # (unowned, queued for tech lead, investigating, waiting on you, being fixed,
+  # waiting on world, held, verify) and why. An item in an owned state longer
+  # than its threshold is stale; the Blocked column counts unowned + stale
+  # items as "needs attention". Minutes; omitted states keep these defaults.
+  # custody:
+  #   stale_after_minutes:
+  #     queued_for_tech_lead: 240
+  #     investigating: 120
+  #     waiting_on_you: 1440
+  #     being_fixed: 720
+  #     waiting_on_world: 360
+  #     held: 4320
+  #     verify: 1440
   # Health reviews (ADR-0031 §4 + reaction-model amendment): the interval is
   # the periodic floor. A storm of K recent blocked/failed problem issues
   # creates one immediate health review instead of K investigations. The

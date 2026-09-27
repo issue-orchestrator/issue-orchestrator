@@ -9,6 +9,7 @@ the section dispatch table and existing importers are unaffected.
 from __future__ import annotations
 
 from .config_models_tech_lead_charter import TechLeadCharterConfig
+from .config_models_tech_lead_custody import TechLeadCustodyConfig
 from .config_models import (
     MilestoneStrategyConfig,
     StuckSweepConfig,
@@ -102,6 +103,7 @@ def parse_tech_lead_config(data: dict) -> TechLeadConfig:
             data.get("health_review", {}) or {}
         ),
         stuck_sweep=StuckSweepConfig.from_mapping(data.get("stuck_sweep", {}) or {}),
+        custody=TechLeadCustodyConfig.from_mapping(data.get("custody")),
         findings=TechLeadFindingsConfig.from_mapping(
             _required_mapping(data, "findings")
         ),

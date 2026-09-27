@@ -109,6 +109,16 @@ class SharedNeedsHumanBlock(Protocol):
         """Recorded disposition sources, without claiming the label is present."""
         ...
 
+    def recorded_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
+        """The causes on record for ``issue_number``, for display (#7331).
+
+        The owner's rows plus the quarantine ledger: no label read, no gate,
+        no pruning. The label stays authoritative, so a reader pairs this with
+        the label it observed. The tech-lead marker is a label, not a record,
+        and is not included.
+        """
+        ...
+
     def owns(self, label: str) -> bool:
         """Whether ``label`` is the shared block this owner governs."""
         ...
@@ -169,6 +179,14 @@ _UNSETTLEABLE_BY_FORCE = (
 )
 
 
+def _cause_for_key(key: str) -> NeedsHumanCause:
+    """The typed cause a stored row key names; an unknown key is a defect."""
+    for cause in NeedsHumanCause:
+        if cause.matches_key(key):
+            return cause
+    raise ValueError(f"unknown needs-human cause key on record: {key!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class _ScopedLabels:
     labels: "BlockLabelWriter"
@@ -220,6 +238,14 @@ class NeedsHumanBlock:
             for key in self.causes.needs_human_causes(issue_number)
             if key.startswith(prefix)
         )
+
+    def recorded_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
+        causes = {
+            _cause_for_key(key) for key in self.causes.needs_human_causes(issue_number)
+        }
+        if issue_number in self.quarantined_issue_numbers():
+            causes.add(NeedsHumanCause.CLAIM_QUARANTINE)
+        return frozenset(causes)
 
     def owns(self, label: str) -> bool:
         return label == self.needs_human_label
@@ -632,6 +658,10 @@ class _NoOtherCauses:
     def recorded_sources(
         self, issue_number: int
     ) -> frozenset[ValidatedWorkBlockSource]:
+        del issue_number
+        return frozenset()
+
+    def recorded_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
         del issue_number
         return frozenset()
 

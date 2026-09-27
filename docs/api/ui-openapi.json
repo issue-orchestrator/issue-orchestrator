@@ -1561,7 +1561,9 @@
               {"type": "null"}
             ]
           },
-          "provider_signal": {"type": ["string", "null"]}
+          "provider_signal": {"type": ["string", "null"]},
+          "custody": {"oneOf": [{"$ref": "#/components/schemas/BlockedItemCustodyPayload"}, {"type": "null"}]},
+          "custody_signal": {"type": ["string", "null"]}
         }
       },
       "StackChipViewPayload": {
@@ -1596,7 +1598,76 @@
           "hidden_count": {"type": "integer", "minimum": 0},
           "items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
           "expandable": {"type": "boolean"},
-          "session_scoped": {"type": "boolean"}
+          "session_scoped": {"type": "boolean"},
+          "custody_summary": {"$ref": "#/components/schemas/BlockedCustodySummaryPayload"}
+        }
+      },
+      "BlockedItemCustodyPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Who owns a blocked item now and why (#7331). Derived by the custody owner; the UI renders it verbatim.",
+        "required": ["state", "label", "owner", "reason", "tone", "since", "since_basis", "age_label", "stale", "stale_after_label", "needs_attention", "attention_text", "charter"],
+        "properties": {
+          "state": {"type": "string", "enum": ["unowned", "queued_for_tech_lead", "investigating", "waiting_on_you", "being_fixed", "waiting_on_world", "held", "verify"]},
+          "label": {"type": "string", "minLength": 1},
+          "owner": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1},
+          "tone": {"type": "string", "enum": ["attention", "pending", "active", "you", "world", "held", "verify"]},
+          "since": {"type": "string"},
+          "since_basis": {"type": "string"},
+          "age_label": {"type": "string", "minLength": 1},
+          "stale": {"type": "boolean"},
+          "stale_after_label": {"type": "string"},
+          "needs_attention": {"type": "boolean"},
+          "attention_text": {"type": "string"},
+          "charter": {"oneOf": [{"$ref": "#/components/schemas/CustodyCharterPayload"}, {"type": "null"}]}
+        }
+      },
+      "CustodyCharterPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The recorded tech-lead charter decision that put a blocked item in its custody state (#7330, #7331), exactly as decided.",
+        "required": ["decision_id", "role", "action", "required_depth", "role_enabled", "role_depth", "role_authority", "action_ceiling", "ceiling_source", "outcome", "outcome_label", "lifecycle_label", "reason", "decided_at", "proposal_issue_number"],
+        "properties": {
+          "decision_id": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "enum": ["flow", "review_loop", "abstraction", "platform", "intake", "learning", "general"]},
+          "action": {"type": "string", "minLength": 1},
+          "required_depth": {"type": "string", "enum": ["workaround", "fix", "restructure"]},
+          "role_enabled": {"type": "boolean"},
+          "role_depth": {"type": "string", "enum": ["workaround", "fix", "restructure"]},
+          "role_authority": {"type": "string", "enum": ["propose", "execute"]},
+          "action_ceiling": {"type": "string", "enum": ["propose", "execute"]},
+          "ceiling_source": {"type": "string"},
+          "outcome": {"type": "string", "enum": ["executed", "proposed", "advice_only", "refused_destructive"]},
+          "outcome_label": {"type": "string", "minLength": 1},
+          "lifecycle_label": {"type": "string"},
+          "reason": {"type": "string", "minLength": 1},
+          "decided_at": {"type": "string"},
+          "proposal_issue_number": {"type": "integer", "minimum": 0}
+        }
+      },
+      "BlockedCustodySummaryPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The Blocked column's 'is it under control?' line (#7331): items nobody owns plus items stale in their state.",
+        "required": ["total", "needs_attention", "unowned", "stale", "headline", "by_state"],
+        "properties": {
+          "total": {"type": "integer", "minimum": 0},
+          "needs_attention": {"type": "integer", "minimum": 0},
+          "unowned": {"type": "integer", "minimum": 0},
+          "stale": {"type": "integer", "minimum": 0},
+          "headline": {"type": "string", "minLength": 1},
+          "by_state": {"type": "array", "items": {"$ref": "#/components/schemas/CustodyStateCountPayload"}}
+        }
+      },
+      "CustodyStateCountPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "label", "count"],
+        "properties": {
+          "state": {"type": "string", "enum": ["unowned", "queued_for_tech_lead", "investigating", "waiting_on_you", "being_fixed", "waiting_on_world", "held", "verify"]},
+          "label": {"type": "string", "minLength": 1},
+          "count": {"type": "integer", "minimum": 1}
         }
       },
       "ProviderCircuitEntryPayload": {

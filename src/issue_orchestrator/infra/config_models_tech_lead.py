@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..domain.tech_lead_artifacts import UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS
+from .config_models_tech_lead_custody import TechLeadCustodyConfig
 from .config_models_tech_lead_charter import (
     TechLeadCharterConfig,
     destructive_execute_error,
@@ -653,6 +654,9 @@ class TechLeadConfig:
     # Tech-lead attention sweep for stuck issues (ADR-0031, #6823)
     stuck_sweep: StuckSweepConfig = field(default_factory=StuckSweepConfig)
 
+    # When a blocked item's custody state counts as stale (#7331)
+    custody: TechLeadCustodyConfig = field(default_factory=TechLeadCustodyConfig)
+
     # Finding-promotion lane: pattern case file -> gated runnable issue (#6957)
     findings: TechLeadFindingsConfig = field(default_factory=TechLeadFindingsConfig)
 
@@ -694,6 +698,7 @@ class TechLeadConfig:
                 "max_recovery_attempts": self.stuck_sweep.max_recovery_attempts,
             },
             "findings": self.findings.to_event_dict(),
+            "custody": self.custody.to_event_dict(),
             "write_health_stale_after_hours": self.write_health_stale_after_hours,
         }
 
@@ -729,6 +734,7 @@ class TechLeadConfig:
         errors.extend(self.dedup.startup_errors())
         errors.extend(self.findings.startup_errors())
         errors.extend(self.charter.startup_errors())
+        errors.extend(self.custody.startup_errors())
         return errors
 
 
