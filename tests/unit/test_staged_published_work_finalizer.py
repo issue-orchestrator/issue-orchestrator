@@ -215,6 +215,21 @@ def test_a_rate_limit_is_a_transient_wait_never_a_durable_failure(tmp_path, mode
     assert rig.store.get(rig.claim.record_id).state is State.PUBLISHING
 
 
+def test_a_rate_limited_phase_write_keeps_its_reset_when_the_read_back_fails(tmp_path):
+    rig = FinalizationRig(tmp_path / "work.sqlite")
+    limited = rate_limited()
+
+    def lose_phase_write():
+        rig.points.at, rig.points.error = "before:admit", RuntimeError("store unavailable")
+        raise limited
+
+    rig.points.callbacks["before:review_routed"] = lose_phase_write
+    result = rig.invoke()
+    assert result.status is Status.TRANSIENT
+    assert result.rate_limit == limited.rate_limit
+    assert rig.store.get(rig.claim.record_id).state is State.PUBLISHING
+
+
 def test_a_rate_limited_failure_read_back_carries_its_reset(tmp_path):
     """An ordinary routing failure, a lost failure write, then a limited
     read-back: the latest word from the host sets the wait (#7350)."""

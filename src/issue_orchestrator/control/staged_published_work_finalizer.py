@@ -231,7 +231,15 @@ class StagedPublishedWorkFinalizer:
             # An acknowledgement can be lost AFTER the durable commit. Read it
             # back under the same authority, but never continue the next stage
             # during this interrupted invocation.
-            durable = self._read_checkpoint(request)
+            try:
+                durable = self._read_checkpoint(request)
+            except _RetryFinalization as read_error:
+                # The read-back is the host's latest word; the write's limit
+                # stands when the read-back failed for another reason.
+                limit = host_rate_limit_of(read_error) or host_rate_limit_of(error)
+                raise _RetryFinalization(
+                    f"phase write unavailable: {error}; read-back unavailable: {read_error}"
+                ) from rate_limit_cause(limit)
             if durable is not None:
                 progress.phase = durable.phase
             raise _RetryFinalization(f"phase write unavailable: {error}") from error
