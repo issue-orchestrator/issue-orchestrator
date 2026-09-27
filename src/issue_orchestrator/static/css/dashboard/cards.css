@@ -86,12 +86,11 @@ body.column-focus-mode .column-expanded {
     border-color: var(--accent);
 }
 
-/* Viewed card dimming */
+/* Viewed cards recede by their frame, never by fading their text: whole-card
+   opacity dropped custody text below readable contrast in both themes (#7331). */
 .expanded-card.viewed {
-    opacity: 0.55;
-}
-.expanded-card.viewed:hover {
-    opacity: 0.85;
+    background: var(--bg-panel-soft);
+    border-style: dashed;
 }
 
 /* Bulk action bar */
@@ -516,9 +515,9 @@ body.column-focus-mode .column-expanded {
     color: var(--danger);
 }
 
-/* Blocked-item custody (#7331). The state is always written as words; the
-   tone only colours the rule and the word, from theme variables, so both
-   themes keep their contrast. Text wraps rather than clips. */
+/* Blocked-item custody (#7331). The state is always written as words in the
+   body text colour; the tone colours only the rule beside it (theme
+   variables), so every theme keeps text contrast. Text wraps, never clips. */
 .card-custody {
     margin-top: 4px;
     padding-left: 6px;
@@ -536,11 +535,8 @@ body.column-focus-mode .column-expanded {
 .custody-label { font-weight: 600; overflow-wrap: anywhere; }
 .custody-age { color: var(--text-muted); }
 .custody--attention { border-left-color: var(--danger); }
-.custody--attention .custody-label { color: var(--danger); }
 .custody--you { border-left-color: var(--warn); }
-.custody--you .custody-label { color: var(--warn); }
 .custody--active { border-left-color: var(--ok); }
-.custody--active .custody-label { color: var(--ok); }
 .custody--pending,
 .custody--world,
 .custody--verify { border-left-color: var(--accent); }
@@ -584,9 +580,14 @@ body.column-focus-mode .column-expanded {
     font-size: 12px;
     overflow-wrap: anywhere;
 }
-.custody-summary-count { font-weight: 700; }
-.custody-summary-count.needs-attention { color: var(--danger); }
-.custody-summary-count.is-under-control { color: var(--ok); }
+.custody-summary-count {
+    font-weight: 700;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 6px;
+}
+.custody-summary-count.needs-attention { border-color: var(--danger); }
+.custody-summary-count.is-under-control { border-color: var(--ok); }
 .custody-summary-headline { color: var(--text-muted); }
 .custody-summary-states {
     display: flex;

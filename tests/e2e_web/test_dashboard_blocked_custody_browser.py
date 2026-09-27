@@ -194,3 +194,103 @@ def test_custody_renders_in_both_themes_without_clipping(
         page.locator('[data-column="blocked"]').screenshot(
             path=str(Path(out) / f"blocked-custody-{theme}.png")
         )
+
+
+def _set_labels(number: int, labels: list[str]) -> None:
+    orchestrator = web_module.get_orchestrator()
+    orchestrator.state.cached_scope_issues = [
+        Issue(number=issue.number, title=issue.title, labels=labels) if issue.number == number else issue
+        for issue in orchestrator.state.cached_scope_issues
+    ]
+
+
+def _refresh(page: Page) -> None:
+    page.evaluate("() => refreshViewModel({ reloadOnListChange: false })")
+
+
+@pytest.mark.parametrize("surface", ["compact", "expanded"])
+def test_an_open_why_keeps_its_state_and_focus_when_the_custody_changes(
+    page: Page, custody_server: dict[str, object], surface: str
+) -> None:
+    _open(page, str(custody_server["url"]))
+    if surface == "compact":
+        root = page.locator('[data-column="blocked"] .column-cards')
+        row = root.locator(f'.issue-card[data-issue="{NOBODY}"]')
+    else:
+        page.evaluate("() => toggleColumnExpand('blocked')")
+        root = page.locator('[data-column="blocked"] .expanded-cards-list')
+        row = root.locator(f'.expanded-card[data-issue="{NOBODY}"]')
+    summary = row.locator("details.custody-why > summary")
+    expect(summary).to_be_visible()
+    summary.focus()
+    page.keyboard.press("Enter")
+    expect(row.locator("details.custody-why")).to_have_attribute("open", "")
+
+    _set_labels(NOBODY, ["agent:web", "needs-human"])  # Unowned -> Waiting on you
+    try:
+        _refresh(page)
+        expect(row.locator(".custody-label")).to_have_text("Waiting on you")  # rebuilt
+        expect(row.locator("details.custody-why")).to_have_attribute("open", "")
+        expect(row.locator("details.custody-why > summary")).to_be_focused()
+    finally:
+        _set_labels(NOBODY, ["agent:web", "blocked-failed"])
+        _refresh(page)
+
+
+_CONTRAST = """
+(el) => {
+    // WCAG contrast of el's text against what is actually painted behind it:
+    // semi-transparent backgrounds are composited up to the first opaque one,
+    // and every ancestor's opacity fades the text.
+    const rgba = (c) => {
+        // "rgb(a)(r, g, b[, a])", or "color(srgb r g b[ / a])" (0-1 channels)
+        // as color-mix() backgrounds compute.
+        const v = (c.match(/[\\d.]+/g) || []).map(Number);
+        const channels = c.startsWith('color(') ? [...v.slice(0, 3).map((x) => x * 255), ...v.slice(3)] : v;
+        return channels.length === 3 ? [...channels, 1] : channels;
+    };
+    const lum = ([r, g, b]) => {
+        const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    const over = (top, under) => top.slice(0, 3).map((v, i) => v * top[3] + under[i] * (1 - top[3]));
+    const layers = [];
+    let opacity = 1;
+    for (let n = el; n; n = n.parentElement) {
+        const style = getComputedStyle(n);
+        opacity *= Number(style.opacity);
+        const bg = rgba(style.backgroundColor);
+        if (bg.length === 4 && bg[3] > 0) layers.push(bg);
+    }
+    let painted = [255, 255, 255];
+    const html = rgba(getComputedStyle(document.documentElement).backgroundColor);
+    if (html[3] > 0) painted = over(html, painted);
+    for (const layer of layers.reverse()) painted = over(layer, painted);
+    const fg = rgba(getComputedStyle(el).color);
+    const text = over([...fg.slice(0, 3), fg[3] * opacity], painted);
+    const [a, b] = [lum(text) + 0.05, lum(painted) + 0.05];
+    return Math.max(a, b) / Math.min(a, b);
+}
+"""
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_custody_text_on_a_viewed_row_stays_readable(
+    page: Page, custody_server: dict[str, object], theme: str
+) -> None:
+    _open(page, str(custody_server["url"]), theme)
+    page.evaluate("() => toggleColumnExpand('blocked')")
+    row = page.locator(f'[data-column="blocked"] .expanded-card[data-issue="{PROPOSED}"]')
+    expect(row).to_be_visible()
+    row.evaluate("el => el.classList.add('viewed')")
+
+    for selector in (".custody-label", ".custody-age", "details.custody-why > summary"):
+        ratio = row.locator(selector).evaluate(_CONTRAST)
+        assert ratio >= 4.5, f"{selector} contrast {ratio:.2f} in {theme}"
+    unowned = page.locator(f'[data-column="blocked"] .expanded-card[data-issue="{NOBODY}"]')
+    ratio = unowned.locator(".custody-attention").evaluate(_CONTRAST)
+    assert ratio >= 4.5, f"attention pill contrast {ratio:.2f} in {theme}"
+    header = page.locator('[data-column="blocked"] .blocked-custody-summary')
+    for selector in (".custody-summary-count", ".custody-summary-headline", ".custody-summary-states li"):
+        ratio = header.locator(selector).first.evaluate(_CONTRAST)
+        assert ratio >= 4.5, f"summary {selector} contrast {ratio:.2f} in {theme}"

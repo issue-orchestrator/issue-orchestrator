@@ -286,6 +286,8 @@ function renderCompactCards(container, items) {
 
     // Remove "No items" placeholder and skeleton cards when real items exist
     container.querySelectorAll('.column-empty, .skeleton-card').forEach(el => el.remove());
+    // A rebuilt card keeps an open "Why this state?" and its focus (#7331).
+    const disclosures = captureCustodyDisclosures(container);
 
     const nextIds = new Set(items.map((card) => String(card.card_id || `issue-${card.issue_number}`)));
     const existingCards = Array.from(container.querySelectorAll('.issue-card[data-card-id], .issue-card[data-issue]'));
@@ -345,6 +347,7 @@ function renderCompactCards(container, items) {
         }
         insertAfter = node;
     }
+    restoreCustodyDisclosures(container, disclosures);
 }
 
 function syncColumnOverflowFooter(columnElement, column) {
@@ -550,15 +553,20 @@ async function loadExpandedColumn(columnId, options = {}) {
 
         if (shouldRebuild) {
             const viewed = columnId === 'blocked' ? getViewedIssues() : new Set();
+            const disclosures = captureCustodyDisclosures(expandedList);
             expandedList.innerHTML = items
                 .map(item => renderExpandedCardHtml(item, columnId, viewed.has(item.issue_number)))
                 .join('');
             formatDashboardTimestamps(expandedList);
+            restoreCustodyDisclosures(expandedList, disclosures);
             expandedColumnFingerprints.set(columnId, nextFingerprint);
             const reconciledSelection = new Set(
                 expandedColumnState.reconcileSelectedIssues([...previousSelection], items),
             );
             reapplyExpandedSelections(columnId, reconciledSelection);
+        } else {
+            // Unchanged list: its custody ages still tick (#7331).
+            syncExpandedCustodyAges(expandedList, items);
         }
 
         // Update blocked-only derived UI even when list body is unchanged.

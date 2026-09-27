@@ -296,3 +296,28 @@ def test_the_expanded_column_refresh_is_contract_validated() -> None:
 
     assert "uiContractJson.fromResponse(resp, 'DashboardViewModelPayload', endpoint)" in body
     assert "resp.json()" not in body
+
+
+def test_an_unchanged_expanded_list_still_syncs_custody_ages() -> None:
+    body = _kanban_source().split("async function loadExpandedColumn", 1)[1].split("\nfunction ", 1)[0]
+    unchanged = body.split("} else {", 1)[1].split("}", 1)[0]
+
+    assert "syncExpandedCustodyAges(expandedList, items);" in unchanged
+
+
+@pytest.mark.parametrize(
+    ("path", "function"),
+    [
+        ("dashboard/kanban_columns.js", "function renderCompactCards"),
+        ("dashboard/kanban_columns.js", "async function loadExpandedColumn"),
+        ("dashboard/core.js", "async function refreshIssueRows"),
+    ],
+)
+def test_every_surface_that_replaces_custody_keeps_its_open_disclosure(path: str, function: str) -> None:
+    """One helper pair brackets every replacement of custody markup."""
+    source = (STATIC / "js" / path).read_text()
+    body = source.split(function, 1)[1].split("\nfunction ", 1)[0].split("\nasync function ", 1)[0]
+
+    capture = body.index("captureCustodyDisclosures(")
+    restore = body.index("restoreCustodyDisclosures(")
+    assert capture < restore

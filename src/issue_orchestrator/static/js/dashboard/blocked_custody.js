@@ -94,6 +94,51 @@ function syncCustodyAge(node, item) {
     if (ageEl.textContent !== desired) ageEl.textContent = desired;
 }
 
+// Every expanded row whose list was NOT rebuilt still refreshes its age.
+function syncExpandedCustodyAges(list, items) {
+    for (const item of items) {
+        const node = list.querySelector(`.expanded-card[data-issue="${cssEscape(String(item.issue_number))}"]`);
+        if (node) syncCustodyAge(node, item);
+    }
+}
+
+// A rebuild must not close a "Why this state?" the operator opened, nor drop
+// keyboard focus from its summary. One owner for every surface that replaces
+// custody markup (compact cards, the expanded list, list rows): capture by
+// issue before the replacement, restore after it.
+function captureCustodyDisclosures(root) {
+    const open = new Set();
+    let focused = null;
+    if (!root) return { open, focused };
+    for (const details of root.querySelectorAll('details.custody-why[open]')) {
+        const owner = details.closest('[data-issue]');
+        if (owner) open.add(owner.dataset.issue);
+    }
+    const active = document.activeElement;
+    if (active && root.contains(active)) {
+        const details = active.closest('details.custody-why');
+        const owner = details && details.closest('[data-issue]');
+        if (owner) focused = owner.dataset.issue;
+    }
+    return { open, focused };
+}
+
+function restoreCustodyDisclosures(root, state) {
+    if (!root) return;
+    for (const issue of state.open) {
+        const details = root.querySelector(`[data-issue="${cssEscape(issue)}"] details.custody-why`);
+        if (details && !details.open) details.open = true;
+    }
+    if (state.focused === null) return;
+    // Only when the replacement actually took focus away: never steal it.
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const summary = root.querySelector(
+        `[data-issue="${cssEscape(state.focused)}"] details.custody-why > summary`,
+    );
+    if (summary) summary.focus();
+}
+
 // The Blocked column's "is it under control?" line. The count is text, and
 // the headline spells out how it was reached.
 function renderBlockedCustodySummaryHtml(summary) {
@@ -133,6 +178,9 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         renderCustodyHtml,
         blockedCustodySummaryKey,
+        captureCustodyDisclosures,
+        restoreCustodyDisclosures,
+        syncExpandedCustodyAges,
         renderBlockedCustodySummaryHtml,
         syncBlockedCustodySummary,
         syncCustodyAge,

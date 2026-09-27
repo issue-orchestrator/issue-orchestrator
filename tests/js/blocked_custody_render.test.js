@@ -243,3 +243,24 @@ test('the expanded list rebuilds when custody changes but not when only its age 
     assert.strictEqual(fp(base), fp({ ...base, custody: custody({ age_label: '9h' }) }));
     assert.notStrictEqual(fp(base), fp({ ...base, custody_signal: 'verify||r|' }));
 });
+
+test('an unchanged expanded list still refreshes each row\'s age', () => {
+    const { syncExpandedCustodyAges } = loadModule();
+    const ages = { 42: { textContent: ' · 2h' }, 43: { textContent: ' · 1h' } };
+    const list = {
+        querySelector: (selector) => {
+            const match = selector.match(/data-issue="(\d+)"/);
+            const age = match && ages[match[1]];
+            return age ? { querySelector: () => age } : null;
+        },
+    };
+
+    syncExpandedCustodyAges(list, [
+        card({ custody: custody({ age_label: '3h' }) }),
+        { issue_number: 43, custody: custody({ age_label: '4h' }) },
+        { issue_number: 44, custody: custody() },
+    ]);
+
+    assert.strictEqual(ages[42].textContent, ' · 3h');
+    assert.strictEqual(ages[43].textContent, ' · 4h');
+});
