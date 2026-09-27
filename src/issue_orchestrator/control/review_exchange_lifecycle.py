@@ -70,6 +70,7 @@ class IssuePublishRetryRuntime(PublishRetryAbandoner, Protocol):
 
 
 from .session_manager import SessionType
+from .in_flight_work import InFlightWorkLedger, SettlementOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ def _release_issue_runtime(
     active_sessions: list["Session"] | None = None,
     publish_recovery: "PublishRetryAbandoner | None" = None,
     session_types: Iterable[SessionType] = ISSUE_RUNTIME_SESSION_TYPES,
+    work: "InFlightWorkLedger",
 ) -> IssueRuntimeTermination:
     """Apply an issue terminal boundary to every issue-scoped runtime owner.
 
@@ -242,6 +244,13 @@ def _release_issue_runtime(
         active_sessions,
         set(stopped).union(stale),
     )
+    # Each ended run's pending-work claim is CONSUMED before its record goes
+    # (#7380): the record is what tells the recovery sweep the run is live, so
+    # dropped first -- or dropped beside a claim left HELD -- the next tick
+    # re-admitted the rework this boundary just ended.
+    for session in tuple(active_sessions or ()):
+        if session.terminal_id in terminal_ids_to_clear:
+            work.settle(session, SettlementOutcome.CONSUMED)
     _drop_active_session_records(active_sessions, terminal_ids_to_clear)
     if stopped or terminal_ids_to_clear:
         logger.info(
@@ -546,6 +555,8 @@ class CoreIssueRuntimeOwners:
     pair_registry: PersistentExchangePairRegistry | None
     job_supervisor: BackgroundJobSupervisor | None
     publish_recovery: IssuePublishRetryRuntime
+    # Settles the pending-work claim of every run this boundary ends (#7380).
+    work: "InFlightWorkLedger"
 
     def probe(self, issue_number: int) -> IssueRuntimeActivity:
         return _probe_owners({
@@ -565,7 +576,7 @@ class CoreIssueRuntimeOwners:
         return _release_issue_runtime(issue_number=issue_number, reason=reason, validated_work=batch,
             pair_registry=self.pair_registry, job_supervisor=self.job_supervisor,
             session_manager=self.session_manager, active_sessions=self.active_sessions,
-            publish_recovery=self.publish_recovery)
+            publish_recovery=self.publish_recovery, work=self.work)
 
 
 @dataclass(frozen=True, slots=True)
