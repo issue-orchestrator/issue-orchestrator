@@ -713,7 +713,7 @@ def test_pending_escalation_dropped_when_issue_recovers():
 def test_pending_escalations_persist_and_rehydrate_across_restart():
     # R1 (#6824): the pending-escalation set survives a restart via the store, so
     # an unacknowledged escalation is re-planned after a crash.
-    from issue_orchestrator.control.stuck_sweep import (
+    from issue_orchestrator.control.stuck_sweep_state import (
         hydrate_stuck_sweep_state,
         persist_stuck_sweep_state,
     )
