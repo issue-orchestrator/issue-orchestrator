@@ -3,6 +3,8 @@
 from ..domain.publication_verification import publication_pr_identity_failure
 from ..domain.exact_git import ExactPushAuthenticationError, ExactPushOutcome
 from ..domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPullRequest,
     PublicationRemoteError,
     publication_marker,
@@ -235,21 +237,46 @@ class GitValidatedHeadExecutor:
     ) -> PrEnsureOutcome:
         try:
             created = self._remote.create_pr(command)
+        except PublicationPrCreateRejected as rejected:
+            return self._create_refused(command, rejected)
         except PublicationRemoteError:
             # A lost response is not proof of no effect. Adopt ONLY this operation's marker.
-            candidates = tuple(
-                pr
-                for pr in self._remote.list_prs(command)
-                if pr.branch == command.branch_name
-            )
-            if len(candidates) > 1:
-                return self._pr_failure(
-                    ValidatedWorkFailure.DUPLICATE_OPEN_PR, "Multiple PRs after create"
-                )
-            if len(candidates) != 1:
+            adopted = self._adopt_listed(command)
+            if adopted is None:
                 raise
-            return self._adopt_candidate(command, candidates[0])
+            return adopted
         return self._confirm_created(command, created)
+
+    def _create_refused(
+        self, command: PublishValidatedHeadCommand, rejected: PublicationPrCreateRejected
+    ) -> PrEnsureOutcome:
+        """A definite refusal created nothing; only an existing PR may be adopted."""
+        if rejected.rejection is PrCreateRejection.NO_COMMITS:
+            return self._pr_failure(ValidatedWorkFailure.PR_CREATE_NO_COMMITS, str(rejected))
+        if rejected.rejection is PrCreateRejection.INVALID:
+            return self._pr_failure(ValidatedWorkFailure.PR_CREATE_REJECTED, str(rejected))
+        adopted = self._adopt_listed(command)
+        if adopted is not None:
+            return adopted
+        # The host names a PR its listing does not show yet. That is lag, not a
+        # refusal of the work; the store's attempt budget bounds the retries.
+        return self._pr_failure(
+            ValidatedWorkFailure.REMOTE_UNREADABLE,
+            f"{rejected}; the existing PR is not listed yet",
+            transient=True,
+        )
+
+    def _adopt_listed(self, command: PublishValidatedHeadCommand) -> PrEnsureOutcome | None:
+        candidates = tuple(
+            pr for pr in self._remote.list_prs(command) if pr.branch == command.branch_name
+        )
+        if len(candidates) > 1:
+            return self._pr_failure(
+                ValidatedWorkFailure.DUPLICATE_OPEN_PR, "Multiple PRs after create"
+            )
+        if len(candidates) != 1:
+            return None
+        return self._adopt_candidate(command, candidates[0])
 
     def _adopt_candidate(
         self, command: PublishValidatedHeadCommand, pr: PublicationPullRequest

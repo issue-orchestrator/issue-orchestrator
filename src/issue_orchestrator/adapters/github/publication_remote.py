@@ -1,11 +1,14 @@
 """Strict uncached publication reads over the shared GitHub HTTP boundary."""
 
+import json
 from typing import Any
 from urllib.parse import urlsplit
 
 from ...domain.exact_git import ExactPushDestination
 
 from ...domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPullRequest,
     PublicationPrState,
     PublicationRemoteError,
@@ -18,7 +21,14 @@ from ...domain.validated_work_capture import (
 )
 from ...domain.validated_work import require_sha
 from ...ports.repository_host import RepositoryHostError
+from .errors import GitHubHttpError, GitHubRateLimitedError
 from .http_client import GitHubHttpClient
+
+# GitHub answers an unprocessable PR create with 422 and, for the refusals the
+# publication owner acts on, a stable human message in ``errors[].message``.
+_UNPROCESSABLE = 422
+_NO_COMMITS = "no commits between"
+_ALREADY_EXISTS = "a pull request already exists"
 
 
 def _pull_request(raw: dict[str, Any]) -> PublicationPullRequest:
@@ -41,6 +51,45 @@ def _pull_request(raw: dict[str, Any]) -> PublicationPullRequest:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise PublicationRemoteError("Incomplete publication PR identity") from exc
+
+
+def _create_rejection(exc: GitHubHttpError) -> PublicationPrCreateRejected | None:
+    """Classify a definite PR-create refusal; anything else stays a remote error.
+
+    Only a 422 whose body is GitHub's structured validation failure is a
+    definite refusal of this exact request. A 422 without that shape (abuse or
+    spam throttling, a malformed body) proves nothing permanent and stays an
+    untyped remote error, which the attempt budget bounds.
+    """
+    if exc.status_code != _UNPROCESSABLE or isinstance(exc, GitHubRateLimitedError):
+        return None
+    try:
+        payload = json.loads(exc.response_text or "")
+    except ValueError:
+        return None
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if not isinstance(errors, list) or not errors or not all(
+        isinstance(item, dict) and isinstance(item.get("code"), str) for item in errors
+    ):
+        return None
+    messages = [item["message"] for item in errors if isinstance(item.get("message"), str)]
+    folded = " ".join(messages).casefold()
+    if _NO_COMMITS in folded:
+        rejection = PrCreateRejection.NO_COMMITS
+    elif _ALREADY_EXISTS in folded:
+        rejection = PrCreateRejection.ALREADY_EXISTS
+    elif all(isinstance(item.get("field"), str) and item.get("code") != "custom" for item in errors):
+        # A field-level refusal (``base``/``head`` invalid or missing) names
+        # what is wrong with this exact request. A ``custom`` message that is
+        # neither recognized refusal (a throttle, "please wait ...") proves
+        # nothing permanent and stays retryable.
+        rejection = PrCreateRejection.INVALID
+    else:
+        return None
+    detail = "; ".join(
+        messages or [f"{item.get('field', '?')}: {item['code']}" for item in errors]
+    )
+    return PublicationPrCreateRejected(rejection, f"PR create refused: {detail}")
 
 
 def _branch_head(client: GitHubHttpClient, branch_name: str) -> str | None:
@@ -172,5 +221,10 @@ class GitHubPublicationRemote:
             if raw is None:
                 raise PublicationRemoteError("PR create response was lost")
             return _pull_request(raw)
+        except GitHubHttpError as exc:
+            rejected = _create_rejection(exc)
+            if rejected is not None:
+                raise rejected from exc
+            raise PublicationRemoteError(str(exc)) from exc
         except (RepositoryHostError, ValueError, TypeError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
