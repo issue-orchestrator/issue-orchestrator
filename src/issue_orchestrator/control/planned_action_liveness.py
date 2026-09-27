@@ -65,6 +65,7 @@ from .reconciliation import (
 )
 
 if TYPE_CHECKING:
+    from ..events import EventContext
     from ..ports.issue import Issue
     from .planner_types import OrchestratorSnapshot, Plan
 
@@ -267,7 +268,11 @@ class PlannedActionLiveness:
     #: The label the owner's escalation puts on an issue; never a fact.
     escalation_label: str
 
-    def admit(self, plan: "Plan", snapshot: "OrchestratorSnapshot") -> "Plan":
+    def admit(
+        self, plan: "Plan", snapshot: "OrchestratorSnapshot", context: "EventContext"
+    ) -> "Plan":
+        """Admit ``plan`` through the owner, then settle this cycle's owed
+        writes; ``context`` is the run and tick they are announced in."""
         from .planner_types import Plan, SkippedItem
 
         labels = observed_labels(snapshot)
@@ -317,8 +322,10 @@ class PlannedActionLiveness:
                 )
             )
         # Once per planning cycle, AFTER this plan's keys were asked (and so
-        # marked live): retire what nobody asks about, retry owed effects.
-        self.owner.reconcile_effects()
+        # marked live): retire what nobody asks about, retry owed effects. An
+        # owed pause this tick observed on its issue is already there.
+        self.owner.settle_observed_pauses(labels)
+        self.owner.reconcile_effects(context)
         return Plan(
             actions=tuple(admitted),
             skipped=plan.skipped + tuple(held),

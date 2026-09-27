@@ -8,6 +8,8 @@ faked at its port, so what is under test is exactly the path between them.
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import TICK
+
 import dataclasses
 import functools
 import importlib
@@ -721,6 +723,35 @@ def test_terminal_recovery_settles_every_park_on_its_issue(sample_config) -> Non
     assert [row.key.escalation_issue for rows in engine.escalation.released for row in rows] == [410]
 
 
+def test_terminal_recovery_settles_an_owed_pause_too(sample_config) -> None:
+    """A drift pause owed to the issue (its write refused) must not land after
+    terminal recovery settled the issue's work (review of #7350's owed writes,
+    r3)."""
+    from issue_orchestrator.control.actions import RecoverTerminalIssueAction
+
+    recover = RecoverTerminalIssueAction(
+        issue_number=410, pr_number=9, pr_url="u", status="merged", source="pull_request",
+    )
+    plans = {"now": []}
+    engine = _Engine(
+        sample_config, planned=lambda: plans["now"], apply=lambda a: ActionResult.ok(a),
+        labels={410: ("in-progress",)},
+    )
+    engine.escalation.pause_commits = False
+    engine.owner.owe_pause(410, "drift", TICK)
+    assert engine.store.pauses
+
+    plans["now"] = [recover]
+    engine.tick()
+    plans["now"] = []
+    engine.escalation.pause_commits = True
+    for _ in range(3):
+        engine.tick()
+
+    assert engine.store.pauses == {}
+    assert engine.escalation.pauses == [(410, False)], "never written after recovery"
+
+
 def test_two_comments_on_one_issue_keep_separate_budgets(sample_config) -> None:
     """Two comments share the add_comment identity; the one that keeps
     succeeding must not clear the one that keeps failing (review r7). Fixed
@@ -795,9 +826,9 @@ def test_an_engine_park_is_released_by_the_operator_cli(sample_config, tmp_path,
     restarted = liveness_owner(
         store=SQLiteActionLivenessStore(path), escalation=escalation, policy=POLICY
     )
-    restarted.reconcile_effects()
+    restarted.reconcile_effects(TICK)
     assert [[row.key for row in rows] for rows in escalation.released] == [[key]]
-    restarted.reconcile_effects()
+    restarted.reconcile_effects(TICK)
     assert len(escalation.released) == 1, "announced once"
     assert restarted.admit(key).admitted
 
@@ -1059,3 +1090,30 @@ def test_a_wrapped_stable_operation_supersedes_its_old_park(sample_config) -> No
 
     assert engine.owner.parked() == ()
     assert engine.escalation.unblocks == [(229, True)]
+
+
+def test_an_owed_pause_observed_on_its_issue_is_not_written_again() -> None:
+    """The planning cycle's snapshot shows the pause label on the issue the
+    pause is owed to: the debt is settled before owed writes are retried."""
+    escalation = RecordingEscalation(pause_commits=False)
+    store = InMemoryActionLivenessStore()
+    clock = ManualClock()
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock)
+    owner.owe_pause(410, "drift", TICK)
+    assert escalation.pauses == [(410, False)]
+    clock.advance(owner.policy.max_backoff)  # due again
+    snapshot = OrchestratorSnapshot(
+        issues=(Issue(number=410, title="#410", labels=["blocked", PAUSE]),),
+        active_sessions=(),
+        pending_reviews=(),
+        pending_reworks=(),
+        pending_tech_lead=(),
+        paused=False,
+    )
+
+    PlannedActionLiveness(owner, escalation_label="needs-human").admit(
+        Plan(actions=(), skipped=()), snapshot, TICK
+    )
+
+    assert store.pauses == {}
+    assert escalation.pauses == [(410, False)], "not written again"

@@ -9,6 +9,8 @@ side of the transition committed, and a refusal must leave BOTH untouched.
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import TICK
+
 import pytest
 
 from tests.unit.control.liveness_doubles import liveness_owner
@@ -103,7 +105,8 @@ def state() -> OrchestratorState:
 
 
 def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store=None,
-            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS, liveness=None):
+            host=None, published_review=NO_PUBLISHED_REVIEW_HOLDS, liveness=None,
+            run_locked=None):
     from unittest.mock import MagicMock
 
     labels = LabelManager(sample_config)
@@ -119,7 +122,7 @@ def _runner(sample_config, state, live, *, block=None, refuse=frozenset(), store
         config=sample_config,
         queue_cache_store=store if store is not None else MagicMock(),
         state=lambda: state,
-        run_locked=lambda fn: fn(),
+        run_locked=run_locked if run_locked is not None else (lambda fn: fn()),
         open_prs=OpenPullRequestIndex(host, repo_slug="owner/repo"),
         liveness=liveness if liveness is not None else liveness_owner(),
     )
@@ -787,3 +790,150 @@ class TestPublishedWorkKeepsTheSchedulerGate:
         assert live[ISSUE] == {"agent:web"}
 
     _pr = staticmethod(TestRetryKeepsAnOpenPrsReviewGate._pr)
+
+
+class TestAnOwedPauseNeverLandsBehindAPerson:
+    """#7350: the reconciliation pause observed drift owes an issue never lands
+    behind a person's Retry or Dismiss: a command that commits settles it, one
+    that does not leaves it owed, and no tick runs mid-command."""
+
+    @staticmethod
+    def _owner(live):
+        from issue_orchestrator.control.reconciliation import get_pause_label
+        from issue_orchestrator.domain.owed_write import EffectResult
+        from tests.unit.control.liveness_doubles import (
+            InMemoryActionLivenessStore,
+            ManualClock,
+            RecordingEscalation,
+        )
+
+        class _Escalation(RecordingEscalation):
+            """GitHub refuses the pause until ``accepting``; then it lands on
+            the issue's live labels."""
+
+            accepting = False
+
+            def pause(self, issue_number, reason, context):
+                if not self.accepting:
+                    return EffectResult.refused("GitHub 502")
+                live.setdefault(issue_number, set()).add(get_pause_label())
+                return EffectResult.landed()
+
+        store, clock, escalation = InMemoryActionLivenessStore(), ManualClock(), _Escalation()
+        owner = liveness_owner(store=store, escalation=escalation, clock=clock)
+        return owner, store, clock, escalation
+
+    def test_a_retry_racing_a_due_pause_wins(self, sample_config, state):
+        """Reconciliation has read the ledger (the pause is due) when the
+        operator's Retry runs to completion; the resumed reconciliation must
+        not put the pause on the issue."""
+        from issue_orchestrator.control.reconciliation import get_pause_label
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked}}
+        import threading
+
+        owner, store, clock, escalation = self._owner(live)
+        owner.owe_pause(ISSUE, "drift", TICK)  # refused: owed
+        _labels, runner = _runner(sample_config, state, live, liveness=owner)
+        clock.advance(owner.policy.max_backoff)
+        escalation.accepting = True
+
+        read, resume = threading.Event(), threading.Event()
+        ledger = store.pending_pauses
+
+        def read_then_hold():
+            pauses = ledger()
+            if not read.is_set():
+                read.set()
+                resume.wait(timeout=10)
+            return pauses
+
+        store.pending_pauses = read_then_hold  # type: ignore[method-assign]
+        reconciling = threading.Thread(target=lambda: owner.reconcile_effects(TICK))
+        reconciling.start()
+        assert read.wait(timeout=10)
+        assert runner.retry(ISSUE).committed
+        resume.set()
+        reconciling.join(timeout=10)
+
+        assert get_pause_label() not in live[ISSUE]
+        assert store.pauses == {}
+
+    @pytest.mark.parametrize("command", ["retry", "dismiss"])
+    def test_no_tick_owes_a_pause_off_labels_a_retry_is_still_changing(
+        self, sample_config, state, command
+    ):
+        """Retry is held at a GitHub label write when a tick starts that would
+        see the not-yet-removed label as drift and owe a pause. The whole
+        transition holds the engine's state lock, so the tick observes only
+        Retry's settled labels: no drift, no pause (review r2)."""
+        import threading
+
+        from issue_orchestrator.control.reconciliation import get_pause_label
+
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked}}
+        owner, store, _clock, escalation = self._owner(live)
+        escalation.accepting = True
+        state_lock = threading.RLock()
+
+        def run_locked(fn):
+            with state_lock:
+                return fn()
+
+        writing, resume = threading.Event(), threading.Event()
+
+        class _SlowHost(_RepositoryHost):
+            def remove_label(self, issue_number, label):
+                writing.set()
+                resume.wait(timeout=10)
+                super().remove_label(issue_number, label)
+
+        _labels, runner = _runner(
+            sample_config, state, live, host=_SlowHost(live), liveness=owner,
+            run_locked=run_locked,
+        )
+
+        def tick():
+            with state_lock:
+                if labels.blocked in live[ISSUE]:  # "drift" it would pause on
+                    owner.owe_pause(ISSUE, "drift", TICK)
+
+        retrying = threading.Thread(target=lambda: getattr(runner, command)(ISSUE))
+        retrying.start()
+        assert writing.wait(timeout=10)
+        ticking = threading.Thread(target=tick)
+        ticking.start()
+        ticking.join(timeout=0.5)  # an unguarded tick finishes here
+        resume.set()
+        retrying.join(timeout=10)
+        ticking.join(timeout=10)
+
+        assert get_pause_label() not in live[ISSUE]
+        assert store.pauses == {}
+
+    def test_a_retry_that_did_not_commit_leaves_the_pause_owed(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner, store, _clock, _escalation = self._owner(live)
+        owner.owe_pause(ISSUE, "drift", TICK)
+        owed = store.pauses[ISSUE]
+        _labels, runner = _runner(
+            sample_config, state, live, refuse=frozenset({labels.blocked}), liveness=owner
+        )
+
+        assert not runner.retry(ISSUE).committed
+
+        assert store.pauses == {ISSUE: owed}
+
+    def test_dismiss_settles_the_owed_pause_too(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {labels.blocked, labels.needs_human}}
+        owner, store, _clock, _escalation = self._owner(live)
+        owner.owe_pause(ISSUE, "drift", TICK)
+        _labels, runner = _runner(sample_config, state, live, liveness=owner)
+
+        assert runner.dismiss(ISSUE).committed
+
+        assert store.pauses == {}

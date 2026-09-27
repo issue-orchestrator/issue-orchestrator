@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..domain.action_liveness import (
     ActionIdentity,
@@ -19,6 +19,10 @@ from ..domain.action_liveness import (
     LivenessKey,
     LivenessRow,
 )
+from ..domain.owed_write import NO_DEBT, EffectDebt, EffectResult
+
+if TYPE_CHECKING:
+    from ..events import EventContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,8 +30,16 @@ class PendingRelease:
     """A withdrawal of the owner's block cause that has not committed yet."""
 
     issue_number: int
-    attempts: int
-    attempted_at: datetime | None
+    debt: EffectDebt = NO_DEBT
+
+
+@dataclass(frozen=True, slots=True)
+class PendingPause:
+    """A reconciliation pause observed drift called for, not yet on the issue."""
+
+    issue_number: int
+    reason: str
+    debt: EffectDebt = NO_DEBT
 
 
 class ActionLivenessStore(Protocol):
@@ -116,7 +128,9 @@ class ActionLivenessStore(Protocol):
 
         An operator settled that issue's block, so any withdrawal still owed to
         it is forgotten in the same transaction: replayed later, it could take
-        off a block a person has since put back.
+        off a block a person has since put back. So is an owed reconciliation
+        pause: the issue's work is settled (a person's Retry or Dismiss, or a
+        terminal recovery), and a pause landing afterwards would re-block it.
         """
         ...
 
@@ -144,8 +158,29 @@ class ActionLivenessStore(Protocol):
         """Every owed withdrawal, with how often it has been tried."""
         ...
 
-    def record_release_attempt(self, issue_number: int, attempted_at: datetime) -> None:
-        """Count one withdrawal attempt that did not commit."""
+    def set_release_debt(self, issue_number: int, debt: EffectDebt) -> None:
+        """Record how an owed withdrawal's last attempt left it."""
+        ...
+
+    def request_pause(self, issue_number: int, reason: str) -> PendingPause:
+        """Durably owe ``issue_number`` the reconciliation pause; the debt as it
+        now stands (an existing one keeps its pacing)."""
+        ...
+
+    def pending_pauses(self) -> tuple[PendingPause, ...]:
+        """Every owed pause, with its pacing."""
+        ...
+
+    def pending_pause(self, issue_number: int) -> PendingPause | None:
+        """The pause owed to ``issue_number``, if any."""
+        ...
+
+    def set_pause_debt(self, issue_number: int, debt: EffectDebt) -> None:
+        """Record how an owed pause's last attempt left it."""
+        ...
+
+    def clear_pause(self, issue_number: int) -> None:
+        """The pause landed, was observed on the issue, or a person settled it."""
         ...
 
     def clear_release(self, issue_number: int) -> None:
@@ -178,18 +213,24 @@ class LivenessEscalation(Protocol):
         """Publish that ``rows`` stopped being parked."""
         ...
 
-    def block(self, row: LivenessRow) -> bool:
+    def block(self, row: LivenessRow) -> EffectResult:
         """Put the needs-human block, under this owner's cause, on the row's
-        escalation issue. True when it committed."""
+        escalation issue."""
         ...
 
-    def explain(self, row: LivenessRow) -> bool:
-        """Post the one comment explaining the block. True when it committed."""
+    def explain(self, row: LivenessRow) -> EffectResult:
+        """Post the one comment explaining the block."""
         ...
 
-    def unblock(self, issue_number: int) -> bool:
-        """Withdraw this owner's cause of the block. True when that committed."""
+    def unblock(self, issue_number: int) -> EffectResult:
+        """Withdraw this owner's cause of the block."""
+        ...
+
+    def pause(self, issue_number: int, reason: str, context: "EventContext") -> EffectResult:
+        """Put the reconciliation pause label on the issue, and announce it
+        on the timeline -- in ``context``, the run and tick it landed in --
+        when it lands."""
         ...
 
 
-__all__ = ["ActionLivenessStore", "LivenessEscalation", "PendingRelease"]
+__all__ = ["ActionLivenessStore", "LivenessEscalation", "PendingPause", "PendingRelease"]

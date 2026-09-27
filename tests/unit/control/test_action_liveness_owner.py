@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import TICK
+
 from datetime import timedelta
 from unittest.mock import MagicMock
 
@@ -45,7 +47,7 @@ def test_budget_exhaustion_parks_and_escalates_exactly_once() -> None:
         assert owner.admit(KEY).admitted
         owner.record(KEY, ActionOutcome.transient("registry is terminal"))
         clock.advance(timedelta(hours=1))
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
 
     decision = owner.admit(KEY)
     assert decision.admission is Admission.PARKED
@@ -56,7 +58,7 @@ def test_budget_exhaustion_parks_and_escalates_exactly_once() -> None:
     for _ in range(30):  # still planned every day for a month
         clock.advance(timedelta(days=1))
         assert owner.admit(KEY).admission is Admission.PARKED
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
     assert len(escalation.blocks) == 1
 
 
@@ -70,30 +72,37 @@ def test_a_block_github_refused_is_retried_until_it_lands() -> None:
     owner.record(KEY, ActionOutcome.permanent("422"))
     assert store.row(KEY).escalated is False
 
-    owner.reconcile_effects()  # not yet due: paced at max_backoff
+    owner.reconcile_effects(TICK)  # not yet due: paced at max_backoff
     assert len(escalation.blocks) == 1
     escalation.commits = True
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
 
     assert store.row(KEY).escalated is True
     assert [committed for _row, committed in escalation.blocks] == [False, True]
     assert len(escalation.parked) == 1, "announced once, however often the block is retried"
 
 
-def test_a_block_github_never_accepts_stops_being_retried() -> None:
+def test_a_block_github_keeps_refusing_is_retried_at_a_bounded_pace() -> None:
+    """An owed write is never abandoned (dropping it is the failure it exists
+    to prevent), but costs at most one attempt per max_backoff (#7350)."""
     clock = ManualClock()
     escalation = RecordingEscalation(commits=False)
     owner = liveness_owner(escalation=escalation, clock=clock, policy=POLICY)
 
     owner.record(KEY, ActionOutcome.permanent("422"))
     for _ in range(20):
-        clock.advance(POLICY.max_backoff)
+        clock.advance(POLICY.max_backoff / 2)
         owner.admit(KEY)  # still planned
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
 
-    assert len(escalation.blocks) == POLICY.max_attempts
+    assert len(escalation.blocks) == 1 + 10, "the first, then one per max_backoff"
     assert [row.key for row in owner.parked()] == [KEY], "still held and on the board"
+
+    escalation.commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects(TICK)
+    assert escalation.committed_blocks
 
 
 def test_a_comment_github_refused_is_retried_without_relabelling() -> None:
@@ -109,9 +118,9 @@ def test_a_comment_github_refused_is_retried_without_relabelling() -> None:
 
     escalation.explain_commits = True
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
 
     assert len(escalation.blocks) == 1
     assert [committed for _row, committed in escalation.explanations] == [False, True]
@@ -154,7 +163,7 @@ def test_a_park_nobody_asks_about_any_more_is_retired_and_released() -> None:
     clock.advance(POLICY.stale_after / 2)
     owner.admit(changed)
     owner.record(changed, ActionOutcome.done())
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
     assert owner.admit(KEY).admission is Admission.PARKED, "asked again: still parked"
 
     # The new facts keep succeeding; the old question is not asked again.
@@ -162,7 +171,7 @@ def test_a_park_nobody_asks_about_any_more_is_retired_and_released() -> None:
         clock.advance(POLICY.stale_after / 2)
         owner.admit(changed)
         owner.record(changed, ActionOutcome.done())
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
 
     assert owner.parked() == ()
     assert escalation.unblocks == [(229, True)]
@@ -177,11 +186,11 @@ def test_a_park_on_a_slow_cadence_keeps_its_budget() -> None:
 
     for _ in range(12):
         clock.advance(timedelta(hours=4))
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
         assert owner.admit(KEY).admission is Admission.PARKED
 
     clock.advance(POLICY.abandon_after + timedelta(hours=1))
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
     assert owner.parked() == (), "abandoned once nobody asks for abandon_after"
 
 
@@ -199,7 +208,7 @@ def test_a_sibling_operations_success_never_clears_a_park_still_asked_about() ->
         owner.record(sibling, ActionOutcome.done())
         if _ % 2 == 0:
             assert owner.admit(KEY).admission is Admission.PARKED
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
 
     assert [row.key for row in owner.parked()] == [KEY]
 
@@ -227,9 +236,30 @@ def test_a_release_github_refused_is_retried_until_it_lands() -> None:
 
     escalation.unblock_commits = True
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
 
     assert escalation.unblocks == [(229, False), (229, True)]
+    assert store.releases == {}
+
+
+def test_a_withdrawal_refused_many_times_still_lands_once_github_recovers() -> None:
+    """Five ordinary refusals (502s) do not end an owed withdrawal: the block
+    would stay on an issue nobody will take it off (#7350)."""
+    clock = ManualClock()
+    escalation = RecordingEscalation(unblock_commits=False)
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=escalation, clock=clock, policy=POLICY)
+    owner.record(KEY, ActionOutcome.permanent("stuck"))
+    owner.record(KEY, ActionOutcome.done())
+    for _ in range(2 * POLICY.max_attempts):
+        clock.advance(POLICY.max_backoff)
+        owner.reconcile_effects(TICK)
+
+    escalation.unblock_commits = True
+    clock.advance(POLICY.max_backoff)
+    owner.reconcile_effects(TICK)
+
+    assert escalation.unblocks[-1] == (229, True)
     assert store.releases == {}
 
 
@@ -281,7 +311,7 @@ def test_a_release_is_owed_durably_the_moment_the_park_is_forgotten(tmp_path) ->
     restarted = liveness_owner(
         store=SQLiteActionLivenessStore(path), escalation=escalation, policy=POLICY
     )
-    restarted.reconcile_effects()
+    restarted.reconcile_effects(TICK)
     assert escalation.unblocks == [(229, True)]
     assert SQLiteActionLivenessStore(path).pending_releases() == ()
 
@@ -321,7 +351,7 @@ def test_an_operator_release_forgets_an_owed_withdrawal_in_the_same_step(tmp_pat
     restarted = liveness_owner(
         store=SQLiteActionLivenessStore(path), escalation=after, clock=clock
     )
-    restarted.reconcile_effects()
+    restarted.reconcile_effects(TICK)
     assert after.unblocks == []
 
 
@@ -347,7 +377,7 @@ def test_a_release_during_the_block_write_cannot_resurrect_the_park(tmp_path) ->
     assert store.parked_rows() == ()
     assert escalation.unblocks == [(229, True)]
     assert store.pending_releases() == ()
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
     assert [[row.key for row in rows] for rows in escalation.released] == [[KEY]]
 
 
@@ -377,11 +407,11 @@ def test_a_crash_before_publishing_a_park_still_announces_it(tmp_path, mock_even
             events=mock_event_sink, applier=_Applier(), needs_human_label="needs-human"
         ),
     )
-    restarted.reconcile_effects()
+    restarted.reconcile_effects(TICK)
 
     [event] = mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)
     assert event.data["subject"] == "issue:229"
-    restarted.reconcile_effects()
+    restarted.reconcile_effects(TICK)
     assert len(mock_event_sink.get_events_by_name(EventName.ACTION_PARKED)) == 1
 
 
@@ -433,7 +463,7 @@ def test_the_block_stays_while_a_park_whose_own_block_has_not_landed_stands(tmp_
 
     owner.release_identity(second.identity)
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
     assert "needs-human" not in labels.live[229]
 
 
@@ -539,7 +569,7 @@ def test_a_release_racing_the_withdrawal_decision_keeps_its_debt(tmp_path) -> No
     assert released, "the operator's release ran inside the withdrawal decision"
     assert [p.issue_number for p in SQLiteActionLivenessStore(path).pending_releases()] == [229]
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
     assert "needs-human" not in labels.live[229]
 
 

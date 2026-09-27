@@ -58,8 +58,8 @@ def test_a_block_labels_under_its_own_cause_and_comments(mock_event_sink) -> Non
     applier = _Applier()
 
     escalation = _escalation(mock_event_sink, applier)
-    assert escalation.block(_row()) is True
-    assert escalation.explain(_row()) is True
+    assert escalation.block(_row()).committed is True
+    assert escalation.explain(_row()).committed is True
 
     label, comment = applier.applied
     assert isinstance(label, AddLabelAction)
@@ -73,8 +73,8 @@ def test_uncommitted_writes_are_reported(mock_event_sink) -> None:
     applier = _Applier(fail=frozenset({AddLabelAction, AddCommentAction}))
     escalation = _escalation(mock_event_sink, applier)
 
-    assert escalation.block(_row()) is False
-    assert escalation.explain(_row()) is False
+    assert escalation.block(_row()).committed is False
+    assert escalation.explain(_row()).committed is False
 
 
 def test_a_raising_write_is_an_uncommitted_one(mock_event_sink) -> None:
@@ -82,8 +82,8 @@ def test_a_raising_write_is_an_uncommitted_one(mock_event_sink) -> None:
         def apply(self, action):
             raise RuntimeError("claim lost")
 
-    assert _escalation(mock_event_sink, _Raising()).block(_row()) is False
-    assert _escalation(mock_event_sink, _Raising()).unblock(410) is False
+    assert _escalation(mock_event_sink, _Raising()).block(_row()).committed is False
+    assert _escalation(mock_event_sink, _Raising()).unblock(410).committed is False
 
 
 def test_announcements_reach_the_timeline(mock_event_sink) -> None:
@@ -102,7 +102,7 @@ def test_announcements_reach_the_timeline(mock_event_sink) -> None:
 def test_unblock_withdraws_only_this_cause(mock_event_sink) -> None:
     applier = _Applier()
 
-    assert _escalation(mock_event_sink, applier).unblock(410) is True
+    assert _escalation(mock_event_sink, applier).unblock(410).committed is True
     [release] = applier.applied
     assert isinstance(release, RemoveLabelAction)
     assert release.issue_number == 410
