@@ -83,6 +83,13 @@ def terminate_tech_lead_session(
     terminal_stopped = attempt(
         _void(lambda: host.kill_session(session.terminal_id)), "stop terminal"
     )
+    # Settled BEFORE the record goes, and only once the terminal is known to be
+    # stopped: the run ended on purpose, so its claim is consumed rather than
+    # left HELD with no live holder for the recovery sweep to re-admit (#7348).
+    # A terminal that would not stop keeps its claim.
+    work_settled = terminal_stopped and attempt(
+        _void(lambda: _settle_work_claim(host, session)), "settle the work claim"
+    )
     host.state.drop_active_session(session.terminal_id)  # pure in-memory owner op
 
     claims = getattr(deps, "claim_manager", None)
@@ -163,6 +170,7 @@ def terminate_tech_lead_session(
         machine_removed=machine_removed,
         claim_released=claim_released,
         run_released=run_released,
+        work_settled=work_settled,
         worktree_removed=worktree_removed,
         # A failed removal surfaces the EXACT leaked path for explicit operator
         # action before exit — this is the single cleanup-failure owner.
@@ -179,6 +187,14 @@ def terminate_tech_lead_session(
         retained_custody=retained_custody,
         custody_unavailable=custody_unavailable,
     )
+
+
+def _settle_work_claim(host: TechLeadTerminationHost, session: "Session") -> None:
+    """Consume the pending-work claim the stopped session holds, if any."""
+    from .in_flight_work import InFlightWorkLedger, SettlementOutcome
+
+    claims = host.deps.pending_work_claims  # type: ignore[attr-defined]
+    InFlightWorkLedger(host.state, claims).settle(session, SettlementOutcome.CONSUMED)
 
 
 def _release_run_hold(deps: object, session: "Session") -> bool:

@@ -201,6 +201,79 @@ def test_a_live_run_the_operator_stopped_is_not_readmitted_on_the_next_tick(tmp_
     assert state.pending_tech_lead_reviews == []
 
 
+def _terminate_live_run(tmp_path, *, kill_fails: bool):
+    """Terminate a LIVE investigation through ``terminate_tech_lead_session`` --
+    the owner both an ownership LOSS and an on-demand timeout reach."""
+    from issue_orchestrator.control.tech_lead_termination import (
+        terminate_tech_lead_session,
+    )
+    from issue_orchestrator.domain.validated_work_commands import (
+        ValidatedWorkDispositionBatch,
+    )
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("tech_lead")
+    session = _route("tech_lead", state, harness)
+    assert session is not None
+
+    def kill(_name: str) -> None:
+        if kill_fails:
+            raise RuntimeError("tmux is gone")
+
+    host = SimpleNamespace(
+        state=state,
+        deps=SimpleNamespace(pending_work_claims=harness.claims, run_ownership=_ownership()),
+        kill_session=kill,
+        preserve_issue_work=lambda number, reason: ValidatedWorkDispositionBatch.no_work(number, reason),
+    )
+    outcome = terminate_tech_lead_session(host, session)  # type: ignore[arg-type]
+    return harness, state, outcome
+
+
+def test_a_live_run_terminated_by_its_owner_is_not_readmitted_on_the_next_tick(tmp_path):
+    """Ownership LOSS and an on-demand timeout both end a live run through
+    ``terminate_tech_lead_session``, which dropped the session record and left
+    the claim HELD with no live holder -- so the sweep relaunched it."""
+    harness, state, outcome = _terminate_live_run(tmp_path, kill_fails=False)
+
+    assert outcome.work_settled is True
+    assert harness.claims.list_unresolved_claims() == ()
+    assert _next_tick_sweep(state, harness) == 0
+    assert state.pending_tech_lead_reviews == []
+
+
+def test_a_terminal_that_would_not_stop_keeps_its_claim(tmp_path):
+    harness, _state, outcome = _terminate_live_run(tmp_path, kill_fails=True)
+
+    assert outcome.terminal_stopped is False
+    assert outcome.work_settled is False
+    assert [u.deferred for u in harness.claims.list_unresolved_claims()] == [False]
+
+
+def test_a_live_run_whose_issue_claim_was_lost_is_not_readmitted_on_the_next_tick(tmp_path):
+    """Another orchestrator took the issue: the session is stopped and flagged
+    ``blocked:claim-lost``. Its HELD claim used to survive the dropped record,
+    so the sweep relaunched work this engine no longer owns."""
+    from issue_orchestrator.control.claim_loss_termination import (
+        stop_claim_lost_session,
+    )
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("tech_lead")
+    session = _route("tech_lead", state, harness)
+    assert session is not None
+
+    stop_claim_lost_session(
+        session, state=state, claims=harness.claims, kill_session=lambda _n: None,
+        state_machine_manager=MagicMock(),
+    )
+
+    assert state.active_sessions == []
+    assert harness.claims.list_unresolved_claims() == ()
+    assert _next_tick_sweep(state, harness) == 0
+    assert state.pending_tech_lead_reviews == []
+
+
 def test_the_sweep_still_readmits_a_run_nobody_ended(tmp_path):
     """The control: without a terminal decision the deferred row IS the work,
     and the sweep must keep bringing it back after the queue is lost."""

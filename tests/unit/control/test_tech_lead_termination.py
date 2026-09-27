@@ -107,6 +107,8 @@ class _State:
         self.pending_reworks: list = []
         self.pending_validation_retries: list = []
         self.cached_queue_issues: list = []
+        # Launched work held by a terminal; termination settles it (#7348).
+        self.in_flight_work: list = []
 
     def drop_active_session(self, terminal_id: str) -> None:
         self.active_sessions = [
@@ -142,6 +144,7 @@ class _Host:
         self.deps = SimpleNamespace(
             run_ownership=self.ownership,
             claim_manager=None,
+            pending_work_claims=MagicMock(),
             state_machine_manager=None,
             worktree_manager=worktrees,
         )

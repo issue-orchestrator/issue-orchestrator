@@ -343,7 +343,8 @@ class Orchestrator:
             cleanup_manager=self._cleanup_manager,
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
-            pending_work_claims=self.deps.pending_work_claims, queue_cache_store=self.deps.queue_cache_store,
+            pending_work_claims=self.deps.pending_work_claims,
+            queue_cache_store=self.deps.queue_cache_store,
             tech_lead_authority=self.deps.tech_lead_authority,
             run_ownership=self.deps.run_ownership,
         )
@@ -473,7 +474,8 @@ class Orchestrator:
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
             tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
-            pending_work_claims=self.deps.pending_work_claims)
+            pending_work_claims=self.deps.pending_work_claims,
+        )
 
     @cached_property
     def _startup_worktree_reconciler(self) -> StartupWorktreeReconciler:
@@ -793,20 +795,11 @@ class Orchestrator:
         Handles sessions that have lost their claims by terminating them
         and adding the appropriate blocked label.
         """
-        # Check renewals - returns sessions that lost their claim
-        lost_sessions = self.deps.lease_renewer.check_renewals(list(self.state.active_sessions))
-
-        # Handle claim losses
-        for session in lost_sessions:
-            logger.warning("[CLAIM] Session for issue #%d lost claim - terminating", session.issue.number)
-
-            # Kill the terminal session
-            self._kill_session(session.terminal_id)
-
-            # Remove from active sessions
-            self.state.drop_active_session(session.terminal_id)
-            # Drop the session state machine to avoid relaunch conflicts.
-            self.deps.state_machine_manager.remove_session_machine(session.terminal_id)
+        from ..control.claim_loss_termination import stop_claim_lost_session
+        for session in self.deps.lease_renewer.check_renewals(list(self.state.active_sessions)):
+            # Stop the terminal, settle its work claim (#7348), drop its records.
+            stop_claim_lost_session(session, state=self.state, claims=self.deps.pending_work_claims,
+                                    kill_session=self._kill_session, state_machine_manager=self.deps.state_machine_manager)
 
             # Add blocked label (best effort - session lost claim so this may also fail)
             try:
