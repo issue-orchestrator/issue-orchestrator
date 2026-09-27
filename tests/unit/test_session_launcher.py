@@ -10385,6 +10385,7 @@ def test_startup_does_not_requeue_an_anchor_whose_tech_lead_run_is_live(
         config=sample_config,
         session_exists=lambda name: name == live_terminal,
         tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+        claims=_claims_store(),
     )
 
     assert bool(state.pending_tech_lead_reviews) is requeued

@@ -33,10 +33,12 @@ from issue_orchestrator.control.health_review_trigger import (
     ensure_on_demand_health_review_anchor,
     health_review_decision,
     health_review_due,
-    hydrate_last_health_review_at,
     intake_created_tech_lead_anchor,
-    most_recent_health_anchor_created_at,
     plan_health_review_issue_creation,
+)
+from issue_orchestrator.control.health_review_cadence import (
+    hydrate_last_health_review_at,
+    most_recent_health_anchor_created_at,
     record_health_review_creation,
 )
 from issue_orchestrator.control.tech_lead_issue_policy import (

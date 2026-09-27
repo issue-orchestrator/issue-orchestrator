@@ -51,10 +51,8 @@ from ..domain.models import (
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.session_kind import SessionKind
 from .actions import AddLabelAction, RemoveLabelAction
-from .health_review_trigger import (
-    hydrate_last_health_review_at,
-    recover_pending_tech_lead_anchors,
-)
+from .health_review_cadence import hydrate_last_health_review_at
+from .health_review_trigger import recover_pending_tech_lead_anchors
 from .stuck_sweep import hydrate_stuck_sweep_state
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError

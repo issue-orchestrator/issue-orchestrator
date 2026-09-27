@@ -2107,6 +2107,7 @@ def test_an_in_progress_issue_is_orphaned_only_when_no_claim_holder_is_live(
         issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         startup_worktree_reconciler=_startup_worktree_reconciler(),
         label_store=mock_label_store,
+        pending_work_claims=MagicMock(),
     )
     mock_action_applier.apply.return_value = MagicMock(success=True)
     issue = Issue(7, "Anchor", labels=["in-progress", "agent:tech-lead"], repo="owner/repo")
