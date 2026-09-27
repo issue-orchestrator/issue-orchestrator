@@ -67,6 +67,10 @@ def drain_subject(record_id: str) -> str:
     return f"{_SUBJECT_PREFIX}{record_id}"
 
 
+def _record_id(key: LivenessKey) -> str:
+    return key.identity.subject.removeprefix(_SUBJECT_PREFIX)
+
+
 def drain_outcome(result: RecoveryCompleted | RecoveryAttemptPending) -> ActionOutcome:
     """How one drain attempt ended, in the owner's vocabulary."""
     if isinstance(result, RecoveryCompleted):
@@ -201,9 +205,27 @@ class RecoveryDrainLiveness:
     def settle(
         self, key: LivenessKey, result: RecoveryCompleted | RecoveryAttemptPending
     ) -> None:
-        self.record(key, drain_outcome(result))
+        record_id = _record_id(key)
         if isinstance(result, RecoveryCompleted) or result.kind is RecoveryPendingKind.RESOLVED:
-            self.resolve_record(key.identity.subject.removeprefix(_SUBJECT_PREFIX))
+            self.record(key, ActionOutcome.done())
+            self.resolve_record(record_id)
+            return
+        if not self.resolve_if_terminal(record_id):
+            self.record(key, drain_outcome(result))
+
+    def resolve_if_terminal(self, record_id: str) -> bool:
+        """Whether the record is durably resolved -- then every lane's rows
+        are released -- whatever the attempt that just ran reported: a step
+        after a committed recovery or retirement can still fail or pend.
+        An unreadable disposition counts as not resolved."""
+        try:
+            resolved = not self.records.get(record_id).unresolved
+        except Exception:
+            logger.warning("Disposition of record %s is unreadable", record_id, exc_info=True)
+            return False
+        if resolved:
+            self.resolve_record(record_id)
+        return resolved
 
     def resolve_record(self, record_id: str) -> None:
         """The record is resolved (recovered or retired): release every drain
@@ -219,11 +241,15 @@ class RecoveryDrainLiveness:
             # open, including ones asked under its older evidence or state.
             self.owner.release_identity(key.identity)
 
-    def settle_error(self, key: LivenessKey, error: Exception) -> None:
+    def settle_error(self, key: LivenessKey, error: Exception) -> bool:
+        """Settle an attempt that raised; whether its record turned out resolved."""
+        if self.resolve_if_terminal(_record_id(key)):
+            return True
         self.owner.record(
             key,
             transient_outcome(f"{type(error).__name__}: {error}", host_rate_limit_of(error)),
         )
+        return False
 
 
 __all__ = [

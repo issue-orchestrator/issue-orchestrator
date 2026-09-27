@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import timedelta
+
+import pytest
 from types import SimpleNamespace
 
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
@@ -99,11 +101,16 @@ class _Engine:
     # optionally moved on by "another path".
     #: Records whose disposition read fails, though selection returns them.
     unreadable: frozenset[str] = frozenset()
+    #: Whether the record reads as durably resolved.
+    resolved = False
 
     def get(self, record_id: str):
         if record_id in self.unreadable:
             raise OSError("disposition row does not decode")
         disposition = self.store.get(record_id)
+        if self.resolved:
+            # Durably resolved by "another step"; only what the drain reads.
+            return SimpleNamespace(key=disposition.key, state=disposition.state, unresolved=False)
         if self.moved_to is None:
             return disposition
         return dataclasses.replace(disposition, state=self.moved_to)
@@ -290,6 +297,36 @@ def test_an_explicit_recovery_that_waits_keeps_the_park_and_its_block(tmp_path) 
         assert row.parked and row.escalated, result.message
         assert [fact.reason for fact in engine.owner.parked_for_issue(410)] == [row.last_reason]
     assert engine.escalation.released == [] and engine.escalation.unblocks == []
+
+
+@pytest.mark.parametrize("ends", ["pending", "raises"])
+def test_a_record_resolved_by_an_attempt_that_then_fails_releases_every_lane(
+    tmp_path, ends
+) -> None:
+    """The attempt durably resolved the record, then a later step pended or
+    raised. The record's parks go at once -- not after stale_after
+    -- and their block is withdrawn (review B r12)."""
+    engine = _Engine(tmp_path, RecoveryAttemptPending("still broken"))
+    engine.passes(10)
+    [parked] = engine.escalation.parked
+
+    def resolves_then_fails(request):
+        engine.resolved = True
+        if ends == "raises":
+            raise RuntimeError("cleanup failed after publication")
+        return RecoveryAttemptPending("cleanup pending after publication")
+
+    engine.operation.result = resolves_then_fails
+    try:
+        engine.drain.recover(_operator_retry(engine), OrchestratorState())
+    except RuntimeError:
+        assert ends == "raises"
+
+    assert engine.rows.rows == {}
+    engine.clock.advance(POLICY.max_backoff)
+    engine.owner.reconcile_effects()
+    assert [row.key for batch in engine.escalation.released for row in batch] == [parked.key]
+    assert engine.escalation.unblocks == [(410, True)]
 
 
 def test_a_state_change_is_a_new_question(tmp_path) -> None:
