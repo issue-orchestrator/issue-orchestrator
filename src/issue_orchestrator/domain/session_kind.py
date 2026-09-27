@@ -106,6 +106,21 @@ class SessionKind(Enum):
         return self in {SessionKind.CODE, SessionKind.TECH_LEAD}
 
     @property
+    def is_tech_lead(self) -> bool:
+        """Whether this is a tech-lead run (any flavor).
+
+        For the readers that need tech-lead identity itself (custody names a
+        tech lead's investigation apart from a fix), not a policy a capability
+        answers.
+        """
+        return self is SessionKind.TECH_LEAD
+
+    @property
+    def work_description(self) -> str:
+        """What a live session of this kind is doing, in the words a card shows."""
+        return _WORK_DESCRIPTION[self]
+
+    @property
     def session_type(self) -> SessionType:
         """The terminal naming lane a session of this kind is launched in."""
         try:
@@ -268,6 +283,15 @@ _SESSION_TYPE: dict[SessionKind, SessionType] = {
 }
 
 _LAUNCHED_AS_ISSUE_BEFORE_7347 = frozenset({SessionKind.TECH_LEAD})
+
+_WORK_DESCRIPTION: dict[SessionKind, str] = {
+    SessionKind.CODE: "coding session",
+    SessionKind.REWORK: "rework session",
+    SessionKind.REVIEW: "code review",
+    SessionKind.RETROSPECTIVE_REVIEW: "retrospective review",
+    SessionKind.TECH_LEAD: "tech-lead session",
+    SessionKind.HISTORICAL: "historical import",
+}
 
 #: The kinds an issue-lane launch stamps from the agent label.
 _ISSUE_LAUNCH_KINDS = frozenset({SessionKind.CODE, SessionKind.TECH_LEAD})
