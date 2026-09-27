@@ -10,7 +10,9 @@ import pytest
 from issue_orchestrator.control.completion_processor import LabelAdapter, PRAdapter
 from issue_orchestrator.control.retained_completion_preparation import RetainedCompletionPreparation
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError
-from issue_orchestrator.domain.completion_processing import ProcessingResult
+from issue_orchestrator.control.stack_base import StackBaseDecision
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from tests.unit.control.liveness_doubles import rate_limited
 from issue_orchestrator.domain.recovery_publication import PreparedRecoveryPublication
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.validated_work import (
@@ -100,7 +102,7 @@ def test_retained_source_uses_normal_completion_guards(retained, kind):
     retained.git.run(retained.worktree, ["commit", "-m", "Forbidden source"])
     rig = prepare(retained)
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
-    assert isinstance(result, ProcessingResult) and not result.success
+    assert isinstance(result, RecoveryAttemptPending)
     assert ("skip" if kind == "test-skip" else "runtime") in result.message.lower()
     assert_no_effects(rig)
 
@@ -163,7 +165,7 @@ def test_retained_record_cannot_request_the_configured_human_block(retained):
     block.owns.side_effect = lambda label: label == "operator-human-block"
     rig.processor.needs_human_block = block
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
-    assert isinstance(result, ProcessingResult) and not result.success
+    assert isinstance(result, RecoveryAttemptPending)
     assert "reserved shared block" in result.message
     assert_no_effects(rig)
 
@@ -183,7 +185,7 @@ def test_create_pr_only_cannot_authorize_an_exact_push_to_master(retained):
     raw["requested_actions"] = []  # prepare adds CREATE_PR alone
     rig = prepare(retained, raw=raw)
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
-    assert isinstance(result, ProcessingResult) and not result.success
+    assert isinstance(result, RecoveryAttemptPending)
     assert "protected branch" in result.message
     assert_no_effects(rig)
 
@@ -213,7 +215,44 @@ def test_a_partial_completion_whose_text_closes_the_issue_is_refused_before_any_
 
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
 
-    assert isinstance(result, ProcessingResult)
-    assert not result.success
-    assert any("closes it by keyword" in e for e in result.errors)
+    assert isinstance(result, RecoveryAttemptPending)
+    assert "closes it by keyword" in result.message
+    assert result.rate_limit is None
+    assert_no_effects(rig)
+
+
+def test_a_rate_limited_partial_delivery_read_keeps_its_reset(retained):
+    """The partial-delivery check reads the branch's open PR from GitHub. A
+    rate limit there waits for the reset instead of spending recovery budget
+    as an ordinary failure (#7426)."""
+    raw = json.loads(completion())
+    raw["partial_pr"] = True
+    rig = prepare(retained, raw=raw)
+    limited = rate_limited()
+    rig.prs.get_prs_for_branch.side_effect = limited
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.rate_limit == limited.rate_limit
+    assert "partial-delivery check" in result.message
+
+
+def test_a_rate_limited_stack_gate_keeps_its_reset(retained):
+    """A fail-closed stack publish gate that could not read GitHub names the
+    host's reset on the recovery result (#7426)."""
+    rig = prepare(retained)
+    limited = rate_limited()
+    gate = Mock()
+    gate.decide_publish.return_value = StackBaseDecision(
+        is_stack=False, allowed=False, reason="stack gate read was rate limited",
+        retryable=True, host_rate_limit=limited.rate_limit,
+    )
+    rig.processor.attach_stack_publish_gate(gate)
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, RecoveryAttemptPending)
+    assert result.rate_limit == limited.rate_limit
+    assert "stack gate read was rate limited" in result.message
     assert_no_effects(rig)
