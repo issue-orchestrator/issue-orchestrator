@@ -42,7 +42,7 @@ from tests.e2e.exam.scenarios import (
     case_b,
     run_case_a,
     run_case_b,
-    teardown_items,
+    teardown_run,
 )
 from tests.e2e.flows import E2EFlow
 
@@ -116,7 +116,7 @@ async def test_tech_lead_exam(
             )
     finally:
         created = [number for flow in flows for number in flow.created_issue_numbers]
-        teardown_items(repo_name, created)
+        teardown_run(repo_name, run_label, created)
         for flow in flows:
             flow.cleanup_created_issues()
         # Anchors and follow-ups the engine filed carry the run label.

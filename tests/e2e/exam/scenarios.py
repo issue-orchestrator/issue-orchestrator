@@ -39,7 +39,7 @@ from tests.e2e.exam.observe import (
     terminal_tech_lead_runs,
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
-from tests.e2e.fixtures import fetch_gh_audit_report
+from tests.e2e.fixtures import _github_adapter, fetch_gh_audit_report
 from tests.e2e.flows import E2EFlow, close_pr
 
 logger = logging.getLogger(__name__)
@@ -50,14 +50,20 @@ logger = logging.getLogger(__name__)
 CASE_A_EXTERNAL_ID = "M0-760"
 CASE_B_EXTERNAL_ID = "M0-761"
 
-#: Production tech-lead authority (the operator's io/porchpin configs), so a
-#: destructive remedy is really executed — and really graded — as it would be.
-PRODUCTION_TECH_LEAD_AUTHORITY = {
+#: Production tech-lead authority for every act-level action (the operator's
+#: io/porchpin configs), so a destructive remedy is really executed — and
+#: really graded — as it would be. Filing is proposed instead: an executed
+#: follow-up is worked by the exam's scripted coder (the first Case B run
+#: grew a second investigation that way), and a case file is a real issue
+#: other engines' case-file readers could pick up. A proposed escalation
+#: still grades as a remedy.
+EXAM_TECH_LEAD_AUTHORITY = {
     "reset_retry": "execute",
     "kill_hung_session": "execute",
     "request_rework": "execute",
     "recover_validated_work": "execute",
-    "create_issue": "execute",
+    "create_issue": "propose",
+    "flag_pattern": "propose",
 }
 
 
@@ -200,13 +206,17 @@ def _labels(config: Config) -> LabelManager:
     return LabelManager(config)
 
 
-def teardown_items(repo: str, issue_numbers: list[int]) -> None:
-    """Close every open PR of the exam's items and delete its branch.
+def teardown_run(repo: str, run_label: str, created: list[int]) -> None:
+    """Close every open PR of every issue the run touched, and its branch.
 
-    Recovery-published PRs need not carry the e2e cleanup labels, so the
-    generic label-based reconciliation cannot be relied on to find them.
+    "Touched" is the issues the harness created plus every issue carrying the
+    run label — the engine files some itself (tech-lead anchors, follow-ups,
+    case files) and can publish PRs for them. Recovery-published PRs need not
+    carry the e2e cleanup labels, so label-based reconciliation cannot be
+    relied on to find them. The issues themselves are closed by the caller.
     """
-    for number in issue_numbers:
+    labelled = [issue.number for issue in _github_adapter(repo).list_issues(labels=[run_label], state="all")]
+    for number in sorted(set(created) | set(labelled)):
         for pr in linked_pull_requests(repo, number, state="open"):
             close_pr(repo, pr.number)
             logger.info("[EXAM] closed PR #%d of exam issue #%d", pr.number, number)
@@ -297,7 +307,7 @@ async def run_case_b(
                 "max_concurrent": 1,
                 "explicit_labels": [E2E_DATA_LABEL],
                 "inherit_labels": [E2E_DATA_LABEL],
-                "authority": dict(PRODUCTION_TECH_LEAD_AUTHORITY),
+                "authority": dict(EXAM_TECH_LEAD_AUTHORITY),
                 "findings": {"promote": "off"},
                 "health_review": {"interval_minutes": 0},
                 # The path porchpin took (#7293): the sweep finds the blocked
