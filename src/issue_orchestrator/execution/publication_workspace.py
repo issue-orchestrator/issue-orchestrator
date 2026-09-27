@@ -21,8 +21,8 @@ from ..infra.runtime_artifacts import (
     CLEANUP_SAFE_UNTRACKED_ROOTS,
     DEPENDENCY_OUTPUT_DIR_NAMES,
     builtin_cleanup_root,
-    is_builtin_cleanup_safe_untracked_path,
 )
+from ..ports.command_runner import OutputNewlines
 from ..ports.git import Git, GitError
 from ..ports.validated_work_escrow import ValidatedWorkEscrow
 from .publication_checkout_integrity import require_exact_checkout_content
@@ -233,30 +233,64 @@ class EscrowPublicationWorkspaces:
             raise GitError(branch)
         if self._git.head_sha(checkout) != target:
             raise ValueError("publication checkout HEAD changed; retained")
-        status = self._git.run(checkout, ["status", "--porcelain=v1", "-z",
-                                         "--untracked-files=all", "--ignored=matching"])
-        unexpected = tuple(
-            entry for entry in status.stdout.split("\0")
-            if entry and (
-                not allow_setup_outputs
-                or entry[:3] not in {"!! ", "?? "}
-                or not is_builtin_cleanup_safe_untracked_path(entry[3:])
-            )
-        )
-        if unexpected:
+        tracked = self._git.run(checkout, ["status", "--porcelain=v1", "-z",
+                                          "--untracked-files=no"],
+                                newlines=OutputNewlines.PRESERVED)
+        if tracked.stdout.strip("\0"):
+            raise ValueError("dirty publication checkout retained")
+        outputs = self._untracked_outputs(checkout)
+        if any(root is None or not allow_setup_outputs for root in outputs.values()):
             raise ValueError("dirty publication checkout retained")
         require_exact_checkout_content(self._git, checkout, target)
 
+    def _untracked_outputs(self, checkout: Path) -> dict[str, str | None]:
+        """Map every untracked path to the output root that owns it, or None.
+
+        The checkout's only source of truth is the exact validated commit, which
+        escrow pins independently; nothing untracked is ever published. Two
+        owners are trusted to have produced untracked paths here:
+
+        - process policy (``builtin_cleanup_root``): runtime and dependency
+          output io's own setup writes; and
+        - the validated commit's committed ignore rules: output the repository
+          itself declares generated. This is what its pre-push hook leaves
+          when io pushes from this checkout (#7346/#7289) -- ``.build/``,
+          ``*.tsbuildinfo``, test results. It is not operator work.
+
+        Ignore status is evaluated from per-directory ``.gitignore`` files
+        ONLY. The operator's own excludes (``info/exclude``,
+        ``core.excludesFile``) never grant cleanup authority, so a file an
+        operator hid with them is reported unowned and preserved. Tracked
+        ``.gitignore`` content is proven exact by
+        ``require_exact_checkout_content``; an UNTRACKED ``.gitignore`` could
+        grant itself authority, so it is never owned (outside a builtin root).
+        A tracked modification, a moved HEAD or an untracked non-ignored file
+        stays unowned: that is what stranded work looks like, and it is kept.
+        """
+        rules = ["--exclude-per-directory=.gitignore"]
+        visible = self._git.run(checkout, ["ls-files", "-z", "--others", *rules],
+                                newlines=OutputNewlines.PRESERVED).stdout
+        ignored = self._git.run(
+            checkout, ["ls-files", "-z", "--others", "--ignored", "--directory", *rules],
+            newlines=OutputNewlines.PRESERVED,
+        ).stdout
+        outputs: dict[str, str | None] = {
+            path: builtin_cleanup_root(path) for path in visible.split("\0") if path
+        }
+        for path in ignored.split("\0"):
+            if not path:
+                continue
+            owned = path.rstrip("/")
+            outputs[path] = builtin_cleanup_root(path) or (
+                None if Path(owned).name == ".gitignore" else owned
+            )
+        return outputs
+
     def _clear_setup_outputs(self, checkout: Path, target: str) -> None:
         """Reset trusted generated paths without following planted symlinks."""
-        status = self._git.run(checkout, ["status", "--porcelain=v1", "-z",
-                                         "--untracked-files=all", "--ignored=matching"])
         roots: set[Path] = set()
-        for entry in status.stdout.split("\0"):
-            if not entry:
-                continue
-            root = builtin_cleanup_root(entry[3:])
-            if entry[:3] not in {"!! ", "?? "} or root is None:
+        for root in self._untracked_outputs(checkout).values():
+            if root is None:
                 raise ValueError("dirty publication checkout retained")
             relative = Path(root)
             if relative.is_absolute() or ".." in relative.parts:

@@ -14,6 +14,8 @@ from issue_orchestrator.adapters.github.publication_remote import (
     GitHubPublicationRemote, GitHubValidatedWorkCaptureObserver,
 )
 from issue_orchestrator.domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPrState,
     PublicationRemoteError,
 )
@@ -268,3 +270,51 @@ def test_create_preserves_prepared_content_and_adds_attribution(remote_factory, 
     observed = remote_factory(handle).create_pr(candidate)
     assert observed.number == 2
     assert len(requests) == 1
+
+
+def _unprocessable(message):
+    return httpx.Response(
+        422,
+        json={
+            "message": "Validation Failed",
+            "errors": [{"resource": "PullRequest", "code": "custom", "message": message}],
+            "documentation_url": "https://docs.github.com/rest/pulls/pulls#create-a-pull-request",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "rejection"),
+    [
+        (_unprocessable("No commits between main and feature"), PrCreateRejection.NO_COMMITS),
+        (
+            _unprocessable("A pull request already exists for owner:feature."),
+            PrCreateRejection.ALREADY_EXISTS,
+        ),
+        (
+            httpx.Response(
+                422,
+                json={
+                    "message": "Validation Failed",
+                    "errors": [{"resource": "PullRequest", "field": "base", "code": "invalid"}],
+                },
+            ),
+            PrCreateRejection.INVALID,
+        ),
+        (httpx.Response(422, text="not json"), PrCreateRejection.INVALID),
+    ],
+)
+def test_create_422_is_a_typed_definite_refusal(remote_factory, response, rejection):
+    """#7346: a 422 is an answer, not a lost response, so it is never transient."""
+    with pytest.raises(PublicationPrCreateRejected) as raised:
+        remote_factory(lambda _request: response).create_pr(COMMAND)
+    assert raised.value.rejection is rejection
+
+
+@pytest.mark.parametrize("status", [500, 502, 403])
+def test_create_non_422_failure_stays_an_untyped_remote_error(remote_factory, status):
+    with pytest.raises(PublicationRemoteError) as raised:
+        remote_factory(lambda _request: httpx.Response(status, json={"message": "no"})).create_pr(
+            COMMAND
+        )
+    assert not isinstance(raised.value, PublicationPrCreateRejected)

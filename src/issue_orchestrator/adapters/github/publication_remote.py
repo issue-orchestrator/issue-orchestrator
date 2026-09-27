@@ -1,11 +1,14 @@
 """Strict uncached publication reads over the shared GitHub HTTP boundary."""
 
+import json
 from typing import Any
 from urllib.parse import urlsplit
 
 from ...domain.exact_git import ExactPushDestination
 
 from ...domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPullRequest,
     PublicationPrState,
     PublicationRemoteError,
@@ -18,7 +21,14 @@ from ...domain.validated_work_capture import (
 )
 from ...domain.validated_work import require_sha
 from ...ports.repository_host import RepositoryHostError
+from .errors import GitHubHttpError
 from .http_client import GitHubHttpClient
+
+# GitHub answers an unprocessable PR create with 422 and, for the refusals the
+# publication owner acts on, a stable human message in ``errors[].message``.
+_UNPROCESSABLE = 422
+_NO_COMMITS = "no commits between"
+_ALREADY_EXISTS = "a pull request already exists"
 
 
 def _pull_request(raw: dict[str, Any]) -> PublicationPullRequest:
@@ -41,6 +51,39 @@ def _pull_request(raw: dict[str, Any]) -> PublicationPullRequest:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise PublicationRemoteError("Incomplete publication PR identity") from exc
+
+
+def _create_rejection(exc: GitHubHttpError) -> PublicationPrCreateRejected | None:
+    """Classify a definite PR-create refusal; anything else stays a remote error.
+
+    Only a 422 is a definite refusal. Its subtype is read from the validation
+    messages GitHub returns; an unrecognized or unreadable 422 body is still a
+    refusal of this exact request, never a transient read failure.
+    """
+    if exc.status_code != _UNPROCESSABLE:
+        return None
+    messages: list[str] = []
+    try:
+        payload = json.loads(exc.response_text or "")
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        errors = payload.get("errors")
+        for item in errors if isinstance(errors, list) else ():
+            if isinstance(item, dict) and isinstance(item.get("message"), str):
+                messages.append(item["message"])
+        if isinstance(payload.get("message"), str):
+            messages.append(payload["message"])
+    folded = " ".join(messages).casefold()
+    rejection = (
+        PrCreateRejection.NO_COMMITS
+        if _NO_COMMITS in folded
+        else PrCreateRejection.ALREADY_EXISTS
+        if _ALREADY_EXISTS in folded
+        else PrCreateRejection.INVALID
+    )
+    detail = "; ".join(messages) or str(exc)
+    return PublicationPrCreateRejected(rejection, f"PR create refused: {detail}")
 
 
 def _branch_head(client: GitHubHttpClient, branch_name: str) -> str | None:
@@ -172,5 +215,10 @@ class GitHubPublicationRemote:
             if raw is None:
                 raise PublicationRemoteError("PR create response was lost")
             return _pull_request(raw)
+        except GitHubHttpError as exc:
+            rejected = _create_rejection(exc)
+            if rejected is not None:
+                raise rejected from exc
+            raise PublicationRemoteError(str(exc)) from exc
         except (RepositoryHostError, ValueError, TypeError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
