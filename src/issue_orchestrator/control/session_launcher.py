@@ -722,7 +722,7 @@ class SessionLauncher:
             return result
         # An open PR carrying published validated work owns the issue (#7293).
         if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
-                                                         tech_lead=kind is SessionKind.TECH_LEAD):
+                                                         kind=kind, pr_number=None):
             return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
@@ -1146,9 +1146,10 @@ class SessionLauncher:
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
         # A retry of work already published under an open PR must not start a
-        # second coder on that PR's branch (#7293); a tech lead's retry is a tech-lead run.
+        # second coder on that PR's branch (#7293); a tech lead's retry is a tech-lead
+        # run, and a rework's retry is still that PR's own review cycle.
         if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
-                                                         tech_lead=retry.source_kind is SessionKind.TECH_LEAD):
+                                                         kind=retry.source_kind, pr_number=retry.pr_number):
             return result
         return issue, agent_config, agent_label, prepared_coder_prompt
 
