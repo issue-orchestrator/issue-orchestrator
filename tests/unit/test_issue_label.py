@@ -21,6 +21,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
 from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
 )
@@ -120,6 +121,7 @@ def test_dashboard_view_model_active_card_carries_issue_label():
         _Stub(),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -161,6 +163,7 @@ def test_dashboard_view_model_history_card_carries_issue_label():
         _Stub(),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="awaiting-merge",
         e2e_page=1,

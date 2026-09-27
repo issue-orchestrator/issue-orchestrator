@@ -16,6 +16,10 @@ from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
     TechLeadRunHistoryReader,
 )
+from issue_orchestrator.ports.blocked_item_custody import (
+    NO_ENGINE_CUSTODY,
+    BlockedItemCustodyReader,
+)
 from tests.conftest import operator_paused_state
 
 
@@ -33,6 +37,10 @@ class MockOrchestratorForWeb:
     # a mock without one makes ``GET /`` raise instead of rendering. Override per
     # test to publish runs.
     tech_lead_run_history: TechLeadRunHistoryReader = NO_TECH_LEAD_RUN_HISTORY
+
+    # Blocked-item custody (#7331), resolved from the same kind of required
+    # facade property. Override per test with a real reader.
+    blocked_item_custody: BlockedItemCustodyReader = NO_ENGINE_CUSTODY
 
     def __init__(self) -> None:
         self.state = OrchestratorState(

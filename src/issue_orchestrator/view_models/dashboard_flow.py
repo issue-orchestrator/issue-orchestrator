@@ -65,6 +65,10 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
         # the stale `data-run-dir` — and the launch-prompt action that reads
         # it — cannot survive on a reused DOM node.
         _s(card.get("run_dir")),
+        # `custody_signal` (#7331) is what the card's custody line SAYS - state,
+        # staleness, reason, deciding record - without its ticking age, so a
+        # changed custody rebuilds the card and a clock alone does not.
+        _s(card.get("custody_signal")),
     ]
     return "|".join(parts)
 
@@ -137,6 +141,10 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         # carried for the same reason as the stack chip above.
         "provider_badge": item.get("provider_badge"),
         "provider_signal": item.get("provider_signal") or "",
+        # Blocked-item custody (#7331), stamped by its owner's projection;
+        # None outside the Blocked lane.
+        "custody": item.get("custody"),
+        "custody_signal": item.get("custody_signal") or "",
     }
     card["fingerprint"] = compute_compact_card_fingerprint(card)
     return card
@@ -346,6 +354,8 @@ def build_flow_columns(
     blocked_items: list[dict[str, Any]],
     awaiting_merge_items: list[dict[str, Any]],
     completed_items: list[dict[str, Any]],
+    *,
+    blocked_custody_summary: dict[str, Any],
 ) -> list[dict[str, Any]]:
     # Exclude merge-pending items from the queued column because they appear in awaiting-merge.
     awaiting_numbers = {item.get("issue_number") for item in awaiting_merge_items}
@@ -400,6 +410,9 @@ def build_flow_columns(
             "items": blocked_cards,
             "hidden_count": max(len(blocked_items) - len(blocked_cards), 0),
             "expandable": True,
+            # #7331: the "is it under control?" number, over EVERY blocked
+            # item (not only the preview cards).
+            "custody_summary": blocked_custody_summary,
         },
         {
             "id": "awaiting-merge",

@@ -17,6 +17,8 @@ from ..infra.audit import get_issue_dependencies
 from ..infra import gh_audit
 from ..ports.provider_resilience import ProviderCircuitStatusReader
 from ..ports.tech_lead_run_record_store import TechLeadRunHistoryReader
+from ..ports.blocked_item_custody import BlockedItemCustodyReader
+from .blocked_custody import attach_blocked_custody, custody_summary_payload
 from .dependency_gate import (
     stack_chip,
     stack_chip_payload,
@@ -1127,6 +1129,7 @@ def build_dashboard_view_model(
     *,
     provider_circuit: ProviderCircuitStatusReader,
     tech_lead_history: TechLeadRunHistoryReader,
+    blocked_custody: BlockedItemCustodyReader,
     queue_page: int = 1,
     active_tab: str = "kanban",
     e2e_page: int = 1,
@@ -1235,6 +1238,9 @@ def build_dashboard_view_model(
         blocked_items = _sort_by_issue_number(blocked_items)
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
         completed_items = _sort_by_issue_number(completed_items)
+        # #7331: custody is derived by its owner, for the FINAL blocked lane.
+        custody = blocked_custody.read([item["issue_number"] for item in blocked_items])
+        attach_blocked_custody(blocked_items, custody, datetime.now(timezone.utc))
 
         # Backlog used only for scope_summary.in_scope_total (not a kanban column)
         backlog_items = exclude_flow_overlaps(
@@ -1251,6 +1257,7 @@ def build_dashboard_view_model(
             blocked_items,
             awaiting_merge_items,
             completed_items,
+            blocked_custody_summary=custody_summary_payload(custody).model_dump(mode="json"),
         )
 
     e2e_status_provider = e2e_status_provider or get_e2e_status

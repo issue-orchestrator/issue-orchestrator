@@ -46,6 +46,9 @@
         // rebuilt so the stale data-run-dir — read by the launch-prompt
         // action — cannot linger. Mirrors compute_compact_card_fingerprint.
         const runDir = card?.run_dir ?? '';
+        // custody_signal (#7331; custody_signal() in view_models/blocked_custody.py)
+        // is what the custody line says, without its ticking age.
+        const custodySignal = card?.custody_signal ?? '';
         return [
             cardId,
             issueNumber,
@@ -68,6 +71,7 @@
             stackSignal,
             providerSignal,
             runDir,
+            custodySignal,
         ].join('|');
     }
 
