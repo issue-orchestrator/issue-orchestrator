@@ -277,7 +277,7 @@ def _upgrade_lines(card: Scorecard) -> list[str]:
     lines = [
         f"  upgrade [{_mark(card.upgrade.passed)}]: {facts.base_commit[:10]} -> {facts.candidate_commit[:10]},"
         f" sessions live at stop: {', '.join(f'#{n}' for n in facts.sessions_at_stop) or 'none'}",
-        f"    first {facts.early_ticks} ticks: writes {writes}",
+        f"    restart window ({facts.early_ticks} ticks, work held): writes {writes}",
         "    label changes: " + ("; ".join(c.describe() for c in facts.early_label_changes) or "none"),
         "    restore hazards: " + ("; ".join(facts.hazards) or "none"),
     ]

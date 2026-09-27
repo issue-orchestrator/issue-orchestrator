@@ -133,13 +133,13 @@ class TestUpgradeGrade:
     def test_a_comment_in_the_window_fails(self) -> None:
         writes = {**{kind: 0 for kind in WriteKind}, WriteKind.COMMENT: 2}
         assert grade_upgrade(SPEC, facts(early_writes=writes)).failures == (
-            f"2 comment(s) posted in the first {UPGRADE_EARLY_TICKS} ticks",
+            "2 comment(s) posted in the restart window",
         )
 
     def test_a_hold_label_in_the_window_fails(self) -> None:
         paged = (LabelChange(921, ("io:needs-human",), ()),)
         assert grade_upgrade(SPEC, facts(early_label_changes=paged)).failures == (
-            f"hold label added in the first {UPGRADE_EARLY_TICKS} ticks: #921 +io:needs-human",
+            "hold label added in the restart window: #921 +io:needs-human",
         )
 
     def test_a_hold_label_REMOVED_is_not_a_page(self) -> None:
@@ -148,7 +148,7 @@ class TestUpgradeGrade:
 
     def test_an_engine_that_stops_ticking_fails(self) -> None:
         assert grade_upgrade(SPEC, facts(early_ticks=2)).failures == (
-            f"candidate completed only 2 of {UPGRADE_EARLY_TICKS} ticks in the restart window",
+            f"candidate completed only 2 of {UPGRADE_EARLY_TICKS} ticks before the held work was released",
         )
 
     def test_a_spec_needs_hold_labels_and_a_window(self) -> None:

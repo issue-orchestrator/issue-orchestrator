@@ -9,8 +9,11 @@ when the candidate takes all of that over quietly:
 
 * nothing is quarantined or declared unrestorable (the restore owners'
   ``session.*`` hazard events);
-* in the first ``early_ticks`` ticks it posts no comment and adds no hold
-  label (needs-human, blocked-*), the writes an operator would be paged by;
+* in its restart window (from its start until the harness releases the
+  held work, at least ``early_ticks`` ticks) it posts no comment and adds
+  no hold label (needs-human, blocked-*), the writes an operator would be
+  paged by. Nothing in flight can finish inside the window, so any such
+  write is the restart's own doing;
 * and, graded by the case's goals, the in-flight work then completes.
 
 Every other GitHub write in the window is reported by kind, not failed: a
@@ -171,7 +174,7 @@ class UpgradeSpec:
     """What a sound upgrade looks like for one case."""
 
     early_ticks: int
-    """How many candidate ticks the quiet window covers."""
+    """The fewest candidate ticks the restart window must span."""
     hold_labels: frozenset[str]
     """Labels the candidate must not add in the window (needs-human, blocks)."""
 
@@ -191,7 +194,7 @@ class UpgradeFacts:
     sessions_at_stop: tuple[int, ...]
     """Issues with a live session when the base engine was stopped."""
     early_ticks: int
-    """Candidate ticks completed when the window was measured."""
+    """Candidate ticks completed when the restart window closed."""
     early_writes: Mapping[WriteKind, int]
     early_label_changes: tuple[LabelChange, ...]
     hazards: tuple[str, ...]
@@ -246,14 +249,14 @@ def grade_upgrade(spec: UpgradeSpec, facts: UpgradeFacts) -> UpgradeGrade:
     elif facts.early_ticks < spec.early_ticks:
         failures.append(
             f"candidate completed only {facts.early_ticks} of {spec.early_ticks} ticks"
-            " in the restart window"
+            " before the held work was released"
         )
     failures.extend(f"restore hazard: {hazard}" for hazard in facts.hazards)
     comments = facts.early_writes.get(WriteKind.COMMENT, 0)
     if comments:
-        failures.append(f"{comments} comment(s) posted in the first {spec.early_ticks} ticks")
+        failures.append(f"{comments} comment(s) posted in the restart window")
     failures.extend(
-        f"hold label added in the first {spec.early_ticks} ticks: {change.describe()}"
+        f"hold label added in the restart window: {change.describe()}"
         for change in facts.early_label_changes
         if set(change.added) & spec.hold_labels
     )

@@ -31,20 +31,14 @@ from issue_orchestrator.testing.exam.cases import (
     stale_claim_paused_for_reconcile,
     upgrade_with_work_in_flight,
 )
-from issue_orchestrator.testing.exam.upgrade import (
-    UpgradeFacts,
-    complete_history,
-    hazard_events,
-    label_changes,
-    merged_by_id,
-    writes_by_kind,
-)
+from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL
 from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine, case_u_engine
 from tests.e2e.exam.engine import EngineCheckout, ExamEngine
+from tests.e2e.exam.upgrade_window import capture_restart_window, upgrade_facts
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
@@ -516,20 +510,10 @@ async def run_case_u(
         runtime = await candidate.start()
         try:
             flow.watcher = runtime.watcher
-            await settle(
-                lambda: candidate.ticks_completed() >= UPGRADE_EARLY_TICKS
-                or not candidate.is_running(),
-                timeout_s=CASE_U_WINDOW_S,
-                poll_s=2.0,
-            )
-            # From the engine's own buffer, not the watcher: startup restore
-            # publishes its hazards before any watcher connects.
-            early_events = complete_history(candidate.event_history())
-            early_ticks = sum(1 for event in early_events if event.get("type") == "tick.completed")
-            early_writes = (
-                writes_by_kind(candidate.gh_audit_report()["by_command"])
-                if candidate.is_running()
-                else {}
+            # Closed BEFORE the release: everything in it happened while all
+            # the work was still held (upgrade_window).
+            window = await capture_restart_window(
+                candidate, min_ticks=UPGRADE_EARLY_TICKS, timeout_s=CASE_U_WINDOW_S
             )
             release.touch()
             ended_by = await drive(
@@ -538,16 +522,12 @@ async def run_case_u(
                 quiet_s=420,
                 timeout_s=45 * 60,
             )
-            facts = UpgradeFacts(
+            facts = upgrade_facts(
+                window,
+                whole_run=list(runtime.watcher.view.global_events),
                 base_commit=base_commit,
                 candidate_commit=checkout.commit,
                 sessions_at_stop=sessions_at_stop,
-                early_ticks=early_ticks,
-                early_writes=early_writes,
-                early_label_changes=label_changes(early_events),
-                hazards=hazard_events(
-                    merged_by_id(early_events, runtime.watcher.view.global_events)
-                ),
             )
             return await _finish(
                 run,

@@ -230,7 +230,7 @@ def upgrade_with_work_in_flight(
     claims, labels and every sqlite store's schema.
 
     Right answer: the candidate starts, quarantines nothing, pages nobody in
-    its first ticks, and then finishes both pieces of work — the coding issue
+    its restart window (the work still held), and then finishes both pieces of work — the coding issue
     publishes a PR that is reviewed and approved, and the review in flight is
     completed and approved — with no hold label left on either issue.
     """

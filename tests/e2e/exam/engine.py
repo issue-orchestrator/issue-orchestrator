@@ -164,12 +164,19 @@ class ExamEngine:
         if not run_label:
             # Without its run label the engine would work every open issue.
             raise RuntimeError("exam engine config has no filtering.label (the run label)")
-        self._runtime = await start_orchestrator_runtime(
-            self.process,
-            self.config.control_api_port,
-            max_issues=10,
-            extra_args=["--label", run_label],
-        )
+        try:
+            self._runtime = await start_orchestrator_runtime(
+                self.process,
+                self.config.control_api_port,
+                max_issues=10,
+                extra_args=["--label", run_label],
+            )
+        except BaseException:
+            # The process may be up even though startup failed (e.g. the
+            # control API never became ready). It is ours: stop it before the
+            # caller removes the checkout it runs from.
+            self.process.stop()
+            raise
         # Keep every event for the report, not the watcher's default 200.
         self._runtime.watcher.view.set_diag_limits(100_000)
         return self._runtime
@@ -197,12 +204,6 @@ class ExamEngine:
         """Events about some work item. Tick, plan and fetch events carry no
         ``issue_key`` and fire every tick, so they never count as progress."""
         return sum(1 for event in self.runtime.watcher.view.global_events if event.get("issue_key"))
-
-    def ticks_completed(self) -> int:
-        """Ticks this process has completed, from its own event stream."""
-        return sum(
-            1 for event in self.runtime.watcher.view.global_events if event.get("type") == "tick.completed"
-        )
 
     def event_history(self) -> list[dict[str, Any]]:
         """Every event this process has buffered, from its first.
