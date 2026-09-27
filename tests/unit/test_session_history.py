@@ -155,3 +155,25 @@ def test_reconcile_awaiting_merge_concrete_list_still_supported() -> None:
     assert isinstance(result, HistoryReconciliationMutation)
     assert entry.status == "closed"
     assert entry.status_reason == "PR closed"
+
+
+def test_failures_not_before_an_instant_are_the_ones_it_cannot_place_earlier() -> None:
+    """#7399: a failure the history cannot place before an observation is newer
+    than what was observed; completed runs and other issues never count."""
+    observed = datetime(2026, 9, 27, 14, 0, tzinfo=timezone.utc)
+
+    def entry(number: int, status: SessionHistoryStatus, at: datetime | None) -> SessionHistoryEntry:
+        return SessionHistoryEntry(
+            issue_number=number, title="t", agent_type="agent:web", status=status,
+            runtime_minutes=1, completed_at=at,
+        )
+
+    older = entry(7, "failed", datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc))
+    newer = entry(7, "timed_out", datetime(2026, 9, 27, 15, 0, tzinfo=timezone.utc))
+    naive_newer = entry(7, "blocked", datetime(2026, 9, 27, 14, 30))  # read as UTC
+    undated = entry(7, "needs_human", None)
+    completed = entry(7, "completed", datetime(2026, 9, 27, 15, 0, tzinfo=timezone.utc))
+    elsewhere = entry(8, "failed", datetime(2026, 9, 27, 15, 0, tzinfo=timezone.utc))
+    owner = SessionHistoryOwner([older, newer, naive_newer, undated, completed, elsewhere])
+
+    assert owner.failures_not_before(7, observed) == (newer, naive_newer, undated)

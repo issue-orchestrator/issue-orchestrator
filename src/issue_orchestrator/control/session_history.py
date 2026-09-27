@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, MutableSequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal, TypeAlias
 
 from ..domain.models import (
@@ -255,6 +256,28 @@ class SessionHistoryOwner:
             return entry
         return None
 
+    def failures_not_before(
+        self, issue_number: int, instant: datetime
+    ) -> tuple[SessionHistoryEntry, ...]:
+        """The issue's failed sessions this history cannot place before *instant*.
+
+        A failed entry that ended at or after *instant* is newer than whatever
+        was observed then. An entry with no completion time cannot be proven
+        older, so it is returned too: the caller decides with it in view rather
+        than on a guess (#7399). A naive timestamp is read as UTC, the same way
+        the custody owner dates a block.
+        """
+        return tuple(
+            entry
+            for entry in self.session_history
+            if entry.issue_number == issue_number
+            and entry.status in BLOCKED_HISTORY_STATUSES
+            and (
+                entry.completed_at is None
+                or _as_utc(entry.completed_at) >= _as_utc(instant)
+            )
+        )
+
     def _find_latest_issue_entry(
         self,
         issue_number: int,
@@ -263,3 +286,7 @@ class SessionHistoryOwner:
             if entry.issue_number == issue_number:
                 return entry
         return None
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)

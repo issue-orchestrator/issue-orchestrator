@@ -10,13 +10,11 @@ from typing import Sequence, TYPE_CHECKING
 if TYPE_CHECKING:
     from .tech_lead_actions import RequireTechLeadInvestigationAction
 from .actions import (
+    EFFECTIVE_DISPOSITION_OP_ACTIONS,
     Action,
     ActionResult,
     ActionResultType,
-    KillHungSessionAction,
-    RecoverValidatedWorkAction,
     RequestReworkAction,
-    ResetRetryIssueAction,
 )
 
 
@@ -64,8 +62,7 @@ def is_required_act_level_action(action: Action) -> bool:
     from .tech_lead_actions import RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction
     from .required_issue_comment import RequiredIssueCommentAction
     return isinstance(action, (RequireTechLeadInvestigationAction, TechLeadPlanningFailureAction, RequiredIssueCommentAction,
-                               ResetRetryIssueAction, KillHungSessionAction, RequestReworkAction,
-                               RecoverValidatedWorkAction,
+                               *EFFECTIVE_DISPOSITION_OP_ACTIONS, RequestReworkAction,
                                RecordTechLeadDispositionAction, EscalateTechLeadDispositionAction,
                                CreateTechLeadProposalIssueAction))
 
@@ -93,14 +90,7 @@ def require_investigation_terminal_effect(actions: list[Action], *,
     from .required_issue_comment import TechLeadDecisionCommentAction, RequiredTechLeadDiagnosisAction
     required: list[Action] = [obligation]
     for action in actions:
-        if isinstance(
-            action,
-            (
-                ResetRetryIssueAction,
-                KillHungSessionAction,
-                RecoverValidatedWorkAction,
-            ),
-        ):
+        if isinstance(action, EFFECTIVE_DISPOSITION_OP_ACTIONS):
             action = replace(action, requires_effective_disposition=True)
         elif (isinstance(action, TechLeadDecisionCommentAction)
                 and action.number == obligation.focus_issue_number and not action.is_pr
@@ -135,14 +125,7 @@ def evaluate_required_act_level_outcome(
             isinstance(result.action, RequiredIssueCommentAction)
             and result.result_type is not ActionResultType.SUCCESS
         ) or (
-            isinstance(
-                result.action,
-                (
-                    ResetRetryIssueAction,
-                    KillHungSessionAction,
-                    RecoverValidatedWorkAction,
-                ),
-            )
+            isinstance(result.action, EFFECTIVE_DISPOSITION_OP_ACTIONS)
             and result.action.requires_effective_disposition
             and result.result_type is ActionResultType.SKIPPED
             and result.details.get("terminal_disposition_satisfied") is not True

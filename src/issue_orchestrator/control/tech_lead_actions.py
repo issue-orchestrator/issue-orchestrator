@@ -13,8 +13,6 @@ direction.
 
 from __future__ import annotations
 
-from ..domain.scoped_rework import ReworkRequest
-from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -28,6 +26,16 @@ from .tech_lead_mutation import (
     NO_RECONCILIATION_SUBJECT as NO_RECONCILIATION_SUBJECT,
     TechLeadMutation as TechLeadMutation,
     reconciliation_subject_for as reconciliation_subject_for,
+)
+# The act-level op commands live in their own module; re-exported here so
+# ``actions`` (and existing importers) see one vocabulary.
+from .tech_lead_op_actions import (
+    EFFECTIVE_DISPOSITION_OP_ACTIONS as EFFECTIVE_DISPOSITION_OP_ACTIONS,
+    KillHungSessionAction as KillHungSessionAction,
+    RecoverValidatedWorkAction as RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction as ReleaseWithheldReviewAction,
+    RequestReworkAction as RequestReworkAction,
+    ResetRetryIssueAction as ResetRetryIssueAction,
 )
 
 if TYPE_CHECKING:
@@ -313,138 +321,6 @@ class RequireTechLeadInvestigationAction(Action):
             raise ValueError("investigation obligation requires its trusted focus issue")
         if not self.diagnoses or len({item.action_id for item in self.diagnoses}) != len(self.diagnoses):
             raise ValueError("investigation obligation requires uniquely identified source diagnoses")
-
-
-@dataclass(frozen=True)
-class ResetRetryIssueAction(Action):
-    """Execute a tech_lead ``reset_retry`` proposal via the reset owner (#6764).
-
-    Planned by ``plan_tech_lead_decision_actions`` ONLY when
-    ``tech_lead.authority.reset_retry`` is ``execute``. Proposals are
-    stale-checkable facts, not commands (ADR-0031 §2): the applier's owner
-    re-validates the recorded preconditions against current state at
-    execution time and downgrades to a surfaced proposal
-    (``TECH_LEAD_ACTION_PROPOSED``, ``mode="stale_downgrade"``) when the board
-    has moved — no mutations are posted on the downgrade path.
-
-    ``anchor_issue_number`` is the tech_lead session's anchor issue — the event
-    surface a downgrade is reported against, mirroring
-    :class:`SurfaceTechLeadProposalAction`. For failure investigations and
-    health reviews the immutable launch scope forces
-    ``issue_number == anchor_issue_number``.
-    """
-
-    issue_number: int = 0  # The issue to scratch-reset (the proposal's target)
-    rationale: str = ""  # The agent's recorded rationale (proposal body)
-    proposal_id: str = ""  # The decision artifact action id (A<n>)
-    finding_ids: tuple[str, ...] = ()
-    anchor_issue_number: int = 0
-    # Set (>0) when this execution consumes an APPROVED gated proposal's
-    # stored op (#6778): the applier then finalizes the proposal issue
-    # (outcome comment + close + discard_op). 0 = direct execute-authority.
-    proposal_issue_number: int = 0
-    requires_effective_disposition: bool = False
-    action_type: ActionType = field(default=ActionType.RESET_RETRY_ISSUE, init=False)
-
-    def __post_init__(self) -> None:
-        if self.issue_number <= 0:
-            raise ValueError("ResetRetryIssueAction requires a positive issue_number")
-        if not self.proposal_id:
-            raise ValueError("ResetRetryIssueAction requires the proposal id")
-
-    def reconciliation_subject(self) -> int:
-        """The issue this reset mutates."""
-        return self.issue_number
-
-
-@dataclass(frozen=True)
-class KillHungSessionAction(Action):
-    """Execute a ``kill_hung_session`` proposal op.
-
-    Planned directly when authority is ``execute`` or from an approved gated
-    proposal under ``propose`` (#6778). The applier's owner re-validates that
-    the exact target session generation is still active and applies the
-    issue-runtime termination boundary — the same ``terminate_issue_runtime``
-    the reset owner uses, WITHOUT the reset. Stale proposals downgrade with no
-    mutations, mirroring ``reset_retry``.
-    """
-
-    issue_number: int = 0  # The issue whose runtime is terminated (op target)
-    rationale: str = ""  # The agent's recorded rationale (stored op)
-    proposal_id: str = ""  # The decision artifact action id (A<n>)
-    finding_ids: tuple[str, ...] = ()
-    anchor_issue_number: int = 0  # Event surface: source anchor or gated issue
-    # Set (>0) when consuming an approved gated proposal. 0 means direct
-    # execute-authority and requires no proposal finalization.
-    proposal_issue_number: int = 0
-    # The complete typed generation observed at tech-lead launch. The reusable
-    # terminal slot, task kind, and per-launch run id travel together into the
-    # atomic termination owner; partial/legacy identities fail closed.
-    target_session_id: str = ""
-    target_terminal_id: str = ""
-    target_session_type: str = ""
-    requires_effective_disposition: bool = False
-    action_type: ActionType = field(default=ActionType.KILL_HUNG_SESSION, init=False)
-
-    def __post_init__(self) -> None:
-        if self.issue_number <= 0:
-            raise ValueError("KillHungSessionAction requires a positive issue_number")
-        if not self.proposal_id:
-            raise ValueError("KillHungSessionAction requires the proposal id")
-        if self.proposal_issue_number < 0:
-            raise ValueError("proposal_issue_number cannot be negative")
-
-    def reconciliation_subject(self) -> int:
-        """The issue whose runtime this termination mutates."""
-        return self.issue_number
-
-
-@dataclass(frozen=True)
-class RequestReworkAction(Action):
-    """A consent-bound instruction to the branch-preserving rework owner."""
-
-    request: ReworkRequest = field(kw_only=True)
-    proposal_id: str = field(kw_only=True)
-    finding_ids: tuple[str, ...] = ()
-    anchor_issue_number: int = 0
-    proposal_issue_number: int = 0
-    action_type: ActionType = field(default=ActionType.REQUEST_REWORK, init=False)
-
-    @property
-    def issue_number(self) -> int:
-        return self.request.target.issue_number
-
-    def reconciliation_subject(self) -> int:
-        return self.issue_number
-
-
-@dataclass(frozen=True)
-class RecoverValidatedWorkAction(Action):
-    """Publish one exact retained validated head through the recovery owner."""
-
-    authority: ValidatedWorkAuthoritySnapshot = field(kw_only=True)
-    rationale: str = ""
-    proposal_id: str = ""
-    finding_ids: tuple[str, ...] = ()
-    anchor_issue_number: int = 0
-    proposal_issue_number: int = 0
-    requires_effective_disposition: bool = False
-    action_type: ActionType = field(
-        default=ActionType.RECOVER_VALIDATED_WORK, init=False
-    )
-
-    def __post_init__(self) -> None:
-        if not self.proposal_id:
-            raise ValueError("RecoverValidatedWorkAction requires the proposal id")
-        if self.proposal_issue_number < 0:
-            raise ValueError("proposal_issue_number cannot be negative")
-
-    @property
-    def issue_number(self) -> int:
-        return self.authority.issue_number
-
-    def reconciliation_subject(self) -> int:
-        return self.issue_number
 
 
 @dataclass(frozen=True)

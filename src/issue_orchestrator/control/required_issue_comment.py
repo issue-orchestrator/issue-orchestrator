@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .tech_lead_validated_work_recovery import (
         TechLeadValidatedWorkRecoveryExecutor,
     )
+    from .tech_lead_review_release import TechLeadReviewReleaseExecutor
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,11 @@ def _proposal_reuse_stale_reason(
     reset: TechLeadResetRetryExecutor | None,
     kill: TechLeadKillSessionExecutor | None,
     recovery: TechLeadValidatedWorkRecoveryExecutor | None,
+    release: TechLeadReviewReleaseExecutor | None = None,
 ) -> str | None:
+    if stored.op_type == "release_withheld_review" and release is not None:
+        return release.stale_reason(
+            stored.target_issue_number, stored.observed_at, stored.source_session_name)
     if stored.op_type == "reset_retry" and reset is not None:
         return reset.stale_reason(stored.target_issue_number)
     if stored.op_type == "kill_hung_session" and kill is not None:
@@ -114,7 +119,8 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         reset: TechLeadResetRetryExecutor | None,
         kill: TechLeadKillSessionExecutor | None,
         rework: RequestReworkExecutor | None = None,
-        recovery: TechLeadValidatedWorkRecoveryExecutor | None = None) -> None:
+        recovery: TechLeadValidatedWorkRecoveryExecutor | None = None,
+        release: TechLeadReviewReleaseExecutor | None = None) -> None:
     if authority is None:
         raise ValueError("proposal reuse requires the authority owner")
     required = action.required_op
@@ -136,6 +142,7 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         reset=reset,
         kill=kill,
         recovery=recovery,
+        release=release,
     )
     if stale is not None:
         raise ValueError(f"existing proposal is no longer applicable: {stale}")
@@ -194,7 +201,8 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
         reset: TechLeadResetRetryExecutor | None,
         kill: TechLeadKillSessionExecutor | None,
         rework: RequestReworkExecutor | None = None,
-        recovery: TechLeadValidatedWorkRecoveryExecutor | None = None) -> ActionResult:
+        recovery: TechLeadValidatedWorkRecoveryExecutor | None = None,
+        release: TechLeadReviewReleaseExecutor | None = None) -> ActionResult:
     """One publication owner for ordinary and mandatory issue explanations."""
     def guard() -> None:
         require_expected(action, action.number)
@@ -210,6 +218,7 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
                 kill=kill,
                 rework=rework,
                 recovery=recovery,
+                release=release,
             )
     if isinstance(action, RequiredIssueCommentAction):
         return apply_required_issue_comment(

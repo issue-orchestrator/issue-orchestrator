@@ -58,6 +58,7 @@ TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "kill_hung_session",
     "request_rework",
     "recover_validated_work",
+    "release_withheld_review",
 )
 
 
@@ -94,6 +95,10 @@ class TechLeadAuthorityConfig:
     kill_hung_session: str = "propose"
     request_rework: str = "propose"
     recover_validated_work: str = "propose"
+    # Not destructive (it only removes the issue's own blocked-failed, #7399),
+    # so the per-action ceiling stays open and the charter's flow-role dials
+    # decide execute versus propose.
+    release_withheld_review: str = "execute"
 
     @classmethod
     def from_mapping(cls, data: dict) -> "TechLeadAuthorityConfig":

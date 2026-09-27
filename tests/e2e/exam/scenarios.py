@@ -16,6 +16,8 @@ from typing import Awaitable, Callable
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
+from issue_orchestrator.testing.exam.case import REVIEW_STARTED_EVENT
+from issue_orchestrator.testing.exam.observation import TechLeadActionDisposition
 from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
     SUBJECT,
@@ -32,6 +34,7 @@ from tests.e2e.exam.engine import EngineCheckout, ExamEngine
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
+    item_events,
     linked_pull_requests,
     observe_item,
     observe_tech_lead_runs,
@@ -299,6 +302,7 @@ async def run_case_b(
                 )
                 if not resolved:
                     run.notes.append("tech-lead actions still unresolved 5 min after the run concluded")
+                await _await_released_review(run, engine, number, seeded.number)
             return await _finish(
                 run,
                 engine,
@@ -311,6 +315,45 @@ async def run_case_b(
             await engine.close()
     finally:
         checkout.remove()
+
+
+#: How long a released review may take to launch: the next review scan.
+RELEASED_REVIEW_LAUNCH_S = 10 * 60
+
+
+async def _await_released_review(
+    run: ExamRun, engine: ExamEngine, issue_number: int, pr_number: int
+) -> None:
+    """If the tech lead released the review, wait for it to launch (#7399).
+
+    A release only makes the review ELIGIBLE; it runs on a later review scan.
+    The scorecard then reads the launch from the item's events, and a release
+    that never launched is noted rather than silently passed.
+    """
+    runs = observe_tech_lead_runs(
+        engine.checkout.state_dir, engine.runtime.watcher, worktree_base=engine.config.worktree_base
+    )
+    released = any(
+        action.action_type == "release_withheld_review"
+        and action.disposition is TechLeadActionDisposition.EXECUTED
+        for fact in runs
+        for action in fact.actions
+    )
+    if not released:
+        return
+    subject = TrackedItem(SUBJECT, issue_number, external_id=CASE_B_EXTERNAL_ID)
+    launched = await settle(
+        lambda: any(
+            event.name == REVIEW_STARTED_EVENT
+            for event in item_events(engine.runtime.watcher, subject, (pr_number,))
+        ),
+        timeout_s=RELEASED_REVIEW_LAUNCH_S,
+    )
+    if not launched:
+        run.notes.append(
+            f"the tech lead released PR #{pr_number}'s review, but no review launched"
+            f" within {RELEASED_REVIEW_LAUNCH_S // 60} min"
+        )
 
 
 # ---------------------------------------------------------------------------

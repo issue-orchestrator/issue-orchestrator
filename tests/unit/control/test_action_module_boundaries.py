@@ -44,6 +44,16 @@ def test_tech_lead_actions_depends_on_the_root_not_on_actions() -> None:
     )
 
 
+def test_tech_lead_op_actions_depends_on_the_root_not_on_actions() -> None:
+    imports = _sibling_imports("tech_lead_op_actions")
+
+    assert "action_base" in imports
+    assert not imports & {"actions", "tech_lead_actions"}, (
+        "tech_lead_op_actions is re-exported by tech_lead_actions and actions;"
+        " importing either back closes a cycle"
+    )
+
+
 def test_action_results_depends_on_the_root_not_on_actions() -> None:
     imports = _sibling_imports("action_results")
 
@@ -64,6 +74,7 @@ def test_actions_is_the_re_export_and_action_base_is_the_root() -> None:
     (
         "issue_orchestrator.control.action_base",
         "issue_orchestrator.control.tech_lead_actions",
+        "issue_orchestrator.control.tech_lead_op_actions",
         "issue_orchestrator.control.actions",
     ),
 )

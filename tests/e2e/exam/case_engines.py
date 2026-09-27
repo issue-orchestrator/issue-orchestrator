@@ -32,12 +32,15 @@ from tests.e2e.exam.seeding import E2E_DATA_LABEL
 #: follow-up is worked by the exam's scripted coder (the first Case B run
 #: grew a second investigation that way), and a case file is a real issue
 #: other engines' case-file readers could pick up. Escalation is on the
-#: charter's floor and always executes.
+#: charter's floor and always executes. ``release_withheld_review`` executes
+#: as production's does: the ceiling is open and the charter's default flow
+#: role executes, so Case B's right remedy actually runs (#7399).
 EXAM_TECH_LEAD_AUTHORITY: Mapping[str, str] = {
     "reset_retry": "propose",
     "kill_hung_session": "execute",
     "request_rework": "execute",
     "recover_validated_work": "execute",
+    "release_withheld_review": "execute",
     "create_issue": "propose",
     "flag_pattern": "propose",
 }

@@ -73,6 +73,7 @@ from .actions import (
     AddLabelAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -647,6 +648,12 @@ def _failure_surface_identity(
             action.issue_number,
             "recover_validated_work",
             f"retained validated work for issue #{action.issue_number}",
+        )
+    if isinstance(action, ReleaseWithheldReviewAction):
+        return (
+            action.issue_number,
+            "release_withheld_review",
+            f"the withheld review of issue #{action.issue_number}'s PR",
         )
     return (
         fallback_issue_number,

@@ -267,7 +267,7 @@ artifact; see the contract below.)
   signature to a human instead of looping. Prefer bumping the systemic fix over
   hand-patching symptoms; do not act on stale state without verifying it.
 - **Use your focus-scoped act-level authority.** In a failure investigation,
-  `reset_retry`, `kill_hung_session`, and `recover_validated_work` may target only `focus_issue_number`.
+  `reset_retry`, `kill_hung_session`, `recover_validated_work`, and `release_withheld_review` may target only `focus_issue_number`.
   Propose `reset_retry` when the issue is blocked, no live session, persistent
   pair, background job, or pending publish retry still owns its work, and the
   evidence supports a fresh implementation. Inspect local commits, uncommitted
@@ -291,7 +291,7 @@ artifact; see the contract below.)
   failed.
 - **Leave exactly one terminal disposition for the focus issue.** A diagnosis
   alone, duplicate dispositions, or conflicting remedies are rejected. Choose
-  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `escalate_to_human`, or `defer_to_tracker`.
+  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `escalate_to_human`, or `defer_to_tracker`.
   Read `tech-lead-data/recovery-context.json` first: it contains
   `recovery_tracker_numbers` and any `previous_disposition`. Do not repeat an
   unchanged diagnosis; explain progress, the missed recovery deadline, or the
@@ -394,7 +394,7 @@ sources to confirm; and if a health signal you need is not instrumented yet,
   finding: `create_issue` to instrument it rather than assume it works.
 - `post_comment`/`escalate_to_human` may only target THIS tracking issue;
   board-wide findings belong in `create_issue`/`flag_pattern` proposals.
-- Issue-level act proposals (`reset_retry`, `kill_hung_session`, `recover_validated_work`) may only target
+- Issue-level act proposals (`reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`) may only target
   issue numbers listed in the snapshot's `problem_cohort` - the storm cohort
   this review owns. An EMPTY `problem_cohort` means you own no act-level
   targets at all (a periodic review walks the floor and proposes; it does not
@@ -494,7 +494,7 @@ Compact `tech-lead-decision.json` example:
   - `defer_to_tracker` may only target `focus_issue_number` in a failure
     investigation, with `tracker_number` from `recovery_tracker_numbers` in
     `tech-lead-data/recovery-context.json`. It is not a batch or health action.
-  - Act-level `reset_retry`, `kill_hung_session`, and `recover_validated_work` may only target the
+  - Act-level `reset_retry`, `kill_hung_session`, `recover_validated_work`, and `release_withheld_review` may only target the
     `focus_issue_number` (failure investigation), or an issue number listed
     in the snapshot's `problem_cohort` (health review). A batch review owns
     no act-level target at all for these reset/stop operations: manifest entries are PRs and the anchor is
@@ -552,8 +552,9 @@ Compact `tech-lead-decision.json` example:
   completion-mandatory command; failed publication/storage fails completion.
   See the Failure Investigation Flow for the finite deadline and release rules.
 - Valid `action_type` values: `post_comment`, `create_issue`,
-  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`, `kill_hung_session`, `request_rework`, `recover_validated_work`.
+  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`, `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`.
 - For retained validated work, propose `recover_validated_work` only for an issue listed in `tech-lead-data/validated-work-recovery-targets.json`. The orchestrator binds the full listed authority snapshot, and any later evidence, PR, or remote-baseline change makes approval stale.
+- When an issue's only fault is its own `blocked-failed` while its open, CI-green PR waits on code review (review discovery skips it as `issue_blocked`), propose `release_withheld_review` with the ISSUE as `target_number`: it puts `pr-pending` on, then removes only `blocked-failed`, so the PR's review runs. Never `reset_retry` such a PR. The orchestrator re-verifies at apply time that exactly one open PR is the issue's, its checks are green, no session or claim holds the issue, review validity withholds the review for that block alone, and no failure was recorded after you observed it; otherwise it refuses the release with a typed reason. It is not destructive, so the charter lets it run on its own when the flow role executes.
 - For an existing PR needing scoped corrections, propose `request_rework` with
   `target_is_pr: true`, its PR `target_number`, `finding_ids`, and actionable
   feedback in `body`. Target only PRs in `scoped-rework-targets.json`; those
@@ -565,7 +566,7 @@ Compact `tech-lead-decision.json` example:
   one forward fix. `flag_pattern` promotion is a different lane.
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
-  `kill_hung_session`, `request_rework`, `recover_validated_work`) under `propose` authority become reviewable GitHub
+  `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`) under `propose` authority become reviewable GitHub
   issues carrying the `proposed-tech-lead` label; a human approves one by
   removing that label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not

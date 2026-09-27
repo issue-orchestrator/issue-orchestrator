@@ -90,6 +90,34 @@ def test_reset_retry_is_the_destructive_kind() -> None:
     assert destructive == {"reset_retry"}
 
 
+def test_release_withheld_review_is_a_flow_fix_that_is_not_destructive() -> None:
+    """#7399: removing the issue's own blocked-failed loses nothing, so it is
+    approvable (restricted by the flow role's dials), never destructive."""
+    action_class = classify_charter_action("release_withheld_review")
+
+    assert action_class.role is CharterRole.FLOW
+    assert action_class.depth is CharterDepth.FIX
+    assert action_class.binding is CharterBinding.APPROVABLE
+
+
+def test_release_withheld_review_default_authority_follows_the_charter() -> None:
+    """Its per-action ceiling defaults open, so the flow role's dials decide:
+    the default charter executes it, a proposing flow role proposes it, and a
+    workaround-deep flow role keeps it as advice."""
+    config = Config()
+    assert config.tech_lead.authority.release_withheld_review == "execute"
+    assert TechLeadCharterPolicy.from_config(config).decide("release_withheld_review").executes
+
+    def verdict(flow: RoleCharter) -> CharterOutcome:
+        return decide_charter(
+            "release_withheld_review", _charter(flow=flow),
+            action_ceiling=CharterAuthority.EXECUTE, ceiling_source="x",
+        ).outcome
+
+    assert verdict(RoleCharter(CharterDepth.FIX, CharterAuthority.PROPOSE)) is CharterOutcome.PROPOSED
+    assert verdict(RoleCharter(CharterDepth.WORKAROUND, CharterAuthority.EXECUTE)) is CharterOutcome.ADVICE_ONLY
+
+
 # -- the decision grid -------------------------------------------------------
 
 

@@ -387,14 +387,22 @@ def test_a_rate_limit_turns_a_queued_launch_into_waiting_on_world() -> None:
     assert custody.stale  # three hours against a two-hour threshold
 
 
-def test_an_executed_remedy_is_verify_with_its_decision() -> None:
-    executed = _decision("recover_validated_work")
+@pytest.mark.parametrize(
+    ("kind", "words"),
+    [
+        ("recover_validated_work", "recover validated work"),
+        # #7399: a released review is verified by the review actually running.
+        ("release_withheld_review", "release withheld review"),
+    ],
+)
+def test_an_executed_remedy_is_verify_with_its_decision(kind: str, words: str) -> None:
+    executed = _decision(kind)
 
     custody = _derive(_item(decisions=(executed,), blocked_at=NOW - 2 * HOUR))
 
     assert custody.state is CustodyState.VERIFY
     assert custody.charter is not None and custody.charter.outcome == "executed"
-    assert "recover validated work" in custody.reason
+    assert words in custody.reason
 
 
 def test_a_remedy_nothing_ties_to_this_block_is_named_but_not_verified() -> None:

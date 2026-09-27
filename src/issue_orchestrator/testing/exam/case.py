@@ -327,6 +327,39 @@ def pr_review_approved(role: str) -> Goal:
     return Goal(f"{role}.pr_review_approved", role, f"a review session approved the {role} PR", check)
 
 
+#: The engine's event for a code-review session it launched (``session_launcher``).
+REVIEW_STARTED_EVENT = "review.started"
+
+
+def released_review_launches(role: str, blocked_failed_label: str) -> Goal:
+    """Once the item's block is gone, its PR's code review actually launched.
+
+    Releasing a review only makes it ELIGIBLE (#7399); what the operator wants
+    is the review running. While ``blocked_failed_label`` is still on the issue
+    nothing was released and this holds trivially (the remedy grade judges
+    that); once it is gone, whoever removed it, the engine must have published
+    a review launch for the item.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if blocked_failed_label in item.issue_labels:
+            return GoalCheck(True, f"#{item.issue_number} still carries {blocked_failed_label}; nothing released")
+        launched = REVIEW_STARTED_EVENT in item.events
+        return GoalCheck(
+            launched,
+            f"#{item.issue_number} was released and its code review launched"
+            if launched
+            else f"#{item.issue_number} was released but no code review launched",
+        )
+
+    return Goal(
+        f"{role}.released_review_launches",
+        role,
+        f"once released, a code review of the {role} PR launches",
+        check,
+    )
+
+
 def engine_saw_item(role: str) -> Goal:
     """The engine published at least one event about the item.
 
