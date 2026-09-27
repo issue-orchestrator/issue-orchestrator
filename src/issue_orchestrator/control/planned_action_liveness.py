@@ -124,7 +124,14 @@ _STABLE_OPERATIONS: dict[type[Action], Callable[[Action], str]] = {
 
 
 def liveness_operation(action: Action) -> str:
-    """WHICH operation this action is on its subject (the identity's ``action``)."""
+    """WHICH operation this action is on its subject (the identity's ``action``).
+
+    A wrapper (a charter-audited effect) is the operation of its effect, so a
+    stable effect stays stable through the wrapper.
+    """
+    effect = getattr(action, "effect", None)
+    if isinstance(effect, Action):
+        return f"{action.action_type.value}>{liveness_operation(effect)}"
     stable = _STABLE_OPERATIONS.get(type(action))
     if stable is not None:
         return f"{action.action_type.value}:{stable(action)}"

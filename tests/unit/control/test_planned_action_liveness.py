@@ -1024,3 +1024,36 @@ def test_a_decision_time_is_not_a_fact(sample_config) -> None:
     assert len(audited) == POLICY.max_attempts
     audited_key = planned_action_key(audited[0], {}, escalation_label=NEEDS_HUMAN)
     assert audited_key.identity.subject == "issue:229", "a wrapper is about its effect's subject"
+
+
+def test_a_wrapped_stable_operation_supersedes_its_old_park(sample_config) -> None:
+    """A charter-audited promotion parks under one observation count, then
+    succeeds under a newer one: the wrapper carries its effect's stable
+    operation, so the old park is superseded and its block withdrawn (r16)."""
+    from issue_orchestrator.control.tech_lead_charter_policy import CharterAuditedAction
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+
+    def audited(count):
+        report = ReportPromotedFindingEvidenceAction(
+            signature="sig", case_file_issue_number=229, target_repo="o/r",
+            target_issue_number=7289, observation_count=count, comment=f"evidence {count}",
+            reason="report", expected=build_expected_for_mutation(),
+        )
+        return CharterAuditedAction(decisions=(_decision("A1"),), effect=report)
+
+    phase = {"count": 2}
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [audited(phase["count"])],
+        apply=lambda a: ActionResult.fail(a, "403") if phase["count"] == 2 else ActionResult.ok(a),
+    )
+    for _ in range(POLICY.max_attempts):
+        engine.tick()
+    assert len(engine.owner.parked()) == 1
+
+    phase["count"] = 3
+    for _ in range(3):
+        engine.tick()
+
+    assert engine.owner.parked() == ()
+    assert engine.escalation.unblocks == [(229, True)]
