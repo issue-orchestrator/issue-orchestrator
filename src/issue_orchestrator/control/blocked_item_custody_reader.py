@@ -50,6 +50,7 @@ from .blocked_item_custody import (
     TrackedFix,
     derive_item_custody,
 )
+from ..ports.tech_lead_charter_ledger import MAX_CHARTER_DECISION_READ
 from .host_rate_limit_launch_gate import live_episode_keys
 from .stuck_sweep import stuck_sweep_next_due_at
 from .tech_lead_session_policy import is_tech_lead_session
@@ -70,9 +71,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-#: How many recorded decisions per item the policy may consult. The newest
-#: few decide; a longer history changes nothing it reads.
-DECISIONS_PER_ITEM = 20
+#: How many recorded decisions ABOUT one item the policy may consult: the
+#: ledger's own read cap. Filtered to the item by an index search before the
+#: limit, so reaching it takes that many decisions about a single issue.
+DECISIONS_PER_ITEM = MAX_CHARTER_DECISION_READ
 
 #: What a live session is doing, in the words a card shows. Keyed on the task
 #: kind the session was launched as; tech-lead sessions are recognised
@@ -170,7 +172,12 @@ class StateBlockedItemCustodyReader:
         now: datetime,
     ) -> ItemCustodyFacts:
         unreadable = list(shared.unreadable)
-        decisions = _guard(unreadable, "charter decision ledger", lambda: self._decisions(number), ())
+        decisions = _guard(
+            unreadable,
+            "charter decision ledger",
+            lambda: self._decisions(number, shared.proposals.get(number, ())),
+            (),
+        )
         causes = shared.needs_human_causes.get(number, frozenset())
         parked = _guard(
             unreadable, "action liveness owner", lambda: self._parked.parked_for_issue(number), ()
@@ -211,10 +218,27 @@ class StateBlockedItemCustodyReader:
             unreadable=tuple(unreadable),
         )
 
-    def _decisions(self, number: int) -> tuple["TechLeadCharterDecision", ...]:
-        """Decisions ABOUT this item, filtered by the ledger before its limit."""
-        return self._authority.charter_ledger.list_about_issue(
-            number, limit=DECISIONS_PER_ITEM
+    def _decisions(
+        self, number: int, proposals: Sequence[OpenProposal]
+    ) -> tuple["TechLeadCharterDecision", ...]:
+        """Decisions ABOUT this item, newest first, plus those that filed its open proposals.
+
+        The window is the ledger's read cap, filtered to the item before the
+        limit, so ordinary history cannot crowd out an older decision whose
+        EFFECT (an approval applied later) is recent. A decision linked to an
+        open proposal is read by that proposal's number, whatever its age.
+        """
+        ledger = self._authority.charter_ledger
+        found = {
+            decision.decision_id: decision
+            for decision in ledger.list_about_issue(number, limit=DECISIONS_PER_ITEM)
+        }
+        for proposal in proposals:
+            for decision in ledger.list_for_issue(proposal.proposal_issue_number, limit=10):
+                if decision.proposal_issue_number == proposal.proposal_issue_number:
+                    found.setdefault(decision.decision_id, decision)
+        return tuple(
+            sorted(found.values(), key=lambda d: (d.decided_at, d.decision_id), reverse=True)
         )
 
     def _observed_labels(self, raw: Iterable[str]) -> ObservedLabels:
@@ -239,11 +263,14 @@ class StateBlockedItemCustodyReader:
             for status in self._provider_circuits.snapshot(self._clock())
             if status.provider in lanes and status.is_open
         ]
+        if not statuses:
+            # The circuit closed between the two reads: nothing holds the item.
+            return None
         until = [status.open_until for status in statuses if status.open_until is not None]
         return ProviderWait(
-            provider=", ".join(lanes),
+            provider=", ".join(status.provider for status in statuses),
             open_until=max(until) if until else None,
-            since=min((status.updated_at for status in statuses), default=None),
+            since=min(status.updated_at for status in statuses),
         )
 
     def _sweep_schedule(self, state: "OrchestratorState") -> StuckSweepSchedule:

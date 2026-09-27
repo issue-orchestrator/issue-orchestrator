@@ -470,7 +470,9 @@ def _world(
         return _Claim(
             CustodyState.WAITING_ON_WORLD,
             f"Provider {wait.provider} is unavailable{until}.",
-            _clock(wait.since, "provider circuit opened"),
+            # The circuit's last update, not its opening: a new failure while
+            # open moves it, so it only bounds the wait from below.
+            _clock(wait.since, "last provider circuit activity", lower_bound=True),
         )
     if item.checks_pending_since is not None:
         return _Claim(
