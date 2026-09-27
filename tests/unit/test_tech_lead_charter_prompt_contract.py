@@ -26,9 +26,6 @@ from issue_orchestrator.domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION
 from issue_orchestrator.domain.tech_lead_charter import CharterRole
 from issue_orchestrator.execution.tech_lead_board_prompt import TECH_LEAD_CHARTER_SECTION
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra.config_models import (
-    TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS,
-)
 
 from tests.unit.test_tech_lead_prompt_contract import PROMPT_VARIANTS
 
@@ -140,34 +137,65 @@ _DIAL_OWNERS = {
 }
 
 
-_DIALS = {
-    "authority": set(TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS),
-    "charter": {role.value for role in CharterRole},
-}
+#: Validation, not decision: startup checks run each dial block's own
+#: ``startup_errors``.
+_DIAL_OWNERS_VALIDATION = {"src/issue_orchestrator/infra/validators/review.py"}
+
+_DIAL_BLOCKS = {"tech_lead": {"authority", "charter"}, "findings": {"gated", "promote"}}
+
+
+def _tail(node: ast.expr) -> str:
+    """The last name in an attribute chain: ``config.tech_lead`` -> ``tech_lead``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
 
 
 def _dial_reads(tree: ast.AST) -> list[str]:
-    """``x.tech_lead.authority.<action>``, ``x.tech_lead.charter.<role>``,
-    ``.mode_for(...)``, and ``x.findings.gated`` / ``x.findings.promote``."""
+    """Every way to REACH a dial block, not just a leaf read.
+
+    Flagging ``<x>.tech_lead.authority`` itself (and ``<x>.findings.gated``)
+    catches aliasing at its source — ``modes = config.tech_lead.authority``
+    then ``modes.create_issue`` is reported at the assignment — as well as
+    ``getattr(config.tech_lead, "authority")`` and ``.mode_for(...)``.
+    """
     reads: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute):
-            continue
-        if node.attr == "mode_for":
-            reads.append("mode_for")
-        owner = node.value
-        if not isinstance(owner, ast.Attribute):
-            continue
-        if owner.attr == "findings" and node.attr in {"gated", "promote"}:
-            reads.append(f"findings.{node.attr}")
-        if (
-            owner.attr in _DIALS
-            and node.attr in _DIALS[owner.attr]
-            and isinstance(owner.value, ast.Attribute)
-            and owner.value.attr == "tech_lead"
+        if isinstance(node, ast.Attribute):
+            if node.attr == "mode_for":
+                reads.append("mode_for")
+            elif node.attr in _DIAL_BLOCKS.get(_tail(node.value), ()) and (
+                isinstance(node.value, ast.Attribute) or _tail(node.value) == "findings"
+            ):
+                reads.append(f"{_tail(node.value)}.{node.attr}")
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _DIAL_BLOCKS.get(_tail(node.args[0]), ())
         ):
-            reads.append(f"tech_lead.{owner.attr}.{node.attr}")
+            reads.append(f"getattr({_tail(node.args[0])}, {node.args[1].value!r})")
     return reads
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("modes = config.tech_lead.authority\nx = modes.create_issue", ["tech_lead.authority"]),
+        ("c = self.config.tech_lead.charter.flow", ["tech_lead.charter"]),
+        ("g = getattr(config.tech_lead, 'authority')", ["getattr(tech_lead, 'authority')"]),
+        ("findings = config.tech_lead.findings\ng = findings.gated", ["findings.gated"]),
+        ("m = cfg.authority.mode_for('x')", ["mode_for"]),
+        # The tech-lead COMPOSITION's authority store is not a dial.
+        ("store = tech_lead.authority", []),
+    ],
+)
+def test_the_guard_sees_aliased_and_indirect_dial_reads(source: str, expected: list[str]) -> None:
+    assert _dial_reads(ast.parse(source)) == expected
 
 
 def test_authority_dials_are_read_only_by_the_policy_owner() -> None:
@@ -175,7 +203,7 @@ def test_authority_dials_are_read_only_by_the_policy_owner() -> None:
     offenders: dict[str, list[str]] = {}
     for path in sorted((REPO_ROOT / "src" / "issue_orchestrator").rglob("*.py")):
         relative = path.relative_to(REPO_ROOT).as_posix()
-        if relative in _DIAL_OWNERS:
+        if relative in _DIAL_OWNERS | _DIAL_OWNERS_VALIDATION:
             continue
         reads = _dial_reads(ast.parse(path.read_text(), filename=relative))
         if reads:

@@ -316,3 +316,31 @@ def test_board_omits_the_charter_section_without_a_policy() -> None:
     from issue_orchestrator.control.tech_lead_charter_board import charter_board_rows
 
     assert charter_board_rows(None, InMemoryTechLeadAuthorityStore()) == ()
+
+
+def test_an_applied_op_is_never_recorded_declined_after_a_failed_close(store) -> None:
+    """The approval is linked before the proposal closes, so a close that fails
+    and a later terminal cleanup cannot relabel the applied op "declined"."""
+    store.charter_ledger.record_decisions([_decision("A1", "reset_retry")])
+    store.record_op(issue_number=500, op=_op())
+    action = ResetRetryIssueAction(
+        issue_number=13, rationale="r", proposal_id="A1", anchor_issue_number=500,
+        proposal_issue_number=500,
+    )
+    host = MagicMock()
+    host.update_issue_state.side_effect = RuntimeError("GitHub 502")
+
+    result = finalize_tech_lead_op_execution(
+        ActionResult.ok(action), action, repository_host=host, ops=store
+    )
+    assert not result.success  # finalization failed; the op row is preserved
+    tracker = MagicMock()
+    tracker.get_issue_state.return_value = "closed"  # the operator closed it later
+    apply_discard_terminal_tech_lead_proposal_ops(
+        DiscardTerminalTechLeadProposalOpsAction(candidate_issue_numbers=(500,)),
+        tracker=tracker,
+        authority=store,
+    )
+
+    [row] = store.charter_ledger.list_recent()
+    assert row.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
