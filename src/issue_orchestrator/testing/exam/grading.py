@@ -14,6 +14,7 @@ from .observation import (
     TechLeadRunFact,
     WorkItemFact,
 )
+from .upgrade import UpgradeGrade, grade_upgrade
 from .scorecard import (
     DestructiveAction,
     DiagnosisGrade,
@@ -63,7 +64,18 @@ def grade(case: ExamCase, observation: ExamObservation) -> Scorecard:
         stalls=stalls,
         tech_lead_runs=observation.tech_lead_runs,
         notes=observation.notes,
+        upgrade=_grade_upgrade(case, observation),
     )
+
+
+def _grade_upgrade(case: ExamCase, observation: ExamObservation) -> UpgradeGrade | None:
+    if case.upgrade is None:
+        if observation.upgrade is not None:
+            raise ValueError(f"case {case.case_id} is not an upgrade case but its observation has upgrade facts")
+        return None
+    if observation.upgrade is None:
+        raise ValueError(f"upgrade case {case.case_id} observed without upgrade facts")
+    return grade_upgrade(case.upgrade, observation.upgrade)
 
 
 def _item_numbers(item: WorkItemFact) -> frozenset[int]:

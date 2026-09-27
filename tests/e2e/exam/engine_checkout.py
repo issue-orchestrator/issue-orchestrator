@@ -88,14 +88,52 @@ class EngineCheckout:
         logger.info("[EXAM] engine checkout %s at %s", root, commit)
         return checkout
 
+    def switch_to(self, *, harness_root: Path, ref: str) -> "EngineCheckout":
+        """The same checkout, moved to ``ref``: an in-place upgrade.
+
+        Everything the engine keeps beside its code survives the move,
+        because it lives outside git's tracked files: the state directory,
+        the sqlite stores, and the agent worktrees. The move is refused if
+        the base engine left a tracked file dirty.
+        """
+        commit = _git(harness_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+        _git(self.root, "checkout", "--quiet", "--detach", commit)
+        logger.info("[EXAM] engine checkout %s upgraded %s -> %s", self.root, self.commit, commit)
+        return EngineCheckout(root=self.root, commit=commit)
+
     @property
     def state_dir(self) -> Path:
         return self.root / ".issue-orchestrator" / "state"
 
     def remove(self) -> None:
+        self._remove_engine_worktrees()
         # The venv is a symlink to the HARNESS's; unlink it so rmtree can
         # never follow it into the harness.
         link = self.root / ".venv"
         if link.is_symlink():
             link.unlink()
         shutil.rmtree(self.root)
+
+    def _remove_engine_worktrees(self) -> None:
+        """Remove every agent worktree the engine created from this clone.
+
+        They live outside the clone (under the engine's worktree base) and
+        are registered only in this clone's git metadata, so they are the
+        run's own. Once the clone is gone nothing could find them. A clone
+        the failed ``create`` never finished has no metadata and no
+        worktrees.
+        """
+        if not (self.root / ".git").is_dir():
+            return
+        listing = _git(self.root, "worktree", "list", "--porcelain")
+        paths = [
+            Path(line.removeprefix("worktree "))
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        ]
+        for path in paths:
+            if path.resolve() == self.root.resolve():
+                continue
+            _git(self.root, "worktree", "remove", "--force", "--force", str(path))
+            if path.exists():
+                raise RuntimeError(f"engine worktree {path} survived its removal")

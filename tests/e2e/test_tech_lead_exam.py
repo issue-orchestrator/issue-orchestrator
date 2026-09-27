@@ -6,6 +6,8 @@ real tech-lead model. Run it with ``make test-tech-lead-exam``. Knobs:
 * ``E2E_EXAM_ENGINE_REF`` — the commit the ENGINE runs (default ``HEAD``).
   The harness, shims and grader always come from this tree, so pointing the
   engine at a pre-fix commit proves the exam discriminates.
+* ``E2E_EXAM_BASE_REF`` — Case U only: the commit the engine is upgraded
+  FROM (default ``origin/main``); ``E2E_EXAM_ENGINE_REF`` is the candidate.
 * ``E2E_EXAM_TECH_LEAD_MODEL`` — the tech lead's model (default ``opus``, as
   in production).
 * ``E2E_EXAM_OUT`` — where scorecards are written (default
@@ -33,6 +35,7 @@ from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
+    UPGRADE_WITH_WORK_IN_FLIGHT,
 )
 from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
@@ -46,9 +49,11 @@ from tests.e2e.exam.scenarios import (
     case_a,
     case_b,
     case_c,
+    case_u,
     run_case_a,
     run_case_b,
     run_case_c,
+    run_case_u,
 )
 from tests.e2e.flows import E2EFlow
 
@@ -106,6 +111,7 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
         HALTED_EXCHANGE_WITH_VALIDATED_WORK,
         BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
         STALE_CLAIM_PAUSED_FOR_RECONCILE,
+        UPGRADE_WITH_WORK_IN_FLIGHT,
     ],
 )
 async def test_tech_lead_exam(
@@ -120,6 +126,7 @@ async def test_tech_lead_exam(
         HALTED_EXCHANGE_WITH_VALIDATED_WORK: case_a,
         BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW: case_b,
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
+        UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -136,6 +143,10 @@ async def test_tech_lead_exam(
             return await run_case_a(run, flows)
         if case_id == STALE_CLAIM_PAUSED_FOR_RECONCILE:
             return await run_case_c(run, flows)
+        if case_id == UPGRADE_WITH_WORK_IN_FLIGHT:
+            return await run_case_u(
+                run, flows, base_ref=os.environ.get("E2E_EXAM_BASE_REF", "origin/main")
+            )
         return await run_case_b(
             run,
             flows,
