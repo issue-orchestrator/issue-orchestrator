@@ -89,6 +89,8 @@ class EscrowProblem:
 class EscrowReport:
     repaired: tuple[str, ...] = ()
     problems: tuple[EscrowProblem, ...] = ()
+    # Orphans repair refused to admit: work recovery never owns (#7323).
+    outside_scope: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

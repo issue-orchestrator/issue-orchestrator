@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -23,6 +24,7 @@ from .validated_work_rows import (
     DispositionDatabase,
     current_evidence,
     disposition,
+    record_row,
 )
 
 
@@ -150,6 +152,60 @@ class ValidatedWorkAbandonment:
                 None,
                 "Retained validated work was abandoned by the operator",
             )
+
+    def retire_outside_scope(
+        self,
+        conn: sqlite3.Connection,
+        record_id: str,
+        fence: int,
+        *,
+        evidence_ids: frozenset[str],
+        actor: str,
+        reason: str,
+    ) -> bool:
+        """Resolve a record recovery never owned, inside the caller's claim check.
+
+        Refuses when the record is already resolved, or when its current and
+        attached evidence differ from exactly what the caller proved outside
+        recovery scope -- newer evidence is judged before anything resolves.
+        """
+        row = record_row(conn, record_id)
+        if ValidatedWorkState(row["state"]) in {
+            ValidatedWorkState.RECOVERED, ValidatedWorkState.ABANDONED,
+        }:
+            return False
+        held = frozenset(
+            item["evidence_id"]
+            for item in conn.execute(
+                "SELECT evidence_id FROM validated_work_evidence "
+                "WHERE record_id=? AND role IN ('current','attached')",
+                (record_id,),
+            )
+        )
+        if held != evidence_ids:
+            return False
+        resolved_at = self._timestamp()
+        updated = conn.execute(
+            "UPDATE validated_work_records SET state='abandoned',failure='',reason=?,"
+            "resolution_kind=?,resolved_by=?,resolution_reason=?,resolved_at=?,"
+            "terminal_at=?,updated_at=?,superseded_by_record_id='',waits_on_record_id='' "
+            "WHERE record_id=? AND owner_fence=? AND state NOT IN ('recovered','abandoned')",
+            (
+                reason,
+                ResolutionKind.OUTSIDE_RECOVERY_SCOPE.value,
+                actor,
+                reason,
+                resolved_at,
+                resolved_at,
+                resolved_at,
+                record_id,
+                fence,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("out-of-scope retirement CAS lost its transaction")
+        self._lineage.classify(conn, row["lineage_key"], resolved_at)
+        return True
 
     def _timestamp(self) -> str:
         instant = self._clock()

@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 from ..domain.validated_work import require_positive
 from ..domain.validated_work_escrow import EscrowProblem, EscrowReport
+from ..domain.validated_work_scope import recovery_owns
 from ..domain.validated_work_store import EvidenceAdmission
+from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.validated_work_escrow import EvidenceReader, ValidatedWorkEscrow
 from ..ports.validated_work_store import ValidatedWorkStore
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
@@ -38,9 +40,20 @@ class EscrowInspection:
 
 
 class EscrowReconciliation:
-    def __init__(self, *, escrow: ValidatedWorkEscrow, store: ValidatedWorkAdmissionStore) -> None:
+    """Repair crash-split captures; admits only work recovery owns (#7323).
+
+    Repair is an admission path, so it applies the same scope rule capture
+    does. An out-of-scope orphan -- a tech-lead completion captured before the
+    rule, whose store admission never landed -- stays in escrow, inert: nothing
+    blocks on it, and no role filter authorizes deleting escrow (only a
+    resolved store row does, see `ValidatedWorkEscrowMaintenance.sweep`).
+    """
+
+    def __init__(self, *, escrow: ValidatedWorkEscrow, store: ValidatedWorkAdmissionStore,
+                 intake: CompletionIntakeLedger) -> None:
         self._escrow = escrow
         self._store = store
+        self._intake = intake
 
     def require_issue_custody(self, issue_number: int) -> None:
         for row in self._store.retained_evidence(issue_number):
@@ -52,6 +65,7 @@ class EscrowReconciliation:
     def reconcile_escrow_orphans(self) -> EscrowReport:
         locators, inventory = self._escrow.inventory()
         repaired: list[str] = []
+        outside_scope: list[str] = []
         problems = list(inventory.problems)
         admissions: list[EvidenceAdmission] = []
         for locator in locators:
@@ -64,6 +78,9 @@ class EscrowReconciliation:
                 ):
                     self._escrow.verify_pins(admission)
                     continue
+                if not recovery_owns(self._intake.prepare_evidence(admission.evidence).role):
+                    outside_scope.append(admission.evidence.evidence_id)
+                    continue
                 # A rename-before-pin crash can repin ONLY the recorded exact object.
                 self._escrow.ensure_pins(admission)
                 self._escrow.verify_pins(admission)
@@ -72,10 +89,12 @@ class EscrowReconciliation:
             except Exception as exc:
                 problems.append(EscrowProblem(locator, str(exc)))
         problems.extend(self._escrow.orphan_pins(tuple(admissions)))
-        return EscrowReport(tuple(repaired), tuple(problems))
+        return EscrowReport(tuple(repaired), tuple(problems), tuple(outside_scope))
 
 
-class ValidatedWorkEscrowMaintenance(EscrowReconciliation):
+class ValidatedWorkEscrowMaintenance:
+    """Retention only; orphan repair is `EscrowReconciliation`'s, under capture."""
+
     def __init__(
         self,
         *,
@@ -83,7 +102,6 @@ class ValidatedWorkEscrowMaintenance(EscrowReconciliation):
         store: ValidatedWorkStore,
         retention_days: int,
     ) -> None:
-        super().__init__(escrow=escrow, store=store)
         require_positive(retention_days, "escrow_retention_days")
         self._escrow = escrow
         self._store = store
