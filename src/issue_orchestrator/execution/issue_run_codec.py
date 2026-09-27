@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..domain.issue_key import GitHubIssueKey
-from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, IssueRunRecord, RunTerminalBinding
+from ..domain.issue_run_evidence import (
+    IssueRunEvidenceUnavailable,
+    IssueRunRecord,
+    ReworkTarget,
+    RunTerminalBinding,
+)
 from ..domain.registered_completion import CompletionRunRole
 from ..domain.session_key import SessionKey
 from ..domain.session_kind import SessionKind
@@ -67,6 +72,8 @@ class IssueRunRow:
                 "completion_task": record.session_key.kind.value
                 if record.agent_label is not None
                 else None,
+                "rework_pr_number": None if record.rework_target is None else record.rework_target.pr_number,
+                "rework_cycle": None if record.rework_target is None else record.rework_target.cycle,
                 # Retain the allocated lexical path without following mutable targets.
                 "run_dir": os.path.normpath(str(run.run_dir)),
                 "recorded_at": record.recorded_at,
@@ -87,10 +94,12 @@ class IssueRunRow:
     def insert_sql(self) -> str:
         return """INSERT INTO issue_runs (
             session_name,run_id,started_at,issue_number,issue_scope,issue_key,
-            task,assets_json,branch_name,terminal_binding,agent_label,completion_task,run_dir,recorded_at
+            task,assets_json,branch_name,terminal_binding,agent_label,completion_task,
+            rework_pr_number,rework_cycle,run_dir,recorded_at
         ) VALUES (
             :session_name,:run_id,:started_at,:issue_number,:issue_scope,:issue_key,
-            :task,:assets_json,:branch_name,:terminal_binding,:agent_label,:completion_task,:run_dir,:recorded_at
+            :task,:assets_json,:branch_name,:terminal_binding,:agent_label,:completion_task,
+            :rework_pr_number,:rework_cycle,:run_dir,:recorded_at
         )"""
 
     @property
@@ -148,4 +157,14 @@ class IssueRunRow:
             branch_name=row["branch_name"],
             terminal_binding=None if row["terminal_binding"] is None else RunTerminalBinding(**json.loads(row["terminal_binding"])),
             agent_label=row["agent_label"],
+            rework_target=_rework_target(row["rework_pr_number"], row["rework_cycle"]),
         )
+
+
+def _rework_target(pr_number: int | None, cycle: int | None) -> ReworkTarget | None:
+    """Both halves or neither: a row recording half a rework target is corrupt."""
+    if (pr_number is None) != (cycle is None):
+        raise ValueError(
+            f"run ledger row records half a rework target (pr={pr_number!r}, cycle={cycle!r})"
+        )
+    return ReworkTarget.of(pr_number, cycle)

@@ -1171,7 +1171,7 @@ class TestTheRestoredKindComesFromTheLedger:
         return config
 
     @staticmethod
-    def _sqlite_row(tmp_path, run_assets, kind, agent_label):
+    def _sqlite_row(tmp_path, run_assets, kind, agent_label, rework_target=None):
         from issue_orchestrator.domain.issue_key import GitHubIssueKey
         from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 
@@ -1185,6 +1185,7 @@ class TestTheRestoredKindComesFromTheLedger:
                 branch_name="42-branch",
                 terminal_binding=RunTerminalBinding(run_assets.session_name),
                 agent_label=agent_label,
+                rework_target=rework_target,
             ),
         )
         return ledger
@@ -1247,6 +1248,24 @@ class TestTheRestoredKindComesFromTheLedger:
 
         assert restored.key.kind is SessionKind.REWORK
         assert restored.agent_label == "agent:web"
+
+    def test_a_rework_comes_back_onto_the_pr_its_run_recorded(self, tmp_path):
+        """#7347 review r4: a rework's PR and cycle are read from its run's
+        ledger row - its terminal name carries only the issue number."""
+        from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
+
+        worktree = tmp_path / "repo-42"
+        worktree.mkdir()
+        run_assets = make_session_run_assets(worktree, session_name="coding-3")
+        ledger = self._sqlite_row(
+            tmp_path, run_assets, SessionKind.REWORK, "agent:web", ReworkTarget(500, 2)
+        )
+
+        [restored] = self._restore(
+            tmp_path, ledger, run_assets, "rework-42", issue_labels=["agent:web"]
+        )
+
+        assert (restored.pr_number, restored.rework_cycle) == (500, 2)
 
     def test_a_run_with_no_recorded_role_is_not_restored_under_a_guess(
         self, tmp_path, caplog

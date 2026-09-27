@@ -140,7 +140,9 @@ class ValidationRetryRecovery:
             artifacts = find_pending_retry_artifacts(checkout)
             if artifacts is None or not artifacts.state.can_retry:
                 continue
-            retry = self._queue_entry(issue_number, checkout, branch_name, artifacts)
+            retry = self._queue_entry(
+                issue_number, checkout, branch_name, artifacts
+            ).keeping_rework_target_of(existing)
             if running and active is None:
                 # The terminal exists but no restored session names it, so this
                 # retry is held rather than launched: queued keeps the
@@ -231,6 +233,7 @@ class ValidationRetryRecovery:
             ledger=self._issue_run_ledger,
             authority=self._tech_lead_authority,
         )
+        target = recovered_run.rework_target if recovered_run is not None else None
         return PendingValidationRetry(
             issue_number=issue_number,
             issue_title=f"Issue #{issue_number}",  # The full title is not on disk
@@ -256,6 +259,11 @@ class ValidationRetryRecovery:
                 recovered_run.authority_run if recovered_run is not None else None
             ),
             recovery_error=recovery_error,
+            # A rework's PR and cycle, from the run's own ledger row: the
+            # published-review gate lets a rework resume on its own PR only
+            # (#7347 review r4). Unknown (None) for a legacy row.
+            pr_number=target.pr_number if target is not None else None,
+            rework_cycle=target.cycle if target is not None else None,
         )
 
     @staticmethod

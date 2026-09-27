@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
 from ..domain.coder_prompt import (
     CoderPromptAddendumUnavailable,
@@ -362,6 +363,7 @@ def launch_rework_session(
         reuse_options=deps.worktree_reuse_options(allow_remote_branch_delete=False),
         phase_name=phase_name,
         stack_base_branch=stack_base_branch,
+        rework_target=ReworkTarget(pr_number, rework.rework_cycle),
     )
 
     if ctx.error:

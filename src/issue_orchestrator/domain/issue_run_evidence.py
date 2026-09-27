@@ -19,6 +19,32 @@ class IssueRunEvidenceStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ReworkTarget:
+    """The PR a rework run is fixing, and the review cycle it answers.
+
+    Recorded by the launch that allocated the run (#7347 review r4), so a
+    restart restores a rework - and a rework's validation retry - onto its PR
+    from the orchestrator's own ledger, never from an agent-writable manifest.
+    """
+
+    pr_number: int
+    cycle: int
+
+    def __post_init__(self) -> None:
+        for name in ("pr_number", "cycle"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"rework target {name} must be a positive int, got {value!r}")
+
+    @classmethod
+    def of(cls, pr_number: int | None, cycle: int | None) -> "ReworkTarget | None":
+        """The target when both halves are known; ``None`` (unknown) otherwise."""
+        if pr_number is None or cycle is None:
+            return None
+        return cls(pr_number, cycle)
+
+
+@dataclass(frozen=True, slots=True)
 class RunTerminalBinding:
     """Owner-recorded visible terminal, or explicit background-only allocation."""
     terminal_id: str | None
@@ -39,10 +65,17 @@ class IssueRunRecord:
     # The run's KIND is ``session_key.kind``: the launch-stamped authority
     # (#7347), decoded for pre-#7347 rows by ``SessionKind.from_ledger_stamps``.
     agent_label: str | None = field(default=None, kw_only=True)
+    # The PR a REWORK run fixes; None for every other kind, and for a rework
+    # recorded before #7347 (unknown, never guessed).
+    rework_target: ReworkTarget | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.terminal_binding is not None and type(self.terminal_binding) is not RunTerminalBinding:
             raise TypeError("run requires typed terminal ownership")
+        if self.rework_target is not None and not self.session_key.kind.capabilities.pushes_to_an_open_pr:
+            raise ValueError(
+                f"a {self.session_key.kind.value} run cannot record a rework target"
+            )
         if not self.recorded_at.strip():
             raise ValueError("run record requires recorded_at")
 

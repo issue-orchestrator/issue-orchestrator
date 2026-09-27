@@ -11,6 +11,7 @@ Tests mock at port boundaries, not internal patches, following the hexagonal arc
 """
 
 from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
+from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     parse_scratch_worktree_name,
@@ -9971,7 +9972,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
         launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
         retry = replace(
-            TestTheLaunchStampsOneKind._retry(SessionKind.REWORK), pr_number=500, rework_cycle=1
+            TestTheLaunchStampsOneKind.retry_of(SessionKind.REWORK), pr_number=500, rework_cycle=1
         )
 
         result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
@@ -9992,7 +9993,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
 
         launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
         launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
-        retry = replace(TestTheLaunchStampsOneKind._retry(kind), pr_number=pr_number)
+        retry = replace(TestTheLaunchStampsOneKind.retry_of(kind), pr_number=pr_number)
 
         result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
 
@@ -10089,8 +10090,34 @@ class TestTheLaunchStampsOneKind:
         assert self._identity(session)["task"] == "code"
         assert self._started_task(mock_events) == "code"
 
+    def test_a_review_by_the_agent_that_is_also_the_tech_lead_is_a_review(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """#7347 review r4: one agent may be both the PR reviewer and the tech
+        lead. Its review is chosen by the work, so it launches as REVIEW; only
+        issue-lane launches are decided by the agent label."""
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        sample_config.code_review_agent = "agent:tech-lead"
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+
+        result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert [call["name"] for call in launcher_bundle.create_session_calls] == [session.terminal_id]
+        assert session.terminal_id.startswith("review-")
+        recorded = launcher_bundle.issue_run_ledger.recorded_run(session.run_assets)
+        assert (recorded.session_key.kind, recorded.agent_label) == (SessionKind.REVIEW, "agent:tech-lead")
+
     @staticmethod
-    def _retry(kind: SessionKind) -> PendingValidationRetry:
+    def retry_of(kind: SessionKind) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=123,
             issue_title="Fix checkout",
@@ -10119,7 +10146,7 @@ class TestTheLaunchStampsOneKind:
     ) -> None:
         """It used to drop ``source_task`` and come back as a coder."""
         result = launcher_bundle.launcher.launch_validation_retry_session(
-            self._retry(SessionKind.REWORK), active_sessions=[]
+            self.retry_of(SessionKind.REWORK), active_sessions=[]
         )
 
         assert result.success is True, result.reason
@@ -10145,7 +10172,7 @@ class TestTheLaunchStampsOneKind:
         PR's review machine (#7347 review round 1)."""
         from dataclasses import replace
 
-        retry = replace(self._retry(SessionKind.REWORK), pr_number=456, rework_cycle=2)
+        retry = replace(self.retry_of(SessionKind.REWORK), pr_number=456, rework_cycle=2)
 
         result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
 
@@ -10155,6 +10182,28 @@ class TestTheLaunchStampsOneKind:
         assert (session.pr_number, session.rework_cycle) == (456, 2)
         # Cycle 2 ran as coding-3; its first retry is the next iteration.
         assert session.run_assets.session_name == "coding-4"
+        # ... and its run records them, so a restart restores them (review r4).
+        recorded = launcher_bundle.issue_run_ledger.recorded_run(session.run_assets)
+        assert recorded.rework_target == ReworkTarget(456, 2)
+
+    def test_a_rework_launch_records_the_pr_it_fixes_with_its_run(self, launcher_bundle) -> None:
+        """#7347 review r4: the rework's PR and cycle are durable facts of its run."""
+        launcher_bundle.launcher.repository_host.prs[123] = [PRInfo(
+            number=456, title="Fix", url="u", branch="123-feature", body="", state="open", labels=[],
+        )]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=2,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        recorded = launcher_bundle.issue_run_ledger.recorded_run(session.run_assets)
+        assert recorded.rework_target == ReworkTarget(456, 2)
 
     def test_a_tech_lead_still_running_under_its_pre_upgrade_name_is_not_launched_twice(
         self, launcher_bundle, sample_config, tmp_path
@@ -10174,7 +10223,7 @@ class TestTheLaunchStampsOneKind:
 
     def test_a_coders_retry_still_takes_the_claim(self, launcher_bundle) -> None:
         result = launcher_bundle.launcher.launch_validation_retry_session(
-            self._retry(SessionKind.CODE), active_sessions=[]
+            self.retry_of(SessionKind.CODE), active_sessions=[]
         )
 
         assert result.success is True, result.reason
@@ -10263,7 +10312,7 @@ class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
             ).session
         if kind == "rework-retry":
             return launcher.launch_validation_retry_session(
-                TestTheLaunchStampsOneKind._retry(SessionKind.REWORK), active_sessions=[]
+                TestTheLaunchStampsOneKind.retry_of(SessionKind.REWORK), active_sessions=[]
             ).session
         TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
         return launcher.launch_issue_session(

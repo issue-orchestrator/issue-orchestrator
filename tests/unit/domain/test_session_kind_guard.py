@@ -59,7 +59,6 @@ _PER_KIND_HANDLERS: dict[tuple[str, str], int] = {
     ("control/tech_lead_artifact_retention.py", "tech_lead_problem_artifact_hold_issue_numbers"): 1,
     ("control/tech_lead_reaction.py", "record_completed_session_problem"): 1,
     ("control/health_review_trigger.py", "recover_pending_tech_lead_anchors"): 1,
-    ("control/issue_run_allocator.py", "IssueRunAllocationService._require_launch_role"): 1,
     ("domain/models.py", "PendingValidationRetry.__post_init__"): 1,
     ("domain/registered_completion.py", "CompletionRunRole.__post_init__"): 1,
     ("domain/registered_completion.py", "CompletionRunRole.require_processing_role"): 1,

@@ -119,6 +119,25 @@ def test_allocation_refuses_a_kind_that_contradicts_the_agent_role(custody, kind
     assert custody.ledger.recorded_runs(42) == (recorded,)
 
 
+@pytest.mark.parametrize(
+    "kind", [SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW, SessionKind.REWORK]
+)
+def test_a_kind_chosen_by_the_work_may_run_under_the_tech_lead_agent(custody, kind):
+    """#7347 review r4: the configured reviewer may also be the tech lead. Only
+    the issue-lane kinds (CODE / TECH_LEAD) are decided by the agent label."""
+    config = Config(repo="owner/repo")
+    config.tech_lead_review_agent = "agent:tech-lead"
+    allocator = IssueRunAllocationService(
+        FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=config
+    )
+    recorded = custody.ledger.recorded_run(custody.run)
+    run = allocator.allocate(IssueRunAllocation(
+        custody.worktree, "review-2", 42, replace(recorded.session_key, kind=kind),
+        "agent:tech-lead", "test", terminal_id="visible-reviewer",
+    ))
+    assert custody.ledger.recorded_run(run).session_key.kind is kind
+
+
 def test_a_refused_allocation_leaves_no_run_directory(custody, tmp_path):
     config = Config(repo="owner/repo")
     config.tech_lead_review_agent = "agent:tech-lead"

@@ -243,6 +243,22 @@ class SessionKind(Enum):
             )
         return kind
 
+    def contradicts_agent_role(
+        self, agent_label: str, tech_lead_agent: str | None
+    ) -> bool:
+        """Whether a run stamped with this kind contradicts its agent's role.
+
+        Only the issue-lane kinds are decided by the agent label
+        (:meth:`for_issue_launch`), so only they can contradict it: an issue
+        launch under the tech-lead agent that is not ``TECH_LEAD``, or a
+        ``TECH_LEAD`` run under any other agent. A review, retrospective review
+        or rework is chosen by the work, not the label; one agent may be both
+        the configured reviewer and the tech lead (#7347 review r4).
+        """
+        if self not in _ISSUE_LAUNCH_KINDS:
+            return False
+        return self is not SessionKind.for_issue_launch(agent_label, tech_lead_agent)
+
     @classmethod
     def issue_is_work_item(
         cls, agent_label: str | None, tech_lead_agent: str | None
@@ -408,6 +424,9 @@ _SESSION_TYPE: dict[SessionKind, SessionType] = {
 }
 
 _LAUNCHED_AS_ISSUE_BEFORE_7347 = frozenset({SessionKind.TECH_LEAD})
+
+#: The kinds an issue-lane launch stamps from the agent label.
+_ISSUE_LAUNCH_KINDS = frozenset({SessionKind.CODE, SessionKind.TECH_LEAD})
 
 _PHASE_PREFIX: dict[SessionKind, str] = {
     SessionKind.CODE: "coding",
