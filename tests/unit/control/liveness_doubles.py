@@ -9,6 +9,7 @@ from issue_orchestrator.control.action_liveness import ActionLivenessOwner
 from issue_orchestrator.control.planned_action_liveness import PlannedActionLiveness
 from issue_orchestrator.control.planner_types import OrchestratorSnapshot, Plan
 from issue_orchestrator.domain.owed_write import EffectDebt, EffectResult
+from issue_orchestrator.events import EventContext
 from issue_orchestrator.ports.action_liveness import PendingPause, PendingRelease
 from issue_orchestrator.domain.action_liveness import (
     ActionIdentity,
@@ -16,6 +17,10 @@ from issue_orchestrator.domain.action_liveness import (
     LivenessPolicy,
     LivenessRow,
 )
+
+
+#: The run and tick a test's planning cycles announce owed writes in.
+TICK = EventContext()
 
 
 class InMemoryActionLivenessStore:
@@ -129,6 +134,7 @@ class InMemoryActionLivenessStore:
         from issue_orchestrator.domain.action_liveness import LivenessAnnouncement
 
         self.releases.pop(issue_number, None)
+        self.pauses.pop(issue_number, None)
         gone = self._pop(lambda row: row.key.escalation_issue == issue_number)
         for row in gone:
             if row.parked:
@@ -234,7 +240,7 @@ class RecordingEscalation:
         self.unblocks.append((issue_number, self.unblock_commits))
         return _result(self.unblock_commits)
 
-    def pause(self, issue_number: int, reason: str) -> EffectResult:
+    def pause(self, issue_number: int, reason: str, context: EventContext) -> EffectResult:
         self.pauses.append((issue_number, self.pause_commits))
         return _result(self.pause_commits)
 
@@ -285,13 +291,13 @@ def gated(plan: Plan, owner: ActionLivenessOwner | None = None) -> Plan:
     )
     return PlannedActionLiveness(
         owner or liveness_owner(), escalation_label="needs-human"
-    ).admit(plan, snapshot)
+    ).admit(plan, snapshot, TICK)
 
 
 class _PassthroughLiveness:
     """A gate for tests about FETCHING, whose planner and plan are mocks."""
 
-    def admit(self, plan, snapshot):
+    def admit(self, plan, snapshot, context):
         return plan
 
 

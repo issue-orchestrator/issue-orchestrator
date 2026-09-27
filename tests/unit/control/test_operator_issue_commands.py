@@ -9,6 +9,8 @@ side of the transition committed, and a refusal must leave BOTH untouched.
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import TICK
+
 import pytest
 
 from tests.unit.control.liveness_doubles import liveness_owner
@@ -791,9 +793,9 @@ class TestPublishedWorkKeepsTheSchedulerGate:
 
 
 class TestAnOwedPauseNeverLandsBehindAPerson:
-    """#7350: the reconciliation pause observed drift owes an issue is withheld
-    while a person's Retry or Dismiss runs, so it cannot land behind their
-    label writes -- and is owed again if their command did not commit."""
+    """#7350: the reconciliation pause observed drift owes an issue never lands
+    behind a person's Retry or Dismiss: a command that commits settles it, one
+    that does not leaves it owed, and no tick runs mid-command."""
 
     @staticmethod
     def _owner(live):
@@ -811,7 +813,7 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
 
             accepting = False
 
-            def pause(self, issue_number, reason):
+            def pause(self, issue_number, reason, context):
                 if not self.accepting:
                     return EffectResult.refused("GitHub 502")
                 live.setdefault(issue_number, set()).add(get_pause_label())
@@ -832,7 +834,7 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
         import threading
 
         owner, store, clock, escalation = self._owner(live)
-        owner.owe_pause(ISSUE, "drift")  # refused: owed
+        owner.owe_pause(ISSUE, "drift", TICK)  # refused: owed
         _labels, runner = _runner(sample_config, state, live, liveness=owner)
         clock.advance(owner.policy.max_backoff)
         escalation.accepting = True
@@ -848,7 +850,7 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
             return pauses
 
         store.pending_pauses = read_then_hold  # type: ignore[method-assign]
-        reconciling = threading.Thread(target=owner.reconcile_effects)
+        reconciling = threading.Thread(target=lambda: owner.reconcile_effects(TICK))
         reconciling.start()
         assert read.wait(timeout=10)
         assert runner.retry(ISSUE).committed
@@ -858,8 +860,9 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
         assert get_pause_label() not in live[ISSUE]
         assert store.pauses == {}
 
+    @pytest.mark.parametrize("command", ["retry", "dismiss"])
     def test_no_tick_owes_a_pause_off_labels_a_retry_is_still_changing(
-        self, sample_config, state
+        self, sample_config, state, command
     ):
         """Retry is held at a GitHub label write when a tick starts that would
         see the not-yet-removed label as drift and owe a pause. The whole
@@ -895,9 +898,9 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
         def tick():
             with state_lock:
                 if labels.blocked in live[ISSUE]:  # "drift" it would pause on
-                    owner.owe_pause(ISSUE, "drift")
+                    owner.owe_pause(ISSUE, "drift", TICK)
 
-        retrying = threading.Thread(target=lambda: runner.retry(ISSUE))
+        retrying = threading.Thread(target=lambda: getattr(runner, command)(ISSUE))
         retrying.start()
         assert writing.wait(timeout=10)
         ticking = threading.Thread(target=tick)
@@ -910,11 +913,11 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
         assert get_pause_label() not in live[ISSUE]
         assert store.pauses == {}
 
-    def test_a_retry_that_did_not_commit_owes_the_pause_again(self, sample_config, state):
+    def test_a_retry_that_did_not_commit_leaves_the_pause_owed(self, sample_config, state):
         labels = LabelManager(sample_config)
         live = {ISSUE: {labels.blocked, labels.needs_human}}
         owner, store, _clock, _escalation = self._owner(live)
-        owner.owe_pause(ISSUE, "drift")
+        owner.owe_pause(ISSUE, "drift", TICK)
         owed = store.pauses[ISSUE]
         _labels, runner = _runner(
             sample_config, state, live, refuse=frozenset({labels.blocked}), liveness=owner
@@ -924,11 +927,11 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
 
         assert store.pauses == {ISSUE: owed}
 
-    def test_dismiss_withholds_the_pause_too(self, sample_config, state):
+    def test_dismiss_settles_the_owed_pause_too(self, sample_config, state):
         labels = LabelManager(sample_config)
         live = {ISSUE: {labels.blocked, labels.needs_human}}
         owner, store, _clock, _escalation = self._owner(live)
-        owner.owe_pause(ISSUE, "drift")
+        owner.owe_pause(ISSUE, "drift", TICK)
         _labels, runner = _runner(sample_config, state, live, liveness=owner)
 
         assert runner.dismiss(ISSUE).committed

@@ -42,10 +42,10 @@ from ..domain.action_liveness import (
 )
 from ..domain.host_rate_limit import HostRateLimit
 from ..domain.owed_write import NO_DEBT, EffectResult
+from ..events import EventContext
 from ..ports.action_liveness import (
     ActionLivenessStore,
     LivenessEscalation,
-    PendingPause,
     PendingRelease,
 )
 from ..ports.blocked_item_custody import ParkedActionFact
@@ -186,7 +186,7 @@ class ActionLivenessOwner:
         )
         return self._escalate(row, now)
 
-    def reconcile_effects(self) -> None:
+    def reconcile_effects(self, context: EventContext) -> None:
         """Retry every escalation effect that has not committed yet.
 
         A park whose block did not land, and a release owed to an issue whose
@@ -212,17 +212,18 @@ class ActionLivenessOwner:
                 self._unblock(pending.issue_number, now)
         for pause in self._store.pending_pauses():
             if self._policy.effect_due(pause.debt, now):
-                self._pause(pause.issue_number, now)
+                self._pause(pause.issue_number, now, context)
 
-    def owe_pause(self, issue_number: int, reason: str) -> EffectResult:
+    def owe_pause(self, issue_number: int, reason: str, context: EventContext) -> EffectResult:
         """Observed drift calls for the reconciliation pause on ``issue_number``.
 
         The pause is owed durably before it is attempted, so a refusal is not
         forgotten: :meth:`reconcile_effects` retries it every cycle it is due --
         at a rate limit's reset, else ``max_backoff`` after a refusal --
         independently of the action whose refusal found the drift, until it
-        lands, is observed on the issue (:meth:`settle_observed_pauses`), or an
-        operator settles the issue. A pause already owed and not yet due is not
+        lands, is observed on the issue (:meth:`settle_observed_pauses`), or the
+        issue is settled (:meth:`release_issue`: an operator's Retry or Dismiss,
+        or terminal recovery). A pause already owed and not yet due is not
         written again; its result says so.
         """
         now = self._clock()
@@ -232,31 +233,7 @@ class ActionLivenessOwner:
                 return EffectResult.refused(
                     f"pause already owed; next attempt at {pending.debt.retry_at}"
                 )
-            return self._pause_serialized(issue_number, now)
-
-    def withhold_pause(self, issue_number: int) -> PendingPause | None:
-        """An operator is settling ``issue_number`` (Retry, Dismiss): take its
-        owed pause, if any, out of the ledger BEFORE their label writes.
-
-        Under the effects lock, after any pause write already in flight: from
-        here no owed pause can land on the issue behind the person's back
-        (:meth:`_pause_serialized` re-reads the ledger under the same lock).
-        Only the engine process writes pauses and serves operator commands, so
-        an in-process lock is the whole boundary. The caller hands it back with
-        :meth:`restore_pause` if their command did not commit.
-        """
-        with self._effects:
-            pause = self._store.pending_pause(issue_number)
-            if pause is not None:
-                self._store.clear_pause(issue_number)
-            return pause
-
-    def restore_pause(self, pause: PendingPause) -> None:
-        """An operator command that withheld ``pause`` did not commit: it is
-        owed again, with its pacing."""
-        with self._effects:
-            self._store.request_pause(pause.issue_number, pause.reason)
-            self._store.set_pause_debt(pause.issue_number, pause.debt)
+            return self._pause_serialized(issue_number, now, context)
 
     def settle_observed_pauses(self, labels: Mapping[int, Iterable[str]]) -> None:
         """Forget an owed pause this tick observed on its issue: it is there."""
@@ -265,17 +242,19 @@ class ActionLivenessOwner:
             if pause_label in labels.get(pause.issue_number, ()):
                 self._store.clear_pause(pause.issue_number)
 
-    def _pause(self, issue_number: int, now: datetime) -> None:
+    def _pause(self, issue_number: int, now: datetime, context: EventContext) -> None:
         with self._effects:
-            self._pause_serialized(issue_number, now)
+            self._pause_serialized(issue_number, now, context)
 
-    def _pause_serialized(self, issue_number: int, now: datetime) -> EffectResult:
-        # Read under the lock: an operator may have withheld the pause since
-        # the caller last read the ledger.
+    def _pause_serialized(
+        self, issue_number: int, now: datetime, context: EventContext
+    ) -> EffectResult:
+        # Read under the lock: the issue may have been settled (its pause
+        # forgotten) since the caller last read the ledger.
         pause = self._store.pending_pause(issue_number)
         if pause is None:
-            return EffectResult.refused("pause no longer owed: an operator settled the issue")
-        result = self._escalation.pause(pause.issue_number, pause.reason)
+            return EffectResult.refused("pause no longer owed: the issue was settled")
+        result = self._escalation.pause(pause.issue_number, pause.reason, context)
         debt = self._policy.effect_after(pause.debt, result, now)
         if debt is None:
             self._store.clear_pause(pause.issue_number)

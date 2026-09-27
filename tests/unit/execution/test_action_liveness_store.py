@@ -325,3 +325,13 @@ def test_an_owed_pause_keeps_its_pacing_when_owed_again(tmp_path) -> None:
     assert store.pending_pause(410) == again
     store.clear_pause(410)
     assert store.pending_pauses() == () and store.pending_pause(410) is None
+
+
+def test_settling_an_issue_forgets_its_owed_pause(tmp_path) -> None:
+    store = SQLiteActionLivenessStore(tmp_path / "l.sqlite")
+    store.request_pause(410, "drift")
+    store.request_pause(7, "drift elsewhere")
+
+    store.clear_escalation_issue(410)
+
+    assert [p.issue_number for p in store.pending_pauses()] == [7]

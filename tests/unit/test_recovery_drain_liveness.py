@@ -10,6 +10,8 @@ fake at its port.
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import TICK
+
 import dataclasses
 from datetime import timedelta
 
@@ -348,7 +350,7 @@ def test_a_record_resolved_by_an_attempt_that_then_fails_releases_every_lane(
 
     assert engine.rows.rows == {}
     engine.clock.advance(POLICY.max_backoff)
-    engine.owner.reconcile_effects()
+    engine.owner.reconcile_effects(TICK)
     assert [row.key for batch in engine.escalation.released for row in batch] == [parked.key]
     assert engine.escalation.unblocks == [(410, True)]
 
@@ -369,7 +371,7 @@ def test_an_explicit_recovery_with_no_key_still_releases_what_it_resolved(tmp_pa
 
     assert engine.rows.rows == {}
     engine.clock.advance(POLICY.max_backoff)
-    engine.owner.reconcile_effects()
+    engine.owner.reconcile_effects(TICK)
     assert parked.key in [row.key for batch in engine.escalation.released for row in batch]
     assert engine.escalation.unblocks == [(410, True)]
 
@@ -403,7 +405,7 @@ def test_a_completed_recovery_releases_its_records_older_parks(tmp_path) -> None
     assert engine.drain.recover(_operator_retry(engine), OrchestratorState()) is completed
     engine.clock.advance(POLICY.max_backoff)
     assert POLICY.max_backoff < POLICY.stale_after
-    engine.owner.reconcile_effects()
+    engine.owner.reconcile_effects(TICK)
 
     assert [row.key for rows in engine.escalation.released for row in rows] == [queued_park.key]
     assert engine.escalation.unblocks == [(410, True)]
@@ -429,7 +431,7 @@ def test_a_committed_refresh_is_done_and_releases_older_refresh_parks() -> None:
         "remote authority observed", kind=RecoveryPendingKind.ADVANCED
     ))
     clock.advance(POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
 
     assert rows.rows == {}
     assert [row.key for batch in escalation.released for row in batch] == [old]

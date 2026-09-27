@@ -534,7 +534,7 @@ def pause_issue_for_reconciliation(
     failed step.
     """
     try:
-        result = pauses.owe_pause(issue_number, reason)
+        result = pauses.owe_pause(issue_number, reason, event_context)
     except Exception as e:
         _report_pause_not_applied(events, event_context, issue_number, str(e))
         return
@@ -689,7 +689,7 @@ def run_planning_cycle(
     # The planner re-derives actions from facts; the liveness owner decides
     # which of them may run now (#7350). Parked and backing-off actions leave
     # the plan with the owner's reason in ``skipped``.
-    plan = action_liveness.admit(planner.plan(snapshot), snapshot)
+    plan = action_liveness.admit(planner.plan(snapshot), snapshot, event_context)
     _emit_plan_computed(events, event_context, plan)
 
     if plan.action_count > 0:

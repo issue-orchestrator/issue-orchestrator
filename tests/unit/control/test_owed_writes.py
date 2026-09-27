@@ -9,6 +9,8 @@ planning cycle until it lands -- never reported once and forgotten.
 
 from __future__ import annotations
 
+from tests.unit.control.liveness_doubles import TICK
+
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock
 
@@ -68,7 +70,7 @@ def _cycles(owner, clock, until, step=timedelta(minutes=10)) -> None:
     owed writes."""
     while clock() + step <= until:
         clock.advance(step)
-        owner.reconcile_effects()
+        owner.reconcile_effects(TICK)
 
 
 def test_a_rate_limited_block_and_comment_wait_for_the_reset_then_land(tmp_path) -> None:
@@ -216,12 +218,44 @@ def test_a_rate_limited_pause_waits_for_the_reset(tmp_path) -> None:
     applier = _RateLimitedApplier(clock, clock() + timedelta(minutes=45))
     owner = _owner(tmp_path, applier, clock)
 
-    assert not owner.owe_pause(SUBJECT, "drift").committed
+    assert not owner.owe_pause(SUBJECT, "drift", TICK).committed
     _cycles(owner, clock, applier.reset - timedelta(minutes=1), step=timedelta(minutes=5))
     assert applier.refused == [("AddLabelAction", SUBJECT)]
 
     _cycles(owner, clock, applier.reset + timedelta(minutes=5), step=timedelta(minutes=5))
     assert applier.landed == [("AddLabelAction", SUBJECT)]
+
+
+def test_a_landed_pause_is_announced_in_the_run_and_tick_it_landed_in(tmp_path) -> None:
+    """``issue.paused_reconcile`` keeps its correlation: the schema, the run,
+    and the tick the write landed in -- whether it landed at once or on a later
+    planning cycle."""
+    from issue_orchestrator.events import EventContext
+
+    clock = ManualClock()
+    applier = _RateLimitedApplier(clock, clock())  # accepting now
+    events = MagicMock()
+    owner = applier_owner(
+        applier, events, store=SQLiteActionLivenessStore(tmp_path / "l.sqlite"),
+        clock=clock, policy=POLICY,
+    )
+    context = EventContext()
+    context.tick_id = 3
+
+    assert owner.owe_pause(SUBJECT, "drift", context).committed
+
+    applier.reset = clock() + timedelta(minutes=45)
+    assert not owner.owe_pause(SUBJECT + 1, "drift", context).committed
+    context.tick_id = 9
+    clock.advance(timedelta(hours=1))
+    owner.reconcile_effects(context)
+
+    paused = [
+        call.args[0].data for call in events.publish.call_args_list
+        if call.args[0].name == EventName.ISSUE_PAUSED_RECONCILE
+    ]
+    assert [(p["issue_number"], p["tick_id"]) for p in paused] == [(SUBJECT, 3), (SUBJECT + 1, 9)]
+    assert all(p["run_id"] == str(context.run_id) and "schema" in p for p in paused)
 
 
 def test_an_owed_pause_seen_on_its_issue_is_settled(tmp_path) -> None:
@@ -230,11 +264,11 @@ def test_an_owed_pause_seen_on_its_issue_is_settled(tmp_path) -> None:
     clock = ManualClock()
     applier = _RateLimitedApplier(clock, clock() + LIMITED_FOR)
     owner = _owner(tmp_path, applier, clock)
-    owner.owe_pause(SUBJECT, "drift")
+    owner.owe_pause(SUBJECT, "drift", TICK)
 
     owner.settle_observed_pauses({SUBJECT: ("blocked", get_pause_label())})
     clock.advance(LIMITED_FOR + POLICY.max_backoff)
-    owner.reconcile_effects()
+    owner.reconcile_effects(TICK)
 
     assert applier.landed == []
     assert SQLiteActionLivenessStore(tmp_path / "l.sqlite").pending_pauses() == ()
@@ -251,7 +285,7 @@ def test_the_escalation_adapter_keeps_the_hosts_rate_limit() -> None:
         events=MagicMock(), applier=_RateLimitedApplier(clock, reset),
         needs_human_label="needs-human",
     )
-    assert returned.pause(SUBJECT, "drift").rate_limit == HostRateLimit(reset, "secondary")
+    assert returned.pause(SUBJECT, "drift", TICK).rate_limit == HostRateLimit(reset, "secondary")
 
     limited = RepositoryHostRateLimitedError("API rate limit exceeded")
     limited.rate_limit = HostRateLimit(resets_at=reset, kind="primary")

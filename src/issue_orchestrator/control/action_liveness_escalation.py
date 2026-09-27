@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from ..domain.action_liveness import LivenessRow
 from ..domain.human_block import NeedsHumanCause
 from ..domain.owed_write import EffectResult
-from ..events import EventName
+from ..events import EventContext, EventName
 from ..ports.event_sink import EventSink, make_trace_event
 from ..ports.repository_host import host_rate_limit_of
 from .action_results import SupportsApplyAction
@@ -120,7 +120,7 @@ class ActionLivenessEscalation:
             )
         )
 
-    def pause(self, issue_number: int, reason: str) -> EffectResult:
+    def pause(self, issue_number: int, reason: str, context: EventContext) -> EffectResult:
         pause_label = get_pause_label()
         result = self._apply(
             AddLabelAction(
@@ -136,7 +136,9 @@ class ActionLivenessEscalation:
             )
             self.events.publish(make_trace_event(
                 EventName.ISSUE_PAUSED_RECONCILE,
-                {"issue_number": issue_number, "pause_label": pause_label, "reason": reason},
+                context.enrich(
+                    {"issue_number": issue_number, "pause_label": pause_label, "reason": reason}
+                ),
             ))
         return result
 

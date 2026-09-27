@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..domain.action_liveness import (
     ActionIdentity,
@@ -20,6 +20,9 @@ from ..domain.action_liveness import (
     LivenessRow,
 )
 from ..domain.owed_write import NO_DEBT, EffectDebt, EffectResult
+
+if TYPE_CHECKING:
+    from ..events import EventContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +128,9 @@ class ActionLivenessStore(Protocol):
 
         An operator settled that issue's block, so any withdrawal still owed to
         it is forgotten in the same transaction: replayed later, it could take
-        off a block a person has since put back.
+        off a block a person has since put back. So is an owed reconciliation
+        pause: the issue's work is settled (a person's Retry or Dismiss, or a
+        terminal recovery), and a pause landing afterwards would re-block it.
         """
         ...
 
@@ -221,9 +226,10 @@ class LivenessEscalation(Protocol):
         """Withdraw this owner's cause of the block."""
         ...
 
-    def pause(self, issue_number: int, reason: str) -> EffectResult:
+    def pause(self, issue_number: int, reason: str, context: "EventContext") -> EffectResult:
         """Put the reconciliation pause label on the issue, and announce it
-        on the timeline when it lands."""
+        on the timeline -- in ``context``, the run and tick it landed in --
+        when it lands."""
         ...
 
 

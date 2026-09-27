@@ -74,7 +74,17 @@ class OperatorIssueCommandRunner:
     liveness: "ActionLivenessOwner"
 
     def retry(self, issue_number: int) -> OperatorCommandOutcome:
-        """Clear the retry-gating labels, then make the issue eligible again."""
+        """Clear the retry-gating labels, then make the issue eligible again.
+
+        Retry and dismiss each run their WHOLE transition -- the fresh read, the
+        GitHub label writes and the local commit -- under the facade's state
+        lock, as the tick runs its planning cycle: no tick observes the issue
+        mid-command and owes it a pause off labels the person is still
+        changing, and no owed pause (#7350) is written while the command runs.
+        A command that commits settles the issue in the liveness owner, owed
+        pause included; one that does not leaves it owed. Lock order matches
+        the tick: state lock, then the owner's effects lock.
+        """
         def settle() -> OperatorCommandOutcome:
             observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
             return self._settle(
@@ -84,45 +94,18 @@ class OperatorIssueCommandRunner:
                 lambda settled: self._make_retryable(issue_number, observed, settled),
             )
 
-        return self.run_locked(lambda: self._withholding_owed_pause(issue_number, settle))
+        return self.run_locked(settle)
 
     def dismiss(self, issue_number: int) -> OperatorCommandOutcome:
         """Clear everything holding the issue, then take it off the board."""
-        return self.run_locked(lambda: self._withholding_owed_pause(
+        return self.run_locked(lambda: self._settle(
             issue_number,
-            lambda: self._settle(
-                issue_number,
-                OperatorCommandIntent.DISMISS,
-                self.unblocker.dismiss(issue_number),
-                lambda settled: self._remove_from_board(issue_number),
-            ),
+            OperatorCommandIntent.DISMISS,
+            self.unblocker.dismiss(issue_number),
+            lambda settled: self._remove_from_board(issue_number),
         ))
 
     # -- internals ---------------------------------------------------------
-
-    def _withholding_owed_pause(
-        self, issue_number: int, command: Callable[[], OperatorCommandOutcome]
-    ) -> OperatorCommandOutcome:
-        """Run a person's command on the issue with its owed reconciliation
-        pause (#7350) withheld first, so the pause cannot land behind their
-        label writes; handed back if the command did not commit.
-
-        Called under the facade's state lock for the WHOLE transition -- the
-        fresh read, the GitHub label writes and the local commit -- so no tick
-        observes the issue mid-command (and owes it a new pause off labels
-        the person is still changing). Lock order matches the tick: state lock,
-        then the liveness owner's effects lock.
-        """
-        withheld = self.liveness.withhold_pause(issue_number)
-        try:
-            outcome = command()
-        except BaseException:
-            if withheld is not None:
-                self.liveness.restore_pause(withheld)
-            raise
-        if withheld is not None and not outcome.committed:
-            self.liveness.restore_pause(withheld)
-        return outcome
 
     def _settle(
         self,

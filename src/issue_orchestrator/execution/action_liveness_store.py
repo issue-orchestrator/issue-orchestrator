@@ -381,6 +381,7 @@ class SQLiteActionLivenessStore:
             rows = tuple(_row(found) for found in conn.execute(_BY_ISSUE, (issue_number,)))
             conn.execute(_DELETE_ISSUE, (issue_number,))
             conn.execute(_FORGET_RELEASE, (issue_number,))
+            conn.execute(_FORGET_PAUSE, (issue_number,))
             for row in rows:
                 if row.parked:
                     _owe_announcement(conn, row, LivenessAnnouncement.RELEASED)
