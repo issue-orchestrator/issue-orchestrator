@@ -322,7 +322,7 @@ def test_only_launch_routing_dequeues_a_tech_lead_run_without_retiring_its_claim
 
     That is correct for launch routing, where the launch transaction takes the
     claim over. Any other caller ends a run and strands its deferred row -- the
-    #7348 bug -- so it must go through ``TechLeadRunRetirement`` instead.
+    #7348 bug -- so it must go through ``QueuedWorkRetirement`` instead.
     """
     src = Path(__file__).resolve().parents[3] / "src" / "issue_orchestrator"
     callers = sorted(

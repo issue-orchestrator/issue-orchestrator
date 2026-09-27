@@ -372,13 +372,13 @@ class TechLeadLaunchAuthority:
         Through the same owner as plan-time withdrawal, so the run's durable
         claim is retired with its queue entry (#7348).
         """
-        from .tech_lead_run_retirement import (
-            TechLeadRunRetirement,
+        from .queued_work_retirement import (
+            QueuedWorkRetirement,
             withdraw_queued_tech_lead_run,
         )
 
         withdraw_queued_tech_lead_run(
-            TechLeadRunRetirement(self._state, self._claims),
+            QueuedWorkRetirement(self._state, self._claims),
             self._ownership,
             self._events,
             run_key=refusal.run_key,

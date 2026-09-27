@@ -1290,6 +1290,7 @@ def build_test_orchestrator_deps(
         sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
         publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
         base_branch=lambda _issue, _worktree: "main",
+        pending_work_claims=pending_work_claims,
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
 

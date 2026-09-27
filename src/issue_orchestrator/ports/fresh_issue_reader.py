@@ -32,7 +32,18 @@ class FreshIssueReadError(RuntimeError):
     consumer has to decide what "unknown" means for its own decision — pause the
     mutation, reject the retry, fall back to last-known labels — instead of
     inheriting a silent empty list that reads as fact.
+
+    ``transient`` says whether the host is expected to answer the same read
+    shortly (a transport failure, a 5xx, a rate limit) as opposed to a failure
+    that will not clear by itself (auth, not found, an unreadable payload). It
+    is REQUIRED so every producer classifies: an unknown is still an unknown
+    either way, but only a transient one may be retried instead of escalated
+    (#7379).
     """
+
+    def __init__(self, message: str, *, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass(frozen=True)
