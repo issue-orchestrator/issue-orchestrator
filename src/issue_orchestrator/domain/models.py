@@ -2141,6 +2141,11 @@ class OrchestratorState:
     # One-shot buffer of issues whose published PR's review the sweep releases
     # (#7293); the next snapshot consumes it.
     stuck_sweep_review_releases: list[int] = field(default_factory=list)
+    # The last sweep's observation (#7293, read by the board's custody #7331):
+    # blocked issues whose published validated work sits under an open PR that
+    # owns them, behind a block the sweep may not lift. In memory; the next
+    # sweep replaces it, and a restart leaves it empty until then.
+    stuck_sweep_held_for_review: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def paused(self) -> bool:

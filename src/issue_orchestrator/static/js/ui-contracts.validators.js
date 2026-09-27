@@ -203,6 +203,46 @@
             ],
             "type": "object"
         },
+        "BlockedCustodySummaryPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "by_state": {
+                    "items": {
+                        "$ref": "#/components/schemas/CustodyStateCountPayload"
+                    },
+                    "type": "array"
+                },
+                "headline": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "needs_attention": {
+                    "minimum": 0,
+                    "type": "integer"
+                },
+                "stale": {
+                    "minimum": 0,
+                    "type": "integer"
+                },
+                "total": {
+                    "minimum": 0,
+                    "type": "integer"
+                },
+                "unowned": {
+                    "minimum": 0,
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "total",
+                "needs_attention",
+                "unowned",
+                "stale",
+                "headline",
+                "by_state"
+            ],
+            "type": "object"
+        },
         "BlockedIssuePayload": {
             "additionalProperties": false,
             "properties": {
@@ -298,6 +338,96 @@
             },
             "required": [
                 "blocked_issues"
+            ],
+            "type": "object"
+        },
+        "BlockedItemCustodyPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "age_label": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "attention_text": {
+                    "type": "string"
+                },
+                "charter": {
+                    "oneOf": [
+                        {
+                            "$ref": "#/components/schemas/CustodyCharterPayload"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "label": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "needs_attention": {
+                    "type": "boolean"
+                },
+                "owner": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "reason": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "since": {
+                    "type": "string"
+                },
+                "since_basis": {
+                    "type": "string"
+                },
+                "stale": {
+                    "type": "boolean"
+                },
+                "stale_after_label": {
+                    "type": "string"
+                },
+                "state": {
+                    "enum": [
+                        "unowned",
+                        "queued_for_tech_lead",
+                        "investigating",
+                        "waiting_on_you",
+                        "being_fixed",
+                        "waiting_on_world",
+                        "held",
+                        "verify"
+                    ],
+                    "type": "string"
+                },
+                "tone": {
+                    "enum": [
+                        "attention",
+                        "pending",
+                        "active",
+                        "you",
+                        "world",
+                        "held",
+                        "verify"
+                    ],
+                    "type": "string"
+                }
+            },
+            "required": [
+                "state",
+                "label",
+                "owner",
+                "reason",
+                "tone",
+                "since",
+                "since_basis",
+                "age_label",
+                "stale",
+                "stale_after_label",
+                "needs_attention",
+                "attention_text",
+                "charter"
             ],
             "type": "object"
         },
@@ -621,6 +751,144 @@
                 "kind",
                 "label",
                 "run_id"
+            ],
+            "type": "object"
+        },
+        "CustodyCharterPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "action": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "action_ceiling": {
+                    "enum": [
+                        "propose",
+                        "execute"
+                    ],
+                    "type": "string"
+                },
+                "ceiling_source": {
+                    "type": "string"
+                },
+                "decided_at": {
+                    "type": "string"
+                },
+                "decision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "lifecycle_label": {
+                    "type": "string"
+                },
+                "outcome": {
+                    "enum": [
+                        "executed",
+                        "proposed",
+                        "advice_only",
+                        "refused_destructive"
+                    ],
+                    "type": "string"
+                },
+                "outcome_label": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "proposal_issue_number": {
+                    "minimum": 0,
+                    "type": "integer"
+                },
+                "reason": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "required_depth": {
+                    "enum": [
+                        "workaround",
+                        "fix",
+                        "restructure"
+                    ],
+                    "type": "string"
+                },
+                "role": {
+                    "enum": [
+                        "flow",
+                        "review_loop",
+                        "abstraction",
+                        "platform",
+                        "intake",
+                        "learning",
+                        "general"
+                    ],
+                    "type": "string"
+                },
+                "role_authority": {
+                    "enum": [
+                        "propose",
+                        "execute"
+                    ],
+                    "type": "string"
+                },
+                "role_depth": {
+                    "enum": [
+                        "workaround",
+                        "fix",
+                        "restructure"
+                    ],
+                    "type": "string"
+                },
+                "role_enabled": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "decision_id",
+                "role",
+                "action",
+                "required_depth",
+                "role_enabled",
+                "role_depth",
+                "role_authority",
+                "action_ceiling",
+                "ceiling_source",
+                "outcome",
+                "outcome_label",
+                "lifecycle_label",
+                "reason",
+                "decided_at",
+                "proposal_issue_number"
+            ],
+            "type": "object"
+        },
+        "CustodyStateCountPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "count": {
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                "label": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "state": {
+                    "enum": [
+                        "unowned",
+                        "queued_for_tech_lead",
+                        "investigating",
+                        "waiting_on_you",
+                        "being_fixed",
+                        "waiting_on_world",
+                        "held",
+                        "verify"
+                    ],
+                    "type": "string"
+                }
+            },
+            "required": [
+                "state",
+                "label",
+                "count"
             ],
             "type": "object"
         },
@@ -2557,6 +2825,9 @@
                 "count": {
                     "type": "integer"
                 },
+                "custody_summary": {
+                    "$ref": "#/components/schemas/BlockedCustodySummaryPayload"
+                },
                 "expandable": {
                     "type": "boolean"
                 },
@@ -3327,6 +3598,22 @@
                     ]
                 },
                 "action_hint": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "custody": {
+                    "oneOf": [
+                        {
+                            "$ref": "#/components/schemas/BlockedItemCustodyPayload"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "custody_signal": {
                     "type": [
                         "string",
                         "null"

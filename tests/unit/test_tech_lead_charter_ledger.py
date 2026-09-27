@@ -565,3 +565,84 @@ def test_doctor_proves_no_filing_capability_for_an_advice_only_lane() -> None:
     [check] = check_tech_lead_finding_routes(config, target_host=host)
     assert check.status == "error" and "cannot create issues" in check.detail
     host.check_filing_ready.assert_called()
+
+
+def test_list_about_issue_filters_before_its_limit(store) -> None:
+    """#7331: decisions a run anchored on #99 took about OTHER issues never
+    crowd #99's own decisions out of a bounded read."""
+    own = _decision("A0", target=99, anchor=99, at="2026-09-26T09:00:00+00:00")
+    untargeted = _decision(
+        "A1", "create_issue", target=None, anchor=99, at="2026-09-26T09:30:00+00:00"
+    )
+    others = [
+        _decision(f"B{i}", target=500 + i, anchor=99, at=f"2026-09-26T1{i}:00:00+00:00")
+        for i in range(5)
+    ]
+    elsewhere = _decision("C0", target=None, anchor=7)
+    _ledger(store).record_decisions([own, untargeted, *others, elsewhere])
+
+    about = _ledger(store).list_about_issue(99, limit=2)
+
+    assert [d.decision_id for d in about] == [untargeted.decision_id, own.decision_id]
+    assert all(d.is_about_issue(99) for d in about)
+    assert not others[0].is_about_issue(99)
+
+
+def test_list_about_issue_is_an_index_search_not_a_ledger_scan(tmp_path: Path) -> None:
+    """#7331: the board runs this once per blocked card."""
+    from issue_orchestrator.infra.tech_lead_charter_ledger_store import ABOUT_ISSUE_QUERY
+
+    import sqlite3
+
+    path = tmp_path / "tech_lead_authority.sqlite"
+    store = SqliteTechLeadAuthorityStore(path)
+    store.charter_ledger.list_about_issue(1, limit=5)  # the store has built its schema
+    with sqlite3.connect(path) as connection:
+        plan = [
+            str(row[3])
+            for row in connection.execute(f"EXPLAIN QUERY PLAN {ABOUT_ISSUE_QUERY}", (1, 1, 5))
+        ]
+
+    assert any("USING INDEX tech_lead_charter_decisions_target" in step for step in plan), plan
+    assert any("USING INDEX tech_lead_charter_decisions_anchor" in step for step in plan), plan
+    assert not any(step.startswith("SCAN tech_lead_charter_decisions") for step in plan), plan
+
+
+def test_effects_on_an_issue_come_newest_effect_first(store) -> None:
+    """#7331: an approval applied after later history is still the newest effect."""
+    approved = _decision(
+        "A1", "kill_hung_session", target=40, at="2026-09-26T08:00:00+00:00"
+    ).with_lifecycle(
+        CharterProposalLifecycle.APPROVED_APPLIED,
+        at="2026-09-26T12:00:00+00:00",
+        proposal_issue_number=800,
+    )
+    executed = replace(
+        _decision("A2", "recover_validated_work", target=40, at="2026-09-26T10:00:00+00:00"),
+        outcome=CharterOutcome.EXECUTED,
+        lifecycle=None,
+    )
+    comments = [
+        _decision(f"C{i}", "post_comment", target=40, at=f"2026-09-26T11:0{i}:00+00:00")
+        for i in range(5)
+    ]
+    proposed = _decision("A3", "kill_hung_session", target=40, at="2026-09-26T11:30:00+00:00")
+    elsewhere = _decision("A4", "recover_validated_work", target=41)
+    _ledger(store).record_decisions([approved, executed, *comments, proposed, elsewhere])
+
+    effects = _ledger(store).list_remedies_on_issue(40, limit=5)
+
+    assert [d.decision_id for d in effects][:2] == [approved.decision_id, executed.decision_id]
+    assert [d.decision_id for d in effects] == [approved.decision_id, executed.decision_id]
+    assert all(d.is_remedy and d.took_effect and d.target_number == 40 for d in effects)
+
+
+def test_decisions_filed_as_a_proposal_are_read_by_its_number(store) -> None:
+    filed = _decision("A1", target=13, at="2026-09-26T08:00:00+00:00", proposal_issue_number=900)
+    noise = [
+        _decision(f"C{i}", "post_comment", target=900, anchor=900, at=f"2026-09-26T1{i}:00:00+00:00")
+        for i in range(5)
+    ]
+    _ledger(store).record_decisions([filed, *noise])
+
+    assert _ledger(store).list_filed_as_proposal(900, limit=1) == (filed,)

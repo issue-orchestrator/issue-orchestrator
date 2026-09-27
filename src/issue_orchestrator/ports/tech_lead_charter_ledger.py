@@ -47,6 +47,35 @@ class TechLeadCharterDecisionReader(Protocol):
         """Decisions that target, anchor on, or were filed as *issue_number*."""
         ...
 
+    def list_about_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        """Decisions ABOUT *issue_number* (#7331), filtered before the limit.
+
+        Aimed at it, or made by a run anchored on it with no other target
+        (:meth:`TechLeadCharterDecision.is_about_issue`). Unlike
+        :meth:`list_for_issue`, a busy run anchored on the issue cannot crowd
+        the issue's own decisions out of the window.
+        """
+        ...
+
+    def list_remedies_on_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        """Remedies aimed at *issue_number* that took effect, newest EFFECT first.
+
+        ``is_remedy`` / ``took_effect`` / ``effect_at`` as persisted: an
+        approval applied after a burst of later history is still the newest
+        effect (#7331).
+        """
+        ...
+
+    def list_filed_as_proposal(
+        self, proposal_issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        """The decisions linked to gated proposal *proposal_issue_number* (#7331)."""
+        ...
+
     def list_for_role(
         self, role: CharterRole, *, limit: int = 100
     ) -> tuple[TechLeadCharterDecision, ...]:
@@ -195,6 +224,36 @@ class InMemoryTechLeadCharterLedger:
                 for row in self._rows.values()
                 if issue_number
                 in (row.target_number, row.anchor_issue_number, row.proposal_issue_number)
+            ]
+        return _newest_first(rows, limit)
+
+    def list_about_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        with self._lock:
+            rows = [row for row in self._rows.values() if row.is_about_issue(issue_number)]
+        return _newest_first(rows, limit)
+
+    def list_remedies_on_issue(
+        self, issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        with self._lock:
+            rows = [
+                row
+                for row in self._rows.values()
+                if row.target_number == issue_number and row.is_remedy and row.took_effect
+            ]
+        ordered = sorted(rows, key=lambda row: (row.effect_at, row.decision_id), reverse=True)
+        return tuple(ordered[: check_read_limit(limit)])
+
+    def list_filed_as_proposal(
+        self, proposal_issue_number: int, *, limit: int = 100
+    ) -> tuple[TechLeadCharterDecision, ...]:
+        with self._lock:
+            rows = [
+                row
+                for row in self._rows.values()
+                if row.proposal_issue_number == proposal_issue_number
             ]
         return _newest_first(rows, limit)
 

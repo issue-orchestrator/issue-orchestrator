@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..ports import RepositoryHost
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.pull_request_tracker import PRInfo
+    from .orchestrator_deps import OrchestratorDeps
 
 logger = logging.getLogger(__name__)
 
@@ -373,3 +374,20 @@ class CleanupManager:
                         pr.number, e
                     )
         return fixed_count
+
+
+def build_cleanup_manager(config: "Config", deps: "OrchestratorDeps") -> CleanupManager:
+    """The engine's cleanup manager, bound to its session and worktree owners."""
+    from .session_routing import kill_session, session_exists
+    from .worktree_manager import get_session_name, get_worktree_path
+
+    return CleanupManager(
+        config,
+        deps.repository_host,
+        deps.worktree_manager,
+        lambda name: kill_session(name, deps.session_manager, deps.events),
+        lambda name: session_exists(name, deps.session_manager, deps.events),
+        lambda issue_number, agent_config: get_worktree_path(config, issue_number, agent_config),
+        lambda number, session_type="issue": get_session_name(number, session_type),
+        deps.runtime_lifecycle,
+    )

@@ -98,7 +98,9 @@ from ..control.session_routing import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
-from ..control.cleanup_manager import CleanupManager
+from ..control.cleanup_manager import CleanupManager, build_cleanup_manager
+from ..control.blocked_item_custody_reader import build_blocked_item_custody_reader
+from ..ports.blocked_item_custody import BlockedItemCustodyReader
 from ..control.worker_budget import worker_slot_free
 from ..control.review_exchange_lifecycle import IssueRuntimeTermination, IssueTerminationOutcome, ReviewExchangeCancellation
 from ..control.completion_handler import (
@@ -298,16 +300,12 @@ class Orchestrator:
 
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:
-        return CleanupManager(
-            self.config,
-            self.deps.repository_host,
-            self.deps.worktree_manager,
-            lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
-            lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
-            lambda issue_number, agent_config: get_worktree_path(self.config, issue_number, agent_config),
-            lambda number, session_type="issue": get_session_name(number, session_type),
-            self.deps.runtime_lifecycle,
-        )
+        return build_cleanup_manager(self.config, self.deps)
+
+    @cached_property
+    def blocked_item_custody(self) -> "BlockedItemCustodyReader":
+        """Who owns each blocked item, and why (#7331); the dashboard only renders it."""
+        return build_blocked_item_custody_reader(self.config, self.deps, lambda: self.state)
 
     @cached_property
     def _completion_handler(self) -> CompletionHandler:

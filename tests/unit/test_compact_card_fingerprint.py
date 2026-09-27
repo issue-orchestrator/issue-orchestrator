@@ -68,6 +68,9 @@ REPRESENTATIVE_CARDS: list[dict[str, Any]] = [
         "github_title": "Open issue on GitHub",
         "github_aria_label": "Open issue #101 on GitHub",
         "orchestrator_labels": ["agent:web", "blocked-needs-human"],
+        # A blocked card carries its custody signal (#7331); parity must hold
+        # with a non-empty one.
+        "custody_signal": "waiting_on_you||An agent asked for a human (needs-human).|",
     },
     {
         "card_id": "issue-202",
@@ -210,3 +213,12 @@ def test_run_dir_change_does_change_fingerprint_while_phase_age_stays_excluded()
     ticked_age = dict(base)
     ticked_age["phase_age"] = "1h"
     assert compute_compact_card_fingerprint(base) == compute_compact_card_fingerprint(ticked_age)
+
+
+def test_custody_signal_change_does_change_fingerprint() -> None:
+    """A blocked card whose custody changed must be rebuilt (#7331)."""
+    base = dict(REPRESENTATIVE_CARDS[0])
+    other = dict(base)
+    other["custody_signal"] = "investigating||A tech-lead session is analysing it now.|"
+    assert compute_compact_card_fingerprint(base) != compute_compact_card_fingerprint(other)
+    assert _js_fingerprint(base) != _js_fingerprint(other)

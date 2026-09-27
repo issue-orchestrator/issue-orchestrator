@@ -31,7 +31,12 @@ from ..domain.tech_lead_findings import (
     VALID_FINDING_PROMOTION_MODES,
 )
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
+from ..domain.blocked_item_custody import CustodyState
 from ..domain.tech_lead_charter import CharterRole
+from .config_models_tech_lead_custody import (
+    DEFAULT_CUSTODY_STALE_MINUTES,
+    MAX_CUSTODY_STALE_MINUTES,
+)
 from .config_models_tech_lead_charter import (
     TECH_LEAD_CHARTER_AUTHORITIES,
     TECH_LEAD_CHARTER_DEPTHS,
@@ -57,6 +62,33 @@ _CHARTER_ROLE_JOBS = {
     CharterRole.LEARNING: "turn incidents and case files into lasting fixes",
     CharterRole.GENERAL: "catch-all for actions that fit no named role",
 }
+
+
+def _custody_stale_field(state: CustodyState) -> Any:
+    """One ``tech_lead.custody.stale_after_minutes.<state>`` field (#7331)."""
+    path = f"tech_lead.custody.stale_after_minutes.{state.value}"
+    return Field(
+        DEFAULT_CUSTODY_STALE_MINUTES[state],
+        title=f"Blocked Custody: {state.label} Stale After (minutes)",
+        description=(
+            f"A blocked item {state.label.lower()} longer than this counts toward"
+            " the board's needs-attention number"
+        ),
+        ge=1,
+        le=MAX_CUSTODY_STALE_MINUTES,
+        json_schema_extra={
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": path,
+            "yaml_path": path,
+            "doc_examples": [str(DEFAULT_CUSTODY_STALE_MINUTES[state])],
+            "doc_notes": (
+                "Every blocked item on the board has a custody state: who owns"
+                " it now and why. The Blocked column's needs-attention count is"
+                " the items nobody owns plus the items that have sat in their"
+                " state longer than its threshold. Unowned items always count."
+            ),
+        },
+    )
 
 
 def _charter_field(role: CharterRole, dial: str) -> Any:
@@ -1675,6 +1707,24 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.stuck_sweep.max_recovery_attempts",
         },
     )
+    # When a blocked item's custody state is stale (#7331), one per state.
+    tech_lead_custody_stale_queued_for_tech_lead_minutes: int = _custody_stale_field(
+        CustodyState.QUEUED_FOR_TECH_LEAD
+    )
+    tech_lead_custody_stale_investigating_minutes: int = _custody_stale_field(
+        CustodyState.INVESTIGATING
+    )
+    tech_lead_custody_stale_waiting_on_you_minutes: int = _custody_stale_field(
+        CustodyState.WAITING_ON_YOU
+    )
+    tech_lead_custody_stale_being_fixed_minutes: int = _custody_stale_field(
+        CustodyState.BEING_FIXED
+    )
+    tech_lead_custody_stale_waiting_on_world_minutes: int = _custody_stale_field(
+        CustodyState.WAITING_ON_WORLD
+    )
+    tech_lead_custody_stale_held_minutes: int = _custody_stale_field(CustodyState.HELD)
+    tech_lead_custody_stale_verify_minutes: int = _custody_stale_field(CustodyState.VERIFY)
     tech_lead_max_concurrent: Optional[int] = Field(
         None,
         title="Reserved Tech Lead Concurrency",

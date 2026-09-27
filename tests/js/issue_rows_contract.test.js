@@ -123,6 +123,10 @@ function _loadCore({ listEl, fetchImpl }) {
         // fail-closed tests below return before this.
         formatDashboardTimestamps: () => {},
         initFlowLazyVisibleRefresh: () => {},
+        // ``blocked_custody.js`` (#7331): the reconcile loop keeps an open
+        // custody disclosure across a row replacement.
+        captureCustodyDisclosures: () => ({ open: new Set(), focused: null }),
+        restoreCustodyDisclosures: () => {},
         addEventListener: () => {},
         removeEventListener: () => {},
         document: _stubDocument(listEl),
