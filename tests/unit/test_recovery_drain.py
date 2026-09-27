@@ -20,6 +20,7 @@ from issue_orchestrator.domain.validated_work import (
 )
 from issue_orchestrator.domain.validated_work_remote_authority import RemoteAuthorityRefreshRequest
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
@@ -103,6 +104,7 @@ def test_queue_routes_unobserved_remote_authority_to_refresh(tmp_path):
         authority_refresh=refreshes,
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=2,
         interval_seconds=10,
     ).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
@@ -125,6 +127,7 @@ def test_batch_bound_and_interval_do_not_starve_after_exception(tmp_path):
         authority_refresh=Refreshes(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=2,
         interval_seconds=10,
         clock=lambda: now.value,
@@ -157,6 +160,7 @@ def test_interval_starts_after_synchronous_work_finishes(tmp_path):
         authority_refresh=Refreshes(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
         clock=lambda: now.value,
@@ -181,6 +185,7 @@ def test_stopped_mode_cannot_select_or_start_recovery_work():
         authority_refresh=authority_refresh,
         claim_maintenance=claim_maintenance,
         block_sweep=block_sweep,
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
     )
@@ -207,6 +212,7 @@ def test_due_drain_reports_block_sweep_even_when_no_recovery_record_is_selected(
         authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=block_sweep,
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
     )
@@ -235,6 +241,7 @@ def test_due_drain_runs_claim_maintenance_before_projection_and_selection():
         authority_refresh=Mock(),
         claim_maintenance=maintenance,
         block_sweep=block_sweep,
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=10,
     )
@@ -261,6 +268,7 @@ def test_lifecycle_stop_during_batch_prevents_another_operation_and_preserves_cu
         authority_refresh=Refreshes(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=3,
         interval_seconds=10,
         clock=lambda: now.value,
