@@ -174,7 +174,7 @@ def queue_retrospective_review_request(
     if state.has_in_flight_retrospective_review(issue_number):
         return False
 
-    state.pending_retrospective_reviews.append(
+    return state.queue_pending_retrospective_review(
         PendingRetrospectiveReview(
             issue_key=repository_host.create_issue_key(issue_number),
             issue_number=issue_number,
@@ -186,7 +186,6 @@ def queue_retrospective_review_request(
             issue_labels=tuple(decision.labels),
         )
     )
-    return True
 
 
 def discover_retrospective_review_issues(
