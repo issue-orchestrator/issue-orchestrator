@@ -44,6 +44,7 @@ CARRIERS = frozenset({
     "FinalizationOutcome",
     "RecoveryBlockReconcileOutcome",
     "RecoveryBlockReleaseOutcome",
+    "PullRequestPreparationRefusal",
 })
 
 #: Results that forward a limit under ``host_rate_limit`` instead: checked as
@@ -62,9 +63,10 @@ AUTHORITY_ONLY = frozenset({"ValidatedWorkClaimLost", "ValidatedWorkAuthorityUna
 #: Sources whose message is converted but whose type cannot carry a limit,
 #: keyed by (module, source expression), with the reason.
 NOT_CARRIERS = {
-    ("control/claimed_recovery_preparation.py", "prepared"): (
-        "ProcessingResult from retained PR preparation: its refusals travel as "
-        "error strings through the shared completion pipeline (follow-up #7426)"
+    ("control/retained_completion_preparation.py", "policy_refusal"): (
+        "ProcessingResult from completion policy checks (reserved labels, role, "
+        "tech-lead shaping, validation): local, never a host read. PR preparation "
+        "refusals are typed (PullRequestPreparationRefusal) and carry their limit"
     ),
     ("control/validated_work_scope_retirement.py", "self"): (
         "ScopeRetirement: a store compare-and-set outcome, never a host error"
