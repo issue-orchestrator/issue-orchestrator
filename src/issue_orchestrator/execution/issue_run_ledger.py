@@ -260,9 +260,13 @@ class SqliteIssueRunLedger:
         return record
 
     def _exact_row(self, run: SessionRunAssets) -> "sqlite3.Row | None":
-        with self._connect() as conn:
-            return conn.execute("SELECT * FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?",
-                (run.session_name, run.run_id, run.started_at)).fetchone()
+        try:
+            with self._connect() as conn:
+                return conn.execute("SELECT * FROM issue_runs WHERE session_name=? AND run_id=? AND started_at=?",
+                    (run.session_name, run.run_id, run.started_at)).fetchone()
+        except sqlite3.Error as exc:
+            # The port promises IssueRunEvidenceUnavailable for an unreadable row.
+            raise IssueRunEvidenceUnavailable("exact allocated run could not be read") from exc
 
     def run_for_capability(self, capability: str) -> SessionRunAssets:
         return self._intake.run_for_capability(capability)
