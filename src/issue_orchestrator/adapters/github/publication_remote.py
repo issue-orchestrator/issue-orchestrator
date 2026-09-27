@@ -21,7 +21,7 @@ from ...domain.validated_work_capture import (
 )
 from ...domain.validated_work import require_sha
 from ...ports.repository_host import RepositoryHostError
-from .errors import GitHubHttpError
+from .errors import GitHubHttpError, GitHubRateLimitedError
 from .http_client import GitHubHttpClient
 
 # GitHub answers an unprocessable PR create with 422 and, for the refusals the
@@ -61,7 +61,7 @@ def _create_rejection(exc: GitHubHttpError) -> PublicationPrCreateRejected | Non
     spam throttling, a malformed body) proves nothing permanent and stays an
     untyped remote error, which the attempt budget bounds.
     """
-    if exc.status_code != _UNPROCESSABLE:
+    if exc.status_code != _UNPROCESSABLE or isinstance(exc, GitHubRateLimitedError):
         return None
     try:
         payload = json.loads(exc.response_text or "")

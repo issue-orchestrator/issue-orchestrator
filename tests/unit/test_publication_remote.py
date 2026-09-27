@@ -327,3 +327,20 @@ def test_create_failure_without_a_definite_refusal_stays_untyped(remote_factory,
     with pytest.raises(PublicationRemoteError) as raised:
         remote_factory(lambda _request: response).create_pr(COMMAND)
     assert not isinstance(raised.value, PublicationPrCreateRejected)
+
+
+def test_rate_limited_create_is_never_a_definite_refusal():
+    """A rate limit says when the host will answer, not what the answer is."""
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.adapters.github.errors import GitHubRateLimitedError
+    from issue_orchestrator.adapters.github.publication_remote import _create_rejection
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+
+    exc = GitHubRateLimitedError(
+        "rate limited",
+        rate_limit=HostRateLimit(datetime(2026, 9, 27, tzinfo=timezone.utc), "secondary"),
+        status_code=422,
+        response_text=_unprocessable("No commits between main and feature").text,
+    )
+    assert _create_rejection(exc) is None
