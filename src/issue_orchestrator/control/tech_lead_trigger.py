@@ -131,6 +131,10 @@ class TechLeadTerminationOutcome:
     # one-shot leaves every conflicting tech-lead run blocked until the lease
     # expires — there is no later tick to reconcile it (#6994 round 2 F10/A7).
     run_released: bool = True
+    # The durable pending-work claim the session launched holding (#7348).
+    # Termination drops the active-session record, so a claim left HELD has no
+    # live holder and the per-tick recovery sweep would re-admit the run.
+    work_settled: bool = True
     worktree_removed: bool = True
     # Path of the disposable scratch worktree that could NOT be removed (a leak
     # requiring explicit operator action); None when there was nothing to remove
@@ -154,6 +158,7 @@ class TechLeadTerminationOutcome:
             and self.machine_removed
             and self.claim_released
             and self.run_released
+            and self.work_settled
             and self.worktree_removed
         )
 

@@ -20,6 +20,7 @@ from ..domain.tech_lead_session import (
     TECH_LEAD_OBSERVATION_LABEL,
     is_proposed_tech_lead_gate,
 )
+from .reconciliation import RECONCILE_PAUSE_LABEL
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -189,7 +190,9 @@ class LabelManager:
             LabelEntry("blocked_claim_lost", "blocked:claim-lost", LabelCategory.BLOCKING, "Claim lost"),
             LabelEntry("blocked_stale_claim", "blocked:stale-claim", LabelCategory.BLOCKING, "Stale claim"),
             LabelEntry("blocked_pr_closed", "blocked:pr-closed", LabelCategory.BLOCKING, "PR closed or missing"),
-            LabelEntry("needs_reconcile", "needs-reconcile", LabelCategory.CLAIM, "Needs reconciliation"),
+            # Raw: the pause label has ONE spelling, declared by the
+            # reconciliation owner that writes and guards it (#7349).
+            LabelEntry("needs_reconcile", RECONCILE_PAUSE_LABEL, LabelCategory.CLAIM, "Needs reconciliation", raw=True),
             LabelEntry("provider_unavailable", self._provider_unavailable_base, LabelCategory.BLOCKING, "Provider unavailable"),
             LabelEntry("run_audit_requested", "needs-run-audit", LabelCategory.INFORMATIONAL, "Run audit requested"),
             LabelEntry("run_audit_completed", "run-audit-complete", LabelCategory.INFORMATIONAL, "Run audit completed"),

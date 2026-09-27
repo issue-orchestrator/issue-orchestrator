@@ -118,6 +118,14 @@ class PendingSessionQueues:
         ]
 
     def remove_tech_lead(self, issue_number: int) -> None:
+        """LAUNCH ROUTING ONLY: dequeue a run the launch transaction now owns.
+
+        A launch hands the run's durable claim to the launch transaction, which
+        holds it or settles it. Every OTHER way a queued run ends must also
+        retire that claim, so it goes through
+        :class:`..control.tech_lead_run_retirement.TechLeadRunRetirement`
+        instead (#7348); a guard test pins this method to launch routing.
+        """
         self.state.pending_tech_lead_reviews[:] = [
             t
             for t in self.state.pending_tech_lead_reviews
@@ -151,23 +159,6 @@ class PendingSessionQueues:
                 problem_cohort=problem_cohort,
             )
         )
-
-    def remove_failure_investigations(
-        self, issue_numbers: frozenset[int]
-    ) -> None:
-        """Remove only storm-superseded individual investigation entries.
-
-        Batch and health anchors may share an issue number with other tech_lead
-        bookkeeping and must never be removed by a problem-cohort transition.
-        """
-        self.state.pending_tech_lead_reviews[:] = [
-            item
-            for item in self.state.pending_tech_lead_reviews
-            if not (
-                item.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
-                and item.issue_number in issue_numbers
-            )
-        ]
 
     def queue_failure_investigation(
         self, issue_number: int, title: str, *, failure: DiscoveredFailure

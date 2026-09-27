@@ -14,6 +14,8 @@ cover the two reliability findings that the batch/planner tests cannot reach:
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from datetime import datetime, timezone
 
 from types import SimpleNamespace
@@ -31,10 +33,12 @@ from issue_orchestrator.control.health_review_trigger import (
     ensure_on_demand_health_review_anchor,
     health_review_decision,
     health_review_due,
-    hydrate_last_health_review_at,
     intake_created_tech_lead_anchor,
-    most_recent_health_anchor_created_at,
     plan_health_review_issue_creation,
+)
+from issue_orchestrator.control.health_review_cadence import (
+    hydrate_last_health_review_at,
+    most_recent_health_anchor_created_at,
     record_health_review_creation,
 )
 from issue_orchestrator.control.tech_lead_issue_policy import (
@@ -550,7 +554,7 @@ class TestGateSuppressesAcrossRealCreation:
             health_review_fingerprint=decision.fingerprint,
             origin=TechLeadCreationOrigin.authors_anchor(),
         )
-        intake_created_tech_lead_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store, claims=MagicMock())
         state.last_health_review_at = T0  # intake stamps wall-clock time.time()
 
         # The anchor is queued: the board is transiently different...
@@ -581,7 +585,7 @@ class TestGateSuppressesAcrossRealCreation:
             health_review_fingerprint=decision.fingerprint,
             origin=TechLeadCreationOrigin.authors_anchor(),
         )
-        intake_created_tech_lead_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store, claims=MagicMock())
         state.last_health_review_at = T0
         state.pending_tech_lead_reviews.clear()
 
@@ -599,7 +603,7 @@ class TestGateSuppressesAcrossRealCreation:
             labels=health_review_issue_labels(config),
             origin=TechLeadCreationOrigin.authors_anchor(),
         )
-        intake_created_tech_lead_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store, claims=MagicMock())
         state.last_health_review_at = 100_000.0
         state.pending_tech_lead_reviews.clear()
         assert state.last_reviewed_board_fingerprint == ""
@@ -663,7 +667,7 @@ class TestPlannerCarriesTheDecidedFingerprint:
         action = self._plan(config, facts)
         assert action is not None
 
-        intake_created_tech_lead_anchor(action, 900, state, store)
+        intake_created_tech_lead_anchor(action, 900, state, store, claims=MagicMock())
         state.last_health_review_at = T0  # intake stamps wall-clock time.time()
         state.pending_tech_lead_reviews.clear()  # review launched and completed
 
@@ -745,6 +749,7 @@ class TestEnsureOnDemandHealthReviewAnchor:
             queue_cache_store=store,
             tech_lead_authority=None,
             now=now,
+            claims=MagicMock(),
         )
 
         # An anchor was shaped + created through the real apply path...
@@ -776,6 +781,7 @@ class TestEnsureOnDemandHealthReviewAnchor:
             queue_cache_store=_FakeStore(),
             tech_lead_authority=None,
             now=5_000_000.0,
+            claims=MagicMock(),
         )
 
         assert applier.applied == []  # no new anchor created
@@ -801,6 +807,7 @@ class TestEnsureOnDemandHealthReviewAnchor:
             queue_cache_store=None,
             tech_lead_authority=None,
             now=1.0,
+            claims=MagicMock(),
         )
 
         assert result is None
@@ -821,6 +828,7 @@ class TestEnsureOnDemandHealthReviewAnchor:
             queue_cache_store=_FakeStore(),
             tech_lead_authority=None,
             now=5_000_000.0,
+            claims=MagicMock(),
         )
 
         assert result is None

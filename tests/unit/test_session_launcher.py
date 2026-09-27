@@ -4537,6 +4537,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         support.apply_plan(
             Plan(actions=tuple(actions), skipped=()), MagicMock()
@@ -5465,6 +5466,7 @@ class TestTechLeadProducerToLaunchBoundary:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         support.apply_plan(
             Plan(actions=tuple(actions), skipped=()), MagicMock()
@@ -5788,6 +5790,7 @@ class TestTechLeadProducerToLaunchBoundary:
             pre_crash_state,
             None,
             authority_store,
+            claims=MagicMock(),
         )
 
         # ---- CRASH: everything in memory is lost. ----
@@ -5834,6 +5837,7 @@ class TestTechLeadProducerToLaunchBoundary:
             config=config,
             session_exists=lambda name: False,
             tech_lead_authority=authority_store,
+            claims=MagicMock(),
         )
 
         (queued,) = state.pending_tech_lead_reviews
@@ -5914,6 +5918,7 @@ class TestTechLeadProducerToLaunchBoundary:
             config=config,
             session_exists=lambda name: False,
             tech_lead_authority=authority_store,
+            claims=MagicMock(),
         )
 
         (queued,) = state.pending_tech_lead_reviews
@@ -10380,6 +10385,7 @@ def test_startup_does_not_requeue_an_anchor_whose_tech_lead_run_is_live(
         config=sample_config,
         session_exists=lambda name: name == live_terminal,
         tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+        claims=_claims_store(),
     )
 
     assert bool(state.pending_tech_lead_reviews) is requeued

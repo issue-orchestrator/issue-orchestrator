@@ -186,6 +186,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
         config=config,
         session_exists=lambda _: False,
         tech_lead_authority=store,
+        claims=MagicMock(),
     )
     assert not startup.pending_tech_lead_reviews
     gatherer = FactGatherer(config, host, tech_lead_authority=store)
