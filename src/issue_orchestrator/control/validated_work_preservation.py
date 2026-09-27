@@ -52,18 +52,20 @@ class ValidatedWorkPreservationService:
         return self._store.for_issue(issue_number)
 
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
+        # One remote read per branch, shared by the capture decision and the
+        # capture itself (#7347 PR 2 review r5).
+        observations: dict[
+            ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
+        ] = {}
         candidates = tuple(
             candidate
             for candidate in self._intake.prepare_termination(command.run_evidence, command.scope)
-            if self._captures(candidate)
+            if self._captures(candidate, command, observations)
         )
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")
         self._repair.require_issue_custody(command.issue_number)
-        observations: dict[
-            ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
-        ] = {}
         selected = newest_per_work(candidates, command.issue_number)
         for candidate in selected:
             self._capture(candidate, command, observations)
@@ -72,7 +74,12 @@ class ValidatedWorkPreservationService:
             captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
         )
 
-    def _captures(self, candidate: PreparedCompletionEvidence) -> bool:
+    def _captures(
+        self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
+        observations: dict[
+            ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
+        ],
+    ) -> bool:
         """Whether this completion is validated work recovery must hold (#7347).
 
         Two facts, both required. The run's KIND must make its completion the
@@ -92,7 +99,7 @@ class ValidatedWorkPreservationService:
             )
             return False
         worktree = candidate.entry.run.worktree_path
-        base = self._base_branch(role.issue_number, worktree)
+        base = self._pull_request_base(candidate, command, observations)
         # Read fresh from the remote: a cached tracking ref of a base that has
         # since been force-pushed would drop real work. A base that cannot be
         # read or established proves nothing: the head is preserved.
@@ -109,6 +116,55 @@ class ValidatedWorkPreservationService:
             )
             return False
         return True
+
+    def _pull_request_base(
+        self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
+        observations: dict[
+            ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
+        ],
+    ) -> str | None:
+        """The branch this work's PR targets, or None when it cannot be known.
+
+        An open PR for the run's branch already names its base, and that is the
+        authority: a base selected afresh (a changed stack or configuration)
+        may already contain a head the existing PR still needs. With no PR, the
+        issue's selected base (``PullRequestBaseBranch``) is what one would
+        target. An unreadable remote, or PR facts capture would park as
+        ambiguous, establish nothing.
+        """
+        branch_name = candidate.run.branch_name
+        if branch_name is None:
+            return None
+        observed = self._observe(candidate, command, observations, branch_name)
+        if not isinstance(observed, ValidatedWorkRemoteFacts):
+            return None
+        pr_number, failure = classify_remote_pr(
+            observed, candidate.run.session_key.issue.scope(), branch_name,
+        )
+        if failure is not None:
+            return None
+        if pr_number is not None:
+            return observed.pull_requests[0].base_branch
+        return self._base_branch(command.issue_number, candidate.entry.run.worktree_path)
+
+    def _observe(
+        self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
+        observations: dict[
+            ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
+        ],
+        branch_name: str,
+    ) -> ValidatedWorkRemoteFacts | _RemoteUnavailable:
+        request = ValidatedWorkRemoteRequest(
+            candidate.run.session_key.issue.scope(), command.issue_number, branch_name,
+        )
+        observed = observations.get(request)
+        if observed is None:
+            try:
+                observed = self._observer.observe(request)
+            except PublicationRemoteError:
+                observed = _RemoteUnavailable()
+            observations[request] = observed
+        return observed
 
     def _capture(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
@@ -138,16 +194,7 @@ class ValidatedWorkPreservationService:
         expected_remote_head_sha = None
         pr_number = None
         remote_failure = None
-        request = ValidatedWorkRemoteRequest(
-            candidate.run.session_key.issue.scope(), command.issue_number, branch_name,
-        )
-        observed = observations.get(request)
-        if observed is None:
-            try:
-                observed = self._observer.observe(request)
-            except PublicationRemoteError:
-                observed = _RemoteUnavailable()
-            observations[request] = observed
+        observed = self._observe(candidate, command, observations, branch_name)
         if isinstance(observed, ValidatedWorkRemoteFacts):
             remote_status = RemoteBaselineStatus.OBSERVED
             expected_remote_head_sha = observed.branch_head_sha

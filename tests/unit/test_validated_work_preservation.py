@@ -748,3 +748,27 @@ def test_an_unreadable_remote_base_preserves_the_head(custody):
     batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
 
     assert batch.unresolved
+
+
+def test_an_open_prs_own_base_decides_not_a_newly_selected_one(custody):
+    """#7347 PR 2 review r5: the run's branch already has an open PR targeting
+    main, and the validated head is ahead of main. The base selected afresh
+    (here a stack predecessor that already contains the head) must not
+    discard work the existing PR still needs: the PR's base is the authority."""
+    from issue_orchestrator.domain.publication_remote import PublicationPrState, PublicationPullRequest
+
+    _stacked_on_a_predecessor(custody)
+    remote_head = custody.git.run(custody.repo, ["rev-parse", "main"]).stdout.strip()
+    custody.observer.observe.return_value = ValidatedWorkRemoteFacts(remote_head, (
+        PublicationPullRequest(
+            number=500, url="https://example.invalid/pull/500", head_repo="owner/repo",
+            base_repo="owner/repo", branch="feature", base_branch="main",
+            head_sha=remote_head, state=PublicationPrState.OPEN, body="",
+        ),
+    ))
+    custody.base["ref"] = PullRequestBaseBranch(lambda: "main", _StackGate(StackBaseDecision.allowed_on("41-pred")))
+    submit(custody, "validated")
+
+    batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
+
+    assert batch.unresolved

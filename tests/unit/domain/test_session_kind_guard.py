@@ -79,12 +79,35 @@ def _is_str_literal(node: ast.AST) -> bool:
 
 def _kind_names(tree: ast.AST) -> frozenset[str]:
     """Every local name ``SessionKind`` is bound to in a module (#7347 PR 2
-    review r3): ``from ... import SessionKind as SK`` names it ``SK``."""
+    review r3, r5): ``from ... import SessionKind as SK`` names it ``SK``, and
+    ``K = SK`` (or ``K: type = SK``) names it ``K`` too, transitively."""
     names = {"SessionKind"}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             names.update(alias.asname or alias.name for alias in node.names if alias.name == "SessionKind")
-    return frozenset(names)
+    assignments = [
+        (targets, node.value)
+        for node in ast.walk(tree)
+        for targets in _assigned_names(node)
+    ]
+    while True:
+        grown = {
+            target
+            for targets, value in assignments
+            if isinstance(value, ast.Name) and value.id in names
+            for target in targets
+        } - names
+        if not grown:
+            return frozenset(names)
+        names |= grown
+
+
+def _assigned_names(node: ast.AST) -> list[list[str]]:
+    if isinstance(node, ast.Assign):
+        return [[target.id for target in node.targets if isinstance(target, ast.Name)]]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+        return [[node.target.id]]
+    return []
 
 
 class _KindComparisons(ast.NodeVisitor):
@@ -220,9 +243,13 @@ def j(kind):
     return kind is SessionKind["CODE"]
 def k(kind):
     return kind is SessionKind("code")
+K = SK
+K2: type = K
+def m(kind):
+    return kind is K2.REWORK
 def decode(value):
     return SessionKind(value).capabilities.capturable
 '''
     assert _direct_kind_comparisons(source) == collections.Counter(
-        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1, "h": 1, "i": 1, "j": 1, "k": 1}
+        {"a": 1, "b": 1, "c": 1, "<module>": 1, "d": 1, "g": 1, "h": 1, "i": 1, "j": 1, "k": 1, "m": 1}
     )
