@@ -252,7 +252,7 @@ class ActionApplier:
             raise
         except Exception as e:
             logger.exception(f"Action failed: {action}")
-            result = ActionResult.fail(action, str(e))
+            result = ActionResult.fail_from(action, e)
 
         self._emit_action_end(action, result)
         return result
@@ -416,7 +416,7 @@ class ActionApplier:
                 reason=action.reason,
                 detail=str(e),
             )
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _acquire_block(self, action: AddLabelAction) -> BlockOutcome:
         """Hand the governed label to its owner, which applies AND records it."""
@@ -558,7 +558,7 @@ class ActionApplier:
                 reason=action.reason,
                 detail=str(e),
             )
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _apply_provider_impact(self, action: Action) -> ActionResult:
         """Move an issue across the provider-availability boundary (#5980)."""

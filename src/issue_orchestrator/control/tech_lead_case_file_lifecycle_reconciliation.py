@@ -18,6 +18,7 @@ from ..ports.pattern_registry import (
     require_canonical_case_file,
     require_resumable_retirement,
     require_reviewed_revision,
+    TerminalRetirementPolicy,
 )
 from .mutation_gate import ReconciliationGate
 from .reconciliation import ExpectedState
@@ -385,6 +386,10 @@ class CaseFileLifecycleReconciler:
                         signature=outcome.signature,
                         transition=transition,
                         issue_number=outcome.issue_number,
+                        # A reviewed decision: a signature another transition
+                        # already retired is a conflict (a reopen), never
+                        # silently adopted (#7345).
+                        already_terminal=TerminalRetirementPolicy.REFUSE,
                         expected_revision=outcome.expected_revision,
                         expected_signatures=expected_signatures,
                     )

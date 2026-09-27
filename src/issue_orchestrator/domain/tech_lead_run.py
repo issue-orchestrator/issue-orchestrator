@@ -348,6 +348,10 @@ REASON_ANCHOR_CLOSED = "anchor_closed"
 # rather than launching on ignorance: the cost of waiting a tick is one tick,
 # whereas launching a duplicate whole-repository review is a duplicate audit.
 REASON_ANCHOR_UNREADABLE = "anchor_unreadable"
+# GitHub refused on a rate limit with a known reset (#7297). HELD, never
+# withdrawn: the host said when it will answer, and neither the subject nor the
+# anchor can be revalidated before then.
+REASON_GITHUB_RATE_LIMITED = "github_rate_limited"
 # The shared run-claim store could not be reached, so ownership of the logical
 # run could not be established. Admission fails CLOSED on this rather than
 # guessing, because guessing is what creates the duplicate run.

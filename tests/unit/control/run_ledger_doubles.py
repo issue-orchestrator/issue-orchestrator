@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
+from issue_orchestrator.domain.host_rate_limit import HostRateLimit
 from issue_orchestrator.control.tech_lead_run_ownership import TechLeadRunOwnership
 from issue_orchestrator.domain.run_ledger import (
     RunLedger,
@@ -51,6 +52,8 @@ class SharedRunLedger:
         self.ledger = RunLedger()
         self.submissions: list[RunLedgerRequest] = []
         self.unavailable = False
+        #: The host rate limit an unavailable store reports, if any (#7297).
+        self.rate_limit: HostRateLimit | None = None
 
     def engine(self, claimant: str) -> "_EngineLedgerStore":
         """A store view for one orchestrator instance."""
@@ -91,7 +94,9 @@ class _EngineLedgerStore:
         self._shared.submissions.append(request)
         if self._shared.unavailable:
             return RunLedgerOutcome.unavailable(
-                request.run_key, "the coordination store is unreachable"
+                request.run_key,
+                "the coordination store is unreachable",
+                host_rate_limit=self._shared.rate_limit,
             )
         request = self._with_lease(request)
         resolution = resolve(
