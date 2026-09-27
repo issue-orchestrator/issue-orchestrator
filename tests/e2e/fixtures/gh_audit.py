@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from .inflight_tracker import control_api_headers
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,10 @@ def fetch_gh_audit_report(port: int | None) -> dict | None:
                         f"http://localhost:{port}/api/gh_audit_report",
                         data=b"{}",
                         method="POST",
-                        headers={"Content-Type": "application/json"},
+                        # The control API requires auth; without it every
+                        # report request is a 401 and every gh_activity_limit
+                        # guard silently checks nothing.
+                        headers={"Content-Type": "application/json", **control_api_headers()},
                     )
                     with urllib.request.urlopen(req, timeout=5) as resp:
                         payload = json.loads(resp.read().decode("utf-8"))
