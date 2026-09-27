@@ -172,6 +172,9 @@ class GitWorkingCopy:
     def get_head_sha(self, worktree: Path) -> str | None:
         return GitRevisionReader(self._run_git).get_head_sha(worktree)
 
+    def resolve_commit(self, worktree: Path, ref: str) -> str | None:
+        return GitRevisionReader(self._run_git).resolve_commit(worktree, ref)
+
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch."""
         branch = self.get_current_branch(worktree)

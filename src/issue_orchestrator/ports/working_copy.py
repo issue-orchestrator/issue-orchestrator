@@ -165,6 +165,14 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
+    def resolve_commit(self, worktree: Path, ref: str) -> str | None:
+        """The full SHA of the commit ``ref`` names in the worktree's repository.
+
+        Returns ``None`` when the ref names no commit there (absent remote
+        branch, unfetched ref) - never a guess.
+        """
+        ...
+
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch.
 

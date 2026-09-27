@@ -37,6 +37,14 @@ class GitRevisionReader:
             logger.warning("Failed to get HEAD SHA in %s", worktree)
             return None
 
+    def resolve_commit(self, worktree: Path, ref: str) -> str | None:
+        """The full SHA of the commit ``ref`` names, or None if it names none."""
+        result = self._run_git(
+            worktree, ["rev-parse", "--verify", "--quiet", ref + "^{commit}"], check=False
+        )
+        sha = result.stdout.strip()
+        return sha if result.returncode == 0 and sha else None
+
     def verify_historical_selection(
         self, repo_root: Path, branch_name: str, head_sha: str
     ) -> bool:

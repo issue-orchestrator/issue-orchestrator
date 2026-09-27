@@ -69,6 +69,11 @@ def custody(tmp_path):
     git.run(repo, ["commit", "-m", "base"])
     worktree = tmp_path / "worktree"
     git.run(repo, ["worktree", "add", "-b", "feature", str(worktree)])
+    # The branch carries work: a head the base already contains is nothing to
+    # preserve and is never captured (#7347).
+    (worktree / "work").write_text("work")
+    git.run(worktree, ["add", "work"])
+    git.run(worktree, ["commit", "-m", "work"])
     state = tmp_path / "owner-state"
     ledger = SqliteIssueRunLedger(state / "runs.sqlite", repo_slug="test-owner/test-repo")
     wc = GitWorkingCopy(git=git)
@@ -90,7 +95,7 @@ def custody(tmp_path):
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
         custody=ValidatedWorkCustody(escrow, store), repair=repair, working_copy=wc,
-        observer=observer)
+        observer=observer, base_ref=lambda: "main")
     source = IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-07T00:00:00Z")
     sessions = Mock()
     sessions.exists.return_value = False
@@ -617,3 +622,17 @@ def test_termination_captures_only_a_capturable_kinds_completion(
 
     assert bool(batch.unresolved) is captured
     assert bool(custody.store.for_issue(42).unresolved) is captured
+
+
+@pytest.mark.parametrize(("ahead", "captured"), [(True, True), (False, False)])
+def test_a_head_the_base_already_contains_is_not_captured(custody, ahead, captured):
+    """#7346 (enrollment) / #7347: a validated head with no commits ahead of the
+    base its PR targets is nothing to preserve - and a PR of it is refused by
+    the host, which is how a zero-commit head wedged the recovery drain."""
+    if not ahead:
+        custody.git.run(custody.worktree, ["reset", "--hard", "main"])
+    submit(custody, "validated")
+
+    batch = custody.lifecycle.preserve_terminal(42, "issue-42", "completed", run=custody.run)
+
+    assert bool(batch.unresolved) is captured

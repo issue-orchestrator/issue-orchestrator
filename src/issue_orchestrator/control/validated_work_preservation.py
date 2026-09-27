@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from ..domain.completion_intake import CompletionIntakeError
@@ -17,6 +18,7 @@ from ..domain.validated_work_capture import (
 )
 from ..domain.validated_work_remote_authority import classify_remote_pr
 from ..domain.validated_work_escrow import EscrowArtifacts
+from ..domain.validated_work_store import AncestryRelation
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
 from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
@@ -27,37 +29,19 @@ from .validated_work_escrow import EscrowReconciliation
 logger = logging.getLogger(__name__)
 
 
-def _capturable(
-    candidates: tuple[PreparedCompletionEvidence, ...],
-) -> tuple[PreparedCompletionEvidence, ...]:
-    """Keep the completions whose kind makes them the issue's deliverable (#7347).
-
-    A tech-lead run is recorded against its subject issue, but its branch is its
-    own and its completion already decides what that branch publishes; taking
-    its validated head as the subject's work put a ``recovery-pending`` on the
-    subject that no publication ever released (#7323, #7346).
-    """
-    for candidate in candidates:
-        if not candidate.role.kind.capabilities.capturable:
-            logger.info(
-                "[VALIDATED_WORK] Not capturing issue #%d run %s: a %s run's "
-                "completion is not the issue's deliverable",
-                candidate.role.issue_number, candidate.run.run.run_id,
-                candidate.role.kind.value,
-            )
-    return tuple(c for c in candidates if c.role.kind.capabilities.capturable)
-
-
 class ValidatedWorkPreservationService:
     def __init__(self, *, intake: CompletionIntakeRuntime, store: ValidatedWorkAdmissionStore,
                  custody: ValidatedWorkCustody, repair: EscrowReconciliation,
-                 working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver) -> None:
+                 working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver,
+                 base_ref: Callable[[], str]) -> None:
         self._intake = intake
         self._store = store
         self._custody = custody
         self._repair = repair
         self._working_copy = working_copy
         self._observer = observer
+        # The ref a head must be ahead of to be work: the base its PR targets.
+        self._base_ref = base_ref
 
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._store.has_unresolved_work(issue_number)
@@ -66,8 +50,10 @@ class ValidatedWorkPreservationService:
         return self._store.for_issue(issue_number)
 
     def dispose_at_termination(self, command: AutomaticCaptureCommand) -> ValidatedWorkDispositionBatch:
-        candidates = _capturable(
-            self._intake.prepare_termination(command.run_evidence, command.scope)
+        candidates = tuple(
+            candidate
+            for candidate in self._intake.prepare_termination(command.run_evidence, command.scope)
+            if self._captures(candidate)
         )
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
@@ -83,6 +69,43 @@ class ValidatedWorkPreservationService:
             self._store.for_issue(command.issue_number),
             captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
         )
+
+    def _captures(self, candidate: PreparedCompletionEvidence) -> bool:
+        """Whether this completion is validated work recovery must hold (#7347).
+
+        Two facts, both required. The run's KIND must make its completion the
+        issue's deliverable (``capturable``): a tech-lead run is recorded
+        against its subject issue, but its branch is its own and its
+        completion already decides what that branch publishes - taking it as
+        the subject's work put a ``recovery-pending`` on the subject that no
+        publication ever released (#7323, #7346). And its validated head must
+        have commits ahead of the base its PR targets: a head the base already
+        contains is nothing to preserve, and a PR of it is refused by the host.
+        """
+        role = candidate.role
+        if not role.kind.capabilities.capturable:
+            logger.info(
+                "[VALIDATED_WORK] Not capturing issue #%d run %s: a %s run's "
+                "completion is not the issue's deliverable",
+                role.issue_number, candidate.run.run.run_id, role.kind.value,
+            )
+            return False
+        base = self._base_ref()
+        worktree = candidate.entry.run.worktree_path
+        base_sha = self._working_copy.resolve_commit(worktree, base)
+        # A base that cannot be read proves nothing: the head is preserved.
+        relation = None if base_sha is None else self._working_copy.compare_commits(
+            worktree, left=candidate.validation.head_sha, right=base_sha,
+        )
+        if relation in (AncestryRelation.EQUAL, AncestryRelation.ANCESTOR):
+            logger.info(
+                "[VALIDATED_WORK] Not capturing issue #%d run %s: validated head "
+                "%s has no commits ahead of %s",
+                role.issue_number, candidate.run.run.run_id,
+                candidate.validation.head_sha, base,
+            )
+            return False
+        return True
 
     def _capture(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
