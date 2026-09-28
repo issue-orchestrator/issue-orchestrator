@@ -25,12 +25,14 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..infra.repo_lock import set_lock_http_port
 
 if TYPE_CHECKING:
+    from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
 
 logger = logging.getLogger(__name__)
@@ -146,3 +148,32 @@ class EngineStartup:
                 logger.info("Updated lock with actual bound port %d", actual_port)
 
         return _on_server_started
+
+
+def record_engine_start(config: "Config", *, repo_root: Path, now: datetime) -> Path:
+    """Record this start durably, with the charter the engine resolved (#7490).
+
+    The one writer of the engine-start record: when the engine started, which
+    io commit it runs, and the tech lead's EFFECTIVE charter. An outside
+    reader (the improver's staging) separates "since this start" from history
+    with it, and reads the charter as the engine decided it rather than as the
+    source defaults say.
+    """
+    from ..contracts.engine_start import EngineStartRecord
+    from ..control.tech_lead_charter_policy import TechLeadCharterPolicy
+    from ..infra.engine_start_record import write_engine_start
+    from ..infra.repo_identity import get_repo_head_sha, state_dir
+    from ..infra.runtime_identity import resolve_runtime_identity
+
+    identity = resolve_runtime_identity()
+    record = EngineStartRecord(
+        started_at=now,
+        engine_commit=identity.source_commit_sha,
+        package_version=identity.package_version,
+        repo_root=str(repo_root),
+        repo_head=get_repo_head_sha(repo_root),
+        charter=TechLeadCharterPolicy.from_config(config).effective_charter(),
+    )
+    path = write_engine_start(state_dir(repo_root), record)
+    logger.info("Recorded engine start at %s (engine commit %s)", path, record.engine_commit)
+    return path

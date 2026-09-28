@@ -2988,7 +2988,7 @@ def test_list_open_prs_complete_refuses_a_node_without_its_draft_flag() -> None:
 
 
 def _issue_node(number: int, labels: tuple[str, ...] = (), total: int | None = None) -> dict:
-    return {"number": number, "labels": {
+    return {"number": number, "title": f"Issue {number}", "labels": {
         "totalCount": len(labels) if total is None else total,
         "nodes": [{"name": name} for name in labels],
     }}
@@ -3017,7 +3017,9 @@ def test_open_issue_labels_walk_by_cursor_so_a_closure_mid_walk_skips_nothing() 
 
     issues = client.list_open_issue_labels_complete()
 
-    assert issues == [(1, ()), (2, ()), (3, ("needs-human",)), (4, ())]
+    assert issues == [
+        (1, "Issue 1", ()), (2, "Issue 2", ()), (3, "Issue 3", ("needs-human",)), (4, "Issue 4", ())
+    ]
     assert [r["after"] for r in requests] == [None, "2"]
 
 
@@ -3026,7 +3028,9 @@ def test_open_issue_labels_walk_by_cursor_so_a_closure_mid_walk_skips_nothing() 
     [
         _issue_node(1, ("a",), total=150),  # more labels than one page carries
         {"number": 1},
-        {"number": "1", "labels": {"totalCount": 0, "nodes": []}},
+        {"number": "1", "title": "t", "labels": {"totalCount": 0, "nodes": []}},
+        # A title is part of what is read whole (#7490: the improver's open issues).
+        {"number": 1, "labels": {"totalCount": 0, "nodes": []}},
     ],
 )
 def test_open_issue_labels_refuse_what_they_cannot_read_whole(node) -> None:

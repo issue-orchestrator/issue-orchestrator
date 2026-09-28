@@ -1,0 +1,426 @@
+"""Stage the improver's inputs: ``$ISSUE_ORCHESTRATOR_RUN_DIR/improver-data/`` (#7490).
+
+The one owner of what the improver reads. It writes exactly the prompt's
+Inputs table (``examples/prompts/tech-lead-improver.md``), each file a typed
+document (:mod:`..contracts.improver_inputs`), plus ``inputs.json`` saying what
+was staged and why anything was not.
+
+It never opens a live engine database: every store is read from a byte copy
+(:mod:`.engine_snapshot`), one copy per store, taken once and shared by the
+audit and every other reading of that store. The audited engine's state is
+only ever read.
+
+An input the improver cannot work without (the engine's start record, its
+source, the open issues its outputs are deduplicated against) makes staging
+fail with :class:`ImproverInputsUnavailable`; any other missing source is
+recorded as missing, and the improver is told to draw no conclusion from it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import tempfile
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Protocol, TypeVar
+
+from pydantic import BaseModel
+
+from ..contracts.engine_audit import AuditDiff, EngineAuditReport
+from ..contracts.engine_start import EffectiveCharter
+from ..contracts.improver_inputs import (
+    AUDIT_DIFF_FILE,
+    AUDIT_FILE,
+    AUDIT_PREVIOUS_FILE,
+    CASE_FILES_FILE,
+    CHARTER_DECISIONS_FILE,
+    CHARTER_FILE,
+    ENGINE_SOURCE_DIRNAME,
+    ENGINE_START_FILE,
+    EXAM_DIRNAME,
+    IMPROVER_DATA_DIRNAME,
+    INPUTS_FILE,
+    INTERVENTIONS_FILE,
+    OPEN_ISSUES_FILE,
+    PREVIOUS_SCORECARD_SUFFIX,
+    CaseFilesInput,
+    CharterDecisionsInput,
+    EngineStartInput,
+    InputsManifest,
+    InterventionsInput,
+    OpenIssue,
+    OpenIssuesInput,
+    ScorecardHead,
+    StagedInput,
+    to_json,
+)
+from ..domain.improver_findings_validation import StagedEvidence, parse_documents
+from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
+from ..infra.engine_start_record import EngineStartRecordUnavailable, read_engine_start
+from ..infra.pause_journal import PAUSE_JOURNAL_FILENAME, JsonlPauseJournal
+from ..observation.engine_audit import Unavailable, audit_engine
+from ..observation.engine_audit_diff import IncomparableAuditError, diff_reports, load_report
+from ..observation.improver_inputs import (
+    ExamSeries,
+    Scorecard,
+    case_files_input,
+    charter_decisions_input,
+    engine_start_input,
+    exam_series,
+    interventions_input,
+)
+from ..ports.engine_audit import OpenIssueLabels, OpenWorkHost
+from ..ports.pull_request_tracker import PRInfo
+from ..testing.exam.cases import EXAM_CASE_IDS
+from .engine_snapshot import EngineSnapshot, snapshot_engine, snapshot_tech_lead_runs
+
+M = TypeVar("M", bound=BaseModel)
+
+#: Pause-journal rows kept by the journal itself; all of them are read.
+_PAUSE_ROWS = 500
+
+
+class ImproverInputsUnavailable(RuntimeError):
+    """An input the improver cannot run without could not be staged."""
+
+
+class EngineSourceExporter(Protocol):
+    def export(self, commit: str, destination: Path) -> None: ...
+
+
+class OpenIssueListing(Protocol):
+    """The outputs repository's open issues (``OpenWorkHost``'s issue half)."""
+
+    def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]: ...
+
+
+@dataclass(frozen=True)
+class ImproverStagingRequest:
+    #: The audited engine's state directory (read only, through snapshots).
+    state_dir: Path
+    audited_repo: str
+    #: Where the improver's outputs are filed (io's own repository).
+    outputs_repo: str
+    #: ``$ISSUE_ORCHESTRATOR_RUN_DIR``; ``improver-data/`` must not exist yet.
+    run_dir: Path
+    previous_audit: Path | None
+    exam_dir: Path | None
+    window: timedelta
+    log_tail_bytes: int
+
+
+@dataclass(frozen=True)
+class StagedImproverInputs:
+    data_dir: Path
+    manifest: InputsManifest
+    audit: EngineAuditReport
+
+
+class ImproverInputStager:
+    def __init__(
+        self,
+        *,
+        audited_host: OpenWorkHost | Unavailable,
+        outputs_host: OpenIssueListing,
+        source: EngineSourceExporter,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._audited_host = audited_host
+        self._outputs_host = outputs_host
+        self._source = source
+        self._clock = clock
+
+    def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs:
+        now = self._clock()
+        data = request.run_dir / IMPROVER_DATA_DIRNAME
+        data.mkdir(parents=True, exist_ok=False)
+        entries: list[StagedInput] = []
+        try:
+            record = read_engine_start(request.state_dir)
+            start = engine_start_input(record)
+        except (EngineStartRecordUnavailable, ValueError) as error:
+            raise ImproverInputsUnavailable(str(error)) from error
+        _write(data / ENGINE_START_FILE, start)
+        _write(data / CHARTER_FILE, record.charter)
+        entries += [_staged(ENGINE_START_FILE), _staged(CHARTER_FILE, "effective at the latest start")]
+        audited = _OnceListing(self._audited_host)
+        with tempfile.TemporaryDirectory(prefix="io-improver-") as scratch:
+            snapshot = snapshot_engine(
+                request.state_dir,
+                Path(scratch),
+                repo=request.audited_repo,
+                log_tail_bytes=request.log_tail_bytes,
+                github=audited.as_host(),
+            )
+            audit = audit_engine(snapshot.audit, now=now, window=request.window)
+            audit, previous_entries = _with_previous(audit, request.previous_audit, data)
+            _write(data / AUDIT_FILE, audit)
+            entries += [_staged(AUDIT_FILE, "partial" if audit.partial else "all sources read")]
+            entries += previous_entries
+            window_start = now - request.window
+            entries += _stage_tech_lead(snapshot, request, Path(scratch), data, window_start, now)
+        entries.append(self._stage_open_issues(request, audited, data, now))
+        series = _stage_exam(request.exam_dir, data)
+        entries.append(_exam_entry(series, request.exam_dir))
+        try:
+            self._source.export(start.engine_commit, data / ENGINE_SOURCE_DIRNAME)
+        except Exception as error:
+            raise ImproverInputsUnavailable(f"engine source: {error}") from error
+        entries.append(_staged(ENGINE_SOURCE_DIRNAME, f"io at {start.engine_commit}"))
+        manifest = InputsManifest(
+            staged_at=now,
+            audited_repo=request.audited_repo,
+            outputs_repo=request.outputs_repo,
+            inputs=tuple(entries),
+            existing_exam_case_ids=tuple(sorted({*EXAM_CASE_IDS, *series.latest, *series.previous})),
+            exam_scores_comparable=series.comparable,
+        )
+        _write(data / INPUTS_FILE, manifest)
+        return StagedImproverInputs(data_dir=data, manifest=manifest, audit=audit)
+
+    def _stage_open_issues(
+        self,
+        request: ImproverStagingRequest,
+        audited: "_OnceListing",
+        data: Path,
+        now: datetime,
+    ) -> StagedInput:
+        listing: OpenIssueListing = (
+            audited.as_listing()
+            if request.outputs_repo == request.audited_repo
+            else self._outputs_host
+        )
+        try:
+            issues = listing.list_open_issue_labels_complete()
+        except Exception as error:
+            raise ImproverInputsUnavailable(
+                f"open issues of {request.outputs_repo}: {error}"
+            ) from error
+        _write(
+            data / OPEN_ISSUES_FILE,
+            OpenIssuesInput(
+                repo=request.outputs_repo,
+                read_at=now,
+                issues=tuple(
+                    OpenIssue(number=i.number, title=i.title, labels=i.labels)
+                    for i in sorted(issues, key=lambda i: i.number)
+                ),
+            ),
+        )
+        return _staged(OPEN_ISSUES_FILE, f"{len(issues)} open in {request.outputs_repo}")
+
+
+def _with_previous(
+    audit: EngineAuditReport, previous: Path | None, data: Path
+) -> tuple[EngineAuditReport, list[StagedInput]]:
+    if previous is None:
+        missing = "no previous improver run"
+        return audit, [_missing(AUDIT_PREVIOUS_FILE, missing), _missing(AUDIT_DIFF_FILE, missing)]
+    try:
+        earlier = load_report(previous)
+        diff = diff_reports(earlier, audit)
+    except IncomparableAuditError as error:
+        return audit, [_missing(AUDIT_PREVIOUS_FILE, str(error)), _missing(AUDIT_DIFF_FILE, str(error))]
+    _write(data / AUDIT_PREVIOUS_FILE, earlier)
+    _write(data / AUDIT_DIFF_FILE, diff)
+    return audit.model_copy(update={"diff": diff}), [
+        _staged(AUDIT_PREVIOUS_FILE, f"generated {earlier.generated_at}"),
+        _staged(AUDIT_DIFF_FILE),
+    ]
+
+
+def _stage_tech_lead(
+    snapshot: EngineSnapshot,
+    request: ImproverStagingRequest,
+    scratch: Path,
+    data: Path,
+    window_start: datetime,
+    cutoff: datetime,
+) -> list[StagedInput]:
+    store = snapshot.tech_lead
+    if isinstance(store, Unavailable):
+        why = f"tech-lead authority store {store.status.value}: {store.detail}"
+        return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
+                _missing(INTERVENTIONS_FILE, why)]
+    try:
+        ledger = store.charter_ledger.list_all()
+        case_files = store.list_case_file_records()
+    except (sqlite3.Error, ReadOnlySqliteAccessError) as error:
+        why = f"tech-lead authority store unreadable: {error}"
+        return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
+                _missing(INTERVENTIONS_FILE, why)]
+    decisions = charter_decisions_input(ledger, window_start=window_start, cutoff=cutoff)
+    _write(data / CHARTER_DECISIONS_FILE, decisions)
+    entries = [_staged(CHARTER_DECISIONS_FILE, decisions.coverage.detail)]
+    runs_store = snapshot_tech_lead_runs(request.state_dir, scratch)
+    if isinstance(runs_store, Unavailable):
+        entries.append(_missing(CASE_FILES_FILE, f"tech-lead run history {runs_store.status.value}: {runs_store.detail}"))
+    else:
+        staged = case_files_input(case_files, runs_store.all_runs(), window_start=window_start, cutoff=cutoff)
+        _write(data / CASE_FILES_FILE, staged)
+        entries.append(_staged(CASE_FILES_FILE, staged.coverage.detail))
+    timeline = snapshot.timeline
+    interventions = interventions_input(
+        ledger,
+        f"{timeline.status.value}: {timeline.detail}"
+        if isinstance(timeline, Unavailable)
+        else timeline.events_between(window_start, cutoff),
+        JsonlPauseJournal(request.state_dir / PAUSE_JOURNAL_FILENAME).recent(limit=_PAUSE_ROWS),
+        window_start=window_start,
+        cutoff=cutoff,
+    )
+    _write(data / INTERVENTIONS_FILE, interventions)
+    entries.append(_staged(INTERVENTIONS_FILE, "a floor: not every intervention is recorded"))
+    return entries
+
+
+def _stage_exam(exam_dir: Path | None, data: Path) -> ExamSeries:
+    series = exam_series(() if exam_dir is None or not exam_dir.is_dir() else _scorecards(exam_dir))
+    target = data / EXAM_DIRNAME
+    target.mkdir()
+    for case_id, card in series.latest.items():
+        (target / f"{case_id}.json").write_text(card.text, encoding="utf-8")
+    for case_id, card in series.previous.items():
+        (target / f"{case_id}{PREVIOUS_SCORECARD_SUFFIX}").write_text(card.text, encoding="utf-8")
+    return series
+
+
+def _scorecards(exam_dir: Path) -> list[Scorecard]:
+    """Every scorecard the exam wrote (``<case>-<sha>-<time>.json``), not its
+    raw observations (``*.observation.json``)."""
+    cards = []
+    for path in sorted(exam_dir.glob("*.json")):
+        if path.name.endswith(".observation.json"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        cards.append(
+            Scorecard(
+                written_at=datetime.fromtimestamp(os.stat(path).st_mtime, tz=UTC),
+                head=ScorecardHead.model_validate(json.loads(text)),
+                text=text,
+            )
+        )
+    return cards
+
+
+def _exam_entry(series: ExamSeries, exam_dir: Path | None) -> StagedInput:
+    if not series.latest:
+        return _missing(EXAM_DIRNAME, f"no scorecards in {exam_dir}")
+    comparable = "comparable" if series.comparable else "not comparable (case sets differ)"
+    return _staged(EXAM_DIRNAME, f"{len(series.latest)} case(s); previous scores {comparable}")
+
+
+class _OnceListing:
+    """One read of the audited repository's open issues, shared by the audit
+    and ``open-issues.json`` when both name the same repository: one GitHub
+    walk, and both files describe the same moment."""
+
+    def __init__(self, host: OpenWorkHost | Unavailable) -> None:
+        self._host = host
+        self._issues: Sequence[OpenIssueLabels] | None = None
+        self._error: BaseException | None = None
+
+    def as_host(self) -> OpenWorkHost | Unavailable:
+        return self._host if isinstance(self._host, Unavailable) else _SharedHost(self)
+
+    def as_listing(self) -> OpenIssueListing:
+        if isinstance(self._host, Unavailable):
+            raise ImproverInputsUnavailable(f"GitHub {self._host.status.value}: {self._host.detail}")
+        return _SharedHost(self)
+
+    def issues(self) -> Sequence[OpenIssueLabels]:
+        if isinstance(self._host, Unavailable):
+            raise RuntimeError("an unavailable host has no issues")
+        if self._error is not None:
+            raise self._error
+        if self._issues is None:
+            try:
+                self._issues = self._host.list_open_issue_labels_complete()
+            except Exception as error:
+                # The audit records a rate limit as an unread source; the
+                # open-issues read then refuses on the SAME failure rather
+                # than trying GitHub a second time.
+                self._error = error
+                raise
+        return self._issues
+
+    def prs(self) -> Sequence[PRInfo]:
+        if isinstance(self._host, Unavailable):
+            raise RuntimeError("an unavailable host has no pull requests")
+        return self._host.list_open_prs_complete()
+
+
+class _SharedHost:
+    def __init__(self, once: _OnceListing) -> None:
+        self._once = once
+
+    def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]:
+        return self._once.issues()
+
+    def list_open_prs_complete(self) -> Sequence[PRInfo]:
+        return self._once.prs()
+
+
+def load_staged_evidence(data_dir: Path) -> StagedEvidence:
+    """Read a staged ``improver-data/`` back through its contracts, for the validator."""
+    texts = {
+        path.relative_to(data_dir).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(data_dir.rglob("*.json"))
+        if not path.relative_to(data_dir).as_posix().startswith(f"{ENGINE_SOURCE_DIRNAME}/")
+    }
+    documents = parse_documents(texts)
+    manifest = InputsManifest.model_validate(documents[INPUTS_FILE])
+
+    def read(name: str, model: type[M]) -> M | None:
+        return None if name not in documents else model.model_validate(documents[name])
+
+    audit = read(AUDIT_FILE, EngineAuditReport)
+    start = read(ENGINE_START_FILE, EngineStartInput)
+    open_issues = read(OPEN_ISSUES_FILE, OpenIssuesInput)
+    if audit is None or start is None or open_issues is None:
+        raise ImproverInputsUnavailable(f"{data_dir} lacks a required input")
+    source = data_dir / ENGINE_SOURCE_DIRNAME
+    return StagedEvidence(
+        documents=documents,
+        audit=audit,
+        previous_audit=read(AUDIT_PREVIOUS_FILE, EngineAuditReport),
+        diff=read(AUDIT_DIFF_FILE, AuditDiff),
+        engine_start=start,
+        charter=read(CHARTER_FILE, EffectiveCharter),
+        decisions=read(CHARTER_DECISIONS_FILE, CharterDecisionsInput),
+        case_files=read(CASE_FILES_FILE, CaseFilesInput),
+        interventions=read(INTERVENTIONS_FILE, InterventionsInput),
+        open_issues=open_issues,
+        existing_exam_case_ids=frozenset(manifest.existing_exam_case_ids),
+        exam_comparable=manifest.exam_scores_comparable,
+        engine_source_files=frozenset(
+            p.relative_to(source).as_posix() for p in source.rglob("*") if p.is_file()
+        ),
+    )
+
+
+def _write(path: Path, model: BaseModel) -> None:
+    path.write_text(to_json(model), encoding="utf-8")
+
+
+def _staged(name: str, detail: str = "") -> StagedInput:
+    return StagedInput(name=name, staged=True, detail=detail)
+
+
+def _missing(name: str, detail: str) -> StagedInput:
+    return StagedInput(name=name, staged=False, detail=detail)
+
+
+__all__ = [
+    "EngineSourceExporter",
+    "ImproverInputStager",
+    "ImproverInputsUnavailable",
+    "ImproverStagingRequest",
+    "OpenIssueListing",
+    "StagedImproverInputs",
+    "load_staged_evidence",
+]

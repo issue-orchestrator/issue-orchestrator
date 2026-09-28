@@ -26,49 +26,36 @@ import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable, TypeVar
 
 from ...contracts.engine_audit import SourceStatus
-from ...domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
-from ...execution.action_liveness_store import (
-    AUDIT_TABLES as ACTION_LIVENESS_AUDIT_TABLES,
-    SQLiteActionLivenessStore,
-)
 from ...execution.pending_work_claim_schema import STORE_FILENAME as PENDING_WORK_CLAIMS_DB
-from ...execution.pending_work_claim_store import (
-    AUDIT_TABLES as CLAIM_AUDIT_TABLES,
-    SqlitePendingWorkClaimStore,
-)
 from ...execution.providers import create_repository_host
-from ...execution.timeline_store import SqliteTimelineAuditReader
-from ...infra.engine_log_reader import read_log
-from ...infra.sqlite_snapshot import require_tables, snapshot_sqlite
-from ...infra.tech_lead_authority_store import (
-    AUDIT_TABLES as TECH_LEAD_AUDIT_TABLES,
-    SqliteTechLeadAuthorityStore,
-)
-from ...infra.validated_work_census import SqliteValidatedWorkCensus
-from ...observation.engine_audit import (
-    EngineAuditInputs,
-    EngineLog,
-    TechLeadReaders,
-    Unavailable,
-    audit_engine,
-)
+from ...observation.engine_audit import EngineAuditInputs, Unavailable, audit_engine
 from ...observation.engine_audit_diff import diff_reports, load_report
 from ..bootstrap_action_liveness import ACTION_LIVENESS_DB
 from ..cli_parser import add_engine_audit_arguments
+from ..engine_snapshot import (
+    ENGINE_LOG,
+    SQLITE_TIMEOUT,
+    TECH_LEAD_AUTHORITY_DB,
+    TIMELINE_DB,
+    VALIDATED_WORK_DB,
+    snapshot_engine,
+)
 from .engine_audit_summary import render_summary
 
-VALIDATED_WORK_DB = "validated_work.sqlite"
-TECH_LEAD_AUTHORITY_DB = "tech_lead_authority.sqlite"
-TIMELINE_DB = "timeline.sqlite"
-ENGINE_LOG = Path("logs") / "orchestrator.log"
-
-#: Seconds a snapshot or a snapshot read may take before it is reported unreadable.
-SQLITE_TIMEOUT = 120.0
-
-T = TypeVar("T")
+__all__ = [
+    "ACTION_LIVENESS_DB",
+    "ENGINE_LOG",
+    "PENDING_WORK_CLAIMS_DB",
+    "SQLITE_TIMEOUT",
+    "TECH_LEAD_AUTHORITY_DB",
+    "TIMELINE_DB",
+    "VALIDATED_WORK_DB",
+    "build_parser",
+    "main",
+    "run",
+]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -147,52 +134,15 @@ def _replace_file(path: Path, text: str) -> None:
 
 
 def _inputs(state_dir: Path, scratch: Path, args: argparse.Namespace) -> EngineAuditInputs:
-    def store(
-        name: str, open_copy: Callable[[Path], T], tables: tuple[str, ...] = ()
-    ) -> T | Unavailable:
-        copy = _snapshot(state_dir / name, scratch / name, tables)
-        return copy if isinstance(copy, Unavailable) else open_copy(copy)
-
-    tech_lead = store(TECH_LEAD_AUTHORITY_DB, SqliteTechLeadAuthorityStore, TECH_LEAD_AUDIT_TABLES)
-    return EngineAuditInputs(
+    return snapshot_engine(
+        state_dir,
+        scratch,
         repo=args.repo,
-        state_dir=state_dir,
-        validated_work=store(
-            VALIDATED_WORK_DB, lambda p: SqliteValidatedWorkCensus(p, timeout=SQLITE_TIMEOUT)
-        ),
-        action_liveness=store(
-            ACTION_LIVENESS_DB, SQLiteActionLivenessStore, ACTION_LIVENESS_AUDIT_TABLES
-        ),
-        tech_lead=tech_lead
-        if isinstance(tech_lead, Unavailable)
-        else TechLeadReaders(charter=tech_lead.charter_ledger, promotions=tech_lead),
-        claims=store(PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore, CLAIM_AUDIT_TABLES),
-        timeline=store(
-            TIMELINE_DB, lambda p: SqliteTimelineAuditReader(p, timeout=SQLITE_TIMEOUT)
-        ),
-        log=_log(state_dir / ENGINE_LOG, tail_bytes=args.log_tail_mb * 1024 * 1024),
+        log_tail_bytes=args.log_tail_mb * 1024 * 1024,
         github=Unavailable(SourceStatus.SKIPPED, "--no-github")
         if args.no_github
         else create_repository_host(args.repo),
-    )
-
-
-def _snapshot(live: Path, copy: Path, tables: tuple[str, ...]) -> Path | Unavailable:
-    """The snapshot of ``live`` holding ``tables``, or why the engine has none to take."""
-    try:
-        return require_tables(
-            snapshot_sqlite(live, copy, timeout=SQLITE_TIMEOUT), tables, timeout=SQLITE_TIMEOUT
-        )
-    except ReadOnlySqliteAccessError as error:
-        if error.reason is ReadOnlySqliteFailure.DATABASE_ABSENT:
-            return Unavailable(SourceStatus.ABSENT, f"no {live.name} in the state directory")
-        return Unavailable(SourceStatus.UNREADABLE, str(error))
-
-
-def _log(path: Path, *, tail_bytes: int) -> EngineLog | Unavailable:
-    if not path.is_file():
-        return Unavailable(SourceStatus.ABSENT, f"no engine log at {path}")
-    return EngineLog(read=lambda: read_log(path, tail_bytes=tail_bytes))
+    ).audit
 
 
 if __name__ == "__main__":

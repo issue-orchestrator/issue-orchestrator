@@ -1,0 +1,408 @@
+"""The improver's evidence, assembled from an engine's records (#7490).
+
+Pure assembly: every function here takes records already read (through the
+read ports, from snapshots) and returns the typed document the staging writes
+(:mod:`..contracts.improver_inputs`). The rule every one of them keeps is the
+improver prompt's: *absence of evidence is not evidence*. A source reports
+``complete`` coverage only over a span it can prove it holds every record of:
+
+* the charter ledger and the tech-lead run history are never pruned, so from
+  their FIRST record on they are complete; an empty one proves nothing, since
+  it cannot say when it started recording;
+* a run-history row this build cannot read back is a hole, not a skipped row.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+
+from ..contracts.engine_start import EngineStartRecord
+from ..contracts.improver_inputs import (
+    CaseFileObservationInput,
+    CaseFilesInput,
+    CharterDecisionsInput,
+    Coverage,
+    EngineStartInput,
+    Intervention,
+    InterventionKind,
+    InterventionsInput,
+    ScorecardHead,
+    StagedCaseFile,
+    StagedDecision,
+    StagedDiagnosis,
+)
+from ..domain.pause_state import PauseActor, PauseTransition
+from ..domain.tech_lead_charter_decisions import (
+    CharterExecutionResult,
+    CharterProposalLifecycle,
+    TechLeadCharterDecision,
+)
+from ..events.catalog import EventName
+from ..domain.tech_lead_run_record import TechLeadRunRecord
+from ..ports.engine_audit import CaseFileRecord, TechLeadRunHistoryRead, TimelineEvent
+
+#: The timeline reason the dashboard's Reset & Retry records (``ISSUE_UNBLOCKED``).
+RESET_RETRY_REASON = "reset_retry_requested"
+
+#: What no local record shows, so ``interventions.json`` is never complete.
+NOT_DERIVABLE_INTERVENTIONS: tuple[str, ...] = (
+    "needs-human or other labels removed by a human on GitHub",
+    "the dashboard's retry/dismiss buttons (logged, not recorded)",
+    "comments or direct edits an operator makes on GitHub",
+)
+LEDGER_INTERVENTIONS = "charter ledger: proposal approvals and declines"
+TIMELINE_INTERVENTIONS = "timeline: Reset & Retry requests"
+PAUSE_INTERVENTIONS = "pause journal: pauses an operator surface requested"
+
+
+class UnparseableTimestampError(ValueError):
+    """A stored timestamp is not an ISO-8601 instant with a zone."""
+
+
+def instant(value: str) -> datetime:
+    """A stored ISO timestamp as an aware datetime; naive or garbled raises."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise UnparseableTimestampError(f"not an ISO timestamp: {value!r}") from error
+    if parsed.tzinfo is None:
+        raise UnparseableTimestampError(f"timestamp has no zone: {value!r}")
+    return parsed
+
+
+def engine_start_input(record: EngineStartRecord) -> EngineStartInput:
+    if record.engine_commit is None:
+        raise ValueError(
+            "the engine recorded no source commit (a non-source install): its source"
+            " cannot be staged, and nothing can be reproduced against it"
+        )
+    return EngineStartInput(
+        started_at=record.started_at,
+        engine_commit=record.engine_commit,
+        package_version=record.package_version,
+        repo_head=record.repo_head,
+    )
+
+
+def applied_at(decision: TechLeadCharterDecision) -> datetime | None:
+    """When the decision's effect was applied, or None if it never was (or
+    the record does not say when: an applied result with no time is not an
+    application time, and ``decided_at`` never stands in for one)."""
+    if (
+        decision.execution is CharterExecutionResult.APPLIED
+        and decision.execution_at is not None
+    ):
+        return instant(decision.execution_at)
+    if (
+        decision.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
+        and decision.lifecycle_updated_at is not None
+    ):
+        return instant(decision.lifecycle_updated_at)
+    return None
+
+
+def charter_decisions_input(
+    ledger: Sequence[TechLeadCharterDecision], *, window_start: datetime, cutoff: datetime
+) -> CharterDecisionsInput:
+    """Every decision made in the window, and every older one applied in it.
+
+    ``ledger`` is the whole ledger, oldest first. A decision made before the
+    window but applied inside it is kept: that is exactly the fix whose signal
+    may still persist (``acted_not_effective``).
+    """
+    staged = []
+    for decision in ledger:
+        decided = instant(decision.decided_at)
+        applied = applied_at(decision)
+        if decided > cutoff:
+            continue
+        if decided < window_start and (applied is None or applied < window_start):
+            continue
+        staged.append(_staged_decision(decision, decided, applied))
+    earliest = instant(ledger[0].decided_at) if ledger else None
+    return CharterDecisionsInput(
+        coverage=_ledger_coverage(
+            earliest,
+            window_start=window_start,
+            cutoff=cutoff,
+            what="the charter ledger",
+            empty="the ledger holds no decision, so it cannot show when it began recording",
+        ),
+        decisions=tuple(staged),
+    )
+
+
+def _staged_decision(
+    decision: TechLeadCharterDecision, decided: datetime, applied: datetime | None
+) -> StagedDecision:
+    return StagedDecision(
+        decision_id=decision.decision_id,
+        run_id=decision.run_id,
+        action_id=decision.action_id,
+        role=decision.role.value,
+        action_kind=decision.action_kind,
+        binding=decision.binding.value,
+        outcome=decision.outcome.value,
+        reason_code=decision.reason_code.value,
+        reason=decision.reason,
+        effect=decision.effect,
+        execution_reason=decision.execution_reason,
+        target_number=decision.target_number,
+        anchor_issue_number=decision.anchor_issue_number,
+        proposal_issue_number=decision.proposal_issue_number,
+        decided_at=decided,
+        applied_at=applied,
+    )
+
+
+def case_files_input(
+    case_files: Sequence[CaseFileRecord],
+    runs: TechLeadRunHistoryRead,
+    *,
+    window_start: datetime,
+    cutoff: datetime,
+) -> CaseFilesInput:
+    """Every case file (the ledger is small and never pruned) and every
+    tech-lead run that overlaps the window, with what each said.
+
+    Coverage is the run history's: it is the record of when the tech lead
+    looked at all, and it is complete from its first run on unless a row
+    could not be read back.
+    """
+    diagnoses = tuple(
+        diagnosis
+        for diagnosis in map(_diagnosis, runs.records)
+        if diagnosis.started_at <= cutoff
+        and (diagnosis.ended_at is None or diagnosis.ended_at >= window_start)
+    )
+    earliest = engine_local(runs.records[0].started_at) if runs.records else None
+    coverage = _ledger_coverage(
+        earliest,
+        window_start=window_start,
+        cutoff=cutoff,
+        what="the tech-lead run history",
+        empty="no tech-lead run is recorded, so the history cannot show when it began",
+    )
+    if runs.unreadable:
+        coverage = coverage.model_copy(
+            update={
+                "complete": False,
+                "detail": f"{runs.unreadable} run record(s) could not be read back",
+            }
+        )
+    return CaseFilesInput(
+        coverage=coverage,
+        case_files=tuple(_case_file(record) for record in case_files),
+        diagnoses=diagnoses,
+    )
+
+
+def _case_file(record: CaseFileRecord) -> StagedCaseFile:
+    return StagedCaseFile(
+        id=f"case-file:{record.signature}",
+        signature=record.signature,
+        issue_number=record.issue_number,
+        recorded_at=instant(record.recorded_at),
+        observation_count=record.observation_count,
+        fix_class=record.fix_class,
+        area=record.area,
+        disposition=record.disposition,
+        retirement_pending=record.retirement_pending,
+        body=record.diagnosis,
+        observations=tuple(
+            CaseFileObservationInput(
+                observation_id=o.observation_id, recorded_at=instant(o.recorded_at)
+            )
+            for o in record.observations
+        ),
+    )
+
+
+def engine_local(moment: datetime) -> datetime:
+    """A run record's time as an instant.
+
+    The engine stamps a session's ``started_at`` with ``datetime.now()``, so
+    run records carry the ENGINE HOST's local wall-clock time with no zone.
+    Staging reads an engine's state on that same host (its snapshots are byte
+    copies of local files), so the host's zone is the engine's. An aware time
+    is kept as it is.
+    """
+    return moment if moment.tzinfo is not None else moment.astimezone()
+
+
+def _diagnosis(record: TechLeadRunRecord) -> StagedDiagnosis:
+    return StagedDiagnosis(
+        id=f"tech-lead-run:{record.run_id}:{record.session_name}",
+        run_key=record.run_key,
+        scope_kind=record.scope_kind.value,
+        flavor=record.flavor.value,
+        phase=record.phase.value,
+        started_at=engine_local(record.started_at),
+        ended_at=None if record.ended_at is None else engine_local(record.ended_at),
+        subject_issue_number=record.subject_issue_number,
+        subject_title=record.subject_title,
+        anchor_issue_number=record.anchor_issue_number,
+        body=record.detail,
+        findings=record.findings,
+        proposals=record.proposals,
+    )
+
+
+def _ledger_coverage(
+    earliest: datetime | None,
+    *,
+    window_start: datetime,
+    cutoff: datetime,
+    what: str,
+    empty: str,
+) -> Coverage:
+    if earliest is None:
+        return Coverage(from_=None, to=cutoff, complete=False, detail=empty)
+    start = max(window_start, earliest)
+    return Coverage(
+        from_=start,
+        to=cutoff,
+        complete=True,
+        detail=f"{what} is never pruned; it is complete from its first record"
+        f" ({earliest.isoformat()}) on",
+    )
+
+
+def interventions_input(
+    ledger: Iterable[TechLeadCharterDecision],
+    timeline: Iterable[TimelineEvent] | str,
+    pauses: Iterable[PauseTransition],
+    *,
+    window_start: datetime,
+    cutoff: datetime,
+) -> InterventionsInput:
+    """The operator interventions the engine's records show in the window.
+
+    ``timeline`` is its events, or why it could not be read; its Reset &
+    Retry requests are then named among what is not derivable.
+    """
+    unread = (f"{TIMELINE_INTERVENTIONS} (unread: {timeline})",) if isinstance(timeline, str) else ()
+    found = [
+        *_proposal_interventions(ledger),
+        *(() if isinstance(timeline, str) else _reset_interventions(timeline)),
+        *(
+            Intervention(
+                at=p.at,
+                kind="operator_pause",
+                subject="engine",
+                detail=f"{p.actor.value}: {p.reason}; {p.detail}".strip(),
+            )
+            for p in pauses
+            if p.paused and p.actor is not PauseActor.SYSTEM
+        ),
+    ]
+    return InterventionsInput(
+        window_from=window_start,
+        window_to=cutoff,
+        derived_from=tuple(
+            source
+            for source in (LEDGER_INTERVENTIONS, TIMELINE_INTERVENTIONS, PAUSE_INTERVENTIONS)
+            if not (unread and source == TIMELINE_INTERVENTIONS)
+        ),
+        not_derivable=NOT_DERIVABLE_INTERVENTIONS + unread,
+        interventions=tuple(
+            sorted(
+                (i for i in found if window_start <= i.at <= cutoff),
+                key=lambda i: (i.at, i.kind, i.subject),
+            )
+        ),
+    )
+
+
+def _proposal_interventions(ledger: Iterable[TechLeadCharterDecision]) -> Iterable[Intervention]:
+    approved = {
+        CharterProposalLifecycle.APPROVED_APPLIED,
+        CharterProposalLifecycle.APPROVED_STALE,
+    }
+    for decision in ledger:
+        if decision.lifecycle is None or decision.lifecycle_updated_at is None:
+            continue
+        kind: InterventionKind
+        if decision.lifecycle in approved:
+            kind = "proposal_approved"
+        elif decision.lifecycle is CharterProposalLifecycle.DECLINED:
+            kind = "proposal_declined"
+        else:
+            continue
+        yield Intervention(
+            at=instant(decision.lifecycle_updated_at),
+            kind=kind,
+            subject=f"#{decision.proposal_issue_number}"
+            if decision.proposal_issue_number
+            else decision.decision_id,
+            detail=f"{decision.action_kind} ({decision.decision_id})",
+        )
+
+
+def _reset_interventions(timeline: Iterable[TimelineEvent]) -> Iterable[Intervention]:
+    for event in timeline:
+        record = event.record
+        name = record.source_event or record.event
+        if name == EventName.ISSUE_UNBLOCKED.value and record.data.get("reason") == RESET_RETRY_REASON:
+            yield Intervention(
+                at=instant(record.timestamp),
+                kind="reset_retry",
+                subject=f"#{event.issue_number}",
+                detail=str(record.data.get("source", "")),
+            )
+
+
+@dataclass(frozen=True)
+class Scorecard:
+    """One exam scorecard file: when it was written, what it says, and its bytes."""
+
+    written_at: datetime
+    head: ScorecardHead
+    text: str
+
+
+@dataclass(frozen=True)
+class ExamSeries:
+    """The latest scorecard of every case, and the one before it where there is one."""
+
+    latest: dict[str, Scorecard]
+    previous: dict[str, Scorecard]
+
+    @property
+    def comparable(self) -> bool:
+        """Whether exam scores can be compared run over run: the same case set
+        on both sides (the prompt's rule), and at least one case."""
+        return bool(self.latest) and set(self.latest) == set(self.previous)
+
+
+def exam_series(scorecards: Iterable[Scorecard]) -> ExamSeries:
+    by_case: dict[str, list[Scorecard]] = {}
+    for card in scorecards:
+        by_case.setdefault(card.head.case_id, []).append(card)
+    latest: dict[str, Scorecard] = {}
+    previous: dict[str, Scorecard] = {}
+    for case_id, cards in by_case.items():
+        ordered = sorted(cards, key=lambda c: c.written_at, reverse=True)
+        latest[case_id] = ordered[0]
+        if len(ordered) > 1:
+            previous[case_id] = ordered[1]
+    return ExamSeries(latest=latest, previous=previous)
+
+
+__all__ = [
+    "ExamSeries",
+    "NOT_DERIVABLE_INTERVENTIONS",
+    "RESET_RETRY_REASON",
+    "Scorecard",
+    "UnparseableTimestampError",
+    "applied_at",
+    "case_files_input",
+    "charter_decisions_input",
+    "engine_local",
+    "engine_start_input",
+    "exam_series",
+    "instant",
+    "interventions_input",
+]

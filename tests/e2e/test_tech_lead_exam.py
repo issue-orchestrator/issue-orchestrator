@@ -33,6 +33,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import render_summary
 from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+    EXAM_CASE_IDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
     UPGRADE_WITH_WORK_IN_FLIGHT,
@@ -105,15 +106,7 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
 @pytest.mark.asyncio
 @pytest.mark.timeout(100 * 60)
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=5000, system_gh_activity_limit=5000)
-@pytest.mark.parametrize(
-    "case_id",
-    [
-        HALTED_EXCHANGE_WITH_VALIDATED_WORK,
-        BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
-        STALE_CLAIM_PAUSED_FOR_RECONCILE,
-        UPGRADE_WITH_WORK_IN_FLIGHT,
-    ],
-)
+@pytest.mark.parametrize("case_id", EXAM_CASE_IDS)
 async def test_tech_lead_exam(
     case_id: str,
     repo_name: str,

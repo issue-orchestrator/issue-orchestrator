@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "engine_commit": "0123456789abcdef0123456789abcdef01234567",
+  "engine_started_at": "2026-09-28T12:00:00+00:00",
+  "findings": [
+    {
+      "id": "validation-retry-refused-loop",
+      "anomaly_keys": [
+        {
+          "kind": "no_progress_log",
+          "subject": "#410",
+          "signature": "WARNING io.retry: validation retry refused"
+        }
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "true",
+      "origin": "before_start",
+      "observed": [
+        {
+          "at": "2026-09-28T18:00:00+00:00",
+          "kind": "snapshot",
+          "source": "audit.json#/anomalies/0",
+          "supports": "present_after_start"
+        },
+        {
+          "at": "2026-09-28T17:30:00+00:00",
+          "kind": "occurrence",
+          "source": "audit.json#/no_progress/log_signatures/0/last_seen",
+          "supports": "recurs_after_start"
+        },
+        {
+          "at": "2026-09-27T09:00:00+00:00",
+          "kind": "occurrence",
+          "source": "audit-previous.json#/no_progress/log_signatures/0/first_seen",
+          "supports": "origin"
+        }
+      ],
+      "grading_window": {
+        "from": "2026-09-27T09:00:00+00:00",
+        "to": "2026-09-28T18:00:00+00:00"
+      },
+      "classification": "new_defect",
+      "stall_point": "noticed_not_acted",
+      "stall_evidence": [
+        "D1",
+        "case-file:validation-retry-refused"
+      ],
+      "output": "exam_case",
+      "root_cause": {
+        "owner": "issue_orchestrator.control.validation_retry:plan_retry",
+        "why": "The retry planner re-offers a validation retry the completion owner has already refused, once per tick, because the refusal is not recorded where the planner reads.",
+        "same_shape_sites": [
+          "issue_orchestrator.control.publish_retry:plan_publish_retry"
+        ]
+      },
+      "reproduction": {
+        "kind": "exam_case",
+        "harness": "src/issue_orchestrator/testing/exam/cases.py",
+        "case_id": "E-refused-validation-retry-loop",
+        "planted_state": "An issue whose pending validation retry the completion owner refuses (its anchor carries a reconcile pause), reachable after an upgrade with the pause already set.",
+        "assertions": [
+          "the engine stops offering the retry within 3 ticks",
+          "the tech lead's flag_pattern for it is applied, not withheld"
+        ],
+        "fails_on": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "proposal": "Add exam case E-refused-validation-retry-loop; do not change existing cases."
+    }
+  ],
+  "trend": {
+    "exam_scores": "unobserved",
+    "operator_interventions": "unobserved",
+    "notes": "No previous exam run over the same case set; interventions are only partly recorded, so neither series is comparable."
+  }
+}

@@ -732,12 +732,17 @@ test-e2e-heavy: sync-deps
 	$(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Live tech-lead exam (#7304): real GitHub, real engine, real tech lead.
-# Writes JSON scorecards to $$E2E_EXAM_OUT (default /tmp/e2e-orchestrator-logs/exam).
+# Writes JSON scorecards to EXAM_OUT (below; override with EXAM_OUT=<dir>).
 # EXAM_ENGINE_REF runs the engine at another commit (the harness stays this tree's).
 EXAM_CASE ?=
 EXAM_ENGINE_REF ?= HEAD
+# Scorecards land under the repository's common Git directory, not /tmp, so
+# they outlive the budgeted suite's temporary checkout and the tech-lead
+# improver (#7490) can stage the latest ones. Recursive (=) so git runs only
+# when the target does.
+EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-tech-lead-exam
 test-tech-lead-exam: sync-deps
-	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
+	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
 test-e2e-onboarding-live: sync-deps
 	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)

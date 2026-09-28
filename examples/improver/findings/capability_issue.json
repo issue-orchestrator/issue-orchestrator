@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "engine_commit": "0123456789abcdef0123456789abcdef01234567",
+  "engine_started_at": "2026-09-28T12:00:00+00:00",
+  "findings": [
+    {
+      "id": "parked-publish-divergent-heads",
+      "anomaly_keys": [
+        {
+          "kind": "parked_action",
+          "subject": "#320",
+          "signature": "publish:fp1"
+        }
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "before_start",
+      "observed": [
+        {
+          "at": "2026-09-28T18:00:00+00:00",
+          "kind": "snapshot",
+          "source": "audit.json#/anomalies/1",
+          "supports": "present_after_start"
+        },
+        {
+          "at": "2026-09-28T10:00:00+00:00",
+          "kind": "occurrence",
+          "source": "audit.json#/action_liveness/parked/0/last_failed_at",
+          "supports": "origin"
+        }
+      ],
+      "grading_window": {
+        "from": "2026-09-28T10:00:00+00:00",
+        "to": "2026-09-28T18:00:00+00:00"
+      },
+      "classification": "new_defect",
+      "stall_point": "acted_not_effective",
+      "stall_evidence": [
+        "D2"
+      ],
+      "output": "capability_issue",
+      "root_cause": {
+        "owner": "issue_orchestrator.control.validated_work_recovery:compare_heads",
+        "why": "Recovery compares against the pre-rebase head because a completion's own push is not recorded as a publication.",
+        "same_shape_sites": []
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/control/test_validated_work_recovery.py",
+        "planted_state": "A record whose completion pushed a rebase to its open PR, then parked.",
+        "assertions": [
+          "recovery resolves the record instead of parking it divergent"
+        ],
+        "fails_on": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "proposal": "Record a completion's own push to its open PR as the published head."
+    }
+  ],
+  "trend": {
+    "exam_scores": "unobserved",
+    "operator_interventions": "unobserved",
+    "notes": "No previous exam run over the same case set; interventions are only partly recorded, so neither series is comparable."
+  }
+}

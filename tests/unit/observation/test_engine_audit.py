@@ -44,6 +44,7 @@ from issue_orchestrator.domain.read_only_sqlite import (
     ReadOnlySqliteFailure,
 )
 from issue_orchestrator.domain.tech_lead_findings import PromotedFinding
+from issue_orchestrator.entrypoints import engine_snapshot
 from issue_orchestrator.entrypoints.cli_tools import engine_audit as cli
 from issue_orchestrator.execution.action_liveness_store import SQLiteActionLivenessStore
 from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
@@ -686,7 +687,7 @@ def test_a_database_that_never_holds_still_is_an_unreadable_source(
     def always_changing(live, destination, *, timeout):
         raise ReadOnlySqliteAccessError(ReadOnlySqliteFailure.UNREADABLE, "changed during each copy")
 
-    monkeypatch.setattr(cli, "snapshot_sqlite", always_changing)
+    monkeypatch.setattr(engine_snapshot, "snapshot_sqlite", always_changing)
 
     report = _run(state, tmp_path, monkeypatch, FakeHost())
 
