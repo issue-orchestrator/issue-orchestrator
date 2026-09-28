@@ -130,6 +130,23 @@ Scorecards are written under the repository's common Git directory, in
 suite's temporary checkout; the tech-lead improver (#7490) stages the latest
 two of each case from there.
 
+The **tech-lead improver** (`tech-lead-improver`, #7490) is a budgeted suite in
+every mode, `enabled: false` until the operator turns it on. Daily (and after
+50 merges at most), `make tech-lead-improver` audits the engine, stages the
+improver's inputs, runs `examples/prompts/tech-lead-improver.md` read-only on
+Codex, validates the findings strictly and records the run under
+`<git common dir>/io-improver`. A rejected findings file exits 1 with every
+broken rule recorded and changes nothing; an unavailable input or agent exits
+75. The accepted findings' effects (an issue per finding, deduplicated against
+open issues by the `[improver:<key>]` title token, or an evidence comment on a
+tracked issue; proposals labelled `needs-operator-decision`, never applied) go
+through the repository-host port; a rate limit leaves the rest pending for the
+next run. `python -m issue_orchestrator.entrypoints.cli_tools.improver status`
+prints the runs, their stall-point grades and how those moved;
+`... improver apply --outputs-repo <owner/repo>` applies what is still owed.
+Point `IMPROVER_STATE_DIR` and `IMPROVER_AUDITED_REPO` at another engine (e.g.
+porchpin) to audit it while filing into this repository.
+
 Pass `--config path/to/config.yaml` to select a specific YAML configuration.
 `run` is an explicit forced request. `check` still coalesces with another worker.
 `status` reports the scheduled coverage verdict separately from diagnosis probes.

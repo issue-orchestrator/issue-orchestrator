@@ -189,6 +189,24 @@ validation:
       cadence:
         max_merges_since_success: 10
         max_delay_hours: 24
+    tech-lead-improver:
+      # The tech-lead improver (#7490): audits this repository's engine, runs
+      # the improver prompt read-only on Codex, validates its findings
+      # strictly and files what they ask for (exam cases, capability issues,
+      # proposals the operator decides). Off until the operator enables it.
+      # Daily: it grades trends, not single merges; only an unusual burst of
+      # 50 merges makes it due sooner. (A day with no merge is not due: the
+      # budgeted cadence never reruns unchanged code.)
+      enabled: false
+      command: [make, tech-lead-improver]
+      setup_command: [make, venv-fast]
+      issue_agent_label: agent:backend
+      branch: main
+      # Staging and validation take minutes; the agent is bounded at 90.
+      timeout_seconds: 7200
+      cadence:
+        max_merges_since_success: 50
+        max_delay_hours: 24
   # TEMPORARILY on the direct backend — see #7163. The condor backend runs
   # the unit lane at UNIT_PARALLEL=12 inside a 3-CPU reservation, and the
   # resulting oversubscription fails condor's own forking adapter tests.

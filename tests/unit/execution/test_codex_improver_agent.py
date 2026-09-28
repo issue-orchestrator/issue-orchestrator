@@ -1,0 +1,63 @@
+"""The improver runs on Codex non-interactively and read-only (#7490)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from issue_orchestrator.execution.codex_improver_agent import FINAL_MESSAGE_FILE, CodexImproverAgent
+from issue_orchestrator.ports.command_runner import CommandResult
+
+
+class FakeRunner:
+    def __init__(self, result: CommandResult, message: str | None = None) -> None:
+        self.result = result
+        self.message = message
+        self.calls: list[dict] = []
+
+    def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False, newlines=None):  # type: ignore[no-untyped-def]
+        self.calls.append({"command": command, "cwd": cwd, "env": env, "timeout": timeout_seconds})
+        if self.message is not None:
+            (Path(cwd) / FINAL_MESSAGE_FILE).write_text(self.message)
+        return self.result
+
+
+def _agent(runner: FakeRunner) -> CodexImproverAgent:
+    return CodexImproverAgent(runner=runner, model="gpt-5.6-sol", timeout_seconds=600)
+
+
+def test_codex_runs_read_only_in_the_run_dir_and_its_last_message_is_the_output(tmp_path: Path) -> None:
+    runner = FakeRunner(CommandResult(0, "events", ""), message='{"findings": []}')
+
+    result = _agent(runner).run(prompt="PROMPT", run_dir=tmp_path)
+
+    [call] = runner.calls
+    argv = call["command"]
+    codex = argv[argv.index("codex"):]
+    assert codex[:2] == ["codex", "exec"]
+    assert codex[codex.index("--sandbox") + 1] == "read-only"
+    assert codex[codex.index("--cd") + 1] == str(tmp_path)
+    assert codex[codex.index("--model") + 1] == "gpt-5.6-sol"
+    assert codex[codex.index("--output-last-message") + 1] == str(tmp_path / FINAL_MESSAGE_FILE)
+    assert "--ephemeral" in codex and codex[-1] == "PROMPT"
+    assert argv[:3] == ["/bin/sh", "-c", 'exec "$@" </dev/null']
+    assert call["env"]["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(tmp_path)
+    assert call["timeout"] == 600
+    assert result.final_message == '{"findings": []}'
+    assert (tmp_path / "improver-agent.log").read_text().startswith("events")
+
+
+@pytest.mark.parametrize(
+    ("result", "message", "detail"),
+    [
+        (CommandResult(-9, "", "", timed_out=True), None, "timed out"),
+        (CommandResult(2, "", "quota exhausted"), None, "exited 2: quota exhausted"),
+        (CommandResult(0, "", ""), None, "without a final message"),
+    ],
+)
+def test_no_output_says_why(tmp_path: Path, result: CommandResult, message: str | None, detail: str) -> None:
+    answer = _agent(FakeRunner(result, message)).run(prompt="P", run_dir=tmp_path)
+
+    assert answer.final_message is None
+    assert detail in answer.detail

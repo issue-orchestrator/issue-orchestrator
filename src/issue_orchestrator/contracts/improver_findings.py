@@ -24,6 +24,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 #: ``schema_version`` must match.
 IMPROVER_FINDINGS_SCHEMA_VERSION = 1
 
+#: The improver's one output, beside ``improver-data/`` in the run directory.
+FINDINGS_FILE = "improver-findings.json"
+
 #: A present/recurs fact: the prompt's three-valued string, never a boolean.
 Liveness = Literal["true", "false", "unknown"]
 Origin = Literal["before_start", "unknown"]
@@ -135,6 +138,7 @@ class ImproverFindings(_Closed):
 
 
 __all__ = [
+    "FINDINGS_FILE",
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
     "Finding",

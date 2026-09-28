@@ -1,4 +1,4 @@
-.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-tech-lead-exam test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-tech-lead-exam tech-lead-improver test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -44,6 +44,7 @@ help:
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
 	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
+	@echo "  tech-lead-improver  Run the tech-lead improver once (#7490; IMPROVER_STATE_DIR/IMPROVER_AUDITED_REPO pick the engine)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude-dev    Test dev agent: Claude execution -> PR created"
@@ -743,6 +744,23 @@ EXAM_ENGINE_REF ?= HEAD
 EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-tech-lead-exam
 test-tech-lead-exam: sync-deps
 	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
+
+# The tech-lead improver (#7490): audit an engine, run the improver prompt
+# read-only on Codex, validate its findings strictly, record the run and file
+# what the accepted findings ask for. Defaults audit this repository's own
+# engine (the checkout that owns the common Git directory) and file into this
+# repository; point IMPROVER_STATE_DIR/IMPROVER_AUDITED_REPO at another engine.
+# Runs are recorded under <git common dir>/io-improver (improver status).
+IMPROVER_REPO ?= issue-orchestrator/issue-orchestrator
+IMPROVER_AUDITED_REPO ?= $(IMPROVER_REPO)
+IMPROVER_STATE_DIR ?= $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir)")/.issue-orchestrator/state
+IMPROVER_MODEL ?= gpt-5.6-sol
+IMPROVER_AGENT_TIMEOUT_MINUTES ?= 90
+tech-lead-improver: sync-deps
+	$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.improver run \
+		--state-dir "$(IMPROVER_STATE_DIR)" --audited-repo $(IMPROVER_AUDITED_REPO) \
+		--outputs-repo $(IMPROVER_REPO) --exam-dir "$(EXAM_OUT)" \
+		--model $(IMPROVER_MODEL) --agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 
 test-e2e-onboarding-live: sync-deps
 	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
