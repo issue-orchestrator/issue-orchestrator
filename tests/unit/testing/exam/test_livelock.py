@@ -197,3 +197,10 @@ def test_the_current_run_forgets_a_run_a_state_change_ended() -> None:
     assert [r.count for r in find_repeating_failures(events)] == [6]
     assert find_current_repeats(events) == ()
     assert [r.count for r in find_current_repeats(failures)] == [6]
+
+
+def test_a_pr_state_change_ends_a_run_of_failures_about_that_pr() -> None:
+    failure = {"type": "merge_queue.failed", "issue_key": None, "payload": {"pr_number": 12, "reason": "conflict"}}
+    changed = {"type": "pr.view_changed", "issue_key": "410", "payload": {"issue_number": 410, "pr_number": 12}}
+
+    assert find_current_repeats([failure] * 6 + [changed]) == ()
