@@ -42,6 +42,20 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+#: The two line layouts an engine writes to its repo log. ``io engine-audit``
+#: parses the log back (``infra/engine_log_reader.py``), so these are the one
+#: spelling both the writers and that reader use.
+ROTATING_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+ROTATING_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+CONTEXT_LOG_FORMAT = "%(asctime)s [%(process)d] %(name)s %(levelname)s:%(context)s %(message)s"
+#: What starts every further line of a multi-line message, so no line inside
+#: a message can be read back as an entry of its own (captured agent output
+#: carries its own timestamps and request lines; #7490).
+MESSAGE_CONTINUATION = "    | "
+
+#: The ``extra=`` fields :class:`ContextFormatter` renders as ``%(context)s``.
+CONTEXT_LOG_FIELDS = ("run_id", "tick_id", "issue_key", "session_id", "step_id")
+
 # Flag to track if logging has been set up (for idempotency)
 _logging_configured = False
 _current_log_file: Path | None = None
@@ -113,22 +127,63 @@ def add_rotating_file_handler(log_file: Path, *, level: int) -> bool:
     )
     handler.setLevel(level)
     handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        FramedFormatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
     )
     root.addHandler(handler)
     return True
 
 
-class ContextFormatter(logging.Formatter):
+class FramedFormatter(logging.Formatter):
+    """A formatter whose record is always one entry when read back.
+
+    Every line after the record's first starts with
+    :data:`MESSAGE_CONTINUATION`: the message's own further lines and the
+    traceback (``exc_info``) or stack (``stack_info``) appended to it, whose
+    text may itself contain lines shaped like log entries.
+    """
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        message = record.message
+        record.message = _frame(message)
+        try:
+            return super().formatMessage(record)
+        finally:
+            record.message = message
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        if self.usesTime():
+            record.asctime = self.formatTime(record, self.datefmt)
+        text = self.formatMessage(record)
+        # Not cached on the record: another handler's plain formatter must
+        # not inherit this one's framing.
+        exception = record.exc_text
+        if not exception and record.exc_info:
+            exception = self.formatException(record.exc_info)
+        if exception:
+            text += "\n" + MESSAGE_CONTINUATION + _frame(exception)
+        if record.stack_info:
+            text += "\n" + MESSAGE_CONTINUATION + _frame(self.formatStack(record.stack_info))
+        return text
+
+
+def _frame(text: str) -> str:
+    return text.replace("\n", "\n" + MESSAGE_CONTINUATION)
+
+
+def frame_root_handlers(fmt: str, datefmt: str | None = None) -> None:
+    """Give every root handler a :class:`FramedFormatter` (after ``basicConfig``)."""
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(FramedFormatter(fmt, datefmt=datefmt))
+
+
+class ContextFormatter(FramedFormatter):
     """Formatter that includes context fields from extra= if present."""
 
     def format(self, record: logging.LogRecord) -> str:
         # Build context string from known extra fields
         context_parts = []
-        for field in ("run_id", "tick_id", "issue_key", "session_id", "step_id"):
+        for field in CONTEXT_LOG_FIELDS:
             value = getattr(record, field, None)
             if value is not None:
                 # Shorten run_id for readability
@@ -222,7 +277,7 @@ def setup_logging(
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    human_format = "%(asctime)s [%(process)d] %(name)s %(levelname)s:%(context)s %(message)s"
+    human_format = CONTEXT_LOG_FORMAT
     stderr_format = "[%(process)d] %(name)s: %(message)s"
 
     file_handler, log_file, fallback_used = _create_file_handler(log_file, log_retention_days)

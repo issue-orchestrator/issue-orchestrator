@@ -219,6 +219,20 @@ class TechLeadCharterDecision:
         ) or self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
 
     @property
+    def effect(self) -> str:
+        """What became of the action, in one word: the applier's linked result
+        for an executed decision (``applied``, ``withheld``, ...), the proposal
+        lifecycle for a gated one, ``unlinked`` until either is recorded, and
+        ``advice`` for advice-only."""
+        if self.execution is not None:
+            return self.execution.value
+        if self.lifecycle is not None:
+            return self.lifecycle.value
+        if self.outcome is CharterOutcome.ADVICE_ONLY:
+            return "advice"
+        return "unlinked"
+
+    @property
     def effect_at(self) -> str:
         """When it took effect (or last tried to): as linked, else its decision."""
         if self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED and self.lifecycle_updated_at:

@@ -103,6 +103,7 @@ and this table is the same set with the tier each command carries:
 | `executor-status` | Diagnostics | Supported |
 | `worktree-custody` | Diagnostics | Supported |
 | `action-liveness` | Diagnostics | Supported |
+| `engine-audit` | Diagnostics | Supported |
 | `test-reset` | Development | Internal |
 | `e2e-reset` | Development | Internal |
 

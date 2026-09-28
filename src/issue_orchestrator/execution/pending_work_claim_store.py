@@ -102,6 +102,12 @@ def _issue_number_of(claim: PendingWorkClaim) -> int:
     return int(getattr(request, "issue_number", 0))
 
 
+#: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
+#: copy of this store's database before opening the store on it: opening
+#: creates missing tables, which would read a damaged file as an empty one.
+AUDIT_TABLES = ("pending_work_claim", "pending_work_claim_quarantine")
+
+
 class SqlitePendingWorkClaimStore:
     """Orchestrator-owned claim ledger and quarantine record for one repository."""
 

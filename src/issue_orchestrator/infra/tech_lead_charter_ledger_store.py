@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import AbstractContextManager
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ..domain.tech_lead_charter import CharterRole
 from ..domain.tech_lead_charter_decisions import (
@@ -89,6 +89,13 @@ REMEDIES_ON_ISSUE_QUERY = (
     " THEN json_extract(record, '$.execution_at') ELSE decided_at END DESC,"
     " decision_id DESC LIMIT ?"
 )
+
+
+def _counted(keys: Iterable[tuple[str, ...]]) -> tuple[tuple[Any, ...], ...]:
+    counts: dict[tuple[str, ...], int] = {}
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
+    return tuple((*key, n) for key, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 class SqliteTechLeadCharterLedger:
@@ -228,6 +235,25 @@ class SqliteTechLeadCharterLedger:
                 (role.value, check_read_limit(limit)),
             )
         )
+
+    def role_outcome_counts(self) -> tuple[tuple[str, str, int], ...]:
+        """How many decisions each ``(role, outcome)`` holds, most first (#7490)."""
+        return _counted(
+            (decision.role.value, decision.outcome.value) for decision in self._all()
+        )
+
+    def effect_counts(self) -> tuple[tuple[str, str, str, str, int], ...]:
+        """How many decisions each ``(role, action_kind, outcome, effect)`` holds,
+        most first: what the charter allowed and what then became of it
+        (``TechLeadCharterDecision.effect``) (#7490)."""
+        return _counted(
+            (d.role.value, d.action_kind, d.outcome.value, d.effect) for d in self._all()
+        )
+
+    def _all(self) -> tuple[TechLeadCharterDecision, ...]:
+        """Every decision, decoded, so counts read the domain's fields rather
+        than JSON paths that could drift from them."""
+        return _decode(self._connection().execute("SELECT record FROM tech_lead_charter_decisions"))
 
     def list_recent(self, *, limit: int = 100) -> tuple[TechLeadCharterDecision, ...]:
         return _decode(
