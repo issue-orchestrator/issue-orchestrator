@@ -549,3 +549,15 @@ def test_a_provider_deferred_issue_launch_waits_and_never_marks_the_issue_failed
 
     _assert_nothing_failed(engine)
     assert len(_skips(engine)) == 1
+    assert state.launch_deferred_this_cycle == {ISSUE}
+
+    # An issue has no queue to wait on: it sits out the rest of the cycle, so
+    # the unchanged refusal does not repeat every tick (#7461 review r1).
+    again = engine.plan()
+    assert again.actions == ()
+    assert [s.reason for s in again.skipped if s.number == ISSUE] == [
+        "launch deferred this cycle (waiting, not failed)"
+    ]
+
+    state.launch_deferred_this_cycle.clear()  # the next refresh
+    assert [a.action_type.value for a in engine.plan().actions] == ["launch_session"]

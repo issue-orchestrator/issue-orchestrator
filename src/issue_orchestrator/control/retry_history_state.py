@@ -179,6 +179,7 @@ class RetryHistoryState:
         """
         result = self.remove_issue_from_history(issue_number)
         self._state.failed_this_cycle.discard(issue_number)
+        self._state.launch_deferred_this_cycle.discard(issue_number)
         return result
 
     def deprioritize_issues(self, issue_numbers: Iterable[int]) -> list[int]:
@@ -509,6 +510,7 @@ class RetryHistoryState:
     def _clear_progress_flags(self, issue_number: int) -> None:
         """Progress-blocking flags — genuinely issue-scoped, stay after #6130."""
         self._state.failed_this_cycle.discard(issue_number)
+        self._state.launch_deferred_this_cycle.discard(issue_number)
         self._state.stale_issue_ticks.pop(issue_number, None)
         self._state.dependency_problems.pop(issue_number, None)
 

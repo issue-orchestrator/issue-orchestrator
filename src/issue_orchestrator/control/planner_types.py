@@ -117,6 +117,9 @@ class OrchestratorSnapshot:
     stale_claim_issues: tuple[Issue, ...] = field(default_factory=tuple)
     # Issues that failed this cycle - skip until cache refresh (prevents immediate retry)
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
+    # Issues whose launch waited this cycle (#7461 review): not re-planned
+    # until the next refresh, and not a failure.
+    launch_deferred_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
     session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
     # E2E-as-first-class-workload facts (e2e.occupies_session_slot). Both are
@@ -235,6 +238,7 @@ class OrchestratorSnapshot:
             stale_in_progress_issues=tuple(stale_in_progress_issues),
             stale_claim_issues=tuple(stale_claim_issues),
             failed_this_cycle=frozenset(state.failed_this_cycle),
+            launch_deferred_this_cycle=frozenset(state.launch_deferred_this_cycle),
         )
 
 

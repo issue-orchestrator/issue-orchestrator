@@ -378,6 +378,22 @@ class TestUpdateAndEmit:
             # failed_this_cycle should be cleared
             assert len(state.failed_this_cycle) == 0
 
+    def test_a_deferred_launch_hold_is_released_by_the_refresh(self, queue_projection):
+        """#7461 review: an issue whose launch waited sits out only until the
+        next refresh, which releases it for planning again."""
+        issue = Issue(number=1, title="Issue", labels=["agent:backend"], body="")
+        state = OrchestratorState()
+        state.cached_queue_issues = [issue]
+        state.launch_deferred_this_cycle = {1}
+
+        with patch(
+            "issue_orchestrator.infra.audit.fetch_all_issues",
+            return_value=[issue],
+        ):
+            queue_projection.update_and_emit(state)
+
+        assert state.launch_deferred_this_cycle == set()
+
     def test_failed_this_cycle_cleared_on_any_update(self, queue_projection):
         """failed_this_cycle is cleared whenever update_and_emit is called successfully."""
         issue = Issue(number=1, title="Issue", labels=["agent:backend"], body="")

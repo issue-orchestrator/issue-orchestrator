@@ -94,12 +94,11 @@ class QueueProjection:
                 queue_cache.save_snapshot()
 
             # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
-            if state.failed_this_cycle:
+            if failed := state.release_cycle_holds():
                 logger.info(
                     "[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)",
-                    state.failed_this_cycle,
+                    set(failed),
                 )
-                state.failed_this_cycle.clear()
 
             if added_numbers or removed_numbers:
                 added = [i for i in scope_issues if i.number in added_numbers]

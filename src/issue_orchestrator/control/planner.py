@@ -91,7 +91,7 @@ from .reconciliation import build_expected_for_mutation, without_paused_subjects
 from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
-from .plan_launches import PlanLaunches, first_per_subject, withhold_launching
+from .plan_launches import PlanLaunches, first_per_subject, withhold_deferred_launches, withhold_launching
 from .recovery_review_hold import withhold_recovery_held
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,
@@ -1243,6 +1243,7 @@ class Planner:
         excluded_issues = (
             snapshot.active_issue_numbers |
             launching |
+            snapshot.launch_deferred_this_cycle |
             issues_with_reviews |
             issues_with_retrospective_reviews |
             issues_with_reworks |
@@ -1258,6 +1259,7 @@ class Planner:
         _, skip_reason_by_issue = withhold_launching(
             available, launching, skipped, item_type="issue", subject=lambda i: i.number
         )
+        skip_reason_by_issue.update(withhold_deferred_launches(available, snapshot, skipped))
         for issue in available:
             if issue.number in snapshot.active_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))

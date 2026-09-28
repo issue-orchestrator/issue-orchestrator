@@ -335,6 +335,9 @@ def _queue_wait_reason(
     if issue_number in state.failed_this_cycle:
         return "Waiting: previous launch/action failed (manual retry may be needed)"
 
+    if issue_number in state.launch_deferred_this_cycle:
+        return "Waiting: launch deferred until the next refresh (provider not ready)"
+
     if issue_number in issues_held_by_session_history(state.session_history):
         return "Waiting: previous run state"
 

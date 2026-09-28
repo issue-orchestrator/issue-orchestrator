@@ -10,6 +10,7 @@ from ..domain.models import Session
 from ..ports.repository_host import HostRateLimit, host_rate_limit_of
 
 if TYPE_CHECKING:
+    from ..domain.models import OrchestratorState
     from .action_base import Action
     from .action_results import ActionResult
 
@@ -344,3 +345,22 @@ def launch_step_result(action: "Action", step: LaunchStep, failure: str) -> "Act
     if step.outcome is LaunchStepOutcome.NOT_LAUNCHED:
         return ActionResult.fail(action, failure)
     return ActionResult.skip(action, step.reason, launch_step=step.outcome.value)
+
+
+def hold_deferred_issue_launch(
+    state: "OrchestratorState", action: "Action", result: "ActionResult"
+) -> None:
+    """An ISSUE launch that WAITED sits out until the next refresh (#7461 review).
+
+    Queued work waits on its queue; a fresh issue pickup has none, so without
+    this hold the planner re-plans it every tick and the launch is refused
+    again for the same reason. Recorded as a deferral, never as a failure.
+    """
+    from .actions import LaunchSessionAction, SessionType
+
+    if (
+        isinstance(action, LaunchSessionAction)
+        and action.session_type is SessionType.ISSUE
+        and result.details.get("launch_step") == LaunchStepOutcome.WAITING.value
+    ):
+        state.launch_deferred_this_cycle.add(action.number)
