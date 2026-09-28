@@ -85,6 +85,20 @@ def completion_intake(completion_intake_fixture):
 
 
 @pytest.fixture(autouse=True)
+def isolate_web_orchestrator_globals():
+    """Restore the web entrypoints' orchestrator/server globals after each test.
+
+    A test that installs a stub orchestrator and does not put the previous one
+    back used to leak it into whichever test that xdist worker ran next (see
+    ``tests/web_globals.py``).
+    """
+    from tests.web_globals import web_globals_isolated
+
+    with web_globals_isolated():
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_git_env(monkeypatch):
     """Strip git env vars to prevent test git commands from affecting main repo.
 
