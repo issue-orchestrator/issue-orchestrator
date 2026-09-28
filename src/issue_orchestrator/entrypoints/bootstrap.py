@@ -797,6 +797,7 @@ def build_orchestrator(
         provider_credentials=build_provider_credentials(),
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
+        recovery_holds=validated_work.blocks,
     )
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
@@ -808,6 +809,8 @@ def build_orchestrator(
         config, events=events, action_applier=action_applier, label_manager=label_manager,
         charter=tech_lead_authority.charter_ledger,
     )
+    # Planning asks the recovery owner which queued reviews it holds (#7455).
+    fact_gatherer.recovery_holds = validated_work.blocks
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
         runtime=runtime_lifecycle.core, working_copy=working_copy, fresh_issue_reader=fresh_issue_reader,

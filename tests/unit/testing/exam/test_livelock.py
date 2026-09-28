@@ -168,7 +168,10 @@ def test_a_paused_claim_the_engine_only_notices_is_not_a_livelock() -> None:
     assert card.passed, card.failures
 
 
-@pytest.mark.parametrize("reason", ["no_capacity", "orchestrator_paused", "retrospective_review_no_capacity"])
+@pytest.mark.parametrize(
+    "reason",
+    ["no_capacity", "orchestrator_paused", "retrospective_review_no_capacity", "held_by_recovery"],
+)
 def test_waiting_skips_are_not_livelocks(reason: str) -> None:
     waiting = [{"type": "review.skipped", "issue_key": None, "payload": {"reason": reason}} for _ in range(20)]
     assert find_repeating_failures(waiting) == ()

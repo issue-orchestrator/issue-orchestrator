@@ -92,6 +92,7 @@ from .stuck_sweep import build_stuck_sweep_escalation_actions
 from .published_review_release import build_stuck_sweep_review_release_actions
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .plan_launches import PlanLaunches, first_per_subject, withhold_launching
+from .recovery_review_hold import withhold_recovery_held
 from .tech_lead_issue_policy import (
     plan_batch_review_issue,
 )
@@ -1361,7 +1362,7 @@ class Planner:
             return actions, skipped
 
         decision: ReviewDecision = self.review_workflow.should_launch_reviews(
-            pending_reviews=first_per_subject(snapshot.pending_reviews, lambda r: r.pr_number),
+            pending_reviews=first_per_subject(withhold_recovery_held(snapshot.pending_reviews, snapshot.recovery_held_reviews, skipped), lambda r: r.pr_number),
             active_session_count=worker_active_count,  # worker-only, not raw (#6824 F5)
             paused=snapshot.paused,
         )

@@ -746,3 +746,21 @@ def test_shared_block_later_cause_cannot_reset_ambiguous_present_generation(tmp_
     assert rig.human.force_clear(6914, "retry") is BlockOutcome.FAILED
     assert "needs-human" in rig.remote.labels
     assert rig.causes.needs_human_causes(6914) == frozenset({second.cause_key})
+
+
+def test_the_owner_holds_an_issue_exactly_until_it_releases_the_published_record(tmp_path):
+    """#7455: planning asks `holds_recovery`; it must track the owner's own plan.
+
+    While the published record awaits routing, the owner holds the issue (the
+    label it projects is `recovery-pending`); once finalization routes the
+    review and releases the record, it holds nothing and a queued review may
+    launch.
+    """
+    rig = AggregateRig(tmp_path)
+
+    assert rig.aggregate.holds_recovery(6914) is True
+
+    assert rig.base.invoke().status is FinalizationStatus.FINALIZED
+
+    assert rig.aggregate.holds_recovery(6914) is False
+    assert "recovery-pending" not in rig.remote.labels

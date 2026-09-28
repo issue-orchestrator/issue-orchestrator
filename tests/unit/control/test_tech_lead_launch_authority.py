@@ -60,6 +60,7 @@ from issue_orchestrator.domain.tech_lead_session import (
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.session_launch_types import LaunchStep
 
 from .run_ledger_doubles import SharedRunLedger
 
@@ -208,7 +209,7 @@ class _Harness:
                 str(label).startswith("blocked") for label in labels
             ),
             events=self.events,  # type: ignore[arg-type]
-            launch=self._launch,
+            launch=lambda item: LaunchStep.of_session(self._launch(item), "the fake launch did not start"),
             activity=self.activity,
             claims=MagicMock(),
         )
@@ -658,3 +659,85 @@ def test_an_ABSENT_anchor_also_holds_rather_than_launching():
 
     assert harness.launch(anchor) is None
     assert harness.held_reasons() == [REASON_ANCHOR_UNREADABLE]
+
+
+# ---------------------------------------------------------------------------
+# #7455: a refusal is typed, never a failed launch
+# ---------------------------------------------------------------------------
+
+
+def test_a_withdrawn_run_is_a_withdrawal_step_not_a_failed_launch():
+    """The anchor closed after planning: the run is withdrawn and retired, and
+    the plan applier must see a withdrawal, not `launch_session failed`."""
+    from issue_orchestrator.control.actions import LaunchSessionAction, SessionType
+    from issue_orchestrator.control.session_launch_types import (
+        LaunchStepOutcome,
+        launch_step_result,
+    )
+
+    investigation = _investigation(42)
+    harness = _Harness(
+        pending=[investigation], issues={42: FakeIssue(42, state="closed")}
+    )
+
+    step = harness.authority().launch_step(investigation)
+
+    assert step.outcome is LaunchStepOutcome.WITHDRAWN
+    assert harness.state.pending_tech_lead_reviews == []
+    applied = launch_step_result(
+        LaunchSessionAction(session_type=SessionType.TECH_LEAD, number=42), step, "failed"
+    )
+    assert not applied.success and applied.error is None  # a skip, not a failure
+
+
+def test_a_retained_refusal_is_a_wait_and_keeps_the_run_queued():
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    anchor = _health_anchor()
+    harness = _Harness(pending=[anchor], repository_host=UnreadableRepositoryHost())
+
+    step = harness.authority().launch_step(anchor)
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert harness.state.pending_tech_lead_reviews == [anchor]
+
+
+def test_a_launch_that_started_nothing_is_still_a_failed_step():
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    anchor = _health_anchor()
+    harness = _Harness(
+        pending=[anchor], launch_fails=True, issues={900: FakeIssue(900, labels=())}
+    )
+
+    assert harness.authority().launch_step(anchor).outcome is LaunchStepOutcome.NOT_LAUNCHED
+
+
+def _coder_session(issue_number: int) -> SimpleNamespace:
+    """An ordinary coding session on the issue: not a tech-lead run."""
+    return SimpleNamespace(
+        issue=FakeIssue(issue_number),
+        agent_label="agent:backend",
+        tech_lead_scope=None,
+        terminal_id=f"issue-{issue_number}",
+        key=SimpleNamespace(stable_id=lambda: f"code:{issue_number}", kind=SessionKind.CODE),
+    )
+
+
+def test_a_targeted_run_whose_subject_has_a_live_session_waits_for_it():
+    """#7455 review r2: the scope gate holds it (planning and launch share the
+    rule), so the launcher never refuses and drops it."""
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    investigation = _investigation(42)
+    harness = _Harness(
+        pending=[investigation],
+        active=[_coder_session(42)],
+        issues={42: FakeIssue(42)},
+    )
+
+    step = harness.authority().launch_step(investigation)
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert harness.launched == []
+    assert harness.state.pending_tech_lead_reviews == [investigation]

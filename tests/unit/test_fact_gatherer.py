@@ -146,6 +146,44 @@ class TestFactGathererHostRateLimit:
         assert snapshot.host_rate_limit_hold is None
 
 
+class TestFactGathererRecoveryHeldReviews:
+    """#7455: planning sees which queued reviews the recovery owner holds."""
+
+    def test_a_review_whose_issue_the_recovery_owner_holds_is_reported_held(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
+        from issue_orchestrator.domain.models import PendingReview
+
+        for pr, issue in ((70, 7), (80, 8)):
+            assert sample_state.queue_pending_review(
+                PendingReview(FakeIssueKey(name=str(issue)), pr, "url", "branch", issue)
+            )
+        held_issues = {7}
+        fact_gatherer.recovery_holds = Mock(
+            holds_recovery=lambda issue_number: issue_number in held_issues
+        )
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.recovery_held_reviews == frozenset({70})
+
+    def test_an_unreadable_hold_leaves_the_decision_to_launch_time(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
+        from issue_orchestrator.domain.models import PendingReview
+
+        assert sample_state.queue_pending_review(
+            PendingReview(FakeIssueKey(name="7"), 70, "url", "branch", 7)
+        )
+        fact_gatherer.recovery_holds = Mock(holds_recovery=Mock(side_effect=OSError("locked")))
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.recovery_held_reviews == frozenset()
+
+
 class TestFactGathererE2ESlotFacts:
     """The E2E worker-slot facts are threaded from the injected reader into the
     snapshot only when e2e.occupies_session_slot is on (observation boundary)."""

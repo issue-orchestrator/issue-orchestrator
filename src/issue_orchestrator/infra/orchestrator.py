@@ -36,6 +36,7 @@ from ..control.orchestrator_support import (
     check_health as _check_health,
     init_orchestrator_components,
 )
+from ..control.session_launch_types import LaunchStep
 from ..control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
 from ..control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
 
@@ -353,7 +354,7 @@ class Orchestrator:
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path:
         return get_worktree_path(self.config, issue_number, agent_config)
 
-    def session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]:
+    def session_launcher_callback(self, session_type: "SessionType", number: int) -> LaunchStep:
         return _session_launcher_callback(
             session_type,
             number,
@@ -364,29 +365,34 @@ class Orchestrator:
             self._launch_tech_lead_by_number,
         )
 
-    def _launch_issue_by_number(self, n: int) -> Optional[Session]:
+    def _launch_issue_by_number(self, n: int) -> LaunchStep:
         return _gw_launch_issue_by_number(
-            n, self.state.cached_queue_issues, self.launch_session, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
+            n, self.state.cached_queue_issues, self._attempt_issue_launch, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
         )
 
-    def _launch_review_by_number(self, n: int) -> Optional[Session]:
-        return _ch_launch_review_by_number(n, self.state.pending_reviews, self.launch_review_session)
+    def _attempt_issue_launch(self, issue: Issue) -> LaunchStep:
+        return LaunchStep.of_session(self.launch_session(issue), f"issue #{issue.number} did not start")
 
-    def _launch_retrospective_review_by_number(self, n: int) -> Optional[Session]:
+    def _launch_review_by_number(self, n: int) -> LaunchStep:
+        return _ch_launch_review_by_number(n, self.state.pending_reviews, lambda review: _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims))
+
+    def _launch_retrospective_review_by_number(self, n: int) -> LaunchStep:
         review = next((r for r in self.state.pending_retrospective_reviews if r.issue_number == n), None)
-        return self.launch_retrospective_review_session(review) if review else None
+        if review is None:
+            return LaunchStep.not_queued("retrospective review", n)
+        return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
-    def _launch_rework_by_number(self, n: int) -> Optional[Session]:
-        return _ch_launch_rework_by_number(n, self.state.pending_reworks, self.launch_rework_session)
+    def _launch_rework_by_number(self, n: int) -> LaunchStep:
+        return _ch_launch_rework_by_number(n, self.state.pending_reworks, lambda rework: _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims))
 
-    def launch_validation_retry_by_number(self, n: int) -> Optional[Session]:
+    def launch_validation_retry_by_number(self, n: int) -> LaunchStep:
         retry = next((r for r in self.state.pending_validation_retries if r.issue_number == n), None)
         if retry is None:
-            return None
+            return LaunchStep.not_queued("validation retry", n)
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
-    def _launch_tech_lead_by_number(self, n: int) -> Optional[Session]:
-        return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_session)
+    def _launch_tech_lead_by_number(self, n: int) -> LaunchStep:
+        return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_step)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]:
         return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
@@ -519,7 +525,7 @@ class Orchestrator:
         sweep_orphan_session_tempfiles(self.config.repo_root)
 
     def launch_session(self, issue: Issue, *, tech_lead_scope: "TechLeadLaunchScope | None" = None) -> Optional[Session]:
-        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, tech_lead_scope=tech_lead_scope)
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, tech_lead_scope=tech_lead_scope).session
 
     def handle_session_completion(self, session: Session, status: SessionStatus, *, provider_error_type: "ProviderErrorType | None" = None) -> None:
         _handle_session_completion(
@@ -1074,15 +1080,18 @@ class Orchestrator:
         )
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
-        return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
+        return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]:
-        return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
+        return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
-    def launch_queued_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
+    def launch_queued_tech_lead_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
         return _launch_tech_lead_session(tech_lead, self.state, self.config, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
     def launch_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
+        return self.launch_tech_lead_step(tech_lead).session
+
+    def launch_tech_lead_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
         with self.state_lock:
             return _launch_tech_lead_run(self, tech_lead)
 
@@ -1115,7 +1124,7 @@ class Orchestrator:
         return self._github_workflow.reconcile_orphaned_pr_labels(ORCHESTRATOR_PR_MARKER)
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
-        return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
+        return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
     def _recovery_drain_mode(self) -> RecoveryDrainMode:
         """Read lifecycle admission at each retained-work start boundary."""

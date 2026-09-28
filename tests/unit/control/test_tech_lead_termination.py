@@ -53,6 +53,7 @@ from issue_orchestrator.domain.validated_work_commands import (
     ValidatedWorkDispositionBatch,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.session_launch_types import LaunchStep
 
 from .run_ledger_doubles import SharedRunLedger
 
@@ -188,7 +189,7 @@ class _Host:
                 str(label).startswith("blocked") for label in labels
             ),
             events=SimpleNamespace(publish=lambda _e: None),  # type: ignore[arg-type]
-            launch=self._start_session,
+            launch=lambda item: LaunchStep.of_session(self._start_session(item), "the fake launch did not start"),
             activity=in_memory_run_activity(),
             claims=MagicMock(),
         ).launch(tech_lead)

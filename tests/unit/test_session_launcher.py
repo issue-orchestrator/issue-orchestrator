@@ -616,6 +616,7 @@ def _build_launcher_bundle(
     provider_readiness_probe: ProviderReadinessProbe | None = None,
     issue_run_ledger: IssueRunLedger | None = None,
     refresh_issue_fn: Callable[[int], Any] | None = None,
+    recovery_holds: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -682,6 +683,8 @@ def _build_launcher_bundle(
         launcher_kwargs["provider_resilience"] = provider_resilience
     if provider_readiness_probe is not None:
         launcher_kwargs["provider_readiness_probe"] = provider_readiness_probe
+    if recovery_holds is not None:
+        launcher_kwargs["recovery_holds"] = recovery_holds
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
@@ -3433,7 +3436,7 @@ class TestOrchestratorLaunchSession:
         """Verify session is appended to active_sessions."""
         state = OrchestratorState()
 
-        result = orchestrator_launch_session(sample_issue, state, session_launcher)
+        result = orchestrator_launch_session(sample_issue, state, session_launcher).session
 
         assert result is not None
         assert len(state.active_sessions) == 1
@@ -3477,7 +3480,7 @@ class TestOrchestratorLaunchSession:
             True,
         )
 
-        result = orchestrator_launch_session(sample_issue, state, session_launcher)
+        result = orchestrator_launch_session(sample_issue, state, session_launcher).session
 
         assert result is duplicate
         assert state.active_sessions == [existing]
@@ -3506,7 +3509,7 @@ class TestOrchestratorLaunchSession:
             state,
             launcher_bundle.launcher,
             mock_restorer,
-        )
+        ).session
 
         assert result is None
         assert state.active_sessions == []
@@ -3550,7 +3553,7 @@ class TestOrchestratorLaunchSession:
             state,
             launcher_bundle.launcher,
             mock_restorer,
-        )
+        ).session
 
         assert result is restored
         assert state.active_sessions == [restored]
@@ -3603,7 +3606,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert result is not None
         assert [r.issue_number for r in state.pending_validation_retries] == [456]
@@ -3661,7 +3664,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             launcher_bundle.launcher,
             mock_restorer,
             _claims_store(),
-        )
+        ).session
 
         assert result is restored
         assert state.active_sessions == [restored]
@@ -3685,7 +3688,7 @@ class TestOrchestratorLaunchReviewSession:
 
         mock_restorer = MagicMock()
 
-        result = orchestrator_launch_review_session(review, state, session_launcher, mock_restorer, _claims_store())
+        result = orchestrator_launch_review_session(review, state, session_launcher, mock_restorer, _claims_store()).session
 
         assert result is not None
         assert len(state.pending_reviews) == 0
@@ -3716,7 +3719,7 @@ class TestOrchestratorLaunchReviewSession:
         mock_restorer = MagicMock()
         mock_restorer.restore_known_terminal.return_value = []
 
-        result = orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer, _claims_store())
+        result = orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer, _claims_store()).session
 
         assert result is None
         mock_restorer.restore_known_terminal.assert_not_called()
@@ -3769,7 +3772,7 @@ class TestOrchestratorLaunchReviewSession:
             launcher_bundle.launcher,
             mock_restorer,
             _claims_store(),
-        )
+        ).session
 
         assert result is restored
         assert state.active_sessions == [restored]
@@ -3806,7 +3809,7 @@ class TestOrchestratorLaunchReworkSession:
 
         mock_restorer = MagicMock()
 
-        result = orchestrator_launch_rework_session(rework, state, session_launcher, mock_restorer, _claims_store())
+        result = orchestrator_launch_rework_session(rework, state, session_launcher, mock_restorer, _claims_store()).session
 
         assert result is not None
         assert len(state.pending_reworks) == 0
@@ -4016,7 +4019,7 @@ class TestOrchestratorLaunchTechLeadSession:
                 MagicMock(),
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     def test_raises_when_tech_lead_agent_not_in_config(self, sample_config):
         """Verify raises ValueError when tech lead agent not configured."""
@@ -4030,7 +4033,7 @@ class TestOrchestratorLaunchTechLeadSession:
                 MagicMock(),
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     @pytest.mark.parametrize(
         "flavor",
@@ -4053,7 +4056,7 @@ class TestOrchestratorLaunchTechLeadSession:
             launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         call = launcher.launch_issue_session.call_args
         issue = call.args[0]
@@ -4081,7 +4084,7 @@ class TestOrchestratorLaunchTechLeadSession:
             launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         issue = launcher.launch_issue_session.call_args.args[0]
         assert issue.repo == "acme/widgets"
@@ -4105,7 +4108,7 @@ class TestOrchestratorLaunchTechLeadSession:
                 _stub_tech_lead_launcher(LaunchResult(session=None, success=False)),
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     def test_successful_launch_removes_item_from_queue(self, sample_config, tmp_path):
         """Reviewer scenario: a launched item must not stay queued (#6768 r4)."""
@@ -4126,7 +4129,7 @@ class TestOrchestratorLaunchTechLeadSession:
         result = orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert result is session
         assert state.pending_tech_lead_reviews == []
@@ -4149,7 +4152,7 @@ class TestOrchestratorLaunchTechLeadSession:
         result = orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0], state, sample_config, launcher, restorer,
             _claims_store(),
-        )
+        ).session
 
         assert result is None
         assert len(state.pending_tech_lead_reviews) == 1
@@ -4174,7 +4177,7 @@ class TestOrchestratorLaunchTechLeadSession:
         result = orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert result is None
         assert state.pending_tech_lead_reviews == []
@@ -4501,7 +4504,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert session is not None
         return session
 
@@ -4879,7 +4882,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
                 launcher_bundle.launcher,
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
             assert session is None
             assert len(state.pending_tech_lead_reviews) == 1, (
                 "a retryable prep failure must retain the queued investigation"
@@ -4906,7 +4909,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert session is None
         assert state.pending_tech_lead_reviews == []
         needs_human = [
@@ -4959,7 +4962,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
                 launcher_bundle.launcher,
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     @staticmethod
     def _queue_investigation(state) -> None:
@@ -5082,7 +5085,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert state.pending_tech_lead_reviews == [], (
             "the drop must commit only after the durable transition succeeds"
         )
@@ -5176,7 +5179,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert session is not None
         assert state.pending_tech_lead_reviews == []
@@ -5482,7 +5485,7 @@ class TestTechLeadProducerToLaunchBoundary:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert session is not None
         return session
 
@@ -9558,7 +9561,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
 
         session = orchestrator_launch_validation_retry_session(
             retry, state, launcher_bundle.launcher, MagicMock(), claims
-        )
+        ).session
 
         assert session is not None
         resumed = session.run_assets.identity
@@ -9681,7 +9684,7 @@ class TestLaunchDefersOnGitHubRateLimit:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
     def test_repeated_rate_limited_prep_spends_nothing_and_escalates_nothing(
         self, launcher_bundle, mock_events, tmp_path, monkeypatch
@@ -9935,7 +9938,7 @@ class TestLaunchDefersOnGitHubRateLimit:
 
         result = orchestrator_launch_review_session(
             review, state, launcher_bundle.launcher, MagicMock(), _claims_store()
-        )
+        ).session
 
         assert result is None
         assert state.pending_reviews == [review]
@@ -9986,7 +9989,7 @@ class TestLaunchDefersOnGitHubRateLimit:
 
         result = orchestrator_launch_validation_retry_session(
             retry, state, bundle.launcher, MagicMock(), _claims_store()
-        )
+        ).session
 
         assert result is None
         assert state.pending_validation_retries == [retry]
@@ -10049,7 +10052,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         )
         state = OrchestratorState()
 
-        assert orchestrator_launch_session(sample_issue, state, launcher_bundle.launcher) is None
+        assert orchestrator_launch_session(sample_issue, state, launcher_bundle.launcher).session is None
 
         assert state.host_rate_limit.open_at(
             datetime.now(UTC), live=frozenset({"issue:123"})

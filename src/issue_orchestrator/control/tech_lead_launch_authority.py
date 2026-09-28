@@ -61,6 +61,7 @@ from .tech_lead_launch_planning import (
 )
 from .tech_lead_run_admission import scope_of_pending
 from .tech_lead_run_ownership import RunExecutionVerdict
+from .session_launch_types import LaunchStep
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, Session
@@ -109,7 +110,7 @@ class TechLeadLaunchAuthority:
         repository_host: "Optional[RepositoryHost]",
         is_blocking_any: "Callable[[Sequence[str]], bool]",
         events: "EventSink",
-        launch: "Callable[[PendingTechLeadReview], Optional[Session]]",
+        launch: "Callable[[PendingTechLeadReview], LaunchStep]",
         activity: "TechLeadRunActivity",
         claims: "PendingWorkClaimStore",
     ) -> None:
@@ -125,25 +126,37 @@ class TechLeadLaunchAuthority:
 
     def launch(self, tech_lead: PendingTechLeadReview) -> "Optional[Session]":
         """Start ``tech_lead`` if — and only if — it may still start."""
+        return self.launch_step(tech_lead).session
+
+    def launch_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
+        """:meth:`launch`, saying what the step came to (#7455).
+
+        A refusal that withdrew the run is a withdrawal and one that keeps it
+        queued is a wait; neither is a failed launch, and the plan applier must
+        not report either as one.
+        """
         scope = scope_of_pending(tech_lead)
         refusal = self._refusal_for(tech_lead, scope)
         if refusal is not None:
             self._report(refusal)
+            reason = f"{refusal.reason}: {refusal.detail}"
             if not refusal.retained:
                 self._withdraw(tech_lead, refusal)
-            return None
-        session = self._launch(tech_lead)
+                return LaunchStep.withdrawn(reason)
+            return LaunchStep.waiting(reason)
+        step = self._launch(tech_lead)
+        session = step.session
         if session is None:
             # Nothing is executing this run, so the exclusive hold must go back
             # immediately; leaving it would make every other tech-lead run wait
             # out a lease for a session that never started.
             self._ownership.end_run(scope.run_key)
-            return None
+            return step
         # ADR-0033: the run's LOCAL record opens here, at the same single gate
         # that guarantees one session per run — so the history can never show a
         # run this authority refused, nor miss one it allowed (#6858).
         self._activity.note_started(session)
-        return session
+        return step
 
     # ------------------------------------------------------------------
     # The three gates, cheapest local evidence first

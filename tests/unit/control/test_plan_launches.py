@@ -260,3 +260,44 @@ def test_a_validation_retry_after_a_rework_of_its_issue_is_refused() -> None:
     assert launches.admit([rework, retry], into=actions) == 1
     assert actions == [rework]
     assert launches.coder_subjects() == frozenset({7})
+
+
+def test_a_review_the_recovery_owner_holds_waits_without_taking_a_slot() -> None:
+    """#7455: with one slot, a review held by recovery must not crowd out the
+    next review, and planning must not send it to launch (no live reads)."""
+    from dataclasses import replace
+
+    from issue_orchestrator.control.planner import Planner
+    from issue_orchestrator.control.scheduler import Scheduler
+    from issue_orchestrator.control.workflows import ReviewWorkflow
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.models import PendingReview
+    from tests.unit.test_planner import make_config, make_snapshot
+
+    def review(pr: int) -> PendingReview:
+        return PendingReview(
+            issue_key=FakeIssueKey(name=str(pr - 60)),
+            pr_number=pr,
+            pr_url="url",
+            branch_name="branch",
+            _issue_number=pr - 60,
+        )
+
+    config = make_config(max_concurrent_sessions=1)
+    config.code_review_agent = "agent:developer"
+    planner = Planner(
+        config=config,
+        scheduler=Scheduler(config),
+        review_workflow=ReviewWorkflow(config=config, events=MagicMock()),
+    )
+    snapshot = replace(
+        make_snapshot(pending_reviews=[review(70), review(71)]),
+        recovery_held_reviews=frozenset({70}),
+    )
+
+    plan = planner.plan(snapshot)
+
+    assert _launched(plan) == [("review", 71)]
+    assert [(s.number, s.reason) for s in plan.skipped if s.number == 70] == [
+        (70, "held_by_recovery")
+    ]
