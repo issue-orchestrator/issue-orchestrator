@@ -88,8 +88,9 @@ def render_summary(report: EngineAuditReport) -> str:
     np = report.no_progress
     lines.append(f"== no progress since {np.window_start}")
     lines.extend(
-        f"  {s.since_state_change}x ({s.count} in window) {s.subject} {s.level} {s.signature}"
-        for s in sorted(np.log_signatures, key=lambda s: -s.since_state_change)[:TOP]
+        f"  {'?' if s.since_state_change is None else s.since_state_change}x"
+        f" ({s.count} in window) {s.subject} {s.level} {s.signature}"
+        for s in sorted(np.log_signatures, key=lambda s: -(s.since_state_change or s.count))[:TOP]
     )
     lines.extend(f"  timeline: {r.count}x {r.subject} {r.event} [{r.detail}]" for r in np.timeline_repeats)
     lines.append(f"== anomalies: {len(report.anomalies)}")

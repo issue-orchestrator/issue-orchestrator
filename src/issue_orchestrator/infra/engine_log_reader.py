@@ -12,9 +12,12 @@ never rotated (porchpin's reached 280 MB) costs the same as a small one. The
 excerpt says whether it started mid-file, so a reader knows its counts cover
 only the tail.
 
-Log times are the writing host's local wall clock (``logging``'s ``asctime``).
-The audit reads the state directory of an engine on this host, so they are
-read in this host's local zone.
+Log times are the writing host's local wall clock (``logging``'s ``asctime``),
+with no offset. The audit reads the state directory of an engine on this
+host, so they are read in this host's local zone. The one hour a year that
+local time repeats (a daylight-saving fall-back) is resolved by the log's own
+order: a file written in time order that steps back into an ambiguous hour
+has entered its second occurrence (:func:`resolve_local_time`).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .logging_config import CONTEXT_LOG_FIELDS
@@ -63,15 +66,36 @@ class EngineLogExcerpt:
     truncated: bool
 
 
-def parse_log_line(line: str) -> EngineLogEntry | None:
-    """The entry a log line starts, or None for a continuation line."""
+#: How far a log may step backwards (thread interleaving) before an
+#: ambiguous local time is read as the repeated hour's second occurrence.
+_OUT_OF_ORDER = timedelta(minutes=1)
+
+
+def resolve_local_time(local: datetime, previous: datetime | None) -> datetime:
+    """The UTC instant of a naive local log time, given the entry before it.
+
+    Unambiguous local times have one instant. In a repeated hour the first
+    occurrence is taken unless it would put this entry before the previous
+    one: then the log has moved on into the second occurrence.
+    """
+    first = local.replace(fold=0).astimezone(UTC)
+    second = local.replace(fold=1).astimezone(UTC)
+    if first == second or previous is None or first >= previous - _OUT_OF_ORDER:
+        return first
+    return second
+
+
+def parse_log_line(line: str, *, previous: datetime | None = None) -> EngineLogEntry | None:
+    """The entry a log line starts, or None for a continuation line.
+
+    ``previous`` is the instant of the entry before it in the same log, which
+    resolves a local time the fall-back hour makes ambiguous.
+    """
     match = _ROTATING.match(line) or _CONTEXT.match(line)
     if match is None:
         return None
     return EngineLogEntry(
-        # Local wall clock (see the module docstring), held as UTC like every
-        # other instant in the audit.
-        at=datetime.strptime(match["at"], "%Y-%m-%d %H:%M:%S").astimezone().astimezone(UTC),
+        at=resolve_local_time(datetime.strptime(match["at"], "%Y-%m-%d %H:%M:%S"), previous),
         level=match["level"],
         logger=match["logger"],
         message=match["message"],
@@ -108,12 +132,16 @@ def _entries(excerpt: EngineLogExcerpt) -> Iterator[EngineLogEntry]:
         if excerpt.truncated:
             handle.readline()
         remaining = excerpt.size - handle.tell()
+        previous: datetime | None = None
         for raw in handle:
             if remaining <= 0:
                 return
             remaining -= len(raw)
-            entry = parse_log_line(raw.decode("utf-8", errors="replace").rstrip("\n"))
+            entry = parse_log_line(
+                raw.decode("utf-8", errors="replace").rstrip("\n"), previous=previous
+            )
             if entry is not None:
+                previous = entry.at
                 yield entry
 
 
@@ -122,5 +150,6 @@ __all__ = [
     "EngineLogExcerpt",
     "log_excerpt",
     "parse_log_line",
+    "resolve_local_time",
     "read_log",
 ]

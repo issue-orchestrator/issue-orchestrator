@@ -49,6 +49,9 @@ class SourceStatus(StrEnum):
     RATE_LIMITED = "rate_limited"
     #: The operator asked for it not to be read (``--no-github``).
     SKIPPED = "skipped"
+    #: Read, but not over the whole audit window (the log's bounded tail, or a
+    #: rotation, started after the window did): absence there proves nothing.
+    INCOMPLETE = "incomplete"
 
 
 class SourceReading(_Frozen):
@@ -167,8 +170,9 @@ class LogSignature(_Frozen):
     #: Occurrences inside the audit window.
     count: int
     #: Occurrences since the subject last changed state (its timeline); every
-    #: occurrence for a subject with no state change in the window.
-    since_state_change: int
+    #: occurrence for a subject with no state change in the window. None when
+    #: the timeline was not read: nothing then says when the state last moved.
+    since_state_change: int | None
     first_seen: str
     last_seen: str
 
@@ -219,11 +223,14 @@ class LogCoverage(_Frozen):
     bytes_read: int
     #: True when only the log's tail was read.
     truncated: bool
-    #: The first and last entries read inside the audit window. A first entry
-    #: well after ``window_start`` means the bounded tail did not reach back
-    #: to it, so the log counts cover less than the window.
+    #: The first entry read at all, inside the window or before it.
+    first_read_at: str | None
+    #: The first and last entries read inside the audit window.
     first_entry_at: str | None
     last_entry_at: str | None
+    #: Whether what was read reaches back to ``window_start``: False when the
+    #: bounded tail or a rotation begins inside the window.
+    covers_window: bool
 
 
 class TimelineRepeat(_Frozen):
@@ -265,10 +272,12 @@ class Anomaly(_Frozen):
 
     ``(kind, subject, signature)`` identifies it across runs; ``detail`` and
     ``count`` describe this run's observation of it and may change.
+    ``sources`` is every source the conclusion rests on: a repeat "since the
+    subject last changed state" needs the log AND the timeline.
     """
 
     kind: AnomalyKind
-    source: AuditSource
+    sources: tuple[AuditSource, ...] = Field(min_length=1)
     subject: str
     signature: str
     detail: str

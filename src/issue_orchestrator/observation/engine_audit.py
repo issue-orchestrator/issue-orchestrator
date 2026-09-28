@@ -162,8 +162,23 @@ def audit_engine(
     log_read = read(
         AuditSource.LOG,
         inputs.log,
-        lambda log: _census_log(log, window_start, _last_state_change(events)),
+        lambda log: _census_log(
+            log,
+            window_start,
+            None if timeline_events is None else _last_state_change(events),
+        ),
     )
+    if log_read is not None and not log_read[1].covers(window_start):
+        readings[:] = [
+            SourceReading(
+                source=AuditSource.LOG,
+                status=SourceStatus.INCOMPLETE,
+                detail="the log read begins after the audit window starts",
+            )
+            if r.source is AuditSource.LOG
+            else r
+            for r in readings
+        ]
     github = _github(inputs.github, readings)
     repeats = tuple(
         TimelineRepeat(event=r.event, subject=r.subject, detail=r.detail, count=r.count)
@@ -172,7 +187,7 @@ def audit_engine(
     no_progress = NoProgressSection(
         window_start=window_start.isoformat(),
         window_end=now.isoformat(),
-        log=None if log_read is None else _coverage(*log_read),
+        log=None if log_read is None else _coverage(*log_read, window_start),
         log_signatures=() if log_read is None else log_read[1].signatures,
         timeline_repeats=repeats,
     )
@@ -387,7 +402,7 @@ def _last_state_change(events: Iterable[dict[str, Any]]) -> dict[str, datetime]:
 
 
 def _census_log(
-    log: EngineLog, window_start: datetime, last_state_change: dict[str, datetime]
+    log: EngineLog, window_start: datetime, last_state_change: dict[str, datetime] | None
 ) -> tuple[EngineLogExcerpt, LogCensus]:
     excerpt, entries = log.read()
     return excerpt, census_log(
@@ -395,11 +410,15 @@ def _census_log(
     )
 
 
-def _coverage(excerpt: EngineLogExcerpt, census: LogCensus) -> LogCoverage:
+def _coverage(
+    excerpt: EngineLogExcerpt, census: LogCensus, window_start: datetime
+) -> LogCoverage:
     return LogCoverage(
         path=str(excerpt.path),
         bytes_read=excerpt.bytes_read,
         truncated=excerpt.truncated,
+        first_read_at=None if census.first_read_at is None else census.first_read_at.isoformat(),
+        covers_window=census.covers(window_start),
         first_entry_at=None if census.first_entry_at is None else census.first_entry_at.isoformat(),
         last_entry_at=None if census.last_entry_at is None else census.last_entry_at.isoformat(),
     )
@@ -419,7 +438,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.STALE_UNRESOLVED_WORK,
-                source=AuditSource.VALIDATED_WORK,
+                sources=(AuditSource.VALIDATED_WORK,),
                 subject=f"#{w.issue_number}",
                 signature=w.record_id,
                 detail=f"{w.state} for {w.age_hours:.1f}h",
@@ -431,7 +450,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.PARKED_ACTION,
-                source=AuditSource.ACTION_LIVENESS,
+                sources=(AuditSource.ACTION_LIVENESS,),
                 subject=p.subject,
                 signature=f"{p.action}:{p.fingerprint}",
                 detail=("escalated; " if p.escalated else "") + p.last_reason,
@@ -442,7 +461,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.OWED_PAUSE,
-                source=AuditSource.ACTION_LIVENESS,
+                sources=(AuditSource.ACTION_LIVENESS,),
                 subject=f"#{p.issue_number}",
                 signature="reconcile_pause",
                 detail=p.reason,
@@ -454,7 +473,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.UNREADABLE_CLAIM,
-                source=AuditSource.PENDING_WORK_CLAIMS,
+                sources=(AuditSource.PENDING_WORK_CLAIMS,),
                 subject=f"#{n}",
                 signature="unreadable_claim",
                 detail="stored claim payload cannot be read back",
@@ -464,7 +483,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.QUARANTINED_CLAIM,
-                source=AuditSource.PENDING_WORK_CLAIMS,
+                sources=(AuditSource.PENDING_WORK_CLAIMS,),
                 subject=f"#{q.issue_number}",
                 signature=q.quarantine_key,
                 detail=q.cause + ("; releasing" if q.releasing else ""),
@@ -475,7 +494,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.ATTENTION_LABEL,
-                source=AuditSource.GITHUB,
+                sources=(AuditSource.GITHUB,),
                 subject=f"#{a.issue_number}",
                 signature=a.label,
                 detail=f"open issue carries {a.label}",
@@ -485,7 +504,7 @@ def _anomalies(
         found.extend(
             Anomaly(
                 kind=AnomalyKind.DRAFT_PR,
-                source=AuditSource.GITHUB,
+                sources=(AuditSource.GITHUB,),
                 subject=f"PR #{n}",
                 signature="draft",
                 detail="open pull request is a draft",
@@ -495,7 +514,7 @@ def _anomalies(
     found.extend(
         Anomaly(
             kind=AnomalyKind.NO_PROGRESS_LOG,
-            source=AuditSource.LOG,
+            sources=(AuditSource.LOG, AuditSource.TIMELINE),
             subject=s.subject,
             signature=f"{s.level} {s.logger}: {s.signature}",
             detail=f"{s.since_state_change} since the subject last changed state"
@@ -503,12 +522,12 @@ def _anomalies(
             count=s.since_state_change,
         )
         for s in no_progress.log_signatures
-        if s.since_state_change >= LIVELOCK_THRESHOLD
+        if s.since_state_change is not None and s.since_state_change >= LIVELOCK_THRESHOLD
     )
     found.extend(
         Anomaly(
             kind=AnomalyKind.NO_PROGRESS_TIMELINE,
-            source=AuditSource.TIMELINE,
+            sources=(AuditSource.TIMELINE,),
             subject=r.subject,
             signature=f"{r.event} [{r.detail}]",
             detail=f"repeated {r.count}x with no state change",
@@ -529,7 +548,7 @@ def _fetch_cost_anomalies(cost: FetchCostSection) -> Iterator[Anomaly]:
     ):
         yield Anomaly(
             kind=AnomalyKind.FETCH_COST_INVERTED,
-            source=AuditSource.LOG,
+            sources=(AuditSource.LOG,),
             subject=ENGINE_SUBJECT,
             signature="incremental_over_full",
             detail=f"incremental refresh median {incremental.gh_calls_median:g} GitHub calls"
@@ -549,7 +568,7 @@ def _fetch_cost_anomalies(cost: FetchCostSection) -> Iterator[Anomaly]:
         )
         yield Anomaly(
             kind=AnomalyKind.REPEATED_ISSUE_READS,
-            source=AuditSource.LOG,
+            sources=(AuditSource.LOG,),
             subject=ENGINE_SUBJECT,
             signature="repeat_issue_reads",
             detail=detail,

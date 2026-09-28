@@ -81,6 +81,7 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit(f"engine-audit: no state directory at {state_dir}")
     if args.window_hours <= 0 or args.log_tail_mb <= 0:
         raise SystemExit("engine-audit: --window-hours and --log-tail-mb must be positive")
+    output = None if args.output is None else _output_outside(state_dir, Path(args.output))
     previous = None if args.previous is None else load_report(Path(args.previous))
     now = datetime.now(UTC)
     with tempfile.TemporaryDirectory(prefix="io-engine-audit-") as scratch:
@@ -93,13 +94,27 @@ def run(args: argparse.Namespace) -> int:
         report = report.model_copy(update={"diff": diff_reports(previous, report)})
     payload = report.model_dump_json(indent=2)
     summary = render_summary(report)
-    if args.output is None:
+    if output is None:
         print(payload)
         print(summary, file=sys.stderr)
     else:
-        Path(args.output).write_text(payload + "\n", encoding="utf-8")
+        output.write_text(payload + "\n", encoding="utf-8")
         print(summary)
     return 0
+
+
+def _output_outside(state_dir: Path, output: Path) -> Path:
+    """``output`` resolved (symlinks followed), refused if it lands in the engine's state.
+
+    The audit never writes the engine it audits; its one write, the report,
+    must not be aimed at a database or log by mistake or through a link.
+    """
+    resolved = output.expanduser().resolve()
+    if resolved.is_relative_to(state_dir):
+        raise SystemExit(
+            f"engine-audit: refusing to write the report into the engine's state: {resolved}"
+        )
+    return resolved
 
 
 def _inputs(state_dir: Path, scratch: Path, args: argparse.Namespace) -> EngineAuditInputs:

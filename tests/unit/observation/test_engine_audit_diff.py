@@ -23,14 +23,16 @@ from issue_orchestrator.observation.engine_audit_diff import (
 )
 
 
-def _anomaly(kind: AnomalyKind, subject: str, source: AuditSource, count: int | None = None) -> Anomaly:
-    return Anomaly(kind=kind, source=source, subject=subject, signature="sig", detail="d", count=count)
+def _anomaly(
+    kind: AnomalyKind, subject: str, *sources: AuditSource, count: int | None = None
+) -> Anomaly:
+    return Anomaly(kind=kind, sources=sources, subject=subject, signature="sig", detail="d", count=count)
 
 
-PARKED = _anomaly(AnomalyKind.PARKED_ACTION, "issue:410", AuditSource.ACTION_LIVENESS, 3)
+PARKED = _anomaly(AnomalyKind.PARKED_ACTION, "issue:410", AuditSource.ACTION_LIVENESS, count=3)
 LABEL = _anomaly(AnomalyKind.ATTENTION_LABEL, "#411", AuditSource.GITHUB)
 STALE = _anomaly(AnomalyKind.STALE_UNRESOLVED_WORK, "#7001", AuditSource.VALIDATED_WORK)
-LOOP = _anomaly(AnomalyKind.NO_PROGRESS_LOG, "the engine", AuditSource.LOG, 40)
+LOOP = _anomaly(AnomalyKind.NO_PROGRESS_LOG, "the engine", AuditSource.LOG, AuditSource.TIMELINE, count=40)
 
 
 def _report(
@@ -38,14 +40,17 @@ def _report(
     at: str = "2026-09-28T10:00:00+00:00",
     repo: str = "o/r",
     github: SourceStatus = SourceStatus.READ,
+    log: SourceStatus = SourceStatus.READ,
+    timeline: SourceStatus = SourceStatus.READ,
 ) -> EngineAuditReport:
+    status = {AuditSource.GITHUB: github, AuditSource.LOG: log, AuditSource.TIMELINE: timeline}
     return EngineAuditReport(
         generated_at=at,
         repo=repo,
         state_dir="/s",
-        partial=github is not SourceStatus.READ,
+        partial=any(v is not SourceStatus.READ for v in status.values()),
         sources=tuple(
-            SourceReading(source=source, status=github if source is AuditSource.GITHUB else SourceStatus.READ)
+            SourceReading(source=source, status=status.get(source, SourceStatus.READ))
             for source in AuditSource
         ),
         validated_work=None,
@@ -85,6 +90,29 @@ def test_an_anomaly_whose_source_was_not_read_is_unobserved_not_resolved() -> No
     assert diff.resolved == ()
     assert diff.unobserved == (LABEL,)
     assert [p.anomaly for p in diff.persisting] == [PARKED]
+
+
+@pytest.mark.parametrize(
+    ("log", "timeline"),
+    [
+        # The tail began inside the window: the repeat may be in the part not read.
+        (SourceStatus.INCOMPLETE, SourceStatus.READ),
+        # "Since the last state change" needs the timeline too.
+        (SourceStatus.READ, SourceStatus.ABSENT),
+    ],
+)
+def test_a_log_anomaly_is_resolved_only_by_a_full_read_of_everything_it_rests_on(
+    log, timeline
+) -> None:
+    diff = diff_reports(_report(LOOP), _report(log=log, timeline=timeline))
+
+    assert (diff.resolved, diff.unobserved) == ((), (LOOP,))
+
+
+def test_a_full_read_that_no_longer_sees_a_log_anomaly_resolves_it() -> None:
+    diff = diff_reports(_report(LOOP), _report())
+
+    assert (diff.resolved, diff.unobserved) == ((LOOP,), ())
 
 
 def test_audits_of_different_repositories_are_not_compared() -> None:

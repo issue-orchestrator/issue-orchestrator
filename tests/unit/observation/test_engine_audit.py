@@ -192,7 +192,9 @@ def _log(state: Path) -> None:
         return formatter.format(record)
 
     at = NOW - timedelta(hours=1)
-    lines = [
+    # Written before the audit window: proves the log read reaches back to it.
+    lines = [line("engine started", NOW - timedelta(hours=30), logging.INFO)]
+    lines += [
         line("Failed to settle promoted finding 'sig-0'", at + timedelta(minutes=m), logging.ERROR)
         for m in range(7)
     ]
@@ -383,6 +385,48 @@ def test_the_live_state_is_never_written(state, tmp_path, monkeypatch) -> None:
     _run(state, tmp_path, monkeypatch, FakeHost())
 
     assert digest() == before
+
+
+def test_the_report_is_never_written_into_the_engine_state(state, tmp_path, monkeypatch) -> None:
+    db = state / cli.VALIDATED_WORK_DB
+    before = db.read_bytes()
+    link = tmp_path / "innocent.json"
+    link.symlink_to(db)
+    monkeypatch.setattr(cli, "create_repository_host", lambda repo: FakeHost())
+
+    for target in (db, state / cli.ENGINE_LOG, link):
+        with pytest.raises(SystemExit, match="refusing to write"):
+            cli.main(["--state-dir", str(state), "--repo", REPO, "--output", str(target)])
+
+    assert db.read_bytes() == before
+
+
+def test_without_the_timeline_no_repeat_is_claimed_since_a_state_change(
+    state, tmp_path, monkeypatch
+) -> None:
+    (state / cli.TIMELINE_DB).unlink()
+    for sidecar in state.glob(cli.TIMELINE_DB + "-*"):
+        sidecar.unlink()
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    (reconcile,) = [s for s in report.no_progress.log_signatures if s.subject == "#411"]
+    assert (reconcile.count, reconcile.since_state_change) == (6, None)
+    assert AnomalyKind.NO_PROGRESS_LOG not in _kinds(report)
+
+
+def test_a_log_read_that_starts_inside_the_window_is_incomplete(state, tmp_path, monkeypatch) -> None:
+    log = state / cli.ENGINE_LOG
+    log.write_text("\n".join(log.read_text(encoding="utf-8").splitlines()[1:]) + "\n", encoding="utf-8")
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert report.partial is True
+    (reading,) = [r for r in report.sources if r.source is AuditSource.LOG]
+    assert reading.status is SourceStatus.INCOMPLETE
+    assert report.no_progress.log is not None and report.no_progress.log.covers_window is False
+    # What was read is still reported.
+    assert report.no_progress.log_signatures
 
 
 def test_a_database_the_engine_never_created_is_absent_not_a_crash(state, tmp_path, monkeypatch) -> None:

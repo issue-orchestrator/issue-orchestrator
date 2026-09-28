@@ -52,7 +52,7 @@ _HTTP_LOGGER = "httpx"
 @dataclass
 class _SignatureTally:
     count: int = 0
-    since_state_change: int = 0
+    since_state_change: int | None = 0
     first_seen: datetime | None = None
     last_seen: datetime | None = None
 
@@ -67,28 +67,42 @@ class _Cycle:
 class LogCensus:
     signatures: tuple[LogSignature, ...]
     fetch_cost: FetchCostSection
+    #: The first entry read at all, before the window or in it.
+    first_read_at: datetime | None
     first_entry_at: datetime | None
     last_entry_at: datetime | None
+
+    def covers(self, window_start: datetime) -> bool:
+        """Whether the entries read reach back to ``window_start``.
+
+        Only an entry at or before it proves nothing inside the window was
+        cut off by the bounded tail or a rotation.
+        """
+        return self.first_read_at is not None and self.first_read_at <= window_start
 
 
 def census_log(
     entries: Iterable[EngineLogEntry],
     *,
     window_start: datetime,
-    last_state_change: Mapping[str, datetime],
+    last_state_change: Mapping[str, datetime] | None,
 ) -> LogCensus:
     """Tally ``entries`` at or after ``window_start`` (see the module docstring).
 
     ``last_state_change`` maps a subject (``#N``) to the last instant its
     timeline recorded a state change; a subject absent from it had none.
+    None means the timeline was not read, so no count "since the last state
+    change" can be claimed and every such count is None.
     """
     tallies: dict[tuple[str, str, str, str], _SignatureTally] = {}
     fetches: dict[str, list[tuple[int, int, int, datetime]]] = {}
     cycles: list[_Cycle] = []
     issue_gets = 0
+    first_read: datetime | None = None
     first: datetime | None = None
     last: datetime | None = None
     for entry in entries:
+        first_read = entry.at if first_read is None else first_read
         if entry.at < window_start:
             continue
         first = entry.at if first is None else first
@@ -124,6 +138,7 @@ def census_log(
             )
         ),
         fetch_cost=_fetch_cost(fetches, cycles, issue_gets),
+        first_read_at=first_read,
         first_entry_at=first,
         last_entry_at=last,
     )
@@ -132,15 +147,18 @@ def census_log(
 def _tally(
     tallies: dict[tuple[str, str, str, str], _SignatureTally],
     entry: EngineLogEntry,
-    last_state_change: Mapping[str, datetime],
+    last_state_change: Mapping[str, datetime] | None,
 ) -> None:
     subject = subject_of_text(entry.message)
     key = (subject, entry.level, entry.logger, normalize_signature(entry.message))
-    tally = tallies.setdefault(key, _SignatureTally())
+    tally = tallies.setdefault(
+        key, _SignatureTally(since_state_change=None if last_state_change is None else 0)
+    )
     tally.count += 1
-    changed = last_state_change.get(subject)
-    if changed is None or entry.at > changed:
-        tally.since_state_change += 1
+    if last_state_change is not None and tally.since_state_change is not None:
+        changed = last_state_change.get(subject)
+        if changed is None or entry.at > changed:
+            tally.since_state_change += 1
     tally.first_seen = tally.first_seen or entry.at
     tally.last_seen = entry.at
 

@@ -191,6 +191,9 @@ def test_entries_before_the_window_are_not_counted() -> None:
 
     census = census_log(entries, window_start=T0 - timedelta(hours=1), last_state_change={})
 
+    assert census.first_read_at == T0 - timedelta(hours=2)
+    assert census.covers(T0 - timedelta(hours=1)) is True
+    assert census.covers(T0 - timedelta(hours=3)) is False
     assert [(s.count, s.first_seen) for s in census.signatures] == [
         (1, T0.astimezone(UTC).isoformat())
     ]
@@ -266,6 +269,33 @@ def test_no_request_lines_reads_as_unmeasured_not_as_clean() -> None:
     cost = census_log(_entries(_iteration(1)), window_start=T0, last_state_change={}).fetch_cost
 
     assert (cost.cycles, cost.issue_get_lines, cost.worst_cycle) == (1, 0, None)
+
+
+def test_the_repeated_fall_back_hour_is_read_in_log_order(monkeypatch) -> None:
+    """01:30 happens twice in Denver on 2026-11-01: MDT (07:30Z) then MST (08:30Z)."""
+    import time
+
+    monkeypatch.setenv("TZ", "America/Denver")
+    time.tzset()
+    try:
+        lines = [
+            "2026-11-01 01:30:00 [WARNING] io: first",
+            "2026-11-01 01:59:00 [WARNING] io: still first",
+            "2026-11-01 01:30:00 [WARNING] io: second",
+            "2026-11-01 02:10:00 [WARNING] io: after",
+        ]
+        previous = None
+        instants = []
+        for line in lines:
+            entry = parse_log_line(line, previous=previous)
+            assert entry is not None
+            previous = entry.at
+            instants.append(entry.at.strftime("%H:%M"))
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    assert instants == ["07:30", "07:59", "08:30", "09:10"]
 
 
 def test_timezone_of_log_times_is_the_local_zone() -> None:

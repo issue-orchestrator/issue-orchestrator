@@ -5,7 +5,8 @@ so the same stuck record, parked action or repeating log shape is the same
 anomaly in both reports however its count or wording changed.
 
 A previous anomaly missing from the current report is *resolved* only if the
-current audit read its source. If that source was absent or rate limited this
+current audit fully read every source it rests on. If one was absent, rate
+limited or only partly read (a log tail that starts inside the window) this
 time, nothing was observed about it, and it is reported as *unobserved*: a
 rate-limited GitHub read must not turn every attention label into a fix.
 """
@@ -50,13 +51,13 @@ def diff_reports(previous: EngineAuditReport, current: EngineAuditReport) -> Aud
     return AuditDiff(
         previous_generated_at=previous.generated_at,
         new=tuple(a for key, a in after.items() if key not in before),
-        resolved=tuple(a for a in gone if a.source not in unread),
+        resolved=tuple(a for a in gone if unread.isdisjoint(a.sources)),
         persisting=tuple(
             PersistingAnomaly(anomaly=a, previous_count=before[key].count)
             for key, a in after.items()
             if key in before
         ),
-        unobserved=tuple(a for a in gone if a.source in unread),
+        unobserved=tuple(a for a in gone if not unread.isdisjoint(a.sources)),
     )
 
 
