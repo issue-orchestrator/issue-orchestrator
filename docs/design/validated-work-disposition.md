@@ -1438,8 +1438,11 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   just proven that the new head carries validated work of this lineage.
   Keeping the stale head would park every later capture as divergent.
 - After the write, the store reclassifies the lineage (§2.1.4 table). Records
-  the PR head contains resolve `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)`, name
-  the PR, and keep their escrow and pins for the window. Divergent unresolved
+  the PR head contains resolve `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` and keep
+  their escrow and pins for the window. Each one this write resolved also gets
+  the PR stored in `published_pr_number`. A record captured before its PR
+  existed then still names the PR that carries it, and published-review
+  custody keeps guarding that PR after later pushes. Divergent unresolved
   records stay parked, because the PR genuinely does not carry them. A later
   unpublished descendant, captured with the PR head as its expectation, is
   sequenced from that head exactly as §2.1.4 prescribes for
@@ -1452,7 +1455,8 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   observation per branch that the capture itself makes. The admission then
   resolves as contained, so `recovery-pending` is never asserted, and the
   RECOVERED record keeps the PR under published-review custody (#7293). The
-  batch lists such keys as `published_keys`, and
+  batch lists such keys as `published_keys` (only when admission actually
+  resolved them; evidence that fails re-verification stays `FAILED`, held), and
   `recovery_holds_captured_work` does not count them. Recovery routed nothing
   for them, so a halted exchange keeps its own block rather than deferring to
   a recovery that will never act (#7295).

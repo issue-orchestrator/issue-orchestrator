@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS validated_work_records (
     finalization_phase    TEXT NOT NULL DEFAULT 'not_started',  -- FinalizationPhase (§4.5)
     publishing_started_at TEXT NOT NULL DEFAULT '',   -- set by the first attempt claim
     published_head_sha    TEXT NOT NULL DEFAULT '',
+    published_pr_number   INTEGER NOT NULL DEFAULT 0,  -- the open PR proven to carry it (OBSERVED_OPEN_PR)
     resolution_kind       TEXT NOT NULL DEFAULT '',   -- ResolutionKind
     resolved_by           TEXT NOT NULL DEFAULT '',   -- OperatorResolution.actor
     resolution_reason     TEXT NOT NULL DEFAULT '',

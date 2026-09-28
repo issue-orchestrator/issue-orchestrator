@@ -36,7 +36,7 @@ from issue_orchestrator.control.completion_intake_validation import ConfiguredCo
 from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
 from issue_orchestrator.control.issue_run_evidence import IssueRunEvidenceService
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.control.needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES
+from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
 from issue_orchestrator.control.published_review_custody import PublishedReviewCustody
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.control.review_exchange_lifecycle import (
@@ -172,7 +172,9 @@ def rig(tmp_path):
     aggregate = AggregateRecoveryBlocks(repo_slug=REPO, records=store,
         admission=RankedEvidenceAdmission(store, ledger), phases=store, authority=effects,
         gate=FileIssueDispositionMutationGate(state), labels=LabelManager(config),
-        reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
+        reader=labels, applier=labels,
+        human_block=NeedsHumanBlock("needs-human", "tech-lead-needs-human", labels, labels.read_issue_labels,
+                                    frozenset, SqlitePendingWorkClaimStore(state / "causes.sqlite")))
     github = GitHubPulls(git, origin)
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate),
@@ -590,3 +592,80 @@ def test_the_admission_only_store_records_an_open_prs_publication_the_same_way(t
     assert status is OpenPrPublicationStatus.ADVANCED
     (disposition,) = store.for_issue(key.issue_number).dispositions
     assert (disposition.state, disposition.published_head_sha) == (ValidatedWorkState.RECOVERED, L)
+
+
+# -- review round 1 -------------------------------------------------------------
+
+
+def test_published_work_whose_escrow_fails_to_verify_is_still_held_by_recovery(rig, monkeypatch):
+    """Only a capture admission actually resolved inside the PR's head is the
+    completion's: evidence that fails verification stays FAILED, recovery's."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    _push(rig)
+    # Escrow is intact at capture, but containment's re-verification fails.
+    from issue_orchestrator.infra.validated_work_lineage import LineageClassifier
+    monkeypatch.setattr(LineageClassifier, "verifies", lambda _self, _evidence: False)
+
+    assert rig.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=coding) is True
+    (failed,) = rig.store.for_issue(ISSUE).dispositions
+    assert (failed.state, failed.failure) == (ValidatedWorkState.FAILED, ValidatedWorkFailure.ARTIFACT_HASH_MISMATCH)
+    assert _fact(rig).published_via is PublicationProvenance.OBSERVED_OPEN_PR
+
+
+def test_a_record_captured_before_its_pr_existed_rests_in_the_pr_that_publishes_it(rig):
+    """Published-review custody matches a PR by number or exact head: a record
+    resolved by a later open PR must name that PR, or the next push to it
+    leaves the PR unguarded against a reset."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coding)
+    (held,) = rig.store.for_issue(ISSUE).dispositions
+    assert held.pr_number is None  # no PR when it was captured
+    _commit(rig.git, rig.worktree, "more", "pushed later by another completion")
+    _push(rig)
+
+    report = _sweep(rig).tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert report.published == (held.record_id,)
+    resolved = rig.store.get(held.record_id)
+    assert (resolved.state, resolved.pr_number) == (ValidatedWorkState.RECOVERED, PR)
+    assert resolved.key.validated_head_sha == w1
+
+
+def test_a_publication_whose_block_projection_fails_is_not_reported_retired(rig, make_session, monkeypatch):
+    _, v2, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+
+    def unreadable(_issue):
+        raise RuntimeError("GitHub label read failed")
+
+    monkeypatch.setattr(rig.labels, "read_issue_labels", unreadable)
+
+    report = _sweep(rig).tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    # Reported by the durable resolution, never as a retirement.
+    assert report.retired == ()
+    assert report.published and set(report.published) <= {d.record_id for d in parked}
+    # The publication itself committed; the block sweep reconciles the labels.
+    assert not rig.store.has_unresolved_work(ISSUE)
+    assert _fact(rig).published_head_sha == v2
+
+
+def test_an_existing_store_gains_the_published_pr_column_on_open(tmp_path):
+    import sqlite3
+
+    from issue_orchestrator.infra.validated_work_rows import DispositionDatabase
+
+    path = tmp_path / "work.sqlite"
+    DispositionDatabase(path)
+    with sqlite3.connect(path) as conn:  # a store from before this column existed
+        conn.execute("ALTER TABLE validated_work_records DROP COLUMN published_pr_number")
+
+    DispositionDatabase(path)
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(validated_work_records)")}
+    assert "published_pr_number" in columns

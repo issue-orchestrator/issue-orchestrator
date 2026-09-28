@@ -236,15 +236,28 @@ class OutOfScopeRetirementSweep:
             judgement = self._judge(request)
         except Exception as error:
             logger.exception("Recovery scope judgement failed for record %s", request.record_id)
-            # A retirement that committed before a later step raised has still
-            # resolved the record: settle_error then releases every lane.
-            resolved = self._liveness.settle_error(key, error)
-            return _Judgement(ActionOutcome.done(), retired=True) if resolved else _NOT_JUDGED
+            # A write that committed before a later step raised (a retirement,
+            # or an open PR's publication) may have resolved the record:
+            # settle_error then releases every lane, and the record's durable
+            # resolution - never the lane that raised - says which it was.
+            if not self._liveness.settle_error(key, error):
+                return _NOT_JUDGED
+            return self._resolved_as(request.record_id)
+
         self._liveness.record(key, judgement.outcome)
         if judgement.retired or judgement.published:
             # Resolved: no lane's question about this record is still open.
             self._liveness.resolve_record(request.record_id)
         return judgement
+
+    def _resolved_as(self, record_id: str) -> "_Judgement":
+        """Report a record found resolved by what the store recorded."""
+        kind = self._store.record_for_id(record_id).resolution_kind
+        if kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE:
+            return _BY_STATUS[ScopeRetirementStatus.RETIRED]
+        if kind is ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD:
+            return _PUBLISHED
+        return _NOT_JUDGED
 
     def _judge(self, request: RecoveryRecordRequest) -> "_Judgement":
         """What judging the record came to, in the liveness owner's terms."""

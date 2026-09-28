@@ -259,14 +259,16 @@ class ValidatedWorkPreservationService:
                    ValidatedWorkFailure.WORKSPACE_INTEGRITY if not bound else remote_failure)
         state = ValidatedWorkState.QUEUED if failure is None else ValidatedWorkState.PARKED
         assert candidate.entry.normalized_path is not None
-        self._custody.capture_automatic(evidence,
+        outcome = self._custody.capture_automatic(evidence,
             EscrowArtifacts(candidate.entry.normalized_path, candidate.validation.result_path, None),
             AutomaticCaptureDecision(
                 state, failure,
                 command.reason + ("; queued for automatic recovery" if failure is None
                                   else "; preserved pending recovery approval"),
             ))
-        return published
+        # Published only if admission actually resolved it inside that head:
+        # evidence whose escrow fails to verify stays FAILED, and recovery holds it.
+        return published and outcome.disposition.state is ValidatedWorkState.RECOVERED
 
 
 @dataclass(frozen=True, slots=True)
