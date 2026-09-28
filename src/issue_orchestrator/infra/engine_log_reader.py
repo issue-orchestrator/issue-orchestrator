@@ -28,7 +28,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .logging_config import CONTEXT_LOG_FIELDS
+from .logging_config import CONTEXT_LOG_FIELDS, MESSAGE_CONTINUATION
 
 _TIME = r"(?P<at>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d{3})?"
 _LEVEL = r"(?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)"
@@ -167,6 +167,9 @@ def _entries(excerpt: EngineLogExcerpt) -> Iterator[EngineLogEntry]:
             line = raw.decode("utf-8", errors="replace").rstrip("\n")
             entry = parse_log_line(line, previous=previous)
             if entry is None:
+                # A framed record's continuation lines carry the frame; an
+                # older engine's did not. Either way the traceback is read.
+                line = line.removeprefix(MESSAGE_CONTINUATION)
                 traceback = traceback or line.startswith(_TRACEBACK)
                 if traceback and line.strip() and not line.startswith((" ", "\t")):
                     exception = line.strip()

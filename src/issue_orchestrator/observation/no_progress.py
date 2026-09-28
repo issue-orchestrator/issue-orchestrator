@@ -113,6 +113,7 @@ _NUMBER = re.compile(r"\d+")
 # or a bare "#410"; pull requests as "PR #12" / "pr=12".
 _PR_REFERENCE = re.compile(r"\b(?:PR|pr|pull request)[ =#-]*#?(\d+)\b")
 _ISSUE_REFERENCE = re.compile(r"\b[Ii]ssue[ =#:-]*#?(\d+)\b")
+_QUALIFIED_REFERENCE = re.compile(r"\b([\w.-]+/[\w.-]+)#(\d+)\b")
 _BARE_REFERENCE = re.compile(r"(?<![\w/#&])#(\d+)\b")
 
 
@@ -129,12 +130,14 @@ def normalize_signature(text: str) -> str:
     return _NUMBER.sub("N", shape)[:SIGNATURE_LENGTH]
 
 
-def subject_of_text(text: str) -> str:
+def subject_of_text(text: str, *, repo: str | None = None) -> str:
     """The subject a free-text message names, in the event subject's spelling.
 
     ``PR #N`` for a pull request, ``#N`` for an issue, otherwise
-    :data:`ENGINE_SUBJECT`. The first reference wins: a message is about the
-    thing it names first ("Failed to settle ... for issue #4; see #9").
+    :data:`ENGINE_SUBJECT`. An ``owner/repo#N`` reference is ``#N`` when it
+    names ``repo`` (the engine's own repository) and keeps its full spelling
+    for any other repository. The first reference wins: a message is about
+    the thing it names first ("Failed to settle ... for issue #4; see #9").
     """
     found = [
         (match.start(), f"{prefix}{match.group(1)}")
@@ -146,6 +149,10 @@ def subject_of_text(text: str) -> str:
         for match in [pattern.search(text)]
         if match is not None
     ]
+    if (qualified := _QUALIFIED_REFERENCE.search(text)) is not None:
+        owner_repo, number = qualified.group(1), qualified.group(2)
+        own = repo is not None and owner_repo.casefold() == repo.casefold()
+        found.append((qualified.start(), f"#{number}" if own else f"{owner_repo}#{number}"))
     return min(found)[1] if found else ENGINE_SUBJECT
 
 

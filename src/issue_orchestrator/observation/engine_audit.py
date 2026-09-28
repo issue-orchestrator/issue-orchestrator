@@ -163,6 +163,7 @@ def audit_engine(
         inputs.log,
         lambda log: _census_log(
             log,
+            inputs.repo,
             window_start,
             now,
             None if timeline_events is None else _last_state_change(events),
@@ -403,6 +404,7 @@ def _last_state_change(events: Iterable[dict[str, Any]]) -> dict[str, datetime]:
 
 def _census_log(
     log: EngineLog,
+    repo: str,
     window_start: datetime,
     window_end: datetime,
     last_state_change: dict[str, datetime] | None,
@@ -413,6 +415,7 @@ def _census_log(
         window_start=window_start,
         window_end=window_end,
         last_state_change=last_state_change,
+        repo=repo,
     )
 
 

@@ -136,18 +136,39 @@ def add_rotating_file_handler(log_file: Path, *, level: int) -> bool:
 class FramedFormatter(logging.Formatter):
     """A formatter whose record is always one entry when read back.
 
-    Every line after a message's first starts with
-    :data:`MESSAGE_CONTINUATION`. A traceback (``exc_info``) is appended
-    unchanged: it is framed by its own ``Traceback`` header.
+    Every line after the record's first starts with
+    :data:`MESSAGE_CONTINUATION`: the message's own further lines and the
+    traceback (``exc_info``) or stack (``stack_info``) appended to it, whose
+    text may itself contain lines shaped like log entries.
     """
 
     def formatMessage(self, record: logging.LogRecord) -> str:
         message = record.message
-        record.message = message.replace("\n", "\n" + MESSAGE_CONTINUATION)
+        record.message = _frame(message)
         try:
             return super().formatMessage(record)
         finally:
             record.message = message
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        if self.usesTime():
+            record.asctime = self.formatTime(record, self.datefmt)
+        text = self.formatMessage(record)
+        # Not cached on the record: another handler's plain formatter must
+        # not inherit this one's framing.
+        exception = record.exc_text
+        if not exception and record.exc_info:
+            exception = self.formatException(record.exc_info)
+        if exception:
+            text += "\n" + MESSAGE_CONTINUATION + _frame(exception)
+        if record.stack_info:
+            text += "\n" + MESSAGE_CONTINUATION + _frame(self.formatStack(record.stack_info))
+        return text
+
+
+def _frame(text: str) -> str:
+    return text.replace("\n", "\n" + MESSAGE_CONTINUATION)
 
 
 def frame_root_handlers(fmt: str, datefmt: str | None = None) -> None:

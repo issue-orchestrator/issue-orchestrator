@@ -91,12 +91,33 @@ def test_normalisation_keeps_the_words_that_tell_failures_apart() -> None:
         ("Retrying label fetch for issue 12 after error", "#12"),
         ("Tech Lead completion rejected for #77; see #80", "#77"),
         ("Merge queue refused PR #12 for issue #4", "PR #12"),
-        ("Could not read promoted issue porchpin/porchpin#9", ENGINE_SUBJECT),
+        ("Could not read promoted issue other/repo#9", "other/repo#9"),
         ("[LOOP] Planning cycle took 39.5s", ENGINE_SUBJECT),
     ],
 )
 def test_a_log_message_names_its_subject_in_the_event_spelling(message, subject) -> None:
     assert subject_of_text(message) == subject
+
+
+def test_a_qualified_reference_to_the_engines_own_repo_is_its_issue() -> None:
+    assert subject_of_text("Could not read promoted issue Owner/Repo#9", repo="owner/repo") == "#9"
+    assert subject_of_text("Could not read promoted issue io/io#9", repo="owner/repo") == "io/io#9"
+
+
+def test_one_warning_each_about_five_issues_is_not_a_repeat() -> None:
+    entries = _entries(
+        *(
+            _line(f"Could not read promoted issue io/io#{n}; leaving it", at=T0 + timedelta(minutes=n))
+            for n in range(5)
+        )
+    )
+
+    census = census_log(
+        entries, window_start=T0, window_end=END, last_state_change={}, repo="owner/repo"
+    )
+
+    assert sorted(s.subject for s in census.signatures) == [f"io/io#{n}" for n in range(5)]
+    assert all(s.since_state_change == 1 for s in census.signatures)
 
 
 # -- parsing ---------------------------------------------------------------
@@ -413,6 +434,28 @@ def test_a_multiline_message_is_one_entry_however_its_lines_look(tmp_path: Path)
     assert [e.message.splitlines()[0] for e in read] == ["[LOOP] Iteration 1 - active=1", "[issue-7] LAST OUTPUT:"]
     assert census.fetch_cost.issue_get_lines == 0
     assert [(s.subject, s.count) for s in census.signatures] == [("#7", 1)]
+
+
+def test_a_log_shaped_line_inside_an_exception_is_not_an_entry(tmp_path: Path) -> None:
+    formatter = FramedFormatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
+    try:
+        raise RuntimeError("agent said:\n2026-09-28 09:00:01 [WARNING] io: Reconciliation failed for issue #7")
+    except RuntimeError:
+        import sys
+
+        record = logging.LogRecord("io", logging.ERROR, __file__, 1, "drain failed", None, sys.exc_info())
+    record.created = T0.timestamp()
+    record.msecs = 0
+    log = tmp_path / "orchestrator.log"
+    log.write_text(formatter.format(record) + "\n", encoding="utf-8")
+
+    _excerpt, entries = read_log(log, tail_bytes=1 << 20)
+    read = list(entries)
+
+    assert [e.message for e in read] == ["drain failed"]
+    assert read[0].exception == "2026-09-28 09:00:01 [WARNING] io: Reconciliation failed for issue #7"
+    # A plain formatter on another handler still gets the unframed traceback.
+    assert "    | " not in logging.Formatter().format(record)
 
 
 def test_timezone_of_log_times_is_the_local_zone() -> None:

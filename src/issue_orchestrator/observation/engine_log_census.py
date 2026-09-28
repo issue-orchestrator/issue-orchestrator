@@ -95,12 +95,15 @@ def census_log(
     window_start: datetime,
     window_end: datetime,
     last_state_change: Mapping[str, datetime] | None,
+    repo: str | None = None,
 ) -> LogCensus:
     """Tally ``entries`` from ``window_start`` to ``window_end`` (see the module docstring).
 
     Entries after ``window_end`` (written while the audit ran) belong to the
     next audit, not to a report that says its window ended before them.
 
+    ``repo`` is the engine's own repository: a reference to one of its
+    issues spelled ``owner/repo#N`` is the subject ``#N``.
     ``last_state_change`` maps a subject (``#N``) to the last instant its
     timeline recorded a state change; a subject absent from it had none.
     None means the timeline was not read, so no count "since the last state
@@ -126,7 +129,7 @@ def census_log(
         first = entry.at if first is None else first
         last = entry.at
         if entry.level in CENSUS_LEVELS:
-            _tally(tallies, entry, last_state_change)
+            _tally(tallies, entry, last_state_change, repo)
         if (cost := _FETCH_COST.search(entry.message)) is not None:
             fetches.setdefault(cost["mode"], []).append(
                 (int(cost["calls"]), int(cost["errors"]), int(cost["duration"]), entry.at)
@@ -167,8 +170,9 @@ def _tally(
     tallies: dict[tuple[str, str, str, str], _SignatureTally],
     entry: EngineLogEntry,
     last_state_change: Mapping[str, datetime] | None,
+    repo: str | None,
 ) -> None:
-    subject = subject_of_text(entry.message)
+    subject = subject_of_text(entry.message, repo=repo)
     signature = normalize_signature(entry.message)
     if entry.exception:
         signature += " | " + normalize_signature(entry.exception)
