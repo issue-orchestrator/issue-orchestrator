@@ -564,28 +564,44 @@ def _notices_about(
     numbers = _issue_numbers(finding)
     if not numbers:
         return
-
-    def within(t: datetime) -> bool:
-        return (start is None or start <= t) and (end is None or t <= end)
-
+    span = _Span(start, end)
     mentioned = re.compile(r"(?<![\w/])#(?:" + "|".join(map(str, sorted(numbers))) + r")\b")
     if evidence.decisions is not None:
-        for d in evidence.decisions.decisions:
-            about = d.target_number if d.target_number is not None else d.anchor_issue_number
-            if about in numbers and within(d.decided_at):
-                yield d.decision_id
-    if evidence.case_files is None:
-        return
-    for c in evidence.case_files.case_files:
-        stamps = (c.recorded_at, *(o.recorded_at for o in c.observations))
-        if mentioned.search(c.body) and any(within(t) for t in stamps):
-            yield c.id
-    for r in evidence.case_files.diagnoses:
-        overlaps = (end is None or r.started_at <= end) and (
-            start is None or r.ended_at is None or r.ended_at >= start
+        yield from (
+            d.decision_id
+            for d in evidence.decisions.decisions
+            if (d.target_number if d.target_number is not None else d.anchor_issue_number) in numbers
+            and span.holds(d.decided_at)
         )
-        if overlaps and (r.subject_issue_number in numbers or mentioned.search(r.body)):
-            yield r.id
+    if evidence.case_files is not None:
+        yield from (
+            c.id
+            for c in evidence.case_files.case_files
+            if mentioned.search(c.body)
+            and any(span.holds(t) for t in (c.recorded_at, *(o.recorded_at for o in c.observations)))
+        )
+        yield from (
+            r.id
+            for r in evidence.case_files.diagnoses
+            if span.overlaps(r.started_at, r.ended_at)
+            and (r.subject_issue_number in numbers or mentioned.search(r.body))
+        )
+
+
+@dataclass(frozen=True)
+class _Span:
+    """``start``..``end``, either end open when None."""
+
+    start: datetime | None
+    end: datetime | None
+
+    def holds(self, t: datetime) -> bool:
+        return (self.start is None or self.start <= t) and (self.end is None or t <= self.end)
+
+    def overlaps(self, begin: datetime, finish: datetime | None) -> bool:
+        return (self.end is None or begin <= self.end) and (
+            self.start is None or finish is None or finish >= self.start
+        )
 
 
 _MISSING = object()
