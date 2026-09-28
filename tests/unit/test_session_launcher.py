@@ -7225,7 +7225,7 @@ class TestHandleSessionCompletion:
             )
         )
         mock_action_applier = MagicMock()
-        mock_action_applier.apply_all.side_effect = lambda _actions: calls.append("actions")
+        mock_action_applier.apply_all.side_effect = lambda _actions, on_result=None: calls.append("actions")
         session_output = MagicMock(spec=SessionOutput)
         session_output.find_run_dir.return_value = None
 
@@ -7354,7 +7354,7 @@ class TestHandleSessionCompletion:
             )
         )
         mock_action_applier = MagicMock()
-        mock_action_applier.apply_all.side_effect = lambda _actions: calls.append("actions")
+        mock_action_applier.apply_all.side_effect = lambda _actions, on_result=None: calls.append("actions")
         session_output = MagicMock(spec=SessionOutput)
         session_output.find_run_dir.return_value = None
 

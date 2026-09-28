@@ -41,6 +41,8 @@ from issue_orchestrator.domain.tech_lead_charter import (
 )
 from issue_orchestrator.domain.tech_lead_charter_decisions import (
     CharterDecisionSource,
+    CharterExecutionLink,
+    CharterExecutionResult,
     TechLeadCharterDecision,
     decision_key,
 )
@@ -168,6 +170,15 @@ def _decision(
         tracks_proposal=tracks_proposal,
         proposal_issue_number=proposal_issue_number,
     )
+
+
+def _applied(authority: InMemoryTechLeadAuthorityStore, *decisions: TechLeadCharterDecision) -> None:
+    """Link each executed decision's applier result as applied, when it was decided."""
+    for decision in decisions:
+        authority.charter_ledger.link_execution_outcomes(
+            [CharterExecutionLink(decision.decision_id, CharterExecutionResult.APPLIED)],
+            at=decision.decided_at,
+        )
 
 
 # -- live sessions: the one place a tech-lead session is recognised ------------
@@ -461,9 +472,9 @@ def test_an_open_op_is_waiting_on_you_with_its_filing_decision() -> None:
 def test_only_decisions_about_the_item_explain_it() -> None:
     """A run anchored on #50 that acted on #51 says nothing about #50."""
     authority = InMemoryTechLeadAuthorityStore()
-    authority.charter_ledger.record_decisions(
-        [_decision("recover_validated_work", target=51, anchor=50)]
-    )
+    remedy = _decision("recover_validated_work", target=51, anchor=50)
+    authority.charter_ledger.record_decisions([remedy])
+    _applied(authority, remedy)
     state = OrchestratorState(
         cached_scope_issues=[_blocked(50, "blocked-failed"), _blocked(51, "blocked-failed")],
         session_history=[_ended_blocked(50, NOW - 3 * HOUR), _ended_blocked(51, NOW - 3 * HOUR)],
@@ -489,6 +500,7 @@ def test_a_busy_anchored_run_cannot_crowd_out_the_item_s_own_remedy() -> None:
         for i in range(DECISIONS_PER_ITEM + 5)
     ]
     authority.charter_ledger.record_decisions([remedy, *others])
+    _applied(authority, remedy)
     state = OrchestratorState(
         cached_scope_issues=[_blocked(53, "blocked-failed")],
         session_history=[_ended_blocked(53, NOW - 3 * HOUR)],
@@ -938,6 +950,7 @@ def test_an_applied_remedy_outlasts_any_amount_of_later_history() -> None:
     )
     later = _comments(171, DECISIONS_PER_ITEM + 10, first=NOW - 3 * HOUR)
     authority.charter_ledger.record_decisions([remedy, *later])
+    _applied(authority, remedy)
     state = OrchestratorState(
         cached_scope_issues=[_blocked(171, "blocked-failed")],
         session_history=[_ended_blocked(171, NOW - 5 * HOUR)],

@@ -125,6 +125,11 @@ class ActionType(Enum):
     RECOVER_TERMINAL_ISSUE = "recover_terminal_issue"
 
 
+#: Fields that say why an action exists, not what it does: free-text audit
+#: prose, and the charter decisions it is linked back to.
+_NOT_LIVENESS_FACTS = frozenset({"reason", "charter_decisions"})
+
+
 @dataclass(frozen=True)
 class Action:
     """Base action class.
@@ -142,6 +147,10 @@ class Action:
     reason: str = ""  # Why this action is being taken (for audit)
     # Expected state constraints for reconciliation (required for mutating actions)
     expected: Optional["ExpectedState"] = None
+    #: The tech-lead charter decisions (``decision_key``) this action is an
+    #: effect of, when the charter let them execute directly (#7362). The
+    #: completion owner links the action's real result back to each one.
+    charter_decisions: tuple[str, ...] = ()
 
     def __post_init__(self):
         # Validate that subclasses set the correct action_type
@@ -164,6 +173,7 @@ class Action:
         time). An action overrides this when a field changes every tick without
         the underlying facts changing - a sample time, a countdown - because
         such a field would give each failure a fresh budget and defeat the bound.
+        The charter decisions an action is linked to are not facts either.
 
         ``None`` means another owner already governs this action's retries with
         facts the liveness owner cannot see, so it is neither gated nor counted.
@@ -171,5 +181,5 @@ class Action:
         return {
             item.name: getattr(self, item.name)
             for item in fields(self)
-            if item.name != "reason"
+            if item.name not in _NOT_LIVENESS_FACTS
         }

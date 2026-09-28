@@ -851,6 +851,13 @@ class TestDuplicateObservationAccrual:
         assert case_file.area == "github-api"
         assert len(case_file.observations) == 2
         assert not _follow_up_creates(planned)
+        # #7362: the one coalesced creation is the effect of BOTH executed
+        # decisions, so its applied result links back to each of them.
+        from issue_orchestrator.domain.tech_lead_charter_decisions import decision_key
+        assert set(case_file.charter_decisions) == {
+            decision_key(SOURCE_RUN["source_run_id"], "A1"),
+            decision_key(SOURCE_RUN["source_run_id"], "A2"),
+        }
 
     def test_without_flag_pattern_authority_the_gated_create_stands(self) -> None:
         # Accrual writes orchestrator-owned ledgers — a flag_pattern effect. With

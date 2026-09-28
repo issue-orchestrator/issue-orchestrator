@@ -10,7 +10,9 @@ because the charter it would recompute against may have changed since.
 
 Where the existing gated-proposal lifecycle reports what happened next, the
 record carries it as :class:`CharterProposalLifecycle` (approved and applied,
-approved but stale, or declined).
+approved but stale, or declined). An action the charter let run directly
+carries what its applier actually did as :class:`CharterExecutionResult`
+(#7362): the verdict says it was ALLOWED to execute, never that it worked.
 """
 
 from __future__ import annotations
@@ -51,6 +53,28 @@ class CharterProposalLifecycle(str, Enum):
     DECLINED = "declined"
 
 
+class CharterExecutionResult(str, Enum):
+    """What the applier did with an action the charter let run directly (#7362).
+
+    Linked back after the attempt, by the same owner that links a gated
+    proposal's approval. Until then an executed decision has no result, and
+    nothing reads it as having taken effect.
+    """
+
+    #: The applier committed the effect.
+    APPLIED = "applied"
+    #: The applier's own re-validation refused it before any write (a typed
+    #: refusal or stale precondition).
+    REFUSED = "refused"
+    #: The applier tried and failed, or its result is unknown (the apply raised).
+    FAILED = "failed"
+    #: Never attempted: its completion withheld it behind a mandated action
+    #: that did not commit.
+    WITHHELD = "withheld"
+    #: The action liveness owner stopped retrying it (#7350).
+    PARKED = "parked"
+
+
 @dataclass(frozen=True)
 class TechLeadCharterDecision:
     """One tech-lead action and the charter decision that allowed or downgraded it."""
@@ -89,6 +113,25 @@ class TechLeadCharterDecision:
     #: Set when this action coalesced into an earlier same-(op, target)
     #: proposal of the SAME run; that action's proposal lifecycle is this one's.
     proposal_origin_action_id: str | None = None
+    #: What the applier did with an EXECUTED action (#7362); None until linked.
+    execution: CharterExecutionResult | None = None
+    #: The applier's words for a result that did not apply (its refusal,
+    #: error, or park reason); None when it applied.
+    execution_reason: str | None = None
+    execution_at: str | None = None
+
+    def __post_init__(self) -> None:
+        # What became of a decision is told by the path its verdict took: an
+        # approval lifecycle only for a gated verdict, an applier result only
+        # for an executed one, so neither can vouch for the other (#7362).
+        if self.execution is not None and self.outcome is not CharterOutcome.EXECUTED:
+            raise ValueError(
+                f"only an executed decision has an execution result, not {self.outcome.value}"
+            )
+        if self.lifecycle is not None and not self.outcome.awaits_approval:
+            raise ValueError(
+                f"only a gated decision has a proposal lifecycle, not {self.outcome.value}"
+            )
 
     @classmethod
     def from_verdict(
@@ -163,17 +206,35 @@ class TechLeadCharterDecision:
 
     @property
     def took_effect(self) -> bool:
-        """Whether the action ran: executed outright, or approved and applied."""
-        return self.outcome is CharterOutcome.EXECUTED or (
-            self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
-        )
+        """Whether the action ran: its applier committed it, or it was approved and applied.
+
+        The verdict alone is not enough (#7362): an executed decision whose
+        applier refused, failed, withheld or parked it, or whose result is not
+        linked yet, did not take effect.
+        """
+        return (
+            self.outcome is CharterOutcome.EXECUTED
+            and self.execution is CharterExecutionResult.APPLIED
+        ) or self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
 
     @property
     def effect_at(self) -> str:
-        """When it took effect: its approval's application, else its decision."""
+        """When it took effect (or last tried to): as linked, else its decision."""
         if self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED and self.lifecycle_updated_at:
             return self.lifecycle_updated_at
+        if self.execution is not None and self.execution_at:
+            return self.execution_at
         return self.decided_at
+
+    def with_execution(
+        self, link: "CharterExecutionLink", *, at: str
+    ) -> "TechLeadCharterDecision":
+        """Link what the applier did with this executed action (#7362)."""
+        if link.decision_id != self.decision_id:
+            raise ValueError(f"link for {link.decision_id} applied to {self.decision_id}")
+        return replace(
+            self, execution=link.result, execution_reason=link.reason, execution_at=link.at or at
+        )
 
     def with_lifecycle(
         self,
@@ -215,12 +276,16 @@ class TechLeadCharterDecision:
             "lifecycle_updated_at": self.lifecycle_updated_at,
             "proposal_issue_number": self.proposal_issue_number,
             "proposal_origin_action_id": self.proposal_origin_action_id,
+            "execution": self.execution.value if self.execution else None,
+            "execution_reason": self.execution_reason,
+            "execution_at": self.execution_at,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TechLeadCharterDecision":
         """Rehydrate a stored record; unknown enum values raise (orchestrator-owned)."""
         lifecycle = data.get("lifecycle")
+        execution = data.get("execution")
         target = data.get("target_number")
         proposal = data.get("proposal_issue_number")
         return cls(
@@ -248,7 +313,29 @@ class TechLeadCharterDecision:
             lifecycle_updated_at=data.get("lifecycle_updated_at"),
             proposal_issue_number=int(proposal) if proposal is not None else None,
             proposal_origin_action_id=data.get("proposal_origin_action_id"),
+            execution=CharterExecutionResult(execution) if execution else None,
+            execution_reason=data.get("execution_reason"),
+            execution_at=data.get("execution_at"),
         )
+
+
+@dataclass(frozen=True)
+class CharterExecutionLink:
+    """One executed decision's applier result, to link back onto its record (#7362)."""
+
+    decision_id: str
+    result: CharterExecutionResult
+    #: The applier's words for a result that did not apply; None when it applied.
+    reason: str | None = None
+    #: When the result landed, if the linker knows it more precisely than the
+    #: link's own time (a completion links a whole batch at once, in order).
+    at: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.decision_id:
+            raise ValueError("an execution link names its decision")
+        if (self.result is CharterExecutionResult.APPLIED) != (self.reason is None):
+            raise ValueError("an applied result has no reason; every other result needs one")
 
 
 def decision_key(run_id: str, action_id: str) -> str:

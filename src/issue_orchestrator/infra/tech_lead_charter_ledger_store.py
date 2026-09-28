@@ -12,16 +12,18 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import AbstractContextManager
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 from ..domain.tech_lead_charter import CharterRole
 from ..domain.tech_lead_charter_decisions import (
+    CharterExecutionLink,
     CharterProposalLifecycle,
     TechLeadCharterDecision,
 )
 from ..ports.tech_lead_charter_ledger import (
     check_read_limit,
     keep_linked_lifecycle,
+    linked_execution,
     links_to_proposal,
 )
 
@@ -70,16 +72,21 @@ ABOUT_ISSUE_QUERY = (
 
 #: Remedies aimed at one issue that TOOK EFFECT, newest effect first (#7331).
 #: Mirrors ``TechLeadCharterDecision.is_remedy`` / ``took_effect`` /
-#: ``effect_at`` over the persisted record; the target index narrows it to that
-#: issue's rows first.
+#: ``effect_at`` over the persisted record: an executed decision took effect
+#: only once its applier's result linked back as applied (#7362). The target
+#: index narrows it to that issue's rows first.
 REMEDIES_ON_ISSUE_QUERY = (
     "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
     " AND json_extract(record, '$.binding') IN ('approvable', 'destructive')"
-    " AND (json_extract(record, '$.outcome') = 'executed'"
+    " AND ((json_extract(record, '$.outcome') = 'executed'"
+    " AND json_extract(record, '$.execution') = 'applied')"
     " OR json_extract(record, '$.lifecycle') = 'approved_applied')"
     " ORDER BY CASE WHEN json_extract(record, '$.lifecycle') = 'approved_applied'"
     " AND json_extract(record, '$.lifecycle_updated_at') IS NOT NULL"
-    " THEN json_extract(record, '$.lifecycle_updated_at') ELSE decided_at END DESC,"
+    " THEN json_extract(record, '$.lifecycle_updated_at')"
+    " WHEN json_extract(record, '$.execution') IS NOT NULL"
+    " AND json_extract(record, '$.execution_at') IS NOT NULL"
+    " THEN json_extract(record, '$.execution_at') ELSE decided_at END DESC,"
     " decision_id DESC LIMIT ?"
 )
 
@@ -142,6 +149,29 @@ class SqliteTechLeadCharterLedger:
                 linked = row.with_lifecycle(
                     lifecycle, at=at, proposal_issue_number=proposal_issue_number
                 )
+                tx.execute(_UPSERT, _row_values(linked))
+                updated += 1
+            return updated
+
+    def link_execution_outcomes(
+        self, links: Sequence[CharterExecutionLink], *, at: str
+    ) -> int:
+        with self._transaction() as tx:
+            updated = 0
+            for link in links:
+                row = tx.execute(
+                    "SELECT record FROM tech_lead_charter_decisions WHERE decision_id = ?",
+                    (link.decision_id,),
+                ).fetchone()
+                linked = linked_execution(
+                    TechLeadCharterDecision.from_dict(json.loads(row["record"]))
+                    if row is not None
+                    else None,
+                    link,
+                    at=at,
+                )
+                if linked is None:
+                    continue
                 tx.execute(_UPSERT, _row_values(linked))
                 updated += 1
             return updated

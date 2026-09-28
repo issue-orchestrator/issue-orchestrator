@@ -64,6 +64,8 @@ from issue_orchestrator.ports.open_issue_corpus_store import (
 )
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.domain.tech_lead_charter import CharterOutcome
+from dataclasses import replace
 from issue_orchestrator.ports import RepositoryHost
 from tests.unit.session_run_helpers import make_session_run_assets
 
@@ -2357,6 +2359,8 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     _plant_decision_with_actions(session, [
         {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
         {"id": "A2", "action_type": "kill_hung_session", "target_number": 1, "body": "Hung worker.", "finding_ids": ["T1"]},
+        {"id": "A3", "action_type": "create_issue", "title": "Harden the worker watchdog",
+         "body": "Follow-up for the hung worker.", "finding_ids": ["T1"]},
     ])
     actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
     [kill] = [action for action in actions if isinstance(action, KillHungSessionAction)]
@@ -2376,7 +2380,248 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     host.close_issue.assert_not_called()
     run_kill.assert_called_once()
     # ...so a withheld completion still leaves its decisions on the record.
-    assert {row.action_id for row in store.charter_ledger.list_for_issue(1)} == {"A1", "A2"}
+    records = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert set(records) == {"A1", "A2", "A3"}
+    # #7362: and each record says what really happened: the kill was refused
+    # at apply time, the follow-up it gated was never filed, the diagnosis ran.
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    assert {action_id: row.execution for action_id, row in records.items()} == {
+        "A1": CharterExecutionResult.APPLIED,
+        "A2": CharterExecutionResult.REFUSED,
+        "A3": CharterExecutionResult.WITHHELD,
+    }
+    assert not records["A2"].took_effect and not records["A3"].took_effect
+
+
+def _refusing_release_executor(claimed_by: str):
+    """The real release owner, whose re-verification finds another run's claim."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.issue_work_claims import IssueWorkClaim
+    from issue_orchestrator.control.review_exchange_lifecycle import IssueRuntimeActivity
+    from issue_orchestrator.control.tech_lead_review_release import TechLeadReviewReleaseExecutor
+    claim = IssueWorkClaim(issue_number=1, session_name=claimed_by,
+                           started_at="2026-09-27T13:00:00+00:00", readable=True, work="rework")
+    writes = MagicMock()
+    executor = TechLeadReviewReleaseExecutor(
+        events=MagicMock(), config=Config(), labels=MagicMock(), read_issue=MagicMock(),
+        list_open_prs=MagicMock(), read_pr=MagicMock(), issue_branches=MagicMock(),
+        review_admission=MagicMock(), read_checks=MagicMock(),
+        runtime_activity=lambda _n: IssueRuntimeActivity(frozenset(), frozenset()),
+        claims_on_issue=lambda _n: (claim,), failures_not_before=lambda _n, _at: (),
+        custody=MagicMock(), reviews_discoverable=lambda: True, writes=writes, repo_slug="owner/repo",
+    )
+    return executor, writes
+
+
+def test_an_executed_release_refused_at_apply_time_never_reads_as_a_remedy(tmp_path):
+    """#7362: the charter let the release execute, and the verdict is recorded
+    as such; but the release owner refused it at apply time (a new claim), so
+    its record must not say it took effect and custody must not say Verify."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.actions import ReleaseWithheldReviewAction
+    from issue_orchestrator.control.blocked_item_custody import (
+        BoardCustodyFacts, ItemCustodyFacts, ObservedLabels, StuckSweepSchedule, derive_item_custody)
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.blocked_item_custody import (
+        OWNED_CUSTODY_STATES, CustodyStaleThresholds, CustodyState)
+    from issue_orchestrator.domain.tech_lead_charter import CharterOutcome
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    config = make_tech_lead_config(tmp_path)
+    assert config.tech_lead.authority.release_withheld_review == "execute"
+    session = make_tech_lead_session(tmp_path)
+    arm_investigation_session(config, session)
+    _plant_decision_with_actions(session, [
+        {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Diagnosis.", "finding_ids": ["T1"]},
+        {"id": "A2", "action_type": "release_withheld_review", "target_number": 1,
+         "body": "Green PR withheld only by the block.", "finding_ids": ["T1"]},
+    ])
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
+    [release] = [action for action in actions if isinstance(action, ReleaseWithheldReviewAction)]
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=MagicMock())
+    applier.release_withheld_review, writes = _refusing_release_executor("rework-1")
+    store = InMemoryTechLeadAuthorityStore()
+    applier.tech_lead_ops = store
+
+    results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+
+    assert error is None
+    [released] = [r for r in results if r.action is release]
+    assert released.details["refusal"] == "work_claimed"
+    writes.release.assert_not_called()
+    records = {row.action_id: row for row in store.charter_ledger.list_for_issue(1)}
+    # The verdict stands as decided: the charter DID let it execute...
+    assert records["A2"].outcome is CharterOutcome.EXECUTED
+    # ...but the record says what the applier did, and that is no effect.
+    assert records["A2"].execution is CharterExecutionResult.REFUSED
+    assert "work_claimed" in (records["A2"].execution_reason or "")
+    assert not records["A2"].took_effect
+    assert store.charter_ledger.list_remedies_on_issue(1) == ()
+    # The diagnosis sibling did apply, and says so.
+    assert records["A1"].execution is CharterExecutionResult.APPLIED and records["A1"].took_effect
+    now = datetime.now(timezone.utc)
+    custody = derive_item_custody(
+        ItemCustodyFacts(issue_number=1, labels=ObservedLabels(blocking=("blocked-failed",)),
+                         blocked_at=now - timedelta(hours=1),
+                         decisions=store.charter_ledger.list_about_issue(1)),
+        BoardCustodyFacts(now=now, sweep=StuckSweepSchedule(enabled=True, max_attempts=3, next_due_at=None)),
+        CustodyStaleThresholds(by_state={state: timedelta(hours=2) for state in OWNED_CUSTODY_STATES}),
+    )
+    assert custody.state is not CustodyState.VERIFY
+    assert "applied a remedy" not in custody.reason
+    assert "release withheld review) did not take effect: refused" in custody.reason
+
+
+def test_a_batch_that_raises_keeps_what_landed_before_the_raise():
+    """#7362 review r1: apply_all raising mid-batch must not deny an effect that
+    committed before it: that one is applied, the raising one failed, the rest
+    withheld."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.claim_gate import ClaimLostError
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decisions = [_decision(f"A{n}", "post_comment", target=n) for n in (5, 6, 7)]
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions(decisions)
+    refused = ClaimLostError(6, "add_comment")
+
+    def verify_or_raise(*, issue_number, lease_id, operation):
+        if issue_number == 6:  # another engine won #6's claim mid-batch
+            raise refused
+
+    host = MagicMock()
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host,
+                            claim_gate=MagicMock(verify_or_raise=verify_or_raise), lease_id_lookup=lambda _n: "lease-1")
+    applier.tech_lead_ops = store
+    actions = [AddCommentAction(number=n, comment=f"c{n}", charter_decisions=(d.decision_id,))
+               for n, d in zip((5, 6, 7), decisions)]
+
+    _results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+
+    assert error is refused
+    # #5's comment committed before the raise; #7's was never attempted.
+    assert [call.args[0] for call in host.add_comment.call_args_list] == [5]
+    rows = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert {a: r.execution for a, r in rows.items()} == {
+        "A5": CharterExecutionResult.APPLIED,
+        "A6": CharterExecutionResult.FAILED,
+        "A7": CharterExecutionResult.WITHHELD,
+    }
+    assert rows["A5"].took_effect and not rows["A6"].took_effect
+    assert "ClaimLostError" in (rows["A6"].execution_reason or "")
+
+
+def test_a_batch_that_raises_after_every_result_landed_still_links_them():
+    """#7362 review r2: apply_all can raise after its last action (the label
+    summary in its ``finally``); every landed result is still linked."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from issue_orchestrator.events import EventName
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decision = _decision("A5", "post_comment", target=5)
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions([decision])
+    summary_down = RuntimeError("event sink down")
+    events = MagicMock()
+
+    def publish(event):
+        if event.name == EventName.LABEL_MUTATION_SUMMARY:
+            raise summary_down
+
+    events.publish.side_effect = publish
+    labels = MagicMock()
+    labels.get_labels.return_value = []
+    applier = ActionApplier(labels=labels, sessions=MagicMock(), events=events, repository_host=MagicMock())
+    applier.tech_lead_ops = store
+    action = AddLabelAction(issue_number=5, label="tech-lead-diagnosed",
+                            charter_decisions=(decision.decision_id,))
+
+    _results, error = apply_completion_actions_gated(applier, [action], issue_number=1)
+
+    assert error is summary_down
+    [row] = store.charter_ledger.list_recent()
+    assert row.execution is CharterExecutionResult.APPLIED and row.took_effect
+
+
+def test_a_replayed_decision_whose_new_link_fails_never_keeps_its_old_applied(tmp_path):
+    """#7362 review r3: an earlier attempt linked APPLIED; the replay's effect
+    is refused and its link write fails. The record must not still say the
+    remedy took effect."""
+    from unittest.mock import MagicMock, patch
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.tech_lead_charter_policy import RecordTechLeadCharterDecisionsAction
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import (
+        CharterExecutionLink, CharterExecutionResult)
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decision = _decision("A5", "post_comment", target=5)
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions([decision])
+    store.charter_ledger.link_execution_outcomes(
+        [CharterExecutionLink(decision.decision_id, CharterExecutionResult.APPLIED)], at="t1")
+    host = MagicMock()
+    host.add_comment.side_effect = RuntimeError("403")
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_ops = store
+    replay = [RecordTechLeadCharterDecisionsAction(decisions=(decision,)),
+              AddCommentAction(number=5, comment="again", charter_decisions=(decision.decision_id,))]
+
+    with patch.object(type(store.charter_ledger), "link_execution_outcomes",
+                      side_effect=RuntimeError("ledger locked")):
+        apply_completion_actions_gated(applier, replay, issue_number=1)
+
+    [row] = store.charter_ledger.list_recent()
+    assert not row.took_effect and row.execution is None
+    assert store.charter_ledger.list_remedies_on_issue(5) == ()
+
+
+def test_a_remedy_refused_later_in_the_batch_is_the_newest_result():
+    """#7362 review r5: A9 applies, then A10 (same item) is refused in the same
+    batch. A10's result landed later, so it speaks for the item, whatever the
+    decision ids sort as."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.blocked_item_custody import (
+        BoardCustodyFacts, ItemCustodyFacts, ObservedLabels, StuckSweepSchedule, derive_item_custody)
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.blocked_item_custody import (
+        OWNED_CUSTODY_STATES, CustodyStaleThresholds, CustodyState)
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    applied, refused = (_decision(a, "recover_validated_work", target=5, at="2026-09-26T10:00:00+00:00")
+                        for a in ("A9", "A10"))
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions([replace(d, outcome=CharterOutcome.EXECUTED, lifecycle=None,
+                                                   lifecycle_updated_at=None) for d in (applied, refused)])
+    host = MagicMock()
+    host.add_comment.side_effect = [None, RuntimeError("403")]
+    applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
+    applier.tech_lead_ops = store
+    batch = [AddCommentAction(number=5, comment=f"c{d.action_id}", charter_decisions=(d.decision_id,))
+             for d in (applied, refused)]
+
+    apply_completion_actions_gated(applier, batch, issue_number=1)
+
+    rows = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert rows["A9"].execution is CharterExecutionResult.APPLIED
+    assert rows["A10"].execution is CharterExecutionResult.FAILED
+    assert rows["A10"].effect_at > rows["A9"].effect_at
+    now = datetime.now(timezone.utc)
+    custody = derive_item_custody(
+        ItemCustodyFacts(issue_number=5, labels=ObservedLabels(blocking=("blocked-failed",)),
+                         blocked_at=now - timedelta(days=400),
+                         decisions=store.charter_ledger.list_about_issue(5)),
+        BoardCustodyFacts(now=now, sweep=StuckSweepSchedule(enabled=True, max_attempts=3, next_due_at=None)),
+        CustodyStaleThresholds(by_state={state: timedelta(hours=2) for state in OWNED_CUSTODY_STATES}),
+    )
+    assert custody.state is not CustodyState.VERIFY
+    assert "did not take effect: failed" in custody.reason
 
 
 def test_an_unrecordable_charter_decision_withholds_every_effect(tmp_path):

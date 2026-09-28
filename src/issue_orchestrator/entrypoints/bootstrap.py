@@ -806,7 +806,8 @@ def build_orchestrator(
         base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
-        config, events=events, action_applier=action_applier, label_manager=label_manager
+        config, events=events, action_applier=action_applier, label_manager=label_manager,
+        charter=tech_lead_authority.charter_ledger,
     )
     # Planning asks the recovery owner which queued reviews it holds (#7455).
     fact_gatherer.recovery_holds = validated_work.blocks
@@ -1238,7 +1239,8 @@ def build_orchestrator_for_testing(
         base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
-        config, events=events, action_applier=action_applier, label_manager=label_manager
+        config, events=events, action_applier=action_applier, label_manager=label_manager,
+        charter=tech_lead_authority_for_testing.charter_ledger,
     )
     deps = OrchestratorDeps(
         issue_run_allocator=issue_run_allocator,

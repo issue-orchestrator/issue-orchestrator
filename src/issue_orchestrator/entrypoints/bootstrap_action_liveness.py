@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..control.label_manager import LabelManager
     from ..infra.config import Config
     from ..ports.event_sink import EventSink
+    from ..ports.tech_lead_charter_ledger import TechLeadCharterLedger
 
 #: The owner's own database, registered in ``infra.sqlite_registry``.
 ACTION_LIVENESS_DB = "action_liveness.sqlite"
@@ -31,8 +32,13 @@ def build_action_liveness(
     events: "EventSink",
     action_applier: "SupportsApplyAction",
     label_manager: "LabelManager",
+    charter: "TechLeadCharterLedger",
 ) -> PlannedActionLiveness:
-    """One owner per engine: the planner gate and every other path share it."""
+    """One owner per engine: the planner gate and every other path share it.
+
+    ``charter`` is where a park of an executed tech-lead decision's effect is
+    linked back to its record (#7362).
+    """
     owner = ActionLivenessOwner(
         store=action_liveness_store(config),
         escalation=ActionLivenessEscalation(
@@ -41,7 +47,9 @@ def build_action_liveness(
             needs_human_label=label_manager.needs_human,
         ),
     )
-    return PlannedActionLiveness(owner, escalation_label=label_manager.needs_human)
+    return PlannedActionLiveness(
+        owner, escalation_label=label_manager.needs_human, charter=charter
+    )
 
 
 __all__ = ["ACTION_LIVENESS_DB", "action_liveness_store", "build_action_liveness"]

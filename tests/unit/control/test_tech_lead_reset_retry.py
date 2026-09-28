@@ -145,7 +145,7 @@ class _RaisingApplier:
         self._error = error
         self.apply_all_calls = 0
 
-    def apply_all(self, _actions):
+    def apply_all(self, _actions, on_result=None):
         self.apply_all_calls += 1
         raise self._error
 

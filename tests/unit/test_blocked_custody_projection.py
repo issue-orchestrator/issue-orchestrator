@@ -8,7 +8,7 @@ is the UI's own test suite.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
@@ -105,6 +105,50 @@ def test_a_custody_payload_is_the_contract_s_shape_and_says_everything_in_words(
     assert payload["charter"]["outcome_label"] == "Proposed, awaiting approval"
     assert payload["charter"]["lifecycle_label"] == "awaiting approval"
     assert payload["charter"]["proposal_issue_number"] == 700
+
+
+EXECUTED = replace(
+    BASIS, action_kind="release_withheld_review", action_ceiling="execute",
+    ceiling_source="tech_lead.authority.release_withheld_review", outcome="executed",
+    reason_code="advisory_executes", lifecycle=None, proposal_issue_number=None,
+)
+
+
+@pytest.mark.parametrize(
+    ("execution", "reason", "outcome_label"),
+    [
+        ("applied", None, "Executed and applied"),
+        ("refused", "stale precondition: work_claimed", "Refused when applied"),
+        ("failed", "review release failed", "Failed when applied"),
+        ("withheld", "withheld: a mandated action did not commit", "Withheld; never applied"),
+        ("parked", "stopped retrying", "Parked; the orchestrator stopped retrying it"),
+        (None, None, "Allowed to execute; no result recorded yet"),
+    ],
+)
+def test_an_executed_decision_says_what_its_applier_did_not_that_it_executed(
+    execution: str | None, reason: str | None, outcome_label: str
+) -> None:
+    """#7362: the verdict only let it run; the panel says what running it did."""
+    basis = replace(EXECUTED, execution=execution, execution_reason=reason)
+
+    charter = custody_payload(
+        _custody(9, CustodyState.HELD, charter=basis), NOW
+    ).model_dump(mode="json")["charter"]
+
+    assert charter["outcome"] == "executed"
+    assert charter["outcome_label"] == outcome_label
+    assert charter["lifecycle_label"] == (reason or "")
+    if execution != "applied":
+        assert not charter["outcome_label"].startswith("Executed")
+
+
+def test_a_linked_result_changes_what_the_card_says() -> None:
+    unlinked = _custody(9, CustodyState.UNOWNED, charter=EXECUTED)
+    refused = _custody(
+        9, CustodyState.UNOWNED, charter=replace(EXECUTED, execution="refused", execution_reason="x")
+    )
+
+    assert custody_signal(unlinked) != custody_signal(refused)
 
 
 def test_an_unowned_item_always_asks_for_attention() -> None:
