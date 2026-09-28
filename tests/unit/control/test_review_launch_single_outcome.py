@@ -452,7 +452,7 @@ def test_an_unreadable_recovery_hold_is_a_retried_launch_failure_not_a_wait(
     launcher_bundle: LauncherTestBundle, recovery_holds: _RecoveryHolds
 ) -> None:
     def unreadable(issue_number: int) -> bool:
-        raise OSError("database is locked")
+        raise OSError()  # no message: the failure must still be seen
 
     recovery_holds.holds_recovery = unreadable  # type: ignore[method-assign]
     _host_shows(launcher_bundle, "recovery-pending")

@@ -83,7 +83,7 @@ class ReviewLaunchCheck:
 
     validity: ReviewValidity
     held_by_recovery: bool
-    hold_unreadable: str = ""
+    hold_unreadable: str | None = None
 
 
 def review_launch_validity(
@@ -122,7 +122,9 @@ def review_launch_validity(
         held = recovery_holds.holds_recovery(review.issue_number)
     except Exception as error:  # store-defined read failure
         return ReviewLaunchCheck(
-            withholding.current, held_by_recovery=False, hold_unreadable=str(error)
+            withholding.current,
+            held_by_recovery=False,
+            hold_unreadable=f"{type(error).__name__}: {error}",
         )
     return ReviewLaunchCheck(withholding.current, held_by_recovery=held)
 
@@ -138,7 +140,7 @@ def refuse_unlaunchable_review(
     a failed launch (#7455).
     """
     validity = check.validity
-    if check.hold_unreadable:
+    if check.hold_unreadable is not None:
         return LaunchResult(
             None,
             False,
