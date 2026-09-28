@@ -74,18 +74,13 @@ def record_open_pr_publication(
             return Status.ALREADY_PUBLISHED
         if relation not in {Relation.DESCENDANT, Relation.DIVERGENT}:
             return Status.CONTAINMENT_UNPROVEN
-    unresolved = frozenset(
-        row["record_id"] for row in conn.execute(
-            "SELECT record_id FROM validated_work_records WHERE lineage_key=? "
-            "AND state IN ('queued','parked','failed')",
-            (lineage_key,),
-        )
-    )
     conn.execute(
-        "INSERT INTO validated_work_lineage VALUES (?,?,?,?,?,?) ON CONFLICT(lineage_key) DO UPDATE SET "
+        "INSERT INTO validated_work_lineage (lineage_key,published_head_sha,published_by_record_id,"
+        "published_via,published_pre_push_expected,published_at,published_pr_number) VALUES (?,?,?,?,?,?,?) "
+        "ON CONFLICT(lineage_key) DO UPDATE SET "
         "published_head_sha=excluded.published_head_sha,published_by_record_id=excluded.published_by_record_id,"
         "published_via=excluded.published_via,published_pre_push_expected=excluded.published_pre_push_expected,"
-        "published_at=excluded.published_at",
+        "published_at=excluded.published_at,published_pr_number=excluded.published_pr_number",
         (
             lineage_key,
             published.head_sha,
@@ -93,16 +88,10 @@ def record_open_pr_publication(
             PublicationProvenance.OBSERVED_OPEN_PR.value,
             "",
             observed_at,
+            published.pr_number,
         ),
     )
+    # Every record this resolves is stamped with the PR by the classifier
+    # (``published_pr_number``), as is any later admission contained in it.
     lineage.classify(conn, lineage_key, observed_at)
-    # The records this publication resolved rest in that PR: name it, so
-    # published-review custody (#7293) keeps guarding it after later pushes,
-    # even for a record captured before the PR existed.
-    for record_id in unresolved:
-        conn.execute(
-            "UPDATE validated_work_records SET published_pr_number=? "
-            "WHERE record_id=? AND state='recovered' AND published_head_sha=?",
-            (published.pr_number, record_id, published.head_sha),
-        )
     return Status.ADVANCED

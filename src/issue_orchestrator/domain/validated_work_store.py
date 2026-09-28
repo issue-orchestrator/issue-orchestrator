@@ -174,9 +174,15 @@ class LineagePublication:
     published_via: PublicationProvenance
     published_pre_push_expected: str
     published_at: str
+    # The open PR an OBSERVED_OPEN_PR publication was observed on; 0 otherwise.
+    published_pr_number: int = 0
 
     def __post_init__(self) -> None:
         require_text(self.lineage_key, "lineage_key")
+        if (self.published_pr_number > 0) is not (
+            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
+        ):
+            raise ValueError("exactly an open-PR publication names its PR")
         require_text(self.published_by_record_id, "published_by_record_id")
         require_sha(self.published_head_sha)
         require_text(self.published_at, "published_at")
@@ -209,11 +215,6 @@ class OpenPrPublicationStatus(StrEnum):
     def reclassified_lineage(self) -> bool:
         """Whether the lineage's records were reclassified, so its block may have moved."""
         return self is OpenPrPublicationStatus.ADVANCED
-
-    @property
-    def published(self) -> bool:
-        """Whether the lineage now names a head carrying the recorded one."""
-        return self in (OpenPrPublicationStatus.ADVANCED, OpenPrPublicationStatus.ALREADY_PUBLISHED)
 
 
 class LineageResolutionRefusal(StrEnum):

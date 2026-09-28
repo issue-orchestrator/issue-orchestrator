@@ -1440,9 +1440,12 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
 - After the write, the store reclassifies the lineage (§2.1.4 table). Records
   the PR head contains resolve `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` and keep
   their escrow and pins for the window. Each one this write resolved also gets
-  the PR stored in `published_pr_number`. A record captured before its PR
+  the PR stored in `published_pr_number`. The classifier copies it from the
+  lineage fact to every record it resolves inside that head, whether the record
+  was resolved now or is admitted later. A record captured before its PR
   existed then still names the PR that carries it, and published-review
-  custody keeps guarding that PR after later pushes. Divergent unresolved
+  custody keeps guarding that PR after later pushes. The disposition exposes
+  the stamp as `published_by_open_pr`. Divergent unresolved
   records stay parked, because the PR genuinely does not carry them. A later
   unpublished descendant, captured with the PR head as its expectation, is
   sequenced from that head exactly as §2.1.4 prescribes for
@@ -1454,20 +1457,24 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   publication before it admits the run's head. It reuses the one remote
   observation per branch that the capture itself makes. The admission then
   resolves as contained, so `recovery-pending` is never asserted, and the
-  RECOVERED record keeps the PR under published-review custody (#7293). The
-  batch lists such keys as `published_keys` (only when admission actually
-  resolved them; evidence that fails re-verification stays `FAILED`, held), and
-  `recovery_holds_captured_work` does not count them. Recovery routed nothing
-  for them, so a halted exchange keeps its own block rather than deferring to
-  a recovery that will never act (#7295).
+  RECOVERED record keeps the PR under published-review custody (#7293).
+  `recovery_holds_captured_work` does not count records that are
+  `published_by_open_pr`, because recovery routed nothing for them. A halted
+  exchange therefore keeps its own block rather than deferring to a recovery
+  that will never act (#7295). The answer is read from the durable record, so
+  a replayed capture gives it again. Evidence that fails re-verification stays
+  `FAILED`, and recovery holds it.
 - **Records captured before this rule** are reached by
   `OutOfScopeRetirementSweep`. For every in-scope record that is not
   `PUBLISHING`, it asks `OpenPullRequestPublication`. That records the
   publication through `AggregateRecoveryBlocks`, which re-projects the issue's
   block. The porchpin records resolve on the first drain pass after the
-  upgrade. A record judged in scope and not carried is remembered by its
-  current evidence id for the process, because the publication read is an
-  uncached GitHub call. Work published later is recorded at its own capture.
+  upgrade. A record's scope, once proven, is remembered for the process. Its
+  publication is asked again only every `PUBLICATION_RECHECK_SECONDS` (15
+  minutes), because it is an uncached GitHub read. A later push can still
+  release a parked record without any new capture. Cold readers require the
+  new column, so an unmigrated store reads as `UNSUPPORTED_SCHEMA` instead of
+  failing in the mapper.
 
 ## 3. Composition and control flow
 

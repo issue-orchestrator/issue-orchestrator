@@ -13,6 +13,8 @@ holds is outside scope, and the store refuses if that set changed meanwhile.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -69,6 +71,9 @@ class ScopeRetirement:
         return RecoveryAttemptPending(self.message)
 
 RETIREMENT_ACTOR = "orchestrator:validated-work-scope"
+#: How often a parked in-scope record is asked again whether its issue's open
+#: PR now carries it (one uncached GitHub read per record per interval).
+PUBLICATION_RECHECK_SECONDS = 15 * 60
 
 
 class OutOfScopeRecordRetirement:
@@ -177,23 +182,28 @@ class OutOfScopeRetirementSweep:
     admits (porchpin #186), but a record captured before it did - a rebased
     rework parked ``divergent_validated_heads`` against the lineage's older
     head - is resolved here the same way, through the store's lineage owner.
-    A record judged in scope and unpublished is remembered by its current
-    evidence id, so it is judged once per process, not once per tick: the
-    role is immutable, and the publication read is an uncached GitHub call a
-    long-parked record must not spend every pass. Work published later is
-    recorded at its own capture.
+    A record proven in scope is remembered by its current evidence id: its
+    role is immutable, so custody is proven once per process. Whether an open
+    PR carries it is not immutable - a later push may publish a parked head
+    without any new capture - so that question is asked again, but only every
+    ``publication_recheck_seconds``: it is an uncached GitHub read that a
+    long-parked record must not spend on every pass.
     """
 
     def __init__(self, *, source: ValidatedWorkScopeSource, store: ValidatedWorkStore,
                  execution: ValidatedWorkExecutionOwner, retirement: OutOfScopeRecordRetirement,
                  publication: OpenPullRequestPublication,
-                 batch_size: int, liveness: "RecoveryDrainLiveness") -> None:
+                 batch_size: int, liveness: "RecoveryDrainLiveness",
+                 publication_recheck_seconds: float = PUBLICATION_RECHECK_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         require_positive(batch_size, "scope sweep batch size")
         self._source, self._store, self._execution = source, store, execution
         self._retirement, self._batch_size = retirement, batch_size
         self._publication = publication
+        self._recheck, self._clock = publication_recheck_seconds, clock
         self._liveness = liveness
-        self._owned: set[str] = set()
+        # Evidence proven in scope -> when to ask again whether an open PR carries it.
+        self._owned: dict[str, float] = {}
         self._after = ""
 
     def tick(self, admission: RecoveryDrainAdmission) -> RecoveryScopeSweepReport:
@@ -207,7 +217,8 @@ class OutOfScopeRetirementSweep:
             if admission() is RecoveryDrainMode.STOPPED:
                 break
             self._after = request.record_id
-            if request.evidence_id in self._owned:
+            due = self._owned.get(request.evidence_id)
+            if due is not None and self._clock() < due:
                 continue
             judgement = self._judge_bounded(request)
             if judgement.retired:
@@ -274,10 +285,12 @@ class OutOfScopeRetirementSweep:
                     return _MOVED_ON
                 # Prove before claiming: an in-scope record is never claimed here,
                 # so this lane cannot contend with its publication or abandonment.
-                if self._retirement.recovery_owns_record(record):
+                if (request.evidence_id in self._owned
+                        or self._retirement.recovery_owns_record(record)):
                     if self._publication.record(record):
+                        self._owned.pop(request.evidence_id, None)
                         return _PUBLISHED
-                    self._owned.add(request.evidence_id)
+                    self._owned[request.evidence_id] = self._clock() + self._recheck
                     return _BY_STATUS[ScopeRetirementStatus.IN_SCOPE]
                 claim = self._store.acquire_claim(
                     request.record_id, expected_states=frozenset({record.disposition.state}),
@@ -288,7 +301,7 @@ class OutOfScopeRetirementSweep:
                 self._execution.remember_claim(token, claim)
                 outcome = self._retirement.retire_if_outside(token, claim, record)
                 if outcome.status is ScopeRetirementStatus.IN_SCOPE:
-                    self._owned.add(request.evidence_id)
+                    self._owned[request.evidence_id] = self._clock() + self._recheck
                 return _BY_STATUS[outcome.status]
             finally:
                 self._execution.relinquish(token)

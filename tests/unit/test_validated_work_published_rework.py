@@ -661,11 +661,83 @@ def test_an_existing_store_gains_the_published_pr_column_on_open(tmp_path):
 
     path = tmp_path / "work.sqlite"
     DispositionDatabase(path)
+    tables = ("validated_work_records", "validated_work_lineage")
     with sqlite3.connect(path) as conn:  # a store from before this column existed
-        conn.execute("ALTER TABLE validated_work_records DROP COLUMN published_pr_number")
+        for table in tables:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN published_pr_number")
 
     DispositionDatabase(path)
 
     with sqlite3.connect(path) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(validated_work_records)")}
-    assert "published_pr_number" in columns
+        for table in tables:
+            assert "published_pr_number" in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_a_cold_reader_refuses_an_unmigrated_store_instead_of_crashing(tmp_path):
+    """Review r2: the mapper reads ``published_pr_number``, so a read-only reader
+    of a store the engine has not yet migrated reports an unsupported schema."""
+    import sqlite3
+
+    from issue_orchestrator.domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
+    from issue_orchestrator.infra.validated_work_read_schema import require_supported_validated_work_schema
+    from issue_orchestrator.infra.validated_work_rows import DispositionDatabase
+
+    path = tmp_path / "work.sqlite"
+    DispositionDatabase(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE validated_work_records DROP COLUMN published_pr_number")
+        conn.row_factory = sqlite3.Row
+        with pytest.raises(ReadOnlySqliteAccessError) as refused:
+            require_supported_validated_work_schema(conn)
+    assert refused.value.reason is ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA
+    assert "published_pr_number" in str(refused.value)
+
+
+def test_a_replayed_capture_still_says_recovery_holds_nothing(rig):
+    """Review r2: the answer is the durable record's, so re-running the
+    terminal capture (a crash-replayed completion) gives it again."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    _push(rig)
+
+    first = rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coding)
+    replayed = rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coding)
+
+    assert (first, replayed) == (False, False)
+    assert len(rig.store.retained_evidence(ISSUE)) == 1
+    assert rig.labels.operations == []
+
+
+def test_a_parked_record_published_later_is_released_on_the_next_recheck(rig, make_session, monkeypatch):
+    """Review r2: a later push can publish a parked head with no new capture;
+    the sweep asks again after its recheck interval, and not before."""
+    _, v2, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    published_head = rig.git.head_sha(rig.worktree)
+    rig.git.run(rig.worktree, ["reset", "-q", "--hard", "main"])
+    _commit(rig.git, rig.worktree, "other", "a head that carries neither")
+    _push(rig)
+    now = [1000.0]
+    sweep = OutOfScopeRetirementSweep(
+        source=rig.store, store=rig.store, execution=rig.execution, retirement=rig.retirement,
+        publication=OpenPullRequestPublication(
+            observer=rig.github, carriage=OpenPullRequestCarriage(git=rig.wc), store=rig.aggregate,
+            repository=rig.repo, now=lambda: "2026-09-28T13:00:00+00:00"),
+        batch_size=5, liveness=drain_liveness(records=rig.store),
+        publication_recheck_seconds=600, clock=lambda: now[0])
+
+    sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
+    assert rig.store.has_unresolved_work(ISSUE)
+    rig.git.run(rig.worktree, ["reset", "-q", "--hard", published_head])
+    _push(rig)  # the PR now carries the parked heads again
+    reads = rig.github.reads
+    sweep.tick(lambda: RecoveryDrainMode.ACTIVE)  # inside the interval: no read
+    assert rig.github.reads == reads
+    now[0] += 600
+
+    report = sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert report.published
+    assert not rig.store.has_unresolved_work(ISSUE)
+    _published_as_contained(rig, {d.key.validated_head_sha for d in parked}, v2)
+    assert RECOVERY_PENDING not in rig.labels.labels

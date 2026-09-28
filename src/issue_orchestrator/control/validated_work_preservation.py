@@ -70,15 +70,11 @@ class ValidatedWorkPreservationService:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")
         self._repair.require_issue_custody(command.issue_number)
         selected = newest_per_work(candidates, command.issue_number)
-        published = frozenset(
-            candidate_key(candidate, command.issue_number)
-            for candidate in selected
-            if self._capture(candidate, command, observations)
-        )
+        for candidate in selected:
+            self._capture(candidate, command, observations)
         return replace(
             self._store.for_issue(command.issue_number),
             captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
-            published_keys=published,
         )
 
     def _captures(
@@ -127,7 +123,7 @@ class ValidatedWorkPreservationService:
     def _record_publication(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
         observed: ValidatedWorkRemoteFacts, evidence: ValidatedWorkEvidence,
-    ) -> bool:
+    ) -> None:
         """Before admission: record the head the issue's open PR already publishes.
 
         When the completion's own push put this validated head on its open PR,
@@ -138,8 +134,7 @@ class ValidatedWorkPreservationService:
         against the lineage's older head and parking it divergent (porchpin
         #186). No proof, no record: the capture is admitted as before.
 
-        Answers whether the lineage now names a head carrying this one. An
-        in-flight recovery publication keeps the lineage, and then recovery
+        An in-flight recovery publication keeps the lineage, and then recovery
         holds the capture like any other.
         """
         key = evidence.identity.key
@@ -149,7 +144,7 @@ class ValidatedWorkPreservationService:
             repository=candidate.entry.run.worktree_path,
         )
         if published is None:
-            return False
+            return
         status = self._store.record_open_pr_publication(
             key, published=published, observed_at=command.run_evidence.observed_at,
         )
@@ -158,7 +153,6 @@ class ValidatedWorkPreservationService:
             command.issue_number, candidate.run.run.run_id,
             published.describe(key.validated_head_sha), status.value,
         )
-        return status.published
 
     def _pull_request_base(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
@@ -214,8 +208,7 @@ class ValidatedWorkPreservationService:
         observations: dict[
             ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
         ],
-    ) -> bool:
-        """Admit the candidate; whether its issue's open PR already published it."""
+    ) -> None:
         branch_name = candidate.run.branch_name
         if branch_name is None:
             raise CompletionIntakeError("exact run has no recorded branch binding")
@@ -227,7 +220,7 @@ class ValidatedWorkPreservationService:
                 captured_at=command.run_evidence.observed_at)
             retained = self._store.evidence_for_id(identity.evidence_id)
             if retained is not None:
-                return False
+                return
         worktree = candidate.entry.run.worktree_path
         head = self._working_copy.get_head_sha(worktree)
         if head is None:
@@ -251,24 +244,20 @@ class ValidatedWorkPreservationService:
             head=head, branch_verified=bound, captured_at=command.run_evidence.observed_at,
             remote_baseline_status=remote_status,
             expected_remote_head_sha=expected_remote_head_sha, pr_number=pr_number)
-        published = isinstance(observed, ValidatedWorkRemoteFacts) and self._record_publication(
-            candidate, command, observed, evidence,
-        )
+        if isinstance(observed, ValidatedWorkRemoteFacts):
+            self._record_publication(candidate, command, observed, evidence)
         failure = (ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION
                    if head != candidate.validation.head_sha else
                    ValidatedWorkFailure.WORKSPACE_INTEGRITY if not bound else remote_failure)
         state = ValidatedWorkState.QUEUED if failure is None else ValidatedWorkState.PARKED
         assert candidate.entry.normalized_path is not None
-        outcome = self._custody.capture_automatic(evidence,
+        self._custody.capture_automatic(evidence,
             EscrowArtifacts(candidate.entry.normalized_path, candidate.validation.result_path, None),
             AutomaticCaptureDecision(
                 state, failure,
                 command.reason + ("; queued for automatic recovery" if failure is None
                                   else "; preserved pending recovery approval"),
             ))
-        # Published only if admission actually resolved it inside that head:
-        # evidence whose escrow fails to verify stays FAILED, and recovery holds it.
-        return published and outcome.disposition.state is ValidatedWorkState.RECOVERED
 
 
 @dataclass(frozen=True, slots=True)
