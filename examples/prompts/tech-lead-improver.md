@@ -77,8 +77,10 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
 
    The **grading window** runs from the anomaly's **onset** to a fixed
    cutoff, `audit.json`'s `generated_at`. Only an **occurrence** can establish
-   onset: the earliest dated failure, event or log record of the anomaly.
-   If you only have snapshots, the onset is `unknown`. It's the whole
+   onset, and it must be the **earliest** matching occurrence in the supplied
+   records. For example, a log signature's `first_seen`, not its `last_seen`.
+   If you only have snapshots, or can't find the earliest occurrence, the
+   onset is `unknown`. It's the whole
    span in which the tech lead could have noticed it. You may grade
    `not_noticed` **only** when both `charter-decisions.json` and
    `case-files.json` report `coverage.complete: true` over a span that
@@ -154,10 +156,17 @@ whole file. Valid findings become the corresponding GitHub artefacts.
   `open-issues.json`. `new_defect` forbids `tracked_issue`. `classification:
   unknown` is allowed only with `output: needs_investigation`. Expected items
   are **not emitted**.
-- `grading_window.from` must be the timestamp of an `occurrence` entry, or
-  `unknown`; never a snapshot's time. `origin: after_start` needs an
-  `observed` entry of kind `occurrence` that supports `origin`, from a source
-  whose coverage includes time before `engine_started_at`.
+- `grading_window.from` must be the timestamp of the **earliest** matching
+  `occurrence` in the supplied records (e.g. `first_seen`), or `unknown`;
+  never a snapshot's time or a later occurrence.
+- `origin: after_start` needs:
+  - an `occurrence` entry supporting `origin`, whose time is the earliest
+    matching occurrence;
+  - **complete** coverage before `engine_started_at` in that source, with no
+    earlier matching occurrence.
+
+  If any matching occurrence predates the start (e.g. `first_seen` <
+  `engine_started_at`), `origin` is `before_start`.
 - `present_after_start` and `recurs_after_start` are strings: `"true"`,
   `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
   `needs_investigation`.
