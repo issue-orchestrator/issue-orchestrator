@@ -177,3 +177,18 @@ def test_a_run_that_must_not_apply_records_its_effects_as_owed(tmp_path: Path) -
     assert record.outcome is RunOutcome.ACCEPTED
     assert [e.status for e in record.effects] == [EffectStatus.PENDING]
     assert host.created == [] and host.comments == []
+
+
+def test_a_run_never_starts_while_another_holds_the_store(tmp_path: Path) -> None:
+    from issue_orchestrator.execution.improver_run_store import FileImproverRunStore
+    from issue_orchestrator.ports.improver import ImproverStoreBusy
+    import pytest
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent(_findings("capability_issue"))
+
+    with FileImproverRunStore(tmp_path).exclusive():
+        with pytest.raises(ImproverStoreBusy):
+            _improver(store, host, agent).run(_request())
+
+    assert agent.prompts == [] and store.runs() == ()

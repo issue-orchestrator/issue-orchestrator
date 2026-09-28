@@ -55,3 +55,16 @@ def test_every_worktree_of_a_repository_shares_one_store(tmp_path: Path) -> None
     main.record(_record("r", NOW))
 
     assert [r.run_id for r in FileImproverRunStore.for_checkout(tmp_path / "wt", LocalCommandRunner()).runs()] == ["r"]
+
+
+def test_one_run_or_apply_holds_the_store_at_a_time(tmp_path: Path) -> None:
+    from issue_orchestrator.ports.improver import ImproverStoreBusy
+
+    first, second = FileImproverRunStore(tmp_path), FileImproverRunStore(tmp_path)
+
+    with first.exclusive():
+        with pytest.raises(ImproverStoreBusy):
+            with second.exclusive():
+                pass
+    with second.exclusive():
+        pass

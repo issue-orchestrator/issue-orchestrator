@@ -9,14 +9,19 @@ and the next run all read the same history.
 
 from __future__ import annotations
 
+import fcntl
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..contracts.improver_findings import FINDINGS_FILE, ImproverFindings
 from ..contracts.improver_run import ImproverRunRecord, RunOutcome
 from ..infra.atomic_io import atomic_write_bytes
 from ..ports.command_runner import CommandRunner
+from ..ports.improver import ImproverStoreBusy
 
 RUN_RECORD = "run.json"
+LOCK_FILE = "lock"
 STORE_DIRNAME = "io-improver"
 
 
@@ -35,6 +40,22 @@ class FileImproverRunStore:
         if result.returncode:
             raise RuntimeError(f"{checkout} is not a Git checkout: {result.stderr.strip()}")
         return cls(Path(result.stdout.strip()) / STORE_DIRNAME)
+
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """An advisory ``flock`` on ``<store>/lock``, released on exit or crash."""
+        self._runs.mkdir(parents=True, exist_ok=True)
+        with open(self._runs.parent / LOCK_FILE, "a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise ImproverStoreBusy(
+                    f"another improver run or apply holds {self._runs.parent}"
+                ) from error
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def new_run_dir(self, run_id: str) -> Path:
         path = self._runs / run_id

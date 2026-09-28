@@ -47,6 +47,7 @@ from ...observation.engine_audit import Unavailable
 from ...execution.improver_effect_applier import ImproverEffects
 from ...execution.codex_improver_agent import CodexImproverAgent
 from ...execution.improver_run_store import FileImproverRunStore
+from ...ports.improver import ImproverStoreBusy
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
 from ..improver_run import ImproverRun, ImproverRunRequest, render_run
 from ..improver_staging import (
@@ -111,8 +112,7 @@ def main(argv: list[str]) -> int:
     if args.command == "run":
         return run(args)
     if args.command == "apply":
-        _effects(args.outputs_repo).apply_pending()
-        return EXIT_OK
+        return apply(args.outputs_repo)
     if args.command == "status":
         return status()
     return validate(args.run_dir)
@@ -167,36 +167,54 @@ def _store() -> FileImproverRunStore:
     return FileImproverRunStore.for_checkout(Path.cwd(), LocalCommandRunner())
 
 
-def _effects(outputs_repo: str) -> ImproverEffects:
-    return ImproverEffects(store=_store(), host=create_repository_host(outputs_repo), clock=_now)
+def _effects(outputs_repo: str, store: FileImproverRunStore) -> ImproverEffects:
+    return ImproverEffects(store=store, host=create_repository_host(outputs_repo), clock=_now)
 
 
 def run(args: argparse.Namespace) -> int:
+    store = _store()
     improver = ImproverRun(
-        store=_store(),
+        store=store,
         stager=_stager(args),
         agent=CodexImproverAgent(
             runner=ProcessGroupCommandRunner(),
             model=args.model,
             timeout_seconds=args.agent_timeout_minutes * 60,
         ),
-        effects=_effects(args.outputs_repo),
+        effects=_effects(args.outputs_repo, store),
         prompt=args.prompt.read_text(encoding="utf-8"),
         clock=_now,
     )
-    record = improver.run(
-        ImproverRunRequest(
-            state_dir=args.state_dir.expanduser().resolve(),
-            audited_repo=args.audited_repo,
-            outputs_repo=args.outputs_repo,
-            exam_dir=args.exam_dir,
-            window=timedelta(hours=args.window_hours),
-            log_tail_bytes=args.log_tail_mb * 1024 * 1024,
-        ),
-        apply=not args.no_apply,
-    )
+    try:
+        record = improver.run(
+            ImproverRunRequest(
+                state_dir=args.state_dir.expanduser().resolve(),
+                audited_repo=args.audited_repo,
+                outputs_repo=args.outputs_repo,
+                exam_dir=args.exam_dir,
+                window=timedelta(hours=args.window_hours),
+                log_tail_bytes=args.log_tail_mb * 1024 * 1024,
+            ),
+            apply=not args.no_apply,
+        )
+    except ImproverStoreBusy as busy:
+        print(f"improver run: {busy}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
     print(render_run(record))
     return record.exit_code
+
+
+def apply(outputs_repo: str) -> int:
+    store = _store()
+    try:
+        with store.exclusive():
+            runs = _effects(outputs_repo, store).apply_pending()
+    except ImproverStoreBusy as busy:
+        print(f"improver apply: {busy}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    for record in runs:
+        print(render_run(record))
+    return max((r.exit_code for r in runs), default=EXIT_OK)
 
 
 def status() -> int:

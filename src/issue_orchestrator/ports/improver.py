@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -27,7 +28,20 @@ class ImproverRunReader(Protocol):
         ...
 
 
+class ImproverStoreBusy(RuntimeError):
+    """Another process holds the run store (a run or an apply is in progress)."""
+
+
 class ImproverRunStore(ImproverRunReader, Protocol):
+    def exclusive(self) -> AbstractContextManager[None]:
+        """Hold the store for one run or one application of owed effects.
+
+        Raises :class:`ImproverStoreBusy` at once when another process holds
+        it: two runs, or a run and an ``apply``, must never apply the same
+        owed effects side by side.
+        """
+        ...
+
     def new_run_dir(self, run_id: str) -> Path:
         """A fresh, empty working directory for ``run_id``."""
         ...
@@ -49,4 +63,10 @@ class ImproverAgent(Protocol):
     def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult: ...
 
 
-__all__ = ["ImproverAgent", "ImproverAgentResult", "ImproverRunReader", "ImproverRunStore"]
+__all__ = [
+    "ImproverAgent",
+    "ImproverAgentResult",
+    "ImproverRunReader",
+    "ImproverRunStore",
+    "ImproverStoreBusy",
+]

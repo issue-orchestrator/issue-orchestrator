@@ -109,8 +109,14 @@ class ImproverRun:
         self._clock = clock
 
     def run(self, request: ImproverRunRequest, *, apply: bool = True) -> ImproverRunRecord:
-        """One run. ``apply=False`` records an accepted run's effects as owed
-        without touching GitHub (``improver apply`` applies them later)."""
+        """One run, holding the store throughout (raises
+        :class:`~..ports.improver.ImproverStoreBusy` if another holds it).
+        ``apply=False`` records an accepted run's effects as owed without
+        touching GitHub (``improver apply`` applies them later)."""
+        with self._store.exclusive():
+            return self._run(request, apply=apply)
+
+    def _run(self, request: ImproverRunRequest, *, apply: bool) -> ImproverRunRecord:
         if apply:
             self._effects.apply_pending()
         started = self._clock()

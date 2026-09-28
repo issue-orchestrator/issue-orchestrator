@@ -271,6 +271,9 @@ class MemoryRunStore:
         self._files = FileImproverRunStore(root)
         self.recorded: list = []
 
+    def exclusive(self):  # type: ignore[no-untyped-def]
+        return self._files.exclusive()
+
     def new_run_dir(self, run_id: str) -> Path:
         return self._files.new_run_dir(run_id)
 
