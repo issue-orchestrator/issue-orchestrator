@@ -153,13 +153,14 @@ def test_boolean_ancestry_fact_is_not_a_typed_proof(tmp_path):
     assert not store.for_issue(6914).found_work
 
 
-def test_merged_publication_cannot_invent_a_pre_push_baseline():
+@pytest.mark.parametrize(
+    "observed", [PublicationProvenance.OBSERVED_MERGE, PublicationProvenance.OBSERVED_OPEN_PR]
+)
+def test_an_observed_publication_cannot_invent_a_pre_push_baseline(observed):
     with pytest.raises(ValueError, match="proves no"):
-        LineagePublication(
-            "lineage", V, "record", PublicationProvenance.OBSERVED_MERGE, ROOT, AT
-        )
+        LineagePublication("lineage", V, "record", observed, ROOT, AT)
     with pytest.raises(ValueError, match="provenance"):
-        LineagePublication("lineage", V, "record", "observed_merge", "", AT)
+        LineagePublication("lineage", V, "record", observed.value, "", AT)
 
 
 @pytest.mark.parametrize(

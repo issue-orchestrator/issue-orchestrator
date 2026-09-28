@@ -23,6 +23,7 @@ from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import (
     ResolutionKind,
     ValidatedWorkFailure,
+    ValidatedWorkKey,
     ValidatedWorkState,
     require_positive,
 )
@@ -48,12 +49,14 @@ from ..domain.validated_work_store import (
     FinalizationPhase,
     LineagePublication,
     LineageResolutionRefusal,
+    OpenPrPublicationStatus,
     PublicationResolution,
     PublishAttempt,
     PublishValidatedHeadStatus,
     ValidatedWorkRecord,
 )
 from ..domain.validated_work_remote_authority import (
+    PublishedOnOpenPullRequest,
     RemoteAuthorityDecision,
     RemoteAuthorityRefreshRequest,
 )
@@ -71,6 +74,7 @@ from .validated_work_recovery_blocks import RecoveryBlockPersistence
 from .validated_work_attempts import PublishAttemptWriter
 from .validated_work_claims import ClaimAuthority, owner_identity
 from .validated_work_lineage import LineageClassifier
+from .validated_work_open_pr import record_open_pr_publication
 from .validated_work_resolution import PublicationResolver
 from .validated_work_rows import (
     DispositionDatabase,
@@ -118,6 +122,14 @@ class SqliteValidatedWorkStore:
             status = self._admission.admit(conn, admission)
             return AdmissionOutcome(
                 status, disposition(conn, admission.evidence.record_id)
+            )
+
+    def record_open_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
+    ) -> OpenPrPublicationStatus:
+        with self._db.transaction(write=True) as conn:
+            return record_open_pr_publication(
+                conn, self._lineage, key=key, published=published, observed_at=observed_at,
             )
 
     def admit_selected(

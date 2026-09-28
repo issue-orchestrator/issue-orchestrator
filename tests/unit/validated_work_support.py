@@ -275,3 +275,14 @@ def owned_intake(task=None):
     )
     intake.evidence_receive_sequence.return_value = 1
     return intake
+
+
+@dataclass
+class UnpublishedRecords:
+    """The scope sweep's open-PR publication owner when no open PR carries any record."""
+
+    asked: list[str] = field(default_factory=list)
+
+    def record(self, record) -> bool:
+        self.asked.append(record.disposition.record_id)
+        return False

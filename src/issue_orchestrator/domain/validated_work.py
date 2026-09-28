@@ -220,6 +220,9 @@ class EvidenceRole(StrEnum):
 class PublicationProvenance(StrEnum):
     PUSHED_BY_OWNER = "pushed_by_owner"
     OBSERVED_MERGE = "observed_merge"
+    # The issue's one open PR carries a validated head of the lineage: the
+    # completion's own push published it (porchpin #186). No baseline of ours.
+    OBSERVED_OPEN_PR = "observed_open_pr"
 
 
 class FinalizationPhase(StrEnum):

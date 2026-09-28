@@ -184,8 +184,8 @@ class LineagePublication:
             raise ValueError("publication provenance must be typed")
         if self.published_pre_push_expected:
             require_sha(self.published_pre_push_expected)
-            if self.published_via is PublicationProvenance.OBSERVED_MERGE:
-                raise ValueError("an observed merge proves no pre-push baseline")
+            if self.published_via is not PublicationProvenance.PUSHED_BY_OWNER:
+                raise ValueError("an observed publication proves no pre-push baseline")
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +195,25 @@ class PublicationResolution:
     resolved_ancestors: tuple[ValidatedWorkDisposition, ...]
     failed_ancestors: tuple[ValidatedWorkDisposition, ...]
     classified_waiters: tuple[ValidatedWorkDisposition, ...]
+
+
+class OpenPrPublicationStatus(StrEnum):
+    """What recording an open PR's publication did to the lineage fact."""
+
+    ADVANCED = "advanced"  # the fact now names the PR head; the lineage was reclassified
+    ALREADY_PUBLISHED = "already_published"  # the fact already contains the PR head
+    PUBLICATION_IN_FLIGHT = "publication_in_flight"  # recovery owns the remote expectation now
+    CONTAINMENT_UNPROVEN = "containment_unproven"  # the store could not verify the commits
+
+    @property
+    def reclassified_lineage(self) -> bool:
+        """Whether the lineage's records were reclassified, so its block may have moved."""
+        return self is OpenPrPublicationStatus.ADVANCED
+
+    @property
+    def published(self) -> bool:
+        """Whether the lineage now names a head carrying the recorded one."""
+        return self in (OpenPrPublicationStatus.ADVANCED, OpenPrPublicationStatus.ALREADY_PUBLISHED)
 
 
 class LineageResolutionRefusal(StrEnum):

@@ -1,6 +1,7 @@
 """Composition root for retained-work admission, custody, and recovery."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ..infra.config import Config
@@ -279,6 +280,9 @@ def build_validated_work_recovery(
     from ..control.retained_completion_preparation import RetainedCompletionPreparation
     from ..control.retry_review_routing import RetryReviewPolicy
     from ..control.validated_work_scope_retirement import OutOfScopeRetirementSweep
+    from ..control.validated_work_published_head import (
+        OpenPullRequestCarriage, OpenPullRequestPublication,
+    )
     from ..control.review_exchange_lifecycle import OtherRuntimeActivity
     from ..control.staged_published_work_finalizer import StagedPublishedWorkFinalizer
     from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
@@ -371,6 +375,13 @@ def build_validated_work_recovery(
             store=owners.records,
             execution=owners.execution,
             retirement=owners.scope_retirement,
+            publication=OpenPullRequestPublication(
+                observer=owners.capture_observer,
+                carriage=OpenPullRequestCarriage(git=working_copy),
+                store=owners.store,
+                repository=config.repo_root,
+                now=lambda: datetime.now(timezone.utc).isoformat(),
+            ),
             batch_size=config.validated_work.drain_batch_size,
             liveness=liveness,
         ),

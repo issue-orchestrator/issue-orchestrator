@@ -361,6 +361,9 @@ class ValidatedWorkDispositionBatch:
     # read, which says nothing about any particular run. Provenance of the
     # read, not part of the disposition set, so equality ignores it.
     captured_keys: frozenset[ValidatedWorkKey] = field(default=frozenset(), compare=False)
+    # Of those, the work the issue's open PR already carried when captured:
+    # the completion's own push published it, and recovery holds none of it.
+    published_keys: frozenset[ValidatedWorkKey] = field(default=frozenset(), compare=False)
 
     @classmethod
     def no_work(cls, issue_number: int, reason: str) -> "ValidatedWorkDispositionBatch":
@@ -385,6 +388,8 @@ class ValidatedWorkDispositionBatch:
             for k in self.captured_keys
         ):
             raise ValueError("captured keys must be this issue's typed work keys")
+        if type(self.published_keys) is not frozenset or not self.published_keys <= self.captured_keys:
+            raise ValueError("published keys must be a subset of the captured keys")
 
     @property
     def recovery_holds_captured_work(self) -> bool:
@@ -394,10 +399,14 @@ class ValidatedWorkDispositionBatch:
         blocks the issue (QUEUED/PARKED/PUBLISHING hold ``recovery-pending``,
         FAILED asserts ``needs-human``) or has routed the published PR to
         review (RECOVERED). A record for work no captured run validated says
-        nothing about this run, so it does not count.
+        nothing about this run, so it does not count. Neither does work the
+        issue's open PR already carried when captured: it rests RECOVERED
+        because the completion's own push published it, and recovery routed
+        nothing (porchpin #186).
         """
         return any(
-            d.key in self.captured_keys and d.state is not ValidatedWorkState.ABANDONED
+            d.key in self.captured_keys and d.key not in self.published_keys
+            and d.state is not ValidatedWorkState.ABANDONED
             for d in self.dispositions
         )
 
