@@ -21,7 +21,8 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `audit-diff.json` | New / resolved / persisting / unobserved anomalies between the two |
 | `engine-start.json` | When the engine last started and the commit it runs. Separate **since this start** from **history** |
 | `exam/*.json` | Latest tech-lead exam scorecards (A/B/C/U …) with the engine commit each ran on |
-| `charter-decisions.json` | **All** of the tech lead's recorded decisions in the observation window, with stable decision IDs, outcome, effect and reason, plus a `coverage` block (`from`, `to`, `complete: true/false`) |
+| `charter-decisions.json` | **All** of the tech lead's recorded decisions in the observation window, with stable decision IDs, outcome, effect, reason, `decided_at` and **`applied_at`** (when its effect was applied; absent if never applied), plus a `coverage` block (`from`, `to`, `complete: true/false`) |
+| `charter.json` | The engine's **effective** charter at the latest start: each role's `enabled`/depth/authority and the per-action authority settings, after config overrides |
 | `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies, plus the same `coverage` block |
 | `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
@@ -70,12 +71,15 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    - `noticed_not_acted`: it flagged or diagnosed it, but no action followed,
      or the action was withheld or refused (check `effect` and `reason`).
    - `acted_not_effective`: its action was applied, but the live signal
-     persists. The linked decision must be applied at or before the audit
-     cutoff, and a live observation (an occurrence or snapshot) dated **after**
-     its application must support the persistence. Without that later
+     persists. Compare against the decision's **`applied_at`**, never its
+     `decided_at`. It must be at or before the audit cutoff, and a live
+     observation (an occurrence or snapshot) dated **after** `applied_at` must
+     support the persistence. If `applied_at` is missing, grade `unknown`. Without that later
      observation, grade `unknown` and name it in `missing_evidence`.
-   - `not_in_charter`: the right remedy has no action type, or its role or
-     depth doesn't allow it.
+   - `not_in_charter`: the right remedy has no action type (cite the source),
+     or the effective settings in `charter.json` don't allow its role or depth
+     (cite those settings; don't use the source defaults). If `charter.json`
+     is missing, grade `unknown`.
    - `unknown`: the evidence needed to decide isn't complete.
 
    The **grading window** runs from the anomaly's **onset** to a fixed
@@ -169,14 +173,17 @@ whole file. Valid findings become the corresponding GitHub artefacts.
   `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
   `needs_investigation`.
 - `observed` must cite at least one record, and each entry names the claim
-  it `supports`. `present_after_start: "true"` needs a post-start entry of
-  either kind. `recurs_after_start: "true"` needs a **post**-start entry of
+  it `supports`. `present_after_start: "true"` needs a **snapshot** from
+  the current audit (an occurrence that may since have cleared doesn't show
+  presence). `recurs_after_start: "true"` needs a **post**-start entry of
   kind **`occurrence`**. `origin: before_start` needs a **pre**-start entry
   of kind **`occurrence`**. A snapshot supports neither.
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
-  whose application time is at or before `grading_window.to`, and an
-  `observed` entry supporting presence or recurrence dated after that
-  application time.
+  with `applied_at` at or before `grading_window.to`, and an `observed` entry
+  supporting presence or recurrence dated after that `applied_at`.
+- `stall_point: not_in_charter` requires citing either the source (for a
+  missing action type) or the `charter.json` settings that forbid the role or
+  depth.
 - `stall_point: not_noticed` requires `grading_window.from` to be known,
   `grading_window.to` to equal `audit.json`'s `generated_at`, and both
   coverage spans to contain the whole window. If either span ends before
