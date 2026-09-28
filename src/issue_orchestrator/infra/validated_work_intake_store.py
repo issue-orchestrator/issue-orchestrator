@@ -5,12 +5,17 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 import sqlite3
 from ..domain.completion_intake import CompletionIntakeError
-from ..domain.validated_work import ValidatedWorkState
+from ..domain.validated_work import ValidatedWorkKey, ValidatedWorkState
+from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
-from ..domain.validated_work_store import AdmissionOutcome, EvidenceAdmission, EvidenceLookup, EvidenceRow, EvidenceAdmissionSelection
+from ..domain.validated_work_store import (
+    AdmissionOutcome, EvidenceAdmission, EvidenceAdmissionSelection, EvidenceLookup, EvidenceRow,
+    OpenPrPublicationStatus,
+)
 from ..ports.validated_work_verification import ValidatedWorkAncestry, ValidatedWorkArtifactVerifier
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_lineage import LineageClassifier
+from .validated_work_open_pr import record_open_pr_publication
 from .validated_work_rows import DispositionDatabase, disposition
 from .validated_work_snapshots import DispositionSnapshots
 
@@ -19,7 +24,8 @@ class SqliteValidatedWorkIntakeStore:
     def __init__(self, path: Path, ancestry: ValidatedWorkAncestry, artifacts: ValidatedWorkArtifactVerifier) -> None:
         self._db = DispositionDatabase(path)
         self._snapshots = DispositionSnapshots(self._db)
-        self._admission = EvidenceAdmissionWriter(LineageClassifier(ancestry, artifacts))
+        self._lineage = LineageClassifier(ancestry, artifacts)
+        self._admission = EvidenceAdmissionWriter(self._lineage)
 
     @contextmanager
     def _admission_write(self, admission: EvidenceAdmission) -> Iterator[sqlite3.Connection]:
@@ -35,6 +41,17 @@ class SqliteValidatedWorkIntakeStore:
         with self._admission_write(admission) as conn:
             status = self._admission.admit(conn, admission)
             return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
+
+    def record_open_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
+    ) -> OpenPrPublicationStatus:
+        try:
+            with self._db.transaction(write=True) as conn:
+                return record_open_pr_publication(
+                    conn, self._lineage, key=key, published=published, observed_at=observed_at,
+                )
+        except sqlite3.Error as exc:
+            raise CompletionIntakeError("open-PR publication record unavailable") from exc
 
     def admit_selected(self, admission: EvidenceAdmission, expected_current: str | None,
                        selection: EvidenceAdmissionSelection) -> AdmissionOutcome | None:

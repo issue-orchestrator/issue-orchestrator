@@ -13,7 +13,8 @@ from .validated_work import (
 )
 from .validated_work_capture import ValidatedWorkRemoteFacts
 from .validated_work_commands import ValidatedWorkAuthoritySnapshot
-from .validated_work_store import ValidatedWorkRecord
+from .validated_work import require_positive, require_sha
+from .validated_work_store import AncestryRelation, ValidatedWorkRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,3 +168,52 @@ def refreshed_remote_authority(
         None,
         "Remote authority refreshed; automatic recovery authorized",
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedOnOpenPullRequest:
+    """Proof a validated head is published: its issue's one open PR carries it.
+
+    ``head_sha`` is the PR branch head, read fresh from the remote, and the
+    validated head is that head or an ancestor of it. It is a publication
+    route of its own - the completion's push, not recovery's - and the store
+    records it as the lineage's published head (``OBSERVED_OPEN_PR``).
+    """
+
+    pr_number: int
+    head_sha: str
+
+    def __post_init__(self) -> None:
+        require_positive(self.pr_number, "pr_number")
+        require_sha(self.head_sha)
+
+    def describe(self, validated_head_sha: str) -> str:
+        return (
+            f"validated head {validated_head_sha[:12]} is already published: open PR "
+            f"#{self.pr_number}'s head {self.head_sha[:12]} carries it"
+        )
+
+
+def carried_by_open_pull_request(
+    facts: ValidatedWorkRemoteFacts,
+    *,
+    repo_slug: str,
+    branch_name: str,
+    fetched_head_sha: str | None,
+    relation: AncestryRelation | None,
+) -> PublishedOnOpenPullRequest | None:
+    """Whether an open PR is PROVEN to carry the validated head; None proves nothing.
+
+    Every fact must agree: exactly one open PR, of this repository, on this
+    branch, whose head is the branch head the remote reported AND the head just
+    fetched; and the validated head is that head or an ancestor of it. A closed
+    PR, no PR, several PRs, a moved branch or an unanswerable ancestry leaves
+    the head to recovery, which publishes it and opens its PR.
+    """
+    pr_number, failure = classify_remote_pr(facts, repo_slug, branch_name)
+    if pr_number is None or failure is not None or fetched_head_sha != facts.branch_head_sha:
+        return None
+    if relation not in (AncestryRelation.EQUAL, AncestryRelation.ANCESTOR):
+        return None
+    assert fetched_head_sha is not None  # classify_remote_pr proved the branch head
+    return PublishedOnOpenPullRequest(pr_number, fetched_head_sha)

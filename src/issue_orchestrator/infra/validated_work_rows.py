@@ -37,6 +37,7 @@ from .validated_work_schema import SCHEMA
 from .validated_work_migrations import (
     migrate_attempt_rate_limit,
     migrate_evidence_base_gate,
+    migrate_published_pr_number,
     migrate_remote_baseline_authority,
 )
 
@@ -56,6 +57,7 @@ class DispositionDatabase:
             with conn:
                 migrate_evidence_base_gate(conn)
                 migrate_attempt_rate_limit(conn)
+                migrate_published_pr_number(conn)
             migrate_remote_baseline_authority(conn)
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(
@@ -160,9 +162,12 @@ def disposition(conn: sqlite3.Connection, record_id: str) -> ValidatedWorkDispos
         LineageRole(row["lineage_role"]),
         row["reason"],
         ValidatedWorkFailure(row["failure"]) if row["failure"] else None,
-        evidence.admission.evidence.observations.pr_number,
+        # The PR an open-PR publication proved carries the work outranks the
+        # one observed at capture: it is the PR published-review custody guards.
+        row["published_pr_number"] or evidence.admission.evidence.observations.pr_number,
         row["published_head_sha"] or None,
         resolution,
+        published_by_open_pr=row["published_pr_number"] > 0,  # stamped only on RECOVERED
     )
 
 
@@ -181,6 +186,7 @@ def publication(
         PublicationProvenance(row["published_via"]),
         row["published_pre_push_expected"],
         row["published_at"],
+        row["published_pr_number"],
     )
 
 

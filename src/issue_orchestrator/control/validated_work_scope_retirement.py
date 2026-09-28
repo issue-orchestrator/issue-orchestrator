@@ -13,6 +13,8 @@ holds is outside scope, and the store refuses if that set changed meanwhile.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -35,6 +37,7 @@ from ..ports.validated_work_drain import RecoveryDrainAdmission, ValidatedWorkSc
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
 from ..ports.validated_work_store import ValidatedWorkStore
+from .validated_work_published_head import OpenPullRequestPublication
 
 if TYPE_CHECKING:
     from .recovery_drain_liveness import RecoveryDrainLiveness
@@ -68,6 +71,9 @@ class ScopeRetirement:
         return RecoveryAttemptPending(self.message)
 
 RETIREMENT_ACTOR = "orchestrator:validated-work-scope"
+#: How often a parked in-scope record is asked again whether its issue's open
+#: PR now carries it (one uncached GitHub read per record per interval).
+PUBLICATION_RECHECK_SECONDS = 15 * 60
 
 
 class OutOfScopeRecordRetirement:
@@ -134,6 +140,8 @@ class _Judgement:
 
     outcome: ActionOutcome
     retired: bool = False
+    # Resolved as contained in the head its issue's open PR publishes.
+    published: bool = False
 
     @classmethod
     def held(cls, reason: str) -> "_Judgement":
@@ -145,6 +153,10 @@ class _Judgement:
 #: The record moved on (new evidence, or resolved) before it was judged: the
 #: question is answered.
 _MOVED_ON = _Judgement(ActionOutcome.done())
+#: The liveness owner held the judgement, or it failed without resolving.
+_NOT_JUDGED = _Judgement(ActionOutcome.done())
+#: The issue's open PR publishes the record's head; the lineage now says so.
+_PUBLISHED = _Judgement(ActionOutcome.done(), published=True)
 #: The retirement owner's typed outcome. A refused retirement (CHANGED)
 #: repeated under unchanged facts is a loop, so it spends a budget.
 _BY_STATUS = {
@@ -163,19 +175,35 @@ class OutOfScopeRetirementSweep:
     the records they select. PARKED records awaiting approval, FAILED records and
     non-HEAD lineage peers are selected by neither, yet a pre-rule tech-lead
     capture in those states blocks its issue the same way. This bounded,
-    round-robin lane reaches them. A record proven in scope is remembered by
-    its current evidence id -- evidence and its run role are immutable -- so it
-    is proven once per process, not once per tick.
+    round-robin lane reaches them.
+
+    An in-scope record gets one more question: does the issue's open PR
+    already publish its head? Capture records that publication before it
+    admits (porchpin #186), but a record captured before it did - a rebased
+    rework parked ``divergent_validated_heads`` against the lineage's older
+    head - is resolved here the same way, through the store's lineage owner.
+    A record proven in scope is remembered by its current evidence id: its
+    role is immutable, so custody is proven once per process. Whether an open
+    PR carries it is not immutable - a later push may publish a parked head
+    without any new capture - so that question is asked again, but only every
+    ``publication_recheck_seconds``: it is an uncached GitHub read that a
+    long-parked record must not spend on every pass.
     """
 
     def __init__(self, *, source: ValidatedWorkScopeSource, store: ValidatedWorkStore,
                  execution: ValidatedWorkExecutionOwner, retirement: OutOfScopeRecordRetirement,
-                 batch_size: int, liveness: "RecoveryDrainLiveness") -> None:
+                 publication: OpenPullRequestPublication,
+                 batch_size: int, liveness: "RecoveryDrainLiveness",
+                 publication_recheck_seconds: float = PUBLICATION_RECHECK_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         require_positive(batch_size, "scope sweep batch size")
         self._source, self._store, self._execution = source, store, execution
         self._retirement, self._batch_size = retirement, batch_size
+        self._publication = publication
+        self._recheck, self._clock = publication_recheck_seconds, clock
         self._liveness = liveness
-        self._owned: set[str] = set()
+        # Evidence proven in scope -> when to ask again whether an open PR carries it.
+        self._owned: dict[str, float] = {}
         self._after = ""
 
     def tick(self, admission: RecoveryDrainAdmission) -> RecoveryScopeSweepReport:
@@ -184,17 +212,22 @@ class OutOfScopeRetirementSweep:
         except Exception as error:
             return RecoveryScopeSweepReport((), f"Retained record scan failed: {error}")
         retired: list[str] = []
+        published: list[str] = []
         for request in requests:
             if admission() is RecoveryDrainMode.STOPPED:
                 break
             self._after = request.record_id
-            if request.evidence_id in self._owned:
+            due = self._owned.get(request.evidence_id)
+            if due is not None and self._clock() < due:
                 continue
-            if self._judge_bounded(request):
+            judgement = self._judge_bounded(request)
+            if judgement.retired:
                 retired.append(request.record_id)
+            elif judgement.published:
+                published.append(request.record_id)
         if len(requests) < self._batch_size:
             self._after = ""
-        return RecoveryScopeSweepReport(tuple(retired))
+        return RecoveryScopeSweepReport(tuple(retired), published=tuple(published))
 
     def _next(self) -> tuple[RecoveryRecordRequest, ...]:
         requests = self._source.unresolved_records(after_record_id=self._after, limit=self._batch_size)
@@ -203,25 +236,39 @@ class OutOfScopeRetirementSweep:
             requests = self._source.unresolved_records(after_record_id="", limit=self._batch_size)
         return requests
 
-    def _judge_bounded(self, request: RecoveryRecordRequest) -> bool:
-        """Judge one record through the drain's liveness (#7350); whether it
-        was retired. A judgement that fails the same way every pass is held,
+    def _judge_bounded(self, request: RecoveryRecordRequest) -> "_Judgement":
+        """Judge one record through the drain's liveness (#7350); what it
+        resolved. A judgement that fails the same way every pass is held,
         then parked, like any other replanned action."""
         key = self._liveness.scope_key(request)
         if key is None or not self._liveness.admit(key).admitted:
-            return False
+            return _NOT_JUDGED
         try:
             judgement = self._judge(request)
         except Exception as error:
             logger.exception("Recovery scope judgement failed for record %s", request.record_id)
-            # A retirement that committed before a later step raised has still
-            # resolved the record: settle_error then releases every lane.
-            return self._liveness.settle_error(key, error)
+            # A write that committed before a later step raised (a retirement,
+            # or an open PR's publication) may have resolved the record:
+            # settle_error then releases every lane, and the record's durable
+            # resolution - never the lane that raised - says which it was.
+            if not self._liveness.settle_error(key, error):
+                return _NOT_JUDGED
+            return self._resolved_as(request.record_id)
+
         self._liveness.record(key, judgement.outcome)
-        if judgement.retired:
+        if judgement.retired or judgement.published:
             # Resolved: no lane's question about this record is still open.
             self._liveness.resolve_record(request.record_id)
-        return judgement.retired
+        return judgement
+
+    def _resolved_as(self, record_id: str) -> "_Judgement":
+        """Report a record found resolved by what the store recorded."""
+        record = self._store.record_for_id(record_id)
+        if record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE:
+            return _BY_STATUS[ScopeRetirementStatus.RETIRED]
+        if record.disposition.published_by_open_pr:
+            return _PUBLISHED
+        return _NOT_JUDGED
 
     def _judge(self, request: RecoveryRecordRequest) -> "_Judgement":
         """What judging the record came to, in the liveness owner's terms."""
@@ -238,8 +285,12 @@ class OutOfScopeRetirementSweep:
                     return _MOVED_ON
                 # Prove before claiming: an in-scope record is never claimed here,
                 # so this lane cannot contend with its publication or abandonment.
-                if self._retirement.recovery_owns_record(record):
-                    self._owned.add(request.evidence_id)
+                if (request.evidence_id in self._owned
+                        or self._retirement.recovery_owns_record(record)):
+                    if self._publication.record(record):
+                        self._owned.pop(request.evidence_id, None)
+                        return _PUBLISHED
+                    self._owned[request.evidence_id] = self._clock() + self._recheck
                     return _BY_STATUS[ScopeRetirementStatus.IN_SCOPE]
                 claim = self._store.acquire_claim(
                     request.record_id, expected_states=frozenset({record.disposition.state}),
@@ -250,7 +301,7 @@ class OutOfScopeRetirementSweep:
                 self._execution.remember_claim(token, claim)
                 outcome = self._retirement.retire_if_outside(token, claim, record)
                 if outcome.status is ScopeRetirementStatus.IN_SCOPE:
-                    self._owned.add(request.evidence_id)
+                    self._owned[request.evidence_id] = self._clock() + self._recheck
                 return _BY_STATUS[outcome.status]
             finally:
                 self._execution.relinquish(token)

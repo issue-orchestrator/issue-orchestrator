@@ -21,12 +21,15 @@ from ..domain.recovery_block import (
     RecoveryAdmissionDeferred,
     RecoveryMutationBusy,
 )
+from ..domain.validated_work import ValidatedWorkKey
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
+from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
 from ..domain.validated_work_store import (
     AdmissionOutcome,
     EvidenceAdmission,
     EvidenceLookup,
     EvidenceRow,
+    OpenPrPublicationStatus,
 )
 from ..domain.validated_work_execution import (
     ValidatedWorkClaimLost,
@@ -109,6 +112,29 @@ class AggregateRecoveryBlocks:
                     f"durable admission awaits block reconciliation: {error}"
                 ) from error
             return outcome
+
+    def record_open_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
+    ) -> OpenPrPublicationStatus:
+        """Record the open PR's published head, then re-project the issue's block.
+
+        Reclassifying the lineage against that head can resolve every record
+        it contains, so the block is projected under the same issue hold as
+        an admission. A failed projection is healed by the drain's block sweep.
+        """
+        if key.repo_slug != self._repo:
+            raise ValueError("publication names another repository")
+        with self._hold_issue(key.issue_number):
+            # Only records that were unresolved can change: a local read spares
+            # the fresh GitHub label read when nothing could have.
+            held = self._admission.has_unresolved_work(key.issue_number)
+            recorded = self._admission.record_open_pr_publication(
+                key, published=published, observed_at=observed_at,
+            )
+            if held and recorded.reclassified_lineage:
+                snapshot = self._records.recovery_block_snapshot(self._repo, key.issue_number)
+                self._project(snapshot.plan(), IssueGateProjectionEffects())
+            return recorded
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._admission.for_issue(issue_number)

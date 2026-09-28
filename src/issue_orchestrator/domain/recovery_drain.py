@@ -23,16 +23,18 @@ class RecoveryDrainItem:
 
 @dataclass(frozen=True, slots=True)
 class RecoveryScopeSweepReport:
-    """Records the scope sweep resolved as outside recovery scope (#7323)."""
+    """Records the scope sweep resolved: as outside recovery scope (#7323), or
+    as contained in the head their issue's open PR publishes (porchpin #186)."""
 
     retired: tuple[str, ...]
     error: str = ""
+    published: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if type(self.retired) is not tuple or any(
-            type(item) is not str or not item for item in self.retired
-        ):
-            raise ValueError("retired records must be an immutable tuple of ids")
+        for name in ("retired", "published"):
+            ids = getattr(self, name)
+            if type(ids) is not tuple or any(type(item) is not str or not item for item in ids):
+                raise ValueError(f"{name} records must be an immutable tuple of ids")
         if type(self.error) is not str:
             raise ValueError("scope sweep error must be text")
 

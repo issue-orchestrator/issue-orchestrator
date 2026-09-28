@@ -37,6 +37,8 @@ class LineageDecision:
     superseded_by: str = ""
     waits_on: str = ""
     contained_at: str = ""
+    # The open PR the containing head was observed on (OBSERVED_OPEN_PR), else 0.
+    contained_pr: int = 0
     reachable: bool = True
 
     @property
@@ -219,6 +221,7 @@ class LineageClassifier:
                     ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD.value,
                     fact.published_head_sha,
                 )
+                decision.contained_pr = fact.published_pr_number
             else:
                 decision.state, decision.failure, decision.reason = (
                     State.FAILED,
@@ -378,12 +381,14 @@ class LineageClassifier:
         )
         if decision.contained_at:
             conn.execute(
-                "UPDATE validated_work_records SET published_head_sha=?, resolution_kind=?, resolved_at=?, terminal_at=?, finalization_phase='complete' WHERE record_id=?",
+                "UPDATE validated_work_records SET published_head_sha=?, resolution_kind=?, resolved_at=?, terminal_at=?, "
+                "finalization_phase='complete', published_pr_number=? WHERE record_id=?",
                 (
                     decision.contained_at,
                     ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD.value,
                     at,
                     at,
+                    decision.contained_pr,
                     decision.record_id,
                 ),
             )

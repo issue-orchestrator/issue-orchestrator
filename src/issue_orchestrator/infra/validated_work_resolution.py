@@ -125,9 +125,12 @@ class PublicationResolver:
         # Equal observations must not erase an already proven pre-push baseline.
         if old_fact is None or old_fact.published_head_sha != head:
             conn.execute(
-                "INSERT INTO validated_work_lineage VALUES (?,?,?,?,?,?) ON CONFLICT(lineage_key) DO UPDATE SET "
+                "INSERT INTO validated_work_lineage (lineage_key,published_head_sha,published_by_record_id,"
+                "published_via,published_pre_push_expected,published_at,published_pr_number) VALUES (?,?,?,?,?,?,0) "
+                "ON CONFLICT(lineage_key) DO UPDATE SET "
                 "published_head_sha=excluded.published_head_sha,published_by_record_id=excluded.published_by_record_id,"
-                "published_via=excluded.published_via,published_pre_push_expected=excluded.published_pre_push_expected,published_at=excluded.published_at",
+                "published_via=excluded.published_via,published_pre_push_expected=excluded.published_pre_push_expected,"
+                "published_at=excluded.published_at,published_pr_number=0",
                 (row["lineage_key"], head, record_id, via.value, expected, at),
             )
         self._lineage.classify(conn, row["lineage_key"], at)

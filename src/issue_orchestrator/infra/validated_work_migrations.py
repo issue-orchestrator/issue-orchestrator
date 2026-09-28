@@ -46,6 +46,17 @@ def migrate_attempt_rate_limit(conn: sqlite3.Connection) -> None:
         )
 
 
+def migrate_published_pr_number(conn: sqlite3.Connection) -> None:
+    """Add the open PR an OBSERVED_OPEN_PR publication names (§2.7): on the
+    lineage fact, and on each record resolved inside it. Nothing before it."""
+    for table in ("validated_work_records", "validated_work_lineage"):
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "published_pr_number" not in columns:
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN published_pr_number INTEGER NOT NULL DEFAULT 0"
+            )
+
+
 def migrate_remote_baseline_authority(conn: sqlite3.Connection) -> None:
     """Remove authority that predates the observed/unobserved provenance bit.
 

@@ -174,9 +174,15 @@ class LineagePublication:
     published_via: PublicationProvenance
     published_pre_push_expected: str
     published_at: str
+    # The open PR an OBSERVED_OPEN_PR publication was observed on; 0 otherwise.
+    published_pr_number: int = 0
 
     def __post_init__(self) -> None:
         require_text(self.lineage_key, "lineage_key")
+        if (self.published_pr_number > 0) is not (
+            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
+        ):
+            raise ValueError("exactly an open-PR publication names its PR")
         require_text(self.published_by_record_id, "published_by_record_id")
         require_sha(self.published_head_sha)
         require_text(self.published_at, "published_at")
@@ -184,8 +190,8 @@ class LineagePublication:
             raise ValueError("publication provenance must be typed")
         if self.published_pre_push_expected:
             require_sha(self.published_pre_push_expected)
-            if self.published_via is PublicationProvenance.OBSERVED_MERGE:
-                raise ValueError("an observed merge proves no pre-push baseline")
+            if self.published_via is not PublicationProvenance.PUSHED_BY_OWNER:
+                raise ValueError("an observed publication proves no pre-push baseline")
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +201,20 @@ class PublicationResolution:
     resolved_ancestors: tuple[ValidatedWorkDisposition, ...]
     failed_ancestors: tuple[ValidatedWorkDisposition, ...]
     classified_waiters: tuple[ValidatedWorkDisposition, ...]
+
+
+class OpenPrPublicationStatus(StrEnum):
+    """What recording an open PR's publication did to the lineage fact."""
+
+    ADVANCED = "advanced"  # the fact now names the PR head; the lineage was reclassified
+    ALREADY_PUBLISHED = "already_published"  # the fact already contains the PR head
+    PUBLICATION_IN_FLIGHT = "publication_in_flight"  # recovery owns the remote expectation now
+    CONTAINMENT_UNPROVEN = "containment_unproven"  # the store could not verify the commits
+
+    @property
+    def reclassified_lineage(self) -> bool:
+        """Whether the lineage's records were reclassified, so its block may have moved."""
+        return self is OpenPrPublicationStatus.ADVANCED
 
 
 class LineageResolutionRefusal(StrEnum):

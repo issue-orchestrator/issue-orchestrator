@@ -666,6 +666,7 @@ class PublicationProvenance(StrEnum):
 |---|---|---|
 | `RECOVERED(PUBLISHED)` — §4.4 drain | the pushed `validated_head_sha` | the recorded pre-push expectation |
 | `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` — §3.5 merged PR | the observed merged head, verified to contain the validated head | `''` — we did not push, so we have no baseline to prove |
+| `OBSERVED_OPEN_PR`, from §2.7: the completion's own push, seen on the issue's open PR | the PR head, verified to contain a validated head of the lineage | `''`, because we did not push it. This is the one route that follows the branch wherever the PR head moved, including a rebased rework's force-push |
 
 Both are written in the same transaction as their record's resolution, and only when
 the new head is a descendant of (or equal to) the recorded one, so the fact moves
@@ -1386,6 +1387,95 @@ records, one stranded in `PUBLISHING`). Review runs publish nothing.
   and claims only an out-of-scope record, so it never contends with an in-scope
   record's publication or operator abandonment; a record proven in scope is
   remembered by its immutable current evidence id.
+
+### 2.7 The completion's own push is a publication route (porchpin #186)
+
+A coding or rework completion that pushes its branch and reuses or opens the
+issue's PR has published its validated head. Nothing recorded that. The
+lineage fact (§2.1.4) moved only when recovery pushed or a merge was
+observed. Capture then admitted the run's validated heads and classified them
+against the lineage's older published head:
+
+- A rework that rebased onto a moved base force-pushes a head that diverges
+  from that fact. Every capture of it parked `DIVERGENT_VALIDATED_HEADS` and
+  put `recovery-pending` back on an issue whose PR was already published and
+  under review. On porchpin (2026-09-28) this parked 7 records on #186, #293,
+  #320 and #353.
+- A first coding run's capture was `QUEUED` behind `recovery-pending` until the
+  drain found its PR already at the target (#7340).
+
+So the open PR is the third verified publication route:
+
+| Route | `published_head_sha` | `published_pre_push_expected` |
+|---|---|---|
+| `OBSERVED_OPEN_PR`: the completion's push, observed on its open PR | the PR's branch head, which the store verified contains a validated head of the lineage | `''`, because we did not push it and so have no baseline |
+
+**The proof** is `carried_by_open_pull_request`
+(`domain/validated_work_remote_authority.py`), and every fact must agree:
+
+- exactly one open PR of this repository on the run's branch
+  (`classify_remote_pr`);
+- the PR head equals the branch head the remote reported and the head just
+  fetched (`OpenPullRequestCarriage` fetches fresh and never trusts a cached
+  tracking ref);
+- the validated head equals that head or is an ancestor of it.
+
+No PR, several PRs, a closed PR, a moved branch, an unreadable remote or an
+unanswerable ancestry each prove nothing, and admission proceeds as before.
+
+**The record** is `record_open_pr_publication`
+(`infra/validated_work_open_pr.py`), one write transaction owned by the store:
+
+- The store re-verifies the containment with its own ancestry. It never takes
+  the caller's word for it.
+- If a record in the lineage is `PUBLISHING`, the store refuses. That
+  publication owns the remote expectation (§4.4e).
+- The fact follows the PR. It moves to the PR head wherever that head is
+  relative to the recorded one: a descendant, a divergent head after a
+  rebased rework's force-push, or even an ancestor after a force-push back.
+  This is the one exception to "forward only", and it is deliberate. The PR
+  head is what the branch publishes now, and the store has just proven that
+  it carries validated work of this lineage. Keeping a stale head would park
+  every later capture as divergent. Two cases write nothing: the head recovery
+  itself pushed, and this PR's already recorded publication of the same head.
+- After the write, the store reclassifies the lineage (§2.1.4 table). Records
+  the PR head contains resolve `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` and keep
+  their escrow and pins for the window. Each one this write resolved also gets
+  the PR stored in `published_pr_number`. The classifier copies it from the
+  lineage fact to every record it resolves inside that head, whether the record
+  was resolved now or is admitted later. A record captured before its PR
+  existed then still names the PR that carries it, and published-review
+  custody keeps guarding that PR after later pushes. The disposition exposes
+  the stamp as `published_by_open_pr`. Divergent unresolved
+  records stay parked, because the PR genuinely does not carry them. A later
+  unpublished descendant, captured with the PR head as its expectation, is
+  sequenced from that head exactly as §2.1.4 prescribes for
+  `OBSERVED_MERGE`.
+
+**Who records it:**
+
+- **Capture** (`ValidatedWorkPreservationService._capture`) records the
+  publication before it admits the run's head. It reuses the one remote
+  observation per branch that the capture itself makes. The admission then
+  resolves as contained, so `recovery-pending` is never asserted, and the
+  RECOVERED record keeps the PR under published-review custody (#7293).
+  `recovery_holds_captured_work` does not count records that are
+  `published_by_open_pr`, because recovery routed nothing for them. A halted
+  exchange therefore keeps its own block rather than deferring to a recovery
+  that will never act (#7295). The answer is read from the durable record, so
+  a replayed capture gives it again. Evidence that fails re-verification stays
+  `FAILED`, and recovery holds it.
+- **Records captured before this rule** are reached by
+  `OutOfScopeRetirementSweep`. For every in-scope record that is not
+  `PUBLISHING`, it asks `OpenPullRequestPublication`. That records the
+  publication through `AggregateRecoveryBlocks`, which re-projects the issue's
+  block. The porchpin records resolve on the first drain pass after the
+  upgrade. A record's scope, once proven, is remembered for the process. Its
+  publication is asked again only every `PUBLICATION_RECHECK_SECONDS` (15
+  minutes), because it is an uncached GitHub read. A later push can still
+  release a parked record without any new capture. Cold readers require the
+  new column, so an unmigrated store reads as `UNSUPPORTED_SCHEMA` instead of
+  failing in the mapper.
 
 ## 3. Composition and control flow
 

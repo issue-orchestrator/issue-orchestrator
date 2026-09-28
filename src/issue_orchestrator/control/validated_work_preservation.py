@@ -12,7 +12,7 @@ from ..domain.prepared_completion import PreparedCompletionEvidence
 from ..domain.validated_work import ValidatedWorkFailure
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
 from ..domain.publication_remote import PublicationRemoteError
-from ..domain.validated_work import RemoteBaselineStatus, ValidatedWorkState
+from ..domain.validated_work import RemoteBaselineStatus, ValidatedWorkEvidence, ValidatedWorkState
 from ..domain.validated_work_capture import (
     AutomaticCaptureDecision, ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest,
     candidate_evidence, candidate_key, newest_per_work,
@@ -27,6 +27,7 @@ from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.working_copy import WorkingCopy
 from .validated_work_capture import ValidatedWorkCustody
 from .validated_work_escrow import EscrowReconciliation
+from .validated_work_published_head import OpenPullRequestCarriage
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,8 @@ class ValidatedWorkPreservationService:
     def __init__(self, *, intake: CompletionIntakeRuntime, store: ValidatedWorkAdmissionStore,
                  custody: ValidatedWorkCustody, repair: EscrowReconciliation,
                  working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver,
-                 base_branch: Callable[[int, Path], str | None]) -> None:
+                 base_branch: Callable[[int, Path], str | None],
+                 carriage: OpenPullRequestCarriage) -> None:
         self._intake = intake
         self._store = store
         self._custody = custody
@@ -44,6 +46,7 @@ class ValidatedWorkPreservationService:
         self._observer = observer
         # The ref a head must be ahead of to be work: the base its PR targets.
         self._base_branch = base_branch
+        self._carriage = carriage
 
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._store.has_unresolved_work(issue_number)
@@ -116,6 +119,40 @@ class ValidatedWorkPreservationService:
             )
             return False
         return True
+
+    def _record_publication(
+        self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
+        observed: ValidatedWorkRemoteFacts, evidence: ValidatedWorkEvidence,
+    ) -> None:
+        """Before admission: record the head the issue's open PR already publishes.
+
+        When the completion's own push put this validated head on its open PR,
+        that PR head is the lineage's published head. Recording it first makes
+        admission resolve the capture as contained in it
+        (RECOVERED, ``recovery-pending`` never asserted, the PR's work under
+        published-review custody) instead of classifying a rebased rework
+        against the lineage's older head and parking it divergent (porchpin
+        #186). No proof, no record: the capture is admitted as before.
+
+        An in-flight recovery publication keeps the lineage, and then recovery
+        holds the capture like any other.
+        """
+        key = evidence.identity.key
+        published = self._carriage.carried(
+            observed, repo_slug=key.repo_slug, branch_name=key.branch_name,
+            validated_head_sha=key.validated_head_sha,
+            repository=candidate.entry.run.worktree_path,
+        )
+        if published is None:
+            return
+        status = self._store.record_open_pr_publication(
+            key, published=published, observed_at=command.run_evidence.observed_at,
+        )
+        logger.info(
+            "[VALIDATED_WORK] Issue #%d run %s: %s; lineage publication %s",
+            command.issue_number, candidate.run.run.run_id,
+            published.describe(key.validated_head_sha), status.value,
+        )
 
     def _pull_request_base(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
@@ -207,6 +244,8 @@ class ValidatedWorkPreservationService:
             head=head, branch_verified=bound, captured_at=command.run_evidence.observed_at,
             remote_baseline_status=remote_status,
             expected_remote_head_sha=expected_remote_head_sha, pr_number=pr_number)
+        if isinstance(observed, ValidatedWorkRemoteFacts):
+            self._record_publication(candidate, command, observed, evidence)
         failure = (ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION
                    if head != candidate.validation.head_sha else
                    ValidatedWorkFailure.WORKSPACE_INTEGRITY if not bound else remote_failure)
