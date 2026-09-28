@@ -122,12 +122,20 @@ class CharterDecisionSummary(_Frozen):
     action_kind: str
     target_number: int | None
     outcome: str
+    #: What became of it: ``applied``/``withheld``/... (the applier's linked
+    #: result), a proposal lifecycle, ``unlinked`` or ``advice``.
+    effect: str
     took_effect: bool
+    #: The applier's words when it did not apply the action.
+    execution_reason: str | None
 
 
 class TechLeadSection(_Frozen):
     #: ``[role, outcome]``.
     charter_by_role_outcome: tuple[Count, ...]
+    #: ``[role, action_kind, outcome, effect]``: what the charter allowed and
+    #: what then became of it, e.g. executed actions the applier ``withheld``.
+    charter_effects: tuple[Count, ...]
     recent_decisions: tuple[CharterDecisionSummary, ...]
     #: ``[state]``.
     promotions_by_state: tuple[Count, ...]

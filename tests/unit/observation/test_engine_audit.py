@@ -66,6 +66,11 @@ from issue_orchestrator.observation.engine_audit import (
 from issue_orchestrator.ports.pending_work_claim_store import QuarantineCause
 from issue_orchestrator.ports.timeline_store import TimelineRecord
 from tests.unit.test_github_http import _client_with_transport
+from issue_orchestrator.domain.tech_lead_charter_decisions import (
+    CharterExecutionLink,
+    CharterExecutionResult,
+    decision_key,
+)
 from tests.unit.test_tech_lead_charter_ledger import _decision
 from tests.unit.validated_work_support import Rig, begin, capture, claim, finalize
 
@@ -125,7 +130,17 @@ def _tech_lead(state: Path) -> None:
             _decision("A1", "kill_hung_session", at="2026-09-26T10:00:00+00:00"),
             _decision("A2", "create_issue", target=None, at="2026-09-26T11:00:00+00:00"),
             _decision("A3", "create_issue", target=None, at="2026-09-26T12:00:00+00:00"),
+            _decision("A4", "create_issue", target=None, at="2026-09-26T12:30:00+00:00"),
         ]
+    )
+    # What the applier then did, linked back through the ledger's own owner.
+    store.charter_ledger.link_execution_outcomes(
+        [
+            CharterExecutionLink(decision_key("run-1", "A2"), CharterExecutionResult.WITHHELD, "held by gh guard"),
+            CharterExecutionLink(decision_key("run-1", "A3"), CharterExecutionResult.WITHHELD, "held by gh guard"),
+            CharterExecutionLink(decision_key("run-1", "A4"), CharterExecutionResult.APPLIED),
+        ],
+        at="2026-09-26T13:00:00+00:00",
     )
     for n, state_name in enumerate(("promoted", "promoted", "declined")):
         store.record_promotion(
@@ -317,10 +332,21 @@ def test_the_audit_reports_every_store_through_its_owner(state, tmp_path, monkey
     tl = report.tech_lead
     assert tl is not None
     assert [(c.key, c.count) for c in tl.charter_by_role_outcome] == [
-        (("flow", "executed"), 2),
+        (("flow", "executed"), 3),
         (("flow", "proposed"), 1),
     ]
-    assert [d.action_kind for d in tl.recent_decisions] == ["create_issue", "create_issue", "kill_hung_session"]
+    # An executed action is not an applied one: the applier withheld two.
+    assert [(c.key, c.count) for c in tl.charter_effects] == [
+        (("flow", "create_issue", "executed", "withheld"), 2),
+        (("flow", "create_issue", "executed", "applied"), 1),
+        (("flow", "kill_hung_session", "proposed", "awaiting_approval"), 1),
+    ]
+    assert [(d.effect, d.took_effect, d.execution_reason) for d in tl.recent_decisions] == [
+        ("applied", True, None),
+        ("withheld", False, "held by gh guard"),
+        ("withheld", False, "held by gh guard"),
+        ("awaiting_approval", False, None),
+    ]
     assert {(c.key, c.count) for c in tl.promotions_by_state} == {(("promoted",), 2), (("declined",), 1)}
 
     claims = report.claims

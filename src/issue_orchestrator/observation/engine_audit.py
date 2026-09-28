@@ -314,6 +314,10 @@ def _tech_lead(readers: TechLeadReaders) -> TechLeadSection:
             Count(key=(role, outcome), count=n)
             for role, outcome, n in readers.charter.role_outcome_counts()
         ),
+        charter_effects=tuple(
+            Count(key=(role, kind, outcome, effect), count=n)
+            for role, kind, outcome, effect, n in readers.charter.effect_counts()
+        ),
         recent_decisions=tuple(
             CharterDecisionSummary(
                 decided_at=d.decided_at,
@@ -321,7 +325,9 @@ def _tech_lead(readers: TechLeadReaders) -> TechLeadSection:
                 action_kind=d.action_kind,
                 target_number=d.target_number,
                 outcome=d.outcome.value,
+                effect=d.effect,
                 took_effect=d.took_effect,
+                execution_reason=d.execution_reason,
             )
             for d in readers.charter.list_recent(limit=RECENT_DECISIONS)
         ),

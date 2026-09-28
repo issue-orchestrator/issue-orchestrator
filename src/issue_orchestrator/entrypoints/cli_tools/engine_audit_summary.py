@@ -83,12 +83,12 @@ def _liveness(lv: ActionLivenessSection) -> list[str]:
 
 def _tech_lead(tl: TechLeadSection) -> list[str]:
     return [
-        "== charter decisions (role, outcome)",
-        *_counts(tl.charter_by_role_outcome),
+        "== charter decisions: role | action | outcome | effect",
+        *_counts(tl.charter_effects),
         "== charter decisions: most recent",
         *(
             f"  {d.decided_at} | {d.role} | {d.action_kind} | {d.target_number} | {d.outcome}"
-            f" | took_effect={d.took_effect}"
+            f" | {d.effect}" + (f" ({d.execution_reason[:80]})" if d.execution_reason else "")
             for d in tl.recent_decisions
         ),
         "== promoted findings by state",
