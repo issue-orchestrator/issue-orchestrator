@@ -190,6 +190,10 @@ def test_act_level_kill_follows_the_flow_role(
         assert record.lifecycle is CharterProposalLifecycle.AWAITING_APPROVAL
     else:
         assert record.lifecycle is None
+    # #7362: only an effect of an EXECUTED decision carries it, for its applier
+    # result to link back; a gated or advisory filing links through its own path.
+    executed = record.outcome is CharterOutcome.EXECUTED
+    assert planned[0].charter_decisions == ((record.decision_id,) if executed else ())
 
 
 @pytest.mark.parametrize(

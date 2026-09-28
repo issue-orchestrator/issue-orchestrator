@@ -609,6 +609,11 @@ def _latest_remedy(
             _clock(applied, "remedy applied"),
             _basis(decision),
         )
+    # Executed but refused, failed, withheld, parked or not yet applied
+    # (#7362): it owns nothing, and the Unowned reason names it. A park that
+    # still stands holds the item through the liveness owner's own fact
+    # (``_held``), which a person's release takes away; the record's PARKED
+    # is only the history of why that remedy never took effect.
     return None
 
 
@@ -642,7 +647,36 @@ def _nobody_reason(
         what = f"Its last session ended {item.history_status.replace('_', ' ')}"
     else:
         what = "Blocked"
-    return f"{what}; nothing has picked it up. {_untied_remedy(item)}{_sweep_hint(board)}"
+    return (
+        f"{what}; nothing has picked it up."
+        f" {_unapplied_remedy(item) or _untied_remedy(item)}{_sweep_hint(board)}"
+    )
+
+
+def _unapplied_remedy(item: ItemCustodyFacts) -> str:
+    """Name the newest remedy the tech lead decided to run that did not take effect.
+
+    Only when it is the item's latest remedy: one that did take effect since
+    speaks for the item instead (#7362).
+    """
+    remedial = [
+        record
+        for record in item.decisions
+        if record.target_number == item.issue_number and record.is_remedy
+    ]
+    decision = max(remedial, key=_effect_order, default=None)
+    if decision is None or decision.outcome is not CharterOutcome.EXECUTED or decision.took_effect:
+        return ""
+    action = decision.action_kind.replace("_", " ")
+    if decision.execution is None:
+        return (
+            f"The tech lead decided to run {action} at {decision.decided_at}, but no"
+            " result of it is recorded, so nothing shows it took effect. "
+        )
+    return (
+        f"The tech lead's remedy ({action}) did not take effect:"
+        f" {decision.execution.value}, {decision.execution_reason}. "
+    )
 
 
 def _untied_remedy(item: ItemCustodyFacts) -> str:

@@ -81,7 +81,7 @@ def _settle() -> SettleTechLeadPromotionAction:
 class _Engine:
     """Ticks the real planning cycle; the planner and applier are port fakes."""
 
-    def __init__(self, sample_config: Config, planned, apply, *, labels=None, policy=POLICY):
+    def __init__(self, sample_config: Config, planned, apply, *, labels=None, policy=POLICY, charter=None):
         self.clock = ManualClock()
         self.escalation = RecordingEscalation()
         self.store = InMemoryActionLivenessStore()
@@ -114,6 +114,7 @@ class _Engine:
             pending_work_claims=MagicMock(),
         )
         self.tick_count = 0
+        self.charter = charter
 
     def _snapshot(self) -> OrchestratorSnapshot:
         return OrchestratorSnapshot(
@@ -157,7 +158,9 @@ class _Engine:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
-            action_liveness=PlannedActionLiveness(self.owner, escalation_label=NEEDS_HUMAN),
+            action_liveness=PlannedActionLiveness(
+                self.owner, escalation_label=NEEDS_HUMAN, charter=self.charter
+            ),
         )
         self.clock.advance(advance)
         self.tick_count += 1
@@ -1090,6 +1093,82 @@ def test_a_wrapped_stable_operation_supersedes_its_old_park(sample_config) -> No
 
     assert engine.owner.parked() == ()
     assert engine.escalation.unblocks == [(229, True)]
+
+
+def test_a_parked_executed_decision_shows_the_park_on_its_record(sample_config) -> None:
+    """#7362: an ungated promotion the liveness owner stops retrying is linked
+    back to its charter decision as parked, not left reading as executed."""
+    from issue_orchestrator.control.tech_lead_charter_policy import apply_charter_audited_action
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.unit.test_tech_lead_charter_ledger import _executed_promotion
+
+    audited = _executed_promotion()
+    store = InMemoryTechLeadAuthorityStore()
+    engine = _Engine(
+        sample_config,
+        planned=lambda: [audited],
+        apply=lambda action: apply_charter_audited_action(
+            action, authority=store,
+            apply_action=lambda effect: ActionResult.fail(effect, "403 from o/r"),
+        ),
+        charter=store.charter_ledger,
+    )
+
+    engine.tick()
+    [row] = store.charter_ledger.list_recent()
+    assert (row.execution, row.execution_reason) == (CharterExecutionResult.FAILED, "403 from o/r")
+    for _ in range(POLICY.max_attempts - 1):
+        engine.tick()
+
+    assert len(engine.owner.parked()) == 1
+    [row] = store.charter_ledger.list_recent()
+    assert row.execution is CharterExecutionResult.PARKED
+    assert "stopped retrying it" in (row.execution_reason or "")
+    assert "403 from o/r" in (row.execution_reason or "")
+    assert not row.took_effect
+
+
+def test_a_park_never_overrides_an_effect_that_committed(sample_config) -> None:
+    """#7362 review r4: the filing commits and is linked applied, then the plan
+    step fails after it every tick until the liveness owner parks it. The park
+    is the step's; the record keeps saying the effect applied."""
+    from issue_orchestrator.control.tech_lead_charter_policy import apply_charter_audited_action
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.unit.test_tech_lead_charter_ledger import _executed_promotion
+
+    audited = _executed_promotion()
+    store = InMemoryTechLeadAuthorityStore()
+    filed: list = []
+
+    def apply(action):
+        apply_charter_audited_action(
+            action, authority=store,
+            apply_action=lambda effect: filed.append(effect) or ActionResult.ok(effect),
+        )
+        raise RuntimeError("step bookkeeping failed after the filing")
+
+    engine = _Engine(sample_config, planned=lambda: [audited], apply=apply, charter=store.charter_ledger)
+    for _ in range(POLICY.max_attempts):
+        engine.tick()
+
+    assert len(filed) == POLICY.max_attempts and len(engine.owner.parked()) == 1
+    [row] = store.charter_ledger.list_recent()
+    assert row.execution is CharterExecutionResult.APPLIED and row.took_effect
+
+
+def test_a_plan_with_an_executed_decision_needs_the_charter_ledger(sample_config) -> None:
+    """Without it a park could not be linked back, so admission refuses (#7362)."""
+    from tests.unit.test_tech_lead_charter_ledger import _executed_promotion
+
+    audited = _executed_promotion()
+    engine = _Engine(sample_config, planned=lambda: [audited], apply=ActionResult.ok)
+
+    with pytest.raises(ValueError, match="charter ledger"):
+        engine.tick()
+
+
 
 
 def test_an_owed_pause_observed_on_its_issue_is_not_written_again() -> None:

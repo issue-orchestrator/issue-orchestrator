@@ -96,7 +96,8 @@ def require_investigation_terminal_effect(actions: list[Action], *,
                 and action.number == obligation.focus_issue_number and not action.is_pr
                 and action.intent in obligation.diagnoses):
             action = RequiredTechLeadDiagnosisAction(number=action.number, comment=action.comment,
-                intent=action.intent, reason=action.reason, expected=action.expected)
+                intent=action.intent, reason=action.reason, expected=action.expected,
+                charter_decisions=action.charter_decisions)
         required.append(action)
     return required
 

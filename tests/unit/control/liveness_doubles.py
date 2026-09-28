@@ -279,8 +279,14 @@ def liveness_owner(
     )
 
 
-def gated(plan: Plan, owner: ActionLivenessOwner | None = None) -> Plan:
-    """Admit ``plan`` through a liveness gate, as ``run_planning_cycle`` does."""
+def gated(plan: Plan, owner: ActionLivenessOwner | None = None, charter=None) -> Plan:
+    """Admit ``plan`` through a liveness gate, as ``run_planning_cycle`` does.
+
+    Like the engine's gate it carries a charter ledger, where a park of an
+    executed tech-lead decision's effect is linked back (#7362).
+    """
+    from issue_orchestrator.ports.tech_lead_charter_ledger import InMemoryTechLeadCharterLedger
+
     snapshot = OrchestratorSnapshot(
         issues=(),
         active_sessions=(),
@@ -290,7 +296,8 @@ def gated(plan: Plan, owner: ActionLivenessOwner | None = None) -> Plan:
         paused=False,
     )
     return PlannedActionLiveness(
-        owner or liveness_owner(), escalation_label="needs-human"
+        owner or liveness_owner(), escalation_label="needs-human",
+        charter=charter if charter is not None else InMemoryTechLeadCharterLedger(),
     ).admit(plan, snapshot, TICK)
 
 

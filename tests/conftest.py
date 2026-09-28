@@ -1309,7 +1309,8 @@ def build_test_orchestrator_deps(
     _action_applier.runtime_lifecycle = runtime_lifecycle
     from issue_orchestrator.entrypoints.bootstrap_action_liveness import build_action_liveness
     action_liveness = build_action_liveness(
-        config, events=events, action_applier=_action_applier, label_manager=label_manager
+        config, events=events, action_applier=_action_applier, label_manager=label_manager,
+        charter=tech_lead_authority.charter_ledger,
     )
 
     from issue_orchestrator.ports.validated_work_drain import (

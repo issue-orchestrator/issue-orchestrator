@@ -50,10 +50,21 @@ _TONES: Mapping[CustodyState, str] = {
 
 #: What each recorded charter outcome means, in words.
 _OUTCOME_LABELS: Mapping[str, str] = {
-    "executed": "Executed",
     "proposed": "Proposed, awaiting approval",
     "advice_only": "Advice only",
     "refused_destructive": "Refused as destructive; needs approval",
+}
+
+#: What became of an executed decision (#7362). The verdict said it MAY run;
+#: this says what running it did, so a refused or failed remedy never reads as
+#: executed. Keyed by the linked result; ``None`` is not linked yet.
+_EXECUTION_LABELS: Mapping[str | None, str] = {
+    "applied": "Executed and applied",
+    "refused": "Refused when applied",
+    "failed": "Failed when applied",
+    "withheld": "Withheld; never applied",
+    "parked": "Parked; the orchestrator stopped retrying it",
+    None: "Allowed to execute; no result recorded yet",
 }
 
 _LIFECYCLE_LABELS: Mapping[str, str] = {
@@ -96,7 +107,9 @@ def custody_signal(custody: "BlockedItemCustody") -> str:
     Feeds the compact-card fingerprint. The age label is left out on purpose:
     it ticks every minute, and a changed clock alone must not rebuild a card.
     """
-    charter = custody.charter.decision_id if custody.charter else ""
+    basis = custody.charter
+    # What became of the decision is part of what its panel says (#7362).
+    charter = f"{basis.decision_id}~{basis.lifecycle}~{basis.execution}" if basis else ""
     clock = custody.clock
     # The clock's ENTRY point is part of what the card says (a new
     # investigation on the same issue restarts it); only its age ticks.
@@ -171,8 +184,16 @@ def _attention_text(custody: "BlockedItemCustody") -> str:
     return ""
 
 
-def _charter_payload(basis: "CustodyCharterBasis") -> CustodyCharterPayload:
+def _outcome_labels(basis: "CustodyCharterBasis") -> tuple[str, str]:
+    """(outcome label, what happened next) for one recorded decision."""
+    if basis.outcome == "executed":
+        return _EXECUTION_LABELS[basis.execution], basis.execution_reason or ""
     lifecycle = basis.lifecycle
+    return _OUTCOME_LABELS[basis.outcome], _LIFECYCLE_LABELS[lifecycle] if lifecycle else ""
+
+
+def _charter_payload(basis: "CustodyCharterBasis") -> CustodyCharterPayload:
+    outcome_label, lifecycle_label = _outcome_labels(basis)
     return CustodyCharterPayload.model_validate(
         {
             "decision_id": basis.decision_id,
@@ -185,8 +206,8 @@ def _charter_payload(basis: "CustodyCharterBasis") -> CustodyCharterPayload:
             "action_ceiling": basis.action_ceiling,
             "ceiling_source": basis.ceiling_source,
             "outcome": basis.outcome,
-            "outcome_label": _OUTCOME_LABELS[basis.outcome],
-            "lifecycle_label": _LIFECYCLE_LABELS[lifecycle] if lifecycle else "",
+            "outcome_label": outcome_label,
+            "lifecycle_label": lifecycle_label,
             "reason": basis.reason,
             "decided_at": basis.decided_at,
             "proposal_issue_number": basis.proposal_issue_number or 0,
