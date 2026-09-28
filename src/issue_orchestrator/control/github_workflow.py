@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
-    from ..domain.models import OrchestratorState, DependencyProblem, Session, PendingCleanup
+    from ..domain.models import OrchestratorState, DependencyProblem, PendingCleanup
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from .fact_gatherer import FactGatherer
     from .pr_scanner import PRScanner

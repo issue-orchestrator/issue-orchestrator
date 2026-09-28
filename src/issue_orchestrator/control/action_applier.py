@@ -39,7 +39,7 @@ from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
-from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
+from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
 from .action_results import FailureCollector
 from .session_launch_types import LaunchStep, launch_step_result
 
@@ -129,7 +129,7 @@ from .tech_lead_reset_retry import apply_surface_tech_lead_proposal
 logger = logging.getLogger(__name__)
 
 # Type alias for session launcher callback
-# Takes (session_type, number) and returns Optional[Session]
+# Takes (session_type, number) and returns the typed LaunchStep (#7455)
 # This allows orchestrator to inject entity lookup + SessionLauncher
 SessionLauncherCallback = Callable[[SessionType, int], LaunchStep]
 ValidationRetryLauncherCallback = Callable[[int], LaunchStep]
@@ -339,7 +339,9 @@ class ActionApplier:
 
         handler = handlers.get(action.action_type)
         if handler is None:
-            return ActionResult.skip(
+            # A missing handler is a defect, not "nothing to do": it must stay a
+            # failure now that skips are no longer applied as failures (#7455).
+            return ActionResult.fail(
                 action, f"No handler for action type: {action.action_type}"
             )
 
