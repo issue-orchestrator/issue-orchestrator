@@ -45,6 +45,9 @@ from ..contracts.engine_audit import (
     UnresolvedWork,
     ValidatedWorkSection,
 )
+from ..control.label_manager import TECH_LEAD_NEEDS_HUMAN_LABEL
+from ..control.reconciliation import RECONCILE_PAUSE_LABEL
+from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 from ..infra.engine_log_reader import EngineLogEntry, EngineLogExcerpt
 from ..ports.engine_audit import (
     ActionLivenessAuditReader,
@@ -69,15 +72,17 @@ from .no_progress import (
 #: An unresolved validated-work record older than this is stuck.
 STALE_UNRESOLVED_AFTER = timedelta(hours=24)
 
-#: Open-issue labels that ask a human (or the tech lead) to act. The prototype
+#: Open-issue labels that ask a human (or the tech lead) to act: the prototype
 #: audit's set, minus ``in-progress`` (normal work, counted but not flagged).
+#: Spelled as an unprefixed engine writes them (``label_prefix`` unset, the
+#: default ``needs-human``); every label is in ``label_counts`` regardless.
 ATTENTION_LABELS: tuple[str, ...] = (
     "needs-human",
-    "tech-lead-needs-human",
+    TECH_LEAD_NEEDS_HUMAN_LABEL,
     "blocked-failed",
     "recovery-pending",
-    "io:needs-reconcile",
-    "proposed-tech-lead",
+    RECONCILE_PAUSE_LABEL,
+    PROPOSED_TECH_LEAD_LABEL,
 )
 
 #: How many charter decisions the report lists by name.
