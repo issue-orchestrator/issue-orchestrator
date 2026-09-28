@@ -68,8 +68,9 @@ class CharterExecutionResult(str, Enum):
     REFUSED = "refused"
     #: The applier tried and failed, or its result is unknown (the apply raised).
     FAILED = "failed"
-    #: Never attempted: its completion withheld it behind a mandated action
-    #: that did not commit.
+    #: Never attempted: its completion withheld it, and the record's reason
+    #: says why (a mandated action that did not commit, a subject refused
+    #: earlier in the completion, or a raise that stopped the apply).
     WITHHELD = "withheld"
     #: The action liveness owner stopped retrying it (#7350).
     PARKED = "parked"
@@ -216,6 +217,20 @@ class TechLeadCharterDecision:
             self.outcome is CharterOutcome.EXECUTED
             and self.execution is CharterExecutionResult.APPLIED
         ) or self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
+
+    @property
+    def effect(self) -> str:
+        """What became of the action, in one word: the applier's linked result
+        for an executed decision (``applied``, ``withheld``, ...), the proposal
+        lifecycle for a gated one, ``unlinked`` until either is recorded, and
+        ``advice`` for advice-only."""
+        if self.execution is not None:
+            return self.execution.value
+        if self.lifecycle is not None:
+            return self.lifecycle.value
+        if self.outcome is CharterOutcome.ADVICE_ONLY:
+            return "advice"
+        return "unlinked"
 
     @property
     def effect_at(self) -> str:

@@ -106,6 +106,12 @@ def _promotion_from_row(row: sqlite3.Row) -> PromotedFinding:
     )
 
 
+#: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
+#: copy of this store's database before opening the store on it: opening
+#: creates missing tables, which would read a damaged file as an empty one.
+AUDIT_TABLES = ("tech_lead_charter_decisions", "tech_lead_promoted_findings")
+
+
 class SqliteTechLeadAuthorityStore:
     """Persists per-run tech_lead launch authority across restarts."""
 

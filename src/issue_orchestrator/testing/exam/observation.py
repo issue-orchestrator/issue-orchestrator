@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from .github_calls import GitHubCallCounts
-from .livelock import RepeatingFailure
+from ...observation.no_progress import RepeatingFailure
 from .upgrade import UpgradeFacts
 
 

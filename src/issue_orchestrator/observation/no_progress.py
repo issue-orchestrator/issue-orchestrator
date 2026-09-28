@@ -15,6 +15,12 @@ progresses. This finds it on the engine's own event stream:
 The threshold sits above the engine's own bounded retries (three attempts,
 e.g. the review-exchange no-completion budget) and far below a per-tick
 loop (porchpin#410 repeated its reconcile pause 130 times).
+
+One signature method serves every reader of it: the tech-lead exam grades a
+run on its event stream, and ``io engine-audit`` (#7490) reads the same
+events from an engine's timeline and the same shapes from its log, so both
+normalize a message with :func:`normalize_signature` and name a subject with
+:func:`subject_of_text` / the event subject rule here.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from ...control.session_launch_types import REVIEW_HELD_BY_RECOVERY
+from ..control.session_launch_types import REVIEW_HELD_BY_RECOVERY
 
 LIVELOCK_THRESHOLD = 5
 
@@ -81,7 +87,73 @@ STATE_CHANGES: frozenset[str] = frozenset(
 )
 
 _DETAIL_KEYS = ("step_type", "reason", "failure_reason", "failure")
-_VOLATILE = re.compile(r"\d+")
+
+#: The subject of a failure that names no issue or PR: board-wide work.
+ENGINE_SUBJECT = "the engine"
+
+#: How much of a normalized message a signature keeps.
+SIGNATURE_LENGTH = 160
+
+# Volatile parts of one failure's message, most specific first: the same
+# failure carries a fresh timestamp, id, SHA or count every time it repeats,
+# and only its shape repeats.
+_ISO_INSTANT = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+_UUID = re.compile(
+    r"\b[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}\b"
+)
+#: A hex run long enough to be a SHA or an opaque id, with a letter in it (a
+#: run of digits alone is a number, normalized below).
+_HEX_ID = re.compile(r"\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]*\d[0-9a-fA-F]*\b")
+_NUMBER = re.compile(r"\d+")
+
+# How a log message names its subject, most specific first. Issue references
+# come as "issue #410", "issue=410", "issue-410" (a session name), "issue 410"
+# or a bare "#410"; pull requests as "PR #12" / "pr=12".
+_PR_REFERENCE = re.compile(r"\b(?:PR|pr|pull request)[ =#-]*#?(\d+)\b")
+_ISSUE_REFERENCE = re.compile(r"\b[Ii]ssue[ =#:-]*#?(\d+)\b")
+_QUALIFIED_REFERENCE = re.compile(r"\b([\w.-]+/[\w.-]+)#(\d+)\b")
+_BARE_REFERENCE = re.compile(r"(?<![\w/#&])#(\d+)\b")
+
+
+def normalize_signature(text: str) -> str:
+    """The repeatable shape of one failure message.
+
+    Strips what changes between two occurrences of the same failure:
+    timestamps, UUIDs, SHAs and hex ids, then every remaining number. Two
+    messages with the same shape normalize to the same signature.
+    """
+    shape = _ISO_INSTANT.sub("<time>", text)
+    shape = _UUID.sub("<id>", shape)
+    shape = _HEX_ID.sub(lambda m: "<sha>" if len(m.group()) >= 7 else m.group(), shape)
+    return _NUMBER.sub("N", shape)[:SIGNATURE_LENGTH]
+
+
+def subject_of_text(text: str, *, repo: str | None = None) -> str:
+    """The subject a free-text message names, in the event subject's spelling.
+
+    ``PR #N`` for a pull request, ``#N`` for an issue, otherwise
+    :data:`ENGINE_SUBJECT`. An ``owner/repo#N`` reference is ``#N`` when it
+    names ``repo`` (the engine's own repository) and keeps its full spelling
+    for any other repository. The first reference wins: a message is about
+    the thing it names first ("Failed to settle ... for issue #4; see #9").
+    """
+    found = [
+        (match.start(), f"{prefix}{match.group(1)}")
+        for pattern, prefix in (
+            (_PR_REFERENCE, "PR #"),
+            (_ISSUE_REFERENCE, "#"),
+            (_BARE_REFERENCE, "#"),
+        )
+        for match in [pattern.search(text)]
+        if match is not None
+    ]
+    if (qualified := _QUALIFIED_REFERENCE.search(text)) is not None:
+        owner_repo, number = qualified.group(1), qualified.group(2)
+        own = repo is not None and owner_repo.casefold() == repo.casefold()
+        found.append((qualified.start(), f"#{number}" if own else f"{owner_repo}#{number}"))
+    return min(found)[1] if found else ENGINE_SUBJECT
 
 
 @dataclass(frozen=True)
@@ -125,7 +197,7 @@ def _subject(event: Mapping[str, Any]) -> str:
     ):
         if isinstance(value, (int, str)) and not isinstance(value, bool) and str(value):
             return f"{prefix}{value}"
-    return "the engine"
+    return ENGINE_SUBJECT
 
 
 def _detail(event: Mapping[str, Any]) -> str:
@@ -134,15 +206,64 @@ def _detail(event: Mapping[str, Any]) -> str:
     error = payload.get("error")
     if isinstance(error, str) and error:
         # The same failure carries changing ids/counts; the shape repeats.
-        parts.append(_VOLATILE.sub("N", error)[:160])
+        parts.append(normalize_signature(error))
     return "; ".join(parts)
+
+
+def subject_of_event(event: Mapping[str, Any]) -> str:
+    """The subject an engine event is about (see the module docstring)."""
+    return _subject(event)
+
+
+def subjects_changed_by(event: Mapping[str, Any]) -> tuple[str, ...]:
+    """Every subject a state-change event changes, in the subject spelling.
+
+    An event about an issue's pull request (``pr.view_changed`` carries both
+    numbers) changes the issue AND the PR, so a failure logged against either
+    one is no longer a repeat after it. Empty for an event that changes no
+    subject's state.
+    """
+    if not resets_subject(event):
+        return ()
+    subjects = [_subject(event)]
+    pr_number = _payload(event).get("pr_number")
+    if isinstance(pr_number, (int, str)) and not isinstance(pr_number, bool) and str(pr_number):
+        subjects.append(f"PR #{pr_number}")
+    return tuple(dict.fromkeys(subjects))
+
+
+def resets_subject(event: Mapping[str, Any]) -> bool:
+    """Whether ``event`` changes its subject's state (so its failures are not repeats)."""
+    return str(event.get("type", "")) in STATE_CHANGES
 
 
 def find_repeating_failures(
     events: Iterable[Mapping[str, Any]], *, threshold: int = LIVELOCK_THRESHOLD
 ) -> tuple[RepeatingFailure, ...]:
     """Every failure signature that repeated ``threshold``+ times in a row of
-    its subject's history with no state change in between (the peak run)."""
+    its subject's history with no state change in between (the peak run).
+
+    The exam's question: did the engine livelock at any point in its run?"""
+    _running, peak = _runs(events, threshold)
+    return _over(peak, threshold)
+
+
+def find_current_repeats(
+    events: Iterable[Mapping[str, Any]], *, threshold: int = LIVELOCK_THRESHOLD
+) -> tuple[RepeatingFailure, ...]:
+    """Every failure signature whose run at the END of ``events`` is ``threshold``+.
+
+    The audit's question: is the engine livelocked now? A run a later state
+    change ended has been left behind, however long it was.
+    """
+    running, _peak = _runs(events, threshold)
+    return _over(running, threshold)
+
+
+def _runs(
+    events: Iterable[Mapping[str, Any]], threshold: int
+) -> tuple[Counter[tuple[str, str, str]], Counter[tuple[str, str, str]]]:
+    """The running and peak repeat counts of each failure signature."""
     if threshold < 2:
         raise ValueError("a livelock needs a threshold of at least 2 repeats")
     running: Counter[tuple[str, str, str]] = Counter()
@@ -151,7 +272,8 @@ def find_repeating_failures(
         name = str(event.get("type", ""))
         subject = _subject(event)
         if name in STATE_CHANGES:
-            for key in [key for key in running if key[1] == subject]:
+            changed = subjects_changed_by(event)
+            for key in [key for key in running if key[1] in changed]:
                 del running[key]
         elif name == "apply.step_applied" and _payload(event).get("result") == "success":
             step = str(_payload(event).get("step_type", ""))
@@ -163,8 +285,12 @@ def find_repeating_failures(
             key = (name, subject, _detail(event))
             running[key] += 1
             peak[key] = max(peak[key], running[key])
+    return running, peak
+
+
+def _over(counts: Counter[tuple[str, str, str]], threshold: int) -> tuple[RepeatingFailure, ...]:
     return tuple(
         RepeatingFailure(event=name, subject=subject, detail=detail, count=count)
-        for (name, subject, detail), count in sorted(peak.items())
+        for (name, subject, detail), count in sorted(counts.items())
         if count >= threshold
     )

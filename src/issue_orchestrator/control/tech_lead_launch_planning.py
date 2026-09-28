@@ -37,10 +37,11 @@ from ..domain.tech_lead_run import (
     BARRIER_GLOBAL_RUN_ACTIVE,
     BARRIER_GLOBAL_RUN_QUEUED,
     BARRIER_SUBJECT_SESSION_ACTIVE,
-    REASON_ISSUE_CLOSED,
-    REASON_NO_LONGER_BLOCKED,
     global_run_precedence,
+    paused_run_refusal,
+    subject_run_refusal,
 )
+from .reconciliation import is_paused_for_reconciliation
 from .tech_lead_run_admission import (
     active_tech_lead_sessions,
     has_active_global_run,
@@ -147,7 +148,9 @@ def issue_run_eligibility(
 ) -> Optional[tuple[str, str]]:
     """Is this issue still worth a tech-lead investigation? None when yes.
 
-    The rule: the issue must be OPEN and must still carry a blocking label.
+    The rule: the issue must be OPEN, must still carry a blocking label, and
+    must not be paused for reconciliation — a paused subject refuses every
+    write the run would make (:func:`paused_subject_refusal`).
     Returned as a ``(reason_code, detail)`` pair so both callers report the same
     machine-readable refusal.
 
@@ -161,18 +164,25 @@ def issue_run_eligibility(
     classification happens ONCE, so the verdict and the evidence-map context can
     never disagree about which label blocked it.
     """
-    lifecycle = (getattr(issue, "state", "") or "").casefold()
-    if lifecycle and lifecycle != "open":
-        return (
-            REASON_ISSUE_CLOSED,
-            f"Issue #{issue.number} is closed; nothing to investigate.",
-        )
-    if not blocking_label:
-        return (
-            REASON_NO_LONGER_BLOCKED,
-            f"Issue #{issue.number} is no longer blocked; nothing to investigate.",
-        )
-    return None
+    return subject_run_refusal(
+        issue.number,
+        lifecycle=(getattr(issue, "state", "") or "").casefold(),
+        blocked=bool(blocking_label),
+        paused=is_paused_for_reconciliation(issue.labels),
+    )
+
+
+def paused_subject_refusal(issue: "Issue") -> Optional[tuple[str, str]]:
+    """Refuse a run whose subject (or anchor) is paused for reconciliation.
+
+    The facts are read here; the decision is the domain's
+    (:func:`..domain.tech_lead_run.paused_run_refusal`). Asked at admission and
+    plan time through :func:`issue_run_eligibility`, and by the launch
+    authority for a whole-repository run's anchor.
+    """
+    return paused_run_refusal(
+        issue.number, paused=is_paused_for_reconciliation(issue.labels)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +233,8 @@ def plan_tech_lead_launch_revalidation(
 
     Global runs are never subject to this: a health-review anchor is not a
     blocked work item, and blocked-label eligibility says nothing about whether
-    the board is still worth auditing.
+    the board is still worth auditing. (A paused anchor is refused by the
+    launch authority, which withdraws the run under its own scope.)
     """
     by_number: dict[int, "Issue"] = {issue.number: issue for issue in subjects}
     by_number.update({issue.number: issue for issue in board})

@@ -21,6 +21,7 @@ from ...ports.pull_request_tracker import (
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
+from ...ports.engine_audit import OpenIssueLabels
 from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ...ports.comment_receipt import IssueCommentReceipt
 from ...infra import gh_audit
@@ -1221,6 +1222,13 @@ class GitHubAdapter:
         return [
             self._pr_info_from_api(pr)
             for pr in self._client.list_prs_numbered_above(number_floor)
+        ]
+
+    def list_open_issue_labels_complete(self) -> list[OpenIssueLabels]:
+        """Every open issue with its labels, cursor-paged; raises rather than truncating."""
+        return [
+            OpenIssueLabels(number=number, labels=labels)
+            for number, labels in self._client.list_open_issue_labels_complete()
         ]
 
     def list_open_prs_complete(self) -> list[PRInfo]:

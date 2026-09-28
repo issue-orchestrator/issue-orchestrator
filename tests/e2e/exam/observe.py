@@ -46,7 +46,7 @@ from issue_orchestrator.testing.exam import (
     TechLeadRunFact,
     WorkItemFact,
 )
-from issue_orchestrator.testing.exam.livelock import find_repeating_failures
+from issue_orchestrator.observation.no_progress import find_repeating_failures
 from issue_orchestrator.testing.exam.screens import SCREEN_QUOTE_CHARS, render_recording, silent_screen
 from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
 from issue_orchestrator.testing.exam.tech_lead import (

@@ -120,6 +120,7 @@ _PARKED_ON_ISSUE = (
     _SELECT + " WHERE escalation_issue=? AND next_attempt_at IS NULL" + _ORDER
 )
 _PARKED = _SELECT + " WHERE next_attempt_at IS NULL" + _ORDER
+_ALL = _SELECT + _ORDER
 _WAITING = (
     _SELECT + " WHERE next_attempt_at IS NOT NULL AND last_outcome='waiting'" + _ORDER
 )
@@ -201,6 +202,12 @@ _SET_PAUSE_DEBT = (
     " first_failed_at=? WHERE issue_number=?"
 )
 _FORGET_PAUSE = "DELETE FROM action_liveness_pause WHERE issue_number=?"
+
+
+#: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
+#: copy of this store's database before opening the store on it: opening
+#: creates missing tables, which would read a damaged file as an empty one.
+AUDIT_TABLES = ("action_liveness", "action_liveness_pause")
 
 
 class SQLiteActionLivenessStore:
@@ -395,6 +402,10 @@ class SQLiteActionLivenessStore:
 
     def waiting_rows(self) -> tuple[LivenessRow, ...]:
         return self._select(_WAITING, ())
+
+    def all_rows(self) -> tuple[LivenessRow, ...]:
+        """Every row: parks, waits and backing-off failures (the engine audit, #7490)."""
+        return self._select(_ALL, ())
 
     def visible_rows(self) -> tuple[LivenessRow, ...]:
         """What the tech-lead board shows: every park, then every wait."""

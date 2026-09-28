@@ -51,6 +51,7 @@ from ..domain.tech_lead_session import (
 )
 from .actions import CreateTechLeadIssueAction, SupportsApplyAction
 from .board_review_fingerprint import board_review_fingerprint
+from .reconciliation import without_paused_subjects
 from .tech_lead_issue_policy import (
     apply_tech_lead_priority_prefix,
     health_review_issue_labels,
@@ -242,8 +243,29 @@ def discover_open_health_review_anchor(
     Callers invoke this only while a creation decision is actually pending
     (GitHub API discipline — see ``FactGatherer.gather_tech_lead_facts``).
     """
-    scoped = health_review_anchor_issues(repository_host, config, state="open")
+    scoped = runnable_tech_lead_anchors(
+        health_review_anchor_issues(repository_host, config, state="open")
+    )
     return scoped[0].number if scoped else None
+
+
+def runnable_tech_lead_anchors(issues: Iterable["Issue"]) -> list["Issue"]:
+    """The open anchors a tech-lead run may still use: none paused for reconciliation.
+
+    Every output of a run reconciles against its anchor — the anchor's own
+    labels and close, its comments, and the issues and case files it files
+    (#6957) — and the mutation gate refuses all of them while the anchor
+    carries the reconciliation pause. porchpin #410 held that pause for two
+    days, was still treated as THE open health anchor, and was relaunched until
+    two reviews had run 92 minutes between them with every output dropped.
+
+    A paused anchor is therefore not an anchor: it is not requeued at startup,
+    not reused on demand, and does not dedup a due review, so the next review
+    gets a fresh anchor while the paused one waits for the human who lifts it.
+    The one rule for startup recovery, the tick's anchor classification and
+    the on-demand path.
+    """
+    return without_paused_subjects(issues)
 
 
 def health_review_anchor_issues(
@@ -275,7 +297,7 @@ def classify_tech_lead_anchor_issues(
     """
     batch: Optional[int] = None
     health: Optional[int] = None
-    for issue in _scoped_issues(issues, filter_label):
+    for issue in runnable_tech_lead_anchors(_scoped_issues(issues, filter_label)):
         if has_health_review_marker(issue.labels):
             health = issue.number if health is None else health
             continue
@@ -770,7 +792,15 @@ def recover_pending_tech_lead_anchors(
         )
     if case_files:
         print(f"  Skipped {len(case_files)} pattern case file(s) (#6781)")
+    runnable = runnable_tech_lead_anchors(anchors)
+    runnable_numbers = {issue.number for issue in runnable}
     for issue in anchors:
+        if issue.number not in runnable_numbers:
+            print(
+                f"  tech_lead issue #{issue.number}: Paused for reconciliation;"
+                " left for a human, not requeued"
+            )
+    for issue in runnable:
         # Every lane a tech-lead run may hold, the pre-#7347 ``issue-N`` too.
         if any(map(session_exists, SessionKind.TECH_LEAD.conflicting_terminal_names(issue.number))):
             print(f"  tech_lead issue #{issue.number}: Already running")

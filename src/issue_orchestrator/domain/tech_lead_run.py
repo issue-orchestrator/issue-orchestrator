@@ -337,6 +337,13 @@ REASON_TECH_LEAD_DISABLED = "tech_lead_disabled"
 REASON_ISSUE_NOT_FOUND = "issue_not_found"
 REASON_ISSUE_CLOSED = "issue_closed"
 REASON_NO_LONGER_BLOCKED = "no_longer_blocked"
+# The run's subject (a focused investigation's issue, or a whole-repository
+# run's anchor) is paused behind the reconciliation label. Every write the run
+# would make reconciles against that issue, so the gate is bound to refuse all
+# of them: the run would spend a session only for its every output to be
+# dropped (porchpin #410, 2026-09-28). The pause is a human's to lift; the run
+# is not started.
+REASON_PAUSED_FOR_RECONCILIATION = "paused_for_reconciliation"
 REASON_CLAIMED_BY_PEER = "claimed_by_peer"
 REASON_ANCHOR_UNAVAILABLE = "anchor_unavailable"
 # The whole-repository anchor this queued run points at has been CLOSED — the
@@ -407,3 +414,45 @@ class TechLeadRunAdmission:
             trigger=trigger,
             issue_number=scope.subject_issue_number,
         )
+
+
+def paused_run_refusal(number: int, *, paused: bool) -> Optional[tuple[str, str]]:
+    """Refuse a run whose subject is paused for reconciliation. None otherwise.
+
+    Every write a tech-lead run makes — the anchor's labels and close, its
+    comments, and the issues and case files it files, which are gated on the
+    anchor too (#6957) — reconciles against this issue, and the mutation gate
+    refuses all of them while the pause label is on it. porchpin #410 carried
+    the pause for two days while two health reviews ran on it for 35 and 57
+    minutes and every output of both was dropped. The pause is a human's to
+    lift, so the run is not started.
+    """
+    if not paused:
+        return None
+    return (
+        REASON_PAUSED_FOR_RECONCILIATION,
+        f"Issue #{number} is paused for reconciliation; every write a"
+        " tech-lead run makes there would be refused until a human lifts the"
+        " pause.",
+    )
+
+
+def subject_run_refusal(
+    number: int, *, lifecycle: str, blocked: bool, paused: bool
+) -> Optional[tuple[str, str]]:
+    """Is a subject still worth a tech-lead run? None when yes.
+
+    The one decision over the subject's observed facts, in order: it must be
+    OPEN, still blocked, and not paused for reconciliation. The control layer
+    reads the facts (``tech_lead_launch_planning.issue_run_eligibility``) and
+    every caller — admission, plan-time revalidation, the launch authority —
+    reports the same ``(reason_code, detail)`` refusal.
+    """
+    if lifecycle and lifecycle != "open":
+        return (REASON_ISSUE_CLOSED, f"Issue #{number} is closed; nothing to investigate.")
+    if not blocked:
+        return (
+            REASON_NO_LONGER_BLOCKED,
+            f"Issue #{number} is no longer blocked; nothing to investigate.",
+        )
+    return paused_run_refusal(number, paused=paused)
