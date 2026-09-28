@@ -5,6 +5,7 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,7 +16,15 @@ from ..infra.config import Config
 from ..ports import Issue as IssueProtocol, RepositoryHost, RepositoryHostError, ReviewState
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.worktree_manager import WorktreeInfo
-from .review_validity import ReviewValidity, evaluate_review_validity
+from ..events import EventName
+from ..ports import EventSink, make_trace_event
+from .session_launch_types import REVIEW_HELD_BY_RECOVERY, LaunchDisposition, LaunchResult
+from .transition_log import log_transition
+from .review_validity import (
+    ReviewValidity,
+    evaluate_review_validity,
+    evaluate_review_withholding,
+)
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
@@ -58,13 +67,27 @@ def build_review_existing_work(
     return keep_current_note
 
 
+@dataclass(frozen=True)
+class ReviewLaunchCheck:
+    """A queued review's launch-time facts, as the review owners judge them.
+
+    ``held_by_recovery`` is true exactly when the validated-work recovery
+    hold (``recovery-pending``) is ALL that keeps the review from launching
+    (#7455): the recovery owner routes that published work to review and then
+    releases the hold, so the review must wait for it, not be dropped.
+    """
+
+    validity: ReviewValidity
+    held_by_recovery: bool
+
+
 def review_launch_validity(
     *,
     review: PendingReview,
     config: Config,
     repository_host: RepositoryHost,
     label_manager: "LabelManager",
-) -> ReviewValidity:
+) -> ReviewLaunchCheck:
     """Load current review facts and decide whether launch is still valid."""
     current_issue = repository_host.get_issue(review.issue_number)
     if not isinstance(current_issue, IssueProtocol):
@@ -72,11 +95,85 @@ def review_launch_validity(
     current_pr = repository_host.get_pr(review.pr_number)
     if not isinstance(current_pr, PRInfo):
         current_pr = None
-    return evaluate_review_validity(
+    if current_issue is None or current_pr is None:
+        validity = evaluate_review_validity(
+            config=config,
+            label_manager=label_manager,
+            issue=current_issue,
+            pr=current_pr,
+        )
+        return ReviewLaunchCheck(validity, held_by_recovery=False)
+    withholding = evaluate_review_withholding(
         config=config,
         label_manager=label_manager,
         issue=current_issue,
         pr=current_pr,
+        block_label=label_manager.recovery_pending,
+    )
+    return ReviewLaunchCheck(
+        withholding.current, held_by_recovery=withholding.withheld_only_by_block
+    )
+
+
+def refuse_unlaunchable_review(
+    check: ReviewLaunchCheck, review: PendingReview, events: EventSink
+) -> LaunchResult | None:
+    """The launch result for a queued review its live facts no longer admit.
+
+    ``None`` when the review may launch. A review held ONLY by the recovery
+    owner waits on its queue (``HELD_BY_RECOVERY``); any other invalid review
+    is withdrawn (``WITHDRAWN``) - dropped, and reported as a withdrawal, not
+    a failed launch (#7455).
+    """
+    validity = check.validity
+    if check.held_by_recovery:
+        # The recovery owner routes this published work and then releases
+        # its hold: wait for it, keep the review queued.
+        log_transition("review", review.pr_number, "QUEUED", "QUEUED", "held by recovery-pending")
+        logger.info(
+            "[launch] Review waits for recovery release: pr=%s issue=%s",
+            review.pr_number,
+            review.issue_number,
+        )
+        _publish_review_skipped(events, review, REVIEW_HELD_BY_RECOVERY)
+        return LaunchResult(
+            None,
+            False,
+            "Review waits for its issue's recovery hold to be released",
+            disposition=LaunchDisposition.HELD_BY_RECOVERY,
+        )
+    if validity.valid:
+        return None
+    log_transition(
+        "review", review.pr_number, "QUEUED", "SKIP", f"stale pending review: {validity.reason}"
+    )
+    logger.info(
+        "[launch] Dropping stale pending review: pr=%s issue=%s reason=%s issue_labels=%s pr_labels=%s",
+        review.pr_number,
+        review.issue_number,
+        validity.reason,
+        ",".join(validity.issue_labels) or "(missing)",
+        ",".join(validity.pr_labels) or "(none)",
+    )
+    _publish_review_skipped(events, review, f"stale_pending_review:{validity.reason}")
+    return LaunchResult(
+        None,
+        False,
+        f"Stale pending review: {validity.reason}",
+        disposition=LaunchDisposition.WITHDRAWN,
+    )
+
+
+def _publish_review_skipped(events: EventSink, review: PendingReview, reason: str) -> None:
+    events.publish(
+        make_trace_event(
+            EventName.REVIEW_SKIPPED,
+            {
+                "pr_number": review.pr_number,
+                "issue_number": review.issue_number,
+                "reason": reason,
+            },
+        )
     )
 
 

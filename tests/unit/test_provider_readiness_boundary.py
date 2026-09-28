@@ -3001,13 +3001,15 @@ class _ProductionTick:
         )
 
         def _launch(session_type, number):
+            from issue_orchestrator.control.session_launch_types import LaunchStep
+
             if session_type is not SessionType.ISSUE:
-                return None
+                return LaunchStep.not_launched(f"no {session_type} launcher here")
             issue = self.github.get_issue(number)
             result = self.launcher.launch_issue(issue)
             if result.success:
                 self.launched.append(number)
-            return result.session
+            return LaunchStep.of_result(result)
 
         self.applier = make_action_applier(
             labels=self.github,
@@ -3315,6 +3317,11 @@ def _pending_count(state, queue: str) -> int:
     )
 
 
+def _step_session(step):
+    """The session a routed launch step started, or ``None`` (#7455)."""
+    return step.session
+
+
 def _route(queue: str, state, harness, restorer=None):
     """Drive the production routing function that owns ``queue``.
 
@@ -3335,38 +3342,38 @@ def _route(queue: str, state, harness, restorer=None):
     restorer.restore_session.return_value = None
     claims = harness.claims
     if queue == "review":
-        return session_routing.orchestrator_launch_review_session(
+        return _step_session(session_routing.orchestrator_launch_review_session(
             state.pending_reviews[0], state, harness.launcher, restorer, claims
-        )
+        ))
     if queue == "retrospective_review":
-        return session_routing.orchestrator_launch_retrospective_review_session(
+        return _step_session(session_routing.orchestrator_launch_retrospective_review_session(
             state.pending_retrospective_reviews[0],
             state,
             harness.launcher,
             restorer,
             claims,
-        )
+        ))
     if queue == "rework":
-        return session_routing.orchestrator_launch_rework_session(
+        return _step_session(session_routing.orchestrator_launch_rework_session(
             state.pending_reworks[0], state, harness.launcher, restorer, claims
-        )
+        ))
     if queue == "validation_retry":
-        return session_routing.orchestrator_launch_validation_retry_session(
+        return _step_session(session_routing.orchestrator_launch_validation_retry_session(
             state.pending_validation_retries[0],
             state,
             harness.launcher,
             restorer,
             claims,
-        )
+        ))
     if queue == "tech_lead":
-        return session_routing.orchestrator_launch_tech_lead_session(
+        return _step_session(session_routing.orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0],
             state,
             harness.launcher.config,
             harness.launcher,
             restorer,
             claims,
-        )
+        ))
     raise AssertionError(f"unknown queue {queue!r}")
 
 
@@ -3565,7 +3572,7 @@ def test_a_provider_deferral_touches_neither_restoration_nor_the_retry_budget(
         OrchestratorState(),
     )
 
-    assert settled is None
+    assert settled.session is None
     assert calls == []  # not removed, not restored, no budget spent
 
 

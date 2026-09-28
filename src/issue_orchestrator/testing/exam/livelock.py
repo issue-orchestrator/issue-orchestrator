@@ -24,6 +24,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from ...control.session_launch_types import REVIEW_HELD_BY_RECOVERY
+
 LIVELOCK_THRESHOLD = 5
 
 #: Events that report an action failing or being refused. Pure observations
@@ -57,6 +59,9 @@ _WAITING_SKIP_REASONS: frozenset[str] = frozenset(
         "orchestrator_paused",
         "retrospective_review_no_capacity",
         "retrospective_review_orchestrator_paused",
+        # A queued review waiting for the recovery owner to release its issue
+        # (#7455); the owner routes and releases it, so it is a wait.
+        REVIEW_HELD_BY_RECOVERY,
     }
 )
 _SKIP_EVENTS = frozenset({"review.skipped", "rework.skipped"})

@@ -300,3 +300,113 @@ def test_a_queue_holding_one_pr_twice_plans_and_applies_one_launch(
     engine.apply(plan)
 
     _assert_one_launch_one_success(engine)
+
+
+# --- #7455: a withdrawn or held review is not a failed launch ----------------
+
+
+def _host_shows(bundle: LauncherTestBundle, *issue_labels: str) -> None:
+    """The live issue carries ``issue_labels``; its PR is open and awaits review."""
+    host = bundle.launcher.repository_host
+    host.labels[ISSUE] = set(issue_labels) | {"agent:web"}
+    host.prs[ISSUE] = [
+        PRInfo(
+            number=PR,
+            title="Feature",
+            url=f"https://github.com/test/repo/pull/{PR}",
+            branch=f"{ISSUE}-feature",
+            body="",
+            state="open",
+            labels=["needs-code-review"],
+        )
+    ]
+
+
+def _skips(engine: _Engine) -> list[str]:
+    return [
+        e["skip_reason"]
+        for e in engine.events.of(EventName.APPLY_STEP_APPLIED)
+        if e.get("result") == "skipped"
+    ]
+
+
+def _assert_nothing_failed(engine: _Engine) -> None:
+    assert engine.spawned() == []
+    assert engine.events.of(EventName.APPLY_FAILED) == []
+    assert engine.state.failed_this_cycle == set()
+
+
+def test_a_review_of_a_blocked_issue_is_withdrawn_not_failed(
+    launcher_bundle: LauncherTestBundle,
+) -> None:
+    """Porchpin: a queued review of a ``blocked-failed`` issue is dropped.
+
+    Dropping it is right; reporting it as ``launch_session failed`` and
+    marking the PR number failed this cycle was not.
+    """
+    _host_shows(launcher_bundle, "blocked-failed")
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert _skips(engine) == ["Stale pending review: issue_blocked"]
+    assert state.pending_reviews == []  # withdrawn: the queue drops it
+
+
+def test_a_review_held_only_by_recovery_waits_then_launches_once(
+    launcher_bundle: LauncherTestBundle,
+) -> None:
+    """Case U: the first review of a just-published PR lands inside the
+    recovery owner's ``recovery-pending`` window. It must wait for the owner
+    to release the hold, not be dropped, and then launch exactly once."""
+    _host_shows(launcher_bundle, "recovery-pending", "pr-pending")
+    state = OrchestratorState()
+    queued = _review(agent_label=None)
+    assert state.queue_pending_review(queued)
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert state.pending_reviews == [queued]  # still queued, nothing spent
+    assert len(_skips(engine)) == 1
+
+    _host_shows(launcher_bundle, "pr-pending")  # the recovery owner released it
+    released = _Engine(launcher_bundle, state)
+    released.apply(released.plan())
+
+    assert released.spawned() == [f"review-{PR}"]
+    assert released.events.of(EventName.APPLY_FAILED) == []
+    assert state.pending_reviews == []
+
+
+def test_recovery_with_any_other_block_still_withdraws_the_review(
+    launcher_bundle: LauncherTestBundle,
+) -> None:
+    _host_shows(launcher_bundle, "recovery-pending", "needs-human")
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert state.pending_reviews == []
+
+
+def test_a_failed_review_launch_never_marks_its_pr_number_failed_this_cycle(
+    launcher_bundle: LauncherTestBundle,
+) -> None:
+    """``failed_this_cycle`` holds ISSUE numbers; a review launch names a PR."""
+    launcher_bundle.create_session_override[0] = lambda *_args: False
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    assert [e["step_type"] for e in engine.events.of(EventName.APPLY_FAILED)] == ["launch_session"]
+    assert PR not in state.failed_this_cycle

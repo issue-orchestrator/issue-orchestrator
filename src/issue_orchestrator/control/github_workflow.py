@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 from ..infra.config import Config
 from ..events import EventName, EventContext
 from ..domain.blocked_open_pr import BlockedPRLane
+from .session_launch_types import LaunchStep
 from ..domain.models import (
     DiscoveredReview,
     DiscoveredRework,
@@ -360,27 +361,21 @@ def get_issue_machine(issue: "Issue", state_machines: "StateMachineManager") -> 
 def launch_issue_by_number(
     n: int,
     cached_queue_issues: list["Issue"],
-    launch_session_fn: Callable[["Issue"], Optional["Session"]],
+    launch_session_fn: Callable[["Issue"], "LaunchStep"],
     increment_count_fn: Callable[[], None],
-) -> Optional["Session"]:
-    """Launch issue session by number - moved per method table.
+) -> "LaunchStep":
+    """Launch an issue session for queued issue ``n``.
 
-    Args:
-        n: Issue number
-        cached_queue_issues: List of cached issues
-        launch_session_fn: Function to launch session
-        increment_count_fn: Function to increment issues_started_count
-
-    Returns:
-        The launched session or None
+    An issue no longer in the queue cache is nothing to launch, not a failed
+    launch (#7455).
     """
     issue = next((i for i in cached_queue_issues if i.number == n), None)
     if not issue:
-        return None
-    s = launch_session_fn(issue)
-    if s:
+        return LaunchStep.not_queued("issue", n)
+    step = launch_session_fn(issue)
+    if step.session is not None:
         increment_count_fn()
-    return s
+    return step
 
 
 def _known_issues(state: "OrchestratorState") -> dict[int, "Issue"]:

@@ -34,7 +34,7 @@ from ..domain.session_run import SessionRunAssets
 from ..ports.pending_work_claim_store import PendingWorkClaimStore
 from .active_sessions import append_unique_active_sessions
 from .in_flight_work import InFlightWorkLedger
-from .session_launch_types import LaunchDisposition, LaunchResult
+from .session_launch_types import LaunchDisposition, LaunchResult, LaunchStep
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -443,11 +443,16 @@ class LaunchSettlement:
 
     def settle(
         self, result: LaunchResult, state: "OrchestratorState"
-    ) -> Optional[Session]:
+    ) -> LaunchStep:
+        """Settle the queue and the ledger, and say what the launch step came to.
+
+        The step is typed (#7455) so the plan applier can tell a withdrawn or
+        held request - nothing failed - from a launch that did not start.
+        """
         if result.success and result.session:
             self._consume_into_flight(result.session, state)
             append_unique_active_sessions(state.active_sessions, [result.session])
-            return result.session
+            return LaunchStep.launched(result.session)
         if result.disposition is LaunchDisposition.EXISTING_TERMINAL:
             # The terminal the launcher actually found, never a re-derived name
             # (#7347: a tech lead may still run as a pre-upgrade ``issue-N``).
@@ -457,16 +462,18 @@ class LaunchSettlement:
                 # An adopted terminal is running this work exactly as a freshly
                 # spawned one is, so it holds the claim on the same terms.
                 self._consume_into_flight(restored, state)
-                return restored
+                return LaunchStep.launched(restored)
             # Nothing was adopted, so the item is still queued and waiting.
             self._commit(
                 SettlementDecision(
                     WorkDisposal.RETAINED, self.work.claim, _no_projection
                 )
             )
-            return None
+            return LaunchStep.not_launched(
+                f"terminal {result.existing_terminal} is running but was not adopted"
+            )
         self._commit(self._decide(result))
-        return None
+        return LaunchStep.of_result(result)
 
     def _commit(self, decision: SettlementDecision) -> None:
         """Durable side first, in-memory queue second (#6999 F2).
@@ -524,6 +531,17 @@ class LaunchSettlement:
                 result.reason,
             )
             return SettlementDecision(WorkDisposal.UNRECORDED, claim, _no_projection)
+        if result.disposition is LaunchDisposition.HELD_BY_RECOVERY:
+            # The recovery owner routes this work and then releases its hold
+            # (#7455). Nothing about the request failed and nothing was spent:
+            # it waits on its queue, exactly as a provider refusal leaves it.
+            logger.info("[WORK] %s work held by recovery, retained: %s", claim.kind.value, result.reason)
+            return SettlementDecision(WorkDisposal.RETAINED, claim, _no_projection)
+        if result.disposition is LaunchDisposition.WITHDRAWN:
+            # No longer wanted, whatever the queue's policy for failures: a
+            # withdrawn request is dropped with its row, like a permanent one,
+            # but it is reported as a withdrawal, not a failure (#7455).
+            return SettlementDecision(WorkDisposal.DROPPED, claim, self.remove)
         if result.disposition is LaunchDisposition.RETRYABLE_FAILURE:
             return self._spend_retry_budget(claim)
         if result.disposition is LaunchDisposition.PERMANENT_FAILURE:

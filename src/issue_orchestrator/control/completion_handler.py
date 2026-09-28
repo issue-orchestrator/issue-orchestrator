@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..domain.issue_key import StableIssueId
+from .session_launch_types import LaunchStep
 from ..domain.completion_processing import CompletionPublication
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.run_manifest import RunManifest
@@ -1138,21 +1139,21 @@ class CompletionHandler:
 def launch_review_by_number(
     n: int,
     pending_reviews: list["PendingReview"],
-    launch_review_session_fn: Callable[["PendingReview"], Optional["Session"]],
-) -> Optional["Session"]:
-    """Launch review session by number - moved per method table."""
+    launch_review_session_fn: Callable[["PendingReview"], "LaunchStep"],
+) -> "LaunchStep":
+    """Launch the review queued for PR ``n``; no queued review is no failure (#7455)."""
     r = next((r for r in pending_reviews if r.pr_number == n), None)
-    return launch_review_session_fn(r) if r else None
+    return launch_review_session_fn(r) if r else LaunchStep.not_queued("review", n)
 
 
 def launch_rework_by_number(
     n: int,
     pending_reworks: list["PendingRework"],
-    launch_rework_session_fn: Callable[["PendingRework"], Optional["Session"]],
-) -> Optional["Session"]:
-    """Launch rework session by number - moved per method table."""
+    launch_rework_session_fn: Callable[["PendingRework"], "LaunchStep"],
+) -> "LaunchStep":
+    """Launch the rework queued for issue ``n``; none queued is no failure (#7455)."""
     r = next((r for r in pending_reworks if r.resolve_issue_number() == n), None)
-    return launch_rework_session_fn(r) if r else None
+    return launch_rework_session_fn(r) if r else LaunchStep.not_queued("rework", n)
 
 
 def get_review_machine(
@@ -1166,11 +1167,15 @@ def launch_tech_lead_by_number(
     n: int,
     pending_tech_lead_reviews: list["PendingTechLeadReview"],
     launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], Optional["Session"]],
-) -> Optional["Session"]:
+) -> "LaunchStep":
     """Launch tech_lead session by number - moved per method table.
 
     Queue lifecycle (removal vs retention) is owned by the launch wrapper
     (``orchestrator_launch_tech_lead_session``), like the review/rework lookups.
     """
     t = next((t for t in pending_tech_lead_reviews if t.issue_number == n), None)
-    return launch_tech_lead_session_fn(t) if t else None
+    if t is None:
+        return LaunchStep.not_queued("tech-lead run", n)
+    return LaunchStep.of_session(
+        launch_tech_lead_session_fn(t), f"tech-lead run for #{n} did not start"
+    )

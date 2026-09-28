@@ -117,6 +117,7 @@ from .session_rework_launcher import (
 )
 from .session_review_support import (
     build_review_existing_work,
+    refuse_unlaunchable_review,
     review_launch_validity,
 )
 from .retrospective_review import (
@@ -450,7 +451,9 @@ class SessionLauncher:
 
         if any(s.issue.number == issue.number for s in active_sessions):
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+            return LaunchResult(
+                None, False, "Already in active sessions", disposition=LaunchDisposition.WITHDRAWN
+            )
 
         running = next(
             (name for name in kind.conflicting_terminal_names(issue.number) if self._session_exists(name)),
@@ -1497,43 +1500,23 @@ class SessionLauncher:
         against the live labels, then the two conflict checks and the repo
         config. Returns a :class:`LaunchResult` on failure, ``None`` to proceed.
         """
-        validity = review_launch_validity(
-            review=review,
-            config=self.config,
-            repository_host=self.repository_host,
-            label_manager=self._lm,
-        )
-        if not validity.valid:
-            log_transition(
-                "review",
-                review.pr_number,
-                "QUEUED",
-                "SKIP",
-                f"stale pending review: {validity.reason}",
-            )
-            logger.info(
-                "[launch] Dropping stale pending review: pr=%s issue=%s reason=%s issue_labels=%s pr_labels=%s",
-                review.pr_number,
-                review.issue_number,
-                validity.reason,
-                ",".join(validity.issue_labels) or "(missing)",
-                ",".join(validity.pr_labels) or "(none)",
-            )
-            self.events.publish(
-                make_trace_event(
-                    EventName.REVIEW_SKIPPED,
-                    {
-                        "pr_number": review.pr_number,
-                        "issue_number": review.issue_number,
-                        "reason": f"stale_pending_review:{validity.reason}",
-                    },
-                )
-            )
-            return LaunchResult(None, False, f"Stale pending review: {validity.reason}")
+        if result := refuse_unlaunchable_review(
+            review_launch_validity(
+                review=review,
+                config=self.config,
+                repository_host=self.repository_host,
+                label_manager=self._lm,
+            ),
+            review,
+            self.events,
+        ):
+            return result
 
         if any(s.terminal_id == session_name for s in active_sessions):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+            return LaunchResult(
+                None, False, "Already in active sessions", disposition=LaunchDisposition.WITHDRAWN
+            )
 
         if self._session_exists(session_name):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "terminal session already running")

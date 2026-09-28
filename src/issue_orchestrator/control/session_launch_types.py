@@ -4,8 +4,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from typing import TYPE_CHECKING
+
 from ..domain.models import Session
 from ..ports.repository_host import HostRateLimit, host_rate_limit_of
+
+if TYPE_CHECKING:
+    from .action_base import Action
+    from .action_results import ActionResult
+
+
+#: The review-skip reason a review held by the recovery owner reports: a
+#: wait, not a refusal (the exam's livelock detector counts it as waiting).
+REVIEW_HELD_BY_RECOVERY = "held_by_recovery"
 
 
 class LaunchDisposition(Enum):
@@ -59,6 +70,19 @@ class LaunchDisposition(Enum):
     #: Nothing failed about the WORK here; the ledger did. The item is retained
     #: with its budget untouched, exactly as a provider refusal leaves it.
     CLAIM_UNRECORDED = "claim_unrecorded"
+    #: The request is no longer wanted and nothing failed (#7455): its subject
+    #: moved on - a queued review whose issue or PR is now blocked, closed or
+    #: sent back for rework, or work that is already running in a session. The
+    #: queue drops the item, exactly as for a permanent failure, but the plan
+    #: step is a withdrawal, not a failed launch.
+    WITHDRAWN = "withdrawn"
+    #: The subject is held by the validated-work recovery owner (#7455): the
+    #: issue carries ``recovery-pending`` and that hold is ALL that keeps the
+    #: review from launching. That owner routes the published work to review
+    #: and then releases the hold, so the item stays queued untouched, with no
+    #: budget spent, and launches once the hold is gone. Any other block still
+    #: withdraws it.
+    HELD_BY_RECOVERY = "held_by_recovery"
     #: The launcher gave up. The queue drops the item.
     PERMANENT_FAILURE = "permanent_failure"
 
@@ -201,3 +225,87 @@ class ClaimAcquisitionResult:
         if self.host_rate_limit is not None:
             return LaunchResult.host_rate_limited(reason, self.host_rate_limit)
         return LaunchResult(None, False, reason)
+
+
+class LaunchStepOutcome(Enum):
+    """What one planned launch step came to, as the plan applier must report it.
+
+    A launch path settles its queue from a :class:`LaunchDisposition`; the
+    action applier needs a coarser answer, and needs it typed: before #7455 it
+    only saw "a session, or ``None``", so a queued review that was deliberately
+    withdrawn - or was never queued at all - was applied as a failed launch.
+    """
+
+    #: A session is running this work: started now, or an existing terminal
+    #: adopted.
+    LAUNCHED = "launched"
+    #: Nothing to launch, and nothing failed: the request was withdrawn (see
+    #: ``LaunchDisposition.WITHDRAWN``), or no such request was queued.
+    WITHDRAWN = "withdrawn"
+    #: Nothing launched yet, and nothing failed: the request waits on its
+    #: queue for an owner to release its subject.
+    WAITING = "waiting"
+    #: The launch was attempted and did not start a session.
+    NOT_LAUNCHED = "not_launched"
+
+
+@dataclass(frozen=True)
+class LaunchStep:
+    """The typed result of one launch step, handed back to the action applier."""
+
+    outcome: LaunchStepOutcome
+    session: Session | None
+    reason: str
+
+    def __post_init__(self) -> None:
+        if (self.outcome is LaunchStepOutcome.LAUNCHED) != (self.session is not None):
+            raise ValueError("exactly a LAUNCHED step carries its session")
+
+    @classmethod
+    def launched(cls, session: Session) -> "LaunchStep":
+        return cls(LaunchStepOutcome.LAUNCHED, session, "session launched")
+
+    @classmethod
+    def withdrawn(cls, reason: str) -> "LaunchStep":
+        return cls(LaunchStepOutcome.WITHDRAWN, None, reason)
+
+    @classmethod
+    def not_queued(cls, kind: str, number: int) -> "LaunchStep":
+        """No request for ``number`` is queued: it already launched or left."""
+        return cls.withdrawn(f"no {kind} is queued for #{number}")
+
+    @classmethod
+    def not_launched(cls, reason: str) -> "LaunchStep":
+        return cls(LaunchStepOutcome.NOT_LAUNCHED, None, reason)
+
+    @classmethod
+    def of_session(cls, session: Session | None, reason: str) -> "LaunchStep":
+        """For a launch path that reports only a session: none means not launched."""
+        return cls.launched(session) if session is not None else cls.not_launched(reason)
+
+    @classmethod
+    def of_result(cls, result: LaunchResult) -> "LaunchStep":
+        """The step a launch result comes to when no terminal was adopted."""
+        if result.success and result.session is not None:
+            return cls.launched(result.session)
+        if result.disposition is LaunchDisposition.WITHDRAWN:
+            return cls.withdrawn(result.reason)
+        if result.disposition is LaunchDisposition.HELD_BY_RECOVERY:
+            return cls(LaunchStepOutcome.WAITING, None, result.reason)
+        return cls.not_launched(result.reason or result.disposition.value)
+
+
+def launch_step_result(action: "Action", step: LaunchStep, failure: str) -> "ActionResult":
+    """The applied result of a launch step that started no session (#7455).
+
+    A withdrawn or waiting request is a SKIPPED step - nothing failed, so it
+    is not an ``apply.failed``, marks nothing failed this cycle, and spends
+    nothing. Only a launch that was attempted and did not start is a failure.
+    """
+    from .action_results import ActionResult
+
+    if step.outcome is LaunchStepOutcome.LAUNCHED:
+        raise ValueError("a launched step is applied as a success, not here")
+    if step.outcome is LaunchStepOutcome.NOT_LAUNCHED:
+        return ActionResult.fail(action, failure)
+    return ActionResult.skip(action, step.reason, launch_step=step.outcome.value)
