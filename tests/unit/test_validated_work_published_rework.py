@@ -788,3 +788,32 @@ def test_a_parked_record_published_later_is_released_on_the_next_recheck(rig, ma
     assert not rig.store.has_unresolved_work(ISSUE)
     _published_as_contained(rig, {d.key.validated_head_sha for d in parked}, v2)
     assert RECOVERY_PENDING not in rig.labels.labels
+
+
+@pytest.mark.parametrize("superseded_by", ["rebase", "force-back-to-ancestor"])
+def test_the_completion_superseding_its_own_publication_reopens_nothing(rig, make_session, superseded_by):
+    """Review r4 (declined, by design): work the completion published is not a
+    recovery obligation, so when that same owner's later push replaces it - a
+    rework rebase, or a force-push back - recovery does not reopen it. Reopening
+    it would park it and re-block the PR under review: the #186 regression."""
+    first = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, first, "coding-1")
+    w2 = _commit(rig.git, rig.worktree, "more", "second commit")
+    second = _run(rig, SessionKind.REWORK, "coding-2", f"rework-{ISSUE}")
+    _validate(rig, second, "coding-2")
+    _push(rig)
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"rework-{ISSUE}", "session-completion", run=second) is False
+    (w2_record,) = [d for d in rig.store.for_issue(ISSUE).dispositions if d.key.validated_head_sha == w2]
+    assert w2_record.published_by_open_pr
+    if superseded_by == "rebase":
+        _rework_rebases_onto_moved_main(rig)
+    else:
+        rig.git.run(rig.worktree, ["reset", "-q", "--hard", w1])
+    _push(rig)
+
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=first) is False
+
+    assert rig.store.get(w2_record.record_id).state is ValidatedWorkState.RECOVERED
+    assert not rig.store.has_unresolved_work(ISSUE)
+    assert RECOVERY_PENDING not in rig.labels.labels
