@@ -86,13 +86,17 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    cutoff, `audit.json`'s `generated_at`. Only an **occurrence** can establish
    onset, and it must be the **earliest** matching occurrence in the supplied
    records. For example, a log signature's `first_seen`, not its `last_seen`.
-   If you only have snapshots, or can't find the earliest occurrence, the
-   onset is `unknown`. It's the whole
+   The earliest *supplied* occurrence is only a **proven onset** when that
+   source's coverage starts **before** it and shows no earlier occurrence.
+   A bounded log whose retention starts at `first_seen` can't prove the
+   anomaly didn't begin earlier. If you only have snapshots, or the onset
+   isn't proven, the onset is `unknown`. It's the whole
    span in which the tech lead could have noticed it. You may grade
-   `not_noticed` **only** when both `charter-decisions.json` and
-   `case-files.json` report `coverage.complete: true` over a span that
-   **contains the whole grading window**, and nothing in them refers to the
-   anomaly. If the window's start is `unknown` or not covered, grade
+   `not_noticed` **only** when the onset is **proven** (above), both
+   `charter-decisions.json` and `case-files.json` report
+   `coverage.complete: true` over a span that **contains the whole grading
+   window** from that proven onset, and nothing in them refers to the
+   anomaly. If the onset isn't proven, or the window isn't covered, grade
    `unknown`. Cite the decision and case-file IDs that support every other
    grade.
 4. **Find the root cause before proposing anything.** Trace it in the engine
@@ -184,7 +188,9 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 - `stall_point: not_in_charter` requires citing either the source (for a
   missing action type) or the `charter.json` settings that forbid the role or
   depth.
-- `stall_point: not_noticed` requires `grading_window.from` to be known,
+- `stall_point: not_noticed` requires a **proven** onset (the occurrence
+  source's coverage starts before `grading_window.from`, with no earlier
+  occurrence), `grading_window.from` to be known,
   `grading_window.to` to equal `audit.json`'s `generated_at`, and both
   coverage spans to contain the whole window. If either span ends before
   the cutoff, the grade is `unknown`. Every other grade except
