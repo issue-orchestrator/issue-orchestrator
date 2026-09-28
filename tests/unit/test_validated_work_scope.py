@@ -909,3 +909,85 @@ def test_a_scope_judgement_that_raises_every_pass_is_bounded(tmp_path):
     assert parked.key.escalation_issue == before.disposition.key.issue_number
     assert "intake ledger unreadable" in parked.last_reason
     assert rig.store.record_for_id(rig.record_id) == before
+
+
+# -- porchpin#410 end to end (#7457) -----------------------------------------
+
+
+def _stamp_as_launched_before_7347(rig) -> None:
+    """Rewrite the run's ledger row exactly as porchpin#410's reads today.
+
+    Before #7347 a tech-lead run was allocated under the issue lane's ``code``
+    stamp and its role recorded in ``completion_task``: porchpin's row for run
+    ``20260927-033842Z-a32bc975…/coding-1`` is ``task=code``,
+    ``completion_task=tech-lead``, ``agent_label=agent:tech-lead``.
+    """
+    import sqlite3
+
+    with sqlite3.connect(rig.state / "runs.sqlite") as conn:
+        changed = conn.execute(
+            "UPDATE issue_runs SET task='code' WHERE session_name=? AND run_id=? AND started_at=?",
+            (rig.run.session_name, rig.run.run_id, rig.run.started_at),
+        ).rowcount
+    assert changed == 1
+    row = sqlite3.connect(rig.state / "runs.sqlite").execute(
+        "SELECT task, completion_task, agent_label FROM issue_runs WHERE run_id=?",
+        (rig.run.run_id,),
+    ).fetchone()
+    assert row == ("code", "tech-lead", TECH_LEAD)
+
+
+@pytest.mark.parametrize("stranded_in", ["queued", "publishing"])
+def test_porchpin_410_a_legacy_tech_lead_completion_is_retired_once_and_never_prepared(
+    tech_lead, monkeypatch, stranded_in
+):
+    """#7457: porchpin#410's retained tech-lead completion, driven by the drain.
+
+    On the pre-#7341 engine the drain claimed the record, prepared a
+    publication workspace (``npm ci``) and handed the completion to the
+    processor, which rejected it for ``missing_authority`` - 175 times in 20 h,
+    because a rejection is not a resolution. On this branch the record's role
+    is read from the ledger (the pre-#7347 ``code``/``tech-lead`` stamps decode
+    to ``TECH_LEAD``), recovery never owned it, and the first drain tick retires
+    it before any preparation: no workspace, no ``npm ci``, no completion
+    processing, and no later tick touches it again.
+    """
+    disposition = _legacy_capture(tech_lead, monkeypatch)
+    if stranded_in == "publishing":
+        _strand_publishing(tech_lead, disposition)
+    _stamp_as_launched_before_7347(tech_lead)
+    preparation = Mock(spec=ClaimedRecoveryPreparation)  # workspace + npm ci live here
+    completion = Mock(spec=RecoveryPublicationCompletion)  # the processor's rejection lives here
+    store, execution = tech_lead.store, tech_lead.execution
+    drain = RecoveryDrain(
+        queue=store,
+        operation=RecoveryRecordOperation(execution=execution, store=store, preparation=preparation,
+            publication=Mock(spec=RecoveryPublicationAttempt), completion=completion,
+            scope=tech_lead.retirement),
+        authority_refresh=Mock(),
+        claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
+                                              retirement=tech_lead.retirement, batch_size=5,
+                                              liveness=drain_liveness(records=store)),
+        batch_size=5, interval_seconds=1,
+        liveness=drain_liveness(records=store),
+        clock=lambda: next(passes),
+    )
+    passes = iter(range(0, 1000, 10))  # every tick is past the interval
+
+    for _ in range(5):  # porchpin re-drove it every drain pass
+        drain.tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    preparation.prepare.assert_not_called()
+    completion.complete.assert_not_called()
+    record = store.record_for_id(disposition.record_id)
+    assert record.disposition.state is ValidatedWorkState.ABANDONED
+    assert record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE
+    assert store.drain_requests(after_record_id="", limit=10) == ()
+    assert not store.has_unresolved_work(ISSUE)
+    assert tech_lead.labels.labels == set()  # recovery-pending released
+    retirements = [
+        e for e in tech_lead.events.events
+        if e.event_type is EventName.VALIDATED_WORK_ABANDONED
+    ]
+    assert len(retirements) == 1  # retired once, never re-judged
