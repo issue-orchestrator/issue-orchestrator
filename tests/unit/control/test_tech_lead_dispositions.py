@@ -948,4 +948,9 @@ def test_only_exact_executed_source_diagnosis_can_complete_investigation(authori
     assert effective_terminal_status(SessionStatus.COMPLETED, outcome) is (
         SessionStatus.COMPLETED if permitted else SessionStatus.FAILED)
     assert ("success-only" in harness.host.comments) is permitted
-    assert any("ROOT CAUSE:" in comment for comment in harness.host.comments) is permitted
+    # A diagnosis aimed at a PR is not the required ISSUE diagnosis, so it never
+    # satisfies the obligation (above); as an executed post_comment it is the
+    # tech lead's own observation, which lands whatever the obligation did
+    # (porchpin #410) instead of being withheld with the success-only effects.
+    observed = authority_mode == "execute" and substitute == "target-is-pr"
+    assert any("ROOT CAUSE:" in comment for comment in harness.host.comments) is (permitted or observed)

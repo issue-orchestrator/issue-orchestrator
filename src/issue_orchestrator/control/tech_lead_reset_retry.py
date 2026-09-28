@@ -83,14 +83,14 @@ from .published_review_release import ReviewReleaseOutcome, refused_reset_dispos
 if TYPE_CHECKING:
     from ..domain.models import SessionHistoryEntry
     from ..ports.issue import Issue
-    from .action_applier import ActionApplier
     from .label_manager import LabelManager
-    from .tech_lead_charter_lifecycle import CompletionEffectLinks
 
+from .tech_lead_completion_apply import (
+    apply_completion_actions_gated as apply_completion_actions_gated,
+)
 from .tech_lead_completion_gate import (
     RequiredActLevelOutcome as RequiredActLevelOutcome,
     is_required_act_level_action as is_required_act_level_action,
-    partition_required_act_level_actions as partition_required_act_level_actions,
     require_investigation_terminal_effect as require_investigation_terminal_effect,
     evaluate_required_act_level_outcome as evaluate_required_act_level_outcome,
 )
@@ -380,120 +380,6 @@ def preserve_reset_retry_eligibility(
         make_retryable(candidate.issue_number)
         cleared.append(candidate.issue_number)
     return cleared
-
-
-def apply_completion_actions_gated(
-    action_applier: "ActionApplier",
-    actions: Sequence[Action],
-    *,
-    issue_number: int,
-) -> tuple[list[ActionResult], BaseException | None]:
-    """Apply completion actions so the mandated act-level outcome GATES the rest.
-
-    THE authority-with-effects owner (ADR-0031 §2, #6779 R13 root cause): the
-    decision-mandated ``ResetRetryIssueAction`` is applied FIRST as the gate, and
-    its success-only siblings (completion labels/comments/close) apply ONLY when it
-    commits — so a failing mandated reset can never leave a success-only effect
-    committed, no matter where it sat in the planned list. A raised apply past the
-    runtime-kill boundary (Reconciliation/Claim/adapter, #6777) withholds the
-    remainder too and is returned so the caller can finalize the ONE terminal
-    outcome, then re-raise. With no mandated action the whole list applies in one
-    pass — behavior for ordinary completions is unchanged.
-    """
-    from .tech_lead_charter_lifecycle import CompletionEffectLinks, link_or_log
-    from .tech_lead_charter_records import partition_charter_records
-
-    # The charter decisions are an audit of what was DECIDED, so they land
-    # before the gate and whatever the mandated outcome; a failed audit write
-    # withholds every effect (#7330 review F2).
-    audit, actions = partition_charter_records(actions)
-    audited, error = _apply_completion_action_batch(action_applier, audit, issue_number)
-    if error is not None or not all(result.success for result in audited):
-        return audited, error or RuntimeError("tech-lead charter decisions were not recorded")
-    # What really happened to each executed decision's effects is linked back
-    # to its record once the gate has run them, so no verdict reads as a
-    # remedy that took effect when it did not (#7362).
-    links = CompletionEffectLinks(planned=actions)
-    applied, error = _apply_gated_effects(action_applier, actions, issue_number, links)
-    link_or_log(
-        lambda: links.link(lambda: action_applier.tech_lead_ops),
-        f"issue #{issue_number}'s completion effects",
-    )
-    return audited + applied, error
-
-
-def _apply_gated_effects(
-    action_applier: "ActionApplier",
-    actions: Sequence[Action],
-    issue_number: int,
-    links: "CompletionEffectLinks",
-) -> tuple[list[ActionResult], BaseException | None]:
-    """The mandated act-level actions first, then the rest only if they commit."""
-    mandated, remainder = partition_required_act_level_actions(actions)
-    first = mandated or list(actions)
-    applied, error = _apply_completion_action_batch(action_applier, first, issue_number, links)
-    if (
-        not mandated
-        or error is not None
-        or evaluate_required_act_level_outcome(applied).failed
-    ):
-        if mandated and remainder:
-            logger.warning(
-                issue_log(
-                    issue_number,
-                    "Mandated act-level action did not commit; "
-                    "withholding %d success-only completion effect(s)",
-                ),
-                len(remainder),
-            )
-        return applied, error
-    remainder_applied, error = _apply_completion_action_batch(
-        action_applier, remainder, issue_number, links
-    )
-    return applied + remainder_applied, error
-
-
-def _apply_completion_action_batch(
-    action_applier: "ActionApplier",
-    actions: Sequence[Action],
-    issue_number: int,
-    links: "CompletionEffectLinks | None" = None,
-) -> tuple[list[ActionResult], BaseException | None]:
-    """Apply one batch of actions, capturing a raise past the runtime-kill boundary.
-
-    Terminal finalization must run on EVERY apply outcome (#6777): a propagated
-    ``ReconciliationRequired`` / ``ClaimLostError`` / adapter fault is CAPTURED and
-    returned rather than aborting before finalization.
-    """
-    if not actions:
-        return [], None
-    logger.info(
-        issue_log(issue_number, "Applying %d completion action(s): %s"),
-        len(actions),
-        [type(action).__name__ for action in actions],
-    )
-    landed: list[ActionResult] = []
-    try:
-        # `or []` tolerates test doubles whose apply_all returns None.
-        results = list(action_applier.apply_all(list(actions), on_result=landed.append) or [])
-    except Exception as exc:
-        if links is not None:
-            # What landed before the raise stands; the raise is the next one's.
-            links.applied(actions, landed)
-            if len(landed) < len(actions):
-                links.raised(actions[len(landed)], exc)
-        logger.warning(
-            issue_log(
-                issue_number,
-                "Completion-action apply raised; finalizing "
-                "terminal FAILED before re-raising: %s",
-            ),
-            exc,
-        )
-        return [], exc
-    if links is not None:
-        links.applied(actions, results)
-    return results, None
 
 
 def required_act_level_outcome_after_apply(
