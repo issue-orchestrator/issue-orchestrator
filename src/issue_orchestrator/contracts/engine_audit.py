@@ -64,6 +64,10 @@ class SourceReading(_Frozen):
     #: When a rate-limited source can be read again.
     resets_at: str | None = None
 
+    def describe(self) -> str:
+        until = f" until {self.resets_at}" if self.resets_at else ""
+        return f"{self.source.value}: {self.status.value}{until} {self.detail}"
+
 
 class Count(_Frozen):
     """One cell of a grouped count, e.g. ``["abandoned", "outside_recovery_scope"]``."""
@@ -128,6 +132,11 @@ class CharterDecisionSummary(_Frozen):
     took_effect: bool
     #: The applier's words when it did not apply the action.
     execution_reason: str | None
+
+    def describe_effect(self) -> str:
+        """The effect, with the applier's words when it did not apply."""
+        because = f" ({self.execution_reason[:80]})" if self.execution_reason else ""
+        return self.effect + because
 
 
 class TechLeadSection(_Frozen):
@@ -352,7 +361,10 @@ class EngineAuditReport(_Frozen):
     diff: AuditDiff | None = None
 
     def unread_sources(self) -> frozenset[AuditSource]:
-        return frozenset(r.source for r in self.sources if r.status is not SourceStatus.READ)
+        return frozenset(r.source for r in self.unread_readings())
+
+    def unread_readings(self) -> tuple[SourceReading, ...]:
+        return tuple(r for r in self.sources if r.status is not SourceStatus.READ)
 
 
 __all__ = [

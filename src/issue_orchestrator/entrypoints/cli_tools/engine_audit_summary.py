@@ -19,7 +19,6 @@ from ...contracts.engine_audit import (
     FetchCostSection,
     GitHubSection,
     NoProgressSection,
-    SourceStatus,
     TechLeadSection,
     ValidatedWorkSection,
 )
@@ -36,10 +35,7 @@ def render_summary(report: EngineAuditReport) -> str:
         f"######## ENGINE AUDIT {report.repo}  {report.generated_at}"
         + ("  [PARTIAL]" if report.partial else ""),
     ]
-    for reading in report.sources:
-        if reading.status is not SourceStatus.READ:
-            resets = f" until {reading.resets_at}" if reading.resets_at else ""
-            lines.append(f"  !! {reading.source.value}: {reading.status.value}{resets} {reading.detail}")
+    lines.extend(f"  !! {reading.describe()}" for reading in report.unread_readings())
     lines.extend(_section(report.validated_work, _validated_work))
     lines.extend(_section(report.action_liveness, _liveness))
     lines.extend(_section(report.tech_lead, _tech_lead))
@@ -88,7 +84,7 @@ def _tech_lead(tl: TechLeadSection) -> list[str]:
         "== charter decisions: most recent",
         *(
             f"  {d.decided_at} | {d.role} | {d.action_kind} | {d.target_number} | {d.outcome}"
-            f" | {d.effect}" + (f" ({d.execution_reason[:80]})" if d.execution_reason else "")
+            f" | {d.describe_effect()}"
             for d in tl.recent_decisions
         ),
         "== promoted findings by state",
