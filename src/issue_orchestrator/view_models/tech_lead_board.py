@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Sequence
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 
 if TYPE_CHECKING:
+    from ..domain.action_liveness import LivenessRow
     from ..domain.tech_lead_session import (
         GatedTechLeadProposal,
         StoredTechLeadOp,
@@ -76,6 +77,43 @@ class TechLeadBoardCaseFile:
 
 
 @dataclass(frozen=True)
+class TechLeadBoardHeldAction:
+    """One action the liveness owner parked (#7350), as shown on the board.
+
+    "Held - waiting on you": the orchestrator stopped retrying it, and it runs
+    again only when its facts change, it succeeds, or an operator retries the
+    issue. ``issue_number`` is the escalation issue, 0 when there is none.
+    """
+
+    subject: str
+    action: str
+    outcome: str
+    reason: str
+    parked_since: str
+    issue_number: int
+
+
+@dataclass(frozen=True)
+class TechLeadBoardCharterRole:
+    """One charter role: its active dials and what its recent decisions were (#7330).
+
+    The counts are READ from the persisted charter decision ledger, never
+    recomputed against the current charter.
+    """
+
+    role: str
+    dials: str
+    #: Executed decisions whose applier committed the effect (#7362).
+    executed: int = 0
+    #: Executed decisions refused, failed, withheld or parked when applied, or
+    #: whose result is not linked yet: allowed to run, but not shown to work.
+    executed_not_applied: int = 0
+    proposed: int = 0
+    refused_destructive: int = 0
+    advice_only: int = 0
+
+
+@dataclass(frozen=True)
 class TechLeadBoardView:
     """Frozen board projection; input to :func:`render_tech_lead_board_md`."""
 
@@ -83,6 +121,9 @@ class TechLeadBoardView:
     case_files: tuple[TechLeadBoardCaseFile, ...]
     area_counts: tuple[tuple[str, int], ...]
     last_health_review: str  # ISO timestamp; "" when never
+    held_actions: tuple[TechLeadBoardHeldAction, ...] = ()
+    charter: tuple[TechLeadBoardCharterRole, ...] = ()
+    waiting_actions: tuple[TechLeadBoardHeldAction, ...] = ()
 
 
 def _proposal_age_hours(created_at: str, now: datetime) -> int:
@@ -146,6 +187,8 @@ def build_tech_lead_board_view(
     area_counts: Sequence[tuple[str, int]],
     last_health_review_at: float,
     now: datetime,
+    held_actions: Sequence["LivenessRow"],
+    charter: Sequence[TechLeadBoardCharterRole] = (),
 ) -> TechLeadBoardView:
     """Project the ledgers + observed facts onto the board.
 
@@ -174,11 +217,25 @@ def build_tech_lead_board_view(
             for item in ranked
         ),
         area_counts=tuple(area_counts),
+        held_actions=tuple(_held(row) for row in held_actions if row.parked),
+        waiting_actions=tuple(_held(row) for row in held_actions if not row.parked),
         last_health_review=(
             datetime.fromtimestamp(last_health_review_at, tz=timezone.utc).isoformat()
             if last_health_review_at > 0
             else ""
         ),
+        charter=tuple(charter),
+    )
+
+
+def _held(row: "LivenessRow") -> TechLeadBoardHeldAction:
+    return TechLeadBoardHeldAction(
+        subject=row.key.identity.subject,
+        action=row.key.identity.action,
+        outcome=row.last_outcome.value,
+        reason=row.last_reason,
+        parked_since=row.last_failed_at.isoformat(),
+        issue_number=row.key.escalation_issue or 0,
     )
 
 
@@ -210,6 +267,8 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
         lines.extend(_ledgerless_proposal_note(view.open_proposals))
     else:
         lines.append("None.")
+    lines.extend(_held_actions_section(view.held_actions))
+    lines.extend(_waiting_actions_section(view.waiting_actions))
     lines.extend(["", "## Open pattern case files", ""])
     if view.case_files:
         lines.extend(
@@ -233,7 +292,77 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
         )
     else:
         lines.append("None.")
+    lines.extend(_charter_lines(view.charter))
     return "\n".join(lines) + "\n"
+
+
+def _held_actions_section(held: Sequence[TechLeadBoardHeldAction]) -> list[str]:
+    """Actions the orchestrator stopped retrying (#7350), oldest park first."""
+    lines = ["", "## Held — waiting on you", ""]
+    if not held:
+        lines.append("None.")
+        return lines
+    lines.extend(
+        [
+            f"{len(held)} action(s) stopped retrying. Each runs again when its"
+            " facts change, when an operator retries its issue, or when released"
+            " with `issue-orchestrator action-liveness release --subject <subject>"
+            " --action <action>`.",
+            "",
+            "| Issue | Subject | Action | Outcome | Parked since | Reason |",
+            "|---|---|---|---|---|---|",
+            *(
+                f"| {f'#{item.issue_number}' if item.issue_number else _UNKNOWN_CELL}"
+                f" | `{_markdown_cell(item.subject)}` | `{item.action}`"
+                f" | {item.outcome} | {item.parked_since}"
+                f" | {_markdown_cell(item.reason)} |"
+                for item in held
+            ),
+        ]
+    )
+    return lines
+
+
+def _charter_lines(roles: Sequence[TechLeadBoardCharterRole]) -> list[str]:
+    """The active charter and its recorded decisions per role (#7330)."""
+    if not roles:
+        return []
+    return [
+        "",
+        "## Charter",
+        "",
+        "Active `tech_lead.charter` dials, with the recorded outcome of each"
+        " role's recent decisions.",
+        "",
+        "| Role | Dials | Executed (applied) | Executed, not applied | Proposed"
+        " | Refused (destructive) | Advice only |",
+        "|---|---|---|---|---|---|---|",
+        *(
+            f"| {item.role} | {item.dials} | {item.executed}"
+            f" | {item.executed_not_applied} | {item.proposed}"
+            f" | {item.refused_destructive} | {item.advice_only} |"
+            for item in roles
+        ),
+    ]
+
+
+def _waiting_actions_section(waiting: Sequence[TechLeadBoardHeldAction]) -> list[str]:
+    """Actions paced behind another owner's precondition (#7350); omitted when none."""
+    if not waiting:
+        return []
+    return [
+        "",
+        "## Waiting on another owner",
+        "",
+        "| Issue | Subject | Action | Since | Reason |",
+        "|---|---|---|---|---|",
+        *(
+            f"| {f'#{item.issue_number}' if item.issue_number else _UNKNOWN_CELL}"
+            f" | `{_markdown_cell(item.subject)}` | `{item.action}`"
+            f" | {item.parked_since} | {_markdown_cell(item.reason)} |"
+            for item in waiting
+        ),
+    ]
 
 
 def _proposal_row(item: TechLeadBoardProposal) -> str:

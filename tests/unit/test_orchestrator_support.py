@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch, PropertyMock
 from typing import Optional
 
+from tests.unit.control.liveness_doubles import PASSTHROUGH_LIVENESS, applier_owner, gated
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.control.orchestrator_support import (
     OrchestratorSupport,
@@ -40,6 +41,7 @@ from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
     ExpectedState,
     ExternalSnapshot,
+    build_expected_for_mutation,
     get_pause_label,
 )
 from issue_orchestrator.control.session_history import CLOSED_ISSUE_HISTORY_STATUS_REASON
@@ -49,6 +51,7 @@ from issue_orchestrator.control.actions import (
     ActionType,
     AddLabelAction,
     LaunchSessionAction,
+    RemoveLabelAction,
     SessionType,
 )
 from issue_orchestrator.control.health_gate import HealthGate, HealthDecision
@@ -76,7 +79,8 @@ from issue_orchestrator.domain.models import (
     SessionHistoryStatus,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
@@ -183,10 +187,10 @@ def make_history_entry(issue_number: int, status: SessionHistoryStatus) -> Sessi
     )
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:
+def make_session(issue: Issue, task: SessionKind = SessionKind.CODE, tmp_path: Path = None) -> Session:
     """Create a test session for an issue."""
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     worktree = tmp_path or Path("/tmp/test-worktree")
 
     return Session(
@@ -680,6 +684,7 @@ class TestQueueFetchPlanner:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
         )
 
         assert next_sync == last_sync
@@ -729,6 +734,7 @@ class TestQueueFetchPlanner:
             refresh_requested=False,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
         )
 
         assert next_sync >= last_sync
@@ -777,6 +783,7 @@ class TestQueueFetchPlanner:
             refresh_requested=True,
             inflight_stable_ids={},
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            action_liveness=PASSTHROUGH_LIVENESS,
         )
 
         github_workflow.fetch_all_issues.assert_called_once()
@@ -821,6 +828,7 @@ class TestQueueFetchPlanner:
                 issue_fetch_resilience=IssueFetchResilience(
                     "owner/repo", repo_not_found_tolerance=1
                 ),
+                action_liveness=PASSTHROUGH_LIVENESS,
             )
 
         assert "owner/repo" in str(exc_info.value)
@@ -1074,7 +1082,7 @@ class TestPauseIssueForReconciliation:
         """Reconciliation failure adds pause label to issue."""
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=42,
             reason="Labels changed externally",
@@ -1094,7 +1102,7 @@ class TestPauseIssueForReconciliation:
         """Reconciliation pause emits ISSUE_PAUSED_RECONCILE event."""
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=99,
             reason="State drift detected",
@@ -1119,7 +1127,7 @@ class TestPauseIssueForReconciliation:
         # Should not raise
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            action_applier=mock_action_applier,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
             event_context=sample_event_context,
             issue_number=42,
             reason="Test failure",
@@ -1127,6 +1135,27 @@ class TestPauseIssueForReconciliation:
 
         # Should log error
         assert "Failed to add pause label" in caplog.text
+
+
+    def test_refused_pause_write_is_a_visible_failed_step_not_a_pause(
+        self, mock_event_sink, mock_action_applier, sample_event_context
+    ):
+        """#7349: the pause write returning a FAILED result (no exception) used
+        to be announced as ``issue.paused_reconcile`` anyway. A pause that did
+        not land is reported as a failed step instead."""
+        mock_action_applier.apply.side_effect = lambda action: ActionResult.fail(action, "GitHub 502")
+
+        pause_issue_for_reconciliation(
+            events=mock_event_sink,
+            pauses=applier_owner(mock_action_applier, mock_event_sink),
+            event_context=sample_event_context,
+            issue_number=42,
+            reason="drift",
+        )
+
+        assert [e.name for e in mock_event_sink.events] == [EventName.APPLY_FAILED]
+        assert mock_event_sink.events[0].data["issue_number"] == 42
+        assert "GitHub 502" in mock_event_sink.events[0].data["error"]
 
 
 # =============================================================================
@@ -1361,7 +1390,6 @@ class TestOrchestratorSupportApplyPlan:
         mock_worktree_manager = MagicMock()
         mock_state_machine_manager = MagicMock()
         mock_cleanup_manager = MagicMock()
-        mock_cleanup_manager.should_retry_tech_lead_issue = Mock(return_value=True)
 
         return OrchestratorSupport(
             config=mock_config,
@@ -1378,6 +1406,7 @@ class TestOrchestratorSupportApplyPlan:
             cleanup_manager=mock_cleanup_manager,
             get_review_machine=Mock(),
             kill_session=Mock(),
+            pending_work_claims=MagicMock(),
         )
 
     def test_apply_plan_launch_releases_blocked_front_by_issue_identity(self, support):
@@ -1411,7 +1440,7 @@ class TestOrchestratorSupportApplyPlan:
             return ActionResult.ok(action, issue_number=number)
 
         support.action_applier.apply.side_effect = apply
-        support.apply_plan(Plan(actions=(issue_launch, review_launch), skipped=()), MagicMock())
+        support.apply_plan(gated(Plan(actions=(issue_launch, review_launch), skipped=())), MagicMock())
 
         assert 7 not in support.state.priority_queue
         assert 7 not in support.state.blocked_front_prioritized
@@ -1436,7 +1465,7 @@ class TestOrchestratorSupportApplyPlan:
         support.action_applier.apply.side_effect = lambda action: ActionResult.fail(
             action, "worktree create failed"
         )
-        support.apply_plan(Plan(actions=(issue_launch,), skipped=()), MagicMock())
+        support.apply_plan(gated(Plan(actions=(issue_launch,), skipped=())), MagicMock())
 
         assert 7 in support.state.priority_queue
         assert 7 in support.state.blocked_front_prioritized
@@ -1531,26 +1560,170 @@ class TestOrchestratorSupportApplyPlan:
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.RECONCILIATION_REQUIRED in event_names
 
-    def test_tech_lead_issue_skipped_on_cooldown(self, support, mock_event_sink):
-        """CREATE_TECH_LEAD_ISSUE action is skipped when on cooldown."""
-        mock_action = MagicMock()
-        mock_action.action_type = ActionType.CREATE_TECH_LEAD_ISSUE
+    def _real_gate(self, support, labels_by_issue, **applier_ports):
+        """Wire a REAL ActionApplier + mutation gate reading *labels_by_issue*."""
+        from tests.runtime_lifecycle_helpers import make_action_applier
 
-        plan = MagicMock()
-        plan.action_count = 1
-        plan.actions = [mock_action]
+        class _Labels:
+            def __init__(self):
+                self.added: list[tuple[int, str]] = []
+                self.removed: list[tuple[int, str]] = []
 
-        # Set cooldown active
-        support.cleanup_manager.should_retry_tech_lead_issue = Mock(return_value=False)
+            def add_label(self, issue_number, label):
+                self.added.append((issue_number, label))
 
-        support.apply_plan(plan, Mock())
+            def remove_label(self, issue_number, label):
+                self.removed.append((issue_number, label))
 
-        # Should not have called apply for this action
-        support.action_applier.apply.assert_not_called()
+            def list_labels(self, issue_number):
+                return list(labels_by_issue.get(issue_number, []))
 
-        # Should have emitted APPLY_FAILED
-        event_names = [e.name for e in mock_event_sink.events]
-        assert EventName.APPLY_FAILED in event_names
+        class _FreshReader:
+            def read_issue_labels(self, issue_number):
+                return list(labels_by_issue.get(issue_number, []))
+
+        labels = _Labels()
+        support.action_applier = make_action_applier(
+            labels=labels, sessions=MagicMock(), events=support.events,
+            fresh_issue_reader=_FreshReader(), reconcile=True, **applier_ports,
+        )
+        pauses = applier_owner(support.action_applier, support.events)
+        pause = lambda number, reason: pause_issue_for_reconciliation(  # noqa: E731
+            support.events, pauses, support.event_context, number, reason)
+        return labels, pause
+
+    def test_paused_subject_is_withheld_without_aborting_other_subjects(self, support, mock_event_sink):
+        """#7349 (porchpin #410): a subject already paused behind
+        ``io:needs-reconcile`` is refused by the mutation gate. That refusal
+        used to HALT the whole plan, so the review launches planned after it
+        (#379/#381) never ran -- 133 ticks in a row. Now only #410 is withheld:
+        its later action is reported as a failed step, it is not paused again
+        (the refusal IS the pause working), and every other subject's actions
+        still apply."""
+        from issue_orchestrator.control.planner_types import Plan
+
+        labels, pause = self._real_gate(support, {
+            410: ["in-progress", get_pause_label()], 379: [], 381: [],
+        })
+        plan = Plan(actions=(
+            RemoveLabelAction(issue_number=410, label="in-progress", reason="stale",
+                              expected=build_expected_for_mutation()),
+            AddLabelAction(issue_number=379, label="needs-code-review", reason="r",
+                           expected=build_expected_for_mutation()),
+            AddLabelAction(issue_number=410, label="blocked", reason="later write on #410"),
+            AddLabelAction(issue_number=381, label="needs-code-review", reason="r",
+                           expected=build_expected_for_mutation()),
+        ), skipped=())
+
+        support.apply_plan(gated(plan), pause)
+
+        assert labels.added == [(379, "needs-code-review"), (381, "needs-code-review")]
+        assert labels.removed == []
+        refused = [e for e in mock_event_sink.events if e.name == EventName.RECONCILIATION_REQUIRED]
+        assert [(e.data["issue_number"], e.data["already_paused"]) for e in refused] == [(410, True)]
+        assert not [e for e in mock_event_sink.events if e.name == EventName.ISSUE_PAUSED_RECONCILE]
+        withheld = [e for e in mock_event_sink.events
+                    if e.name == EventName.APPLY_FAILED and "withheld" in e.data["error"]]
+        assert [(e.data["issue_number"], e.data["step_type"]) for e in withheld] == [(410, "add_label")]
+        completed = next(e for e in mock_event_sink.events if e.name == EventName.APPLY_COMPLETED)
+        assert (completed.data["applied_steps"], completed.data["failed_steps"]) == (2, 2)
+
+    def test_a_charter_audited_wrapper_is_withheld_with_its_effects_subject(self, support, mock_event_sink):
+        """#7356 whole-branch review: a charter-audited promotion names no
+        subject of its own (its ``effect`` does). With #229 refused earlier in
+        the tick, the wrapper was admitted, WROTE its charter decision, and only
+        then had the inner promotion refused -- bypassing isolation and leaving
+        a decision record for an effect that never ran. The wrapper is now
+        withheld on its effect's subject: neither the ledger write nor the
+        effect happens."""
+        from issue_orchestrator.control.actions import PromoteTechLeadFindingAction
+        from issue_orchestrator.control.planner_types import Plan
+        from issue_orchestrator.control.tech_lead_charter_policy import CharterAuditedAction
+        from tests.unit.control.test_tech_lead_applier_handlers import _charter_record_action
+
+        authority = MagicMock()
+        target = MagicMock()
+        labels, pause = self._real_gate(
+            support, {229: ["blocked"]}, tech_lead_ops=authority, promotion_target=target,
+        )
+        marker = "<!-- issue-orchestrator:tech-lead-promotion:v1:abc -->"
+        promotion = PromoteTechLeadFindingAction(
+            signature="sig", case_file_issue_number=229, target_repo="owner/upstream",
+            title="[tech-lead:src] sig", body=f"body\n\n{marker}", labels=("agent:backend",),
+            observation_count=2, idempotency_marker=marker,
+            expected=build_expected_for_mutation(),
+        )
+        plan = Plan(actions=(
+            AddLabelAction(issue_number=229, label="pr-pending", reason="refused first",
+                           expected=build_expected_for_mutation(forbidden={"blocked"})),
+            CharterAuditedAction(decisions=_charter_record_action().decisions, effect=promotion),
+        ), skipped=())
+
+        support.apply_plan(gated(plan), pause)
+
+        authority.charter_ledger.record_decisions.assert_not_called()
+        assert target.method_calls == []
+        withheld = [e for e in mock_event_sink.events
+                    if e.name == EventName.APPLY_FAILED and "withheld" in e.data["error"]]
+        assert [e.data["step_type"] for e in withheld] == ["apply_charter_audited_action"]
+
+    def test_a_charter_audited_wrapper_is_gated_on_its_effect_before_recording(self, support, mock_event_sink):
+        """Isolation review r1: the wrapper is the FIRST action for a drifted
+        #229. It is gated on its effect's subject and expectations before the
+        charter decision is written, so a refused effect leaves no record, and
+        the refusal withholds #229's later actions."""
+        from issue_orchestrator.control.actions import PromoteTechLeadFindingAction
+        from issue_orchestrator.control.planner_types import Plan
+        from issue_orchestrator.control.tech_lead_charter_policy import CharterAuditedAction
+        from tests.unit.control.test_tech_lead_applier_handlers import _charter_record_action
+
+        authority = MagicMock()
+        target = MagicMock()
+        labels, pause = self._real_gate(
+            support, {229: ["blocked"]}, tech_lead_ops=authority, promotion_target=target,
+        )
+        marker = "<!-- issue-orchestrator:tech-lead-promotion:v1:abc -->"
+        promotion = PromoteTechLeadFindingAction(
+            signature="sig", case_file_issue_number=229, target_repo="owner/upstream",
+            title="[tech-lead:src] sig", body=f"body\n\n{marker}", labels=("agent:backend",),
+            observation_count=2, idempotency_marker=marker,
+            expected=build_expected_for_mutation(forbidden={"blocked"}),
+        )
+        plan = Plan(actions=(
+            CharterAuditedAction(decisions=_charter_record_action().decisions, effect=promotion),
+            AddLabelAction(issue_number=229, label="pr-pending", reason="later write on #229"),
+        ), skipped=())
+
+        support.apply_plan(gated(plan), pause)
+
+        authority.charter_ledger.record_decisions.assert_not_called()
+        assert target.method_calls == []
+        refused = [e for e in mock_event_sink.events if e.name == EventName.RECONCILIATION_REQUIRED]
+        assert [e.data["issue_number"] for e in refused] == [229]
+        withheld = [e for e in mock_event_sink.events
+                    if e.name == EventName.APPLY_FAILED and "withheld" in e.data["error"]]
+        assert [(e.data["issue_number"], e.data["step_type"]) for e in withheld] == [(229, "add_label")]
+
+    def test_drifted_subject_is_paused_and_withheld_while_others_continue(self, support, mock_event_sink):
+        """#7349: NEW drift on one subject escalates THAT subject -- it is
+        paused behind ``io:needs-reconcile`` and its remaining actions are
+        withheld -- while the next subject's actions still apply."""
+        from issue_orchestrator.control.planner_types import Plan
+
+        labels, pause = self._real_gate(support, {42: ["blocked"], 7: []})
+        plan = Plan(actions=(
+            AddLabelAction(issue_number=42, label="pr-pending", reason="done",
+                           expected=build_expected_for_mutation(required={"in-progress"})),
+            AddLabelAction(issue_number=42, label="needs-code-review", reason="later write on #42"),
+            AddLabelAction(issue_number=7, label="needs-code-review", reason="r",
+                           expected=build_expected_for_mutation()),
+        ), skipped=())
+
+        support.apply_plan(gated(plan), pause)
+
+        assert labels.added == [(42, get_pause_label()), (7, "needs-code-review")]
+        paused = [e for e in mock_event_sink.events if e.name == EventName.ISSUE_PAUSED_RECONCILE]
+        assert [e.data["issue_number"] for e in paused] == [42]
 
     def test_failed_label_action_marks_failed_this_cycle(self, support, sample_orchestrator_state):
         """Label mutation failures mark the issue failed_this_cycle."""
@@ -1637,6 +1810,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
+            pending_work_claims=MagicMock(),
         )
 
     def test_clears_immediate_cleanups_via_method(self, support, sample_orchestrator_state):
@@ -1779,6 +1953,7 @@ class TestUpdateStateAfterAction:
             get_review_machine=Mock(),
             kill_session=Mock(),
             tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+            pending_work_claims=MagicMock(),
         )
 
     @staticmethod
@@ -1797,7 +1972,7 @@ class TestUpdateStateAfterAction:
         support.action_applier.apply.side_effect = lambda action: ActionResult.ok(
             action, **details
         )
-        support.apply_plan(Plan(actions=tuple(actions), skipped=()), MagicMock())
+        support.apply_plan(gated(Plan(actions=tuple(actions), skipped=())), MagicMock())
 
     def test_queue_review_adds_to_pending_reviews(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action adds PendingReview to state."""
@@ -1931,7 +2106,7 @@ class TestUpdateStateAfterAction:
             Session(
                 key=SessionKey(
                     issue=FakeIssueKey("42"),
-                    task=TaskKind.RETROSPECTIVE_REVIEW,
+                    kind=SessionKind.RETROSPECTIVE_REVIEW,
                 ),
                 issue=issue,
                 agent_config=AgentConfig(prompt_path=Path("/tmp/prompt.md")),
@@ -2351,7 +2526,7 @@ class TestUpdateStateAfterAction:
             else ActionResult.ok(action)
         )
         support_with_state.apply_plan(
-            Plan(actions=tuple(plan.actions), skipped=()), MagicMock()
+            gated(Plan(actions=tuple(plan.actions), skipped=())), MagicMock()
         )
         clear_discovered_facts(support_with_state.state, config, tick_paused=False)
 
@@ -2826,6 +3001,7 @@ class TestRequestRefresh:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
+            pending_work_claims=MagicMock(),
         )
 
     def test_adds_inflight_ids_with_expiry(self, support):

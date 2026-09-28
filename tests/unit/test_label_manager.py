@@ -139,8 +139,26 @@ class TestNamedProperties:
     def test_blocked_pr_closed(self, lm: LabelManager) -> None:
         assert lm.blocked_pr_closed == "blocked:pr-closed"
 
-    def test_needs_reconcile(self, lm: LabelManager) -> None:
-        assert lm.needs_reconcile == "needs-reconcile"
+    def test_needs_reconcile_is_the_label_the_pause_writes_and_the_gate_forbids(
+        self, lm: LabelManager, plm: LabelManager
+    ) -> None:
+        """#7349: one spelling for the pause label across every owner.
+
+        The registry used to resolve ``needs-reconcile`` (unprefixed) or
+        ``bot:needs-reconcile`` while the pause WROTE, and the mutation gate
+        FORBADE, ``io:needs-reconcile`` -- so every registry-driven guard
+        (claimed recovery, case-file lifecycle, needs-human reconcile) tested
+        for a label that never exists on the issue.
+        """
+        from issue_orchestrator.control.reconciliation import (
+            build_expected_for_mutation,
+            get_pause_label,
+        )
+
+        for manager in (lm, plm):
+            assert manager.needs_reconcile == get_pause_label() == "io:needs-reconcile"
+            assert manager.needs_reconcile in build_expected_for_mutation().forbidden_labels
+            assert manager.is_ours(get_pause_label())
 
     def test_review_keep_approach(self, lm: LabelManager) -> None:
         assert lm.review_keep_approach == "reviewer-keep-current-approach"

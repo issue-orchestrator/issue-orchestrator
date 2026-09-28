@@ -12,6 +12,7 @@ PullRequestTracker into a single interface.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from ..domain.host_rate_limit import HostRateLimit, HostRateLimitReported
 from .issue_tracker import IssueTracker
 from .label_set import LabelSet
 from .pull_request_tracker import PullRequestTracker
@@ -50,6 +51,51 @@ class RepositoryScanIncompleteError(RepositoryHostError):
     Declared at the port so control-layer policy can distinguish the two without
     importing an adapter.
     """
+
+
+class RepositoryHostRateLimitedError(RepositoryHostError):
+    """A host request was refused by a rate limit, carrying when it resets.
+
+    Declared at the port, like :class:`RepositoryScanIncompleteError`, so launch
+    policy can defer on it without importing an adapter. Adapters raise a
+    subclass that also keeps their ordinary HTTP error type, so existing
+    handlers of that type still catch it.
+    """
+
+    rate_limit: HostRateLimit
+
+
+def is_transient_host_failure(exc: BaseException) -> bool:
+    """Whether the host is expected to answer this request again shortly (#7379).
+
+    Transient: a rate limit (the host named when), a transport failure (no HTTP
+    response at all), a 5xx, or a 429. Everything else -- auth (401/403), not
+    found, a malformed answer, a non-host fault -- will not clear by itself and
+    must stay on its caller's escalation path.
+    """
+    if host_rate_limit_of(exc) is not None:
+        return True
+    if not isinstance(exc, RepositoryHostError):
+        return False
+    if exc.kind == "transport":
+        return True
+    status = getattr(exc, "status_code", None)
+    return exc.kind == "http" and isinstance(status, int) and (status >= 500 or status == 429)
+
+
+def host_rate_limit_of(exc: BaseException) -> HostRateLimit | None:
+    """The rate limit behind ``exc`` or anything it was explicitly raised from.
+
+    Follows ``__cause__`` only (``raise ... from``): a wrapper that names the
+    rate limit as its cause is still a rate limit, while an unrelated error
+    that merely happened during handling of one is not.
+    """
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, (RepositoryHostRateLimitedError, HostRateLimitReported)):
+            return current.rate_limit
+        current = current.__cause__
+    return None
 
 
 def repository_host_failure_status(exc: RepositoryHostError) -> int:

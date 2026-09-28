@@ -11,6 +11,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadProposalIssueAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RecordTechLeadDispositionAction,
     EscalateTechLeadDispositionAction,
     ResetRetryIssueAction,
@@ -29,7 +30,7 @@ from issue_orchestrator.control.tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
 )
 from issue_orchestrator.domain.models import Issue
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_artifacts import (
     ProposedTechLeadAction,
     TechLeadDecision,
@@ -850,6 +851,13 @@ class TestDuplicateObservationAccrual:
         assert case_file.area == "github-api"
         assert len(case_file.observations) == 2
         assert not _follow_up_creates(planned)
+        # #7362: the one coalesced creation is the effect of BOTH executed
+        # decisions, so its applied result links back to each of them.
+        from issue_orchestrator.domain.tech_lead_charter_decisions import decision_key
+        assert set(case_file.charter_decisions) == {
+            decision_key(SOURCE_RUN["source_run_id"], "A1"),
+            decision_key(SOURCE_RUN["source_run_id"], "A2"),
+        }
 
     def test_without_flag_pattern_authority_the_gated_create_stands(self) -> None:
         # Accrual writes orchestrator-owned ledgers — a flag_pattern effect. With
@@ -1550,8 +1558,13 @@ def test_create_issue_propose_creates_gated_issue() -> None:
     assert not any(isinstance(a, SurfaceTechLeadProposalAction) for a in [planned])
 
 
-def test_reset_retry_execute_plans_typed_reset_action() -> None:
-    """Execute authority maps reset_retry to the typed executor action (#6764)."""
+def test_reset_retry_execute_is_refused_as_destructive() -> None:
+    """Reset from scratch never runs unattended, whatever the modes say (#7330).
+
+    Config loading rejects ``tech_lead.authority.reset_retry: execute``; a
+    programmatic ``execute`` must still plan the gated proposal issue, never the
+    direct typed reset.
+    """
     config = _config(reset_retry="execute")
     action = ProposedTechLeadAction(
         id="A7",
@@ -1563,16 +1576,10 @@ def test_reset_retry_execute_plans_typed_reset_action() -> None:
 
     [planned] = _plan(_decision(action), config)
 
-    assert isinstance(planned, ResetRetryIssueAction)
-    assert planned.issue_number == 13
-    assert planned.anchor_issue_number == 99  # the anchor issue
-    assert planned.proposal_id == "A7"
-    assert planned.rationale.startswith("Worktree is unrecoverable")
-    assert planned.finding_ids == ("T1",)
-    assert "A7" in planned.reason
-    assert planned.expected is EXPECTED
-    # Execute-mode means no shadow surface and no digest for this proposal.
-    assert not any(isinstance(a, SurfaceTechLeadProposalAction) for a in [planned])
+    assert not isinstance(planned, ResetRetryIssueAction)
+    assert isinstance(planned, CreateTechLeadProposalIssueAction)
+    assert planned.op.op_type == "reset_retry"
+    assert planned.op.source_action_id == "A7"
 
 
 def test_kill_hung_session_execute_plans_generation_bound_kill_action() -> None:
@@ -1591,7 +1598,7 @@ def test_kill_hung_session_execute_plans_generation_bound_kill_action() -> None:
         observed_session_generation=lambda number: (
             TechLeadSessionGeneration(
                 issue_number=13,
-                task_kind=TaskKind.CODE,
+                task_kind=SessionKind.CODE,
                 terminal_id="issue-13",
                 run_id="RUN-13",
             )
@@ -1638,6 +1645,46 @@ def test_recover_validated_work_binds_the_exact_launch_grant(authority_mode) -> 
     )
     assert isinstance(planned, (CreateTechLeadProposalIssueAction, RecoverValidatedWorkAction))
     assert bound is grant
+
+
+def _release(action_id: str = "A11") -> ProposedTechLeadAction:
+    return ProposedTechLeadAction(
+        id=action_id,
+        action_type="release_withheld_review",
+        target_number=13,
+        body="Only blocked-failed withholds PR #14's review.",
+        finding_ids=("T1",),
+    )
+
+
+def test_release_withheld_review_executes_by_default_as_an_owner_command() -> None:
+    """The default ceiling is open and the flow role executes (#7399): the
+    planner emits the typed command, carrying the tech lead's observation
+    instant, and nothing else decides eligibility here."""
+    [planned] = _plan(_decision(_release()))
+
+    assert isinstance(planned, ReleaseWithheldReviewAction)
+    assert planned.issue_number == 13
+    assert planned.anchor_issue_number == 99
+    assert planned.proposal_id == "A11"
+    assert planned.proposal_issue_number == 0
+    assert planned.finding_ids == ("T1",)
+    assert planned.observed_at == SOURCE_RUN["observed_at"]
+    # With observed_at (the run's start) it names the proposing run's own claim.
+    assert planned.source_session_name == SOURCE_RUN["source_session_name"]
+    assert planned.expected is EXPECTED
+
+
+def test_release_withheld_review_under_propose_files_a_gated_proposal() -> None:
+    [planned] = _plan(_decision(_release()), _config(release_withheld_review="propose"))
+
+    assert isinstance(planned, CreateTechLeadProposalIssueAction)
+    assert planned.op.op_type == "release_withheld_review"
+    assert planned.op.target_issue_number == 13
+    # The approval path re-verifies "no newer failure" against the same instant.
+    assert planned.op.observed_at == SOURCE_RUN["observed_at"]
+    assert "release the withheld review of issue #13" in planned.title
+    assert SOURCE_RUN["observed_at"] in planned.body
 
 
 def test_mixed_decision_preserves_order_and_authority() -> None:
@@ -1750,8 +1797,8 @@ class TestCreateIssueExpediteProducer:
 def test_reused_kill_proposal_carries_current_launch_generation_obligation():
     from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
     from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneration
-    from issue_orchestrator.domain.session_key import TaskKind
-    observed = TechLeadSessionGeneration(issue_number=13, task_kind=TaskKind.CODE,
+    from issue_orchestrator.domain.session_kind import SessionKind
+    observed = TechLeadSessionGeneration(issue_number=13, task_kind=SessionKind.CODE,
         terminal_id="worker-13", run_id="new-run")
     proposed = ProposedTechLeadAction(id="A5", action_type="kill_hung_session", target_number=13, body="Again")
     [action] = _plan(_decision(proposed), op_ledger={("kill_hung_session", 13): 321},

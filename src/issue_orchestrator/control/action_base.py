@@ -6,7 +6,7 @@ layer, ``tech_lead_actions`` imports it, and ``actions`` imports both and
 re-exports everything. Importers keep using ``control.actions``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
@@ -79,6 +79,8 @@ class ActionType(Enum):
     KILL_HUNG_SESSION = "kill_hung_session"
     REQUEST_REWORK = "request_rework"
     RECOVER_VALIDATED_WORK = "recover_validated_work"
+    # Release a review withheld only by the issue's own block (#7399)
+    RELEASE_WITHHELD_REVIEW = "release_withheld_review"
 
     # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10):
     # the single mutating boundary for proposal-op cleanup, applied off the
@@ -94,6 +96,11 @@ class ActionType(Enum):
     # tracker binding that transfers stuck-sweep ownership.
     RECORD_TECH_LEAD_DISPOSITION = "record_tech_lead_disposition"
     ESCALATE_TECH_LEAD_DISPOSITION = "escalate_tech_lead_disposition"
+
+    # Per-action tech-lead charter decisions (#7330): persisted for explanation.
+    RECORD_TECH_LEAD_CHARTER_DECISIONS = "record_tech_lead_charter_decisions"
+    # An effect that must not run without its charter decision on the record.
+    APPLY_CHARTER_AUDITED_ACTION = "apply_charter_audited_action"
 
     # Finding promotion (#6957): file a case file's diagnosis as a gated
     # runnable issue in the routed repo, report later evidence onto that one
@@ -118,6 +125,11 @@ class ActionType(Enum):
     RECOVER_TERMINAL_ISSUE = "recover_terminal_issue"
 
 
+#: Fields that say why an action exists, not what it does: free-text audit
+#: prose, and the charter decisions it is linked back to.
+_NOT_LIVENESS_FACTS = frozenset({"reason", "charter_decisions"})
+
+
 @dataclass(frozen=True)
 class Action:
     """Base action class.
@@ -135,7 +147,39 @@ class Action:
     reason: str = ""  # Why this action is being taken (for audit)
     # Expected state constraints for reconciliation (required for mutating actions)
     expected: Optional["ExpectedState"] = None
+    #: The tech-lead charter decisions (``decision_key``) this action is an
+    #: effect of, when the charter let them execute directly (#7362). The
+    #: completion owner links the action's real result back to each one.
+    charter_decisions: tuple[str, ...] = ()
 
     def __post_init__(self):
         # Validate that subclasses set the correct action_type
         pass
+
+    def liveness_resolves_subject(self) -> bool:
+        """Whether this action, once it succeeds, settles every park on its subject.
+
+        True only for an action that ends the subject's work and clears its
+        needs-human block itself, as an operator's Retry or Dismiss does.
+        """
+        return False
+
+    def liveness_facts(self) -> object | None:
+        """The facts this action was derived from, for the action liveness owner (#7350).
+
+        Two attempts with equal facts are the same question asked again, so
+        their failures spend one bounded budget. The default is every field but
+        the free-text ``reason`` (audit prose that often carries a count or a
+        time). An action overrides this when a field changes every tick without
+        the underlying facts changing - a sample time, a countdown - because
+        such a field would give each failure a fresh budget and defeat the bound.
+        The charter decisions an action is linked to are not facts either.
+
+        ``None`` means another owner already governs this action's retries with
+        facts the liveness owner cannot see, so it is neither gated nor counted.
+        """
+        return {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.name not in _NOT_LIVENESS_FACTS
+        }

@@ -11,6 +11,7 @@ import pytest
 
 from issue_orchestrator.control.validated_work_escrow import (
     EscrowInspection,
+    EscrowReconciliation,
     ValidatedWorkEscrowMaintenance,
 )
 from issue_orchestrator.domain.validated_work import (
@@ -31,7 +32,7 @@ from issue_orchestrator.infra.validated_work_inspection import (
 )
 from issue_orchestrator.infra.validated_work_store import SqliteValidatedWorkStore
 from .git_escrow_support import git_rig, real_capture
-from .validated_work_support import Liveness, claim, begin, finalize, LATER
+from .validated_work_support import Liveness, claim, begin, finalize, LATER, owned_intake
 
 
 @pytest.fixture
@@ -60,6 +61,10 @@ def store_for(rig, escrow):
         retention=escrow,
         liveness=Liveness(),
     )
+
+
+def reconciliation(escrow, store):
+    return EscrowReconciliation(escrow=escrow, store=store, intake=owned_intake())
 
 
 def maintenance(escrow, store, days=30):
@@ -116,7 +121,7 @@ def test_every_capture_prefix_repairs_without_source_worktree(rig, tmp_path, pre
     if prefix == 3:
         store.admit(admission)
     rig.run("worktree", "remove", "--force", str(worktree))
-    report = maintenance(escrow, store).reconcile_escrow_orphans()
+    report = reconciliation(escrow, store).reconcile_escrow_orphans()
     assert not report.problems
     assert report.repaired == (() if prefix == 3 else (admission.evidence.evidence_id,))
     lookup = store.evidence_for_id(admission.evidence.evidence_id)
@@ -126,7 +131,7 @@ def test_every_capture_prefix_repairs_without_source_worktree(rig, tmp_path, pre
     assert escrow.verifies(lookup.evidence)
     rig.run("gc", "--prune=now")
     assert escrow.verifies(lookup.evidence)
-    assert maintenance(escrow, store).reconcile_escrow_orphans().repaired == ()
+    assert reconciliation(escrow, store).reconcile_escrow_orphans().repaired == ()
 
 
 def test_content_addressed_replay_keeps_original_envelope_and_uses_no_sources(
@@ -180,7 +185,7 @@ def test_legacy_parked_envelope_survives_database_migration_and_reconciliation(
         )
 
     reopened = store_for(rig, escrow)
-    report = maintenance(escrow, reopened).reconcile_escrow_orphans()
+    report = reconciliation(escrow, reopened).reconcile_escrow_orphans()
     assert not report.problems
     (reopened_row,) = reopened.retained_evidence(6914)
     assert reopened_row.admission.initial_state is ValidatedWorkState.PARKED
@@ -204,7 +209,7 @@ def test_legacy_queued_orphan_replays_as_parked_without_rewriting_capture(
     immutable_legacy = rewrite_as_legacy_envelope(capture_path)
     store = store_for(rig, escrow)
 
-    report = maintenance(escrow, store).reconcile_escrow_orphans()
+    report = reconciliation(escrow, store).reconcile_escrow_orphans()
 
     assert report.repaired == (admission.evidence.evidence_id,)
     assert not report.problems
@@ -272,7 +277,7 @@ def test_malformed_or_missing_evidence_is_reported_retained_never_admitted(
         rig.run("reflog", "expire", "--expire=now", "--all")
         rig.run("gc", "--prune=now")
     store = store_for(rig, escrow)
-    report = maintenance(escrow, store).reconcile_escrow_orphans()
+    report = reconciliation(escrow, store).reconcile_escrow_orphans()
     assert report.problems
     assert not report.repaired
     assert store.evidence_for_id(admission.evidence.evidence_id) is None
@@ -296,7 +301,7 @@ def test_orphan_admission_attaches_during_publish_and_retains_gate(rig, tmp_path
         reason="park forever until approved",
     )
     escrow.capture(orphan, sources2)
-    report = maintenance(escrow, store).reconcile_escrow_orphans()
+    report = reconciliation(escrow, store).reconcile_escrow_orphans()
     assert not report.problems
     attached = store.attached_evidence(first.evidence.record_id)
     assert len(attached) == 1 and attached[0].admission == orphan
@@ -409,7 +414,7 @@ def test_partial_capture_is_inert_and_reported(rig, tmp_path):
     with pytest.raises(ValueError):
         escrow.capture(admission, sources)
     store = store_for(rig, escrow)
-    report = maintenance(escrow, store).reconcile_escrow_orphans()
+    report = reconciliation(escrow, store).reconcile_escrow_orphans()
     assert len(report.problems) == 1 and "partial" in report.problems[0].detail
     assert not report.repaired
 

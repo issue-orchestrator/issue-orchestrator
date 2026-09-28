@@ -1,5 +1,6 @@
 """Issue action control route tests split from test_control_api."""
 
+from tests.unit.control.liveness_doubles import liveness_owner
 from issue_orchestrator.infra.config import Config
 
 # ruff: noqa: F403,F405
@@ -1106,7 +1107,7 @@ class TestBulkUnblockRunsTheOperatorRetryCommand:
             mock_orch.config, repository_host=host, label_manager=mock_orch.deps.label_manager,
             needs_human_block=mock_orch.deps.needs_human_block, fresh_issue_reader=_Fresh(),
             queue_cache_store=mock_orch.deps.queue_cache_store,
-            published_review=NO_PUBLISHED_REVIEW_HOLDS)
+            published_review=NO_PUBLISHED_REVIEW_HOLDS, action_liveness=liveness_owner())
         # As production: the facade composes one command per request.
         type(mock_orch).operator_issue_commands = PropertyMock(
             side_effect=lambda: factory(state=lambda: mock_orch.state, run_locked=lambda fn: fn()))

@@ -36,7 +36,8 @@ from tests.git_push_authorization import authorized_local_fixture_git_env
 from tests.integration.completion_intake_fixture import ExchangeIntakeFixture, TEST_CALLBACK_TOKEN
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 
 from .conftest import (
     ScriptSessionRunner,
@@ -215,7 +216,7 @@ def coder_session_contract(tmp_path, monkeypatch):
             run = intake.allocator(FileSystemSessionOutput()).allocate(IssueRunAllocation(
                 terminal_id=session_name, worktree_path=worktree_path.resolve(),
                 session_name=session_name, issue_number=issue_number,
-                session_key=SessionKey(FakeIssueKey(str(issue_number), "example/repo"), TaskKind.CODE),
+                session_key=SessionKey(FakeIssueKey(str(issue_number), "example/repo"), SessionKind.CODE),
                 agent_label="agent:coder", backend="subprocess"))
             issues.add(issue_number)
             return ForeignSessionContract(issue_number, session_name, completion_rel,

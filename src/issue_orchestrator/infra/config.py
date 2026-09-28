@@ -768,8 +768,8 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
                 for label, cfg in self.agents.items()
             },
         }
-        if self.session_interactions.enabled:
-            result["execution"]["session_interactions"] = {"enabled": True}
+        if not self.session_interactions.enabled:
+            result["execution"]["session_interactions"] = {"enabled": False}
         return result
 
     def to_dict(self) -> dict:  # noqa: C901, PLR0912 - serialization method handles many config fields
@@ -861,9 +861,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         }
         if self.terminal_adapter:
             execution_dict["terminal_adapter"] = self.terminal_adapter
-        if self.session_interactions.enabled:
+        if not self.session_interactions.enabled:
             execution_dict["session_interactions"] = {
-                "enabled": True,
+                "enabled": False,
             }
         if self.isolation.mode != "standard":
             execution_dict["isolation"] = {"mode": self.isolation.mode}
@@ -1270,6 +1270,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         )
         # Parse complex optional configs
         apply_optional_sections(config, sections)
+        config.record_loaded_state()
         config.refresh_config_fingerprint()
         return config
 

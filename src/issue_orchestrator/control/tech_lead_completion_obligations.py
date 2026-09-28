@@ -8,7 +8,7 @@ from .actions import Action, ActionResult, ActionResultType
 from .required_issue_comment import RequiredTechLeadDiagnosisAction, ReuseTechLeadProposalAction
 from .tech_lead_actions import (
     RequireTechLeadInvestigationAction, RecordTechLeadDispositionAction,
-    EscalateTechLeadDispositionAction, ResetRetryIssueAction, KillHungSessionAction,
+    EscalateTechLeadDispositionAction, EFFECTIVE_DISPOSITION_OP_ACTIONS,
     CreateTechLeadProposalIssueAction, RequestReworkAction,
 )
 
@@ -25,7 +25,7 @@ def build_investigation_obligation(decision: TechLeadDecision, *,
 
 def is_focus_terminal_remedy(action: Action, focus: int) -> bool:
     """One identity rule for the remedies that can satisfy the trusted focus."""
-    if isinstance(action, (ResetRetryIssueAction, KillHungSessionAction, EscalateTechLeadDispositionAction, RequestReworkAction)):
+    if isinstance(action, (*EFFECTIVE_DISPOSITION_OP_ACTIONS, EscalateTechLeadDispositionAction, RequestReworkAction)):
         return action.issue_number == focus
     if isinstance(action, RecordTechLeadDispositionAction):
         return action.disposition is not None and action.disposition.issue_number == focus

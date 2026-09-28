@@ -29,7 +29,8 @@ from issue_orchestrator.domain.issue_run_evidence import (
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.models import Issue
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.issue_run_codec import IssueRunRow
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.repo_scope import require_repo
@@ -97,7 +98,7 @@ class TestRunLedgerWriteBoundary:
     def _record(self, tmp_path: Path, scope: str) -> IssueRunRecord:
         return IssueRunRecord(
             session_key=SessionKey(
-                issue=GitHubIssueKey(repo=scope, external_id="7255"), task=TaskKind.CODE
+                issue=GitHubIssueKey(repo=scope, external_id="7255"), kind=SessionKind.CODE
             ),
             run=make_session_run_assets(tmp_path, session_name="issue-7255"),
             recorded_at="2026-09-11T21:04:01+00:00",
@@ -118,7 +119,7 @@ class TestRunLedgerWriteBoundary:
         implementation-agnostic rather than a repeat of the same check.
         """
         record = self._record(tmp_path, "acme/widgets")
-        unscoped = SessionKey(issue=_UnscopedIssueKey(), task=TaskKind.CODE)
+        unscoped = SessionKey(issue=_UnscopedIssueKey(), kind=SessionKind.CODE)
         record = replace(record, session_key=unscoped)
 
         # IssueRunEvidenceUnavailable, not ValueError: `record_run` builds the
@@ -215,7 +216,7 @@ class TestTheLedgerRepairsRowsItCannotOtherwiseRead:
             IssueRunRecord(
                 session_key=SessionKey(
                     issue=GitHubIssueKey(repo="acme/widgets", external_id="7255"),
-                    task=TaskKind.CODE,
+                    kind=SessionKind.CODE,
                 ),
                 run=make_session_run_assets(tmp_path, session_name="issue-7255"),
                 recorded_at="2026-09-11T21:04:01+00:00",

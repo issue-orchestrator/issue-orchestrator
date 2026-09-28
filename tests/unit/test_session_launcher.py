@@ -10,6 +10,9 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
+from tests.unit.control.liveness_doubles import gated
+from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
+from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     parse_scratch_worktree_name,
@@ -29,7 +32,16 @@ import shlex
 from dataclasses import replace
 import pytest
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+
+import httpx
+
+from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+from issue_orchestrator.control import host_rate_limit_launch_gate
+from issue_orchestrator.domain.host_rate_limit import (
+    RATE_LIMIT_DEFERRAL_BOUND,
+    HostRateLimit,
+)
 from pathlib import Path
 from typing import Any, Optional, cast
 from unittest.mock import MagicMock, patch
@@ -123,7 +135,7 @@ from issue_orchestrator.domain.models import (
     PendingCleanup,
     OrchestratorState,
     SessionHistoryEntry,
-    TaskKind,
+    SessionKind,
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
@@ -604,6 +616,7 @@ def _build_launcher_bundle(
     provider_readiness_probe: ProviderReadinessProbe | None = None,
     issue_run_ledger: IssueRunLedger | None = None,
     refresh_issue_fn: Callable[[int], Any] | None = None,
+    recovery_holds: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -670,6 +683,8 @@ def _build_launcher_bundle(
         launcher_kwargs["provider_resilience"] = provider_resilience
     if provider_readiness_probe is not None:
         launcher_kwargs["provider_readiness_probe"] = provider_readiness_probe
+    if recovery_holds is not None:
+        launcher_kwargs["recovery_holds"] = recovery_holds
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
@@ -921,7 +936,7 @@ class TestLaunchIssueSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "issue-123"
-        assert result.session.key.task == TaskKind.CODE
+        assert result.session.key.kind == SessionKind.CODE
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-1")
 
@@ -976,10 +991,7 @@ class TestLaunchIssueSession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=TaskKind.CODE,
-            agent_label=sample_issue.agent_type,
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.CODE)
 
     def test_missing_internal_review_instructions_fail_before_initial_mutation(
         self,
@@ -1074,10 +1086,7 @@ class TestLaunchIssueSession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" not in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=TaskKind.CODE,
-            agent_label="agent:tech-lead",
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.TECH_LEAD)
 
     def test_tech_lead_launch_preserves_branch_but_coding_does_not(
         self, session_launcher, mock_worktree_manager, sample_config, sample_issue, tmp_path
@@ -1470,7 +1479,7 @@ class TestLaunchIssueSession:
         """Verify skips when issue already active (lines 209-210)."""
         issue_key = FakeIssueKey(str(sample_issue.number))
         existing_session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -2049,7 +2058,7 @@ class TestLaunchValidationRetrySession:
             validation_error="Validation blocked before running command: dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2069,81 +2078,6 @@ class TestLaunchValidationRetrySession:
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "Validation Retry" in command
         assert "dirty worktree" in command
-
-    def test_an_investigations_retry_reuses_its_exact_scratch_checkout(
-        self,
-        launcher_bundle,
-        mock_worktree_manager,
-        sample_config,
-        tmp_path,
-    ):
-        """The BASELINE, pinned so a narrowing cannot be undone by accident.
-
-        Earlier revisions of #7271 refused this launch or derived a scratch
-        worktree for it. Both needed a lifecycle boundary that did not exist
-        then, so #7271 pinned today's behaviour and left the rest to #7273 and
-        #7274: the retry launches, carries the recorded branch, and gets no
-        scratch treatment. A mutation restoring either would fail here.
-
-        #7273 has since landed ONE of the two things it was waiting for: the
-        branch is now PRESERVED, because reuse rebases onto the base and
-        hard-resets on conflict, and an investigation's branch was never pushed.
-        Everything else here still stands.
-
-        The retry carries the REAL tech-lead identity -- the configured review
-        agent, not merely scratch-shaped strings -- because a refusal or a
-        scratch derivation conditioned on that identity is exactly what a
-        narrowing would reintroduce, and an ``agent:web`` retry would not see
-        it.
-        """
-        sample_config.agents["agent:tech-lead"] = AgentConfig(
-            prompt_path=tmp_path / "prompt.md",
-            model="sonnet",
-            timeout_minutes=45,
-        )
-        sample_config.tech_lead_review_agent = "agent:tech-lead"
-        token = "a" * 12
-        scratch_branch = scratch_branch_name(123, token)
-        retry = PendingValidationRetry(
-            issue_number=123,
-            issue_title="Fix checkout",
-            agent_label="agent:tech-lead",
-            worktree_path=f"/tmp/w/{scratch_worktree_name('io', 123, token)}",
-            branch_name=scratch_branch,
-            original_prompt="Investigate issue #123",
-            validation_error="boom",
-            validation_error_file=None,
-            retry_count=1,
-            source_task=TaskKind.CODE,
-            validation_cmd="make test",
-        )
-
-        result = launcher_bundle.launcher.launch_validation_retry_session(
-            retry,
-            active_sessions=[],
-        )
-
-        assert result.success is True, (
-            "the investigation's retry was refused; that needs #7274 first"
-        )
-        call = mock_worktree_manager.create_calls[0]
-        assert call["worktree_name"] == scratch_worktree_name("io", 123, token), (
-            "the launcher discarded the CHECKOUT half of the retry identity, so "
-            "a stale branch name falls back to the ordinary issue worktree"
-        )
-        assert call["branch_name"] == scratch_branch
-        assert call["reuse_options"].preserve_branch is True, (
-            "the retry would rebase/reset the investigation's unpushed branch "
-            "onto base -- #7273"
-        )
-        assert call["reuse_options"].disable_reuse is False, (
-            "the retry stopped REUSING its checkout, which detaches and "
-            "recreates it -- and reuse is what keeps the investigation's "
-            "checkout active, so #7274's custody has nothing to protect"
-        )
-        assert result.session is not None
-        assert result.session.scratch_worktree is True
-        assert result.session.tech_lead_scope is None
 
     def test_an_ordinary_retry_keeps_its_existing_derivation(
         self,
@@ -2166,7 +2100,7 @@ class TestLaunchValidationRetrySession:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2198,7 +2132,7 @@ class TestLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2209,10 +2143,7 @@ class TestLaunchValidationRetrySession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=TaskKind.CODE,
-            agent_label="agent:web",
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.CODE)
 
     def test_missing_internal_review_instructions_fail_before_retry_mutation(
         self,
@@ -2236,7 +2167,7 @@ class TestLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2291,7 +2222,7 @@ class TestLaunchReviewSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "review-456"
-        assert result.session.key.task == TaskKind.REVIEW
+        assert result.session.key.kind == SessionKind.REVIEW
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__review-1")
 
@@ -2533,7 +2464,7 @@ class TestLaunchRetrospectiveReviewSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "retrospective-review-365"
-        assert result.session.key.task == TaskKind.RETROSPECTIVE_REVIEW
+        assert result.session.key.kind == SessionKind.RETROSPECTIVE_REVIEW
         assert result.session.pr_number == 512
         assert result.session.issue.labels == [
             "agent:web",
@@ -2552,7 +2483,7 @@ class TestLaunchRetrospectiveReviewSession:
         assert reuse_options.allow_remote_branch_delete is False
 
         event = next(e for e in mock_events.events if str(e.name) == str(EventName.REVIEW_STARTED))
-        assert event.data["task"] == TaskKind.RETROSPECTIVE_REVIEW.value
+        assert event.data["task"] == SessionKind.RETROSPECTIVE_REVIEW.value
         assert event.data["prior_pr_number"] == 512
         assert event.data["source_agent"] == "agent:web"
 
@@ -2776,7 +2707,7 @@ class TestLaunchReworkSession:
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "rework-123"
-        assert result.session.key.task == TaskKind.REWORK
+        assert result.session.key.kind == SessionKind.REWORK
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-2")
         started = next(e for e in mock_events.events if str(e.name) == "rework.started")
@@ -3004,11 +2935,14 @@ class TestLaunchReworkSession:
         monkeypatch.setattr(SqliteTechLeadAuthorityStore, "save_rework_receipts", original)
         run_dirs = list((launcher_bundle.create_session_calls[0]["wd"] / ".issue-orchestrator/sessions").iterdir())
         run_dir = next(path for path in run_dirs if path.name.endswith("__coding-2"))
-        restorer = SessionRestorer(sample_config, mock_repo_host, mock_working_copy, tech_lead_authority=store)
+        restorer = SessionRestorer(
+            sample_config, mock_repo_host, mock_working_copy,
+            run_ledger=launcher_bundle.issue_run_ledger, tech_lead_authority=store,
+        )
         sessions = restorer.restore_known_terminal(issue_number=123, session_name="rework-123", run_dir=run_dir,
             is_review=False, already_tracked=[])
         assert len(sessions) == 1
-        assert sessions[0].key.task is TaskKind.REWORK
+        assert sessions[0].key.kind is SessionKind.REWORK
         assert store.load_rework_receipt(request.key).status == "active"
         assert store.load_rework_receipt(later.key).status == "queued"
         from issue_orchestrator.control.in_flight_work import SettlementOutcome
@@ -3031,10 +2965,7 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
-        provider.prepare.assert_called_once_with(
-            task=TaskKind.REWORK,
-            agent_label="agent:web",
-        )
+        provider.prepare.assert_called_once_with(kind=SessionKind.REWORK)
 
     def test_missing_internal_review_instructions_fail_before_rework_mutation(
         self,
@@ -3119,7 +3050,7 @@ class TestLaunchReworkSession:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = GitHubIssueKey(repo="test/repo", external_id="123")
         existing_session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.REWORK),
+            key=SessionKey(issue=issue_key, kind=SessionKind.REWORK),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="rework-123",
@@ -3505,7 +3436,7 @@ class TestOrchestratorLaunchSession:
         """Verify session is appended to active_sessions."""
         state = OrchestratorState()
 
-        result = orchestrator_launch_session(sample_issue, state, session_launcher)
+        result = orchestrator_launch_session(sample_issue, state, session_launcher).session
 
         assert result is not None
         assert len(state.active_sessions) == 1
@@ -3519,7 +3450,7 @@ class TestOrchestratorLaunchSession:
     ):
         """Launch wrappers must not admit duplicate terminal IDs."""
         existing = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3531,7 +3462,7 @@ class TestOrchestratorLaunchSession:
             ),
         )
         duplicate = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3549,7 +3480,7 @@ class TestOrchestratorLaunchSession:
             True,
         )
 
-        result = orchestrator_launch_session(sample_issue, state, session_launcher)
+        result = orchestrator_launch_session(sample_issue, state, session_launcher).session
 
         assert result is duplicate
         assert state.active_sessions == [existing]
@@ -3578,7 +3509,7 @@ class TestOrchestratorLaunchSession:
             state,
             launcher_bundle.launcher,
             mock_restorer,
-        )
+        ).session
 
         assert result is None
         assert state.active_sessions == []
@@ -3605,7 +3536,7 @@ class TestOrchestratorLaunchSession:
         ]
         state = OrchestratorState()
         restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3622,7 +3553,7 @@ class TestOrchestratorLaunchSession:
             state,
             launcher_bundle.launcher,
             mock_restorer,
-        )
+        ).session
 
         assert result is restored
         assert state.active_sessions == [restored]
@@ -3651,7 +3582,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         other_retry = PendingValidationRetry(
@@ -3664,7 +3595,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry, other_retry])
@@ -3675,7 +3606,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert result is not None
         assert [r.issue_number for r in state.pending_validation_retries] == [456]
@@ -3710,12 +3641,12 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry])
         restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -3733,7 +3664,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             launcher_bundle.launcher,
             mock_restorer,
             _claims_store(),
-        )
+        ).session
 
         assert result is restored
         assert state.active_sessions == [restored]
@@ -3757,7 +3688,7 @@ class TestOrchestratorLaunchReviewSession:
 
         mock_restorer = MagicMock()
 
-        result = orchestrator_launch_review_session(review, state, session_launcher, mock_restorer, _claims_store())
+        result = orchestrator_launch_review_session(review, state, session_launcher, mock_restorer, _claims_store()).session
 
         assert result is not None
         assert len(state.pending_reviews) == 0
@@ -3788,7 +3719,7 @@ class TestOrchestratorLaunchReviewSession:
         mock_restorer = MagicMock()
         mock_restorer.restore_known_terminal.return_value = []
 
-        result = orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer, _claims_store())
+        result = orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer, _claims_store()).session
 
         assert result is None
         mock_restorer.restore_known_terminal.assert_not_called()
@@ -3822,7 +3753,7 @@ class TestOrchestratorLaunchReviewSession:
         )
         state = OrchestratorState(pending_reviews=[review])
         restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.REVIEW),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.REVIEW),
             issue=sample_issue,
             agent_config=sample_agent_config,
             terminal_id="review-456",
@@ -3841,7 +3772,7 @@ class TestOrchestratorLaunchReviewSession:
             launcher_bundle.launcher,
             mock_restorer,
             _claims_store(),
-        )
+        ).session
 
         assert result is restored
         assert state.active_sessions == [restored]
@@ -3878,7 +3809,7 @@ class TestOrchestratorLaunchReworkSession:
 
         mock_restorer = MagicMock()
 
-        result = orchestrator_launch_rework_session(rework, state, session_launcher, mock_restorer, _claims_store())
+        result = orchestrator_launch_rework_session(rework, state, session_launcher, mock_restorer, _claims_store()).session
 
         assert result is not None
         assert len(state.pending_reworks) == 0
@@ -4088,7 +4019,7 @@ class TestOrchestratorLaunchTechLeadSession:
                 MagicMock(),
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     def test_raises_when_tech_lead_agent_not_in_config(self, sample_config):
         """Verify raises ValueError when tech lead agent not configured."""
@@ -4102,7 +4033,7 @@ class TestOrchestratorLaunchTechLeadSession:
                 MagicMock(),
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     @pytest.mark.parametrize(
         "flavor",
@@ -4125,7 +4056,7 @@ class TestOrchestratorLaunchTechLeadSession:
             launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         call = launcher.launch_issue_session.call_args
         issue = call.args[0]
@@ -4153,7 +4084,7 @@ class TestOrchestratorLaunchTechLeadSession:
             launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         issue = launcher.launch_issue_session.call_args.args[0]
         assert issue.repo == "acme/widgets"
@@ -4177,7 +4108,7 @@ class TestOrchestratorLaunchTechLeadSession:
                 _stub_tech_lead_launcher(LaunchResult(session=None, success=False)),
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     def test_successful_launch_removes_item_from_queue(self, sample_config, tmp_path):
         """Reviewer scenario: a launched item must not stay queued (#6768 r4)."""
@@ -4185,7 +4116,7 @@ class TestOrchestratorLaunchTechLeadSession:
         state = OrchestratorState()
         PendingSessionQueues(state).queue_batch_review(789, "Tech Lead batch")
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("789"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("789"), kind=SessionKind.CODE),
             issue=Issue(number=789, title="Tech Lead batch", labels=["agent:web"]),
             agent_config=AgentConfig(prompt_path=tmp_path / "p.md", timeout_minutes=45),
             terminal_id="issue-789",
@@ -4198,7 +4129,7 @@ class TestOrchestratorLaunchTechLeadSession:
         result = orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert result is session
         assert state.pending_tech_lead_reviews == []
@@ -4214,18 +4145,14 @@ class TestOrchestratorLaunchTechLeadSession:
         sample_config.tech_lead_review_agent = "agent:web"
         state = OrchestratorState()
         PendingSessionQueues(state).queue_batch_review(789, "Tech Lead batch")
-        launcher = _stub_tech_lead_launcher(
-            LaunchResult(
-                session=None,
-                success=False,
-                disposition=LaunchDisposition.EXISTING_TERMINAL,
-            )
-        )
+        launcher = _stub_tech_lead_launcher(LaunchResult.terminal_already_running("issue-789"))
+        restorer = MagicMock()
+        restorer.restore_known_terminal.return_value = []
 
         result = orchestrator_launch_tech_lead_session(
-            state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock(),
+            state.pending_tech_lead_reviews[0], state, sample_config, launcher, restorer,
             _claims_store(),
-        )
+        ).session
 
         assert result is None
         assert len(state.pending_tech_lead_reviews) == 1
@@ -4250,7 +4177,7 @@ class TestOrchestratorLaunchTechLeadSession:
         result = orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0], state, sample_config, launcher, MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert result is None
         assert state.pending_tech_lead_reviews == []
@@ -4409,6 +4336,30 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert assignment["flavor"] == "batch_review"
         assert assignment["focus_issue_number"] is None
 
+    def test_launch_writes_the_charter_generated_from_config(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """The agent's charter is generated from the LIVE config at launch
+        (#7330): the file the prompt points at states what will be enforced."""
+        config = launcher_bundle.launcher.config
+        self.enable_tech_lead_agent(config, tmp_path)
+        config.tech_lead.charter.flow.authority = "propose"
+        mock_repo_host.prs_with_label = [self.tech_lead_pr(555)]
+        issue = Issue(
+            number=901, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True
+        run_dir = self.started_run_dir(mock_events)
+        charter_path = run_dir / "tech-lead-data" / "tech-lead-charter.md"
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["tech_lead_charter"] == str(charter_path)
+        charter = charter_path.read_text()
+        assert "## flow (depth: restructure, authority: propose)" in charter
+        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `create_issue`" in charter
+
     def test_failure_investigation_skips_manifest_and_records_focus(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):
@@ -4553,7 +4504,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert session is not None
         return session
 
@@ -4590,9 +4541,10 @@ class TestLaunchTechLeadIssueSessionFlavors:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         support.apply_plan(
-            Plan(actions=tuple(actions), skipped=()), MagicMock()
+            gated(Plan(actions=tuple(actions), skipped=())), MagicMock()
         )
 
     def test_marker_label_derives_health_review_flavor(
@@ -4930,7 +4882,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
                 launcher_bundle.launcher,
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
             assert session is None
             assert len(state.pending_tech_lead_reviews) == 1, (
                 "a retryable prep failure must retain the queued investigation"
@@ -4957,7 +4909,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert session is None
         assert state.pending_tech_lead_reviews == []
         needs_human = [
@@ -5010,7 +4962,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
                 launcher_bundle.launcher,
                 MagicMock(),
                 _claims_store(),
-            )
+            ).session
 
     @staticmethod
     def _queue_investigation(state) -> None:
@@ -5133,7 +5085,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert state.pending_tech_lead_reviews == [], (
             "the drop must commit only after the durable transition succeeds"
         )
@@ -5227,7 +5179,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
 
         assert session is not None
         assert state.pending_tech_lead_reviews == []
@@ -5256,7 +5208,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
     def _restored_session(issue_number: int, labels: list[str], tmp_path: Path) -> Session:
         """Build the active-session shape restored after a process restart."""
         return Session(
-            key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=SessionKind.CODE),
             issue=Issue(
                 number=issue_number,
                 title=f"Issue {issue_number}",
@@ -5518,9 +5470,10 @@ class TestTechLeadProducerToLaunchBoundary:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+            pending_work_claims=MagicMock(),
         )
         support.apply_plan(
-            Plan(actions=tuple(actions), skipped=()), MagicMock()
+            gated(Plan(actions=tuple(actions), skipped=())), MagicMock()
         )
 
     @staticmethod
@@ -5532,7 +5485,7 @@ class TestTechLeadProducerToLaunchBoundary:
             launcher_bundle.launcher,
             MagicMock(),
             _claims_store(),
-        )
+        ).session
         assert session is not None
         return session
 
@@ -5841,6 +5794,7 @@ class TestTechLeadProducerToLaunchBoundary:
             pre_crash_state,
             None,
             authority_store,
+            claims=MagicMock(),
         )
 
         # ---- CRASH: everything in memory is lost. ----
@@ -5887,6 +5841,7 @@ class TestTechLeadProducerToLaunchBoundary:
             config=config,
             session_exists=lambda name: False,
             tech_lead_authority=authority_store,
+            claims=MagicMock(),
         )
 
         (queued,) = state.pending_tech_lead_reviews
@@ -5967,6 +5922,7 @@ class TestTechLeadProducerToLaunchBoundary:
             config=config,
             session_exists=lambda name: False,
             tech_lead_authority=authority_store,
+            claims=MagicMock(),
         )
 
         (queued,) = state.pending_tech_lead_reviews
@@ -6194,7 +6150,7 @@ class TestRestoreRunningSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         agent_config = AgentConfig(prompt_path=tmp_path / "prompt.txt")
         existing = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=agent_config,
             terminal_id="issue-123",
@@ -6206,7 +6162,7 @@ class TestRestoreRunningSessions:
             ),
         )
         duplicate = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=agent_config,
             terminal_id="issue-123",
@@ -6218,7 +6174,7 @@ class TestRestoreRunningSessions:
             ),
         )
         new_session = Session(
-            key=SessionKey(issue=FakeIssueKey("456"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("456"), kind=SessionKind.CODE),
             issue=Issue(number=456, title="Other", labels=["agent:web"]),
             agent_config=agent_config,
             terminal_id="issue-456",
@@ -6360,7 +6316,7 @@ class TestProcessActiveSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6403,7 +6359,7 @@ class TestProcessActiveSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6453,7 +6409,7 @@ class TestProcessActiveSessions:
 
         issue = Issue(number=392, title="Test", labels=["agent:backend"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("392"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-392",
@@ -6530,7 +6486,7 @@ class TestProcessActiveSessions:
         }))
 
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-359",
@@ -6600,7 +6556,7 @@ class TestProcessActiveSessions:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6612,7 +6568,7 @@ class TestProcessActiveSessions:
             ),
         )
         duplicate = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -6741,7 +6697,7 @@ class TestProcessActiveSessions:
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("392"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-392",
@@ -6888,7 +6844,7 @@ class TestProcessActiveSessions:
 
         issue = Issue(number=392, title="Test", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("392"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-392",
@@ -7038,7 +6994,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7102,7 +7058,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7236,7 +7192,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7269,7 +7225,7 @@ class TestHandleSessionCompletion:
             )
         )
         mock_action_applier = MagicMock()
-        mock_action_applier.apply_all.side_effect = lambda _actions: calls.append("actions")
+        mock_action_applier.apply_all.side_effect = lambda _actions, on_result=None: calls.append("actions")
         session_output = MagicMock(spec=SessionOutput)
         session_output.find_run_dir.return_value = None
 
@@ -7300,7 +7256,7 @@ class TestHandleSessionCompletion:
         """Completion diagnostics use the launch-recorded artifact path."""
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7365,7 +7321,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7398,7 +7354,7 @@ class TestHandleSessionCompletion:
             )
         )
         mock_action_applier = MagicMock()
-        mock_action_applier.apply_all.side_effect = lambda _actions: calls.append("actions")
+        mock_action_applier.apply_all.side_effect = lambda _actions, on_result=None: calls.append("actions")
         session_output = MagicMock(spec=SessionOutput)
         session_output.find_run_dir.return_value = None
 
@@ -7434,7 +7390,7 @@ class TestHandleSessionCompletion:
         session = Session(
             key=SessionKey(
                 issue=FakeIssueKey("365"),
-                task=TaskKind.RETROSPECTIVE_REVIEW,
+                kind=SessionKind.RETROSPECTIVE_REVIEW,
             ),
             issue=issue,
             agent_config=sample_agent_config,
@@ -7507,7 +7463,7 @@ class TestHandleSessionCompletion:
         """Adapters may report already-gone sessions while completion cleanup runs."""
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         session = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("123"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7540,7 +7496,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7582,7 +7538,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7642,7 +7598,7 @@ class TestHandleSessionCompletion:
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
-            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            key=SessionKey(issue=issue_key, kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-123",
@@ -7963,7 +7919,7 @@ class TestStackRelaunchGate:
             validation_error="boom",
             validation_error_file="/tmp/err.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8076,7 +8032,7 @@ class TestStackRelaunchGate:
             validation_error="boom",
             validation_error_file="/tmp/err.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8177,7 +8133,7 @@ class TestSetupRunsExactlyOncePerLaunch:
             validation_error="dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8561,7 +8517,7 @@ class TestLaunchRetryGuardClearing:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -8725,6 +8681,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         source: SessionRunIdentity | None,
         agent_label: str = "agent:tech-lead",
         worktree_path: str = "/tmp/repo-tech-lead-6410-abcdef123456",
+        recovery_error: str | None = None,
     ) -> PendingValidationRetry:
         return PendingValidationRetry(
             issue_number=6410,
@@ -8736,9 +8693,13 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             validation_error="boom",
             validation_error_file=None,
             retry_count=1,
-            source_task=TaskKind.CODE,
+            # A tech lead's retry relaunches as a tech-lead run (#7347).
+            source_kind=(
+                SessionKind.TECH_LEAD if agent_label == "agent:tech-lead" else SessionKind.CODE
+            ),
             validation_cmd="make test",
             authority_run=source,
+            recovery_error=recovery_error,
         )
 
     def _resumed(self, launcher_bundle, sample_config, tmp_path, checkout: Path):
@@ -8758,6 +8719,94 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             self._retry(source, worktree_path=str(checkout)), active_sessions=[]
         )
         return result, store, source, granted
+
+    def test_the_resumed_run_keeps_its_run_lease(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """#7347 review r8: the retry relaunches as a TECH_LEAD session, so it
+        must carry the run's launch scope - or the next ownership
+        reconciliation sees no live run and releases the lease of a run whose
+        terminal is still going, for another engine to take."""
+        from issue_orchestrator.control.tech_lead_run_admission import live_run_scopes
+        from issue_orchestrator.domain.tech_lead_run import IssueInvestigationScope
+        from tests.unit.control.run_ledger_doubles import SharedRunLedger
+
+        checkout = tmp_path / "repo-tech-lead-6410-abcdef123456"
+        checkout.mkdir()
+        result, _store, _source, _granted = self._resumed(
+            launcher_bundle, sample_config, tmp_path, checkout
+        )
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.TECH_LEAD
+        assert session.tech_lead_scope is not None
+        assert session.tech_lead_scope.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
+
+        live = live_run_scopes(sample_config, [], [session])
+        assert live == (IssueInvestigationScope(6410),)
+        ownership = SharedRunLedger().ownership("engine-a")
+        assert ownership.claim(IssueInvestigationScope(6410)).owned
+        ownership.reconcile(live)
+        assert ownership.owns(IssueInvestigationScope(6410).run_key)
+
+    def test_a_health_reviews_retry_keeps_its_recorded_grant(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """#7347 review r9: a health review's retry is launched after its
+        anchor's marker label is gone. The run keeps the grant its launch
+        record holds - HEALTH_REVIEW and its owned cohort - so its global
+        lease is kept, instead of being re-inferred from mutable labels."""
+        from dataclasses import replace
+
+        from issue_orchestrator.control.tech_lead_run_admission import live_run_scopes
+        from issue_orchestrator.domain.tech_lead_run import GlobalHealthReviewScope
+        from tests.unit.control.run_ledger_doubles import SharedRunLedger
+
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        checkout = tmp_path / "worktree-6410"
+        checkout.mkdir()
+        store = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root)
+        source = SessionRunIdentity(
+            session_name="tech-lead-1", run_id="run-original", started_at="2026-09-18"
+        )
+        store.record(
+            run_id=source.run_id, session_name=source.session_name,
+            authority=TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+                anchor_issue_number=6410,
+                problem_issue_numbers=(5, 7),
+            ),
+        )
+        data = self._seed_launch_inputs(checkout, source)
+        (data / "tech-lead-assignment.json").write_text(
+            json.dumps(TechLeadAssignment(flavor=TechLeadSessionFlavor.HEALTH_REVIEW).to_dict())
+        )
+        BoardSnapshot(
+            generated_at="2026-09-18T00:00:00", orchestrator_paused=False,
+            recent_failures=[], problem_cohort=[5, 7],
+        ).write(data / "board-snapshot.json")
+        # The anchor as the retry finds it: no health-review marker any more.
+        retry = replace(
+            self._retry(source, worktree_path=str(checkout)), branch_name="6410-health-review"
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        scope = session.tech_lead_scope
+        assert scope is not None
+        assert (scope.flavor, scope.problem_issue_numbers) == (
+            TechLeadSessionFlavor.HEALTH_REVIEW, (5, 7),
+        )
+        live = live_run_scopes(sample_config, [], [session])
+        assert live == (GlobalHealthReviewScope(),)
+        ownership = SharedRunLedger().ownership("engine-a")
+        assert ownership.claim(GlobalHealthReviewScope()).owned
+        ownership.reconcile(live)
+        assert ownership.owns(GlobalHealthReviewScope().run_key)
 
     def test_the_resumed_run_gets_the_original_grant(
         self, launcher_bundle, sample_config, tmp_path
@@ -9012,6 +9061,20 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         assert call["reuse_options"].preserve_branch is True, (
             "the retry would rebase/reset the investigation branch onto base"
         )
+        # The exact scratch checkout is REUSED, not re-derived: the checkout
+        # half of the identity and its branch both come back.
+        assert call["worktree_name"] == checkout.name, (
+            "the launcher discarded the CHECKOUT half of the retry identity"
+        )
+        assert call["branch_name"] == "tech-lead-investigation-6410-abcdef123456"
+        assert call["reuse_options"].disable_reuse is False, (
+            "the retry stopped REUSING its checkout, which detaches and recreates it"
+        )
+        assert result.session is not None
+        assert result.session.scratch_worktree is True
+        # A tech lead's retry is a tech-lead run (#7347), not a coder.
+        assert result.session.key.kind is SessionKind.TECH_LEAD
+        assert result.session.terminal_id == "tech-lead-6410"
 
     def test_an_ordinary_retry_keeps_being_refreshed(
         self, launcher_bundle, sample_config, mock_worktree_manager
@@ -9140,9 +9203,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         assert result.session.issue.agent_type == "agent:tech-lead", (
             "the resumed issue still reads as the focus issue's coder"
         )
-        assert unprocessed_session_policy(
-            result.session, sample_config
-        ).is_tech_lead, "the resumed run does not classify as tech-lead work"
+        assert unprocessed_session_policy(result.session).is_tech_lead, "the resumed run does not classify as tech-lead work"
 
     def test_a_launch_that_never_spawns_leaves_no_destination_authority(
         self, launcher_bundle, sample_config, tmp_path
@@ -9500,7 +9561,7 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
 
         session = orchestrator_launch_validation_retry_session(
             retry, state, launcher_bundle.launcher, MagicMock(), claims
-        )
+        ).session
 
         assert session is not None
         resumed = session.run_assets.identity
@@ -9544,9 +9605,8 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
         else (round 3 finding 1).
         """
         TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
-        damaged = replace(
-            self._retry(None),
-            recovery_error="its original launch authority is missing",
+        damaged = self._retry(
+            None, recovery_error="its original launch authority is missing"
         )
 
         result = launcher_bundle.launcher.launch_validation_retry_session(
@@ -9585,6 +9645,355 @@ class TestAValidationRetryCarriesItsLaunchAuthority:
             store.load(run_id=resumed.run_id, session_name=resumed.session_name)
             is None
         )
+
+
+class TestLaunchDefersOnGitHubRateLimit:
+    """#7297: a GitHub rate limit in launch prep defers; it never escalates.
+
+    Reproduces the 2026-09-25 incident through the real launcher and routing:
+    tech-lead prep's board snapshot raised ``403 — API rate limit exceeded``,
+    each ~60 s retry spent one of three attempts, and the third applied
+    ``tech-lead-needs-human`` + ``needs-human`` to the health-review anchor.
+    """
+
+    @staticmethod
+    def _rate_limited(resets_at: datetime) -> Exception:
+        return github_http_failure(
+            "GitHub GET /search/issues failed: 403 — API rate limit exceeded for installation",
+            status_code=403,
+            headers=httpx.Headers({
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(int(resets_at.timestamp())),
+                "x-ratelimit-resource": "search",
+            }),
+            response_text='{"message": "API rate limit exceeded for installation ID 1"}',
+            method="GET",
+            url="/search/issues",
+        )
+
+    @staticmethod
+    def _queue_health_review(state: OrchestratorState) -> None:
+        PendingSessionQueues(state).queue_health_review(7292, "Health review")
+
+    @staticmethod
+    def _launch_queued(state, config, launcher_bundle):
+        return orchestrator_launch_tech_lead_session(
+            state.pending_tech_lead_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+            _claims_store(),
+        ).session
+
+    def test_repeated_rate_limited_prep_spends_nothing_and_escalates_nothing(
+        self, launcher_bundle, mock_events, tmp_path, monkeypatch
+    ):
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            datetime.now(UTC) + timedelta(seconds=30)
+        )
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        # The incident's cadence: one retry every ~60 s, each after the reset
+        # has passed and each refused again.
+        now = [datetime.now(UTC)]
+        monkeypatch.setattr(host_rate_limit_launch_gate, "_utc_now", lambda: now[0])
+
+        for _ in range(TECH_LEAD_LAUNCH_RETRY_LIMIT + 2):
+            assert self._launch_queued(state, config, launcher_bundle) is None
+            now[0] += timedelta(seconds=61)
+
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.retryable_launch_failures == 0
+        names = [str(e.name) for e in mock_events.events]
+        assert str(EventName.ISSUE_NEEDS_HUMAN) not in names
+        assert str(EventName.SESSION_START_FAILED) not in names
+        assert names.count(str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)) == (
+            TECH_LEAD_LAUNCH_RETRY_LIMIT + 2
+        )
+        applied = [c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list]
+        assert not any(
+            isinstance(a, AddLabelAction) and a.issue_number == 7292 for a in applied
+        ), "a rate limit must never label the anchor needs-human"
+
+    def test_open_window_defers_without_touching_github(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        resets = datetime.now(UTC) + timedelta(minutes=10)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(resets)
+        state = OrchestratorState()
+        self._queue_health_review(state)
+
+        self._launch_queued(state, config, launcher_bundle)
+        prep_reads = len(launcher_bundle.board_snapshot_provider.calls)
+        self._launch_queued(state, config, launcher_bundle)
+
+        assert len(launcher_bundle.board_snapshot_provider.calls) == prep_reads == 1
+        held = state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state))
+        assert held is not None
+        assert held.limit.resets_at == resets.replace(microsecond=0)
+        deferrals = [
+            e.data for e in mock_events.events
+            if str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+        ]
+        assert [d["attempted"] for d in deferrals] == [True, False]
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
+
+    def test_rate_limited_in_progress_label_defers_the_launch(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """Prep succeeds but GitHub refuses the launch's own label write."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        limited = self._rate_limited(datetime.now(UTC) + timedelta(minutes=5))
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction) and action.label == LabelManager(config).in_progress:
+                return ActionResult.fail_from(action, limited)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+        state = OrchestratorState()
+        self._queue_health_review(state)
+
+        assert self._launch_queued(state, config, launcher_bundle) is None
+
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.retryable_launch_failures == 0
+        assert state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state)) is not None
+        names = [str(e.name) for e in mock_events.events]
+        assert str(EventName.SESSION_START_FAILED) not in names
+        assert str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT) in names
+
+    @pytest.mark.parametrize("limited_from", ["claim_read", "convergence"])
+    def test_rate_limited_claim_store_defers_the_launch(
+        self,
+        limited_from,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Codex r2: the ref claim swallowed a rate limit into a string failure."""
+        from issue_orchestrator.adapters.github.ref_claim_adapter import (
+            GitHubRefClaimAdapter,
+        )
+        from issue_orchestrator.domain.lease_config import LeaseConfig
+        from tests.unit.adapters.github.test_ref_claim_adapter import (
+            FakeLabels,
+            RateLimitedRefClient,
+        )
+
+        client = RateLimitedRefClient(limited=limited_from == "claim_read")
+        claims = GitHubRefClaimAdapter(
+            client=client,
+            claimant_id="engine-a",
+            config=LeaseConfig(convergence_timeout_seconds=0.1, convergence_poll_min_ms=1, convergence_poll_max_ms=1),
+            label_adapter=FakeLabels(),
+        )
+        if limited_from == "convergence":
+            original = claims.attempt_claim
+
+            def claim_then_limit(issue_number: int):
+                result = original(issue_number)
+                # Only the confirming read is refused; the hand-back that
+                # follows gets through, or the next launch would find its own
+                # stale claim and read it as a peer's.
+                client.limit_next = 1
+                return result
+
+            monkeypatch.setattr(claims, "attempt_claim", claim_then_limit)
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+            mock_working_copy, mock_command_runner, claim_manager=claims,
+        )
+        config = bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        now = [datetime.now(UTC)]
+        monkeypatch.setattr(host_rate_limit_launch_gate, "_utc_now", lambda: now[0])
+
+        for _ in range(TECH_LEAD_LAUNCH_RETRY_LIMIT + 1):
+            assert self._launch_queued(state, config, bundle) is None
+            now[0] += timedelta(hours=1)
+
+        (queued,) = state.pending_tech_lead_reviews
+        assert queued.retryable_launch_failures == 0
+        applied = [c.args[0] for c in bundle.action_applier.apply.call_args_list]
+        assert not any(isinstance(a, AddLabelAction) and a.issue_number == 7292 for a in applied)
+        assert str(EventName.ISSUE_NEEDS_HUMAN) not in [str(e.name) for e in mock_events.events]
+
+    def test_a_limit_past_the_bound_spends_the_retry_budget(
+        self, launcher_bundle, tmp_path
+    ):
+        """Bounded: a token rate limited without a break still reaches a human."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        now = datetime.now(UTC)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            now - timedelta(seconds=1)
+        )
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        # Refused hourly, re-attempted a minute after each reset, until now.
+        seen = now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=5)
+        while seen < now - timedelta(minutes=2):
+            state.host_rate_limit.observe(
+                HostRateLimit(
+                    resets_at=min(seen + timedelta(hours=1), now - timedelta(minutes=1)),
+                    kind="primary",
+                ),
+                seen,
+                "tech_lead:7292", live=live_episode_keys(state),
+            )
+            seen += timedelta(hours=1, minutes=1)
+
+        self._launch_queued(state, config, launcher_bundle)
+
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 1
+
+    def test_open_window_past_the_bound_reattempts_and_spends(
+        self, launcher_bundle, tmp_path
+    ):
+        """Codex r5: a Retry-After longer than the bound must still reach the budget.
+
+        The launch is attempted again, so its refusal lands after the durable
+        claim is held - the only failure the ledger lets the queue count.
+        """
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            datetime.now(UTC) + timedelta(hours=1)
+        )
+        state = OrchestratorState()
+        self._queue_health_review(state)
+        now = datetime.now(UTC)
+        state.host_rate_limit.observe(
+            HostRateLimit(resets_at=now + timedelta(hours=1), kind="secondary"),
+            now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+            "tech_lead:7292", live=live_episode_keys(state),
+        )
+
+        assert self._launch_queued(state, config, launcher_bundle) is None
+
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 1
+        assert len(launcher_bundle.board_snapshot_provider.calls) == 1
+
+    def test_another_items_old_episode_never_counts_against_this_one(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """Codex r8: a withdrawn item's history must not make B's first refusal count."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(config, tmp_path)
+        now = datetime.now(UTC)
+        launcher_bundle.board_snapshot_provider.error = self._rate_limited(
+            now + timedelta(minutes=5)
+        )
+        state = OrchestratorState()
+        # Item #111 was refused for hours, then withdrawn without recovering.
+        state.host_rate_limit.observe(
+            HostRateLimit(resets_at=now - timedelta(minutes=1), kind="primary"),
+            now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(hours=1),
+            "tech_lead:111", live=live_episode_keys(state),
+        )
+        self._queue_health_review(state)
+
+        assert self._launch_queued(state, config, launcher_bundle) is None
+
+        assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
+        (deferral,) = [
+            e.data for e in mock_events.events
+            if str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+        ]
+        assert deferral["past_deferral_bound"] is False
+
+    def test_rate_limited_review_read_is_deferred_not_raised(
+        self, launcher_bundle, mock_repo_host, mock_events
+    ):
+        """Paths that let the read escape are classified by the same gate."""
+        resets = datetime.now(UTC) + timedelta(minutes=5)
+
+        def rate_limited_get_issue(issue_number: int):
+            raise self._rate_limited(resets)
+
+        mock_repo_host.get_issue = rate_limited_get_issue
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+        state = OrchestratorState()
+        state.pending_reviews = [review]
+
+        result = orchestrator_launch_review_session(
+            review, state, launcher_bundle.launcher, MagicMock(), _claims_store()
+        ).session
+
+        assert result is None
+        assert state.pending_reviews == [review]
+        assert state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state)) is not None
+        assert any(
+            str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+            and e.data["work"] == "review"
+            for e in mock_events.events
+        )
+
+    def test_rate_limited_validation_retry_refresh_is_deferred_not_raised(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+    ):
+        resets = datetime.now(UTC) + timedelta(minutes=5)
+
+        def rate_limited_refresh(issue_number: int):
+            raise self._rate_limited(resets)
+
+        bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            refresh_issue_fn=rate_limited_refresh,
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="original task",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            source_kind=SessionKind.CODE,
+            validation_cmd="make test",
+        )
+        state = OrchestratorState(pending_validation_retries=[retry])
+
+        result = orchestrator_launch_validation_retry_session(
+            retry, state, bundle.launcher, MagicMock(), _claims_store()
+        ).session
+
+        assert result is None
+        assert state.pending_validation_retries == [retry]
+        assert state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(state)) is not None
 
 
 class TestLaunchNeverStartsACoderOverAPublishedPR:
@@ -9626,6 +10035,33 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         assert [(a.issue_number, a.label, a.fresh_presence) for a in actions
                 if isinstance(a, AddLabelAction)] == [(123, pr_pending, True)]
 
+    def test_a_rate_limited_gate_repair_defers_on_the_shared_window(
+        self, launcher_bundle, sample_issue, mock_events
+    ):
+        """Codex r11 (#7297): the pr-pending repair GitHub refused on a rate
+        limit defers the launch and opens the window, instead of a permanent
+        refusal that re-reads custody every tick."""
+        from issue_orchestrator.control.action_results import ActionResult
+
+        limited = TestLaunchDefersOnGitHubRateLimit._rate_limited(
+            datetime.now(UTC) + timedelta(minutes=10)
+        )
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply = MagicMock(
+            side_effect=lambda action: ActionResult.fail_from(action, limited)
+        )
+        state = OrchestratorState()
+
+        assert orchestrator_launch_session(sample_issue, state, launcher_bundle.launcher).session is None
+
+        assert state.host_rate_limit.open_at(
+            datetime.now(UTC), live=frozenset({"issue:123"})
+        ) is not None
+        assert any(
+            str(e.name) == str(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+            for e in mock_events.events
+        )
+
     def test_launches_once_the_operator_closed_the_pr(self, launcher_bundle, sample_issue):
         launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody("closed")
 
@@ -9641,8 +10077,50 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         applier = MagicMock()
         applier.runtime_lifecycle.published_review = self._custody()
 
-        assert refuse_launch_over_published_review(applier, MagicMock(), 123, tech_lead=True) is None
+        assert refuse_launch_over_published_review(
+            applier, MagicMock(), 123, kind=SessionKind.TECH_LEAD, pr_number=None
+        ) is None
         applier.apply.assert_not_called()
+
+    def test_a_reworks_retry_resumes_on_the_pr_it_is_fixing(
+        self, launcher_bundle, mock_worktree_manager
+    ):
+        """#7347 review r3: the retry now relaunches AS the rework on PR #500.
+        Pushing to the PR that holds the published work is that PR's own review
+        cycle; the hold must not strand it."""
+        from dataclasses import replace
+
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
+        retry = replace(
+            TestTheLaunchStampsOneKind.retry_of(SessionKind.REWORK), pr_number=500, rework_cycle=1
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        assert [call["name"] for call in launcher_bundle.create_session_calls] == ["rework-123"]
+        assert result.session is not None and result.session.pr_number == 500
+
+    @pytest.mark.parametrize(
+        ("kind", "pr_number"),
+        [(SessionKind.CODE, 500), (SessionKind.REWORK, 501), (SessionKind.REWORK, None)],
+        ids=["coding-retry", "rework-of-another-pr", "rework-naming-no-pr"],
+    )
+    def test_any_other_retry_is_still_refused_by_the_hold(
+        self, launcher_bundle, mock_worktree_manager, kind, pr_number
+    ):
+        from dataclasses import replace
+
+        launcher_bundle.action_applier.runtime_lifecycle.published_review = self._custody()
+        launcher_bundle.action_applier.apply.return_value = MagicMock(success=True)
+        retry = replace(TestTheLaunchStampsOneKind.retry_of(kind), pr_number=pr_number)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert "PR #500" in result.reason
+        assert launcher_bundle.create_session_calls == []
 
     def test_a_validation_retry_never_starts_a_second_coder_on_the_pr(
         self, launcher_bundle, mock_worktree_manager
@@ -9660,7 +10138,7 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
             validation_error="Validation failed",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
-            source_task=TaskKind.CODE,
+            source_kind=SessionKind.CODE,
             validation_cmd="make test",
         )
 
@@ -9670,3 +10148,409 @@ class TestLaunchNeverStartsACoderOverAPublishedPR:
         assert "PR #500" in result.reason
         assert mock_worktree_manager.create_calls == []
         assert launcher_bundle.create_session_calls == []
+
+
+class TestTheLaunchStampsOneKind:
+    """Every vocabulary a launch writes derives from ONE stamped kind (#7347).
+
+    Before, a tech-lead run launched as CODE / ``issue-N`` / ``coding-1`` and a
+    rework's validation retry relaunched as CODE / ``issue-N``: every
+    ``kind is CODE`` policy check silently included both.
+    """
+
+    @staticmethod
+    def _identity(session) -> dict:
+        return json.loads((session.run_dir / "session-identity.json").read_text())
+
+    @staticmethod
+    def _started_task(mock_events) -> str:
+        started = [e for e in mock_events.events if str(e.name) == "session.started"]
+        return started[-1].data["task"]
+
+    def test_a_tech_lead_run_is_stamped_tech_lead_everywhere(
+        self, launcher_bundle, sample_config, mock_events, tmp_path
+    ) -> None:
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        issue = Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo")
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.TECH_LEAD
+        assert session.terminal_id == "tech-lead-125"
+        assert launcher_bundle.create_session_calls[0]["name"] == "tech-lead-125"
+        assert session.run_assets.session_name == "tech-lead-1"
+        assert (
+            launcher_bundle.issue_run_ledger.recorded_run(session.run_assets).session_key.kind
+            is SessionKind.TECH_LEAD
+        )
+        assert self._identity(session)["task"] == "tech-lead"
+        assert self._started_task(mock_events) == "tech-lead"
+        # Its own kind still completes with coding-done, not reviewer-done.
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "coding-done" in command
+        assert "reviewer-done" not in command
+
+    def test_a_coding_run_keeps_its_names(
+        self, launcher_bundle, sample_issue, mock_events
+    ) -> None:
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.CODE
+        assert session.terminal_id == f"issue-{sample_issue.number}"
+        assert session.run_assets.session_name == "coding-1"
+        assert (
+            launcher_bundle.issue_run_ledger.recorded_run(session.run_assets).session_key.kind
+            is SessionKind.CODE
+        )
+        assert self._identity(session)["task"] == "code"
+        assert self._started_task(mock_events) == "code"
+        # The restore binding a restart checks it against (#7347 follow-up).
+        assert self._identity(session)["session_binding_fingerprint"] == (
+            launcher_bundle.launcher.config.session_binding_fingerprint
+        )
+
+    def test_a_review_by_the_agent_that_is_also_the_tech_lead_is_a_review(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """#7347 review r4: one agent may be both the PR reviewer and the tech
+        lead. Its review is chosen by the work, so it launches as REVIEW; only
+        issue-lane launches are decided by the agent label."""
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        sample_config.code_review_agent = "agent:tech-lead"
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+
+        result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert [call["name"] for call in launcher_bundle.create_session_calls] == [session.terminal_id]
+        assert session.terminal_id.startswith("review-")
+        recorded = launcher_bundle.issue_run_ledger.recorded_run(session.run_assets)
+        assert (recorded.session_key.kind, recorded.agent_label) == (SessionKind.REVIEW, "agent:tech-lead")
+
+    @staticmethod
+    def retry_of(kind: SessionKind) -> PendingValidationRetry:
+        return PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123",
+            validation_error="tests failed",
+            validation_error_file=None,
+            retry_count=1,
+            source_kind=kind,
+            validation_cmd="make test",
+        )
+
+    @staticmethod
+    def _in_progress_moves(launcher_bundle) -> list:
+        return [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+            if isinstance(call.args[0], (AddLabelAction, RemoveLabelAction))
+            and call.args[0].label == "in-progress"
+        ]
+
+    def test_a_reworks_retry_relaunches_as_rework(
+        self, launcher_bundle, mock_events
+    ) -> None:
+        """It used to drop ``source_task`` and come back as a coder."""
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self.retry_of(SessionKind.REWORK), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert session.key.kind is SessionKind.REWORK
+        assert session.terminal_id == "rework-123"
+        assert launcher_bundle.create_session_calls[0]["name"] == "rework-123"
+        assert session.run_assets.session_name == "coding-2"
+        assert (
+            launcher_bundle.issue_run_ledger.recorded_run(session.run_assets).session_key.kind
+            is SessionKind.REWORK
+        )
+        assert self._identity(session)["task"] == "rework"
+        assert self._started_task(mock_events) == "rework"
+        # A rework launch never takes the issue's in-progress claim; neither
+        # does its retry.
+        assert self._in_progress_moves(launcher_bundle) == []
+
+    def test_a_reworks_retry_keeps_the_pr_and_cycle_it_is_fixing(self, launcher_bundle) -> None:
+        """The retry is still that rework: a provider block must be able to put
+        ``needs-rework`` back on its PR, and a completion must advance that
+        PR's review machine (#7347 review round 1)."""
+        from dataclasses import replace
+
+        retry = replace(self.retry_of(SessionKind.REWORK), pr_number=456, rework_cycle=2)
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        assert (session.pr_number, session.rework_cycle) == (456, 2)
+        # Cycle 2 ran as coding-3; its first retry is the next iteration.
+        assert session.run_assets.session_name == "coding-4"
+        # ... and its run records them, so a restart restores them (review r4).
+        recorded = launcher_bundle.issue_run_ledger.recorded_run(session.run_assets)
+        assert recorded.rework_target == ReworkTarget(456, 2)
+
+    def test_a_rework_launch_records_the_pr_it_fixes_with_its_run(self, launcher_bundle) -> None:
+        """#7347 review r4: the rework's PR and cycle are durable facts of its run."""
+        launcher_bundle.launcher.repository_host.prs[123] = [PRInfo(
+            number=456, title="Fix", url="u", branch="123-feature", body="", state="open", labels=[],
+        )]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=2,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True, result.reason
+        session = result.session
+        assert session is not None
+        recorded = launcher_bundle.issue_run_ledger.recorded_run(session.run_assets)
+        assert recorded.rework_target == ReworkTarget(456, 2)
+
+    def test_a_tech_lead_still_running_under_its_pre_upgrade_name_is_not_launched_twice(
+        self, launcher_bundle, sample_config, tmp_path
+    ) -> None:
+        """A tech-lead run launched before #7347 runs as ``issue-N``. A new launch
+        checks that name too and hands the terminal it FOUND to restoration."""
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        launcher_bundle.session_exists_override[0] = lambda name: name == "issue-125"
+        issue = Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo")
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.disposition is LaunchDisposition.EXISTING_TERMINAL
+        assert result.existing_terminal == "issue-125"
+        assert launcher_bundle.create_session_calls == []
+        assert launcher_bundle.issue_run_ledger.recorded_runs(125) == ()
+
+    def test_a_coders_retry_still_takes_the_claim(self, launcher_bundle) -> None:
+        result = launcher_bundle.launcher.launch_validation_retry_session(
+            self.retry_of(SessionKind.CODE), active_sessions=[]
+        )
+
+        assert result.success is True, result.reason
+        assert result.session is not None
+        assert result.session.key.kind is SessionKind.CODE
+        assert result.session.terminal_id == "issue-123"
+        [claim] = self._in_progress_moves(launcher_bundle)
+        assert isinstance(claim, AddLabelAction)
+
+
+@pytest.mark.parametrize(
+    ("live_terminal", "requeued"),
+    [
+        ("tech-lead-905", False),  # a tech-lead run's own name since #7347
+        ("issue-905", False),  # a tech-lead run launched before the upgrade
+        ("rework-905", True),
+        (None, True),
+    ],
+)
+def test_startup_does_not_requeue_an_anchor_whose_tech_lead_run_is_live(
+    sample_config, mock_repo_host, tmp_path, live_terminal, requeued
+) -> None:
+    from issue_orchestrator.control.health_review_trigger import (
+        recover_pending_tech_lead_anchors,
+    )
+    from issue_orchestrator.domain.tech_lead_session import HEALTH_REVIEW_MARKER_LABEL
+
+    TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+    mock_repo_host.issues = {
+        905: Issue(
+            number=905,
+            title="Health Review — problem storm",
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+    }
+    state = OrchestratorState()
+
+    recover_pending_tech_lead_anchors(
+        state,
+        repository_host=mock_repo_host,
+        config=sample_config,
+        session_exists=lambda name: name == live_terminal,
+        tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+        claims=_claims_store(),
+    )
+
+    assert bool(state.pending_tech_lead_reviews) is requeued
+
+
+class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
+    """#7343 through the real launch: the observer asks ``open_pr_means_done``.
+
+    Each session below is produced by the production launcher, so its kind is
+    the one the launch stamped - not a fixture's. Every one of them runs on a
+    branch that has an open PR; only the coding session's PR is its own output.
+    """
+
+    @staticmethod
+    def _observer(config, runner, host):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.observation.observer import SessionObserver
+
+        return SessionObserver(
+            config,
+            session_runner=runner,
+            repository_host=host,
+            fresh_issue_reader=MagicMock(),
+            session_output=FileSystemSessionOutput(),
+        )
+
+    @staticmethod
+    def _launched(kind: str, launcher_bundle, sample_config, sample_issue, tmp_path):
+        launcher = launcher_bundle.launcher
+        if kind == "code":
+            return launcher.launch_issue_session(sample_issue, active_sessions=[]).session
+        if kind == "review":
+            return launcher.launch_review_session(
+                PendingReview(
+                    issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+                    pr_number=456,
+                    pr_url="https://github.com/test/repo/pull/456",
+                    branch_name="123-feature",
+                    _issue_number=123,
+                ),
+                active_sessions=[],
+            ).session
+        if kind == "rework-retry":
+            return launcher.launch_validation_retry_session(
+                TestTheLaunchStampsOneKind.retry_of(SessionKind.REWORK), active_sessions=[]
+            ).session
+        TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+        return launcher.launch_issue_session(
+            Issue(125, "Investigate", labels=["agent:tech-lead"], repo="test/repo"),
+            active_sessions=[],
+        ).session
+
+    @pytest.mark.parametrize(
+        ("kind", "exited"),
+        [("code", True), ("review", False), ("rework-retry", False), ("tech-lead", False)],
+    )
+    def test_the_running_session_is_exited_only_for_its_own_pr(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, exited
+    ) -> None:
+        session = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert session is not None
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = True
+        runner.send_to_session_by_name.return_value = True
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+
+        status = self._observer(sample_config, runner, host).check_session(session)
+
+        assert status is SessionStatus.RUNNING
+        assert runner.send_to_session_by_name.called is exited
+        assert session.exit_sent is exited
+
+    @staticmethod
+    def _restored(session, launcher_bundle, sample_config, terminal_name: str):
+        """The same run as a restart brings it back: through the production
+        restorer, which reads its kind and role from the ledger row its launch
+        recorded - under the name it is found running as."""
+        from issue_orchestrator.control.session_restorer import SessionRestorer
+        from issue_orchestrator.ports.session_runner import DiscoveredSession
+
+        repo_host = MagicMock()
+        repo_host.get_issue.return_value = session.issue
+        working_copy = MagicMock()
+        working_copy.get_current_branch.return_value = session.branch_name
+        restorer = SessionRestorer(
+            sample_config, repo_host, working_copy,
+            run_ledger=launcher_bundle.issue_run_ledger,
+        )
+        [restored] = restorer.restore_sessions(
+            [DiscoveredSession(
+                issue_number=session.issue.number, tab_name="", is_review=False,
+                session_name=terminal_name, run_dir=str(session.run_dir),
+            )],
+            already_tracked=[],
+        )
+        return restored
+
+    @pytest.mark.parametrize(
+        ("kind", "terminal", "exited"),
+        [
+            ("code", "issue-123", True),
+            ("tech-lead", "tech-lead-125", False),
+            # A tech lead launched before #7347 is still running as issue-N.
+            ("tech-lead", "issue-125", False),
+        ],
+        ids=["code", "tech-lead", "tech-lead-pre-7347-name"],
+    )
+    def test_a_restored_session_is_exited_only_for_its_own_pr(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, terminal, exited
+    ) -> None:
+        """#7352 codex r2: a tech-lead batch or health review on an anchor
+        branch with an open PR is never /exited - after a restart too, and on
+        both observer paths that send it (the tick's ``check_session`` and the
+        observation's ``observe_session``)."""
+        launched = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert launched is not None
+        session = self._restored(launched, launcher_bundle, sample_config, terminal)
+        assert session.key.kind is launched.key.kind
+        assert session.terminal_id == terminal
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = True
+        runner.send_to_session_by_name.return_value = True
+        runner.is_process_alive.return_value = True
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+        observer = self._observer(sample_config, runner, host)
+
+        assert observer.check_session(session) is SessionStatus.RUNNING
+        assert runner.send_to_session_by_name.called is exited
+        session.exit_sent = False
+        runner.send_to_session_by_name.reset_mock()
+        observer.observe_session(session)
+        assert runner.send_to_session_by_name.called is exited
+        assert session.exit_sent is exited
+
+    @pytest.mark.parametrize(
+        ("kind", "completed"),
+        [("code", True), ("review", False), ("rework-retry", False), ("tech-lead", False)],
+    )
+    def test_an_exited_session_is_completed_by_an_open_pr_only_if_it_is_its_own(
+        self, launcher_bundle, sample_config, sample_issue, tmp_path, kind, completed
+    ) -> None:
+        """The exit-path twin (observer.py ``_determine_exited_session_outcome``)."""
+        session = self._launched(kind, launcher_bundle, sample_config, sample_issue, tmp_path)
+        assert session is not None
+        runner = MagicMock()
+        runner.session_exists_by_name.return_value = False
+        host = MagicMock()
+        host.get_prs_for_branch.return_value = [
+            PRInfo(number=456, url="u", title="PR", branch=session.branch_name, labels=[], body="", state="open")
+        ]
+
+        status = self._observer(sample_config, runner, host).check_session(session)
+
+        assert (status is SessionStatus.COMPLETED) is completed

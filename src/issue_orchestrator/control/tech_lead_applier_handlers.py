@@ -51,6 +51,10 @@ from .tech_lead_actions import (
     reconciliation_subject_for,
 )
 from .tech_lead_case_files import apply_append_pattern_observation
+from .tech_lead_charter_policy import (
+    apply_charter_audited_action,
+    apply_record_tech_lead_charter_decisions,
+)
 from .tech_lead_dispositions import apply_record_tech_lead_disposition
 from .tech_lead_human_disposition import apply_human_disposition
 from .tech_lead_finding_promotion import (
@@ -85,6 +89,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.KILL_HUNG_SESSION,
             ActionType.REQUEST_REWORK,
             ActionType.RECOVER_VALIDATED_WORK,
+            ActionType.RELEASE_WITHHELD_REVIEW,
             ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
@@ -93,6 +98,8 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.PROMOTE_TECH_LEAD_FINDING,
             ActionType.REPORT_PROMOTED_FINDING_EVIDENCE,
             ActionType.SETTLE_TECH_LEAD_PROMOTION,
+            ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS,
+            ActionType.APPLY_CHARTER_AUDITED_ACTION,
         }
     )
 )
@@ -155,6 +162,7 @@ def tech_lead_action_handlers(
     pattern_registry: "PatternCaseFileRegistry | None" = None,
     promotion_target: "PromotionTargetHost | None",
     recover_validated_work: ActionHandler | None = None,
+    release_withheld_review: ActionHandler | None = None,
 ) -> dict[ActionType, ActionHandler]:
     """Map every tech-lead ActionType to the owner that applies it."""
     handlers: dict[ActionType, ActionHandler] = {
@@ -173,6 +181,14 @@ def tech_lead_action_handlers(
             if recover_validated_work is not None
             else lambda action: ActionResult.fail(
                 action, "validated-work recovery executor is not wired"
+            )
+        ),
+        # Review release re-verifies every precondition in its owner (#7399).
+        ActionType.RELEASE_WITHHELD_REVIEW: (
+            release_withheld_review
+            if release_withheld_review is not None
+            else lambda action: ActionResult.fail(
+                action, "withheld-review release executor is not wired"
             )
         ),
         ActionType.RECOVER_TECH_LEAD_PROPOSAL: lambda action: apply_recover_tech_lead_proposal(
@@ -202,6 +218,15 @@ def tech_lead_action_handlers(
                 repository_host=repository_host, apply_action=apply_action,
                 require_expected=require_expected, verify_claim=verify_claim,
                 clock=lambda: datetime.now(timezone.utc))
+        ),
+        # Charter decisions: orchestrator-owned ledger rows only (#7330).
+        ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS: lambda action: (
+            apply_record_tech_lead_charter_decisions(action, authority=authority)
+        ),
+        ActionType.APPLY_CHARTER_AUDITED_ACTION: lambda action: (
+            apply_charter_audited_action(
+                action, authority=authority, apply_action=apply_action
+            )
         ),
         # Finding promotion: file in the routed repo, then close the loop
         # (#6957). All three reconcile against the SOURCE repo's case file —

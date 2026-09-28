@@ -225,7 +225,7 @@ def finalize(
     assert store.record_attempt_outcome(
         token,
         attempt,
-        outcome=PublishValidatedHeadStatus.PUBLISHED,
+        rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
         failure=None,
         finished_at=LATER,
     )
@@ -252,3 +252,26 @@ def changed_observations(
             observations=replace(admission.evidence.observations, **kwargs),
         ),
     )
+
+
+def owned_intake(task=None):
+    """An intake ledger whose custody proves every evidence's run role.
+
+    Defaults to a coding run: work recovery owns (#7323). Pass
+    ``SessionKind.TECH_LEAD`` for work it never owns.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from issue_orchestrator.domain.registered_completion import CompletionRunRole
+    from issue_orchestrator.domain.session_kind import SessionKind
+    from issue_orchestrator.ports.completion_intake import CompletionIntakeLedger
+
+    task = SessionKind.CODE if task is None else task
+    label = "agent:tech-lead" if task is SessionKind.TECH_LEAD else "agent:coder"
+    intake = Mock(spec=CompletionIntakeLedger)
+    intake.prepare_evidence.side_effect = lambda evidence: SimpleNamespace(
+        role=CompletionRunRole(evidence.identity.key.issue_number, task, label)
+    )
+    intake.evidence_receive_sequence.return_value = 1
+    return intake

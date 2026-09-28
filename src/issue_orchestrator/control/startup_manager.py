@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ..ports.issue_run_evidence import IssueRunLedger
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .label_manager import LabelManager
     from .label_store_reconciler import FreshLabelSnapshot
@@ -48,12 +49,11 @@ from ..domain.models import (
     ORCHESTRATOR_PR_MARKER,
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
+from ..domain.session_kind import SessionKind
 from .actions import AddLabelAction, RemoveLabelAction
-from .health_review_trigger import (
-    hydrate_last_health_review_at,
-    recover_pending_tech_lead_anchors,
-)
-from .stuck_sweep import hydrate_stuck_sweep_state
+from .health_review_cadence import hydrate_last_health_review_at
+from .health_review_trigger import recover_pending_tech_lead_anchors
+from .stuck_sweep_state import hydrate_stuck_sweep_state
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -101,6 +101,8 @@ class StartupManager:
         label_store: "LabelStore | None" = None,
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
         issue_run_ledger: "IssueRunLedger | None" = None,
+        *,
+        pending_work_claims: "PendingWorkClaimStore",
     ):
         """Initialize the startup manager.
 
@@ -144,6 +146,9 @@ class StartupManager:
         # Gated-proposal ledger (#6778); None (tests) = no op-backed exclusions.
         self._tech_lead_authority = tech_lead_authority
         self._issue_run_ledger = issue_run_ledger
+        # Anchor recovery can fold individual investigations into a storm
+        # review; ending them must retire their durable claims too (#7348).
+        self._pending_work_claims = pending_work_claims
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -481,7 +486,7 @@ class StartupManager:
                 issue=issue,
                 repo=self.config.repo,
                 issue_branches=issue_branches,
-                check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+                check_session_fn=self._issue_custody_session_exists,
                 pr_tracker=self.repository_host,
             )
             if not analysis.has_open_pr or not analysis.pr_url:
@@ -584,7 +589,7 @@ class StartupManager:
 
         analysis = analyze_issue(
             issue=issue, repo=self.config.repo, issue_branches=issue_branches,
-            check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+            check_session_fn=self._issue_custody_session_exists,
             pr_tracker=self.repository_host,
         )
 
@@ -610,6 +615,20 @@ class StartupManager:
             ])
         else:
             print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
+
+    def _issue_custody_session_exists(self, issue_number: int) -> bool:
+        """Whether a live terminal holds this issue's in-progress claim.
+
+        Every kind that holds the claim can: a coding session (``issue-N``) and,
+        since #7347 stamps it as its own kind, a tech-lead run
+        (``tech-lead-N``). Checking ``issue-N`` alone read a running tech lead's
+        anchor as orphaned in-progress work.
+        """
+        return any(
+            self._session_exists(kind.terminal_name(issue_number))
+            for kind in SessionKind
+            if kind.capabilities.holds_issue_custody
+        )
 
     def _clear_orphaned_label(self, issue: Issue) -> None:
         """Clear stale in-progress label from issue."""
@@ -692,9 +711,15 @@ class StartupManager:
                     _issue_number=issue_number,
                     issue_labels=validity.issue_labels,
                 )
-                if review not in state.pending_reviews:
-                    state.pending_reviews.append(review)
+                # Through the queue's own admission rule (one entry per PR),
+                # never whole-object equality: a review the in-flight ledger
+                # already returned to this queue carries its reviewer label and
+                # differs field-by-field from this label-derived copy, and the
+                # copy became a second queue entry for the same PR (#7454).
+                if state.queue_pending_review(review):
                     print(f"  PR #{pr_number}: Queued for code review")
+                else:
+                    print(f"  PR #{pr_number}: Already queued for code review")
             else:
                 print(f"  PR #{pr_number}: Review already in progress")
 
@@ -716,6 +741,7 @@ class StartupManager:
             config=self.config,
             session_exists=self._session_exists,
             tech_lead_authority=self._tech_lead_authority,
+            claims=self._pending_work_claims,
         )
 
     def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:
@@ -727,7 +753,7 @@ class StartupManager:
             already_issue_numbers=state.retrospective_review_in_flight_issue_numbers(),
         )
         for review in discovered:
-            state.pending_retrospective_reviews.append(
+            state.queue_pending_retrospective_review(
                 PendingRetrospectiveReview(
                     issue_key=self.repository_host.create_issue_key(review.issue_number),
                     issue_number=review.issue_number,

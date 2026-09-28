@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
     from ..ports.label_store import LabelStore
 
+from ..domain.host_rate_limit import rate_limit_cause
 from ..ports.worktree_custody import CustodyError
 from .actions import RemoveLabelAction, SupersedePullRequestAction
 from .worktree_manager import get_worktree_path
@@ -175,7 +176,7 @@ def _supersede_open_prs(
             raise RuntimeError(
                 f"failed to supersede PR #{pr.number}: "
                 f"{result.error or 'unknown error'}"
-            )
+            ) from rate_limit_cause(result.host_rate_limit)
         superseded_prs.append(pr.number)
         logger.info(
             "[reset] Superseded PR #%d for scratch reset of issue #%d",
@@ -247,7 +248,7 @@ def _remove_orchestrator_labels(
             raise RuntimeError(
                 f"Scratch reset failed to remove label '{label}' from issue #{issue_number}: "
                 f"{result.error or 'unknown error'}"
-            )
+            ) from rate_limit_cause(result.host_rate_limit)
     return labels_removed
 
 

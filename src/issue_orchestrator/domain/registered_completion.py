@@ -5,25 +5,26 @@ from dataclasses import dataclass
 from .completion_intake import CompletionIntakeError
 from .models import CompletionRecord, sanitize_agent_label
 from pathlib import Path
-from .session_key import TaskKind
+from .session_kind import HISTORICAL_AGENT_LABEL, SessionKind
 from .session_run import RunContainedFile, SessionRunIdentity
 
 
 @dataclass(frozen=True, slots=True)
 class CompletionRunRole:
     issue_number: int
-    task: TaskKind
+    kind: SessionKind
     agent_label: str
 
     def __post_init__(self) -> None:
-        if type(self.task) is not TaskKind:
-            raise CompletionIntakeError("recorded completion task is invalid")
-        if (
-            type(self.agent_label) is not str
-            or not (
-                (self.agent_label.startswith("agent:") and self.agent_label.removeprefix("agent:").strip())
-                or (self.agent_label == "operator:historical" and self.task is TaskKind.CODE)
+        if type(self.kind) is not SessionKind:
+            raise CompletionIntakeError("recorded completion kind is invalid")
+        historical = self.kind is SessionKind.HISTORICAL
+        if type(self.agent_label) is not str or historical != (self.agent_label == HISTORICAL_AGENT_LABEL):
+            raise CompletionIntakeError(
+                "recorded completion agent role is missing or invalid"
             )
+        if not historical and not (
+            self.agent_label.startswith("agent:") and self.agent_label.removeprefix("agent:").strip()
         ):
             raise CompletionIntakeError(
                 "recorded completion agent role is missing or invalid"
@@ -33,11 +34,11 @@ class CompletionRunRole:
 
     @classmethod
     def from_recorded(
-        cls, issue_number: int, task: TaskKind | None, agent_label: str | None
+        cls, issue_number: int, kind: SessionKind, agent_label: str | None
     ) -> "CompletionRunRole":
-        if task is None or agent_label is None:
+        if agent_label is None:
             raise CompletionIntakeError("recorded completion role is missing")
-        return cls(issue_number, task, agent_label)
+        return cls(issue_number, kind, agent_label)
 
     def require_processing_role(
         self, issue_number: int, supplied_label: str | None, tech_lead_label: str | None
@@ -46,7 +47,10 @@ class CompletionRunRole:
             raise CompletionIntakeError("receipt does not bind processing issue")
         if supplied_label is not None and supplied_label != self.agent_label:
             raise CompletionIntakeError("caller role differs from recorded allocation")
-        if (self.task is TaskKind.TECH_LEAD) != (self.agent_label == tech_lead_label):
+        # The allocator's rule, from the same owner (#7347 review r5): only the
+        # issue-lane kinds are decided by the agent label, so a review by an
+        # agent that is also the tech lead is still a review.
+        if self.kind.contradicts_agent_role(self.agent_label, tech_lead_label):
             raise CompletionIntakeError(
                 "recorded Tech Lead role does not match configured launch policy"
             )
@@ -65,7 +69,7 @@ class CompletionProcessingPolicy:
     """Role selected once for an invocation, independent of later settings edits."""
 
     agent_label: str | None
-    task: TaskKind | None
+    kind: SessionKind | None
 
     @classmethod
     def for_unprocessed_session(
@@ -80,12 +84,23 @@ class CompletionProcessingPolicy:
         work, and the carried launch authority was bypassed (#7273 round 2
         finding 1).
         """
-        task = TaskKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
-        return cls(agent_label, task)
+        kind = SessionKind.TECH_LEAD if agent_label is not None and agent_label == tech_lead_label else None
+        return cls(agent_label, kind)
 
     @property
     def is_tech_lead(self) -> bool:
-        return self.task is TaskKind.TECH_LEAD
+        return self.kind is SessionKind.TECH_LEAD
+
+    @property
+    def publication_is_optional(self) -> bool:
+        """Whether this completion may finish with nothing to publish.
+
+        Only a kind whose publication is the issue's deliverable
+        (``capturable``) must publish something; for any other (a tech-lead
+        run's clean audit) an empty branch is success, not a publish failure
+        (#7347 A9). An unknown role proves nothing, so it must publish.
+        """
+        return self.kind is not None and not self.kind.capabilities.capturable
 
     def inheritable_launch_authority(
         self, run: "SessionRunIdentity | None"
@@ -146,7 +161,7 @@ class CompletionRolePolicy:
             label = context.role.require_processing_role(
                 issue_number, supplied_label, self.tech_lead_label
             )
-            return CompletionProcessingPolicy(label, context.role.task)
+            return CompletionProcessingPolicy(label, context.role.kind)
         label = supplied_label
         if label is None:
             label, error = self.legacy_label(completion_path)

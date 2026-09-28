@@ -59,9 +59,13 @@ class TechLeadValidatedWorkRecoveryExecutor:
         if isinstance(result, RecoveryAttemptPending):
             if result.failure is ValidatedWorkFailure.AUTHORITY_SNAPSHOT_STALE:
                 return self._downgrade(action, result)
-            return ActionResult.fail(
+            # A pending result names the host rate limit behind it; the
+            # planned-action liveness owner then waits for the reset instead of
+            # spending an attempt (#7350).
+            return ActionResult.fail_limited(
                 action,
                 result.message,
+                result.rate_limit,
                 issue_number=action.issue_number,
                 proposal_id=action.proposal_id,
             )

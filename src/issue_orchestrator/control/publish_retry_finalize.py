@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..control.actions import AddLabelAction, RemoveLabelAction
+from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.models import OrchestratorState, SessionHistoryEntry
 from ..domain.retry_review_routing import RetryReviewRouting as RetryReviewRouting
 from ..ports.fresh_issue_reader import FreshIssueReader
@@ -194,7 +195,9 @@ class RetrySuccessFinalizer:
             result = self._action_applier.apply(action)
             if result.success:
                 continue
-            raise RuntimeError(result.error or f"Label action failed for issue {action.issue_number}")
+            raise RuntimeError(
+                result.error or f"Label action failed for issue {action.issue_number}"
+            ) from rate_limit_cause(result.host_rate_limit)
 
 
 def _is_publish_failure_history(entry: SessionHistoryEntry, issue_number: int) -> bool:

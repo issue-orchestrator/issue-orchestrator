@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock
 
 from issue_orchestrator.control.tech_lead_run_activity import (
     in_memory_run_activity,
@@ -46,11 +47,13 @@ from issue_orchestrator.domain.tech_lead_run import (
     IssueInvestigationScope,
     global_run_precedence,
 )
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.session_launch_types import LaunchStep
 
 from .run_ledger_doubles import LEASE_SECONDS, FrozenClock, SharedRunLedger
 
@@ -76,6 +79,7 @@ class FakeSession:
     def __init__(self, issue_number: int, flavor: TechLeadSessionFlavor) -> None:
         self.issue = FakeIssue(issue_number)
         self.agent_label = TECH_LEAD_AGENT
+        self.key = SimpleNamespace(kind=SessionKind.TECH_LEAD)  # stamped at launch (#7347)
         self.terminal_id = f"tech-lead-{issue_number}"
         self.tech_lead_scope = TechLeadLaunchScope(flavor=flavor)
         # The launch authority opens the run's LOCAL record from these
@@ -185,8 +189,9 @@ class _Engine:
                 str(label).startswith("blocked") for label in labels
             ),
             events=SimpleNamespace(publish=lambda _e: None),  # type: ignore[arg-type]
-            launch=self._start,
+            launch=lambda item: LaunchStep.of_session(self._start(item), "the fake launch did not start"),
             activity=in_memory_run_activity(),
+            claims=MagicMock(),
         )
 
     def _start(self, tech_lead: PendingTechLeadReview):

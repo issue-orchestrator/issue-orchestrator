@@ -349,7 +349,7 @@ def test_failed_attestation_routes_controller_retry_before_any_requested_action(
 ):
     from issue_orchestrator.control.session_controller import SessionController
     from issue_orchestrator.domain.models import SessionStatus
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.execution.session_output_adapter import (
         FileSystemSessionOutput,
     )
@@ -392,7 +392,7 @@ def test_failed_attestation_routes_controller_retry_before_any_requested_action(
         "test issue",
         run.session_name,
         session_run_assets=run,
-        task_kind=TaskKind.CODE,
+        task_kind=SessionKind.CODE,
     )
     assert decision.status is SessionStatus.NEEDS_VALIDATION_RETRY
     assert decision.validation_passed is False

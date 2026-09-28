@@ -55,7 +55,14 @@ def _select_phase(
 ) -> PhaseEntry | None:
     if phase_key in ("in_progress", "rework"):
         return _find_last_phase_with_prefix(phases, "coding-")
-    if phase_key in ("review", "tech_lead"):
+    if phase_key == "tech_lead":
+        # A tech-lead run on this issue has its own ``tech-lead-N`` phase
+        # (#7347); an issue the tech lead reviewed from elsewhere shows its
+        # last review phase.
+        return _find_last_phase_with_prefix(
+            phases, "tech-lead-"
+        ) or _find_last_phase_with_prefix(phases, "review-")
+    if phase_key == "review":
         return _find_last_phase_with_prefix(phases, "review-")
     if phase_key:
         for phase in phases:

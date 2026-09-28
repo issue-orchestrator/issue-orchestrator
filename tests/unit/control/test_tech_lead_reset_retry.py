@@ -53,7 +53,8 @@ from issue_orchestrator.domain.models import (
     SessionHistoryEntry,
     SessionStatus,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_run_record import TechLeadRunPhase
 from issue_orchestrator.domain.state_machines.session_machine import (
     SessionState,
@@ -144,7 +145,7 @@ class _RaisingApplier:
         self._error = error
         self.apply_all_calls = 0
 
-    def apply_all(self, _actions):
+    def apply_all(self, _actions, on_result=None):
         self.apply_all_calls += 1
         raise self._error
 
@@ -337,7 +338,7 @@ class TestCompletionPipelineEligibility:
             repo="owner/repo",
         )
         return Session(
-            key=SessionKey(issue=FakeIssueKey("17"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey("17"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=AgentConfig(
                 prompt_path=tmp_path / "prompt.md", timeout_minutes=45
@@ -578,7 +579,7 @@ def _terminal_outcome_session(tmp_path, *, tech_lead_scope=None) -> Session:
         number=17, title="Broken issue", labels=["agent:tech-lead"], repo="owner/repo"
     )
     return Session(
-        key=SessionKey(issue=FakeIssueKey("17"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("17"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=AgentConfig(
             prompt_path=tmp_path / "prompt.md", timeout_minutes=45

@@ -24,8 +24,13 @@ from issue_orchestrator.domain.models import (
     Session,
     SessionHistoryEntry,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.blocked_item_custody import (
+    NO_ENGINE_CUSTODY,
+    BlockedItemCustodyReader,
+)
 from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
     TechLeadRunHistoryReader,
@@ -68,6 +73,7 @@ class _RouteOrchestratorStub(_OrchestratorStub):
 
     provider_circuit: ProviderCircuitStatusReader
     tech_lead_run_history: TechLeadRunHistoryReader
+    blocked_item_custody: BlockedItemCustodyReader
 
 
 def _make_config() -> Config:
@@ -94,7 +100,7 @@ def test_view_model_active_session_and_dashboard_data():
     config.agents = {"agent:web": agent_config}
 
     issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
-    session_key = SessionKey(issue=FakeIssueKey("12"), task=TaskKind.REVIEW)
+    session_key = SessionKey(issue=FakeIssueKey("12"), kind=SessionKind.REVIEW)
     session = Session(
         key=session_key,
         issue=issue,
@@ -116,6 +122,7 @@ def test_view_model_active_session_and_dashboard_data():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -158,6 +165,7 @@ def test_validation_configured_false_when_no_validation_command():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
@@ -179,6 +187,7 @@ def test_validation_configured_true_when_validation_command_set():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
@@ -195,6 +204,7 @@ def test_dashboard_data_exposes_e2e_failure_evidence_for_live_badge_updates():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         e2e_status_provider=lambda _: {
             "enabled": True,
             "running": False,
@@ -218,7 +228,7 @@ def test_running_flow_card_uses_latest_timeline_snapshot():
 
     issue = Issue(number=409, title="Running flow item", labels=["agent:web", "in-progress"])
     session = Session(
-        key=SessionKey(issue=FakeIssueKey("409"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("409"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=agent_config,
         terminal_id="issue-409",
@@ -250,6 +260,7 @@ def test_running_flow_card_uses_latest_timeline_snapshot():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -292,7 +303,7 @@ def test_active_item_prefers_canonical_issue_title_over_rework_title():
     config.agents = {"agent:web": agent_config}
 
     issue = Issue(number=4057, title="Rework #4124", labels=["agent:web", "in-progress"])
-    session_key = SessionKey(issue=FakeIssueKey("4057"), task=TaskKind.REWORK)
+    session_key = SessionKey(issue=FakeIssueKey("4057"), kind=SessionKind.REWORK)
     session = Session(
         key=session_key,
         issue=issue,
@@ -320,6 +331,7 @@ def test_active_item_prefers_canonical_issue_title_over_rework_title():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -378,6 +390,7 @@ def test_view_model_queue_and_blocked_items():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -464,6 +477,7 @@ def test_non_executable_issues_are_not_projected_as_blocked_work():
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
     )
 
     assert [item["issue_number"] for item in view_model.queue_items] == [45]
@@ -492,6 +506,7 @@ def test_large_queue_counts_use_full_queue_not_preview_page():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -501,6 +516,7 @@ def test_large_queue_counts_use_full_queue_not_preview_page():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=2,
         active_tab="kanban",
         e2e_page=1,
@@ -541,6 +557,7 @@ def test_queue_preview_pages_follow_cached_queue_order_before_sorting():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=2,
         active_tab="kanban",
         e2e_page=1,
@@ -567,6 +584,7 @@ def test_view_model_includes_refresh_freshness_metadata():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -637,6 +655,7 @@ def test_stale_reason_blames_orchestrator_stall_when_tick_is_overdue(monkeypatch
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -673,6 +692,7 @@ def test_stale_reason_uses_threshold_text_when_tick_is_healthy(monkeypatch):
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -707,6 +727,7 @@ def test_stale_reason_respects_configured_stall_threshold(monkeypatch):
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -740,6 +761,7 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -792,6 +814,7 @@ def test_pr_pending_issue_queued_for_rework_leaves_merge_lane_with_reason():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -863,6 +886,7 @@ def test_queued_rework_issue_with_completed_history_pr_stays_queued_not_awaiting
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -909,6 +933,7 @@ def test_pr_closed_blocked_issue_is_blocked_not_awaiting_merge():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -945,6 +970,7 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -1003,6 +1029,7 @@ def test_awaiting_merge_history_card_retains_stack_gate_payload():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1067,6 +1094,7 @@ def test_label_blocked_card_retains_stack_gate_payload():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1100,7 +1128,7 @@ def test_pending_validation_retry_card_retains_stack_gate_payload():
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -1111,6 +1139,7 @@ def test_pending_validation_retry_card_retains_stack_gate_payload():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1148,6 +1177,7 @@ def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1203,6 +1233,7 @@ def test_history_completed_at_normalizes_naive_datetimes_to_utc_timestamp():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1240,6 +1271,7 @@ def test_closed_history_with_pr_url_routes_to_completed_not_awaiting_merge():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1295,6 +1327,7 @@ def test_validation_failed_history_routes_to_blocked_lane():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1329,7 +1362,7 @@ def test_pending_validation_retry_routes_to_blocked_lane_and_suppresses_queue_du
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -1340,6 +1373,7 @@ def test_pending_validation_retry_routes_to_blocked_lane_and_suppresses_queue_du
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1383,7 +1417,7 @@ def test_pending_validation_retry_takes_precedence_over_validation_failed_histor
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
-                source_task=TaskKind.CODE,
+                source_kind=SessionKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -1394,6 +1428,7 @@ def test_pending_validation_retry_takes_precedence_over_validation_failed_histor
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1466,6 +1501,7 @@ def test_awaiting_merge_dedupes_queue_and_history_preferring_pr_link():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="awaiting-merge",
         e2e_page=1,
@@ -1519,6 +1555,7 @@ def test_completed_history_without_pr_url_does_not_enter_completed_lane():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -1539,6 +1576,7 @@ def test_queue_item_shows_textual_wait_reason():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -1587,6 +1625,7 @@ def test_queue_wait_reason_counts_only_runnable_items_ahead():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -1610,6 +1649,7 @@ def test_publish_failed_issue_routes_to_blocked_lane():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1636,6 +1676,7 @@ def test_publish_failed_scope_issue_survives_blocked_lane_without_queue_entry():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1669,6 +1710,7 @@ def test_blocked_column_reports_items_omitted_from_compact_preview():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1705,6 +1747,7 @@ def test_review_stage_queue_item_does_not_get_queue_wait_reason():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -1734,6 +1777,7 @@ def test_view_model_includes_refresh_staleness_meta():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1764,6 +1808,7 @@ def test_view_model_includes_refresh_staleness_meta():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1803,6 +1848,7 @@ def test_view_model_history_routing():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="history",
         e2e_page=1,
@@ -1838,6 +1884,7 @@ def test_history_items_expose_completed_at_as_timestamp_source():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="completed",
         e2e_page=1,
@@ -1878,6 +1925,7 @@ def test_awaiting_merge_history_item_is_not_stale_when_startup_recovery_seeded_f
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1919,6 +1967,7 @@ def test_completed_history_keeps_stale_fact_but_hides_stale_badge():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -1972,6 +2021,7 @@ def test_awaiting_merge_history_stale_fact_shows_stale_badge():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -2087,6 +2137,7 @@ def test_view_model_history_dedupes_latest_per_issue():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="history",
         e2e_page=1,
@@ -2104,7 +2155,7 @@ def test_completed_excludes_issues_visible_in_running_lane():
     config.agents = {"agent:web": agent_config}
     issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
     active_session = Session(
-        key=SessionKey(issue=FakeIssueKey("12"), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey("12"), kind=SessionKind.CODE),
         issue=issue,
         agent_config=agent_config,
         terminal_id="issue-12",
@@ -2135,6 +2186,7 @@ def test_completed_excludes_issues_visible_in_running_lane():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="kanban",
         e2e_page=1,
@@ -2171,6 +2223,7 @@ def test_view_model_e2e_items_from_provider():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="e2e",
         e2e_page=1,
@@ -2204,6 +2257,7 @@ def test_view_model_api_endpoint():
         config=config,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_run_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_item_custody=NO_ENGINE_CUSTODY,
     )
 
     original = get_orchestrator()
@@ -2228,6 +2282,7 @@ def test_view_model_matches_public_contract():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -2483,6 +2538,7 @@ def test_queue_card_embeds_producer_stack_gate_view():
         orchestrator,
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -2527,6 +2583,7 @@ def test_a_merged_partial_pr_does_not_complete_its_issue_on_the_board(partial):
         _OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         queue_page=1,
         active_tab="flow",
         e2e_page=1,
@@ -2547,3 +2604,28 @@ def test_a_merged_partial_pr_does_not_complete_its_issue_on_the_board(partial):
         assert 320 in completed
         assert history_item["flow_stage"] == "done"
         assert wait == "Waiting: previous run state"
+
+
+def test_a_deferred_launch_reads_as_a_wait_not_a_failure_or_a_cause():
+    """#7461 review: an issue whose launch waited is shown waiting for the
+    refresh - never as a failed launch, and without guessing why it waited."""
+    config = _make_config()
+    issue = Issue(number=4, title="Deferred", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        launch_deferred_this_cycle={4},
+    )
+    view_model = build_dashboard_view_model(
+        _OrchestratorStub(state=state, config=config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
+        tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    (item,) = [i for i in view_model.queue_items if i["issue_number"] == 4]
+    assert item["queue_wait_reason"] == "Waiting: launch deferred until the next refresh"

@@ -117,11 +117,7 @@ def test_forward_creation_rechecks_both_subjects_after_lookup(lane, at_launch):
     host.find_issue_by_marker.side_effect = lookup
     with pytest.raises(ReconciliationRequired):
         if at_launch:
-            launch = ScopedReworkLaunch(
-                store,
-                host,
-                lambda actions, **_: all(r.success for r in applier.apply_all(actions)),
-            )
+            launch = ScopedReworkLaunch(store, host, applier.apply)
             launch.admit(PendingRework(issue.key, "agent:coder", pr_number=94), 94)
         else:
             applier.apply(action)
@@ -190,6 +186,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
         config=config,
         session_exists=lambda _: False,
         tech_lead_authority=store,
+        claims=MagicMock(),
     )
     assert not startup.pending_tech_lead_reviews
     gatherer = FactGatherer(config, host, tech_lead_authority=store)
@@ -243,7 +240,7 @@ def test_completion_settlement_relaunches_exact_deferred_instruction_after_resta
     from issue_orchestrator.domain.registered_completion import (
         CompletionProcessingPolicy,
     )
-    from issue_orchestrator.domain.session_key import TaskKind
+    from issue_orchestrator.domain.session_kind import SessionKind
     from issue_orchestrator.execution.pending_work_claim_store import (
         SqlitePendingWorkClaimStore,
     )
@@ -262,7 +259,7 @@ def test_completion_settlement_relaunches_exact_deferred_instruction_after_resta
     assert applier.apply(approved_action(store, proposal)).success
     session = make_session(
         issue_number=5,
-        task=TaskKind.REWORK,
+        task=SessionKind.REWORK,
         terminal_id="rework-94",
         branch_name=pr.branch,
     )

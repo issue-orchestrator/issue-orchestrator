@@ -22,7 +22,8 @@ from playwright.sync_api import ConsoleMessage, Page, Request
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.entrypoints.cli_tools.validate_runner import (
     find_worktree_root,
     get_output_dir,
@@ -345,7 +346,7 @@ class FlowWebMockOrchestrator(MockOrchestratorForWeb):
             backend="fixture",
         )
         session = Session(
-            key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=SessionKind.CODE),
             issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("/tmp/prompt.txt"),

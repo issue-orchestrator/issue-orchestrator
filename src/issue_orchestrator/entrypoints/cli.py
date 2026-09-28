@@ -735,6 +735,13 @@ def cmd_worktree_custody(args: argparse.Namespace) -> int:
     return worktree_custody_main(list(getattr(args, "custody_args", []) or []))
 
 
+def cmd_action_liveness(args: argparse.Namespace) -> int:
+    """List, or release, what the orchestrator stopped retrying (#7350)."""
+    from .cli_tools.action_liveness import main as action_liveness_main
+
+    return action_liveness_main(list(getattr(args, "liveness_args", []) or []))
+
+
 def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused but required for command signature
     """Default command when no subcommand is given - open unified dashboard."""
     import webbrowser
@@ -868,6 +875,7 @@ def main() -> int:
             trace=cmd_trace,
             executor_status=cmd_executor_status,
             worktree_custody=cmd_worktree_custody,
+            action_liveness=cmd_action_liveness,
         )
     )
 

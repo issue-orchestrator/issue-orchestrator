@@ -5,6 +5,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.unit.control.liveness_doubles import drain_liveness, rate_limited
+from issue_orchestrator.control.planned_action_liveness import outcome_of_result
 from issue_orchestrator.control.actions import RecoverValidatedWorkAction
 from issue_orchestrator.control.action_results import ActionResultType
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
@@ -16,6 +18,7 @@ from issue_orchestrator.control.validated_work_recovery_authority import (
     ValidatedWorkRecoveryAuthority,
 )
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
@@ -148,6 +151,26 @@ def test_executor_downgrades_stale_authority_without_reporting_success(tmp_path)
     events.publish.assert_called_once()
 
 
+def test_executor_forwards_a_pending_rate_limit_to_planned_liveness(tmp_path):
+    """A rate-limited recovery is a wait until the host's reset, not a spent
+    attempt: the ActionResult keeps the pending result's limit (#7350)."""
+    _store, authority = _authority(tmp_path)
+    limit = rate_limited().rate_limit
+    executor = TechLeadValidatedWorkRecoveryExecutor(
+        Mock(),
+        lambda _command: None,
+        lambda _command: RecoveryAttemptPending(
+            "remote unreadable", ValidatedWorkFailure.REMOTE_UNREADABLE, rate_limit=limit
+        ),
+    )
+
+    result = executor.apply(_action(authority))
+
+    assert result.result_type is ActionResultType.FAILURE
+    assert result.host_rate_limit == limit
+    assert outcome_of_result(result).retry_at == limit.resets_at
+
+
 def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
     _store, authority = _authority(tmp_path)
     operation = Mock()
@@ -160,8 +183,10 @@ def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
         authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=1,
+        liveness=drain_liveness(),
     )
     command = StoredEvidenceCommand(
         issue_number=42,
@@ -179,6 +204,7 @@ def test_recovery_drain_forwards_the_exact_approval_to_record_owner(tmp_path):
             record_id=authority.record_id,
             evidence_id=authority.evidence_id,
             approved=authority,
+            issue_number=42,
         ),
         state,
     )
@@ -223,6 +249,7 @@ def test_shared_preflight_reports_exact_changed_authority_without_claim(tmp_path
         preparation=Mock(),
         publication=Mock(),
         completion=Mock(),
+        scope=Mock(),
     )
     drain = RecoveryDrain(
         queue=Mock(),
@@ -230,8 +257,10 @@ def test_shared_preflight_reports_exact_changed_authority_without_claim(tmp_path
         authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(),
         block_sweep=NullRecoveryBlockSweep(),
+        scope_sweep=NullValidatedWorkScopeSweep(),
         batch_size=1,
         interval_seconds=1,
+        liveness=drain_liveness(),
     )
     command = StoredEvidenceCommand(
         issue_number=42,
@@ -307,6 +336,7 @@ def test_shared_preflight_names_each_changed_approval_fact(
         preparation=Mock(),
         publication=Mock(),
         completion=Mock(),
+        scope=Mock(),
     )
     command = StoredEvidenceCommand(
         issue_number=42,

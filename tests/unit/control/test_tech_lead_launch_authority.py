@@ -14,11 +14,20 @@ start?" is a fact, not an inference.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock
 
+import httpx
+
+from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
+from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+from issue_orchestrator.domain.host_rate_limit import (
+    RATE_LIMIT_DEFERRAL_BOUND,
+    HostRateLimit,
+)
 from issue_orchestrator.control.tech_lead_launch_authority import (
     TechLeadLaunchAuthority,
 )
@@ -39,16 +48,19 @@ from issue_orchestrator.domain.tech_lead_run import (
     IssueInvestigationScope,
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
+    REASON_GITHUB_RATE_LIMITED,
     REASON_ISSUE_CLOSED,
     REASON_NO_LONGER_BLOCKED,
     REASON_TECH_LEAD_DISABLED,
 )
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.session_launch_types import LaunchStep
 
 from .run_ledger_doubles import SharedRunLedger
 
@@ -113,7 +125,9 @@ class FakeSession:
             TechLeadLaunchScope(flavor=flavor) if flavor is not None else None
         )
         self.terminal_id = f"tech-lead-{issue_number}"
-        self.key = SimpleNamespace(stable_id=lambda: f"tech_lead:{issue_number}")
+        self.key = SimpleNamespace(
+            stable_id=lambda: f"tech_lead:{issue_number}", kind=SessionKind.TECH_LEAD
+        )
         # The launch authority opens the run's LOCAL record from these
         # (ADR-0033 / #6858).
         self.started_at = datetime(2026, 8, 9, 12, 0, 0)
@@ -195,8 +209,9 @@ class _Harness:
                 str(label).startswith("blocked") for label in labels
             ),
             events=self.events,  # type: ignore[arg-type]
-            launch=self._launch,
+            launch=lambda item: LaunchStep.of_session(self._launch(item), "the fake launch did not start"),
             activity=self.activity,
+            claims=MagicMock(),
         )
 
     def launch(self, tech_lead: PendingTechLeadReview):
@@ -371,6 +386,160 @@ def test_an_unreadable_subject_keeps_its_run_rather_than_cancelling_it():
     assert harness.launched == [investigation]
 
 
+class RateLimitedRepositoryHost:
+    """The anchor read GitHub refuses on a spent rate limit (#7297)."""
+
+    def __init__(self, resets_at: datetime) -> None:
+        self.resets_at = resets_at
+        self.reads = 0
+
+    def get_issue(self, number: int):
+        self.reads += 1
+        raise github_http_failure(
+            f"GitHub GET /repos/o/r/issues/{number} failed: 403",
+            status_code=403,
+            headers=httpx.Headers({
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(int(self.resets_at.timestamp())),
+            }),
+            response_text='{"message": "API rate limit exceeded"}',
+            method="GET",
+            url=f"/repos/o/r/issues/{number}",
+        )
+
+
+def test_a_rate_limited_anchor_read_opens_the_shared_launch_window():
+    """The authority's own GitHub read defers every launch, not just this one.
+
+    It catches the error (an unreadable anchor holds the run), so without
+    opening the window here the planner would re-read the anchor - and be
+    refused again - every tick until the reset (#7297).
+    """
+    resets = datetime.now(UTC) + timedelta(minutes=20)
+    anchor = _health_anchor()
+    harness = _Harness(pending=[anchor], repository_host=RateLimitedRepositoryHost(resets))
+
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == []
+    assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED]
+    held = harness.state.host_rate_limit.open_at(datetime.now(UTC), live=live_episode_keys(harness.state))
+    assert held is not None
+    assert held.limit.resets_at == datetime.fromtimestamp(int(resets.timestamp()), UTC)
+    (deferral,) = harness.events.payloads(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)
+    assert deferral["issue_number"] == 900
+
+
+def test_a_rate_limited_subject_read_holds_a_focused_investigation():
+    """Codex r3: a refused read must not fall through to "launch on what we have"."""
+    resets = datetime.now(UTC) + timedelta(minutes=20)
+    investigation = _investigation(42)
+    host = RateLimitedRepositoryHost(resets)
+    harness = _Harness(pending=[investigation], repository_host=host)
+
+    assert harness.launch(investigation) is None
+    assert harness.launch(investigation) is None
+
+    assert harness.launched == [], "no session may start on a refused revalidation"
+    assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED] * 2
+    assert harness.state.pending_tech_lead_reviews == [investigation]
+    assert host.reads == 1, "an open window is honoured before any further read"
+
+
+def test_past_the_deferral_bound_the_authority_stops_holding():
+    """Codex r4: held forever by the authority, the budget never applied.
+
+    Past the bound the run is handed to the launch, whose rate-limit gate
+    refuses it before anything starts and counts it against the queue budget.
+    No anchor read is attempted while the window is open.
+    """
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    host = RateLimitedRepositoryHost(now + timedelta(minutes=20))
+    harness = _Harness(pending=[anchor], repository_host=host)
+    harness.state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
+        now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead:900", live=live_episode_keys(harness.state),
+    )
+
+    harness.launch(anchor)
+
+    assert harness.launched == [anchor]
+    assert REASON_GITHUB_RATE_LIMITED not in harness.held_reasons()
+    assert REASON_ANCHOR_UNREADABLE not in harness.held_reasons()
+    assert host.reads == 1, "past the bound the anchor is revalidated again"
+
+
+def test_past_the_bound_a_closed_anchor_is_still_withdrawn():
+    """Codex r6: past the bound, positive evidence still withdraws the run."""
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    harness = _Harness(
+        pending=[anchor], issues={900: FakeIssue(900, state="closed", labels=())}
+    )
+    harness.state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=5), kind="primary"),
+        now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead:900", live=live_episode_keys(harness.state),
+    )
+
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == [], "a finished anchor must never start a duplicate review"
+    assert harness.state.pending_tech_lead_reviews == []
+
+
+def test_a_rate_limited_run_ledger_holds_the_run_on_the_shared_window():
+    """Codex r9: an UNAVAILABLE ledger caused by a rate limit opens the window,
+    so the ledger is not asked again - by this run or another - before reset."""
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    shared = SharedRunLedger()
+    shared.unavailable = True
+    shared.rate_limit = HostRateLimit(resets_at=now + timedelta(minutes=20), kind="secondary")
+    harness = _Harness(
+        pending=[anchor], issues={900: FakeIssue(900, labels=())}, shared=shared
+    )
+
+    assert harness.launch(anchor) is None
+    requests_after_first = len(shared.submissions)
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == []
+    assert harness.held_reasons() == [REASON_GITHUB_RATE_LIMITED] * 2
+    assert len(shared.submissions) == requests_after_first, "no ledger request before reset"
+    assert harness.state.host_rate_limit.open_at(
+        now, live=live_episode_keys(harness.state)
+    ) is not None
+
+
+def test_a_past_bound_ledger_refusal_reports_the_bound_not_a_counted_failure():
+    """Codex r12: the held run spends nothing, so the event must not say it did."""
+    now = datetime.now(UTC)
+    anchor = _health_anchor()
+    shared = SharedRunLedger()
+    shared.unavailable = True
+    shared.rate_limit = HostRateLimit(resets_at=now - timedelta(seconds=1), kind="primary")
+    harness = _Harness(
+        pending=[anchor], issues={900: FakeIssue(900, labels=())}, shared=shared
+    )
+    harness.state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now - timedelta(seconds=1), kind="primary"),
+        now - RATE_LIMIT_DEFERRAL_BOUND - timedelta(minutes=1),
+        "tech_lead:900",
+        live=live_episode_keys(harness.state),
+    )
+
+    assert harness.launch(anchor) is None
+
+    assert harness.launched == []
+    assert harness.state.pending_tech_lead_reviews == [anchor]
+    deferral = harness.events.payloads(EventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT)[-1]
+    assert deferral["past_deferral_bound"] is True
+    assert "counted_as_failure" not in deferral
+
+
 def test_a_global_anchor_is_never_subject_to_blocked_label_eligibility():
     """An anchor is not a blocked work item — but it MUST still be open (F9)."""
     anchor = _health_anchor()
@@ -490,3 +659,85 @@ def test_an_ABSENT_anchor_also_holds_rather_than_launching():
 
     assert harness.launch(anchor) is None
     assert harness.held_reasons() == [REASON_ANCHOR_UNREADABLE]
+
+
+# ---------------------------------------------------------------------------
+# #7455: a refusal is typed, never a failed launch
+# ---------------------------------------------------------------------------
+
+
+def test_a_withdrawn_run_is_a_withdrawal_step_not_a_failed_launch():
+    """The anchor closed after planning: the run is withdrawn and retired, and
+    the plan applier must see a withdrawal, not `launch_session failed`."""
+    from issue_orchestrator.control.actions import LaunchSessionAction, SessionType
+    from issue_orchestrator.control.session_launch_types import (
+        LaunchStepOutcome,
+        launch_step_result,
+    )
+
+    investigation = _investigation(42)
+    harness = _Harness(
+        pending=[investigation], issues={42: FakeIssue(42, state="closed")}
+    )
+
+    step = harness.authority().launch_step(investigation)
+
+    assert step.outcome is LaunchStepOutcome.WITHDRAWN
+    assert harness.state.pending_tech_lead_reviews == []
+    applied = launch_step_result(
+        LaunchSessionAction(session_type=SessionType.TECH_LEAD, number=42), step, "failed"
+    )
+    assert not applied.success and applied.error is None  # a skip, not a failure
+
+
+def test_a_retained_refusal_is_a_wait_and_keeps_the_run_queued():
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    anchor = _health_anchor()
+    harness = _Harness(pending=[anchor], repository_host=UnreadableRepositoryHost())
+
+    step = harness.authority().launch_step(anchor)
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert harness.state.pending_tech_lead_reviews == [anchor]
+
+
+def test_a_launch_that_started_nothing_is_still_a_failed_step():
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    anchor = _health_anchor()
+    harness = _Harness(
+        pending=[anchor], launch_fails=True, issues={900: FakeIssue(900, labels=())}
+    )
+
+    assert harness.authority().launch_step(anchor).outcome is LaunchStepOutcome.NOT_LAUNCHED
+
+
+def _coder_session(issue_number: int) -> SimpleNamespace:
+    """An ordinary coding session on the issue: not a tech-lead run."""
+    return SimpleNamespace(
+        issue=FakeIssue(issue_number),
+        agent_label="agent:backend",
+        tech_lead_scope=None,
+        terminal_id=f"issue-{issue_number}",
+        key=SimpleNamespace(stable_id=lambda: f"code:{issue_number}", kind=SessionKind.CODE),
+    )
+
+
+def test_a_targeted_run_whose_subject_has_a_live_session_waits_for_it():
+    """#7455 review r2: the scope gate holds it (planning and launch share the
+    rule), so the launcher never refuses and drops it."""
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    investigation = _investigation(42)
+    harness = _Harness(
+        pending=[investigation],
+        active=[_coder_session(42)],
+        issues={42: FakeIssue(42)},
+    )
+
+    step = harness.authority().launch_step(investigation)
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert harness.launched == []
+    assert harness.state.pending_tech_lead_reviews == [investigation]

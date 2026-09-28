@@ -127,7 +127,14 @@ terminal action. `reset_retry` and `kill_hung_session` use configured direct or
 gated authority. `escalate_to_human` uses the existing marker-owned human
 lifecycle, preserving independent human blocks. `defer_to_tracker` commits a
 wait only for a launch-granted, open same-repository prerequisite; arbitrary
-agent-provided issue numbers are refused. A kill requires an observed worker
+agent-provided issue numbers are refused. `release_withheld_review` (#7399)
+releases the code review of the issue's open, CI-green PR when the issue's own
+`blocked-failed` is the only thing withholding it: `pr-pending` goes on, then
+only `blocked-failed` comes off. It is a flow-role fix, not destructive, and
+the orchestrator re-verifies every precondition (one linked open PR, green
+checks, no live session or claim, review validity withholding it for that
+block alone, no failure newer than the tech lead's observation) before any
+write, refusing with a typed reason otherwise. A kill requires an observed worker
 generation, and a stale investigation remedy cannot count as successful unless
 its owner positively proves the target recovered.
 

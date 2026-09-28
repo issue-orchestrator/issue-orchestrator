@@ -13,7 +13,8 @@ from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.historical_intake import HistoricalIntakeParked
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.completion_intake import CompletionEvidenceValidator
@@ -37,7 +38,7 @@ def test_issue_bound_preparation_processes_exact_receipt_without_closing(custody
 def test_substitution_refuses_before_validation_or_processing(custody, substitution):
     allocator = IssueRunAllocationService(FileSystemSessionOutput(), custody.ledger, custody.wc, configuration=Config(repo="owner/repo"))
     other = allocator.allocate(IssueRunAllocation(custody.worktree, custody.run.session_name, 43,
-        SessionKey(GitHubIssueKey("owner/repo", "43"), TaskKind.CODE), "agent:test", "test", terminal_id="issue-43"))
+        SessionKey(GitHubIssueKey("owner/repo", "43"), SessionKind.CODE), "agent:test", "test", terminal_id="issue-43"))
     assert other.session_name == custody.run.session_name
     receipt = custody.intake.submit(custody.capability, command(completion()))
     supplied_receipt, supplied_run, issue = receipt, custody.run, 42
@@ -85,6 +86,6 @@ def test_historical_receipt_uses_same_numeric_issue_binding(tmp_path, interrupte
     assert candidate.run.terminal_binding.terminal_id is None
     assert candidate.role.issue_number == 42
     assert candidate.role.agent_label == "operator:historical"
-    assert candidate.role.task is TaskKind.CODE
+    assert candidate.role.kind is SessionKind.HISTORICAL
     assert runner.run.call_count == calls + int(interrupted)
     validator.validate.assert_not_called()

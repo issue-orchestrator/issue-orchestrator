@@ -36,6 +36,7 @@ from ..control.orchestrator_support import (
     check_health as _check_health,
     init_orchestrator_components,
 )
+from ..control.session_launch_types import LaunchStep
 from ..control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
 from ..control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
 
@@ -98,7 +99,9 @@ from ..control.session_routing import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
-from ..control.cleanup_manager import CleanupManager
+from ..control.cleanup_manager import CleanupManager, build_cleanup_manager
+from ..control.blocked_item_custody_reader import build_blocked_item_custody_reader
+from ..ports.blocked_item_custody import BlockedItemCustodyReader
 from ..control.worker_budget import worker_slot_free
 from ..control.review_exchange_lifecycle import IssueRuntimeTermination, IssueTerminationOutcome, ReviewExchangeCancellation
 from ..control.completion_handler import (
@@ -298,16 +301,12 @@ class Orchestrator:
 
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:
-        return CleanupManager(
-            self.config,
-            self.deps.repository_host,
-            self.deps.worktree_manager,
-            lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
-            lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
-            lambda issue_number, agent_config: get_worktree_path(self.config, issue_number, agent_config),
-            lambda number, session_type="issue": get_session_name(number, session_type),
-            self.deps.runtime_lifecycle,
-        )
+        return build_cleanup_manager(self.config, self.deps)
+
+    @cached_property
+    def blocked_item_custody(self) -> "BlockedItemCustodyReader":
+        """Who owns each blocked item, and why (#7331); the dashboard only renders it."""
+        return build_blocked_item_custody_reader(self.config, self.deps, lambda: self.state)
 
     @cached_property
     def _completion_handler(self) -> CompletionHandler:
@@ -343,6 +342,7 @@ class Orchestrator:
             cleanup_manager=self._cleanup_manager,
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
+            pending_work_claims=self.deps.pending_work_claims,
             queue_cache_store=self.deps.queue_cache_store,
             tech_lead_authority=self.deps.tech_lead_authority,
             run_ownership=self.deps.run_ownership,
@@ -354,7 +354,7 @@ class Orchestrator:
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path:
         return get_worktree_path(self.config, issue_number, agent_config)
 
-    def session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]:
+    def session_launcher_callback(self, session_type: "SessionType", number: int) -> LaunchStep:
         return _session_launcher_callback(
             session_type,
             number,
@@ -365,29 +365,32 @@ class Orchestrator:
             self._launch_tech_lead_by_number,
         )
 
-    def _launch_issue_by_number(self, n: int) -> Optional[Session]:
+    def _launch_issue_by_number(self, n: int) -> LaunchStep:
         return _gw_launch_issue_by_number(
-            n, self.state.cached_queue_issues, self.launch_session, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
+            n, self.state.cached_queue_issues, self.launch_session_step, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
         )
 
-    def _launch_review_by_number(self, n: int) -> Optional[Session]:
-        return _ch_launch_review_by_number(n, self.state.pending_reviews, self.launch_review_session)
 
-    def _launch_retrospective_review_by_number(self, n: int) -> Optional[Session]:
+    def _launch_review_by_number(self, n: int) -> LaunchStep:
+        return _ch_launch_review_by_number(n, self.state.pending_reviews, lambda review: _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims))
+
+    def _launch_retrospective_review_by_number(self, n: int) -> LaunchStep:
         review = next((r for r in self.state.pending_retrospective_reviews if r.issue_number == n), None)
-        return self.launch_retrospective_review_session(review) if review else None
+        if review is None:
+            return LaunchStep.not_queued("retrospective review", n)
+        return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
-    def _launch_rework_by_number(self, n: int) -> Optional[Session]:
-        return _ch_launch_rework_by_number(n, self.state.pending_reworks, self.launch_rework_session)
+    def _launch_rework_by_number(self, n: int) -> LaunchStep:
+        return _ch_launch_rework_by_number(n, self.state.pending_reworks, lambda rework: _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims))
 
-    def launch_validation_retry_by_number(self, n: int) -> Optional[Session]:
+    def launch_validation_retry_by_number(self, n: int) -> LaunchStep:
         retry = next((r for r in self.state.pending_validation_retries if r.issue_number == n), None)
         if retry is None:
-            return None
+            return LaunchStep.not_queued("validation retry", n)
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
-    def _launch_tech_lead_by_number(self, n: int) -> Optional[Session]:
-        return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_session)
+    def _launch_tech_lead_by_number(self, n: int) -> LaunchStep:
+        return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_step)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]:
         return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
@@ -473,6 +476,7 @@ class Orchestrator:
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
             tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
+            pending_work_claims=self.deps.pending_work_claims,
         )
 
     @cached_property
@@ -519,6 +523,9 @@ class Orchestrator:
         sweep_orphan_session_tempfiles(self.config.repo_root)
 
     def launch_session(self, issue: Issue, *, tech_lead_scope: "TechLeadLaunchScope | None" = None) -> Optional[Session]:
+        return self.launch_session_step(issue, tech_lead_scope=tech_lead_scope).session
+
+    def launch_session_step(self, issue: Issue, *, tech_lead_scope: "TechLeadLaunchScope | None" = None) -> LaunchStep:
         return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, tech_lead_scope=tech_lead_scope)
 
     def handle_session_completion(self, session: Session, status: SessionStatus, *, provider_error_type: "ProviderErrorType | None" = None) -> None:
@@ -536,7 +543,7 @@ class Orchestrator:
             publish_recovery=self.deps.publish_recovery,
             pending_work_claims=self.deps.pending_work_claims,
             provider_error_type=provider_error_type,
-            processing_policy=unprocessed_session_policy(session, self.config),
+            processing_policy=unprocessed_session_policy(session),
         )
 
     def tick(self) -> bool:
@@ -793,20 +800,11 @@ class Orchestrator:
         Handles sessions that have lost their claims by terminating them
         and adding the appropriate blocked label.
         """
-        # Check renewals - returns sessions that lost their claim
-        lost_sessions = self.deps.lease_renewer.check_renewals(list(self.state.active_sessions))
-
-        # Handle claim losses
-        for session in lost_sessions:
-            logger.warning("[CLAIM] Session for issue #%d lost claim - terminating", session.issue.number)
-
-            # Kill the terminal session
-            self._kill_session(session.terminal_id)
-
-            # Remove from active sessions
-            self.state.drop_active_session(session.terminal_id)
-            # Drop the session state machine to avoid relaunch conflicts.
-            self.deps.state_machine_manager.remove_session_machine(session.terminal_id)
+        from ..control.claim_loss_termination import stop_claim_lost_session
+        for session in self.deps.lease_renewer.check_renewals(list(self.state.active_sessions)):
+            # Stop the terminal, settle its work claim (#7348), drop its records.
+            stop_claim_lost_session(session, state=self.state, claims=self.deps.pending_work_claims,
+                                    kill_session=self._kill_session, state_machine_manager=self.deps.state_machine_manager)
 
             # Add blocked label (best effort - session lost claim so this may also fail)
             try:
@@ -856,6 +854,7 @@ class Orchestrator:
             io_claimed_label=self.deps.label_manager.io_claimed,
             open_issue_corpus=self.deps.open_issue_corpus,
             provider_launch_sampler=self.deps.services.provider_launch_sampler,
+            action_liveness=self.deps.action_liveness,
         )
 
     def _clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None:
@@ -1056,7 +1055,7 @@ class Orchestrator:
         return diagnosis.to_dict()
 
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None:
-        pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
+        pause_issue_for_reconciliation(self.deps.events, self.deps.action_liveness.owner, self._event_context, issue_number, reason)
 
     def _apply_plan(self, plan: "Plan") -> None:
         self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)
@@ -1066,9 +1065,6 @@ class Orchestrator:
 
     def update_queue_cache(self) -> None:
         self._plan_applier.update_queue_cache()
-
-    def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None:
-        self._github_workflow.update_dependency_problems(self.state, dep_blocked)
 
     @property
     def _github_workflow(self) -> GitHubWorkflow:
@@ -1085,15 +1081,18 @@ class Orchestrator:
         )
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
-        return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
+        return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]:
-        return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
+        return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
-    def launch_queued_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
+    def launch_queued_tech_lead_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
         return _launch_tech_lead_session(tech_lead, self.state, self.config, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
     def launch_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
+        return self.launch_tech_lead_step(tech_lead).session
+
+    def launch_tech_lead_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
         with self.state_lock:
             return _launch_tech_lead_run(self, tech_lead)
 
@@ -1126,7 +1125,7 @@ class Orchestrator:
         return self._github_workflow.reconcile_orphaned_pr_labels(ORCHESTRATOR_PR_MARKER)
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
-        return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
+        return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
     def _recovery_drain_mode(self) -> RecoveryDrainMode:
         """Read lifecycle admission at each retained-work start boundary."""

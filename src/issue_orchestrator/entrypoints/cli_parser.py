@@ -45,6 +45,7 @@ class CLICommandHandlers:
     trace: CommandHandler
     executor_status: CommandHandler
     worktree_custody: CommandHandler
+    action_liveness: CommandHandler
 
 
 class CLIStability(StrEnum):
@@ -118,6 +119,7 @@ CLI_COMMAND_SURFACE: tuple[CLICommandSpec, ...] = (
     CLICommandSpec("demo", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     CLICommandSpec("executor-status", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     CLICommandSpec("worktree-custody", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
+    CLICommandSpec("action-liveness", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     # Development only - these operate on test and E2E state and carry no
     # compatibility promise of any kind.
     CLICommandSpec("test-reset", CLIGroup.DEVELOPMENT, CLIStability.INTERNAL),
@@ -638,3 +640,14 @@ def _register_utility_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="list | hold <path> --reason ... | release <path> --reason ...",
     )
     custody_parser.set_defaults(func=handlers.worktree_custody)
+
+    liveness_parser = subparsers.add_parser(
+        "action-liveness",
+        help="List, or release, actions the orchestrator stopped retrying (#7350)",
+    )
+    liveness_parser.add_argument(
+        "liveness_args",
+        nargs=argparse.REMAINDER,
+        help="list [--repo-root <path>] | release --subject S --action A [--repo-root <path>]",
+    )
+    liveness_parser.set_defaults(func=handlers.action_liveness)

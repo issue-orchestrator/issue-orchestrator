@@ -27,7 +27,14 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.domain.repository_launch_selection import (
     RepositoryLaunchSelection,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.issue_run_evidence import (
+    IssueRunEvidenceUnavailable,
+    IssueRunRecord,
+    RunTerminalBinding,
+)
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.session_runner import DiscoveredSession
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -63,12 +70,61 @@ class MockWorkingCopy:
         return self.branches.get(worktree)
 
 
+class FakeRunLedger:
+    """The durable run ledger as the restorer reads it: one row per exact run.
+
+    A restored session's kind and agent role come from here (#7347), not from
+    its terminal name or the issue's first agent label.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[Path, IssueRunRecord] = {}
+
+    def record(self, run_assets, kind: SessionKind, agent_label: str | None) -> None:
+        self.rows[run_assets.run_dir] = IssueRunRecord(
+            session_key=SessionKey(FakeIssueKey("restored"), kind),
+            run=run_assets,
+            recorded_at=run_assets.started_at,
+            branch_name="restored-branch",
+            terminal_binding=RunTerminalBinding(run_assets.session_name),
+            agent_label=agent_label,
+        )
+
+    def recorded_run(self, run):
+        try:
+            record = self.rows[run.run_dir]
+        except KeyError:
+            raise IssueRunEvidenceUnavailable("exact allocated run is not registered") from None
+        assert record.run == run
+        return record
+
+
+RUN_LEDGER = FakeRunLedger()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_run_ledger():
+    RUN_LEDGER.rows.clear()
+    yield
+    RUN_LEDGER.rows.clear()
+
+
+def restorer_for(config, repo_host, working_copy, authority=None) -> SessionRestorer:
+    return SessionRestorer(
+        config, repo_host, working_copy, run_ledger=RUN_LEDGER, tech_lead_authority=authority
+    )
+
+
 def make_discovered_session(
     issue_number: int,
     tab_name: str | None = None,
     is_review: bool = False,
     session_name: str | None = None,
     worktree: Path | None = None,
+    *,
+    kind: SessionKind | None = None,
+    agent_label: str | None = "agent:web",
+    recorded: bool = True,
 ) -> DiscoveredSession:
     """Create a DiscoveredSession for testing."""
     if tab_name is None:
@@ -90,6 +146,12 @@ def make_discovered_session(
             is_review,
         )
         run_assets = make_session_run_assets(worktree, session_name=asset_session_name)
+        if recorded:
+            RUN_LEDGER.record(
+                run_assets,
+                kind if kind is not None else SessionKind.from_phase_label(asset_session_name),
+                agent_label,
+            )
         (run_assets.run_dir / "session-identity.json").write_text(
             json.dumps(
                 {
@@ -142,7 +204,7 @@ class TestRestoreSessionsBasic:
     def test_canonical_terminal_id_prefers_persisted_session_name(self, tmp_path):
         """The persisted registry id wins over user-facing tab text."""
         config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
-        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        restorer = restorer_for(config, MockRepositoryHost(), MockWorkingCopy())
         discovered = make_discovered_session(
             100,
             tab_name="Review PR #456",
@@ -155,7 +217,7 @@ class TestRestoreSessionsBasic:
     def test_canonical_terminal_id_extracts_review_pr_from_tab_name(self, tmp_path):
         """Legacy discovered review records still derive review-N from tab text."""
         config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
-        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        restorer = restorer_for(config, MockRepositoryHost(), MockWorkingCopy())
         discovered = make_discovered_session(
             100, tab_name="#100 Review PR #456", is_review=True
         )
@@ -169,7 +231,7 @@ class TestRestoreSessionsBasic:
     ):
         """A malformed review discovery record is visible in logs before fallback."""
         config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
-        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        restorer = restorer_for(config, MockRepositoryHost(), MockWorkingCopy())
         discovered = make_discovered_session(
             100, tab_name="review title without pr", is_review=True
         )
@@ -185,7 +247,7 @@ class TestRestoreSessionsBasic:
     ):
         """Known-terminal restore carries session_name without inventing tab text."""
         config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
-        restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
+        restorer = restorer_for(config, MockRepositoryHost(), MockWorkingCopy())
         restorer.restore_sessions = MagicMock(return_value=[])
         run_assets = make_session_run_assets(tmp_path, session_name="issue-123")
 
@@ -230,7 +292,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-test-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         # Act
         discovered = [make_discovered_session(123, is_review=False, worktree=worktree)]
@@ -243,7 +305,7 @@ class TestRestoreSessionsBasic:
         assert session.terminal_id == "issue-123"
         assert session.worktree_path == worktree
         assert session.branch_name == "123-test-branch"
-        assert session.key.task == TaskKind.CODE
+        assert session.key.kind == SessionKind.CODE
 
     def test_restores_review_session_with_pr_number_from_tab_name(self, tmp_path):
         """A discovered review session extracts PR number from tab name."""
@@ -266,7 +328,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "100-feature-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         # Tab name format: "#<issue> Review PR #<pr>"
         discovered = [
@@ -275,6 +337,7 @@ class TestRestoreSessionsBasic:
                 tab_name="#100 Review PR #456",
                 is_review=True,
                 worktree=worktree,
+                agent_label="agent:reviewer",
             )
         ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -282,7 +345,7 @@ class TestRestoreSessionsBasic:
         assert len(restored) == 1
         session = restored[0]
         assert session.terminal_id == "review-456"  # PR number from tab name
-        assert session.key.task == TaskKind.REVIEW
+        assert session.key.kind == SessionKind.REVIEW
 
     def test_skips_already_tracked_sessions(self, tmp_path):
         """Sessions that are already tracked are not restored again."""
@@ -305,7 +368,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         # Create an already-tracked session
         existing_session = MagicMock(spec=Session)
@@ -340,7 +403,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         # Same issue discovered twice
         discovered = [
@@ -368,7 +431,7 @@ class TestOrphanedSessionHandling:
         repo_host = MockRepositoryHost()
         working_copy = MockWorkingCopy()
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123)]
         with pytest.raises(
@@ -401,7 +464,7 @@ class TestErrorRecovery:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree_200] = "200-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [
             make_discovered_session(100),  # Will fail - no recorded run assets
@@ -434,7 +497,7 @@ class TestErrorRecovery:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.ERROR):
@@ -484,7 +547,7 @@ class TestErrorRecovery:
             SessionConfigurationModeMismatchError,
             match="was launched with 'claude'/'main.yaml'",
         ):
-            SessionRestorer(
+            restorer_for(
                 config, MockRepositoryHost(), MockWorkingCopy()
             ).restore_sessions(discovered, already_tracked=[])
 
@@ -510,6 +573,7 @@ class TestErrorRecovery:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-some-task"
         run_assets = make_session_run_assets(worktree, session_name="issue-123")
+        RUN_LEDGER.record(run_assets, SessionKind.CODE, "agent:web")
         (run_assets.run_dir / "session-identity.json").write_text(
             json.dumps(
                 {
@@ -530,7 +594,7 @@ class TestErrorRecovery:
             )
         ]
 
-        restored = SessionRestorer(config, repo_host, working_copy).restore_sessions(
+        restored = restorer_for(config, repo_host, working_copy).restore_sessions(
             discovered, already_tracked=[]
         )
 
@@ -540,6 +604,7 @@ class TestErrorRecovery:
         ("recorded_config", "recorded_fingerprint"),
         [
             ("other.yaml", "current-fingerprint"),
+            # A setting the session is bound to changed since it launched.
             ("main.yaml", "previous-fingerprint"),
         ],
     )
@@ -557,6 +622,7 @@ class TestErrorRecovery:
             config_name="main.yaml",
         )
         config.config_fingerprint = "current-fingerprint"
+        config.session_binding_fingerprint = "current-fingerprint"
         run_assets = make_session_run_assets(worktree, session_name="issue-123")
         (run_assets.run_dir / "session-identity.json").write_text(
             json.dumps(
@@ -564,6 +630,7 @@ class TestErrorRecovery:
                     "configuration_mode": "codex",
                     "config_name": recorded_config,
                     "config_fingerprint": recorded_fingerprint,
+                    "session_binding_fingerprint": recorded_fingerprint,
                 }
             ),
             encoding="utf-8",
@@ -579,7 +646,7 @@ class TestErrorRecovery:
         ]
 
         with pytest.raises(SessionConfigurationModeMismatchError):
-            SessionRestorer(
+            restorer_for(
                 config,
                 MockRepositoryHost(),
                 MockWorkingCopy(),
@@ -599,7 +666,7 @@ class TestErrorRecovery:
             SessionConfigurationIdentityVerificationError,
             match="no recorded run_dir",
         ):
-            SessionRestorer(
+            restorer_for(
                 config,
                 MockRepositoryHost(),
                 MockWorkingCopy(),
@@ -625,7 +692,7 @@ class TestErrorRecovery:
             SessionConfigurationIdentityVerificationError,
             match="is unreadable",
         ):
-            SessionRestorer(
+            restorer_for(
                 config,
                 MockRepositoryHost(),
                 MockWorkingCopy(),
@@ -662,15 +729,16 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
 
-        # No session restored - no agent config available means session skipped
+        # No session restored: the run's recorded agent is not configured, so
+        # it is refused rather than restored under another agent's config.
         assert len(restored) == 0
-        assert "No agent config available" in caplog.text
+        assert "which this configuration does not define" in caplog.text
 
     def test_skips_session_without_repo_config(self, tmp_path, caplog):
         """Sessions without repo in config are skipped."""
@@ -690,7 +758,7 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.WARNING):
@@ -717,7 +785,7 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [
             make_discovered_session(123, tab_name="#123 My task", worktree=worktree)
@@ -730,8 +798,9 @@ class TestStateValidation:
         assert session.issue.number == 123
         assert session.issue.title == "123 My task"  # Tab name with # stripped
 
-    def test_uses_fallback_agent_config_when_issue_has_no_agent_label(self, tmp_path):
-        """Uses first available agent config when issue has no agent type label."""
+    def test_restores_the_recorded_agent_when_issue_has_no_agent_label(self, tmp_path):
+        """The run's ledger-recorded agent role is restored, whatever the issue's
+        labels say now (#7347): the issue's first agent label is not the role."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         worktree = tmp_path / "repo-123"
@@ -748,14 +817,14 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123, worktree=worktree)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
-        # Session restored with fallback agent config
         assert len(restored) == 1
         assert restored[0].agent_config == agent_config
+        assert restored[0].agent_label == "agent:web"
 
 
 class TestBranchNameResolution:
@@ -778,7 +847,7 @@ class TestBranchNameResolution:
         working_copy = MockWorkingCopy()
         # No branch configured for worktree - returns None
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.WARNING):
@@ -809,7 +878,7 @@ class TestWorktreeFromRunAssets:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-feature"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         discovered = [make_discovered_session(123, worktree=worktree)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -840,7 +909,7 @@ class TestReviewSessionSpecifics:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "100-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
         # Tab name without PR number pattern
         discovered = [
@@ -849,6 +918,7 @@ class TestReviewSessionSpecifics:
                 tab_name="#100 Review Something",
                 is_review=True,
                 worktree=worktree,
+                agent_label="agent:reviewer",
             )
         ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -858,7 +928,7 @@ class TestReviewSessionSpecifics:
         assert restored[0].terminal_id == "review-100"
 
     def test_review_session_has_correct_task_kind(self, tmp_path):
-        """Review sessions have TaskKind.REVIEW in their session key."""
+        """Review sessions have SessionKind.REVIEW in their session key."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         worktree = tmp_path / "repo-100"
@@ -876,13 +946,17 @@ class TestReviewSessionSpecifics:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "100-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)
+        restorer = restorer_for(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(100, is_review=True, worktree=worktree)]
+        discovered = [
+            make_discovered_session(
+                100, is_review=True, worktree=worktree, agent_label="agent:reviewer"
+            )
+        ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         assert len(restored) == 1
-        assert restored[0].key.task == TaskKind.REVIEW
+        assert restored[0].key.kind == SessionKind.REVIEW
 
 
 class TestRestoredTechLeadScope:
@@ -909,7 +983,7 @@ class TestRestoredTechLeadScope:
         repo_host.issues[issue.number] = issue
         working_copy = MockWorkingCopy()
         return (
-            SessionRestorer(config, repo_host, working_copy, authority),
+            restorer_for(config, repo_host, working_copy, authority),
             config,
         )
 
@@ -920,7 +994,13 @@ class TestRestoredTechLeadScope:
         working_copy = restorer.working_copy
         working_copy.branches[worktree] = "main"
         discovered = [
-            make_discovered_session(issue.number, is_review=False, worktree=worktree)
+            make_discovered_session(
+                issue.number,
+                is_review=False,
+                worktree=worktree,
+                kind=SessionKind.TECH_LEAD,
+                agent_label="agent:tech-lead",
+            )
         ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
         return restored, config
@@ -945,7 +1025,7 @@ class TestRestoredTechLeadScope:
         scope = restored[0].tech_lead_scope
         assert scope is not None
         assert scope.flavor is TechLeadSessionFlavor.HEALTH_REVIEW
-        assert has_active_global_run(config, restored) is True
+        assert has_active_global_run(restored) is True
 
     def test_a_restored_batch_review_is_still_a_global_run(self, tmp_path):
         from issue_orchestrator.control.tech_lead_run_admission import (
@@ -963,7 +1043,7 @@ class TestRestoredTechLeadScope:
         scope = restored[0].tech_lead_scope
         assert scope is not None
         assert scope.flavor is TechLeadSessionFlavor.BATCH_REVIEW
-        assert has_active_global_run(config, restored) is True
+        assert has_active_global_run(restored) is True
 
     def test_a_restored_investigation_is_not_a_global_barrier(self, tmp_path):
         """The conservative default must not swallow targeted runs.
@@ -982,7 +1062,7 @@ class TestRestoredTechLeadScope:
         scope = restored[0].tech_lead_scope
         assert scope is not None
         assert scope.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
-        assert has_active_global_run(config, restored) is False
+        assert has_active_global_run(restored) is False
 
     def test_a_restored_storm_review_recovers_its_owned_cohort(self, tmp_path):
         from issue_orchestrator.control.health_review_trigger import (
@@ -991,6 +1071,9 @@ class TestRestoredTechLeadScope:
         from issue_orchestrator.domain.models import DiscoveredFailure
 
         class _Authority:
+            def load(self, *, run_id, session_name):
+                return None  # a run with no launch record: labels decide
+
             def load_storm_cohort(self, *, anchor_issue_number):
                 assert anchor_issue_number == 900
                 return (
@@ -1010,6 +1093,35 @@ class TestRestoredTechLeadScope:
         restored, _ = self._restore(tmp_path, issue, authority=_Authority())
 
         assert restored[0].tech_lead_scope.problem_issue_numbers == (5, 7)
+
+    def test_a_restored_run_keeps_the_grant_it_was_launched_with(self, tmp_path):
+        """#7347 review r9: the run's create-once launch record decides, not
+        the anchor's current labels - a marker removed after launch does not
+        turn a health review into a failure investigation."""
+        from issue_orchestrator.domain.tech_lead_session import (
+            TechLeadLaunchAuthority,
+            TechLeadSessionFlavor,
+        )
+
+        class _Authority:
+            def load(self, *, run_id, session_name):
+                return TechLeadLaunchAuthority(
+                    flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+                    anchor_issue_number=900,
+                    problem_issue_numbers=(5, 7),
+                )
+
+            def load_storm_cohort(self, *, anchor_issue_number):
+                raise AssertionError("a recorded grant is not re-inferred")
+
+        issue = Issue(number=900, title="Health Review", labels=["agent:tech-lead"])
+        restored, _ = self._restore(tmp_path, issue, authority=_Authority())
+
+        scope = restored[0].tech_lead_scope
+        assert scope is not None
+        assert (scope.flavor, scope.problem_issue_numbers) == (
+            TechLeadSessionFlavor.HEALTH_REVIEW, (5, 7),
+        )
 
     def test_a_restored_global_run_still_blocks_targeted_launches(self, tmp_path):
         """The end the barrier exists for (#6994 round 1 F3)."""
@@ -1072,3 +1184,156 @@ class TestRestoredTechLeadScope:
         # The anchor is NOT a board card an operator can aim the targeted
         # action at, so it must not appear as a running investigation.
         assert view.running_issue_numbers == ()
+
+
+class TestTheRestoredKindComesFromTheLedger:
+    """A restart restores the kind and role the ledger recorded at allocation (#7347).
+
+    Before, restoration read the kind off the terminal-name prefix and the role
+    off the issue's FIRST agent label, so a tech-lead run launched as
+    ``issue-N`` came back as the focus issue's coder.
+    """
+
+    @staticmethod
+    def _config(tmp_path):
+        config = make_config(
+            agents={
+                "agent:web": make_agent_config(tmp_path),
+                "agent:tech-lead": make_agent_config(tmp_path),
+            }
+        )
+        config.tech_lead_review_agent = "agent:tech-lead"
+        return config
+
+    @staticmethod
+    def _sqlite_row(tmp_path, run_assets, kind, agent_label, rework_target=None):
+        from issue_orchestrator.domain.issue_key import GitHubIssueKey
+        from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+
+        ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test/repo")
+        ledger.record_run(
+            42,
+            IssueRunRecord(
+                session_key=SessionKey(GitHubIssueKey(repo="test/repo", external_id="42"), kind),
+                run=run_assets,
+                recorded_at=run_assets.started_at,
+                branch_name="42-branch",
+                terminal_binding=RunTerminalBinding(run_assets.session_name),
+                agent_label=agent_label,
+                rework_target=rework_target,
+            ),
+        )
+        return ledger
+
+    def _restore(self, tmp_path, ledger, run_assets, session_name, issue_labels):
+        repo_host = MockRepositoryHost()
+        repo_host.issues[42] = Issue(number=42, title="Focus", labels=issue_labels)
+        working_copy = MockWorkingCopy()
+        working_copy.branches[run_assets.worktree_path] = "42-branch"
+        restorer = SessionRestorer(
+            self._config(tmp_path), repo_host, working_copy, run_ledger=ledger
+        )
+        (run_assets.run_dir / "session-identity.json").write_text(
+            json.dumps(
+                {"configuration_mode": "default", "config_name": "default.yaml", "config_fingerprint": ""}
+            ),
+            encoding="utf-8",
+        )
+        return restorer.restore_sessions(
+            [
+                DiscoveredSession(
+                    issue_number=42,
+                    tab_name="",
+                    is_review=False,
+                    session_name=session_name,
+                    run_dir=str(run_assets.run_dir),
+                )
+            ],
+            already_tracked=[],
+        )
+
+    def test_a_tech_lead_launched_before_7347_comes_back_as_a_tech_lead(self, tmp_path):
+        """Legacy row: ``task=code`` + ``completion_task=tech-lead``, terminal ``issue-42``."""
+        import sqlite3
+
+        worktree = tmp_path / "repo-42"
+        worktree.mkdir()
+        run_assets = make_session_run_assets(worktree, session_name="coding-1")
+        ledger = self._sqlite_row(tmp_path, run_assets, SessionKind.TECH_LEAD, "agent:tech-lead")
+        with sqlite3.connect(tmp_path / "runs.sqlite") as conn:
+            conn.execute("UPDATE issue_runs SET task='code', completion_task='tech-lead'")
+
+        [restored] = self._restore(
+            tmp_path, ledger, run_assets, "issue-42", issue_labels=["agent:web"]
+        )
+
+        assert restored.key.kind is SessionKind.TECH_LEAD
+        assert restored.agent_label == "agent:tech-lead"
+        assert restored.terminal_id == "issue-42"  # its name is a handle, not its kind
+
+    def test_a_reworks_retry_comes_back_as_rework_not_by_its_name(self, tmp_path):
+        worktree = tmp_path / "repo-42"
+        worktree.mkdir()
+        run_assets = make_session_run_assets(worktree, session_name="coding-3")
+        ledger = self._sqlite_row(tmp_path, run_assets, SessionKind.REWORK, "agent:web")
+
+        [restored] = self._restore(
+            tmp_path, ledger, run_assets, "rework-42", issue_labels=["agent:web"]
+        )
+
+        assert restored.key.kind is SessionKind.REWORK
+        assert restored.agent_label == "agent:web"
+
+    def test_a_rework_comes_back_onto_the_pr_its_run_recorded(self, tmp_path):
+        """#7347 review r4: a rework's PR and cycle are read from its run's
+        ledger row - its terminal name carries only the issue number."""
+        from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
+
+        worktree = tmp_path / "repo-42"
+        worktree.mkdir()
+        run_assets = make_session_run_assets(worktree, session_name="coding-3")
+        ledger = self._sqlite_row(
+            tmp_path, run_assets, SessionKind.REWORK, "agent:web", ReworkTarget(500, 2)
+        )
+
+        [restored] = self._restore(
+            tmp_path, ledger, run_assets, "rework-42", issue_labels=["agent:web"]
+        )
+
+        assert (restored.pr_number, restored.rework_cycle) == (500, 2)
+
+    def test_a_run_with_no_recorded_role_is_not_restored_under_a_guess(
+        self, tmp_path, caplog
+    ):
+        import sqlite3
+
+        worktree = tmp_path / "repo-42"
+        worktree.mkdir()
+        run_assets = make_session_run_assets(worktree, session_name="coding-1")
+        ledger = self._sqlite_row(tmp_path, run_assets, SessionKind.CODE, "agent:web")
+        with sqlite3.connect(tmp_path / "runs.sqlite") as conn:
+            conn.execute("UPDATE issue_runs SET agent_label=NULL, completion_task=NULL")
+
+        with caplog.at_level(logging.ERROR):
+            restored = self._restore(
+                tmp_path, ledger, run_assets, "issue-42", issue_labels=["agent:web"]
+            )
+
+        assert restored == []
+        assert "no durably recorded role" in caplog.text
+
+    def test_a_run_the_ledger_never_recorded_is_not_restored(self, tmp_path, caplog):
+        from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
+
+        worktree = tmp_path / "repo-42"
+        worktree.mkdir()
+        run_assets = make_session_run_assets(worktree, session_name="coding-1")
+        ledger = SqliteIssueRunLedger(tmp_path / "runs.sqlite", repo_slug="test/repo")
+
+        with caplog.at_level(logging.ERROR):
+            restored = self._restore(
+                tmp_path, ledger, run_assets, "issue-42", issue_labels=["agent:web"]
+            )
+
+        assert restored == []
+        assert "not registered" in caplog.text

@@ -62,11 +62,13 @@ def recordable_outcome(outcome: PublishValidatedHeadStatus) -> bool:
 
 
 def attempt_requires_failure(
-    outcome: PublishValidatedHeadStatus, *, attempt_no: int, limit: int
+    outcome: PublishValidatedHeadStatus, *, spent: int, limit: int
 ) -> bool:
+    """``spent`` counts attempts that spent budget, this one included unless
+    the host rate limited it (#7350)."""
     return outcome in {
         PublishValidatedHeadStatus.REJECTED,
         PublishValidatedHeadStatus.DIVERGED,
     } or (
-        outcome is PublishValidatedHeadStatus.TRANSIENT_FAILURE and attempt_no >= limit
+        outcome is PublishValidatedHeadStatus.TRANSIENT_FAILURE and spent >= limit
     )

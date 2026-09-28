@@ -231,8 +231,13 @@ def test_act_level_wiring_state_is_synchronized(variant: str) -> None:
     wired direct authorities, and the agent's prohibition on the gate label
     itself."""
     text = PROMPT_VARIANTS[variant]
-    assert "`tech_lead.authority.reset_retry: execute`" in text, (
-        f"{variant} does not document the wired reset_retry authority"
+    # Reset from scratch is destructive: it never runs unattended (#7330), so
+    # no variant may still advertise a direct-execute mode for it.
+    assert "`tech_lead.authority.reset_retry: execute`" not in text, (
+        f"{variant} still advertises direct reset_retry execution"
+    )
+    assert "`reset_retry` is destructive and ALWAYS waits for that approval" in text, (
+        f"{variant} does not document that reset_retry always needs approval"
     )
     assert "`tech_lead.authority.kill_hung_session: execute`" in text, (
         f"{variant} does not document the wired kill_hung_session authority"

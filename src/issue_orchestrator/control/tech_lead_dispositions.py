@@ -14,6 +14,7 @@ from datetime import datetime
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable
 
+from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.dependencies import parse_dependency_edges
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 from .action_results import ActionResult, ActionResultType
@@ -46,6 +47,7 @@ TERMINAL_INVESTIGATION_ACTIONS = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        "release_withheld_review",
     }
 )
 
@@ -86,7 +88,10 @@ def investigation_disposition_violation(
             and _targets_focus(a, authority)
         ]
         if len(terminal) != 1:
-            return "failure investigation requires exactly one terminal disposition for the focus issue: defer_to_tracker, escalate_to_human, reset_retry, kill_hung_session, request_rework, or recover_validated_work"
+            return (
+                "failure investigation requires exactly one terminal disposition for the focus issue: "
+                + ", ".join(sorted(TERMINAL_INVESTIGATION_ACTIONS))
+            )
         assert authority.focus_issue_number is not None
         if terminal[0].action_type == "kill_hung_session" and authority.observed_kill_target(authority.focus_issue_number) is None:
             return "kill_hung_session requires a launch-observed worker generation"
@@ -226,7 +231,9 @@ class _DispositionPublisher:
             result = self.apply_action(AddCommentAction(number=disposition.issue_number,
                 comment=body, reason=action.reason, expected=action.expected))
             if result.result_type is not ActionResultType.SUCCESS:
-                raise ValueError(result.error or "disposition explanation did not commit")
+                raise ValueError(result.error or "disposition explanation did not commit") from (
+                    rate_limit_cause(result.host_rate_limit)
+                )
             if self.host.find_issue_comment_receipt(disposition.issue_number, body=body) is None:
                 raise ValueError("disposition explanation has no verified publication receipt")
         self._revalidate(action, disposition)
@@ -263,7 +270,7 @@ def apply_record_tech_lead_disposition(
         current = authority.load_disposition(issue_number=disposition.issue_number)
         pending = pending and current is not None and current.phase == "prepared"
         logger.exception("Could not commit disposition for #%d", disposition.issue_number)
-        return ActionResult.fail(action, str(exc), pending_disposition=pending)
+        return ActionResult.fail_from(action, exc, pending_disposition=pending)
     return ActionResult.ok(action, issue_number=disposition.issue_number,
         tracker_issue_number=disposition.tracker_issue_number)
 

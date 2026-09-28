@@ -21,6 +21,7 @@ from pydantic import (
     AllowInfNan,
     BaseModel,
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -30,6 +31,18 @@ from ..domain.tech_lead_findings import (
     VALID_FINDING_PROMOTION_MODES,
 )
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
+from ..domain.blocked_item_custody import CustodyState
+from ..domain.tech_lead_charter import CharterRole
+from .config_models_tech_lead_custody import (
+    DEFAULT_CUSTODY_STALE_MINUTES,
+    MAX_CUSTODY_STALE_MINUTES,
+)
+from .config_models_tech_lead_charter import (
+    TECH_LEAD_CHARTER_AUTHORITIES,
+    TECH_LEAD_CHARTER_DEPTHS,
+    RoleCharterConfig,
+    destructive_execute_error,
+)
 from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
     MERGE_QUEUE_PROVIDERS,
@@ -38,6 +51,92 @@ from .config_models import (
 )
 
 _TECH_LEAD_SECTION = f"{TECH_LEAD_DISPLAY_NAME} Review"
+
+
+_CHARTER_ROLE_JOBS = {
+    CharterRole.FLOW: "keep work moving and unblock it",
+    CharterRole.REVIEW_LOOP: "cut wasteful code/review back-and-forth",
+    CharterRole.ABSTRACTION: "find missing deep modules and duplicated knowledge",
+    CharterRole.PLATFORM: "catch environment and tooling drift",
+    CharterRole.INTAKE: "fix the inputs: split, sharpen, sequence issues",
+    CharterRole.LEARNING: "turn incidents and case files into lasting fixes",
+    CharterRole.GENERAL: "catch-all for actions that fit no named role",
+}
+
+
+def _custody_stale_field(state: CustodyState) -> Any:
+    """One ``tech_lead.custody.stale_after_minutes.<state>`` field (#7331)."""
+    path = f"tech_lead.custody.stale_after_minutes.{state.value}"
+    return Field(
+        DEFAULT_CUSTODY_STALE_MINUTES[state],
+        title=f"Blocked Custody: {state.label} Stale After (minutes)",
+        description=(
+            f"A blocked item {state.label.lower()} longer than this counts toward"
+            " the board's needs-attention number"
+        ),
+        ge=1,
+        le=MAX_CUSTODY_STALE_MINUTES,
+        json_schema_extra={
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": path,
+            "yaml_path": path,
+            "doc_examples": [str(DEFAULT_CUSTODY_STALE_MINUTES[state])],
+            "doc_notes": (
+                "Every blocked item on the board has a custody state: who owns"
+                " it now and why. The Blocked column's needs-attention count is"
+                " the items nobody owns plus the items that have sat in their"
+                " state longer than its threshold. Unowned items always count."
+            ),
+        },
+    )
+
+
+def _charter_field(role: CharterRole, dial: str) -> Any:
+    """One ``tech_lead.charter.<role>.<dial>`` settings field (#7330)."""
+    default = RoleCharterConfig.default_for(role)
+    path = f"tech_lead.charter.{role.value}.{dial}"
+    title = f"{TECH_LEAD_DISPLAY_NAME} Charter: {role.value} {dial}"
+    extra: dict[str, Any] = {
+        "section": _TECH_LEAD_SECTION,
+        "config_attr": path,
+        "yaml_path": path,
+    }
+    if dial == "enabled":
+        return Field(
+            default.enabled,
+            title=title,
+            description=f"Whether the {role.value} role ({_CHARTER_ROLE_JOBS[role]}) may act",
+            json_schema_extra={
+                **extra,
+                "doc_examples": ["true", "false"],
+                "doc_notes": (
+                    "false makes every action of this role advice only. Noticing and"
+                    " advising (diagnosis comments, pattern observations) and the"
+                    " escalation floor are never restricted by the charter."
+                ),
+            },
+        )
+    values = TECH_LEAD_CHARTER_DEPTHS if dial == "depth" else TECH_LEAD_CHARTER_AUTHORITIES
+    notes = (
+        "How deep a remedy the role may drive: workaround < fix < restructure. An"
+        " action deeper than this is recorded as advice only."
+        if dial == "depth"
+        else "execute acts unattended inside the role's depth; propose files each"
+        " action through the per-instance approval gate. Destructive actions"
+        " (reset from scratch) always need approval, and the per-action"
+        " tech_lead.authority modes remain a ceiling."
+    )
+    return Field(
+        getattr(default, dial),
+        title=title,
+        description=f"{dial.capitalize()} for the {role.value} role ({_CHARTER_ROLE_JOBS[role]})",
+        json_schema_extra={
+            **extra,
+            "enum": list(values),
+            "doc_examples": list(values),
+            "doc_notes": f"{notes} Allowed values: {', '.join(values)}.",
+        },
+    )
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -1321,16 +1420,16 @@ class ReviewSettings(BaseModel):
         title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Reset & Retry",
         description="Act-level: reset-and-retry an issue from scratch",
         json_schema_extra={
-            "enum": list(TECH_LEAD_AUTHORITY_MODES),
-            "doc_examples": ["propose", "execute"],
+            "enum": ["propose"],
+            "doc_examples": ["propose"],
             "doc_notes": (
-                "execute runs the reset+retry-from-scratch owner after "
-                "re-validating the proposal's preconditions at execution time; "
-                "stale proposals downgrade to a surfaced record (#6764). "
-                "propose (default) files each proposal as a gated GitHub issue "
-                "carrying the proposed-tech-lead label; removing the label is "
-                "per-instance approval and triggers the same re-validated "
-                "execution (#6778). Allowed values: execute, propose."
+                "Reset from scratch is destructive, so it always needs operator "
+                "approval (#7330): each proposal is filed as a gated GitHub issue "
+                "carrying the proposed-tech-lead label, and removing the label is "
+                "per-instance approval that runs the reset+retry-from-scratch "
+                "owner after re-validating the proposal's preconditions; stale "
+                "proposals downgrade to a surfaced record (#6764, #6778). "
+                "execute is rejected. Allowed values: propose."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.authority.reset_retry",
@@ -1391,6 +1490,53 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.recover_validated_work",
         },
     )
+    tech_lead_authority_release_withheld_review: str = Field(
+        "execute",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Release Withheld Review",
+        description=(
+            "Release the code review of a green PR withheld only by its issue's"
+            " own blocked-failed"
+        ),
+        json_schema_extra={
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "Not destructive: it removes only the issue's blocked-failed"
+                " (pr-pending goes on first), so execute (default) leaves the"
+                " decision to the charter's flow role. The orchestrator"
+                " re-verifies the open linked PR, green checks, no live session"
+                " or claim, that the block is the only thing review validity"
+                " withholds the review for, and that no newer failure was"
+                " recorded; a failed precondition refuses the release with a"
+                " typed reason. propose files a gated proposal issue instead."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.release_withheld_review",
+            "yaml_path": "tech_lead.authority.release_withheld_review",
+        },
+    )
+    # Per-role charter dials (#7330): one enabled/depth/authority triple per role.
+    tech_lead_charter_flow_enabled: bool = _charter_field(CharterRole.FLOW, "enabled")
+    tech_lead_charter_flow_depth: str = _charter_field(CharterRole.FLOW, "depth")
+    tech_lead_charter_flow_authority: str = _charter_field(CharterRole.FLOW, "authority")
+    tech_lead_charter_review_loop_enabled: bool = _charter_field(CharterRole.REVIEW_LOOP, "enabled")
+    tech_lead_charter_review_loop_depth: str = _charter_field(CharterRole.REVIEW_LOOP, "depth")
+    tech_lead_charter_review_loop_authority: str = _charter_field(CharterRole.REVIEW_LOOP, "authority")
+    tech_lead_charter_abstraction_enabled: bool = _charter_field(CharterRole.ABSTRACTION, "enabled")
+    tech_lead_charter_abstraction_depth: str = _charter_field(CharterRole.ABSTRACTION, "depth")
+    tech_lead_charter_abstraction_authority: str = _charter_field(CharterRole.ABSTRACTION, "authority")
+    tech_lead_charter_platform_enabled: bool = _charter_field(CharterRole.PLATFORM, "enabled")
+    tech_lead_charter_platform_depth: str = _charter_field(CharterRole.PLATFORM, "depth")
+    tech_lead_charter_platform_authority: str = _charter_field(CharterRole.PLATFORM, "authority")
+    tech_lead_charter_intake_enabled: bool = _charter_field(CharterRole.INTAKE, "enabled")
+    tech_lead_charter_intake_depth: str = _charter_field(CharterRole.INTAKE, "depth")
+    tech_lead_charter_intake_authority: str = _charter_field(CharterRole.INTAKE, "authority")
+    tech_lead_charter_learning_enabled: bool = _charter_field(CharterRole.LEARNING, "enabled")
+    tech_lead_charter_learning_depth: str = _charter_field(CharterRole.LEARNING, "depth")
+    tech_lead_charter_learning_authority: str = _charter_field(CharterRole.LEARNING, "authority")
+    tech_lead_charter_general_enabled: bool = _charter_field(CharterRole.GENERAL, "enabled")
+    tech_lead_charter_general_depth: str = _charter_field(CharterRole.GENERAL, "depth")
+    tech_lead_charter_general_authority: str = _charter_field(CharterRole.GENERAL, "authority")
     tech_lead_findings_promote: str = Field(
         FINDING_PROMOTION_GATED,
         title=f"{TECH_LEAD_DISPLAY_NAME} Finding Promotion",
@@ -1586,6 +1732,24 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.stuck_sweep.max_recovery_attempts",
         },
     )
+    # When a blocked item's custody state is stale (#7331), one per state.
+    tech_lead_custody_stale_queued_for_tech_lead_minutes: int = _custody_stale_field(
+        CustodyState.QUEUED_FOR_TECH_LEAD
+    )
+    tech_lead_custody_stale_investigating_minutes: int = _custody_stale_field(
+        CustodyState.INVESTIGATING
+    )
+    tech_lead_custody_stale_waiting_on_you_minutes: int = _custody_stale_field(
+        CustodyState.WAITING_ON_YOU
+    )
+    tech_lead_custody_stale_being_fixed_minutes: int = _custody_stale_field(
+        CustodyState.BEING_FIXED
+    )
+    tech_lead_custody_stale_waiting_on_world_minutes: int = _custody_stale_field(
+        CustodyState.WAITING_ON_WORLD
+    )
+    tech_lead_custody_stale_held_minutes: int = _custody_stale_field(CustodyState.HELD)
+    tech_lead_custody_stale_verify_minutes: int = _custody_stale_field(CustodyState.VERIFY)
     tech_lead_max_concurrent: Optional[int] = Field(
         None,
         title="Reserved Tech Lead Concurrency",
@@ -1682,13 +1846,39 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_kill_hung_session",
         "tech_lead_authority_request_rework",
         "tech_lead_authority_recover_validated_work",
+        "tech_lead_authority_release_withheld_review",
     )
     @classmethod
-    def _validate_tech_lead_authority_mode(cls, value: str) -> str:
+    def _validate_tech_lead_authority_mode(cls, value: str, info: ValidationInfo) -> str:
         if value not in TECH_LEAD_AUTHORITY_MODES:
             raise ValueError(
                 f"tech lead authority mode must be one of"
                 f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {value!r}"
+            )
+        action_type = str(info.field_name).removeprefix("tech_lead_authority_")
+        destructive = destructive_execute_error(action_type, value)
+        if destructive:
+            raise ValueError(destructive)
+        return value
+
+    @field_validator(
+        *(
+            f"tech_lead_charter_{role.value}_{dial}"
+            for role in CharterRole
+            for dial in ("depth", "authority")
+        )
+    )
+    @classmethod
+    def _validate_tech_lead_charter_dial(cls, value: str, info: ValidationInfo) -> str:
+        """Close the charter vocabulary at the schema boundary, like the modes above."""
+        allowed = (
+            TECH_LEAD_CHARTER_DEPTHS
+            if str(info.field_name).endswith("_depth")
+            else TECH_LEAD_CHARTER_AUTHORITIES
+        )
+        if value not in allowed:
+            raise ValueError(
+                f"{info.field_name} must be one of {list(allowed)}, got {value!r}"
             )
         return value
 
@@ -2193,12 +2383,12 @@ class AdvancedSettings(BaseModel):
         },
     )
     session_interactions_enabled: bool = Field(
-        False,
+        True,
         title="Enable Session Interaction Rules",
         description="Allow the orchestrator to auto-respond to trusted prompts in running agent sessions",
         json_schema_extra={
             "doc_examples": ["true", "false"],
-            "doc_notes": "Off by default. Enable only if you want runner-managed prompt responses such as Claude's initial trust confirmation.",
+            "doc_notes": "On by default. The built-in rules answer the startup screens of agents io launches (Claude's trust screen, Codex's Folder access choice for the untrusted worktrees io registers); with them off such sessions wait on that screen until they time out. Set false only to opt out.",
             "section": "Interactive Sessions",
             "restart_required": True,
             "config_attr": "session_interactions.enabled",

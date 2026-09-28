@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import yaml
 
@@ -37,6 +37,45 @@ E2E_LOG_DIR.mkdir(exist_ok=True)
 _GRACEFUL_STOP_TIMEOUT_SECONDS = 20
 
 
+def merge_config_overlay(
+    base: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return ``base`` with ``overlay`` merged in: mappings recurse, values replace."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, Mapping) and isinstance(value, Mapping):
+            merged[key] = merge_config_overlay(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+_SESSION_LOG_MARKERS = (".issue-orchestrator/sessions/", ".issue-orchestrator/session.log")
+
+
+def owned_log_tailers(ps_lines: Iterable[str], roots: Iterable[Path | None]) -> list[int]:
+    """PIDs of ``cat >> <session log>`` tailers whose log lies under ``roots``.
+
+    ``ps_lines`` are ``pid command`` lines. A tailer writing anywhere else —
+    another engine's worktree — is never selected.
+    """
+    resolved = [Path(root).resolve() for root in roots if root is not None]
+    owned: list[int] = []
+    for line in ps_lines:
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        command = parts[1]
+        if "cat >>" not in command or not any(m in command for m in _SESSION_LOG_MARKERS):
+            continue
+        target = command.split("cat >>", 1)[1].strip().split()[0].strip("'\"")
+        log_path = Path(target).resolve()
+        if any(log_path.is_relative_to(root) for root in resolved):
+            owned.append(int(parts[0]))
+    return owned
+
+
 def keep_artifacts() -> bool:
     """Return True if e2e cleanup should be skipped."""
     return os.environ.get("E2E_KEEP_ARTIFACTS") == "1"
@@ -56,10 +95,15 @@ class OrchestratorProcess:
         project_root: Path,
         *,
         source_root: Path | None = None,
+        config_overlay: Mapping[str, Any] | None = None,
     ):
         self.config = config
         self.project_root = project_root
         self.source_root = source_root or project_root
+        # YAML merged over the generated config, for settings the generator
+        # does not model (review-exchange loop bounds, the ``tech_lead:``
+        # section). Mappings merge key by key; any other value replaces.
+        self.config_overlay: Mapping[str, Any] = dict(config_overlay or {})
         self.process: subprocess.Popen | None = None
         self.ipc_socket_path: Path | None = None
         self._output_lines: list[str] = []
@@ -72,8 +116,9 @@ class OrchestratorProcess:
         self._config_path: Path | None = None
         self._last_log_time: float | None = None
 
-    def _write_e2e_config(self) -> Path:
-        """Write an ephemeral config file so the CLI uses the e2e config."""
+    def write_e2e_config(self) -> Path:
+        """Write the ephemeral config file the CLI starts with (generated config
+        plus ``config_overlay``); returns its path."""
         if self._config_dir is None or not self._config_dir.exists():
             self._config_dir = Path(
                 tempfile.mkdtemp(prefix=f"e2e-orchestrator-config-{os.getpid()}-")
@@ -205,6 +250,7 @@ class OrchestratorProcess:
                 "lease_seconds": self.config.claims.lease_seconds,
                 "renew_before_expiry_seconds": self.config.claims.renew_before_expiry_seconds,
             }
+        data = merge_config_overlay(data, self.config_overlay)
         config_path.write_text(yaml.safe_dump(data, sort_keys=False))
         self._config_path = config_path
         return config_path
@@ -304,7 +350,7 @@ class OrchestratorProcess:
         # UI mode is always web (subprocess backend)
         ui_mode = "web"
 
-        config_path = self._write_e2e_config()
+        config_path = self.write_e2e_config()
         label_arg = self.config.filtering.label or "test-data"
         cmd = [
             str(venv_bin), "--config", str(config_path), "start",
@@ -503,7 +549,14 @@ class OrchestratorProcess:
                 pass
 
     def _cleanup_log_tailers(self) -> None:
-        """Stop lingering session.log tail processes from tmux pipe-pane."""
+        """Stop lingering session.log tail processes from tmux pipe-pane.
+
+        Only THIS run's tailers: a machine-wide match on the log path pattern
+        would also SIGTERM a production engine's tailers (they write to the
+        same ``.issue-orchestrator/sessions/`` layout under ~/dev). tmux
+        pipe-pane tailers are children of the tmux server, not of this
+        process group, so ownership is decided by the file they write to.
+        """
         if keep_artifacts():
             return
         try:
@@ -516,18 +569,8 @@ class OrchestratorProcess:
             )
         except OSError:
             return
-        for line in result.stdout.splitlines():
-            if "cat >>" not in line:
-                continue
-            if ".issue-orchestrator/sessions/" not in line and ".issue-orchestrator/session.log" not in line:
-                continue
-            parts = line.strip().split(None, 1)
-            if not parts:
-                continue
-            try:
-                pid = int(parts[0])
-            except ValueError:
-                continue
+        roots = [self.config.worktree_base, self.project_root]
+        for pid in owned_log_tailers(result.stdout.splitlines(), roots):
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:

@@ -144,6 +144,7 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     from .tech_lead_reset_retry_wiring import (
         build_tech_lead_kill_session_executor,
         build_tech_lead_reset_retry_executor,
+        build_tech_lead_review_release_executor,
         build_tech_lead_validated_work_recovery_executor,
     )
 
@@ -158,6 +159,8 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     applier.tech_lead_ops = orchestrator.deps.services.tech_lead_authority
     applier.pattern_registry = orchestrator.deps.services.pattern_registry
     if orchestrator.deps.repository_host is not None:
+        applier.release_withheld_review = build_tech_lead_review_release_executor(
+            orchestrator, orchestrator.deps.repository_host)
         applier.request_rework = RequestReworkExecutor(
             repository=orchestrator.deps.repository_host,
             mutate=applier.apply_scoped_rework_mutation,
@@ -228,10 +231,14 @@ def create_tech_lead_board_publisher(
     if not config.tech_lead_enabled:
         return None
     from ..control.tech_lead_board import TechLeadBoardPublisher, tech_lead_board_path
+    from .bootstrap_action_liveness import action_liveness_store
+    from ..control.tech_lead_charter_policy import TechLeadCharterPolicy
 
     return TechLeadBoardPublisher(
         board_path=tech_lead_board_path(config.repo_root),
         authority=authority,
+        held_actions=action_liveness_store(config).visible_rows,
+        charter_policy=lambda: TechLeadCharterPolicy.from_config(config),
     )
 
 
@@ -380,9 +387,11 @@ def create_pattern_registry(
         MirroredPatternCaseFileRegistry,
     )
 
+    from ..control.tech_lead_charter_policy import TechLeadCharterPolicy
+
+    policy = TechLeadCharterPolicy.from_config(config)
     pattern_consumers_active = (
-        config.tech_lead.authority.flag_pattern == "execute"
-        or config.tech_lead.findings.promote != "off"
+        policy.executes("flag_pattern") or policy.promotion_lane_enabled
     )
     if (
         not shared_required

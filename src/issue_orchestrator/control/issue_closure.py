@@ -51,4 +51,4 @@ def apply_issue_closure(
         raise
     except Exception as error:
         logger.error("Failed to close issue #%s: %s", action.issue_number, error)
-        return ActionResult.fail(action, str(error), issue_number=action.issue_number)
+        return ActionResult.fail_from(action, error, issue_number=action.issue_number)

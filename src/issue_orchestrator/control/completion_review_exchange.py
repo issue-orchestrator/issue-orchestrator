@@ -4,7 +4,8 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from ..domain.review_subject import BranchSubject, CurrentBranchReader
 from ..domain.issue_run_allocation import IssueExchangeRunAllocation
 from ..domain.models import Issue
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 
 import logging
 from collections.abc import Callable
@@ -1110,9 +1111,13 @@ class CompletionReviewExchange:
         # can prove this site is safe without reading two lines up.
         subject = Issue(number=issue_number, title=issue_title, labels=[],
                         repo=require_repo(self._config))
+        # The exchange launches the parent's coder agent again on the issue, so
+        # its run is stamped by the same issue-lane rule as any launch of that
+        # agent (#7347): a tech lead's exchange run is a tech-lead run.
+        kind = SessionKind.for_issue_launch(agent_label, self._config.tech_lead_review_agent)
         return self._issue_run_allocator.allocate_exchange(IssueExchangeRunAllocation(
             worktree_path=worktree, issue_number=issue_number,
-            session_key=SessionKey(subject.key, TaskKind.CODE),
+            session_key=SessionKey(subject.key, kind),
             parent_session_name=parent_session_name, agent_label=agent_label,
         ))
 

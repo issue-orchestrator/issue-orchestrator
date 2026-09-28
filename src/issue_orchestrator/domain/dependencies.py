@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .host_rate_limit import HostRateLimit
 from .issue_key import ISSUE_LABEL_SEPARATOR
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,10 @@ class Dependency:
 
     # Structural problem with the edge declaration (self/duplicate/malformed/...)
     problem: EdgeProblem | None = None
+
+    # Set on an UNKNOWN edge whose lookup the host refused on a rate limit
+    # (#7297): planning still reads it as UNKNOWN, but a launch defers on it.
+    host_rate_limit: HostRateLimit | None = None
 
     @property
     def is_satisfied(self) -> bool:

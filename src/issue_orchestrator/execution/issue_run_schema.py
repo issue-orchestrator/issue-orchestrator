@@ -22,6 +22,8 @@ def create_issue_run_schema(conn: sqlite3.Connection, identity: str) -> None:
             terminal_binding TEXT,
             agent_label TEXT,
             completion_task TEXT,
+            rework_pr_number INTEGER,
+            rework_cycle INTEGER,
             PRIMARY KEY(session_name, run_id, started_at)
         )
     """)
@@ -47,3 +49,9 @@ def validate_issue_run_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE issue_runs ADD COLUMN branch_name TEXT")
     if "terminal_binding" not in columns:
         conn.execute("ALTER TABLE issue_runs ADD COLUMN terminal_binding TEXT")
+    # A rework run's PR and cycle (#7347). Rows written before carry NULL:
+    # unknown, never guessed.
+    if "rework_pr_number" not in columns:
+        conn.execute("ALTER TABLE issue_runs ADD COLUMN rework_pr_number INTEGER")
+    if "rework_cycle" not in columns:
+        conn.execute("ALTER TABLE issue_runs ADD COLUMN rework_cycle INTEGER")

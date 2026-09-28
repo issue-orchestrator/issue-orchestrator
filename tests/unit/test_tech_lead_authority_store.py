@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.domain.models import DiscoveredFailure
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_findings import (
     PatternClassificationConflictError,
     PendingCaseFile,
@@ -198,7 +198,7 @@ def test_allowed_act_level_targets_are_issue_only() -> None:
 def test_observed_session_generation_round_trips_and_resolves_unambiguously() -> None:
     generation = TechLeadSessionGeneration(
         issue_number=14,
-        task_kind=TaskKind.CODE,
+        task_kind=SessionKind.CODE,
         terminal_id="issue-14",
         run_id="RUN-14",
     )
@@ -223,7 +223,7 @@ def test_observed_session_generation_round_trips_and_resolves_unambiguously() ->
             generation,
             TechLeadSessionGeneration(
                 issue_number=14,
-                task_kind=TaskKind.REWORK,
+                task_kind=SessionKind.REWORK,
                 terminal_id="rework-14",
                 run_id="RUN-R",
             ),

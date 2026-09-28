@@ -65,7 +65,8 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.event_taxonomy import infer_event_intent
 from issue_orchestrator.timeline import (
     TIMELINE_SCHEMA_VERSION,
@@ -199,6 +200,11 @@ def create_mock_orchestrator():
     mock_orch.repository_host.update_label_cache = MagicMock()
 
 
+    # A real custody reader stands in for the engine's facade property (#7331):
+    # a MagicMock would answer every custody question with another mock.
+    from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
+    mock_orch.blocked_item_custody = NO_ENGINE_CUSTODY
+
     attach_real_pause_controller(mock_orch)
     return mock_orch
 
@@ -222,7 +228,7 @@ def create_session(issue, worktree_path="/tmp/worktree-1", branch_name="feature/
         timeout_minutes=45,
     )
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     return Session(
         key=session_key,
         issue=issue,

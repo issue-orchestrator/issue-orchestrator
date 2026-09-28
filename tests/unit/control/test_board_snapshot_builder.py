@@ -56,7 +56,7 @@ from issue_orchestrator.domain.models import (
     PendingValidationRetry,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
 )
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.ports.timeline_store import TimelineRecord
@@ -152,10 +152,10 @@ def _make_session(
     issue_number: int,
     title: str = "Test issue",
     started_at: datetime,
-    task: TaskKind = TaskKind.CODE,
+    task: SessionKind = SessionKind.CODE,
 ) -> Session:
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=task),
+        key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=task),
         issue=Issue(number=issue_number, title=title, labels=["agent:test"]),
         agent_config=AgentConfig(prompt_path=prompt_path, model="sonnet"),
         terminal_id=f"issue-{issue_number}",
@@ -163,6 +163,7 @@ def _make_session(
         branch_name=f"{issue_number}-test",
         run_assets=run_assets,
         started_at=started_at,
+        agent_label="agent:test",  # the launch-recorded role (#7347)
     )
 
 
@@ -195,7 +196,7 @@ class TestSessions:
             issue_number=102,
             title="Newer session",
             started_at=datetime(2026, 7, 10, 11, 58, 0),
-            task=TaskKind.REVIEW,
+            task=SessionKind.REVIEW,
         )
         state = OrchestratorState(active_sessions=[s1, s2])
 
@@ -347,7 +348,7 @@ class TestQueuesBlockedAndFailures:
                     validation_error="pytest exploded",
                     validation_error_file=None,
                     retry_count=1,
-                    source_task=TaskKind.CODE,
+                    source_kind=SessionKind.CODE,
                 ),
             ],
             priority_queue=[42],

@@ -20,6 +20,8 @@ clock, and recorded terminations instead of real ones.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from types import SimpleNamespace
 from typing import Optional
 
@@ -35,6 +37,7 @@ from issue_orchestrator.domain.tech_lead_run import (
     GlobalHealthReviewScope,
     IssueInvestigationScope,
 )
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
@@ -65,6 +68,7 @@ class FakeSession:
     def __init__(self, issue_number: int, flavor: TechLeadSessionFlavor) -> None:
         self.issue = FakeIssue(issue_number)
         self.agent_label = TECH_LEAD_AGENT
+        self.key = SimpleNamespace(kind=SessionKind.TECH_LEAD)  # stamped at launch (#7347)
         self.tech_lead_scope = TechLeadLaunchScope(flavor=flavor)
 
 
@@ -105,12 +109,13 @@ class FakeOrchestrator:
             repository_host=SimpleNamespace(get_issue=lambda _n: None),
             run_ownership=self.ownership,
             events=self.events,
+            pending_work_claims=MagicMock(),
         )
 
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]:
         return None
 
-    def launch_queued_tech_lead_session(self, tech_lead):  # pragma: no cover
+    def launch_queued_tech_lead_step(self, tech_lead):  # pragma: no cover
         raise AssertionError("reconciliation must not launch anything")
 
     def terminate_tech_lead_session(self, session) -> object:

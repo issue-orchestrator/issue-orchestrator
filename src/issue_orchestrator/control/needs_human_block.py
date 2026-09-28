@@ -109,6 +109,18 @@ class SharedNeedsHumanBlock(Protocol):
         """Recorded disposition sources, without claiming the label is present."""
         ...
 
+    def recorded_causes(
+        self, issue_numbers: Sequence[int]
+    ) -> dict[int, frozenset[NeedsHumanCause]]:
+        """The causes on record for each issue, for display (#7331).
+
+        The owner's rows plus the quarantine ledger, read once for the whole
+        batch: no label read, no gate, no pruning. The label stays
+        authoritative, so a reader pairs this with the label it observed. The
+        tech-lead marker is a label, not a record, and is not included.
+        """
+        ...
+
     def owns(self, label: str) -> bool:
         """Whether ``label`` is the shared block this owner governs."""
         ...
@@ -169,6 +181,14 @@ _UNSETTLEABLE_BY_FORCE = (
 )
 
 
+def _cause_for_key(key: str) -> NeedsHumanCause:
+    """The typed cause a stored row key names; an unknown key is a defect."""
+    for cause in NeedsHumanCause:
+        if cause.matches_key(key):
+            return cause
+    raise ValueError(f"unknown needs-human cause key on record: {key!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class _ScopedLabels:
     labels: "BlockLabelWriter"
@@ -221,6 +241,18 @@ class NeedsHumanBlock:
             if key.startswith(prefix)
         )
 
+    def recorded_causes(
+        self, issue_numbers: Sequence[int]
+    ) -> dict[int, frozenset[NeedsHumanCause]]:
+        quarantined = self.quarantined_issue_numbers()  # one scan per batch
+        recorded: dict[int, frozenset[NeedsHumanCause]] = {}
+        for number in issue_numbers:
+            causes = {_cause_for_key(key) for key in self.causes.needs_human_causes(number)}
+            if number in quarantined:
+                causes.add(NeedsHumanCause.CLAIM_QUARANTINE)
+            recorded[number] = frozenset(causes)
+        return recorded
+
     def owns(self, label: str) -> bool:
         return label == self.needs_human_label
 
@@ -260,6 +292,10 @@ class NeedsHumanBlock:
         # nothing is asserting, and releasing the new cause would then find the
         # ghost and keep the block forever. Relying on some later read to prune
         # it first is not a fix; it is a race this owner happened to win.
+        # Whether this exact cause already stood on the label before this call:
+        # a failed write must withdraw only what THIS call recorded, never a
+        # row an earlier acquisition of the same cause still owns (#7350).
+        already = self._cause_already_recorded(request)
         if not self._recorded(request):
             return BlockOutcome.FAILED
         try:
@@ -272,7 +308,8 @@ class NeedsHumanBlock:
                 request.target,
                 request.cause.value,
             )
-            self._withdraw(request)
+            if not already:
+                self._withdraw(request)
             return BlockOutcome.FAILED
         return BlockOutcome.HELD
 
@@ -294,6 +331,11 @@ class NeedsHumanBlock:
             refusal = self._scoped_release_refusal(request)
             if refusal is not None:
                 return refusal
+        if request.cause.releases_only_its_recorded_block and not self._recorded_cause_holds(
+            request.cause, request.target
+        ):
+            # Nothing of this cause stands on the label: it is not ours to remove.
+            return BlockOutcome.HELD_BY_ANOTHER_CAUSE
         if self._held_by_another_cause(request.target, excluding=request.cause) or (
             request.source is not None
             and self._recorded_cause_holds(
@@ -454,6 +496,26 @@ class NeedsHumanBlock:
             return BlockOutcome.FAILED
         self._forget(target)
         return BlockOutcome.CLEARED
+
+    def _cause_already_recorded(self, request: HumanBlockRequest) -> bool:
+        """This cause's row already stands on the LIVE label generation.
+
+        A row under an absent label is stale (a person cleared the label); the
+        acquisition restarts the generation, so it is this call's row after
+        all. Fail closed: an unreadable label or cause store counts as yes.
+        """
+        present = self._label_present_now(request.target)
+        if present is None:
+            return True
+        if not present:
+            return False
+        try:
+            return request.cause_key in self.causes.needs_human_causes(request.target)
+        except Exception:
+            logger.exception(
+                "[BLOCK] Could not read needs-human causes for #%d", request.target
+            )
+            return True
 
     def _recorded(self, request: HumanBlockRequest) -> bool:
         """Record this cause against the CURRENT generation of the label.
@@ -634,6 +696,11 @@ class _NoOtherCauses:
     ) -> frozenset[ValidatedWorkBlockSource]:
         del issue_number
         return frozenset()
+
+    def recorded_causes(
+        self, issue_numbers: Sequence[int]
+    ) -> dict[int, frozenset[NeedsHumanCause]]:
+        return {number: frozenset() for number in issue_numbers}
 
     def owns(self, label: str) -> bool:
         del label

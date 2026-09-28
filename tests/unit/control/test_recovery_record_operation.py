@@ -9,13 +9,15 @@ import pytest
 from issue_orchestrator.control.claimed_recovery_preparation import ClaimedRecoveryPreparation
 from issue_orchestrator.control.recovery_record_operation import RecoveryRecordOperation
 from issue_orchestrator.control.review_exchange_lifecycle import OtherRuntimeActivity
+from issue_orchestrator.control.validated_work_scope_retirement import OutOfScopeRecordRetirement
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError
 from issue_orchestrator.domain.models import OrchestratorState
-from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending, RecoveryPendingKind
 from issue_orchestrator.domain.recovery_completion import RecoveryCompleted
 from issue_orchestrator.domain.recovery_entry import RecoveryIssue, RecoveryIssueState, RecoveryRecordRequest
 from issue_orchestrator.domain.validated_work import ValidatedWorkFailure, ValidatedWorkState
 from issue_orchestrator.domain.validated_work_execution import RecordExecutionBusy
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.recovery_issue_reader import RecoveryIssueReadError
 from tests.unit.control.test_recovery_publication_completion import completion as completion
 from tests.unit.control.test_recovery_publication_attempt import publication as publication
@@ -48,8 +50,12 @@ def build_operation(completion, *, workspaces=None):
         gate=completion.gate, workspaces=workspaces or completion.workspaces,
         preparation=rig.preparation,
         pause_label="io:needs-reconcile")
+    # The REAL scope owner over the real intake: this coding run's record is
+    # recovery's, so the owner must answer None and leave publication alone.
+    scope = OutOfScopeRecordRetirement(intake=rig.custody.ledger, store=rig.store,
+        effects=rig.effects, blocks=completion.aggregate, events=InMemoryEventSink())
     owner = RecoveryRecordOperation(execution=rig.execution, store=rig.store, preparation=preparation,
-        publication=rig.worker, completion=completion.owner)
+        publication=rig.worker, completion=completion.owner, scope=scope)
     request = RecoveryRecordRequest(rig.authority.record_id, rig.authority.evidence_id, rig.authority)
     return SimpleNamespace(rig=rig, owner=owner, request=request, issues=issues)
 
@@ -100,6 +106,11 @@ def test_other_runtime_activity_blocks_publication(operation, unverifiable):
     result = op.owner.run(op.request, OrchestratorState())
     assert isinstance(result, RecoveryAttemptPending)
     assert result.failure is ValidatedWorkFailure.RUNTIME_ACTIVE
+    # A confirmed owner is a visible wait; a probe that cannot answer is a
+    # bounded failure, or a broken probe would hold the record forever (#7350).
+    assert result.kind is (
+        RecoveryPendingKind.FAILED if unverifiable else RecoveryPendingKind.WAITING
+    )
     assert_retained_without_publication(op)
 
 

@@ -56,6 +56,8 @@ Policy summary:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -79,6 +81,7 @@ from .completion_types import (
 from .label_manager import LabelManager
 from .publish_recovery import is_publish_failure
 from .proposal_dedup_gate import DuplicateTargetGrant
+from .tech_lead_charter_records import CharterDecisionLog
 from .tech_lead_decision_actions import (
     plan_tech_lead_decision_actions,
     plan_tech_lead_rejection_action,
@@ -475,15 +478,22 @@ def generate_tech_lead_completion_actions(
     load_result = load_validated_tech_lead_pair(session.run_dir, authority, config=config, labels=labels) if completed_ok else None
     succeeded = load_result is not None and load_result.ok
 
-    if authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW:
-        rework_pr_numbers = frozenset(
-            action.target_number for action in load_result.decision.proposed_actions
-            if action.action_type == "request_rework" and action.target_number is not None
-        ) if load_result is not None and load_result.decision is not None else frozenset()
-        actions.extend(_manifest_label_actions(config, authority, expected, success=succeeded, rework_pr_numbers=rework_pr_numbers))
+    # Manifest labels go HERE in the list, but which PRs are held back for
+    # rework is the planner's effective outcome, known only after planning: a
+    # request_rework the charter kept as advice sends no rework, so its PR must
+    # still be marked reviewed (#7330 review F1).
+    manifest_at = len(actions)
+    rework_pr_numbers: frozenset[int] = frozenset()
+
+    def with_manifest_labels() -> list[Action]:
+        if authority.flavor is TechLeadSessionFlavor.BATCH_REVIEW:
+            actions[manifest_at:manifest_at] = _manifest_label_actions(
+                config, authority, expected, success=succeeded,
+                rework_pr_numbers=rework_pr_numbers)
+        return actions
 
     if load_result is None:
-        return actions
+        return with_manifest_labels()
     if load_result.decision is not None:
         # The op ledger (one open gated proposal per (op, target), #6778)
         # and the pattern ledger (one case file per signature, #6781) come
@@ -493,6 +503,11 @@ def generate_tech_lead_completion_actions(
         obligation = (build_investigation_obligation(load_result.decision,
             focus_issue_number=authority.focus_issue_number)
             if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION else None)
+        charter_log = CharterDecisionLog(
+            run_id=session.run_assets.run_id,
+            anchor_issue_number=session.issue.number,
+            decided_at=datetime.now(timezone.utc).isoformat(),
+        )
         decision_actions = plan_tech_lead_decision_actions(
                 load_result.decision,
                 config,
@@ -512,12 +527,15 @@ def generate_tech_lead_completion_actions(
                 report_text=load_result.report_text,
                 dedup_corpus=open_issue_corpus.load(),
                 dedup_grant=DuplicateTargetGrant.of(authority.allowed_targets()),
+                charter_log=charter_log,
             )
         if obligation is not None:
             from .tech_lead_reset_retry import require_investigation_terminal_effect
             decision_actions = require_investigation_terminal_effect(decision_actions,
                 obligation=obligation)
         actions.extend(decision_actions)
+        actions.extend(charter_log.record_action())
+        rework_pr_numbers = charter_log.acted_on_targets("request_rework")
     else:
         # Belt-and-braces: the processing path (finding 3) should already have
         # classified this session FAILED before the planner sees it; still
@@ -563,7 +581,7 @@ def generate_tech_lead_completion_actions(
                 expected=expected,
             )
         )
-    return actions
+    return with_manifest_labels()
 
 
 def generate_tech_lead_decision_failure_actions(

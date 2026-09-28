@@ -8,6 +8,7 @@ import time
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from collections.abc import Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
@@ -27,9 +28,11 @@ from .auth import (
 from .errors import (
     GitHubAuthError,
     GitHubHttpError,
+    GitHubRateLimitedError,
     GitHubScanIncompleteError,
     GitHubTransportError,
 )
+from .rate_limit import github_http_failure, graphql_rate_limit
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
@@ -263,6 +266,8 @@ def classify_github_http_failure(exc: GitHubHttpError) -> _RollupCapability:
     """
     if exc.status_code == 401:
         return "permission_denied"
+    if isinstance(exc, GitHubRateLimitedError):
+        return "transient_error"
     haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
     if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):
         return "permission_denied"
@@ -702,11 +707,12 @@ class GitHubHttpClient:
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
                 detail = f" — {summary}" if summary else ""
-                raise GitHubHttpError(
+                raise github_http_failure(
                     (f"GitHub {method.upper()} {path} failed: {status_code}{detail}"),
                     method=method,
                     url=str(response.url),
                     status_code=status_code,
+                    headers=response.headers,
                     response_text=response_text,
                 )
             payload = _decode_response_payload(response_text, response_kind)
@@ -801,11 +807,12 @@ class GitHubHttpClient:
 
             if status_code >= 400:
                 error = f"{status_code} {response_text.strip()}"
-                raise GitHubHttpError(
+                raise github_http_failure(
                     f"GitHub GraphQL request failed: {status_code}",
                     method="POST",
                     url="/graphql",
                     status_code=status_code,
+                    headers=response.headers,
                     response_text=response_text,
                 )
 
@@ -815,6 +822,18 @@ class GitHubHttpClient:
             if "errors" in payload and payload["errors"]:
                 error_messages = [e.get("message", str(e)) for e in payload["errors"]]
                 error = f"GraphQL errors: {error_messages}"
+                rate_limit = graphql_rate_limit(
+                    payload["errors"], response.headers, now=datetime.now(UTC)
+                )
+                if rate_limit is not None:
+                    raise GitHubRateLimitedError(
+                        f"GitHub GraphQL error: {error_messages[0]}",
+                        rate_limit=rate_limit,
+                        method="POST",
+                        url="/graphql",
+                        status_code=status_code,
+                        response_text=response_text,
+                    )
                 raise GitHubHttpError(
                     f"GitHub GraphQL error: {error_messages[0]}",
                     method="POST",
@@ -1218,14 +1237,16 @@ class GitHubHttpClient:
                     original=exc,
                 ) from exc
             if response.status_code != 200:
-                raise GitHubScanIncompleteError(
+                raise github_http_failure(
                     f"GitHub returned status {response.status_code} while paging"
                     f" {what} (page {page}); refusing to treat the partial"
                     f" {what} as complete",
                     method="GET",
                     url=path,
                     status_code=response.status_code,
+                    headers=response.headers,
                     response_text=response.text,
+                    scan_incomplete=True,
                 )
             batch = response.json()
             if not isinstance(batch, list):
@@ -2172,6 +2193,43 @@ class GitHubHttpClient:
                 raise self._incomplete_open_prs("reported another page without a cursor")
         raise self._incomplete_open_prs(f"exceeded the {page_cap * 100}-PR page cap")
 
+    def list_prs_numbered_above(
+        self, number_floor: int, *, page_cap: int = 20
+    ) -> list[dict[str, Any]]:
+        """Every PR in any state numbered above ``number_floor``, or an error.
+
+        PR numbers share the issue sequence, so every PR for an issue is
+        numbered above it: a caller that must see ALL of an issue's PRs,
+        closed ones included, asks for the PRs above its number. Walks
+        ``/pulls`` newest first through the shared fail-loud pager and stops
+        once a page reaches the floor, so the walk is bounded by the PRs
+        created since, not by the repository. A PR created mid-walk shifts
+        the offset pages down, which can repeat a PR but never skip one;
+        repeats are dropped by number.
+        """
+        collected: dict[int, dict[str, Any]] = {}
+        for batch in self._paginate_fresh(
+            f"/repos/{self._config.repo}/pulls",
+            params={"state": "all", "sort": "created", "direction": "desc", "per_page": 100},
+            start_page=1,
+            page_cap=page_cap,
+            what="pull requests",
+        ):
+            numbers: list[int] = []
+            for pr in batch:
+                if not (isinstance(pr, dict) and type(pr.get("number")) is int):
+                    raise GitHubScanIncompleteError(
+                        f"GitHub returned a malformed pull request while paging: {pr!r}",
+                        method="GET",
+                        url=f"/repos/{self._config.repo}/pulls",
+                    )
+                numbers.append(pr["number"])
+                if pr["number"] > number_floor:
+                    collected[pr["number"]] = pr
+            if min(numbers) <= number_floor:
+                break
+        return [collected[number] for number in sorted(collected)]
+
     def _incomplete_open_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
             f"Listing open pull requests {why}; refusing to treat it as complete",
@@ -2986,11 +3044,12 @@ class GitHubHttpClient:
                 error = f"{status_code} {response_text.strip()}"
                 summary = _summarize_github_error(response_text)
                 detail = f" — {summary}" if summary else ""
-                raise GitHubHttpError(
+                raise github_http_failure(
                     f"GitHub GET /user failed: {status_code}{detail}",
                     method="GET",
                     url=str(response.url),
                     status_code=status_code,
+                    headers=response.headers,
                     response_text=response_text,
                 )
             header = response.headers.get("X-OAuth-Scopes", "")

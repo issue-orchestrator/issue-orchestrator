@@ -1408,11 +1408,11 @@ class TestSessionControllerValidationCaching:
 
         Regression for #6426: a review-only session makes no commits and
         publishes nothing, so feeding its (often transient) validation failure
-        into the coder retry loop relaunched the work as ``TaskKind.CODE``, which
+        into the coder retry loop relaunched the work as ``SessionKind.CODE``, which
         then tried to open a PR on an empty branch -> publish-failed. The code
         validation gate must be skipped entirely for review-only task kinds.
         """
-        from issue_orchestrator.domain.session_key import TaskKind
+        from issue_orchestrator.domain.session_kind import SessionKind
 
         processor = MockCompletionProcessor()
         processor.completion_record = make_record(
@@ -1445,7 +1445,7 @@ class TestSessionControllerValidationCaching:
             issue_number=361,
             issue_title="Review Existing Implementation #361",
             session_name="retrospective-review-361",
-            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+            task_kind=SessionKind.RETROSPECTIVE_REVIEW,
         )
 
         # The review completes on its read-only path: no retry, no gate run.
@@ -1465,7 +1465,7 @@ class TestSessionControllerValidationCaching:
         Companion to ``test_review_only_session_skips_code_validation_gate`` to
         prove the skip is scoped to review-only tasks, not a blanket change.
         """
-        from issue_orchestrator.domain.session_key import TaskKind
+        from issue_orchestrator.domain.session_kind import SessionKind
 
         processor = MockCompletionProcessor()
         processor.completion_record = make_record(
@@ -1496,7 +1496,7 @@ class TestSessionControllerValidationCaching:
             issue_number=123,
             issue_title="Test Issue",
             session_name="issue-123",
-            task_kind=TaskKind.CODE,
+            task_kind=SessionKind.CODE,
         )
 
         assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY

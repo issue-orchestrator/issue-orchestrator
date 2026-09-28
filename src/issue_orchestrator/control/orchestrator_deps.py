@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from .board_snapshot_builder import BoardSnapshotBuilder
     from ..ports.provider_readiness import ProviderReadinessProbe
     from ..ports.validated_work_drain import ValidatedWorkRecoveryDrain
+    from .planned_action_liveness import PlannedActionLiveness
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,9 @@ class OrchestratorDeps:
     # Bounded retained-work recovery runs before planning so newly recovered
     # review work is visible to the same tick's planner.
     validated_work_recovery: "ValidatedWorkRecoveryDrain"
+    # The action liveness owner's planner gate (#7350): every plan is admitted
+    # through it, and every applied action's outcome settles through it.
+    action_liveness: "PlannedActionLiveness"
 
     # Cross-cutting infrastructure services (label mgmt, persistence, etc.)
     services: "InfraServices"

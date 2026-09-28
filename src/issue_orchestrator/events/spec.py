@@ -62,6 +62,9 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     PublicEventName.SESSION_TIMEOUT: EventSpec(phase='in_progress', step='timeout', status='failed', level='detail'),
     PublicEventName.SESSION_BLOCKED: EventSpec(phase='in_progress', step='blocked', status='failed', level='detail'),
     PublicEventName.SESSION_LAUNCH_BLOCKED_PROVIDER: EventSpec(phase='in_progress', step='launch_blocked_provider', status='failed', level='detail'),
+    # 'started', not 'failed': the launch is WAITING for a known reset, and
+    # rendering it as a failure is the conflation #7297 removes.
+    PublicEventName.SESSION_LAUNCH_DEFERRED_RATE_LIMIT: EventSpec(phase='in_progress', step='launch_deferred_rate_limit', status='started', level='detail'),
     PublicEventName.SESSION_PROVIDER_AUTH_TERMINATED: EventSpec(phase='in_progress', step='provider_auth_terminated', status='failed', level='detail'),
     PublicEventName.SESSION_CLAIM_UNREADABLE: EventSpec(phase='in_progress', step='claim_unreadable', status='failed', level='detail'),
     PublicEventName.SESSION_RUN_UNRESTORABLE: EventSpec(phase='in_progress', step='run_unrestorable', status='failed', level='detail'),
@@ -120,6 +123,10 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     # ----- Provider outage impact on this issue (issue #5980) -----
     PublicEventName.PROVIDER_ISSUE_BLOCKED: EventSpec(phase='blocked', step='provider_blocked', status='failed', level='phase'),
     PublicEventName.PROVIDER_ISSUE_UNBLOCKED: EventSpec(phase='in_progress', step='provider_unblocked', status='completed', level='phase'),
+
+    # ----- Action liveness (#7350): a replanned action stopped / resumed -----
+    PublicEventName.ACTION_PARKED: EventSpec(phase='needs_human', step='action_parked', status='failed', level='phase'),
+    PublicEventName.ACTION_RELEASED: EventSpec(phase='orchestrator', step='action_released', status='completed', level='detail'),
 
     # ----- Publish failure -----
     PublicEventName.PUBLISH_FAILED: EventSpec(phase='orchestrator', step='publish.failed', status='failed', level='detail'),

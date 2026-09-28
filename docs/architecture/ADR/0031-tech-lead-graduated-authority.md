@@ -7,7 +7,7 @@ typed decision artifact, board-snapshot observation surface, periodic + storm
 health-review triggers, and per-action graduated authority are live, with the
 ``reset_retry`` executor wired (#6764) and act-level ``execute`` startup-guarded;
 amended 2026-08-19: direct ``kill_hung_session`` authority wired with exact
-session-generation revalidation)
+session-generation revalidation; amended 2026-09-26: §2a per-role charter, #7330)
 **Milestone:** P1
 **Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778, #6780
 
@@ -243,6 +243,44 @@ Semantics:
   recorded preconditions still hold (the board may have moved since the agent
   wrote the decision); otherwise they downgrade to surfaced proposals with an
   event.
+
+### 2a. The charter: per-role depth × authority (#7330 amendment)
+
+The per-action modes above answer "may this verb run?"; the charter answers
+"may this ROLE go this deep on its own?" `tech_lead.charter` holds, per role
+(`flow`, `review_loop`, `abstraction`, `platform`, `intake`, `learning`, and the
+catch-all `general`), `{enabled, depth: workaround|fix|restructure,
+authority: propose|execute}`.
+
+- **Classification is the orchestrator's.** `domain/tech_lead_charter.py` maps
+  every action kind (each agent `action_type` plus orchestrator-originated
+  finding promotion) to a role, a required depth, and a binding. Nothing in the
+  decision artifact can name a role or depth, so an agent cannot route an
+  action through a more permissive role. A kind without a row fails a test.
+- **One enforcement owner.** `control/tech_lead_charter_policy.py` composes the
+  charter with the per-action modes and `tech_lead.findings.promote` (which
+  stay per-action ceilings) and is the only module that reads those dials
+  (guardrail test). Order: floors execute; advice (diagnosis comments, pattern
+  observations) is never restricted; a disabled role or an action deeper than
+  the role's depth is advice only; destructive actions (reset from scratch)
+  always go through approval and `tech_lead.authority.reset_retry: execute` is
+  a startup error; otherwise either dial saying `propose` sends the action to
+  the existing gated-proposal path.
+- **Defaults change nothing.** Every named role defaults to
+  `restructure`/`execute`, so the per-action modes decide exactly as before;
+  `general` defaults to `workaround`/`propose`.
+- **Every decision is a record.** Each verdict is persisted as a typed
+  `TechLeadCharterDecision` (target, run, action, role, required depth, both
+  dials at decision time, outcome, reason code and text) in the authority
+  store, behind the `TechLeadCharterDecisionReader` port (by issue, by role,
+  recent). Approving or declining a gated act-level proposal links back to it.
+- **The prompt is generated.** Each launch writes `tech-lead-charter.md` into
+  `tech-lead-data/` from the same policy, so what the agent is told and what is
+  enforced are one computation (contract test). The tech-lead board shows the
+  active dials and the recorded outcomes per role.
+
+This subsumes #6877's class × magnitude matrix for tech-lead actions: the
+decision class is the action kind, and magnitude is its required depth.
 
 ### 3. Observation surface: the board-snapshot manifest
 

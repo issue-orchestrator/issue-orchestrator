@@ -23,7 +23,7 @@ from ..ports.event_sink import EventSink, make_trace_event
 from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
 from .background_job_supervisor import drain_background_jobs
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets
 from ..domain.issue_run_evidence import IssueRunEvidence
 from ..domain.tech_lead_session import TechLeadSessionGeneration
@@ -70,11 +70,16 @@ class IssuePublishRetryRuntime(PublishRetryAbandoner, Protocol):
 
 
 from .session_manager import SessionType
+from .in_flight_work import InFlightWorkLedger, SettlementOutcome
 
 logger = logging.getLogger(__name__)
 
 
-ISSUE_RUNTIME_SESSION_TYPES = (SessionType.ISSUE, SessionType.REWORK)
+# The terminal lanes an issue's runtime owners run in: the naming lane of every
+# kind the capability table calls a killable generation (#7347).
+ISSUE_RUNTIME_SESSION_TYPES: tuple[SessionType, ...] = tuple(
+    kind.session_type for kind in SessionKind if kind.capabilities.killable_generation
+)
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,7 @@ def _release_issue_runtime(
     active_sessions: list["Session"] | None = None,
     publish_recovery: "PublishRetryAbandoner | None" = None,
     session_types: Iterable[SessionType] = ISSUE_RUNTIME_SESSION_TYPES,
+    work: "InFlightWorkLedger",
 ) -> IssueRuntimeTermination:
     """Apply an issue terminal boundary to every issue-scoped runtime owner.
 
@@ -206,7 +212,7 @@ def _release_issue_runtime(
     is supplied, any in-flight/stored publish retry for the issue is abandoned in
     the same boundary so a late republish cannot repopulate a terminated issue.
     """
-    refs = tuple(_issue_runtime_session_refs(issue_number, session_types))
+    refs = _issue_runtime_session_refs(issue_number, session_types, active_sessions)
     active_names = _active_session_names(active_sessions)
     matching_active = active_names.intersection(ref.name for ref in refs)
     if session_manager is None and matching_active:
@@ -233,7 +239,18 @@ def _release_issue_runtime(
     if session_manager is not None:
         for ref in refs:
             if session_manager.exists(ref):
-                session_manager.stop(ref)
+                try:
+                    session_manager.stop(ref)
+                except Exception:
+                    # A stop can commit and THEN raise. Whatever it ended must
+                    # still settle before the failure propagates, or its claim
+                    # stays HELD beside no live run (#7380 review r2) -- the
+                    # same post-stop rule `_stop_exact_generation` applies.
+                    if not session_manager.exists(ref):
+                        _end_session_records(
+                            active_sessions, lambda session: session.terminal_id == ref.name, work
+                        )
+                    raise
                 stopped.append(ref.name)
             elif ref.name in matching_active:
                 stale.append(ref.name)
@@ -242,7 +259,8 @@ def _release_issue_runtime(
         active_sessions,
         set(stopped).union(stale),
     )
-    _drop_active_session_records(active_sessions, terminal_ids_to_clear)
+    ended = set(terminal_ids_to_clear)
+    _end_session_records(active_sessions, lambda session: session.terminal_id in ended, work)
     if stopped or terminal_ids_to_clear:
         logger.info(
             "[ISSUE_RUNTIME] terminated issue=%d reason=%s stopped=%s cleared=%s",
@@ -267,7 +285,7 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         session
         for session in active_sessions
         if session.issue.number == target.issue_number
-        and session.key.task in {TaskKind.CODE, TaskKind.REWORK}
+        and session.key.kind.capabilities.killable_generation
     ]
     if not candidates:
         return (
@@ -281,13 +299,13 @@ def issue_session_generation_stale_reason(*, target: TechLeadSessionGeneration,
         )
     current = candidates[0]
     if (
-        current.key.task is not target.task_kind
+        current.key.kind is not target.task_kind
         or current.terminal_id != target.terminal_id
         or current.run_assets.run_id != target.run_id
     ):
         return (
             f"issue #{target.issue_number}'s live generation "
-            f"({current.key.task.value} terminal {current.terminal_id}, "
+            f"({current.key.kind.value} terminal {current.terminal_id}, "
             f"run {current.run_assets.run_id}) is not the observed generation "
             f"({target.task_kind.value} terminal {target.terminal_id}, "
             f"run {target.run_id}); refusing to kill a replacement"
@@ -311,6 +329,7 @@ def _terminate_issue_session_generation(
     kill_session: Callable[[str], None],
     pair_registry: "PersistentExchangePairRegistry | None",
     job_supervisor: "BackgroundJobSupervisor | None",
+    work: "InFlightWorkLedger",
     publish_recovery: "PublishRetryAbandoner | None" = None,
 ) -> GenerationBoundTermination:
     """Conditionally stop the exact launch-observed worker generation.
@@ -363,6 +382,7 @@ def _terminate_issue_session_generation(
         session_exists=session_exists,
         kill_session=kill_session,
         validated_work=validated_work,
+        work=work,
     )
     termination = IssueRuntimeTermination(
         issue_number=target.issue_number,
@@ -381,20 +401,41 @@ def _raise_lifecycle_errors(message: str, errors: list[Exception]) -> None:
     raise ExceptionGroup(message, errors)
 
 
+def _end_session_records(
+    active_sessions: list["Session"] | None,
+    ended: Callable[["Session"], bool],
+    work: "InFlightWorkLedger",
+) -> None:
+    """Settle each ended run's claim as CONSUMED, THEN drop its record (#7380).
+
+    The one settle-before-drop step every issue-runtime termination shares. The
+    record is what tells the recovery sweep the run is live, so a record dropped
+    beside a claim left HELD -- or before a settlement that then raised -- let
+    the next tick re-admit the work this boundary just ended.
+    """
+    if active_sessions is None:
+        return
+    for session in tuple(active_sessions):
+        if ended(session):
+            work.settle(session, SettlementOutcome.CONSUMED)
+    active_sessions[:] = [session for session in active_sessions if not ended(session)]
+
+
 def _drop_exact_generation(
-    active_sessions: list["Session"], target: TechLeadSessionGeneration
+    active_sessions: list["Session"], target: TechLeadSessionGeneration,
+    work: "InFlightWorkLedger",
 ) -> None:
     """Reconcile only the active row proven to represent the stopped generation."""
-    active_sessions[:] = [
-        session
-        for session in active_sessions
-        if not (
+    _end_session_records(
+        active_sessions,
+        lambda session: (
             session.issue.number == target.issue_number
-            and session.key.task is target.task_kind
+            and session.key.kind is target.task_kind
             and session.terminal_id == target.terminal_id
             and session.run_assets.run_id == target.run_id
-        )
-    ]
+        ),
+        work,
+    )
 
 
 def _stop_exact_generation(
@@ -404,6 +445,7 @@ def _stop_exact_generation(
     active_sessions: list["Session"],
     session_exists: Callable[[str], bool],
     kill_session: Callable[[str], None],
+    work: "InFlightWorkLedger",
 ) -> None:
     """Stop one exact terminal and reconcile whether a raised stop committed."""
     try:
@@ -418,10 +460,10 @@ def _stop_exact_generation(
             ) from stop_error
         if terminal_still_running:
             raise
-        _drop_exact_generation(active_sessions, target)
+        _drop_exact_generation(active_sessions, target, work)
         raise GenerationTerminationPartialFailure(target, stop_error, validated_work) from stop_error
 
-    _drop_exact_generation(active_sessions, target)
+    _drop_exact_generation(active_sessions, target, work)
 
 
 def _issue_runtime_session_active(
@@ -434,12 +476,17 @@ def _issue_runtime_session_active(
 
     Reads ``active_sessions`` (the registry ``terminate_issue_runtime`` clears)
     and, when supplied, the ``SessionManager`` it stops, so the visible-session
-    activity signal matches the terminals the reset would tear down.
+    activity signal matches the terminals the reset would tear down. A
+    recorded tech-lead run is never issue runtime (#7347): it reads its
+    subject from its own checkout, and neither counts nor is stopped here -
+    also when a pre-#7347 one still runs under ``issue-N``. Every other
+    recorded session on the issue still counts, as before.
     """
     registry_active = any(
-        session.issue.number == issue_number for session in (active_sessions or ())
+        session.issue.number == issue_number and not _is_tech_lead_run(session)
+        for session in (active_sessions or ())
     )
-    refs = _issue_runtime_session_refs(issue_number, session_types)
+    refs = _issue_runtime_session_refs(issue_number, session_types, active_sessions)
     manager_active = session_manager is not None and any(
         session_manager.exists(ref) for ref in refs
     )
@@ -449,14 +496,33 @@ def _issue_runtime_session_active(
 def _issue_runtime_session_refs(
     issue_number: int,
     session_types: Iterable[SessionType],
-) -> list["SessionRef"]:
+    active_sessions: list["Session"] | None,
+) -> tuple["SessionRef", ...]:
+    """The issue-runtime terminals of ``issue_number``: ONE selector for the
+    activity probe and the teardown.
+
+    The issue and rework lanes, minus a name a recorded tech-lead run holds
+    (a pre-#7347 tech lead runs as ``issue-N``). A live lane terminal no
+    recorded session accounts for stays in: its owner is unknown, so it is
+    still guarded and torn down.
+    """
     from .session_manager import SessionRef
 
-    return [
+    tech_lead_names = {
+        session.terminal_id
+        for session in (active_sessions or ())
+        if _is_tech_lead_run(session)
+    }
+    lanes = (
         SessionRef(session_type=session_type, number=issue_number)
         for session_type in session_types
         if session_type in ISSUE_RUNTIME_SESSION_TYPES
-    ]
+    )
+    return tuple(ref for ref in lanes if ref.name not in tech_lead_names)
+
+
+def _is_tech_lead_run(session: "Session") -> bool:
+    return session.key.kind is SessionKind.TECH_LEAD
 
 
 def _active_session_names(active_sessions: list["Session"] | None) -> set[str]:
@@ -476,20 +542,6 @@ def _active_session_ids_to_clear(
         for session in active_sessions
         if session.terminal_id in terminal_ids
     )
-
-
-def _drop_active_session_records(
-    active_sessions: list["Session"] | None,
-    terminal_ids: tuple[str, ...],
-) -> None:
-    if active_sessions is None or not terminal_ids:
-        return
-    terminal_id_set = set(terminal_ids)
-    active_sessions[:] = [
-        session
-        for session in active_sessions
-        if session.terminal_id not in terminal_id_set
-    ]
 
 
 def _shutdown_agent_runtime(
@@ -546,6 +598,8 @@ class CoreIssueRuntimeOwners:
     pair_registry: PersistentExchangePairRegistry | None
     job_supervisor: BackgroundJobSupervisor | None
     publish_recovery: IssuePublishRetryRuntime
+    # Settles the pending-work claim of every run this boundary ends (#7380).
+    work: "InFlightWorkLedger"
 
     def probe(self, issue_number: int) -> IssueRuntimeActivity:
         return _probe_owners({
@@ -565,7 +619,7 @@ class CoreIssueRuntimeOwners:
         return _release_issue_runtime(issue_number=issue_number, reason=reason, validated_work=batch,
             pair_registry=self.pair_registry, job_supervisor=self.job_supervisor,
             session_manager=self.session_manager, active_sessions=self.active_sessions,
-            publish_recovery=self.publish_recovery)
+            publish_recovery=self.publish_recovery, work=self.work)
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,7 +788,7 @@ class IssueRuntimeLifecycleOwners:
         return _terminate_issue_session_generation(target=target, reason=reason, preserve=self.preserve,
             active_sessions=self.core.active_sessions, session_exists=session_exists, kill_session=kill_session,
             pair_registry=self.core.pair_registry, job_supervisor=self.core.job_supervisor,
-            publish_recovery=self.core.publish_recovery)
+            work=self.core.work, publish_recovery=self.core.publish_recovery)
 
     def shutdown(self, runner: SessionRunner) -> None:
         # Freeze every retained issue before the first global subprocess teardown.

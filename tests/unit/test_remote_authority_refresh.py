@@ -17,6 +17,7 @@ from issue_orchestrator.domain.publication_remote import (
     PublicationPrState,
     PublicationRemoteError,
 )
+from issue_orchestrator.domain.recovery_attempt import RecoveryPendingKind
 from issue_orchestrator.domain.validated_work import (
     FinalizationPhase,
     PublishValidatedHeadStatus,
@@ -35,7 +36,13 @@ from issue_orchestrator.domain.validated_work_remote_authority import (
 from issue_orchestrator.execution.validated_work_execution import (
     LocalValidatedWorkExecutionOwner,
 )
+from unittest.mock import Mock
+
+from issue_orchestrator.control.validated_work_scope_retirement import OutOfScopeRecordRetirement
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
+from issue_orchestrator.ports.recovery_block import RecoveryBlockIssueReconciler
 from tests.unit.validated_work_support import (
+    owned_intake,
     AT,
     V,
     Rig,
@@ -73,13 +80,19 @@ def matching_pr(number: int = 91) -> PublicationPullRequest:
     )
 
 
-def operation(store, observer) -> RemoteAuthorityRefreshOperation:
+def operation(store, observer, *, blocks=None, events=None, task=None) -> RemoteAuthorityRefreshOperation:
     execution = LocalValidatedWorkExecutionOwner(store)
+    effects = FencedValidatedWorkEffects(execution=execution, fence=store)
     return RemoteAuthorityRefreshOperation(
         execution=execution,
-        effects=FencedValidatedWorkEffects(execution=execution, fence=store),
+        effects=effects,
         store=store,
         observer=observer,
+        scope=OutOfScopeRecordRetirement(
+            intake=owned_intake(task), store=store, effects=effects,
+            blocks=blocks if blocks is not None else Mock(spec=RecoveryBlockIssueReconciler),
+            events=events if events is not None else InMemoryEventSink(),
+        ),
         clock=lambda: datetime.fromisoformat(AT),
     )
 
@@ -151,6 +164,8 @@ def test_exact_healthy_refresh_queues_and_preserves_capture_audit(tmp_path):
     disposition = store.get(admission.evidence.record_id)
     row, = store.retained_evidence(admission.evidence.identity.key.issue_number)
     assert outcome.failure is None
+    # The refresh itself is done; the record's recovery goes on in its lane.
+    assert outcome.kind is RecoveryPendingKind.ADVANCED
     assert disposition.state is ValidatedWorkState.QUEUED
     assert disposition.failure is None
     assert row.admission.initial_state is ValidatedWorkState.PARKED
@@ -205,6 +220,27 @@ def test_failed_remote_read_keeps_same_retryable_snapshot(tmp_path):
 
     assert outcome.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
     assert refresh_request(store) == request
+
+
+def test_a_rate_limited_remote_read_carries_the_hosts_reset(tmp_path):
+    """The observer wraps a typed GitHub rate limit; the refusal keeps it so
+    the action liveness owner waits for the reset (#7350)."""
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+    from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    store.admit(parked_unobserved())
+    limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+    limited.rate_limit = HostRateLimit(
+        resets_at=datetime.fromisoformat(AT), kind="primary"
+    )
+    wrapped = PublicationRemoteError("quota unavailable")
+    wrapped.__cause__ = limited
+
+    outcome = operation(store, Observer(error=wrapped)).run(refresh_request(store))
+
+    assert outcome.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert outcome.rate_limit == limited.rate_limit
 
 
 def test_stale_selected_revision_is_refused_before_remote_read(tmp_path):
@@ -280,7 +316,7 @@ def test_publishing_unobserved_refresh_preserves_in_flight_lifecycle(tmp_path):
     assert store.record_attempt_outcome(
         owned,
         attempt,
-        outcome=PublishValidatedHeadStatus.PUBLISHED,
+        rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
         failure=None,
         finished_at=AT,
     )
@@ -333,7 +369,7 @@ def test_migrated_success_with_nonempty_baseline_finalizes_after_exact_refresh(
     assert store.record_attempt_outcome(
         owned,
         attempt,
-        outcome=PublishValidatedHeadStatus.PUBLISHED,
+        rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
         failure=None,
         finished_at=AT,
     )

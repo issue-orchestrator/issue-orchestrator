@@ -102,6 +102,7 @@ and this table is the same set with the tier each command carries:
 | `demo` | Diagnostics | Supported |
 | `executor-status` | Diagnostics | Supported |
 | `worktree-custody` | Diagnostics | Supported |
+| `action-liveness` | Diagnostics | Supported |
 | `test-reset` | Development | Internal |
 | `e2e-reset` | Development | Internal |
 

@@ -43,6 +43,7 @@ TechLeadActionType = Literal[
     "kill_hung_session",
     "request_rework",
     "recover_validated_work",
+    "release_withheld_review",
 ]
 TechLeadFindingClassification = Literal["infra", "task", "agent", "systemic"]
 TechLeadAuthorityMode = Literal["execute", "propose"]
@@ -63,6 +64,7 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        "release_withheld_review",
     )
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
@@ -72,7 +74,13 @@ _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
 # be granted direct ``execute`` authority. Keep the explicit unwired set as the
 # fail-closed extension point for future act-level actions.
 ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
-    ("reset_retry", "kill_hung_session", "request_rework", "recover_validated_work")
+    (
+        "reset_retry",
+        "kill_hung_session",
+        "request_rework",
+        "recover_validated_work",
+        "release_withheld_review",
+    )
 )
 UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset()
 
@@ -210,6 +218,11 @@ class ProposedTechLeadAction:
       (#6764, first slice); ``kill_hung_session`` is also wired for direct
       ``execute`` with an exact-session-generation safety check. Under
       ``propose``, either action runs only via gated approval.
+    * ``release_withheld_review`` — ``target_number`` (the ISSUE) + ``body``
+      (the rationale); act-level (#7399). Releases the code review of the
+      issue's open, CI-green PR when the issue's own ``blocked-failed`` is the
+      only thing withholding it. The orchestrator re-verifies every
+      precondition when it applies the release and refuses a stale one.
     """
 
     id: str

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from issue_orchestrator.control.actions import (
+    ActionResult,
     AddLabelAction,
     RemoveLabelAction,
     SupersedePullRequestAction,
@@ -208,9 +209,9 @@ class _ActionApplier:
     def apply(
         self,
         action: AddLabelAction | RemoveLabelAction | SupersedePullRequestAction,
-    ) -> SimpleNamespace:
+    ) -> ActionResult:
         if isinstance(action, (AddLabelAction, RemoveLabelAction)) and action.label == self.fail_on_label:
-            return SimpleNamespace(success=False, error=f"label mutation failed: {action.label}")
+            return ActionResult.fail(action, f"label mutation failed: {action.label}")
         if isinstance(action, AddLabelAction):
             self.repo.add_label(action.issue_number, action.label)
         elif isinstance(action, SupersedePullRequestAction):
@@ -222,7 +223,7 @@ class _ActionApplier:
             ]
         else:
             self.repo.remove_label(action.issue_number, action.label)
-        return SimpleNamespace(success=True, error=None)
+        return ActionResult.ok(action)
 
 
 def _service(
@@ -1274,7 +1275,8 @@ class _UnreadableRepo(_Repo):
         self.label_reads.append(issue_number)
         if issue_number in self.unreadable:
             raise FreshIssueReadError(
-                f"could not read fresh labels for issue #{issue_number}: rate limited"
+                f"could not read fresh labels for issue #{issue_number}: rate limited",
+                transient=True,
             )
         return super().read_issue_labels(issue_number)
 
@@ -1350,7 +1352,7 @@ def test_existing_pr_recovery_stays_retryable_when_the_read_fails(
     def _fail_on_finalize(issue_number: int) -> list[str]:
         calls["n"] += 1
         if calls["n"] > 1:
-            raise FreshIssueReadError("rate limited")
+            raise FreshIssueReadError("rate limited", transient=True)
         return original(issue_number)
 
     repo.read_issue_labels = _fail_on_finalize  # type: ignore[method-assign]
@@ -1391,7 +1393,8 @@ class _TwoIssueRepo:
     def read_issue_labels(self, issue_number: int) -> list[str]:
         if issue_number in self.unreadable:
             raise FreshIssueReadError(
-                f"could not read fresh labels for issue #{issue_number}: rate limited"
+                f"could not read fresh labels for issue #{issue_number}: rate limited",
+                transient=True,
             )
         return list(self.labels.get(issue_number, []))
 

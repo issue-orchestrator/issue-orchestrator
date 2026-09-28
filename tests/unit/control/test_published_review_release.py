@@ -36,8 +36,11 @@ class _Labels:
     """Live issue labels plus the guarded writes the owner delegates to."""
 
     def __init__(self, labels, *, refuse_add=False, refuse_remove=False, board_moved=False,
-                 refuse_route=False):
+                 refuse_route=False, lands_during_route=(), on_route=None):
+        self.on_route = on_route
         self.board_moved = board_moved
+        #: Labels another owner puts on the ISSUE while the PR route is written.
+        self.lands_during_route = tuple(lands_during_route)
         self.refuse_route = refuse_route
         self.pr_live: set[str] = set()
         self.live = set(labels)
@@ -57,6 +60,9 @@ class _Labels:
                     return ActionResult.fail(action, "github refused the PR label")
                 self.writes.append(("add-pr", action.label))
                 self.pr_live.add(action.label)
+                self.live.update(self.lands_during_route)
+                if self.on_route is not None:
+                    self.on_route()
                 return ActionResult.ok(action)
             if self.refuse_add:
                 return ActionResult.fail(action, "github refused the add")
@@ -248,3 +254,35 @@ def test_the_sweeps_release_command_runs_through_the_real_applier_dispatch():
     assert result.result_type is ActionResultType.SUCCESS, result.error
     assert live[ISSUE] == {"agent:web", LM.pr_pending}
     assert live[PR] == {REVIEW_LABEL}
+
+
+def test_a_block_that_lands_during_the_writes_withdraws_the_release():
+    """#7399 review r3: eligibility is asked again right before the block
+    comes off; a human's block that landed meanwhile has its own owner."""
+    labels = _Labels(["agent:web", LM.blocked_failed], lands_during_route=(LM.blocked,))
+
+    outcome = _owner(labels).release(ISSUE)
+
+    assert outcome.status is ReviewReleaseStatus.WITHDRAWN
+    assert not outcome.released and not outcome.left_alone
+    assert ("remove", LM.blocked_failed) not in labels.writes
+    assert {LM.blocked_failed, LM.blocked} <= labels.live
+
+
+def test_a_routed_pr_that_closes_during_the_writes_withdraws_even_if_another_pr_holds_work():
+    """#7399 review r4: the final check is for the PR the review was ROUTED to;
+    another PR still holding published work does not stand in for it."""
+    prs = PullRequests({ISSUE: [pr(ISSUE, 500), pr(ISSUE, 501)]})
+    store = DispositionStore({ISSUE: (disposition(ISSUE, ValidatedWorkState.RECOVERED, pr_number=500),)})
+
+    def close_the_routed_pr():
+        prs.by_issue[ISSUE] = [pr(ISSUE, 500, state="closed"), pr(ISSUE, 501)]
+
+    labels = _Labels(["agent:web", LM.blocked_failed], on_route=close_the_routed_pr)
+    owner = PublishedReviewRelease(custody=custody(store, prs), labels=LM, read_labels=labels.read,
+                                   apply=labels.apply, review_label=REVIEW_LABEL)
+
+    outcome = owner.release(ISSUE)
+
+    assert outcome.status is ReviewReleaseStatus.WITHDRAWN
+    assert ("remove", LM.blocked_failed) not in labels.writes

@@ -173,6 +173,13 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
     "publish.failed": [
         _user("publish.failed", "Publish failed", "orchestrator"),
     ],
+    # -- Action liveness (#7350) --
+    "action.parked": [
+        _user("action.parked", "Action stopped retrying — waiting on you", "orchestrator"),
+    ],
+    "action.released": [
+        _ops("action.released", "Parked action released", "orchestrator"),
+    ],
 
     # -- Provider outage impact on a specific issue (issue #5980) --
     # The fleet-scoped provider.* events carry no issue identity and so can
@@ -199,6 +206,16 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _user(
             "session.launch_blocked_provider",
             "Provider not ready — launch blocked",
+            "orchestrator",
+        ),
+    ],
+    # User-visible on purpose (#7297): "waiting for the GitHub rate limit to
+    # reset" must read differently from "failing", or the operator cannot tell
+    # a transient token limit from broken work.
+    "session.launch_deferred_rate_limit": [
+        _user(
+            "session.launch_deferred_rate_limit",
+            "GitHub rate limit — launch deferred until reset",
             "orchestrator",
         ),
     ],

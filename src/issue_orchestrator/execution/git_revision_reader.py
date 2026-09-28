@@ -37,6 +37,34 @@ class GitRevisionReader:
             logger.warning("Failed to get HEAD SHA in %s", worktree)
             return None
 
+    def resolve_commit(self, worktree: Path, ref: str) -> str | None:
+        """The full SHA of the commit ``ref`` names, or None if it names none."""
+        result = self._run_git(
+            worktree, ["rev-parse", "--verify", "--quiet", ref + "^{commit}"], check=False
+        )
+        sha = result.stdout.strip()
+        return sha if result.returncode == 0 and sha else None
+
+    def fetch_remote_branch_head(
+        self, worktree: Path, branch: str, remote: str = "origin"
+    ) -> str | None:
+        """The remote's CURRENT head of ``branch``, fetched now, or None.
+
+        Fetches exactly that branch into its remote-tracking ref first, so the
+        answer is the remote's, not whatever the tracking ref last cached (a
+        force-pushed base would otherwise be judged from its old history).
+        ``None`` when the remote cannot be read or has no such branch - the
+        caller must not treat that as "nothing is ahead".
+        """
+        tracking = f"refs/remotes/{remote}/{branch}"
+        fetched = self._run_git(
+            worktree, ["fetch", "--quiet", remote, f"+refs/heads/{branch}:{tracking}"], check=False
+        )
+        if fetched.returncode != 0:
+            logger.warning("Could not fetch %s/%s in %s: %s", remote, branch, worktree, fetched.stderr.strip())
+            return None
+        return self.resolve_commit(worktree, tracking)
+
     def verify_historical_selection(
         self, repo_root: Path, branch_name: str, head_sha: str
     ) -> bool:

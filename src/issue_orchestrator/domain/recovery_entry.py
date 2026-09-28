@@ -44,6 +44,10 @@ class RecoveryRecordRequest:
     record_id: str
     evidence_id: str
     approved: ValidatedWorkAuthoritySnapshot | None = None
+    #: The issue the record was selected under, carried from the durable
+    #: selection so a failed disposition read still escalates where the work
+    #: is (#7350). ``None`` only where no selection supplied it.
+    issue_number: int | None = None
 
     def __post_init__(self) -> None:
         require_text(self.record_id, "record_id")

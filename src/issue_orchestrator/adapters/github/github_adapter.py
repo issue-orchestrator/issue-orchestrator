@@ -1215,6 +1215,14 @@ class GitHubAdapter:
             return [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
         return []
 
+    def list_prs_numbered_above(self, number_floor: int) -> list[PRInfo]:
+        """Every PR (any state) numbered above ``number_floor``; raises rather
+        than returning a partial list. See the client method."""
+        return [
+            self._pr_info_from_api(pr)
+            for pr in self._client.list_prs_numbered_above(number_floor)
+        ]
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR; raises rather than returning a partial list."""
         return [self._pr_info_from_api(pr) for pr in self._client.list_open_prs_complete()]

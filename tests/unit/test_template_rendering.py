@@ -12,8 +12,10 @@ from jinja2 import Environment, FileSystemLoader
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, Session, SessionHistoryEntry
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
 from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
 )
@@ -65,10 +67,10 @@ def make_agent_config() -> AgentConfig:
     return AgentConfig(prompt_path=Path("/tmp/prompt.txt"), model="sonnet", timeout_minutes=45)
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
+def make_session(issue: Issue, task: SessionKind = SessionKind.CODE) -> Session:
     agent_config = make_agent_config()
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=task),
+        key=SessionKey(issue=FakeIssueKey(str(issue.number)), kind=task),
         issue=issue,
         agent_config=agent_config,
         terminal_id=f"issue-{issue.number}",
@@ -105,6 +107,7 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -153,6 +156,7 @@ def test_first_paint_renders_stack_chip_for_stacked_card(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -175,6 +179,7 @@ def test_dashboard_renders_manifest_js_chunks_in_order(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -203,6 +208,7 @@ def test_dashboard_renders_manifest_css_chunks_before_late_styles(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -249,6 +255,7 @@ def test_kanban_blocked_column_is_expandable(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -287,6 +294,7 @@ def test_truncated_blocked_column_renders_full_list_footer(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -322,6 +330,7 @@ def test_complete_compact_column_keeps_full_list_footer_hidden(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -365,6 +374,7 @@ def test_kanban_blocked_column_excludes_non_executable_issues(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -388,6 +398,7 @@ def test_kanban_running_column_is_expandable_and_routes_cancel_to_menu(jinja_env
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -423,6 +434,7 @@ def test_kanban_completed_column_session_scoped(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -463,6 +475,7 @@ def test_completed_column_renders_merged_history_card(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -510,6 +523,7 @@ def test_completed_card_phase_age_is_hydrated_by_dashboard_timestamp_localizer(j
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -558,6 +572,7 @@ def test_awaiting_merge_template_renders_one_pr_card_when_queue_and_history_over
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
@@ -581,6 +596,7 @@ def test_status_badge_shows_running(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -599,6 +615,7 @@ def test_issue_detail_drawer_is_rendered(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -617,6 +634,7 @@ def test_flow_refresh_preferences_modal_is_rendered(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -637,6 +655,7 @@ def test_github_usage_pill_is_rendered(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -663,6 +682,7 @@ def test_embedded_header_elements_in_tab_bar(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -685,6 +705,7 @@ def test_starting_dashboard_renders_initializing_status(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -703,6 +724,7 @@ def test_e2e_tab_and_panels_render(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="e2e",
         e2e_status_provider=lambda _: {
             "enabled": True,
@@ -743,6 +765,7 @@ def test_e2e_tab_disables_results_action_when_no_run_exists(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="e2e",
         e2e_status_provider=lambda _: {
             "enabled": True,
@@ -784,6 +807,7 @@ def test_server_rendered_card_carries_fingerprint_for_first_paint_no_flash(jinja
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -825,6 +849,7 @@ def test_server_rendered_fingerprint_matches_js_helper_output(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="flow",
         e2e_status_provider=e2e_disabled,
     )
@@ -885,6 +910,7 @@ def test_first_paint_active_card_menu_carries_run_dir(jinja_env):
         OrchestratorStub(state=state, config=config),
         provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
         tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
         active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )

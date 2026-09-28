@@ -247,9 +247,16 @@ class IsolationConfig:
 
 @dataclass
 class SessionInteractionsConfig:
-    """Guardrails for orchestrator-driven session interactions."""
+    """Guardrails for orchestrator-driven session interactions.
 
-    enabled: bool = False
+    On by default: the built-in rules answer the startup screens of the agents
+    io itself launches, which io's own setup produces (it registers every
+    worktree as untrusted, so Codex opens on "Folder access"). With them off,
+    every such session sits on that screen until it times out (#7343).
+    Setting this false is an explicit opt-out.
+    """
+
+    enabled: bool = True
 
 
 @dataclass
