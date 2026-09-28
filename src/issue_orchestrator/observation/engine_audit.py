@@ -236,6 +236,14 @@ def _read(
         # source not read, like one that could not be copied.
         readings.append(_unavailable(source, Unavailable(SourceStatus.UNREADABLE, str(error))))
         return None
+    except OSError as error:
+        # The log is read live, not from a snapshot: the engine's handler
+        # rotates it at midnight, so it can vanish between the check and the
+        # read. Any other source's OSError is a fault, not a rotation.
+        if source is not AuditSource.LOG:
+            raise
+        readings.append(_unavailable(source, Unavailable(SourceStatus.UNREADABLE, str(error))))
+        return None
     readings.append(SourceReading(source=source, status=SourceStatus.READ))
     return result
 

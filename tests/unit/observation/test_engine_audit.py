@@ -51,6 +51,7 @@ from issue_orchestrator.execution.timeline_store import (
     SqliteTimelineAuditReader,
     SqliteTimelineStore,
 )
+from issue_orchestrator.infra import engine_log_reader
 from issue_orchestrator.infra.logging_config import ROTATING_LOG_DATEFMT, ROTATING_LOG_FORMAT
 from issue_orchestrator.infra.sqlite_snapshot import snapshot_sqlite
 from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
@@ -876,6 +877,34 @@ def test_a_damaged_timeline_row_makes_the_timeline_unread(
     (reading,) = [r for r in report.sources if r.source is AuditSource.TIMELINE]
     assert reading.status is SourceStatus.UNREADABLE
     assert AnomalyKind.NO_PROGRESS_TIMELINE not in _kinds(report)
+
+
+@pytest.mark.parametrize("vanishes", ["before_stat", "before_open"])
+def test_a_log_rotated_away_mid_audit_is_an_unread_source(state, tmp_path, monkeypatch, vanishes) -> None:
+    """The engine's TimedRotatingFileHandler renames the log at midnight."""
+    first = _run(state, tmp_path, monkeypatch, FakeHost())
+    previous = tmp_path / "previous.json"
+    previous.write_text(first.model_dump_json(), encoding="utf-8")
+    log = state / cli.ENGINE_LOG
+    real_excerpt = engine_log_reader.log_excerpt
+
+    def rotate_then(path, *, tail_bytes):
+        if vanishes == "before_stat":
+            log.rename(log.with_name("orchestrator.log.2026-09-27"))
+            return real_excerpt(path, tail_bytes=tail_bytes)
+        excerpt = real_excerpt(path, tail_bytes=tail_bytes)
+        log.rename(log.with_name("orchestrator.log.2026-09-27"))
+        return excerpt
+
+    monkeypatch.setattr(engine_log_reader, "log_excerpt", rotate_then)
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost(), "--previous", str(previous))
+
+    (reading,) = [r for r in report.sources if r.source is AuditSource.LOG]
+    assert reading.status is SourceStatus.UNREADABLE
+    assert report.diff is not None
+    assert AnomalyKind.FETCH_COST_INVERTED in {a.kind for a in report.diff.unobserved}
+    assert all(a.sources[0] is not AuditSource.LOG for a in report.diff.resolved)
 
 
 def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, monkeypatch) -> None:
