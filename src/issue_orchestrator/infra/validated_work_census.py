@@ -37,8 +37,7 @@ class SqliteValidatedWorkCensus:
         self._timeout = timeout
 
     def census(self) -> ValidatedWorkCensus:
-        unresolved_states = tuple(sorted(state.value for state in UNRESOLVED_STATES))
-        placeholders = ",".join("?" * len(unresolved_states))
+        unresolved_states = frozenset(state.value for state in UNRESOLVED_STATES)
         with readonly_sqlite_transaction(
             self._database, timeout=self._timeout, row_factory=sqlite3.Row
         ) as conn:
@@ -47,11 +46,11 @@ class SqliteValidatedWorkCensus:
                 "SELECT state, resolution_kind, COUNT(*) AS n FROM validated_work_records"
                 " GROUP BY state, resolution_kind ORDER BY n DESC, state, resolution_kind"
             ).fetchall()
-            unresolved = conn.execute(
+            records = conn.execute(
                 "SELECT record_id, issue_number, state, created_at FROM validated_work_records"
-                f" WHERE state IN ({placeholders}) ORDER BY created_at, record_id",
-                unresolved_states,
+                " ORDER BY created_at, record_id"
             ).fetchall()
+        unresolved = [row for row in records if row["state"] in unresolved_states]
         return ValidatedWorkCensus(
             by_state_resolution=tuple(
                 (row["state"], row["resolution_kind"], int(row["n"])) for row in counts

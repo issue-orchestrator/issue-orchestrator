@@ -471,6 +471,31 @@ def test_a_closed_wal_database_is_copied_without_creating_its_sidecars(tmp_path:
     assert sorted(p.name for p in tmp_path.glob("live.sqlite*")) == ["live.sqlite"]
 
 
+def test_a_writer_closing_between_the_log_check_and_the_open_is_read_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The -wal seen by the check is gone by the open: read the closed file instead."""
+    live = tmp_path / "live.sqlite"
+    with closing(sqlite3.connect(live)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (x)")
+        conn.execute("INSERT INTO t VALUES (7)")
+        conn.commit()
+    log = tmp_path / "live.sqlite-wal"
+    log.write_bytes(b"")
+
+    def writer_closes(path, **_kwargs):
+        log.unlink()  # the last writer closed: SQLite removes its log
+        raise ReadOnlySqliteAccessError(ReadOnlySqliteFailure.UNREADABLE, "unable to open")
+
+    monkeypatch.setattr("issue_orchestrator.infra.sqlite_snapshot.open_sqlite_readonly", writer_closes)
+
+    copy = snapshot_sqlite(live, tmp_path / "copy.sqlite", timeout=10.0)
+
+    with closing(sqlite3.connect(copy)) as conn:
+        assert conn.execute("SELECT x FROM t").fetchall() == [(7,)]
+
+
 def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live.sqlite"
     with closing(sqlite3.connect(live)) as conn:

@@ -219,6 +219,9 @@ class LogCoverage(_Frozen):
     bytes_read: int
     #: True when only the log's tail was read.
     truncated: bool
+    #: The first and last entries read inside the audit window. A first entry
+    #: well after ``window_start`` means the bounded tail did not reach back
+    #: to it, so the log counts cover less than the window.
     first_entry_at: str | None
     last_entry_at: str | None
 

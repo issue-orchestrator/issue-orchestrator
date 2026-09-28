@@ -191,7 +191,9 @@ def test_entries_before_the_window_are_not_counted() -> None:
 
     census = census_log(entries, window_start=T0 - timedelta(hours=1), last_state_change={})
 
-    assert [(s.count, s.first_seen) for s in census.signatures] == [(1, T0.isoformat())]
+    assert [(s.count, s.first_seen) for s in census.signatures] == [
+        (1, T0.astimezone(UTC).isoformat())
+    ]
     assert census.first_entry_at == T0
 
 

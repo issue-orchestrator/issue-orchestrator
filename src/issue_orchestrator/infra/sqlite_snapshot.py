@@ -32,8 +32,9 @@ from pathlib import Path
 from ..domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
 from .sqlite_readonly import open_sqlite_readonly
 
-#: Copies of a log-less database attempted before it is reported unreadable.
-QUIESCENT_COPY_ATTEMPTS = 3
+#: Copies attempted before a database that keeps changing under the copy
+#: is reported unreadable.
+SNAPSHOT_ATTEMPTS = 3
 
 
 def snapshot_sqlite(live: Path, destination: Path, *, timeout: float) -> Path:
@@ -42,44 +43,56 @@ def snapshot_sqlite(live: Path, destination: Path, *, timeout: float) -> Path:
     Raises :class:`~..domain.read_only_sqlite.ReadOnlySqliteAccessError` when
     ``live`` is absent or unreadable (the caller decides what an absent
     database means). ``destination`` must not exist yet.
+
+    The read path is chosen afresh on every attempt: a writer that closes the
+    database between the ``-wal`` check and the open removes the log it was
+    chosen for, and the next attempt then reads the closed file.
     """
     if destination.exists():
         raise FileExistsError(f"snapshot destination already exists: {destination}")
-    if _log_beside(live).exists():
-        with closing(
-            open_sqlite_readonly(live, timeout=timeout, row_factory=sqlite3.Row)
-        ) as source:
-            _backup(source, destination)
-        return destination
-    return _quiescent_copy(live, destination, timeout=timeout)
-
-
-def _quiescent_copy(live: Path, destination: Path, *, timeout: float) -> Path:
-    for _attempt in range(QUIESCENT_COPY_ATTEMPTS):
-        before = _identity(live)
-        try:
-            with closing(
-                sqlite3.connect(
-                    live.resolve().as_uri() + "?mode=ro&immutable=1", uri=True, timeout=timeout
-                )
-            ) as source:
-                source.execute("PRAGMA query_only=ON")
-                _backup(source, destination)
-        except sqlite3.Error as error:
-            destination.unlink(missing_ok=True)
-            raise ReadOnlySqliteAccessError(
-                ReadOnlySqliteFailure.UNREADABLE, f"SQLite read failed: {error}"
-            ) from error
-        # A writer that opens the database meanwhile commits into a new log,
-        # not the main file, so the copy is still one consistent state; only
-        # a checkpoint writing the main file under the copy can tear it.
-        if _identity(live) == before:
+    for _attempt in range(SNAPSHOT_ATTEMPTS):
+        if _log_beside(live).exists():
+            try:
+                with closing(
+                    open_sqlite_readonly(live, timeout=timeout, row_factory=sqlite3.Row)
+                ) as source:
+                    _backup(source, destination)
+                return destination
+            except ReadOnlySqliteAccessError as error:
+                destination.unlink(missing_ok=True)
+                if error.reason is not ReadOnlySqliteFailure.UNREADABLE or _log_beside(live).exists():
+                    raise
+        elif _quiescent_copy(live, destination, timeout=timeout):
             return destination
-        destination.unlink()
     raise ReadOnlySqliteAccessError(
         ReadOnlySqliteFailure.UNREADABLE,
-        f"{live} changed during each of {QUIESCENT_COPY_ATTEMPTS} copies",
+        f"{live} changed during each of {SNAPSHOT_ATTEMPTS} copies",
     )
+
+
+def _quiescent_copy(live: Path, destination: Path, *, timeout: float) -> bool:
+    """Copy a database no writer holds open; False if a checkpoint touched it meanwhile."""
+    before = _identity(live)
+    try:
+        with closing(
+            sqlite3.connect(
+                live.resolve().as_uri() + "?mode=ro&immutable=1", uri=True, timeout=timeout
+            )
+        ) as source:
+            source.execute("PRAGMA query_only=ON")
+            _backup(source, destination)
+    except sqlite3.Error as error:
+        destination.unlink(missing_ok=True)
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNREADABLE, f"SQLite read failed: {error}"
+        ) from error
+    # A writer that opens the database meanwhile commits into a new log, not
+    # the main file, so the copy is still one consistent state; only a
+    # checkpoint writing the main file under the copy can tear it.
+    if _identity(live) == before:
+        return True
+    destination.unlink()
+    return False
 
 
 def _identity(live: Path) -> tuple[int, int, int, int]:
@@ -104,4 +117,4 @@ def _log_beside(live: Path) -> Path:
     return live.with_name(live.name + "-wal")
 
 
-__all__ = ["QUIESCENT_COPY_ATTEMPTS", "snapshot_sqlite"]
+__all__ = ["SNAPSHOT_ATTEMPTS", "snapshot_sqlite"]

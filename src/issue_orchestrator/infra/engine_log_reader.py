@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .logging_config import CONTEXT_LOG_FIELDS
@@ -69,7 +69,9 @@ def parse_log_line(line: str) -> EngineLogEntry | None:
     if match is None:
         return None
     return EngineLogEntry(
-        at=datetime.strptime(match["at"], "%Y-%m-%d %H:%M:%S").astimezone(),
+        # Local wall clock (see the module docstring), held as UTC like every
+        # other instant in the audit.
+        at=datetime.strptime(match["at"], "%Y-%m-%d %H:%M:%S").astimezone().astimezone(UTC),
         level=match["level"],
         logger=match["logger"],
         message=match["message"],
