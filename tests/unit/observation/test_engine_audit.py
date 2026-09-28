@@ -488,6 +488,21 @@ def test_a_pr_state_change_ends_the_repeats_logged_against_that_pr(
     assert all(subject != "PR #42" for subject, _ in _kinds(report).get(AnomalyKind.NO_PROGRESS_LOG, ()))
 
 
+def test_a_qualified_reference_to_the_audited_repo_is_that_issue(state, tmp_path, monkeypatch) -> None:
+    log = state / cli.ENGINE_LOG
+    stamp = (NOW - timedelta(minutes=30)).astimezone().strftime(ROTATING_LOG_DATEFMT)
+    log.write_text(
+        log.read_text(encoding="utf-8")
+        + "".join(f"{stamp} [WARNING] io: Could not read promoted issue {REPO}#411\n" for _ in range(5)),
+        encoding="utf-8",
+    )
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    subjects = {s.subject for s in report.no_progress.log_signatures if "promoted issue" in s.signature}
+    assert subjects == {"#411"}
+
+
 def test_without_the_timeline_no_repeat_is_claimed_since_a_state_change(
     state, tmp_path, monkeypatch
 ) -> None:
