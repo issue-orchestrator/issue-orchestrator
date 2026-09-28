@@ -402,7 +402,7 @@ def _key(head):
     return ValidatedWorkKey(REPO, ISSUE, BRANCH, head)
 
 
-def test_the_store_verifies_containment_itself_and_never_moves_the_fact_backward(rig, make_session):
+def test_the_store_verifies_containment_itself(rig, make_session):
     w1 = _recovery_published_first_head(rig)
     ahead = _commit(rig.git, rig.worktree, "ahead", "not published")
 
@@ -410,12 +410,59 @@ def test_the_store_verifies_containment_itself_and_never_moves_the_fact_backward
     assert rig.store.record_open_pr_publication(
         _key(ahead), published=PublishedOnOpenPullRequest(PR, w1), observed_at="2026-09-28T12:00:00+00:00",
     ) is OpenPrPublicationStatus.CONTAINMENT_UNPROVEN
-    # An older head than the recorded one never replaces it.
-    base = rig.git.run(rig.repo, ["rev-parse", "main"]).stdout.strip()
-    assert rig.store.record_open_pr_publication(
-        _key(base), published=PublishedOnOpenPullRequest(PR, base), observed_at="2026-09-28T12:00:00+00:00",
-    ) is OpenPrPublicationStatus.ALREADY_PUBLISHED
     assert _fact(rig).published_head_sha == w1
+
+
+def test_the_fact_follows_a_pr_forced_back_to_an_ancestor(rig, make_session):
+    """Review r3: the recorded head is W2, but the completion force-pushed its
+    PR back to W1. The PR publishes W1 now; the completion published it."""
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    _validate(rig, coding, "coding-1")
+    w2 = _commit(rig.git, rig.worktree, "more", "a later head recovery published")
+    later = _run(rig, SessionKind.CODE, "coding-2", f"rework-{ISSUE}")
+    _validate(rig, later, "coding-2")
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"rework-{ISSUE}", "session-completion", run=later)
+    (held,) = rig.store.for_issue(ISSUE).dispositions
+    assert not isinstance(rig.store.resolve_observed_merge(
+        record_id=held.record_id, merged_head_sha=w2, observed_at="2026-09-28T11:00:00+00:00"), str)
+    rig.git.run(rig.worktree, ["reset", "-q", "--hard", w1])
+    _push(rig)
+
+    assert rig.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=coding) is False
+    fact = _fact(rig)
+    assert (fact.published_head_sha, fact.published_pr_number) == (w1, PR)
+    (published,) = [d for d in rig.store.for_issue(ISSUE).dispositions if d.key.validated_head_sha == w1]
+    assert published.published_by_open_pr
+    # The same PR's publication of the same head is already recorded.
+    assert rig.store.record_open_pr_publication(
+        _key(w1), published=PublishedOnOpenPullRequest(PR, w1), observed_at="2026-09-28T12:00:00+00:00",
+    ) is OpenPrPublicationStatus.ALREADY_PUBLISHED
+
+
+def test_a_record_another_owner_resolved_is_not_reported_published(rig, make_session, monkeypatch):
+    """Review r3: the route is the durable record's. Another owner resolves the
+    record between the sweep's proof and its result; the store refuses this
+    publication, and the sweep must not claim it."""
+    _, v2, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    (target,) = [d for d in parked if d.key.validated_head_sha == v2]
+
+    def another_owner_first(key, *, published, observed_at):
+        if key.validated_head_sha == v2:
+            claim = rig.store.acquire_claim(target.record_id, expected_states=frozenset({ValidatedWorkState.PARKED}),
+                                            evidence_id=target.evidence_id)
+            assert rig.store.retire_outside_scope(claim, evidence_ids=frozenset({target.evidence_id}),
+                                                  actor="another-owner", reason="resolved elsewhere")
+            assert rig.store.relinquish_claim(claim)
+        return OpenPrPublicationStatus.PUBLICATION_IN_FLIGHT
+
+    monkeypatch.setattr(rig.aggregate, "record_open_pr_publication", another_owner_first)
+
+    report = _sweep(rig).tick(lambda: RecoveryDrainMode.ACTIVE)
+
+    assert rig.store.get(target.record_id).state is ValidatedWorkState.ABANDONED
+    assert report.published == ()
 
 
 def test_an_in_flight_recovery_publication_keeps_the_lineage(rig, make_session):

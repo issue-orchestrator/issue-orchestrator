@@ -263,10 +263,10 @@ class OutOfScopeRetirementSweep:
 
     def _resolved_as(self, record_id: str) -> "_Judgement":
         """Report a record found resolved by what the store recorded."""
-        kind = self._store.record_for_id(record_id).resolution_kind
-        if kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE:
+        record = self._store.record_for_id(record_id)
+        if record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE:
             return _BY_STATUS[ScopeRetirementStatus.RETIRED]
-        if kind is ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD:
+        if record.disposition.published_by_open_pr:
             return _PUBLISHED
         return _NOT_JUDGED
 

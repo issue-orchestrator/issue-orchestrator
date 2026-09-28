@@ -100,8 +100,10 @@ class OpenPullRequestPublication:
         if published is None:
             return False
         status = self.store.record_open_pr_publication(key, published=published, observed_at=self.now())
-        resolved = not any(
-            d.unresolved for d in self.store.for_issue(key.issue_number).dispositions
+        # The route that resolved it is the durable record's answer: another
+        # owner may have resolved it meanwhile, and that is not this publication.
+        resolved = any(
+            d.published_by_open_pr for d in self.store.for_issue(key.issue_number).dispositions
             if d.record_id == record.disposition.record_id
         )
         logger.info(

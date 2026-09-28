@@ -666,7 +666,7 @@ class PublicationProvenance(StrEnum):
 |---|---|---|
 | `RECOVERED(PUBLISHED)` — §4.4 drain | the pushed `validated_head_sha` | the recorded pre-push expectation |
 | `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` — §3.5 merged PR | the observed merged head, verified to contain the validated head | `''` — we did not push, so we have no baseline to prove |
-| `OBSERVED_OPEN_PR`, from §2.7: the completion's own push, seen on the issue's open PR | the PR head, verified to contain a validated head of the lineage | `''`, because we did not push it. This is the one route that may move the fact to a divergent head (a rebased rework's force-push); it still never moves it backward |
+| `OBSERVED_OPEN_PR`, from §2.7: the completion's own push, seen on the issue's open PR | the PR head, verified to contain a validated head of the lineage | `''`, because we did not push it. This is the one route that follows the branch wherever the PR head moved, including a rebased rework's force-push |
 
 Both are written in the same transaction as their record's resolution, and only when
 the new head is a descendant of (or equal to) the recorded one, so the fact moves
@@ -1430,13 +1430,14 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   the caller's word for it.
 - If a record in the lineage is `PUBLISHING`, the store refuses. That
   publication owns the remote expectation (§4.4e).
-- The fact never moves backward. If the recorded head already contains the PR
-  head, nothing is written.
-- The fact **may** move to a head that diverges from the recorded one. This is
-  the one exception to "forward only", and it is deliberate: a rebased
-  rework's force-push changes what the branch publishes, and the store has
-  just proven that the new head carries validated work of this lineage.
-  Keeping the stale head would park every later capture as divergent.
+- The fact follows the PR. It moves to the PR head wherever that head is
+  relative to the recorded one: a descendant, a divergent head after a
+  rebased rework's force-push, or even an ancestor after a force-push back.
+  This is the one exception to "forward only", and it is deliberate. The PR
+  head is what the branch publishes now, and the store has just proven that
+  it carries validated work of this lineage. Keeping a stale head would park
+  every later capture as divergent. Two cases write nothing: the head recovery
+  itself pushed, and this PR's already recorded publication of the same head.
 - After the write, the store reclassifies the lineage (§2.1.4 table). Records
   the PR head contains resolve `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` and keep
   their escrow and pins for the window. Each one this write resolved also gets

@@ -48,11 +48,12 @@ def record_open_pr_publication(
       caller's proof.
     * A lineage with a PUBLISHING record is left alone. That in-flight
       publication owns the remote expectation (§4.4e).
-    * The fact never moves backward. If the recorded head already contains
-      the PR head, nothing is written.
-    * The fact may move to a head that diverges from the recorded one. That
-      is the completion's force-push of a rebased rework, and the PR head is
-      now what the branch publishes.
+    * The fact follows the PR: whatever the PR head's relation to the
+      recorded head (descendant, divergent after a rebased rework's
+      force-push, or even an ancestor after a force-push back), the PR head is
+      what the branch publishes now, and the store has just proven it carries
+      validated work of this lineage. Only the head recovery itself pushed, or
+      this PR's already recorded publication of the same head, is left as is.
     """
     lineage_key = canonical_lineage_key(key)
     head = replace(key, validated_head_sha=published.head_sha)
@@ -68,11 +69,17 @@ def record_open_pr_publication(
         return Status.PUBLICATION_IN_FLIGHT
     fact = publication(conn, lineage_key)
     if fact is not None:
-        recorded = replace(key, validated_head_sha=fact.published_head_sha)
-        relation = lineage.compare(CommitReference(head, ""), CommitReference(recorded, ""))
-        if relation in {Relation.EQUAL, Relation.ANCESTOR}:
+        if fact.published_head_sha == published.head_sha and (
+            fact.published_via is PublicationProvenance.PUSHED_BY_OWNER
+            or fact.published_pr_number == published.pr_number
+        ):
+            # Recovery pushed this very head (and routed it), or this PR's
+            # publication of it is already recorded.
             return Status.ALREADY_PUBLISHED
-        if relation not in {Relation.DESCENDANT, Relation.DIVERGENT}:
+        recorded = replace(key, validated_head_sha=fact.published_head_sha)
+        if lineage.compare(CommitReference(head, ""), CommitReference(recorded, "")) not in {
+            Relation.EQUAL, Relation.ANCESTOR, Relation.DESCENDANT, Relation.DIVERGENT,
+        }:
             return Status.CONTAINMENT_UNPROVEN
     conn.execute(
         "INSERT INTO validated_work_lineage (lineage_key,published_head_sha,published_by_record_id,"
