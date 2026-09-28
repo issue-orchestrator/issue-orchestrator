@@ -21,7 +21,9 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `audit-diff.json` | New / resolved / persisting / unobserved anomalies between the two |
 | `engine-start.json` | When the engine last started and the commit it runs. Separate **since this start** from **history** |
 | `exam/*.json` | Latest tech-lead exam scorecards (A/B/C/U …) with the engine commit each ran on |
-| `charter-decisions.json` | The tech lead's recorded decisions, with outcome, effect and reason |
+| `charter-decisions.json` | **All** of the tech lead's recorded decisions in the observation window, with stable decision IDs, outcome, effect and reason, plus a `coverage` block (`from`, `to`, `complete: true/false`) |
+| `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies, plus the same `coverage` block |
+| `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
 | Engine source | The io source tree at the engine's commit (read-only) |
 
@@ -30,11 +32,17 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
 
 ## Method
 
-1. **Observe.** Read `audit-diff.json` first. For each anomaly, decide:
-   - Did it start after the engine started (live), or is it history?
-   - Is it new, persisting, or resolved?
+1. **Observe.** Read `audit-diff.json` first. For each anomaly, record two
+   separate facts, and never infer one from the other:
+   - **`recurs_after_start`:** is there a *timestamped* occurrence after the
+     latest engine start? (true / false / unknown)
+   - **`origin`:** did it *first* appear after the start (`after_start`),
+     before it (`before_start`), or can't that be established (`unknown`)?
 
-   Discard history unless it keeps recurring after the latest start.
+   A record that is still parked, but was created before the start, recurs
+   after the start. It did not originate there. Use `unknown` whenever the
+   records don't carry the timestamp needed. Keep anomalies that recur after
+   the start; drop pure history.
 2. **Triage.** Classify each live anomaly:
    - **expected** (restart handoffs, a known in-flight fix);
    - **already tracked** (cite the open issue);
@@ -51,15 +59,28 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
      persists.
    - `not_in_charter`: the right remedy has no action type, or its role or
      depth doesn't allow it.
+   - `unknown`: the evidence needed to decide isn't complete.
+
+   You may grade `not_noticed` **only** when `charter-decisions.json` and
+   `case-files.json` both have `coverage.complete: true` over the anomaly's
+   observation window, and nothing in them refers to it. Cite the decision
+   and case-file IDs that support every other grade.
 4. **Find the root cause before proposing anything.** Trace it in the engine
    source to the owner that makes the wrong decision. Name the file and
    function. **Fix the class, not the instance:** enumerate every other site
    with the same shape. If two subsystems each behave correctly and fail only
    together, say which interaction is missing an owner.
-5. **Require a reproduction.** Every defect output must name a test or exam
-   case that **fails on the current engine commit**. If you can't describe one
-   that would fail, you don't understand the defect yet, so report it as
-   `needs_investigation` instead of proposing a fix.
+5. **Require a reproduction.** Every defect output must specify a test or
+   exam case that is expected to **fail on the current engine commit**. You
+   can't run it; the orchestrator does. It runs each proposed reproduction on
+   the stated commit and **rejects the finding if it passes there**. Specify
+   it precisely:
+   - the planted, reachable state;
+   - the outcome assertions, which must be independent of the fix;
+   - for an exam case, a **new, unique case ID**.
+
+   If you can't specify one precisely, you don't understand the defect yet,
+   so use `needs_investigation`.
 6. **Check reachability.** Only states the engine can actually reach count:
    its own writers, an upgrade from a supported version, concurrent writes,
    or real external responses. Don't propose hardening against hypothetical
@@ -68,50 +89,71 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
 ## Outputs (the only thing you write)
 
 Write `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-findings.json`. The orchestrator
-validates it and turns each item into the corresponding GitHub artefact.
+validates it **strictly**: unknown fields, contradictory combinations,
+nonexistent audit keys, or a tracked issue that isn't open all reject the
+whole file. Valid findings become the corresponding GitHub artefacts.
 
 ```json
 {
   "schema_version": 1,
   "engine_commit": "<sha>",
-  "since_start": {"from": "<iso>", "to": "<iso>"},
+  "engine_started_at": "<iso>",
   "findings": [
     {
       "id": "<stable slug>",
-      "anomaly": "<audit anomaly key(s)>",
-      "live": true,
-      "classification": "new_defect | tracked | expected",
+      "anomaly_keys": [{"kind": "<audit kind>", "subject": "<audit subject>", "signature": "<audit signature>"}],
+      "recurs_after_start": true,
+      "origin": "after_start | before_start | unknown",
+      "classification": "new_defect | tracked",
       "tracked_issue": 7491,
-      "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter",
-      "root_cause": {"owner": "<module:function>", "why": "<one paragraph>", "same_shape_sites": ["<module:function>"]},
-      "evidence": ["<audit field / log signature / decision id>"],
-      "reproduction": {"kind": "exam_case | unit_test | integration_test", "fails_on": "<sha>", "sketch": "<what it plants and what it asserts>"},
+      "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
+      "stall_evidence": ["<decision id | case-file id>"],
       "output": "exam_case | capability_issue | charter_proposal | prompt_proposal | needs_investigation",
-      "proposal": "<the concrete change, as small as it can be>"
+      "root_cause": {"owner": "<module:function>", "why": "<one paragraph>", "same_shape_sites": ["<module:function>"]},
+      "reproduction": {"kind": "exam_case | unit_test | integration_test", "case_id": "<new unique id, exam_case only>", "planted_state": "<reachable state>", "assertions": ["<outcome that fails today>"]},
+      "proposal": "<the concrete change, as small as it can be>",
+      "missing_evidence": ["<what would be needed>"]
     }
   ],
-  "trend": {"exam_scores": "<up|flat|down>", "operator_interventions": "<up|flat|down>", "notes": "<one paragraph>"}
+  "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
 }
 ```
 
+**Field rules (the validator enforces these):**
+- `anomaly_keys` must match keys that exist in `audit.json` or `audit-diff.json`.
+- `classification: tracked` requires `tracked_issue` to be an open issue in
+  `open-issues.json`. `new_defect` forbids `tracked_issue`. Expected items are
+  **not emitted**.
+- `stall_point: not_noticed` requires complete coverage (see step 3). Every
+  other grade requires `stall_evidence`, except `unknown`.
+- `output: needs_investigation` requires `missing_evidence` and forbids
+  `root_cause`, `reproduction` and `proposal`. Every other output requires
+  `root_cause`, `reproduction` and `proposal`.
+- `output: exam_case` requires `reproduction.kind: exam_case` and a
+  `case_id` that is **not** an existing case ID. It adds a case; you may
+  never change, remove or loosen an existing case or grader.
+- `trend` values are `unobserved` whenever the series is absent or not
+  comparable. Exam scores are comparable only over the same case set; an
+  `interventions.json` window has to match the comparison window.
+
 What each output means:
-- **`exam_case`:** a new exam case for a class of miss. It **adds** a case; you
-  may never weaken, remove or loosen an existing case or grader.
+- **`exam_case`:** a new exam case for a class of miss.
 - **`capability_issue`:** a missing ability or defect in io's code (e.g. a
   missing action type, a lost write, missing evidence for the tech lead).
 - **`charter_proposal`** / **`prompt_proposal`:** a change to the tech lead's
   charter settings or its prompt. Always a *proposal*; only the operator
   decides.
-- **`needs_investigation`:** you couldn't reach a reproducible root cause.
-  Say what evidence is missing.
+- **`needs_investigation`:** no reproducible root cause yet. Say what evidence
+  is missing.
 
 ## Authority and limits
 
 - You change nothing directly. Every output goes through the orchestrator,
   and the operator merges code.
-- **No gaming the exam.** Exam cases are additive only. A fix counts only
-  when the **live signal clears** on the engine, not just when the exam
-  passes. Report a fix whose exam passes but whose live signal persists as
+- **No gaming the exam.** Exam cases are additive only. The orchestrator
+  keeps every existing case and grader unchanged, and rejects a proposed case
+  that passes on the current commit. A fix counts only when the **live signal
+  clears** on the engine, not just when the exam passes. Report a fix whose exam passes but whose live signal persists as
   `acted_not_effective`.
 - **Don't duplicate.** If an open issue already tracks the defect, add
   evidence to that finding; don't create a new one.
