@@ -779,6 +779,27 @@ def test_a_database_that_cannot_be_copied_is_unreadable_and_leaves_no_copy(
     assert reading.status is SourceStatus.UNREADABLE
 
 
+def test_an_unreadable_admission_instant_makes_validated_work_unread(
+    state, tmp_path, monkeypatch
+) -> None:
+    with closing(sqlite3.connect(state / cli.VALIDATED_WORK_DB)) as conn:
+        conn.execute("UPDATE validated_work_records SET created_at = 'yesterday' WHERE issue_number = 7001")
+        conn.commit()
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    (reading,) = [r for r in report.sources if r.source is AuditSource.VALIDATED_WORK]
+    assert reading.status is SourceStatus.UNREADABLE and "created_at" in reading.detail
+    assert report.validated_work is None
+    assert AnomalyKind.STALE_UNRESOLVED_WORK not in _kinds(report)
+
+
+def test_the_report_carries_each_subjects_last_state_change(state, tmp_path, monkeypatch) -> None:
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert [c.subject for c in report.no_progress.state_changes] == ["#411"]
+
+
 def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live.sqlite"
     with closing(sqlite3.connect(live)) as conn:

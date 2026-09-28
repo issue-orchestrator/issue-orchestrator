@@ -15,6 +15,7 @@ from issue_orchestrator.contracts.engine_audit import (
     NoProgressSection,
     SourceReading,
     SourceStatus,
+    StateChange,
 )
 from issue_orchestrator.observation.engine_audit_diff import (
     IncomparableAuditError,
@@ -32,7 +33,9 @@ def _anomaly(
 PARKED = _anomaly(AnomalyKind.PARKED_ACTION, "issue:410", AuditSource.ACTION_LIVENESS, count=3)
 LABEL = _anomaly(AnomalyKind.ATTENTION_LABEL, "#411", AuditSource.GITHUB)
 STALE = _anomaly(AnomalyKind.STALE_UNRESOLVED_WORK, "#7001", AuditSource.VALIDATED_WORK)
-LOOP = _anomaly(AnomalyKind.NO_PROGRESS_LOG, "the engine", AuditSource.LOG, AuditSource.TIMELINE, count=40)
+LOOP = _anomaly(AnomalyKind.NO_PROGRESS_LOG, "#410", AuditSource.LOG, AuditSource.TIMELINE, count=40)
+LATER = "2026-09-29T10:00:00+00:00"
+CHANGED_410 = (StateChange(subject="#410", at="2026-09-28T12:00:00+00:00"),)
 
 
 def _report(
@@ -42,6 +45,7 @@ def _report(
     github: SourceStatus = SourceStatus.READ,
     log: SourceStatus = SourceStatus.READ,
     timeline: SourceStatus = SourceStatus.READ,
+    state_changes: tuple[StateChange, ...] = (),
 ) -> EngineAuditReport:
     status = {AuditSource.GITHUB: github, AuditSource.LOG: log, AuditSource.TIMELINE: timeline}
     return EngineAuditReport(
@@ -59,7 +63,12 @@ def _report(
         claims=None,
         github=None,
         no_progress=NoProgressSection(
-            window_start=at, window_end=at, log=None, log_signatures=(), timeline_repeats=()
+            window_start=at,
+            window_end=at,
+            log=None,
+            log_signatures=(),
+            timeline_repeats=(),
+            state_changes=state_changes,
         ),
         fetch_cost=None,
         anomalies=anomalies,
@@ -104,15 +113,31 @@ def test_an_anomaly_whose_source_was_not_read_is_unobserved_not_resolved() -> No
 def test_a_log_anomaly_is_resolved_only_by_a_full_read_of_everything_it_rests_on(
     log, timeline
 ) -> None:
-    diff = diff_reports(_report(LOOP), _report(log=log, timeline=timeline))
+    diff = diff_reports(
+        _report(LOOP), _report(log=log, timeline=timeline, at=LATER, state_changes=CHANGED_410)
+    )
 
     assert (diff.resolved, diff.unobserved) == ((), (LOOP,))
 
 
-def test_a_full_read_that_no_longer_sees_a_log_anomaly_resolves_it() -> None:
-    diff = diff_reports(_report(LOOP), _report())
+def test_a_no_progress_anomaly_is_resolved_by_its_subject_changing_state() -> None:
+    diff = diff_reports(_report(LOOP), _report(at=LATER, state_changes=CHANGED_410))
 
     assert (diff.resolved, diff.unobserved) == ((LOOP,), ())
+
+
+@pytest.mark.parametrize(
+    "state_changes",
+    [
+        (),  # the repeats aged out of the window (or were trimmed): nothing changed
+        (StateChange(subject="#410", at="2026-09-28T09:00:00+00:00"),),  # before the previous audit
+        (StateChange(subject="#411", at="2026-09-28T12:00:00+00:00"),),  # another subject
+    ],
+)
+def test_a_no_progress_anomaly_that_only_aged_out_is_unobserved(state_changes) -> None:
+    diff = diff_reports(_report(LOOP), _report(at=LATER, state_changes=state_changes))
+
+    assert (diff.resolved, diff.unobserved) == ((), (LOOP,))
 
 
 def test_audits_of_different_repositories_are_not_compared() -> None:

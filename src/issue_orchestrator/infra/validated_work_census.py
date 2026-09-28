@@ -17,6 +17,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from ..domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
 from ..domain.validated_work import UNRESOLVED_STATES
 from ..ports.engine_audit import UnresolvedWorkRecord, ValidatedWorkCensus
 from .sqlite_readonly import readonly_sqlite_transaction
@@ -60,18 +61,25 @@ class SqliteValidatedWorkCensus:
                     record_id=row["record_id"],
                     issue_number=int(row["issue_number"]),
                     state=row["state"],
-                    # Written from the admission's aware ISO instant; a value
-                    # that does not parse is a corrupt row and fails loudly.
-                    created_at=_aware(datetime.fromisoformat(row["created_at"])),
+                    created_at=_created_at(row["record_id"], row["created_at"]),
                 )
                 for row in unresolved
             ),
         )
 
 
-def _aware(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        raise ValueError(f"validated-work created_at has no offset: {value.isoformat()}")
+def _created_at(record_id: str, stored: object) -> datetime:
+    """A row's admission instant: written from an aware ISO instant, so a value
+    that does not parse, or has no offset, is a damaged row the census refuses."""
+    try:
+        value = datetime.fromisoformat(str(stored))
+    except ValueError:
+        value = None
+    if value is None or value.tzinfo is None:
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNREADABLE,
+            f"validated-work record {record_id} has an unreadable created_at: {stored!r}",
+        )
     return value
 
 

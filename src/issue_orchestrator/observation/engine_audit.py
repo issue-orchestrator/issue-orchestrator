@@ -40,6 +40,7 @@ from ..contracts.engine_audit import (
     QuarantinedClaim,
     SourceReading,
     SourceStatus,
+    StateChange,
     TechLeadSection,
     TimelineRepeat,
     UnreadableClaimSummary,
@@ -193,6 +194,10 @@ def audit_engine(
         log=None if log_read is None else _coverage(*log_read, window_start),
         log_signatures=() if log_read is None else log_read[1].signatures,
         timeline_repeats=repeats,
+        state_changes=tuple(
+            StateChange(subject=subject, at=at.isoformat())
+            for subject, at in sorted(_last_state_change(events).items())
+        ),
     )
     fetch_cost = None if log_read is None else log_read[1].fetch_cost
     return EngineAuditReport(

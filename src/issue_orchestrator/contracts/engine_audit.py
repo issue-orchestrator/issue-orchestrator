@@ -251,6 +251,13 @@ class TimelineRepeat(_Frozen):
     count: int
 
 
+class StateChange(_Frozen):
+    """The last time the timeline shows a subject's state moving in the window."""
+
+    subject: str
+    at: str
+
+
 class NoProgressSection(_Frozen):
     window_start: str
     window_end: str
@@ -258,6 +265,11 @@ class NoProgressSection(_Frozen):
     log: LogCoverage | None
     log_signatures: tuple[LogSignature, ...]
     timeline_repeats: tuple[TimelineRepeat, ...]
+    #: Every subject whose state changed in the window, with the last change.
+    #: A no-progress anomaly that is gone from a later audit is resolved only
+    #: if its subject changed state after the earlier audit: a repeat that
+    #: merely aged out of the window, or was trimmed, proves nothing.
+    state_changes: tuple[StateChange, ...]
 
 
 class AnomalyKind(StrEnum):
@@ -360,6 +372,7 @@ __all__ = [
     "PersistingAnomaly",
     "QuarantinedClaim",
     "SourceReading",
+    "StateChange",
     "SourceStatus",
     "TechLeadSection",
     "TimelineRepeat",
