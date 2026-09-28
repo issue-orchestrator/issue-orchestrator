@@ -2604,3 +2604,28 @@ def test_a_merged_partial_pr_does_not_complete_its_issue_on_the_board(partial):
         assert 320 in completed
         assert history_item["flow_stage"] == "done"
         assert wait == "Waiting: previous run state"
+
+
+def test_a_deferred_launch_reads_as_a_wait_not_a_failure_or_a_cause():
+    """#7461 review: an issue whose launch waited is shown waiting for the
+    refresh - never as a failed launch, and without guessing why it waited."""
+    config = _make_config()
+    issue = Issue(number=4, title="Deferred", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        launch_deferred_this_cycle={4},
+    )
+    view_model = build_dashboard_view_model(
+        _OrchestratorStub(state=state, config=config),
+        provider_circuit=NO_PROVIDER_CIRCUIT_STATUS,
+        tech_lead_history=NO_TECH_LEAD_RUN_HISTORY,
+        blocked_custody=NO_ENGINE_CUSTODY,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    (item,) = [i for i in view_model.queue_items if i["issue_number"] == 4]
+    assert item["queue_wait_reason"] == "Waiting: launch deferred until the next refresh"

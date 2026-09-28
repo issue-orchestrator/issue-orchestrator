@@ -31,8 +31,10 @@ from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilien
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
+from issue_orchestrator.control.github_workflow import launch_issue_by_number
 from issue_orchestrator.control.session_routing import (
     orchestrator_launch_review_session,
+    orchestrator_launch_session,
     session_launcher_callback,
 )
 from issue_orchestrator.control.workflows import ReviewWorkflow
@@ -82,6 +84,13 @@ def recovery_holds() -> _RecoveryHolds:
 @pytest.fixture
 def launcher_bundle(tmp_path: Path, recovery_holds: _RecoveryHolds) -> LauncherTestBundle:
     """A real SessionLauncher over the launch tests' fakes, with a reviewer."""
+    return _bundle(tmp_path, recovery_holds)
+
+
+def _bundle(
+    tmp_path: Path, recovery_holds: _RecoveryHolds, *, provider_readiness_probe=None,
+    provider_resilience=None,
+) -> LauncherTestBundle:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Test prompt")
     config = Config()
@@ -101,6 +110,8 @@ def launcher_bundle(tmp_path: Path, recovery_holds: _RecoveryHolds) -> LauncherT
         MockWorkingCopy(),
         MockCommandRunner(),
         recovery_holds=recovery_holds,
+        provider_readiness_probe=provider_readiness_probe,
+        provider_resilience=provider_resilience,
     )
 
 
@@ -152,7 +163,12 @@ class _Engine:
             return session_launcher_callback(
                 session_type,
                 number,
-                _no_other_kind,
+                lambda n: launch_issue_by_number(
+                    n,
+                    state.cached_queue_issues,
+                    lambda issue: orchestrator_launch_session(issue, state, bundle.launcher, restorer),
+                    lambda: None,
+                ),
                 lambda n: launch_review_by_number(
                     n,
                     state.pending_reviews,
@@ -191,7 +207,9 @@ class _Engine:
         )
 
     def plan(self) -> Plan:
-        return self.planner.plan(OrchestratorSnapshot.from_state([], self.state))
+        return self.planner.plan(
+            OrchestratorSnapshot.from_state(list(self.state.cached_queue_issues), self.state)
+        )
 
     def apply(self, plan: Plan) -> None:
         self.support.apply_plan(gated(plan), MagicMock())
@@ -466,3 +484,80 @@ def test_an_unreadable_recovery_hold_is_a_retried_launch_failure_not_a_wait(
     assert engine.spawned() == []
     assert [e["step_type"] for e in engine.events.of(EventName.APPLY_FAILED)] == ["launch_session"]
     assert state.pending_reviews == [queued]  # retained for the next attempt
+
+
+# --- #7461 review: a deferred launch is a wait, not a failed action ---------
+
+
+def test_a_rate_limited_review_launch_waits_queued_and_is_not_a_failure(
+    launcher_bundle: LauncherTestBundle,
+) -> None:
+    """The host's rate-limit window is open: the launch is retained, nothing
+    is spent, and the plan step is a wait - no apply.failed, nothing failed."""
+    from datetime import UTC, datetime, timedelta
+
+    from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
+    from issue_orchestrator.domain.host_rate_limit import HostRateLimit, episode_key
+
+    state = OrchestratorState()
+    queued = _review(agent_label=None)
+    assert state.queue_pending_review(queued)
+    now = datetime.now(UTC)
+    state.host_rate_limit.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=30), kind="primary", resource="core"),
+        now, episode_key("review", ISSUE), live=live_episode_keys(state),
+    )
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert state.pending_reviews == [queued]
+    assert len(_skips(engine)) == 1
+
+
+def test_a_provider_deferred_issue_launch_waits_and_never_marks_the_issue_failed(
+    tmp_path: Path, recovery_holds: _RecoveryHolds
+) -> None:
+    """The provider CLI is not installed: the launch is refused before anything
+    is attempted. That is a wait for a ready provider, not a failed launch that
+    holds the issue out of the next tick's plan (``failed_this_cycle``)."""
+    from issue_orchestrator.domain.models import Issue as ModelIssue
+    from issue_orchestrator.ports.provider_readiness import (
+        ProviderReadiness,
+        StaticProviderReadinessProbe,
+    )
+
+    readiness = ProviderReadiness.not_installed("claude-code", "claude not on PATH")
+    from tests.unit.test_provider_readiness_boundary import _manager
+
+    bundle = _bundle(
+        tmp_path, recovery_holds,
+        provider_readiness_probe=StaticProviderReadinessProbe(readiness.state, readiness.detail),
+        provider_resilience=_manager(MockEventSink()),
+    )
+    bundle.launcher.config.agents["agent:web"].provider = "claude-code"
+    state = OrchestratorState()
+    issue = ModelIssue(number=ISSUE, title="Feature", labels=["agent:web"], repo="test/repo")
+    state.cached_queue_issues = [issue]
+    state.cached_scope_issues = [issue]
+    engine = _Engine(bundle, state)
+
+    plan = engine.plan()
+    assert [a.action_type.value for a in plan.actions] == ["launch_session"]
+    engine.apply(plan)
+
+    _assert_nothing_failed(engine)
+    assert len(_skips(engine)) == 1
+    assert state.launch_deferred_this_cycle == {ISSUE}
+
+    # An issue has no queue to wait on: it sits out the rest of the cycle, so
+    # the unchanged refusal does not repeat every tick (#7461 review r1).
+    again = engine.plan()
+    assert again.actions == ()
+    assert [s.reason for s in again.skipped if s.number == ISSUE] == [
+        "launch deferred this cycle (waiting, not failed)"
+    ]
+
+    state.launch_deferred_this_cycle.clear()  # the next refresh
+    assert [a.action_type.value for a in engine.plan().actions] == ["launch_session"]

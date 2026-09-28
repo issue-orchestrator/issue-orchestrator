@@ -2062,6 +2062,12 @@ class OrchestratorState:
     active_sessions: list[Session] = field(default_factory=list)
     completed_today: list[int] = field(default_factory=list)  # issue numbers (to migrate: set[IssueKey])
     failed_this_cycle: set[int] = field(default_factory=set)  # issues that failed since last refresh (prevent immediate retry)
+    # Issues whose launch WAITED this cycle - refused before anything was
+    # attempted, e.g. a provider not ready (#7461 review). Not a failure: the
+    # issue simply is not re-planned until the next refresh, so a refusal that
+    # nothing has changed does not repeat every tick. Cleared with
+    # ``failed_this_cycle``.
+    launch_deferred_this_cycle: set[int] = field(default_factory=set)
     # Owned by control.pause_controller.PauseController — never assign this
     # directly. The bare ``paused`` bool it replaces was mutated from four
     # modules, which is why pauses used to carry no reason, actor, or
@@ -2345,6 +2351,19 @@ class OrchestratorState:
             if existing.issue_number != retry.issue_number
         ]
         self.pending_validation_retries.extend([retry])
+
+    def release_cycle_holds(self) -> frozenset[int]:
+        """A queue refresh ends the cycle: release every issue held out of it.
+
+        Both the failure hold and the deferred-launch hold (#7461 review) last
+        until the labels are re-synced from GitHub; one owner releases them so
+        no refresh path can clear one and forget the other. Returns the issues
+        that had failed, for the refresh log.
+        """
+        failed = frozenset(self.failed_this_cycle)
+        self.failed_this_cycle.clear()
+        self.launch_deferred_this_cycle.clear()
+        return failed
 
     def record_discovered_review(self, review: DiscoveredReview) -> None:
         """Record a completion-discovered review once per issue/PR pair."""

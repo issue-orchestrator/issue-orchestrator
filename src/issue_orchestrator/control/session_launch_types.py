@@ -10,6 +10,7 @@ from ..domain.models import Session
 from ..ports.repository_host import HostRateLimit, host_rate_limit_of
 
 if TYPE_CHECKING:
+    from ..domain.models import OrchestratorState
     from .action_base import Action
     from .action_results import ActionResult
 
@@ -294,17 +295,40 @@ class LaunchStep:
 
     @classmethod
     def of_result(cls, result: LaunchResult) -> "LaunchStep":
-        """The step a launch result comes to when no terminal was adopted."""
-        if result.success and result.session is not None:
+        """The step a launch result comes to when no terminal was adopted.
+
+        Decided by :data:`STEP_OUTCOME_BY_DISPOSITION`, one row per
+        disposition, so a disposition added later cannot silently fall through
+        to "not launched" - which the plan applier reports as a failed action.
+        """
+        outcome = STEP_OUTCOME_BY_DISPOSITION[result.disposition]
+        if outcome is LaunchStepOutcome.LAUNCHED:
+            if result.session is None:
+                raise ValueError("a LAUNCHED launch result carries no session")
             return cls.launched(result.session)
-        if result.disposition is LaunchDisposition.WITHDRAWN:
-            return cls.withdrawn(result.reason)
-        if result.disposition in (
-            LaunchDisposition.HELD_BY_RECOVERY,
-            LaunchDisposition.SUBJECT_BUSY,
-        ):
-            return cls.waiting(result.reason)
-        return cls.not_launched(result.reason or result.disposition.value)
+        return cls(outcome, None, result.reason or result.disposition.value)
+
+
+#: What every launch disposition comes to as a plan step (#7455, #7461 review).
+#: A request its queue RETAINS with no budget spent is a wait, never a failed
+#: action: a provider refusal, a host rate limit, an unrecorded claim, a
+#: recovery hold, a busy subject. Only an attempt that did not start - a
+#: retryable or permanent failure, or a running terminal that could not be
+#: adopted - is NOT_LAUNCHED.
+STEP_OUTCOME_BY_DISPOSITION: dict[LaunchDisposition, LaunchStepOutcome] = {
+    LaunchDisposition.LAUNCHED: LaunchStepOutcome.LAUNCHED,
+    LaunchDisposition.EXISTING_TERMINAL: LaunchStepOutcome.NOT_LAUNCHED,
+    LaunchDisposition.PROVIDER_DEFERRED: LaunchStepOutcome.WAITING,
+    LaunchDisposition.HOST_RATE_LIMITED: LaunchStepOutcome.WAITING,
+    LaunchDisposition.CLAIM_UNRECORDED: LaunchStepOutcome.WAITING,
+    LaunchDisposition.HELD_BY_RECOVERY: LaunchStepOutcome.WAITING,
+    LaunchDisposition.SUBJECT_BUSY: LaunchStepOutcome.WAITING,
+    LaunchDisposition.WITHDRAWN: LaunchStepOutcome.WITHDRAWN,
+    LaunchDisposition.RETRYABLE_FAILURE: LaunchStepOutcome.NOT_LAUNCHED,
+    LaunchDisposition.PERMANENT_FAILURE: LaunchStepOutcome.NOT_LAUNCHED,
+}
+if set(STEP_OUTCOME_BY_DISPOSITION) != set(LaunchDisposition):
+    raise RuntimeError("every LaunchDisposition needs a plan-step outcome")
 
 
 def launch_step_result(action: "Action", step: LaunchStep, failure: str) -> "ActionResult":
@@ -321,3 +345,22 @@ def launch_step_result(action: "Action", step: LaunchStep, failure: str) -> "Act
     if step.outcome is LaunchStepOutcome.NOT_LAUNCHED:
         return ActionResult.fail(action, failure)
     return ActionResult.skip(action, step.reason, launch_step=step.outcome.value)
+
+
+def hold_deferred_issue_launch(
+    state: "OrchestratorState", action: "Action", result: "ActionResult"
+) -> None:
+    """An ISSUE launch that WAITED sits out until the next refresh (#7461 review).
+
+    Queued work waits on its queue; a fresh issue pickup has none, so without
+    this hold the planner re-plans it every tick and the launch is refused
+    again for the same reason. Recorded as a deferral, never as a failure.
+    """
+    from .actions import LaunchSessionAction, SessionType
+
+    if (
+        isinstance(action, LaunchSessionAction)
+        and action.session_type is SessionType.ISSUE
+        and result.details.get("launch_step") == LaunchStepOutcome.WAITING.value
+    ):
+        state.launch_deferred_this_cycle.add(action.number)

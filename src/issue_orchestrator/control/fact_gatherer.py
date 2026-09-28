@@ -292,6 +292,7 @@ class FactGatherer:
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
+            launch_deferred_this_cycle=frozenset(state.launch_deferred_this_cycle),
             session_history_issue_numbers=issues_held_by_session_history(state.session_history),
             e2e_occupies_slot=e2e_occupies_slot,
             e2e_due=e2e_due,

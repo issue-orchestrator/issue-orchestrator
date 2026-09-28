@@ -14,6 +14,7 @@ from tests.conftest import MockSessionRunner
 from tests.conftest import operator_paused_state
 from tests.unit.control.liveness_doubles import gated
 from tests.unit.control.liveness_doubles import drain_liveness
+from issue_orchestrator.control.session_launch_types import LaunchStep
 from issue_orchestrator.domain.pause_state import PauseActor, PauseReason
 from issue_orchestrator.infra.orchestrator import Orchestrator
 from issue_orchestrator.entrypoints.run_orchestrator import run_orchestrator
@@ -2127,7 +2128,7 @@ class TestRunLoop:
             # Mock observe_session to return RUNNING (sessions still active)
             mock_observe.return_value = SessionObservationResult.running(runtime_minutes=5.0)
 
-            with patch.object(orchestrator, "launch_session") as mock_launch:
+            with patch.object(orchestrator, "launch_session_step") as mock_launch:
                 await run_loop_one_tick(orchestrator)
 
                 # Should not launch new sessions when at capacity
@@ -2148,8 +2149,8 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
-            mock_launch.return_value = create_session(issue1)
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
+            mock_launch.return_value = LaunchStep.launched(create_session(issue1))
 
             tick_complete = asyncio.Event()
             original_tick = orchestrator.tick
@@ -2182,7 +2183,7 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             mock_launch.side_effect = Exception("Launch failed")
 
             # Run one iteration - should not crash
@@ -2246,7 +2247,7 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             tick_complete = asyncio.Event()
@@ -2301,7 +2302,7 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             # Run one iteration
@@ -2342,7 +2343,7 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             def launch_side_effect(issue):
@@ -2351,10 +2352,10 @@ class TestMaxIssuesToStart:
                 if call_count >= 3:
                     orchestrator.request_shutdown()
                 if call_count == 1:
-                    return create_session(issue1)
+                    return LaunchStep.launched(create_session(issue1))
                 if call_count == 2:
-                    return create_session(issue2)
-                return create_session(issue3)
+                    return LaunchStep.launched(create_session(issue2))
+                return LaunchStep.launched(create_session(issue3))
 
             mock_launch.side_effect = launch_side_effect
 
@@ -2382,7 +2383,7 @@ class TestMaxIssuesToStart:
         # Simulate that we already started 2 issues in previous iterations
         orchestrator.state.issues_started_count = 2
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             await run_loop_one_tick(orchestrator)
 
             # Should not launch any new issues
@@ -2425,11 +2426,11 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
-            mock_launch.return_value = create_session(issue1)
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
+            mock_launch.return_value = LaunchStep.launched(create_session(issue1))
 
             mock_launch.side_effect = lambda issue: (
-                orchestrator.request_shutdown() or create_session(issue1)
+                orchestrator.request_shutdown() or LaunchStep.launched(create_session(issue1))
             )
 
             await orchestrator.run_loop()
@@ -2469,7 +2470,7 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             def launch_side_effect(issue):
@@ -2477,7 +2478,7 @@ class TestMaxIssuesToStart:
                 call_count += 1
                 if call_count >= 2:
                     orchestrator.request_shutdown()
-                return None if call_count == 1 else create_session(issue2)
+                return LaunchStep.not_launched("claimed elsewhere") if call_count == 1 else LaunchStep.launched(create_session(issue2))
 
             mock_launch.side_effect = launch_side_effect
 
@@ -3321,9 +3322,9 @@ class TestPauseBehavior:
             if launch_count == 1:
                 orchestrator.state.pause_state = operator_paused_state()
                 orchestrator.request_shutdown()
-            return create_session(issue)
+            return LaunchStep.launched(create_session(issue))
 
-        with patch.object(orchestrator, "launch_session", side_effect=launch_side_effect) as mock_launch:
+        with patch.object(orchestrator, "launch_session_step", side_effect=launch_side_effect) as mock_launch:
             await orchestrator.run_loop()
 
             # Should only launch 1 issue (paused after first)
@@ -4730,3 +4731,22 @@ def test_a_reworks_validation_retry_is_queued_with_its_pr_and_cycle(sample_confi
     [retry] = orchestrator.state.pending_validation_retries
     assert retry.source_kind is SessionKind.REWORK
     assert (retry.pr_number, retry.rework_cycle) == (456, 2)
+
+
+def test_the_issue_launch_callback_keeps_the_launch_steps_type(
+    sample_config, mock_repository_host
+):
+    """#7461 review: the ISSUE callback must hand the applier the routed step,
+    not collapse a deferral to "no session" (which the applier fails)."""
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+    from issue_orchestrator.control.session_manager import SessionType
+
+    issue = create_issue(1, labels=["agent:web"])
+    orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+    orchestrator.state.cached_queue_issues = [issue]
+    waiting = LaunchStep.waiting("provider not ready")
+
+    with patch.object(orchestrator, "launch_session_step", return_value=waiting):
+        step = orchestrator.session_launcher_callback(SessionType.ISSUE, 1)
+
+    assert step.outcome is LaunchStepOutcome.WAITING

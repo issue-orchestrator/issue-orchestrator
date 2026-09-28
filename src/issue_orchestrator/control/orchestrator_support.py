@@ -52,6 +52,7 @@ from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
 from .reconciliation import ReconciliationRequired, ReconciliationResponse, response_to
 from .planned_action_liveness import PlannedActionLiveness, outcome_of_error, outcome_of_result
 from .action_results import ActionResultType
+from .session_launch_types import hold_deferred_issue_launch
 from ..domain.action_liveness import ActionOutcome
 from .tick_telemetry import report_slow_tick
 from .session_history import (
@@ -307,6 +308,7 @@ class OrchestratorSupport:
 
     def _handle_action_skipped(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
         reason = str(result.details.get("skip_reason", ""))
+        hold_deferred_issue_launch(self.state, action, result)
         logger.info("[PLAN] Action %s skipped: %s", action.action_type.value, reason)
         self.events.publish(make_trace_event(
             EventName.APPLY_STEP_APPLIED,
@@ -870,9 +872,8 @@ def _fetch_and_update_queue(
         if queue_cache_store is not None:
             queue_cache.save_snapshot()
 
-        if state.failed_this_cycle:
-            logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
-            state.failed_this_cycle.clear()
+        if failed := state.release_cycle_holds():
+            logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", set(failed))
 
         gh_usage_after = gh_audit.get_live_usage_snapshot()
         gh_calls = int(gh_usage_after.get("total_calls", 0)) - int(gh_usage_before.get("total_calls", 0))

@@ -41,11 +41,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Sequence, TypeVar
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence, TypeVar
 
 from .action_base import Action
 from .actions import ActionType, LaunchSessionAction, LaunchValidationRetryAction, SessionType
 from .planner_types import SkippedItem
+
+if TYPE_CHECKING:
+    from ..ports.issue import Issue
+    from .planner_types import OrchestratorSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +148,31 @@ def withhold_launching(
             continue
         kept.append(candidate)
     return kept, reasons
+
+
+def withhold_deferred_launches(
+    issues: Iterable[Issue], snapshot: "OrchestratorSnapshot", skipped: list[SkippedItem]
+) -> dict[int, str]:
+    """Report each candidate issue whose launch already waited this cycle.
+
+    A launch refused before anything was attempted (a provider not ready) is a
+    wait, not a failure (#7461 review), and an issue - unlike queued work - has
+    no queue to wait on. Re-planning it every tick would repeat the refusal
+    and its dependency read; so it sits out until the next refresh, reported
+    as waiting.
+    """
+    reasons: dict[int, str] = {}
+    for issue in issues:
+        if issue.number in snapshot.launch_deferred_this_cycle:
+            skipped.append(
+                SkippedItem(
+                    item_type="issue",
+                    number=issue.number,
+                    reason="launch deferred this cycle (waiting, not failed)",
+                )
+            )
+            reasons[issue.number] = "launch_deferred_this_cycle"
+    return reasons
 
 
 @dataclass
