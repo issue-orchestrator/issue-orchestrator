@@ -14,7 +14,7 @@
       ],
       "present_after_start": "true",
       "recurs_after_start": "true",
-      "origin": "unknown",
+      "origin": "before_start",
       "observed": [
         {
           "at": "2026-09-28T18:00:00+00:00",
@@ -27,10 +27,16 @@
           "kind": "occurrence",
           "source": "audit.json#/no_progress/log_signatures/0/last_seen",
           "supports": "recurs_after_start"
+        },
+        {
+          "at": "2026-09-27T09:00:00+00:00",
+          "kind": "occurrence",
+          "source": "audit-previous.json#/no_progress/log_signatures/0/first_seen",
+          "supports": "origin"
         }
       ],
       "grading_window": {
-        "from": "unknown",
+        "from": "2026-09-27T09:00:00+00:00",
         "to": "2026-09-28T18:00:00+00:00"
       },
       "classification": "tracked",

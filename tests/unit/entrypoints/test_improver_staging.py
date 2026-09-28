@@ -320,3 +320,16 @@ def test_an_audit_told_not_to_read_github_still_stages_the_open_issues(state: Pa
 
     assert outputs.calls == ["issues"]
     assert json.loads((staged.data_dir / "open-issues.json").read_text())["issues"][0]["number"] == 7491
+
+
+def test_the_case_file_ledger_is_staged_without_a_run_history(state: Path, tmp_path: Path) -> None:
+    for name in ("tech_lead_runs.sqlite", "tech_lead_runs.sqlite-wal", "tech_lead_runs.sqlite-shm"):
+        (state / name).unlink(missing_ok=True)
+
+    staged = _stager(FakeHost(), FakeHost()).stage(_request(state, tmp_path))
+
+    cases = json.loads((staged.data_dir / "case-files.json").read_text())
+    assert [c["signature"] for c in cases["case_files"]] == ["retry-refused"]
+    assert cases["coverage"]["complete"] is True
+    assert cases["diagnoses"] == [] and cases["diagnoses_coverage"]["complete"] is False
+    assert "tech-lead run history absent" in cases["diagnoses_coverage"]["detail"]

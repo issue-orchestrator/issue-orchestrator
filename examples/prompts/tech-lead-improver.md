@@ -189,7 +189,8 @@ in `engine-source/examples/improver/findings/`.
   never a snapshot's time or a later occurrence.
 - `origin` is `before_start` exactly when an `occurrence` entry dated
   before `engine_started_at` supports it (e.g. a signature's `first_seen`);
-  otherwise it is `unknown`. There is no `after_start` value.
+  otherwise it is `unknown`. There is no `after_start` value. When the staged records hold an occurrence of the anomaly dated before
+  the start, `origin` must be `before_start` (cite it).
 - `present_after_start` and `recurs_after_start` are strings: `"true"`,
   `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
   `needs_investigation`.
@@ -203,6 +204,9 @@ in `engine-source/examples/improver/findings/`.
   shows the anomaly or could not observe it, `recurs_after_start: "false"`
   while the staged records show an occurrence after the start, and an anomaly neither present
   nor recurring (both `"false"`) is history: don't emit it.
+- For `noticed_not_acted` and `acted_not_effective`, every cited decision,
+  case file or diagnosis must refer to the anomaly's own issue (a decision
+  about it, a run on it, or a `#<n>` mention).
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
   with `applied_at` at or before `grading_window.to`, and an `observed` entry
   supporting presence or recurrence dated after that `applied_at`.

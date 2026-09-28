@@ -73,7 +73,7 @@ from ..observation.improver_inputs import (
     exam_series,
     interventions_input,
 )
-from ..ports.engine_audit import OpenIssueLabels, OpenWorkHost
+from ..ports.engine_audit import OpenIssueLabels, OpenWorkHost, TechLeadRunHistoryRead
 from ..ports.pull_request_tracker import PRInfo
 from ..testing.exam.cases import EXAM_CASE_IDS
 from .engine_snapshot import EngineSnapshot, snapshot_engine, snapshot_tech_lead_runs
@@ -257,12 +257,20 @@ def _stage_tech_lead(
     _write(data / CHARTER_DECISIONS_FILE, decisions)
     entries = [_staged(CHARTER_DECISIONS_FILE, decisions.coverage.detail)]
     runs_store = snapshot_tech_lead_runs(request.state_dir, scratch)
+    # The case-file ledger stands on its own; an unreadable run history only
+    # leaves the diagnoses (never complete anyway) empty, and says why.
+    runs = (
+        TechLeadRunHistoryRead(records=(), unreadable=0)
+        if isinstance(runs_store, Unavailable)
+        else runs_store.all_runs()
+    )
+    staged = case_files_input(case_files, runs, window_start=window_start, cutoff=cutoff)
     if isinstance(runs_store, Unavailable):
-        entries.append(_missing(CASE_FILES_FILE, f"tech-lead run history {runs_store.status.value}: {runs_store.detail}"))
-    else:
-        staged = case_files_input(case_files, runs_store.all_runs(), window_start=window_start, cutoff=cutoff)
-        _write(data / CASE_FILES_FILE, staged)
-        entries.append(_staged(CASE_FILES_FILE, staged.coverage.detail))
+        staged = staged.model_copy(update={"diagnoses_coverage": staged.diagnoses_coverage.model_copy(
+            update={"detail": f"tech-lead run history {runs_store.status.value}: {runs_store.detail}"}
+        )})
+    _write(data / CASE_FILES_FILE, staged)
+    entries.append(_staged(CASE_FILES_FILE, staged.coverage.detail))
     timeline = snapshot.timeline
     interventions = interventions_input(
         ledger,

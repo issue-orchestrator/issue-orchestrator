@@ -88,6 +88,7 @@ class Rule(StrEnum):
     NOT_NOTICED_NEEDS_COVERAGE = "not_noticed_needs_coverage"
     NOT_NOTICED_CITES_NO_NOTICE = "not_noticed_cites_no_notice"
     NOT_NOTICED_UNREFERENCED = "not_noticed_unreferenced"
+    STALL_EVIDENCE_ABOUT_THE_ANOMALY = "stall_evidence_about_the_anomaly"
     ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION = "acted_not_effective_needs_applied_decision"
     ACTED_NOT_EFFECTIVE_NEEDS_LATER_OBSERVATION = "acted_not_effective_needs_later_observation"
     NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE = "not_in_charter_cites_charter_or_source"
@@ -308,7 +309,11 @@ class _Checker:
             if o.supports == "origin" and o.at >= self._start:
                 yield Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, f"{o.source} does not predate the start"
         pre_start = any(o.at < self._start for o in occurrences)
-        if (f.origin == "before_start") != pre_start:
+        if f.origin != "before_start" and any(t < self._start for t in records.known_times()):
+            yield Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, (
+                "the staged records show an occurrence before the start, so its origin is before_start"
+            )
+        elif (f.origin == "before_start") != pre_start:
             yield Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, (
                 "origin is before_start exactly when a cited occurrence predates the start"
             )
@@ -357,6 +362,8 @@ class _Checker:
         for item in evidence:
             if not self._stall_citation_resolves(item):
                 yield Rule.STALL_EVIDENCE_RESOLVES, f"{item!r} is not a staged decision, case file, run, charter setting or source file"
+        if f.stall_point in ("noticed_not_acted", "acted_not_effective"):
+            yield from self._evidence_about(f)
         if f.stall_point == "not_noticed":
             yield from self._not_noticed(f, records)
         elif f.stall_point == "acted_not_effective":
@@ -366,6 +373,17 @@ class _Checker:
                 yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
             if not any(i.startswith((CHARTER_CITATION, ENGINE_SOURCE_CITATION)) for i in evidence):
                 yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "cite the charter.json setting or the source that lacks the action"
+
+    def _evidence_about(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+        """A cited decision, case file or run must refer to the finding's own
+        issue: someone else's remedy does not show this anomaly noticed or
+        acted on. An engine anomaly names no issue, so this cannot be checked."""
+        if not _issue_numbers(f):
+            return
+        about = set(_notices_about(self._evidence, f, None, None))
+        for item in f.stall_evidence:
+            if item in self._notice_ids and item not in about:
+                yield Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY, f"{item} does not refer to the anomaly's issue"
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -392,10 +410,12 @@ class _Checker:
                 yield Rule.NOT_NOTICED_NEEDS_COVERAGE, f"{name} does not completely cover the grading window"
 
     def _acted_not_effective(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+        about = set(_notices_about(self._evidence, f, None, None)) if _issue_numbers(f) else None
         applied = [
             d.applied_at
             for d in (self._decisions.get(i) for i in f.stall_evidence)
             if d is not None and d.applied_at is not None and d.applied_at <= f.grading_window.to
+            and (about is None or d.decision_id in about)
         ]
         if not applied:
             yield Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION, "no cited decision was applied by the audit cutoff"
@@ -522,38 +542,48 @@ class _AnomalyRecords:
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 
 
+def _issue_numbers(finding: Finding) -> set[int]:
+    return {
+        int(match.group(1))
+        for key in finding.anomaly_keys
+        if (match := _ISSUE_SUBJECT.match(key.subject))
+    }
+
+
 def _notices_about(
-    evidence: StagedEvidence, finding: Finding, start: datetime, end: datetime
+    evidence: StagedEvidence, finding: Finding, start: datetime | None, end: datetime | None
 ) -> Iterator[str]:
     """Staged decisions, case files and runs that refer to the finding's
-    issues between ``start`` and ``end``.
+    issues between ``start`` and ``end`` (unbounded where None).
 
     A reference is structural (a decision about the issue, a run whose
     subject it is) or a ``#<n>`` mention in what the tech lead wrote. An
     anomaly of the engine itself names no issue, so nothing refers to it
     structurally.
     """
-    numbers = {
-        int(match.group(1))
-        for key in finding.anomaly_keys
-        if (match := _ISSUE_SUBJECT.match(key.subject))
-    }
+    numbers = _issue_numbers(finding)
     if not numbers:
         return
+
+    def within(t: datetime) -> bool:
+        return (start is None or start <= t) and (end is None or t <= end)
+
     mentioned = re.compile(r"(?<![\w/])#(?:" + "|".join(map(str, sorted(numbers))) + r")\b")
     if evidence.decisions is not None:
         for d in evidence.decisions.decisions:
             about = d.target_number if d.target_number is not None else d.anchor_issue_number
-            if about in numbers and start <= d.decided_at <= end:
+            if about in numbers and within(d.decided_at):
                 yield d.decision_id
     if evidence.case_files is None:
         return
     for c in evidence.case_files.case_files:
         stamps = (c.recorded_at, *(o.recorded_at for o in c.observations))
-        if mentioned.search(c.body) and any(start <= t <= end for t in stamps):
+        if mentioned.search(c.body) and any(within(t) for t in stamps):
             yield c.id
     for r in evidence.case_files.diagnoses:
-        overlaps = r.started_at <= end and (r.ended_at is None or r.ended_at >= start)
+        overlaps = (end is None or r.started_at <= end) and (
+            start is None or r.ended_at is None or r.ended_at >= start
+        )
         if overlaps and (r.subject_issue_number in numbers or mentioned.search(r.body)):
             yield r.id
 

@@ -126,6 +126,13 @@ def _append_observed(entry: dict) -> Mutation:
     return mutate
 
 
+def _drop_observed(index: int) -> Mutation:
+    def mutate(doc: Doc) -> None:
+        del _finding(doc)["observed"][index]
+
+    return mutate
+
+
 PRE_START_LOG = {
     "at": "2026-09-27T18:05:00+00:00", "kind": "occurrence",
     "source": "audit.json#/no_progress/log_signatures/0/first_seen", "supports": "origin",
@@ -168,6 +175,11 @@ CASES: list[tuple[Rule, str, Mutation]] = [
     (Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, "exam_case", _set("origin", "unknown")),
     (Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, "charter_proposal", _set("origin", "before_start")),
     (Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, "charter_proposal", _set("observed.1.supports", "origin")),
+    # Citing only the post-start sighting hides a pre-start one the records show (r2 F1).
+    (Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, "exam_case",
+     _all(_drop_observed(2), _set("origin", "unknown"), _set("grading_window.from", "unknown"))),
+    # Someone else's decision is not this anomaly noticed (r2 F2).
+    (Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY, "exam_case", _set("stall_evidence", ["D2"])),
     # citations
     (Rule.CITATION_RESOLVES, "exam_case", _set("observed.0.source", "audit.json#/anomalies/99")),
     (Rule.CITATION_RESOLVES, "exam_case", _set("observed.0.source", "unstaged.json#/anomalies/0")),
@@ -406,3 +418,16 @@ def test_a_whole_record_citation_still_proves_an_onset(evidence: StagedEvidence)
     _finding(doc)["observed"][1]["source"] = "audit.json#/no_progress/log_signatures/1"
 
     assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "not_noticed"
+
+
+def test_acted_not_effective_needs_an_applied_decision_about_its_own_issue(tmp_path: Path) -> None:
+    """D2 applied, but about another issue: not this anomaly's remedy (r2 F2)."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "charter-decisions.json",
+        lambda d: d["decisions"][1].update(target_number=999, anchor_issue_number=999),
+    )
+
+    rules = _rules(example("capability_issue"), evidence)
+
+    assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in rules
+    assert Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY in rules
