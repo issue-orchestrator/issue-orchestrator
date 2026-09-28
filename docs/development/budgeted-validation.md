@@ -115,7 +115,16 @@ From the repository checkout, using the active IO config selection:
 make agent-test-status       # Read coverage without running tests
 make agent-test-check        # Run only suites whose cadence is due
 python -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation run --suite live-agents
+python -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation run --suite tech-lead-exam
 ```
+
+This repository also runs the live **tech-lead exam** (`tech-lead-exam`, #7304) as a
+budgeted suite. It covers four cases: A, B and C plant known faults, and U is an
+upgrade with work in flight, run from `HEAD~10`, the span one cadence covers. Each
+case runs the real engine and tech lead against GitHub and grades the outcome, so a
+regression in how the tech lead handles a known fault is found within ten merges
+and narrowed to the merge that caused it. Run a single case by hand with
+`make test-tech-lead-exam EXAM_CASE=<A|B|C|U> EXAM_ENGINE_REF=<ref>`.
 
 Pass `--config path/to/config.yaml` to select a specific YAML configuration.
 `run` is an explicit forced request. `check` still coalesces with another worker.
