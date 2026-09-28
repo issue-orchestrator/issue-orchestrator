@@ -176,6 +176,15 @@ class LaunchSessionAction(Action):
         """
         return None
 
+    @property
+    def is_pr(self) -> bool:
+        """A review launch names a PULL REQUEST, never an issue (#7455).
+
+        Every "which issue is this about?" reader (``failed_this_cycle``, the
+        liveness subject) must not mistake a reviewed PR's number for an issue.
+        """
+        return self.session_type is SessionType.REVIEW
+
 
 @dataclass(frozen=True)
 class LaunchValidationRetryAction(Action):

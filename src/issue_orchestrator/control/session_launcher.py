@@ -106,6 +106,7 @@ from .launch_transaction import (
     SpawnGuard,
     abandon_claim_unless_spawned,
 )
+from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from .session_launch_types import (
     ClaimAcquisitionResult,
     LaunchDisposition,
@@ -117,6 +118,7 @@ from .session_rework_launcher import (
 )
 from .session_review_support import (
     build_review_existing_work,
+    refuse_unlaunchable_review,
     review_launch_validity,
 )
 from .retrospective_review import (
@@ -206,8 +208,12 @@ class SessionLauncher:
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+        # The validated-work recovery owner's holds (#7455): a review waits only
+        # for a hold that owner confirms, never for a lingering label alone.
+        recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
     ):
         self.config = config
+        self._recovery_holds = recovery_holds
         self.events = events
         self.repository_host = repository_host
         self._action_applier = action_applier
@@ -427,8 +433,14 @@ class SessionLauncher:
         issue: "IssueProtocol",
         active_sessions: list[Session],
         kind: SessionKind,
+        *,
+        busy: LaunchDisposition,
     ) -> LaunchResult | None:
         """Validate config and check for conflicts before launching.
+
+        ``busy`` is the CALLER's answer when another live session already holds
+        the issue (#7455): fresh issue pickup is withdrawn, but queued work - a
+        tech-lead run, a validation retry - waits for that session.
 
         A running terminal under ANY name this kind's work can hold - including
         the ``issue-N`` a tech lead or a rework's retry ran under before #7347 -
@@ -450,7 +462,7 @@ class SessionLauncher:
 
         if any(s.issue.number == issue.number for s in active_sessions):
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+            return LaunchResult(None, False, "Already in active sessions", disposition=busy)
 
         running = next(
             (name for name in kind.conflicting_terminal_names(issue.number) if self._session_exists(name)),
@@ -683,7 +695,8 @@ class SessionLauncher:
         logger.info(issue_log(issue.number, "Session starting: type=%s title=%s"), kind.value, issue.title)
 
         # Phase 1: Validate preconditions
-        if result := self._check_launch_preconditions(issue, active_sessions, kind):
+        busy = LaunchDisposition.SUBJECT_BUSY if kind.is_tech_lead else LaunchDisposition.WITHDRAWN
+        if result := self._check_launch_preconditions(issue, active_sessions, kind, busy=busy):
             return result
 
         # Safe to access after precondition check - issue.agent_type and agent_config
@@ -1137,7 +1150,9 @@ class SessionLauncher:
                 f"No agent config available for validation retry #{retry.issue_number}",
             )
         issue, agent_config, agent_label = resolved
-        if result := self._check_launch_preconditions(issue, active_sessions, retry.source_kind):
+        if result := self._check_launch_preconditions(
+            issue, active_sessions, retry.source_kind, busy=LaunchDisposition.SUBJECT_BUSY
+        ):
             return result
         prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=retry.source_kind)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
@@ -1497,43 +1512,24 @@ class SessionLauncher:
         against the live labels, then the two conflict checks and the repo
         config. Returns a :class:`LaunchResult` on failure, ``None`` to proceed.
         """
-        validity = review_launch_validity(
-            review=review,
-            config=self.config,
-            repository_host=self.repository_host,
-            label_manager=self._lm,
-        )
-        if not validity.valid:
-            log_transition(
-                "review",
-                review.pr_number,
-                "QUEUED",
-                "SKIP",
-                f"stale pending review: {validity.reason}",
-            )
-            logger.info(
-                "[launch] Dropping stale pending review: pr=%s issue=%s reason=%s issue_labels=%s pr_labels=%s",
-                review.pr_number,
-                review.issue_number,
-                validity.reason,
-                ",".join(validity.issue_labels) or "(missing)",
-                ",".join(validity.pr_labels) or "(none)",
-            )
-            self.events.publish(
-                make_trace_event(
-                    EventName.REVIEW_SKIPPED,
-                    {
-                        "pr_number": review.pr_number,
-                        "issue_number": review.issue_number,
-                        "reason": f"stale_pending_review:{validity.reason}",
-                    },
-                )
-            )
-            return LaunchResult(None, False, f"Stale pending review: {validity.reason}")
+        if result := refuse_unlaunchable_review(
+            review_launch_validity(
+                review=review,
+                config=self.config,
+                repository_host=self.repository_host,
+                label_manager=self._lm,
+                recovery_holds=self._recovery_holds,
+            ),
+            review,
+            self.events,
+        ):
+            return result
 
         if any(s.terminal_id == session_name for s in active_sessions):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+            return LaunchResult(
+                None, False, "Already in active sessions", disposition=LaunchDisposition.WITHDRAWN
+            )
 
         if self._session_exists(session_name):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "terminal session already running")

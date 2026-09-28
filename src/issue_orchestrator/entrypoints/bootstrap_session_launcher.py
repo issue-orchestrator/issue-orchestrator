@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..control.needs_human_block import SharedNeedsHumanBlock
+from ..control.recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from ..control.session_launcher import SessionLauncher
 from ..ports.coder_prompt import (
     CoderPromptAddendumProvider,
@@ -63,6 +64,7 @@ def build_session_launcher_factory(
     provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
     needs_human_block: SharedNeedsHumanBlock,
     coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+    recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
 ) -> "SessionLauncherFactory":
     """Bind the application dependencies; return the facade-facing factory."""
 
@@ -103,6 +105,7 @@ def build_session_launcher_factory(
             provider_credentials=provider_credentials,
             needs_human_block=needs_human_block,
             coder_prompt_addendum=coder_prompt_addendum,
+            recovery_holds=recovery_holds,
         )
 
     return _factory

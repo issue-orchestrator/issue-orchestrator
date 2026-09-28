@@ -107,6 +107,9 @@ class OrchestratorSnapshot:
     # Queued failure-investigation subjects whose published validated work an
     # open PR now carries (#7293): their review owns them; withdraw the run.
     published_review_subjects: frozenset[int] = frozenset()
+    # Queued reviews (PR numbers) whose issue the validated-work recovery owner
+    # holds behind recovery-pending (#7455): they wait, launching nothing.
+    recovery_held_reviews: frozenset[int] = frozenset()
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)

@@ -364,6 +364,9 @@ REASON_NO_ON_DEMAND_ANCHOR = "no_on_demand_anchor"
 BARRIER_GLOBAL_RUN_ACTIVE = "global_run_active"
 BARRIER_GLOBAL_RUN_QUEUED = "global_run_queued"
 BARRIER_GLOBAL_AWAITING_DRAIN = "global_run_awaiting_drain"
+# A targeted run whose subject already has a live session (a coder working the
+# issue): it waits for that session, it is not withdrawn (#7455).
+BARRIER_SUBJECT_SESSION_ACTIVE = "subject_session_active"
 
 
 @dataclass(frozen=True, slots=True)

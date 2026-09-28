@@ -53,6 +53,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.session_launch_types import LaunchStep
 
 from .run_ledger_doubles import LEASE_SECONDS, FrozenClock, SharedRunLedger
 
@@ -188,7 +189,7 @@ class _Engine:
                 str(label).startswith("blocked") for label in labels
             ),
             events=SimpleNamespace(publish=lambda _e: None),  # type: ignore[arg-type]
-            launch=self._start,
+            launch=lambda item: LaunchStep.of_session(self._start(item), "the fake launch did not start"),
             activity=in_memory_run_activity(),
             claims=MagicMock(),
         )

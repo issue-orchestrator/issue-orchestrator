@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import Session
+    from .session_launch_types import LaunchStep
     from .action_applier import ActionResult
     from .tech_lead_run_ownership import TechLeadRunOwnership
     from .actions import (
@@ -390,9 +391,9 @@ class TechLeadFacadeHost(Protocol):
 
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]: ...
 
-    def launch_queued_tech_lead_session(
+    def launch_queued_tech_lead_step(
         self, tech_lead: PendingTechLeadReview
-    ) -> "Optional[Session]": ...
+    ) -> "LaunchStep": ...
 
     def terminate_tech_lead_session(self, session: "Session") -> object: ...
 
@@ -539,7 +540,7 @@ def _publish_ownership_change(
 
 def orchestrator_launch_tech_lead_run(
     orchestrator: TechLeadFacadeHost, tech_lead: PendingTechLeadReview
-) -> "Optional[Session]":
+) -> "LaunchStep":
     """Start one queued tech-lead run through the SINGLE launch authority.
 
     Both launch paths — the in-tick applier (via the session-launcher callback)
@@ -558,10 +559,10 @@ def orchestrator_launch_tech_lead_run(
         repository_host=deps.repository_host,  # type: ignore[attr-defined]
         is_blocking_any=LabelManager(orchestrator.config).is_blocking_any,
         events=deps.events,  # type: ignore[attr-defined]
-        launch=orchestrator.launch_queued_tech_lead_session,
+        launch=orchestrator.launch_queued_tech_lead_step,
         activity=deps.tech_lead_run_activity,  # type: ignore[attr-defined]
         claims=deps.pending_work_claims,  # type: ignore[attr-defined]
-    ).launch(tech_lead)
+    ).launch_step(tech_lead)
 
 
 def _facade_anchor_lifecycle(

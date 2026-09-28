@@ -12,6 +12,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCreationOrigin,
 )
 from issue_orchestrator.control.action_applier import ActionApplier
+from issue_orchestrator.control.session_launch_types import LaunchStep
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.actions import (
     ActionType,
@@ -902,7 +903,7 @@ class TestLaunchSessionAction:
         mock_session.terminal_id = "issue-123"
         mock_session.issue.number = 123
 
-        callback = MagicMock(return_value=mock_session)
+        callback = MagicMock(return_value=LaunchStep.launched(mock_session))
         applier.session_launcher = callback
 
         action = LaunchSessionAction(
@@ -918,8 +919,8 @@ class TestLaunchSessionAction:
         assert result.details["issue_number"] == 123
 
     def test_launch_session_callback_fails(self, applier):
-        """Test launch session when callback returns None."""
-        callback = MagicMock(return_value=None)
+        """Test launch session when the launch did not start a session."""
+        callback = MagicMock(return_value=LaunchStep.not_launched("terminal never came up"))
         applier.session_launcher = callback
 
         action = LaunchSessionAction(
@@ -984,7 +985,7 @@ class TestLaunchValidationRetryAction:
         mock_session = MagicMock()
         mock_session.terminal_id = "issue-123"
         mock_session.issue.number = 123
-        callback = MagicMock(return_value=mock_session)
+        callback = MagicMock(return_value=LaunchStep.launched(mock_session))
         applier.validation_retry_launcher = callback
 
         result = applier.apply(LaunchValidationRetryAction(issue_number=123, retry_count=1))

@@ -51,6 +51,7 @@ from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchErr
 from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
 from .reconciliation import ReconciliationRequired, ReconciliationResponse, response_to
 from .planned_action_liveness import PlannedActionLiveness, outcome_of_error, outcome_of_result
+from .action_results import ActionResultType
 from ..domain.action_liveness import ActionOutcome
 from .tick_telemetry import report_slow_tick
 from .session_history import (
@@ -282,8 +283,7 @@ class OrchestratorSupport:
         """
         try:
             result = self._aa.apply(action)
-            handler = self._handle_action_success if result.success else self._handle_action_failure
-            applied, outcome = handler(action, result), outcome_of_result(result)
+            applied, outcome = self._handle_action_result(action, result), outcome_of_result(result)
         except ReconciliationRequired as rr:
             outcome = outcome_of_error(rr)
             applied = self._handle_reconciliation_error(action, rr, pause_issue_callback)
@@ -294,6 +294,30 @@ class OrchestratorSupport:
             applied = self._ActionApplyResult(success=False)
         settle(outcome)
         return applied
+
+    def _handle_action_result(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
+        """Route an applied result by its type: a SKIPPED step found nothing to
+        do - a withdrawn or waiting launch, work already done - and is neither
+        a success's state change nor a failure (#7455)."""
+        if result.success:
+            return self._handle_action_success(action, result)
+        if result.result_type is ActionResultType.SKIPPED:
+            return self._handle_action_skipped(action, result)
+        return self._handle_action_failure(action, result)
+
+    def _handle_action_skipped(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
+        reason = str(result.details.get("skip_reason", ""))
+        logger.info("[PLAN] Action %s skipped: %s", action.action_type.value, reason)
+        self.events.publish(make_trace_event(
+            EventName.APPLY_STEP_APPLIED,
+            self.event_context.enrich({
+                "step_type": action.action_type.value,
+                "issue_number": self._get_action_issue_number(action),
+                "result": "skipped",
+                "skip_reason": reason,
+            }),
+        ))
+        return self._ActionApplyResult(success=True)
 
     def _handle_action_success(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
         """Handle successful action application."""

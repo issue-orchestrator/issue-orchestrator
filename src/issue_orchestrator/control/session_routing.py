@@ -46,7 +46,7 @@ from .launch_transaction import (
     PendingWorkLaunchClaim,
     RetryPlan,
 )
-from .session_launch_types import LaunchDisposition
+from .session_launch_types import LaunchDisposition, LaunchStep
 from .session_launcher import SessionLauncher
 from .session_manager import SessionManager
 
@@ -67,7 +67,7 @@ def orchestrator_launch_review_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a review session and update orchestrator queues."""
     pending_queues = PendingSessionQueues(state)
     # One object for the whole launch: the launcher holds the claim durably
@@ -106,7 +106,7 @@ def orchestrator_launch_retrospective_review_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a retrospective review session and update orchestrator queues."""
     pending_queues = PendingSessionQueues(state)
     work = PendingWorkLaunchClaim(
@@ -142,7 +142,7 @@ def orchestrator_launch_rework_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a rework session and update orchestrator queues."""
     pending_queues = PendingSessionQueues(state)
     work = PendingWorkLaunchClaim(
@@ -184,7 +184,7 @@ def orchestrator_launch_validation_retry_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a validation retry session and update retry queue tracking."""
     pending_queues = PendingSessionQueues(state)
     work = PendingWorkLaunchClaim(
@@ -221,7 +221,7 @@ def orchestrator_launch_tech_lead_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a queued tech_lead session and update orchestrator queues.
 
     The pending-tech-lead queue carries every tech_lead variant — threshold-created
@@ -404,12 +404,12 @@ def _rate_limit_gate(
 def session_launcher_callback(
     session_type: "SessionType",
     number: int,
-    launch_issue_fn: Callable[[int], Optional[Session]],
-    launch_review_fn: Callable[[int], Optional[Session]],
-    launch_retrospective_review_fn: Callable[[int], Optional[Session]],
-    launch_rework_fn: Callable[[int], Optional[Session]],
-    launch_tech_lead_fn: Callable[[int], Optional[Session]],
-) -> Optional[Session]:
+    launch_issue_fn: Callable[[int], LaunchStep],
+    launch_review_fn: Callable[[int], LaunchStep],
+    launch_retrospective_review_fn: Callable[[int], LaunchStep],
+    launch_rework_fn: Callable[[int], LaunchStep],
+    launch_tech_lead_fn: Callable[[int], LaunchStep],
+) -> LaunchStep:
     """Route SessionManager launch callbacks by session type."""
     from .session_manager import SessionType
 
@@ -591,7 +591,7 @@ def orchestrator_launch_session(
     session_restorer: "SessionRestorer | None" = None,
     *,
     tech_lead_scope: TechLeadLaunchScope | None = None,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch an issue session and update active-session tracking."""
     result = _rate_limit_gate(state, session_launcher).launch(
         lambda: session_launcher.launch_issue_session(
@@ -602,7 +602,8 @@ def orchestrator_launch_session(
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
-    elif result.disposition is LaunchDisposition.EXISTING_TERMINAL and session_restorer is not None:
+        return LaunchStep.launched(result.session)
+    if result.disposition is LaunchDisposition.EXISTING_TERMINAL and session_restorer is not None:
         assert result.existing_terminal is not None  # the result type's invariant
         restored = _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
@@ -615,5 +616,5 @@ def orchestrator_launch_session(
             session_restorer=session_restorer,
         )
         if restored:
-            return restored
-    return result.session if result.success else None
+            return LaunchStep.launched(restored)
+    return LaunchStep.of_result(result)

@@ -39,8 +39,9 @@ from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
-from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
+from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
 from .action_results import FailureCollector
+from .session_launch_types import LaunchStep, launch_step_result
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
@@ -128,10 +129,10 @@ from .tech_lead_reset_retry import apply_surface_tech_lead_proposal
 logger = logging.getLogger(__name__)
 
 # Type alias for session launcher callback
-# Takes (session_type, number) and returns Optional[Session]
+# Takes (session_type, number) and returns the typed LaunchStep (#7455)
 # This allows orchestrator to inject entity lookup + SessionLauncher
-SessionLauncherCallback = Callable[[SessionType, int], Optional[Session]]
-ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
+SessionLauncherCallback = Callable[[SessionType, int], LaunchStep]
+ValidationRetryLauncherCallback = Callable[[int], LaunchStep]
 
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
@@ -338,7 +339,9 @@ class ActionApplier:
 
         handler = handlers.get(action.action_type)
         if handler is None:
-            return ActionResult.skip(
+            # A missing handler is a defect, not "nothing to do": it must stay a
+            # failure now that skips are no longer applied as failures (#7455).
+            return ActionResult.fail(
                 action, f"No handler for action type: {action.action_type}"
             )
 
@@ -1012,8 +1015,9 @@ class ActionApplier:
 
         # Use the callback if provided (preferred path - handles entity lookup)
         if self.session_launcher is not None:
-            session = self.session_launcher(action.session_type, action.number)
-            if session:
+            step = self.session_launcher(action.session_type, action.number)
+            session = step.session
+            if session is not None:
                 # An expedited issue that is now an active session has jumped
                 # the lane: free its cap slot (via the queue owner, never a
                 # direct priority_queue mutation) so the next urgent tech-lead
@@ -1025,11 +1029,9 @@ class ActionApplier:
                     session_name=session.terminal_id,
                     issue_number=session.issue.number,
                 )
-            else:
-                return ActionResult.fail(
-                    action,
-                    f"Failed to launch {action.session_type} session for #{action.number}"
-                )
+            return launch_step_result(
+                action, step, f"Failed to launch {action.session_type} session for #{action.number}"
+            )
 
         # Fallback: use command/working_dir from action (for testing or direct calls)
         if not action.command or not action.working_dir:
@@ -1068,16 +1070,15 @@ class ActionApplier:
                 "No validation_retry_launcher callback configured",
             )
 
-        session = self.validation_retry_launcher(action.issue_number)
-        if session:
+        step = self.validation_retry_launcher(action.issue_number)
+        if step.session is not None:
             return ActionResult.ok(
                 action,
-                session_name=session.terminal_id,
-                issue_number=session.issue.number,
+                session_name=step.session.terminal_id,
+                issue_number=step.session.issue.number,
             )
-        return ActionResult.fail(
-            action,
-            f"Failed to launch validation retry for issue #{action.issue_number}",
+        return launch_step_result(
+            action, step, f"Failed to launch validation retry for issue #{action.issue_number}"
         )
 
     def _apply_stop_session(self, action: Action) -> ActionResult:

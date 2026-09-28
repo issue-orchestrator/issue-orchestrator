@@ -3001,13 +3001,15 @@ class _ProductionTick:
         )
 
         def _launch(session_type, number):
+            from issue_orchestrator.control.session_launch_types import LaunchStep
+
             if session_type is not SessionType.ISSUE:
-                return None
+                return LaunchStep.not_launched(f"no {session_type} launcher here")
             issue = self.github.get_issue(number)
             result = self.launcher.launch_issue(issue)
             if result.success:
                 self.launched.append(number)
-            return result.session
+            return LaunchStep.of_result(result)
 
         self.applier = make_action_applier(
             labels=self.github,
@@ -3315,6 +3317,11 @@ def _pending_count(state, queue: str) -> int:
     )
 
 
+def _step_session(step):
+    """The session a routed launch step started, or ``None`` (#7455)."""
+    return step.session
+
+
 def _route(queue: str, state, harness, restorer=None):
     """Drive the production routing function that owns ``queue``.
 
@@ -3335,38 +3342,38 @@ def _route(queue: str, state, harness, restorer=None):
     restorer.restore_session.return_value = None
     claims = harness.claims
     if queue == "review":
-        return session_routing.orchestrator_launch_review_session(
+        return _step_session(session_routing.orchestrator_launch_review_session(
             state.pending_reviews[0], state, harness.launcher, restorer, claims
-        )
+        ))
     if queue == "retrospective_review":
-        return session_routing.orchestrator_launch_retrospective_review_session(
+        return _step_session(session_routing.orchestrator_launch_retrospective_review_session(
             state.pending_retrospective_reviews[0],
             state,
             harness.launcher,
             restorer,
             claims,
-        )
+        ))
     if queue == "rework":
-        return session_routing.orchestrator_launch_rework_session(
+        return _step_session(session_routing.orchestrator_launch_rework_session(
             state.pending_reworks[0], state, harness.launcher, restorer, claims
-        )
+        ))
     if queue == "validation_retry":
-        return session_routing.orchestrator_launch_validation_retry_session(
+        return _step_session(session_routing.orchestrator_launch_validation_retry_session(
             state.pending_validation_retries[0],
             state,
             harness.launcher,
             restorer,
             claims,
-        )
+        ))
     if queue == "tech_lead":
-        return session_routing.orchestrator_launch_tech_lead_session(
+        return _step_session(session_routing.orchestrator_launch_tech_lead_session(
             state.pending_tech_lead_reviews[0],
             state,
             harness.launcher.config,
             harness.launcher,
             restorer,
             claims,
-        )
+        ))
     raise AssertionError(f"unknown queue {queue!r}")
 
 
@@ -3565,7 +3572,7 @@ def test_a_provider_deferral_touches_neither_restoration_nor_the_retry_budget(
         OrchestratorState(),
     )
 
-    assert settled is None
+    assert settled.session is None
     assert calls == []  # not removed, not restored, no budget spent
 
 
@@ -7597,3 +7604,60 @@ def test_an_existing_terminal_is_restored_under_the_name_the_launcher_found(tmp_
     ).settle(LaunchResult.terminal_already_running("issue-7"), _pending_state("tech_lead"))
 
     assert asked == ["issue-7"]
+
+
+def test_a_tech_lead_run_of_a_busy_issue_waits_with_its_claim_instead_of_being_dropped(
+    tmp_path: Path,
+) -> None:
+    """#7455 review r2: "already in active sessions" used to drop the queued
+    investigation and retire its claim. For a tech-lead run it is a wait: the
+    run and its durable claim stay, no budget is spent, and the step is a
+    wait - not a withdrawal, not a failure."""
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("tech_lead")
+    queued = list(state.pending_tech_lead_reviews)
+    coder = MagicMock()
+    coder.issue.number = 7
+    coder.terminal_id = "issue-7"
+    state.active_sessions = [coder]
+
+    from issue_orchestrator.control import session_routing
+
+    step = session_routing.orchestrator_launch_tech_lead_session(
+        state.pending_tech_lead_reviews[0], state, harness.launcher.config,
+        harness.launcher, MagicMock(), harness.claims,
+    )
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert state.pending_tech_lead_reviews == queued
+    assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
+    assert harness.created == []
+
+
+def test_a_validation_retry_of_a_busy_issue_waits_and_stays_queued(tmp_path: Path) -> None:
+    """#7455 review r4: another live session on the retry's issue is a wait for
+    that session, never a withdrawal that drops the retry and its claim."""
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control import session_routing
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    queued = list(state.pending_validation_retries)
+    other = MagicMock()
+    other.issue.number = 7
+    other.terminal_id = "review-70"
+    state.active_sessions = [other]
+
+    step = session_routing.orchestrator_launch_validation_retry_session(
+        state.pending_validation_retries[0], state, harness.launcher, MagicMock(), harness.claims,
+    )
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert state.pending_validation_retries == queued
+    assert harness.created == []
