@@ -43,9 +43,12 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
      (true / false / unknown)
    - **`origin`:** did it *first* appear after the start (`after_start`),
      before it (`before_start`), or can't that be established (`unknown`)?
-     `after_start` needs a post-start occurrence **and** records covering the
-     time before the start that show no earlier occurrence. Without that
-     earlier coverage, use `unknown`.
+     `after_start` needs a post-start occurrence **and** continuous coverage
+     of that source from its **retained-history start** (when the source was
+     created, or the oldest record it keeps) through the engine start, with
+     no earlier occurrence. The audit's `covers_window` proves only its own
+     window, so it can't prove `after_start`. Without full-history coverage,
+     use `unknown`.
 
    Evidence has two kinds. A **snapshot** (an audit reading taken after the
    start) can support *presence* only. An **occurrence** (a failure, event or
@@ -162,8 +165,9 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 - `origin: after_start` needs:
   - an `occurrence` entry supporting `origin`, whose time is the earliest
     matching occurrence;
-  - **complete** coverage before `engine_started_at` in that source, with no
-    earlier matching occurrence.
+  - continuous coverage of that source from its retained-history start through
+    `engine_started_at`, with no earlier matching occurrence. The audit's
+    `covers_window` alone is insufficient.
 
   If any matching occurrence predates the start (e.g. `first_seen` <
   `engine_started_at`), `origin` is `before_start`.
