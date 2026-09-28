@@ -328,7 +328,12 @@ def test_the_audit_reports_every_store_through_its_owner(state, tmp_path, monkey
 
 
 def test_anomalies_name_what_is_stuck(state, tmp_path, monkeypatch) -> None:
-    kinds = _kinds(_run(state, tmp_path, monkeypatch, FakeHost()))
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+    kinds = _kinds(report)
+    # A repeat "since the subject last changed state" rests on the timeline too.
+    assert {a.sources for a in report.anomalies if a.kind is AnomalyKind.NO_PROGRESS_LOG} == {
+        (AuditSource.LOG, AuditSource.TIMELINE)
+    }
 
     stale = kinds[AnomalyKind.STALE_UNRESOLVED_WORK]
     assert {subject for subject, _ in stale} == {"#7001"}
