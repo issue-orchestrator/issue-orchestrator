@@ -208,6 +208,23 @@ def subject_of_event(event: Mapping[str, Any]) -> str:
     return _subject(event)
 
 
+def subjects_changed_by(event: Mapping[str, Any]) -> tuple[str, ...]:
+    """Every subject a state-change event changes, in the subject spelling.
+
+    An event about an issue's pull request (``pr.view_changed`` carries both
+    numbers) changes the issue AND the PR, so a failure logged against either
+    one is no longer a repeat after it. Empty for an event that changes no
+    subject's state.
+    """
+    if not resets_subject(event):
+        return ()
+    subjects = [_subject(event)]
+    pr_number = _payload(event).get("pr_number")
+    if isinstance(pr_number, (int, str)) and not isinstance(pr_number, bool) and str(pr_number):
+        subjects.append(f"PR #{pr_number}")
+    return tuple(dict.fromkeys(subjects))
+
+
 def resets_subject(event: Mapping[str, Any]) -> bool:
     """Whether ``event`` changes its subject's state (so its failures are not repeats)."""
     return str(event.get("type", "")) in STATE_CHANGES

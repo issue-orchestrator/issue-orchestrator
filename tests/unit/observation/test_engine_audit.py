@@ -406,6 +406,42 @@ def test_the_report_is_never_written_into_the_engine_state(state, tmp_path, monk
     assert db.read_bytes() == before
 
 
+def test_a_report_path_hard_linked_to_engine_state_does_not_write_through(
+    state, tmp_path, monkeypatch
+) -> None:
+    db = state / cli.VALIDATED_WORK_DB
+    before = db.read_bytes()
+    link = tmp_path / "report.json"
+    link.hardlink_to(db)
+    monkeypatch.setattr(cli, "create_repository_host", lambda repo: FakeHost())
+
+    assert cli.main(["--state-dir", str(state), "--repo", REPO, "--output", str(link)]) == 0
+
+    assert db.read_bytes() == before
+    assert EngineAuditReport.model_validate_json(link.read_text(encoding="utf-8")).repo == REPO
+
+
+def test_a_pr_state_change_ends_the_repeats_logged_against_that_pr(
+    state, tmp_path, monkeypatch
+) -> None:
+    log = state / cli.ENGINE_LOG
+    stamp = (NOW - timedelta(minutes=30)).astimezone().strftime(ROTATING_LOG_DATEFMT)
+    log.write_text(
+        log.read_text(encoding="utf-8")
+        + "".join(f"{stamp} [WARNING] io: Merge queue refused PR #42 ({n})\n" for n in range(5)),
+        encoding="utf-8",
+    )
+    SqliteTimelineStore(state / cli.TIMELINE_DB).append(
+        7, _event("pr.view_changed", NOW - timedelta(minutes=5), {"issue_number": 7, "pr_number": 42})
+    )
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    (refused,) = [s for s in report.no_progress.log_signatures if s.subject == "PR #42"]
+    assert (refused.count, refused.since_state_change) == (5, 0)
+    assert all(subject != "PR #42" for subject, _ in _kinds(report).get(AnomalyKind.NO_PROGRESS_LOG, ()))
+
+
 def test_without_the_timeline_no_repeat_is_claimed_since_a_state_change(
     state, tmp_path, monkeypatch
 ) -> None:

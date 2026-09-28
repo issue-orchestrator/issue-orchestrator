@@ -21,6 +21,7 @@ the snapshots through their owning stores and hands them, as read ports, to
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -98,7 +99,7 @@ def run(args: argparse.Namespace) -> int:
         print(payload)
         print(summary, file=sys.stderr)
     else:
-        output.write_text(payload + "\n", encoding="utf-8")
+        _replace_file(output, payload + "\n")
         print(summary)
     return 0
 
@@ -115,6 +116,19 @@ def _output_outside(state_dir: Path, output: Path) -> Path:
             f"engine-audit: refusing to write the report into the engine's state: {resolved}"
         )
     return resolved
+
+
+def _replace_file(path: Path, text: str) -> None:
+    """Install ``text`` at ``path`` as a new file, never writing through an existing one.
+
+    ``os.replace`` swaps the directory entry, so an ``output`` that is a hard
+    link to some other file (an engine database, say) leaves that file intact.
+    """
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        handle.write(text)
+    os.replace(handle.name, path)
 
 
 def _inputs(state_dir: Path, scratch: Path, args: argparse.Namespace) -> EngineAuditInputs:

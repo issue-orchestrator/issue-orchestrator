@@ -65,8 +65,7 @@ from .no_progress import (
     ENGINE_SUBJECT,
     LIVELOCK_THRESHOLD,
     find_repeating_failures,
-    resets_subject,
-    subject_of_event,
+    subjects_changed_by,
 )
 
 #: An unresolved validated-work record older than this is stuck.
@@ -396,8 +395,8 @@ def _as_engine_event(event: TimelineEvent) -> dict[str, Any]:
 def _last_state_change(events: Iterable[dict[str, Any]]) -> dict[str, datetime]:
     changed: dict[str, datetime] = {}
     for event in events:
-        if resets_subject(event):
-            changed[subject_of_event(event)] = datetime.fromisoformat(event["timestamp"])
+        for subject in subjects_changed_by(event):
+            changed[subject] = datetime.fromisoformat(event["timestamp"])
     return changed
 
 

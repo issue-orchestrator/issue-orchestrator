@@ -75,6 +75,8 @@ def render_summary(report: EngineAuditReport) -> str:
             for m in fc.by_mode
         )
         per_hour = "-" if fc.refresh_calls_per_hour is None else f"{fc.refresh_calls_per_hour:.0f}"
+        if fc.issue_get_lines == 0:
+            lines.append("  repeat reads unmeasured: the log has no request lines (httpx below INFO)")
         lines.append(
             f"  refresh calls/h {per_hour}; {fc.cycles_with_repeat_reads}/{fc.cycles}"
             " iterations re-read an issue"

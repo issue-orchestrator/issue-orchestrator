@@ -341,10 +341,13 @@ def main() -> int:
     args = parse_args()
 
     # Configure logging
+    # The shared layout: ``io engine-audit`` parses this log back (#7490).
+    from ..infra.logging_config import ROTATING_LOG_DATEFMT, ROTATING_LOG_FORMAT
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        format=ROTATING_LOG_FORMAT,
+        datefmt=ROTATING_LOG_DATEFMT,
     )
 
     # Block SIGTERM/SIGINT process-wide BEFORE any thread is created, so the
