@@ -17,7 +17,6 @@ from ..domain.action_liveness import LivenessRow
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from ..domain.tech_lead_findings import PromotedFinding
 from .action_liveness import PendingPause
-from .issue import Issue
 from .pending_work_claim_store import QuarantineRecord, UnreadableClaim, UnresolvedClaim
 from .pull_request_tracker import PRInfo
 from .timeline_store import TimelineRecord
@@ -37,6 +36,14 @@ class ValidatedWorkCensus:
 
     by_state_resolution: tuple[tuple[str, str, int], ...]
     unresolved: tuple[UnresolvedWorkRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OpenIssueLabels:
+    """One open issue and every label on it."""
+
+    number: int
+    labels: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,20 +91,11 @@ class TimelineAuditReader(Protocol):
 class OpenWorkHost(Protocol):
     """The two repository listings the audit reads: open issues and open PRs.
 
-    Both must be complete or raise (a rate limit raises
+    Both are cursor-paged and complete or raise (a rate limit raises
     :class:`~.repository_host.RepositoryHostRateLimitedError`).
     """
 
-    def list_issues(
-        self,
-        labels: list[str] | None = None,
-        milestone: str | None = None,
-        state: str = "open",
-        limit: int = 100,
-        required_stable_ids: set[str] | None = None,
-        *,
-        exhaustive: bool = False,
-    ) -> Sequence[Issue]: ...
+    def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]: ...
 
     def list_open_prs_complete(self) -> Sequence[PRInfo]: ...
 
@@ -106,6 +104,7 @@ __all__ = [
     "ActionLivenessAuditReader",
     "CharterAuditReader",
     "ClaimAuditReader",
+    "OpenIssueLabels",
     "OpenWorkHost",
     "PromotionAuditReader",
     "TimelineAuditReader",

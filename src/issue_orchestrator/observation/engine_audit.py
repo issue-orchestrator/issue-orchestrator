@@ -90,10 +90,6 @@ ATTENTION_LABELS: tuple[str, ...] = (
 #: How many charter decisions the report lists by name.
 RECENT_DECISIONS = 10
 
-#: Exhaustive open-issue listing bound; a repository with more open issues
-#: fails the listing loudly rather than being counted from a partial list.
-OPEN_ISSUE_SCAN_LIMIT = 2000
-
 T = TypeVar("T")
 S = TypeVar("S")
 
@@ -374,7 +370,7 @@ def _github(
         readings.append(_unavailable(AuditSource.GITHUB, host))
         return None
     try:
-        issues = host.list_issues(state="open", limit=OPEN_ISSUE_SCAN_LIMIT, exhaustive=True)
+        issues = host.list_open_issue_labels_complete()
         prs = host.list_open_prs_complete()
     except Exception as error:
         limit = host_rate_limit_of(error)

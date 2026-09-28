@@ -281,9 +281,8 @@ class FakeHost:
     prs: list[_PR] = field(default_factory=lambda: [_PR(90, True), _PR(91, False), _PR(92, False)])
     calls: list[str] = field(default_factory=list)
 
-    def list_issues(self, labels=None, milestone=None, state="open", limit=100,
-                    required_stable_ids=None, *, exhaustive=False):
-        self.calls.append(f"issues state={state} limit={limit} exhaustive={exhaustive}")
+    def list_open_issue_labels_complete(self):
+        self.calls.append("issues")
         return self.issues
 
     def list_open_prs_complete(self):
@@ -360,7 +359,7 @@ def test_the_audit_reports_every_store_through_its_owner(state, tmp_path, monkey
     assert (gh.open_issues, gh.open_prs_ready, gh.draft_prs) == (3, 2, (90,))
     assert {(c.key[0], c.count) for c in gh.label_counts} >= {("needs-human", 1), ("in-progress", 1)}
     # Two listings, both complete-or-raise: no per-label or per-issue reads.
-    assert host.calls == ["issues state=open limit=2000 exhaustive=True", "prs"]
+    assert host.calls == ["issues", "prs"]
 
 
 def test_anomalies_name_what_is_stuck(state, tmp_path, monkeypatch) -> None:

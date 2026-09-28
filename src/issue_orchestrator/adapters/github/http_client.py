@@ -2233,6 +2233,73 @@ class GitHubHttpClient:
                 break
         return [collected[number] for number in sorted(collected)]
 
+    def list_open_issue_labels_complete(
+        self, *, page_cap: int = 20
+    ) -> list[tuple[int, tuple[str, ...]]]:
+        """Every open issue's number and labels, or an error: never a partial list.
+
+        Walks GraphQL ``issues(states: OPEN)`` by CURSOR, like
+        :meth:`list_open_prs_complete`: an issue closing mid-walk cannot shift
+        another past a page boundary the way offset pagination does (#7490).
+        An issue with more labels than one page carries is refused rather than
+        reported with some of them.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+                issues(states: OPEN, first: 100, after: $after,
+                       orderBy: {field: CREATED_AT, direction: ASC}) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { number labels(first: 100) { totalCount nodes { name } } }
+                }
+            }
+        }
+        """
+        issues: list[tuple[int, tuple[str, ...]]] = []
+        after: str | None = None
+        for _page in range(page_cap):
+            result = self._graphql(
+                query, {"owner": owner, "repo": repo, "after": after},
+                caller="list_open_issue_labels_complete",
+            )
+            connection = ((result.get("data") or {}).get("repository") or {}).get("issues")
+            if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+                raise self._incomplete_open_issues("returned no issues connection")
+            for node in connection["nodes"]:
+                issues.append(self._open_issue_labels(node))
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+                raise self._incomplete_open_issues("returned no pageInfo.hasNextPage")
+            if not page_info["hasNextPage"]:
+                return issues
+            after = page_info.get("endCursor")
+            if not isinstance(after, str) or not after:
+                raise self._incomplete_open_issues("reported another page without a cursor")
+        raise self._incomplete_open_issues(f"exceeded the {page_cap * 100}-issue page cap")
+
+    def _open_issue_labels(self, node: object) -> tuple[int, tuple[str, ...]]:
+        if not isinstance(node, dict) or type(node.get("number")) is not int:
+            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
+        labels = node.get("labels")
+        if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
+            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
+        names = [n.get("name") for n in labels["nodes"] if isinstance(n, dict)]
+        if len(names) != len(labels["nodes"]) or not all(isinstance(n, str) for n in names):
+            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
+        if labels.get("totalCount") != len(names):
+            raise self._incomplete_open_issues(
+                f"returned issue #{node['number']} with only some of its labels"
+            )
+        return node["number"], tuple(str(n) for n in names)
+
+    def _incomplete_open_issues(self, why: str) -> GitHubScanIncompleteError:
+        return GitHubScanIncompleteError(
+            f"Listing open issues {why}; refusing to treat it as complete",
+            method="POST",
+            url="/graphql",
+        )
+
     def _incomplete_open_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
             f"Listing open pull requests {why}; refusing to treat it as complete",

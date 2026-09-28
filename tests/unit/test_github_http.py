@@ -2987,6 +2987,60 @@ def test_list_open_prs_complete_refuses_a_node_without_its_draft_flag() -> None:
         client.list_open_prs_complete()
 
 
+def _issue_node(number: int, labels: tuple[str, ...] = (), total: int | None = None) -> dict:
+    return {"number": number, "labels": {
+        "totalCount": len(labels) if total is None else total,
+        "nodes": [{"name": name} for name in labels],
+    }}
+
+
+def test_open_issue_labels_walk_by_cursor_so_a_closure_mid_walk_skips_nothing() -> None:
+    """Issue 1 closes after page 1 is served. Offset paging would move issue 3
+    onto page 1 and skip it; a cursor names the last issue already read (#7490)."""
+    open_issues = [1, 2, 3, 4]
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables = _graphql_body(request)["variables"]
+        requests.append(variables)
+        after = int(variables["after"]) if variables["after"] else 0
+        page = [n for n in open_issues if n > after][:2]
+        if after == 0:
+            open_issues.remove(1)
+        more = bool(page) and any(n > page[-1] for n in open_issues)
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": more, "endCursor": str(page[-1]) if page else None},
+            "nodes": [_issue_node(n, ("needs-human",) if n == 3 else ()) for n in page],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    issues = client.list_open_issue_labels_complete()
+
+    assert issues == [(1, ()), (2, ()), (3, ("needs-human",)), (4, ())]
+    assert [r["after"] for r in requests] == [None, "2"]
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        _issue_node(1, ("a",), total=150),  # more labels than one page carries
+        {"number": 1},
+        {"number": "1", "labels": {"totalCount": 0, "nodes": []}},
+    ],
+)
+def test_open_issue_labels_refuse_what_they_cannot_read_whole(node) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError):
+        client.list_open_issue_labels_complete()
+
+
 def test_list_open_prs_complete_refuses_a_capped_walk() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
