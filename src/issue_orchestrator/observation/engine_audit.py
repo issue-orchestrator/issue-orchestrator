@@ -42,6 +42,7 @@ from ..contracts.engine_audit import (
     SourceStatus,
     TechLeadSection,
     TimelineRepeat,
+    UnreadableClaimSummary,
     UnresolvedWork,
     ValidatedWorkSection,
 )
@@ -248,7 +249,8 @@ def _validated_work(reader: ValidatedWorkCensusReader, now: datetime) -> Validat
                 issue_number=r.issue_number,
                 state=r.state,
                 created_at=r.created_at.isoformat(),
-                age_hours=round((now - r.created_at).total_seconds() / 3600, 2),
+                # Unrounded: the stale threshold compares it exactly.
+                age_hours=(now - r.created_at).total_seconds() / 3600,
             )
             for r in census.unresolved
         ),
@@ -322,7 +324,10 @@ def _claims(reader: ClaimAuditReader) -> ClaimsSection:
     return ClaimsSection(
         held=sum(not c.deferred for c in unresolved),
         deferred=sum(c.deferred for c in unresolved),
-        unreadable_issues=tuple(sorted(c.issue_number for c in reader.list_unreadable_claims())),
+        unreadable=tuple(
+            UnreadableClaimSummary(run_key=c.run_key, issue_number=c.issue_number)
+            for c in sorted(reader.list_unreadable_claims(), key=lambda c: c.run_key)
+        ),
         quarantined=tuple(
             QuarantinedClaim(
                 quarantine_key=q.quarantine_key,
@@ -483,11 +488,11 @@ def _anomalies(
             Anomaly(
                 kind=AnomalyKind.UNREADABLE_CLAIM,
                 sources=(AuditSource.PENDING_WORK_CLAIMS,),
-                subject=f"#{n}",
-                signature="unreadable_claim",
+                subject=f"#{c.issue_number}",
+                signature=c.run_key,
                 detail="stored claim payload cannot be read back",
             )
-            for n in claims.unreadable_issues
+            for c in claims.unreadable
         )
         found.extend(
             Anomaly(

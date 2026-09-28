@@ -127,8 +127,14 @@ def _replace_file(path: Path, text: str) -> None:
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as handle:
-        handle.write(text)
-    os.replace(handle.name, path)
+        staged = Path(handle.name)
+    try:
+        staged.write_text(text, encoding="utf-8")
+        os.replace(staged, path)
+    except BaseException:
+        # Nothing but the report may be left beside it.
+        staged.unlink(missing_ok=True)
+        raise
 
 
 def _inputs(state_dir: Path, scratch: Path, args: argparse.Namespace) -> EngineAuditInputs:
@@ -165,7 +171,7 @@ def _snapshot(live: Path, copy: Path) -> Path | Unavailable:
     except ReadOnlySqliteAccessError as error:
         if error.reason is ReadOnlySqliteFailure.DATABASE_ABSENT:
             return Unavailable(SourceStatus.ABSENT, f"no {live.name} in the state directory")
-        raise
+        return Unavailable(SourceStatus.UNREADABLE, str(error))
 
 
 def _log(path: Path, *, tail_bytes: int) -> EngineLog | Unavailable:

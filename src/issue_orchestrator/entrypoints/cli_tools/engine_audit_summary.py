@@ -99,7 +99,7 @@ def _tech_lead(tl: TechLeadSection) -> list[str]:
 def _claims(cl: ClaimsSection) -> list[str]:
     return [
         f"== claims: held {cl.held}, deferred {cl.deferred},"
-        f" unreadable {len(cl.unreadable_issues)}, quarantined {len(cl.quarantined)}"
+        f" unreadable {len(cl.unreadable)}, quarantined {len(cl.quarantined)}"
     ]
 
 

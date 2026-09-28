@@ -49,6 +49,9 @@ class SourceStatus(StrEnum):
     RATE_LIMITED = "rate_limited"
     #: The operator asked for it not to be read (``--no-github``).
     SKIPPED = "skipped"
+    #: Present but no consistent copy could be taken (it changed under every
+    #: attempt): nothing is claimed from it this time.
+    UNREADABLE = "unreadable"
     #: Read, but not over the whole audit window (the log's bounded tail, or a
     #: rotation, started after the window did): absence there proves nothing.
     INCOMPLETE = "incomplete"
@@ -137,11 +140,17 @@ class QuarantinedClaim(_Frozen):
     releasing: bool
 
 
+class UnreadableClaimSummary(_Frozen):
+    """A stored claim whose payload cannot be read back, by its own identity."""
+
+    run_key: str
+    issue_number: int
+
+
 class ClaimsSection(_Frozen):
     held: int
     deferred: int
-    #: Issue numbers of stored claims whose payload cannot be read back.
-    unreadable_issues: tuple[int, ...]
+    unreadable: tuple[UnreadableClaimSummary, ...]
     quarantined: tuple[QuarantinedClaim, ...]
 
 
@@ -354,6 +363,7 @@ __all__ = [
     "SourceStatus",
     "TechLeadSection",
     "TimelineRepeat",
+    "UnreadableClaimSummary",
     "UnresolvedWork",
     "ValidatedWorkSection",
 ]

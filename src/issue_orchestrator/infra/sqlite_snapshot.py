@@ -1,68 +1,51 @@
-"""Copy a live engine database without ever opening it for writing (#7490).
+"""Copy a live engine database without touching it (#7490).
 
-An audit of a running engine must not be able to change what it audits. The
-live file is only ever opened ``mode=ro`` and copied with SQLite's online
-backup; everything afterwards opens only the copy, so a store that runs its
-own schema setup on open touches the copy, never the engine's file.
+An audit of a running engine must not be able to change what it audits. A
+SQLite connection to the live file, even ``mode=ro``, is not enough: a reader
+of a WAL database marks its read lock in the shared ``-shm`` file, and may
+create that file. So the live files are never opened by SQLite at all. Their
+bytes are copied, the main file and its ``-wal`` together, and the copy is the
+only thing SQLite ever opens.
 
-Two read paths, chosen by whether the database has a write-ahead log beside
-it:
-
-* **A ``-wal`` file exists** (a writer has the database open, or left
-  committed pages in the log): read through the shared no-create,
-  ``query_only`` profile (:func:`.sqlite_readonly.open_sqlite_readonly`),
-  which sees one consistent snapshot, log included, while the engine commits.
-* **No ``-wal`` file** (every writer closed it; the validated-work store opens
-  a connection per operation, so this is its usual state): every committed
-  page is in the main file, but a ``mode=ro`` connection cannot open a WAL
-  database whose ``-shm`` it may not create. The main file is read
-  ``immutable`` instead, and the copy is kept only if the file's identity,
-  size and modification time are the same after the copy as before, which
-  proves no checkpoint wrote into it meanwhile. A file that keeps changing
-  under the copy is reported unreadable rather than copied torn.
+A byte copy of a database being written can be torn, so a copy is kept only
+if every file it came from has the same identity, size and modification time
+after the copy as before (no commit, no checkpoint landed meanwhile) and the
+copy passes SQLite's ``quick_check``. The copy is then opened, which replays
+its copied log, and switched to a rollback journal so later read-only opens
+need no sidecars. A database that changes under every attempt is reported
+unreadable rather than copied torn.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 from ..domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
-from .sqlite_readonly import open_sqlite_readonly
 
-#: Copies attempted before a database that keeps changing under the copy
-#: is reported unreadable.
-SNAPSHOT_ATTEMPTS = 3
+#: Copies attempted before a database that keeps changing under the copy is
+#: reported unreadable. An engine commits every few seconds and a copy of its
+#: largest file takes well under one, so a quiet interval comes quickly.
+SNAPSHOT_ATTEMPTS = 10
+
+_Identity = tuple[int, int, int, int] | None
 
 
 def snapshot_sqlite(live: Path, destination: Path, *, timeout: float) -> Path:
-    """Copy ``live`` to ``destination`` read-only; return ``destination``.
+    """Copy ``live`` (and its write-ahead log) to ``destination``; return ``destination``.
 
-    Raises :class:`~..domain.read_only_sqlite.ReadOnlySqliteAccessError` when
-    ``live`` is absent or unreadable (the caller decides what an absent
-    database means). ``destination`` must not exist yet.
-
-    The read path is chosen afresh on every attempt: a writer that closes the
-    database between the ``-wal`` check and the open removes the log it was
-    chosen for, and the next attempt then reads the closed file.
+    Raises :class:`~..domain.read_only_sqlite.ReadOnlySqliteAccessError`:
+    ``DATABASE_ABSENT`` when ``live`` does not exist (the caller decides what
+    that means), ``UNREADABLE`` when no consistent copy could be taken.
+    ``destination`` must not exist yet. ``timeout`` bounds opening the copy.
     """
     if destination.exists():
         raise FileExistsError(f"snapshot destination already exists: {destination}")
     for _attempt in range(SNAPSHOT_ATTEMPTS):
-        if _log_beside(live).exists():
-            try:
-                with closing(
-                    open_sqlite_readonly(live, timeout=timeout, row_factory=sqlite3.Row)
-                ) as source:
-                    _backup(source, destination)
-                return destination
-            except ReadOnlySqliteAccessError as error:
-                destination.unlink(missing_ok=True)
-                if error.reason is not ReadOnlySqliteFailure.UNREADABLE or _log_beside(live).exists():
-                    raise
-        elif _quiescent_copy(live, destination, timeout=timeout):
+        if _consistent_copy(live, destination, timeout=timeout):
             return destination
     raise ReadOnlySqliteAccessError(
         ReadOnlySqliteFailure.UNREADABLE,
@@ -70,51 +53,52 @@ def snapshot_sqlite(live: Path, destination: Path, *, timeout: float) -> Path:
     )
 
 
-def _quiescent_copy(live: Path, destination: Path, *, timeout: float) -> bool:
-    """Copy a database no writer holds open; False if a checkpoint touched it meanwhile."""
-    before = _identity(live)
+def _consistent_copy(live: Path, destination: Path, *, timeout: float) -> bool:
+    log = _log_beside(live)
+    copied_log = _log_beside(destination)
+    before = (_identity(live, required=True), _identity(log, required=False))
     try:
-        with closing(
-            sqlite3.connect(
-                live.resolve().as_uri() + "?mode=ro&immutable=1", uri=True, timeout=timeout
-            )
-        ) as source:
-            source.execute("PRAGMA query_only=ON")
-            _backup(source, destination)
-    except sqlite3.Error as error:
-        destination.unlink(missing_ok=True)
-        raise ReadOnlySqliteAccessError(
-            ReadOnlySqliteFailure.UNREADABLE, f"SQLite read failed: {error}"
-        ) from error
-    # A writer that opens the database meanwhile commits into a new log, not
-    # the main file, so the copy is still one consistent state; only a
-    # checkpoint writing the main file under the copy can tear it.
-    if _identity(live) == before:
-        return True
-    destination.unlink()
-    return False
+        shutil.copyfile(live, destination)
+        if before[1] is not None:
+            shutil.copyfile(log, copied_log)
+    except FileNotFoundError:
+        # The log was checkpointed away (or the file replaced) mid-copy.
+        _discard(destination)
+        return False
+    if (_identity(live, required=True), _identity(log, required=False)) != before:
+        _discard(destination)
+        return False
+    try:
+        with closing(sqlite3.connect(destination, timeout=timeout)) as copy:
+            # Replays the copied log into the copy, then drops the log.
+            copy.execute("PRAGMA journal_mode=DELETE")
+            intact = copy.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    except sqlite3.DatabaseError:
+        intact = False
+    if not intact:
+        _discard(destination)
+    return intact
 
 
-def _identity(live: Path) -> tuple[int, int, int, int]:
+def _identity(path: Path, *, required: bool) -> _Identity:
     try:
-        found = os.stat(live)
+        found = os.stat(path)
     except FileNotFoundError as error:
+        if not required:
+            return None
         raise ReadOnlySqliteAccessError(
-            ReadOnlySqliteFailure.DATABASE_ABSENT, f"SQLite database is absent: {live}"
+            ReadOnlySqliteFailure.DATABASE_ABSENT, f"SQLite database is absent: {path}"
         ) from error
     return (found.st_dev, found.st_ino, found.st_size, found.st_mtime_ns)
 
 
-def _backup(source: sqlite3.Connection, destination: Path) -> None:
-    with closing(sqlite3.connect(destination)) as copy:
-        source.backup(copy)
-        # The copy is ours: a rollback journal means a later read-only open
-        # needs no -wal/-shm beside it.
-        copy.execute("PRAGMA journal_mode=DELETE")
+def _discard(destination: Path) -> None:
+    for path in (destination, _log_beside(destination), destination.with_name(destination.name + "-shm")):
+        path.unlink(missing_ok=True)
 
 
-def _log_beside(live: Path) -> Path:
-    return live.with_name(live.name + "-wal")
+def _log_beside(path: Path) -> Path:
+    return path.with_name(path.name + "-wal")
 
 
 __all__ = ["SNAPSHOT_ATTEMPTS", "snapshot_sqlite"]

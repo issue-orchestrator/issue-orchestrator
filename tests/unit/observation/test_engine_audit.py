@@ -12,6 +12,7 @@ import gc
 import hashlib
 import json
 import logging
+import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -55,7 +56,9 @@ from issue_orchestrator.infra.sqlite_snapshot import snapshot_sqlite
 from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
 from issue_orchestrator.infra.validated_work_census import SqliteValidatedWorkCensus
 from issue_orchestrator.observation import engine_audit as observed
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.observation.engine_audit import (
+    STALE_UNRESOLVED_AFTER,
     EngineAuditInputs,
     Unavailable,
     audit_engine,
@@ -416,21 +419,29 @@ def test_log_repeats_after_a_state_change_count_from_it(state, tmp_path, monkeyp
 
 
 def test_the_live_state_is_never_written(state, tmp_path, monkeypatch) -> None:
-    """Every database, log and write-ahead log is byte-identical afterwards.
-
-    ``-shm`` is excluded: it is SQLite's shared lock index, which every reader
-    of a WAL database (``mode=ro`` included) marks, the engine's own too.
-    """
+    """Every file in the state directory is byte-identical afterwards, lock
+    index included, and no file is added, whether or not a writer holds a
+    database open."""
 
     def digest() -> dict[str, str]:
         return {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(state.rglob("*"))
-            if p.is_file() and not p.name.endswith("-shm")
+            if p.is_file()
         }
 
     # No writer holds the state open (see the fixture), so any change is the audit's.
     assert not list(state.glob("*.sqlite-wal"))
+    before = digest()
+
+    _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert digest() == before
+
+    # And with the engine's writer holding one open, its -wal and -shm present.
+    held = SQLiteActionLivenessStore(state / cli.ACTION_LIVENESS_DB)
+    held.request_pause(412, "drift")
+    assert (state / (cli.ACTION_LIVENESS_DB + "-shm")).exists()
     before = digest()
 
     _run(state, tmp_path, monkeypatch, FakeHost())
@@ -589,14 +600,19 @@ def test_an_open_pr_without_a_draft_flag_is_refused(state, tmp_path, monkeypatch
 # -- reading the snapshot, never the live file ---------------------------------
 
 
-def test_a_snapshot_sees_committed_pages_still_in_the_live_log(tmp_path: Path) -> None:
-    live = tmp_path / "live.sqlite"
+def test_a_snapshot_of_an_open_database_touches_none_of_its_files(tmp_path: Path) -> None:
+    """Sees commits still in the -wal, and leaves the -shm lock index alone too."""
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live = live_dir / "live.sqlite"
     store = SQLiteActionLivenessStore(live)  # held open: its commits stay in the -wal
     store.request_pause(9, "drift")
-    assert (tmp_path / "live.sqlite-wal").exists()
+    assert sorted(p.name for p in live_dir.iterdir()) == ["live.sqlite", "live.sqlite-shm", "live.sqlite-wal"]
+    before = {p.name: p.read_bytes() for p in live_dir.iterdir()}
 
     copy = snapshot_sqlite(live, tmp_path / "copy.sqlite", timeout=10.0)
 
+    assert {p.name: p.read_bytes() for p in live_dir.iterdir()} == before
     assert [p.issue_number for p in SQLiteActionLivenessStore(copy).pending_pauses()] == [9]
 
 
@@ -617,29 +633,109 @@ def test_a_closed_wal_database_is_copied_without_creating_its_sidecars(tmp_path:
     assert sorted(p.name for p in tmp_path.glob("live.sqlite*")) == ["live.sqlite"]
 
 
-def test_a_writer_closing_between_the_log_check_and_the_open_is_read_closed(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """The -wal seen by the check is gone by the open: read the closed file instead."""
+def test_a_log_checkpointed_away_mid_copy_is_copied_again(tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live.sqlite"
-    with closing(sqlite3.connect(live)) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE t (x)")
-        conn.execute("INSERT INTO t VALUES (7)")
-        conn.commit()
-    log = tmp_path / "live.sqlite-wal"
-    log.write_bytes(b"")
+    store = SQLiteActionLivenessStore(live)
+    store.request_pause(9, "drift")
+    copies: list[str] = []
+    real_copy = shutil.copyfile
 
-    def writer_closes(path, **_kwargs):
-        log.unlink()  # the last writer closed: SQLite removes its log
-        raise ReadOnlySqliteAccessError(ReadOnlySqliteFailure.UNREADABLE, "unable to open")
+    def checkpoint_on_first_log_copy(src, dst):
+        if str(src).endswith("-wal") and not copies:
+            copies.append(str(src))
+            raise FileNotFoundError(src)
+        return real_copy(src, dst)
 
-    monkeypatch.setattr("issue_orchestrator.infra.sqlite_snapshot.open_sqlite_readonly", writer_closes)
+    monkeypatch.setattr("issue_orchestrator.infra.sqlite_snapshot.shutil.copyfile", checkpoint_on_first_log_copy)
 
     copy = snapshot_sqlite(live, tmp_path / "copy.sqlite", timeout=10.0)
 
-    with closing(sqlite3.connect(copy)) as conn:
-        assert conn.execute("SELECT x FROM t").fetchall() == [(7,)]
+    assert copies  # the first attempt was abandoned
+    assert [p.issue_number for p in SQLiteActionLivenessStore(copy).pending_pauses()] == [9]
+
+
+def test_a_database_that_never_holds_still_is_an_unreadable_source(
+    state, tmp_path, monkeypatch
+) -> None:
+    def always_changing(live, destination, *, timeout):
+        raise ReadOnlySqliteAccessError(ReadOnlySqliteFailure.UNREADABLE, "changed during each copy")
+
+    monkeypatch.setattr(cli, "snapshot_sqlite", always_changing)
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert report.partial is True
+    assert {r.status for r in report.sources if r.source is not AuditSource.GITHUB and r.source is not AuditSource.LOG} == {
+        SourceStatus.UNREADABLE
+    }
+
+
+def test_an_unresolved_record_just_short_of_the_threshold_is_not_stale(state) -> None:
+    rig = Rig(state / cli.VALIDATED_WORK_DB)
+    almost = NOW - STALE_UNRESOLVED_AFTER + timedelta(seconds=10)
+    rig.open().admit(capture(issue=7003, branch="almost", at=almost.isoformat()))
+    gc.collect()
+    with tempfile.TemporaryDirectory() as scratch:
+        args = cli.build_parser().parse_args(["--state-dir", str(state), "--repo", REPO, "--no-github"])
+        report = audit_engine(cli._inputs(state, Path(scratch), args), now=NOW, window=timedelta(hours=24))
+
+    stale = {a.subject for a in report.anomalies if a.kind is AnomalyKind.STALE_UNRESOLVED_WORK}
+    assert "#7003" not in stale
+    assert "#7001" in stale
+
+
+def test_two_unreadable_claims_on_one_issue_are_two_anomalies(state, tmp_path, monkeypatch, make_session) -> None:
+    db = state / cli.PENDING_WORK_CLAIMS_DB
+    store = SqlitePendingWorkClaimStore(db)
+    for attempt in range(2):
+        session = make_session(issue_number=8, task=SessionKind.REVIEW if attempt else SessionKind.CODE)
+        store.hold_pending_work_claim(
+            session.run_assets,
+            PendingWorkClaim(
+                PendingWorkKind.REWORK,
+                PendingRework(GitHubIssueKey(REPO, "8"), "agent:coder", pr_number=98),
+            ),
+            issue_number=8,
+        )
+    del store
+    gc.collect()
+    with closing(sqlite3.connect(db)) as conn:
+        good = dict(conn.execute("SELECT run_key, payload FROM pending_work_claim WHERE issue_number = 8"))
+        conn.execute("UPDATE pending_work_claim SET payload = '{corrupt' WHERE issue_number = 8")
+        conn.commit()
+    first = _run(state, tmp_path, monkeypatch, FakeHost())
+    unreadable = {a.signature for a in first.anomalies if a.kind is AnomalyKind.UNREADABLE_CLAIM}
+    assert unreadable == set(good)
+    previous = tmp_path / "previous.json"
+    previous.write_text(first.model_dump_json(), encoding="utf-8")
+    repaired = sorted(good)[0]
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("UPDATE pending_work_claim SET payload = ? WHERE run_key = ?", (good[repaired], repaired))
+        conn.commit()
+
+    diff = _run(state, tmp_path, monkeypatch, FakeHost(), "--previous", str(previous)).diff
+
+    assert diff is not None
+    assert [a.signature for a in diff.resolved] == [repaired]
+    assert [p.anomaly.signature for p in diff.persisting if p.anomaly.kind is AnomalyKind.UNREADABLE_CLAIM] == [
+        sorted(good)[1]
+    ]
+
+
+def test_a_failed_report_install_leaves_nothing_beside_the_output(state, tmp_path, monkeypatch) -> None:
+    out_dir = tmp_path / "reports"
+    out_dir.mkdir()
+    monkeypatch.setattr(cli, "create_repository_host", lambda repo: FakeHost())
+
+    def refuse(_src, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli.os, "replace", refuse)
+
+    with pytest.raises(OSError, match="disk full"):
+        cli.main(["--state-dir", str(state), "--repo", REPO, "--output", str(out_dir / "report.json")])
+
+    assert list(out_dir.iterdir()) == []
 
 
 def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, monkeypatch) -> None:
@@ -649,7 +745,7 @@ def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, 
         conn.commit()
     stamps = iter(range(100))
     monkeypatch.setattr(
-        "issue_orchestrator.infra.sqlite_snapshot._identity", lambda _path: next(stamps)
+        "issue_orchestrator.infra.sqlite_snapshot._identity", lambda _path, **_kwargs: next(stamps)
     )
 
     with pytest.raises(ReadOnlySqliteAccessError) as refused:
