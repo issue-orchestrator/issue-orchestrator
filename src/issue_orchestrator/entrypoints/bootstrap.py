@@ -797,6 +797,7 @@ def build_orchestrator(
         provider_credentials=build_provider_credentials(),
         needs_human_block=pending_work.needs_human_block,
         coder_prompt_addendum=coder_prompt_addendum,
+        recovery_holds=validated_work.blocks,
     )
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,

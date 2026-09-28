@@ -64,8 +64,23 @@ PR = 456
 ISSUE = 123
 
 
+class _RecoveryHolds:
+    """The recovery owner's holds, as the launcher asks them (#7455)."""
+
+    def __init__(self) -> None:
+        self.held: set[int] = set()
+
+    def holds_recovery(self, issue_number: int) -> bool:
+        return issue_number in self.held
+
+
 @pytest.fixture
-def launcher_bundle(tmp_path: Path) -> LauncherTestBundle:
+def recovery_holds() -> _RecoveryHolds:
+    return _RecoveryHolds()
+
+
+@pytest.fixture
+def launcher_bundle(tmp_path: Path, recovery_holds: _RecoveryHolds) -> LauncherTestBundle:
     """A real SessionLauncher over the launch tests' fakes, with a reviewer."""
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Test prompt")
@@ -85,6 +100,7 @@ def launcher_bundle(tmp_path: Path) -> LauncherTestBundle:
         MockWorktreeManager(tmp_path),
         MockWorkingCopy(),
         MockCommandRunner(),
+        recovery_holds=recovery_holds,
     )
 
 
@@ -357,12 +373,13 @@ def test_a_review_of_a_blocked_issue_is_withdrawn_not_failed(
 
 
 def test_a_review_held_only_by_recovery_waits_then_launches_once(
-    launcher_bundle: LauncherTestBundle,
+    launcher_bundle: LauncherTestBundle, recovery_holds: _RecoveryHolds
 ) -> None:
     """Case U: the first review of a just-published PR lands inside the
     recovery owner's ``recovery-pending`` window. It must wait for the owner
     to release the hold, not be dropped, and then launch exactly once."""
     _host_shows(launcher_bundle, "recovery-pending", "pr-pending")
+    recovery_holds.held.add(ISSUE)  # the owner holds it: publish not yet routed
     state = OrchestratorState()
     queued = _review(agent_label=None)
     assert state.queue_pending_review(queued)
@@ -375,6 +392,7 @@ def test_a_review_held_only_by_recovery_waits_then_launches_once(
     assert len(_skips(engine)) == 1
 
     _host_shows(launcher_bundle, "pr-pending")  # the recovery owner released it
+    recovery_holds.held.clear()
     released = _Engine(launcher_bundle, state)
     released.apply(released.plan())
 
@@ -410,3 +428,41 @@ def test_a_failed_review_launch_never_marks_its_pr_number_failed_this_cycle(
 
     assert [e["step_type"] for e in engine.events.of(EventName.APPLY_FAILED)] == ["launch_session"]
     assert PR not in state.failed_this_cycle
+
+
+def test_a_lingering_recovery_label_the_owner_does_not_hold_withdraws_the_review(
+    launcher_bundle: LauncherTestBundle,
+) -> None:
+    """#7455 review r3: only a hold the recovery owner confirms is a wait. A
+    ``recovery-pending`` label with no retained record behind it would never be
+    released by that owner, so waiting on it would retry forever."""
+    _host_shows(launcher_bundle, "recovery-pending")
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert state.pending_reviews == []  # withdrawn, not left to wait forever
+    assert _skips(engine) == ["Stale pending review: issue_blocked"]
+
+
+def test_an_unreadable_recovery_hold_is_a_retried_launch_failure_not_a_wait(
+    launcher_bundle: LauncherTestBundle, recovery_holds: _RecoveryHolds
+) -> None:
+    def unreadable(issue_number: int) -> bool:
+        raise OSError("database is locked")
+
+    recovery_holds.holds_recovery = unreadable  # type: ignore[method-assign]
+    _host_shows(launcher_bundle, "recovery-pending")
+    state = OrchestratorState()
+    queued = _review(agent_label=None)
+    assert state.queue_pending_review(queued)
+    engine = _Engine(launcher_bundle, state)
+
+    engine.apply(engine.plan())
+
+    assert engine.spawned() == []
+    assert [e["step_type"] for e in engine.events.of(EventName.APPLY_FAILED)] == ["launch_session"]
+    assert state.pending_reviews == [queued]  # retained for the next attempt

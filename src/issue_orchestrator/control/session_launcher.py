@@ -106,6 +106,7 @@ from .launch_transaction import (
     SpawnGuard,
     abandon_claim_unless_spawned,
 )
+from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from .session_launch_types import (
     ClaimAcquisitionResult,
     LaunchDisposition,
@@ -207,8 +208,12 @@ class SessionLauncher:
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+        # The validated-work recovery owner's holds (#7455): a review waits only
+        # for a hold that owner confirms, never for a lingering label alone.
+        recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
     ):
         self.config = config
+        self._recovery_holds = recovery_holds
         self.events = events
         self.repository_host = repository_host
         self._action_applier = action_applier
@@ -1507,6 +1512,7 @@ class SessionLauncher:
                 config=self.config,
                 repository_host=self.repository_host,
                 label_manager=self._lm,
+                recovery_holds=self._recovery_holds,
             ),
             review,
             self.events,

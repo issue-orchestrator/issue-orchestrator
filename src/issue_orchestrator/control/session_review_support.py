@@ -20,6 +20,7 @@ from ..events import EventName
 from ..ports import EventSink, make_trace_event
 from .session_launch_types import REVIEW_HELD_BY_RECOVERY, LaunchDisposition, LaunchResult
 from .transition_log import log_transition
+from .recovery_review_hold import RecoveryHolds
 from .review_validity import (
     ReviewValidity,
     evaluate_review_validity,
@@ -73,12 +74,16 @@ class ReviewLaunchCheck:
 
     ``held_by_recovery`` is true exactly when the validated-work recovery
     hold (``recovery-pending``) is ALL that keeps the review from launching
-    (#7455): the recovery owner routes that published work to review and then
-    releases the hold, so the review must wait for it, not be dropped.
+    AND the recovery owner confirms it holds the issue (#7455): that owner
+    routes the published work to review and then releases the hold, so the
+    review must wait for it. A lingering label the owner does not hold is a
+    block like any other and withdraws the review. ``hold_unreadable`` names an
+    owner read that failed: the launch fails and is retried, never waited on.
     """
 
     validity: ReviewValidity
     held_by_recovery: bool
+    hold_unreadable: str = ""
 
 
 def review_launch_validity(
@@ -87,6 +92,7 @@ def review_launch_validity(
     config: Config,
     repository_host: RepositoryHost,
     label_manager: "LabelManager",
+    recovery_holds: RecoveryHolds,
 ) -> ReviewLaunchCheck:
     """Load current review facts and decide whether launch is still valid."""
     current_issue = repository_host.get_issue(review.issue_number)
@@ -110,9 +116,15 @@ def review_launch_validity(
         pr=current_pr,
         block_label=label_manager.recovery_pending,
     )
-    return ReviewLaunchCheck(
-        withholding.current, held_by_recovery=withholding.withheld_only_by_block
-    )
+    if not withholding.withheld_only_by_block:
+        return ReviewLaunchCheck(withholding.current, held_by_recovery=False)
+    try:
+        held = recovery_holds.holds_recovery(review.issue_number)
+    except Exception as error:  # store-defined read failure
+        return ReviewLaunchCheck(
+            withholding.current, held_by_recovery=False, hold_unreadable=str(error)
+        )
+    return ReviewLaunchCheck(withholding.current, held_by_recovery=held)
 
 
 def refuse_unlaunchable_review(
@@ -126,6 +138,13 @@ def refuse_unlaunchable_review(
     a failed launch (#7455).
     """
     validity = check.validity
+    if check.hold_unreadable:
+        return LaunchResult(
+            None,
+            False,
+            f"Could not read the recovery hold of issue #{review.issue_number}: {check.hold_unreadable}",
+            disposition=LaunchDisposition.RETRYABLE_FAILURE,
+        )
     if check.held_by_recovery:
         # The recovery owner routes this published work and then releases
         # its hold: wait for it, keep the review queued.
