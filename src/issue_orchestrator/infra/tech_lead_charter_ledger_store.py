@@ -229,6 +229,24 @@ class SqliteTechLeadCharterLedger:
             )
         )
 
+    def role_outcome_counts(self) -> tuple[tuple[str, str, int], ...]:
+        """How many decisions each ``(role, outcome)`` holds, most first (#7490).
+
+        Counted over the decoded records, so ``outcome`` is the domain's own
+        field as ``TechLeadCharterDecision`` reads it, not a JSON path that
+        could drift from it.
+        """
+        counts: dict[tuple[str, str], int] = {}
+        for decision in _decode(
+            self._connection().execute("SELECT record FROM tech_lead_charter_decisions")
+        ):
+            key = (decision.role.value, decision.outcome.value)
+            counts[key] = counts.get(key, 0) + 1
+        return tuple(
+            (role, outcome, count)
+            for (role, outcome), count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+
     def list_recent(self, *, limit: int = 100) -> tuple[TechLeadCharterDecision, ...]:
         return _decode(
             self._connection().execute(

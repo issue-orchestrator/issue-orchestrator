@@ -42,6 +42,15 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+#: The two line layouts an engine writes to its repo log. ``io engine-audit``
+#: parses the log back (``infra/engine_log_reader.py``), so these are the one
+#: spelling both the writers and that reader use.
+ROTATING_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+ROTATING_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+CONTEXT_LOG_FORMAT = "%(asctime)s [%(process)d] %(name)s %(levelname)s:%(context)s %(message)s"
+#: The ``extra=`` fields :class:`ContextFormatter` renders as ``%(context)s``.
+CONTEXT_LOG_FIELDS = ("run_id", "tick_id", "issue_key", "session_id", "step_id")
+
 # Flag to track if logging has been set up (for idempotency)
 _logging_configured = False
 _current_log_file: Path | None = None
@@ -113,10 +122,7 @@ def add_rotating_file_handler(log_file: Path, *, level: int) -> bool:
     )
     handler.setLevel(level)
     handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        logging.Formatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
     )
     root.addHandler(handler)
     return True
@@ -128,7 +134,7 @@ class ContextFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         # Build context string from known extra fields
         context_parts = []
-        for field in ("run_id", "tick_id", "issue_key", "session_id", "step_id"):
+        for field in CONTEXT_LOG_FIELDS:
             value = getattr(record, field, None)
             if value is not None:
                 # Shorten run_id for readability
@@ -222,7 +228,7 @@ def setup_logging(
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    human_format = "%(asctime)s [%(process)d] %(name)s %(levelname)s:%(context)s %(message)s"
+    human_format = CONTEXT_LOG_FORMAT
     stderr_format = "[%(process)d] %(name)s: %(message)s"
 
     file_handler, log_file, fallback_used = _create_file_handler(log_file, log_retention_days)

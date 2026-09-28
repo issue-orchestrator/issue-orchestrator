@@ -2156,7 +2156,7 @@ class GitHubHttpClient:
                 pullRequests(states: OPEN, first: 100, after: $after,
                              orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number title url body headRefName headRefOid baseRefName }
+                    nodes { number title url body headRefName headRefOid baseRefName isDraft }
                 }
             }
         }
@@ -2180,9 +2180,12 @@ class GitHubHttpClient:
                     isinstance(node, dict)
                     and type(node.get("number")) is int
                     and isinstance(node.get("headRefName"), str)
+                    and type(node.get("isDraft")) is bool
                 ):
                     raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
-                prs.append({**node, "state": "open"})
+                # ``draft`` is the REST spelling ``_pr_info_from_api`` reads;
+                # an open PR is always one or the other (#7490).
+                prs.append({**node, "state": "open", "draft": node["isDraft"]})
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")

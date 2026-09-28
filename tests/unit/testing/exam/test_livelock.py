@@ -12,7 +12,7 @@ import pytest
 
 from issue_orchestrator.testing.exam import grade, render_summary
 from issue_orchestrator.testing.exam.cases import HALTED_EXCHANGE_WITH_VALIDATED_WORK
-from issue_orchestrator.testing.exam.livelock import (
+from issue_orchestrator.observation.no_progress import (
     LIVELOCK_THRESHOLD,
     RepeatingFailure,
     find_repeating_failures,

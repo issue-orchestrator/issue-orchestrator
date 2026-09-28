@@ -9,13 +9,16 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Iterable, Iterator
 
 from .timeline_artifact_expectations import RUN_SCOPED_TIMELINE_EVENTS, event_requires_run_dir
-from ..infra.sqlite_connection import open_sqlite
+from ..domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
+from ..infra.sqlite_connection import open_sqlite, readonly_sqlite_transaction
 from ..infra.timeline_trace import is_timeline_trace_enabled
+from ..ports.engine_audit import TimelineEvent
 from ..ports.timeline_store import TimelineRecord, TimelineStore
 
 logger = logging.getLogger(__name__)
@@ -259,25 +262,7 @@ class SqliteTimelineStore(TimelineStore):
                     (issue_number,),
                 ).fetchall()
 
-        records: list[TimelineRecord] = []
-        for row in rows:
-            data_json = row["data_json"] or "{}"
-            try:
-                data = json.loads(data_json)
-            except json.JSONDecodeError:
-                data = {}
-            if not isinstance(data, dict):
-                data = {}
-            records.append(
-                TimelineRecord(
-                    event_id=str(row["event_id"]),
-                    timestamp=str(row["timestamp"]),
-                    event=str(row["event"]),
-                    data=data,
-                    source_event=str(row["source_event"] or ""),
-                    instance_id=str(row["instance_id"] or ""),
-                )
-            )
+        records = [_record(row) for row in rows]
         if _timeline_trace_enabled():
             logger.info(
                 "[TIMELINE] read db=%s issue=%s count=%s limit=%s",
@@ -412,6 +397,62 @@ class SqliteTimelineStore(TimelineStore):
                 after_count,
                 deleted,
             )
+
+
+def _record(row: sqlite3.Row) -> TimelineRecord:
+    """One stored row as a record; the one decoding every reader shares."""
+    data_json = row["data_json"] or "{}"
+    try:
+        data = json.loads(data_json)
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return TimelineRecord(
+        event_id=str(row["event_id"]),
+        timestamp=str(row["timestamp"]),
+        event=str(row["event"]),
+        data=data,
+        source_event=str(row["source_event"] or ""),
+        instance_id=str(row["instance_id"] or ""),
+    )
+
+
+class SqliteTimelineAuditReader:
+    """Every issue's events since an instant, read-only (the engine audit, #7490).
+
+    Not a :class:`SqliteTimelineStore`: opening the store runs its schema
+    setup, which DROPS the table on a schema-version mismatch. A reader of
+    another engine's database must refuse a version it does not know rather
+    than read an emptied copy as "no events".
+    """
+
+    def __init__(self, db_path: Path, *, timeout: float) -> None:
+        self._db_path = db_path
+        self._timeout = timeout
+
+    def events_since(self, since: datetime) -> Iterator[TimelineEvent]:
+        if since.tzinfo is None:
+            raise ValueError("the timeline is read from an aware instant")
+        with readonly_sqlite_transaction(
+            self._db_path, timeout=self._timeout, row_factory=sqlite3.Row
+        ) as conn:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            if version != _SQLITE_SCHEMA_VERSION:
+                raise ReadOnlySqliteAccessError(
+                    ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA,
+                    f"timeline schema version {version} is not {_SQLITE_SCHEMA_VERSION}",
+                )
+            # Stored timestamps are UTC ISO strings (DefaultTimelineWriter), so
+            # string order is time order; see event_time_bounds.
+            rows = conn.execute(
+                "SELECT issue_number, event_id, source_event, timestamp, event, data_json,"
+                " instance_id FROM timeline_events WHERE timestamp >= ?"
+                " ORDER BY timestamp, sequence",
+                (since.astimezone(UTC).isoformat(),),
+            )
+            for row in rows:
+                yield TimelineEvent(issue_number=int(row["issue_number"]), record=_record(row))
 
 
 def _timeline_trace_enabled() -> bool:

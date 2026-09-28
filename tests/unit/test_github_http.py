@@ -2903,9 +2903,10 @@ def _graphql_body(request: httpx.Request) -> dict:
     return _json.loads(request.content)
 
 
-def _pr_node(number: int) -> dict:
+def _pr_node(number: int, *, draft: bool = False) -> dict:
     return {"number": number, "title": f"PR {number}", "url": "u", "body": "",
-            "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main"}
+            "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main",
+            "isDraft": draft}
 
 
 def test_list_open_prs_complete_walks_by_cursor_without_search() -> None:
@@ -2945,6 +2946,39 @@ def test_list_open_prs_complete_refuses_a_malformed_node() -> None:
         return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
             "pageInfo": {"hasNextPage": False, "endCursor": None},
             "nodes": [_pr_node(1), {"number": "2"}],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="malformed node"):
+        client.list_open_prs_complete()
+
+
+def test_list_open_prs_complete_says_which_prs_are_drafts() -> None:
+    """The engine audit counts draft vs ready from this one listing (#7490)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "isDraft" in _graphql_body(request)["query"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [_pr_node(1, draft=True), _pr_node(2)],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert [(pr["number"], pr["draft"]) for pr in client.list_open_prs_complete()] == [
+        (1, True),
+        (2, False),
+    ]
+
+
+def test_list_open_prs_complete_refuses_a_node_without_its_draft_flag() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        node = _pr_node(1)
+        del node["isDraft"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [node],
         }}}})
 
     client = _client_with_transport(httpx.MockTransport(handler))

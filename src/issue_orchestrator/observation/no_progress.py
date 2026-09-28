@@ -15,6 +15,12 @@ progresses. This finds it on the engine's own event stream:
 The threshold sits above the engine's own bounded retries (three attempts,
 e.g. the review-exchange no-completion budget) and far below a per-tick
 loop (porchpin#410 repeated its reconcile pause 130 times).
+
+One signature method serves every reader of it: the tech-lead exam grades a
+run on its event stream, and ``io engine-audit`` (#7490) reads the same
+events from an engine's timeline and the same shapes from its log, so both
+normalize a message with :func:`normalize_signature` and name a subject with
+:func:`subject_of_text` / the event subject rule here.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from ...control.session_launch_types import REVIEW_HELD_BY_RECOVERY
+from ..control.session_launch_types import REVIEW_HELD_BY_RECOVERY
 
 LIVELOCK_THRESHOLD = 5
 
@@ -81,7 +87,66 @@ STATE_CHANGES: frozenset[str] = frozenset(
 )
 
 _DETAIL_KEYS = ("step_type", "reason", "failure_reason", "failure")
-_VOLATILE = re.compile(r"\d+")
+
+#: The subject of a failure that names no issue or PR: board-wide work.
+ENGINE_SUBJECT = "the engine"
+
+#: How much of a normalized message a signature keeps.
+SIGNATURE_LENGTH = 160
+
+# Volatile parts of one failure's message, most specific first: the same
+# failure carries a fresh timestamp, id, SHA or count every time it repeats,
+# and only its shape repeats.
+_ISO_INSTANT = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+_UUID = re.compile(
+    r"\b[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}\b"
+)
+#: A hex run long enough to be a SHA or an opaque id, with a letter in it (a
+#: run of digits alone is a number, normalized below).
+_HEX_ID = re.compile(r"\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]*\d[0-9a-fA-F]*\b")
+_NUMBER = re.compile(r"\d+")
+
+# How a log message names its subject, most specific first. Issue references
+# come as "issue #410", "issue=410", "issue-410" (a session name), "issue 410"
+# or a bare "#410"; pull requests as "PR #12" / "pr=12".
+_PR_REFERENCE = re.compile(r"\b(?:PR|pr|pull request)[ =#-]*#?(\d+)\b")
+_ISSUE_REFERENCE = re.compile(r"\b[Ii]ssue[ =#:-]*#?(\d+)\b")
+_BARE_REFERENCE = re.compile(r"(?<![\w/#&])#(\d+)\b")
+
+
+def normalize_signature(text: str) -> str:
+    """The repeatable shape of one failure message.
+
+    Strips what changes between two occurrences of the same failure:
+    timestamps, UUIDs, SHAs and hex ids, then every remaining number. Two
+    messages with the same shape normalize to the same signature.
+    """
+    shape = _ISO_INSTANT.sub("<time>", text)
+    shape = _UUID.sub("<id>", shape)
+    shape = _HEX_ID.sub(lambda m: "<sha>" if len(m.group()) >= 7 else m.group(), shape)
+    return _NUMBER.sub("N", shape)[:SIGNATURE_LENGTH]
+
+
+def subject_of_text(text: str) -> str:
+    """The subject a free-text message names, in the event subject's spelling.
+
+    ``PR #N`` for a pull request, ``#N`` for an issue, otherwise
+    :data:`ENGINE_SUBJECT`. The first reference wins: a message is about the
+    thing it names first ("Failed to settle ... for issue #4; see #9").
+    """
+    found = [
+        (match.start(), f"{prefix}{match.group(1)}")
+        for pattern, prefix in (
+            (_PR_REFERENCE, "PR #"),
+            (_ISSUE_REFERENCE, "#"),
+            (_BARE_REFERENCE, "#"),
+        )
+        for match in [pattern.search(text)]
+        if match is not None
+    ]
+    return min(found)[1] if found else ENGINE_SUBJECT
 
 
 @dataclass(frozen=True)
@@ -125,7 +190,7 @@ def _subject(event: Mapping[str, Any]) -> str:
     ):
         if isinstance(value, (int, str)) and not isinstance(value, bool) and str(value):
             return f"{prefix}{value}"
-    return "the engine"
+    return ENGINE_SUBJECT
 
 
 def _detail(event: Mapping[str, Any]) -> str:
@@ -134,8 +199,18 @@ def _detail(event: Mapping[str, Any]) -> str:
     error = payload.get("error")
     if isinstance(error, str) and error:
         # The same failure carries changing ids/counts; the shape repeats.
-        parts.append(_VOLATILE.sub("N", error)[:160])
+        parts.append(normalize_signature(error))
     return "; ".join(parts)
+
+
+def subject_of_event(event: Mapping[str, Any]) -> str:
+    """The subject an engine event is about (see the module docstring)."""
+    return _subject(event)
+
+
+def resets_subject(event: Mapping[str, Any]) -> bool:
+    """Whether ``event`` changes its subject's state (so its failures are not repeats)."""
+    return str(event.get("type", "")) in STATE_CHANGES
 
 
 def find_repeating_failures(

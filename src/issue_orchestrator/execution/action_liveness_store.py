@@ -120,6 +120,7 @@ _PARKED_ON_ISSUE = (
     _SELECT + " WHERE escalation_issue=? AND next_attempt_at IS NULL" + _ORDER
 )
 _PARKED = _SELECT + " WHERE next_attempt_at IS NULL" + _ORDER
+_ALL = _SELECT + _ORDER
 _WAITING = (
     _SELECT + " WHERE next_attempt_at IS NOT NULL AND last_outcome='waiting'" + _ORDER
 )
@@ -395,6 +396,10 @@ class SQLiteActionLivenessStore:
 
     def waiting_rows(self) -> tuple[LivenessRow, ...]:
         return self._select(_WAITING, ())
+
+    def all_rows(self) -> tuple[LivenessRow, ...]:
+        """Every row: parks, waits and backing-off failures (the engine audit, #7490)."""
+        return self._select(_ALL, ())
 
     def visible_rows(self) -> tuple[LivenessRow, ...]:
         """What the tech-lead board shows: every park, then every wait."""
