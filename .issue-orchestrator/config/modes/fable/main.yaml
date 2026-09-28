@@ -171,6 +171,22 @@ validation:
       cadence:
         max_merges_since_success: 10
         max_delay_hours: 24
+    tech-lead-exam:
+      # The live tech-lead exam (#7304): plants known faults (A/B/C) and an
+      # upgrade with work in flight (U), runs the real engine and tech lead
+      # against GitHub, and grades the outcome. It costs real model calls and
+      # GitHub budget (~45 min for all four cases), so it runs on this cadence
+      # rather than in the PR gate; a failure narrows to the regressing merge.
+      enabled: true
+      # Case U upgrades from ten merges back: the span one cadence covers.
+      command: [make, test-tech-lead-exam, EXAM_ENGINE_REF=HEAD, EXAM_BASE_REF=HEAD~10]
+      setup_command: [make, venv-fast]
+      issue_agent_label: agent:backend
+      branch: main
+      timeout_seconds: 5400
+      cadence:
+        max_merges_since_success: 10
+        max_delay_hours: 24
   # TEMPORARILY on the direct backend — see #7163.
   #
   # The condor backend submits the unit lane with `request_cpus = 3` and then
