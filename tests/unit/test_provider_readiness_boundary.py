@@ -3318,11 +3318,16 @@ def _pending_count(state, queue: str) -> int:
 
 
 def _step_session(step):
-    """The session a routed launch step started, or ``None`` (#7455)."""
-    return step.session
+    """The route's whole launch step (#7455); ``_route`` keeps only its session."""
+    return step
 
 
 def _route(queue: str, state, harness, restorer=None):
+    """The session the production routing function for ``queue`` started."""
+    return _route_step(queue, state, harness, restorer).session
+
+
+def _route_step(queue: str, state, harness, restorer=None):
     """Drive the production routing function that owns ``queue``.
 
     ``restorer`` is a caller-supplied spy rather than a hidden local so a test
@@ -3423,6 +3428,32 @@ class TestAProviderRefusalNeverConsumesPendingWork:
         assert harness.created == []  # nothing spawned
         assert _pending_count(state, queue) == 1  # still queued for a healthy tick
         assert state.active_sessions == []
+
+    def test_the_refusal_is_a_wait_applied_as_a_skip_not_a_failure(
+        self, queue, refusal, tmp_path: Path
+    ) -> None:
+        """#7461 review: a provider refusal retains the work and spends nothing,
+        so the plan step is a WAIT - applied as a skip, never as a failed
+        action that marks the issue failed this cycle."""
+        from issue_orchestrator.control.actions import LaunchSessionAction, SessionType
+        from issue_orchestrator.control.session_launch_types import (
+            LaunchStepOutcome,
+            launch_step_result,
+        )
+
+        readiness, threshold = _REFUSALS[refusal]
+        harness = _RefusingLauncherHarness(tmp_path, readiness, threshold=threshold)
+        state = _pending_state(queue)
+
+        step = _route_step(queue, state, harness)
+
+        assert step.outcome is LaunchStepOutcome.WAITING
+        applied = launch_step_result(
+            LaunchSessionAction(session_type=SessionType.ISSUE, number=7), step, "failed"
+        )
+        assert not applied.success and applied.error is None  # SKIPPED
+        if queue == "tech_lead":
+            assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
 
     def test_the_refusal_is_announced_for_the_issue(
         self, queue, refusal, tmp_path: Path

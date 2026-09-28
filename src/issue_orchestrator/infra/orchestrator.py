@@ -367,11 +367,9 @@ class Orchestrator:
 
     def _launch_issue_by_number(self, n: int) -> LaunchStep:
         return _gw_launch_issue_by_number(
-            n, self.state.cached_queue_issues, self._attempt_issue_launch, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
+            n, self.state.cached_queue_issues, self.launch_session_step, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
         )
 
-    def _attempt_issue_launch(self, issue: Issue) -> LaunchStep:
-        return LaunchStep.of_session(self.launch_session(issue), f"issue #{issue.number} did not start")
 
     def _launch_review_by_number(self, n: int) -> LaunchStep:
         return _ch_launch_review_by_number(n, self.state.pending_reviews, lambda review: _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims))
@@ -525,7 +523,10 @@ class Orchestrator:
         sweep_orphan_session_tempfiles(self.config.repo_root)
 
     def launch_session(self, issue: Issue, *, tech_lead_scope: "TechLeadLaunchScope | None" = None) -> Optional[Session]:
-        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, tech_lead_scope=tech_lead_scope).session
+        return self.launch_session_step(issue, tech_lead_scope=tech_lead_scope).session
+
+    def launch_session_step(self, issue: Issue, *, tech_lead_scope: "TechLeadLaunchScope | None" = None) -> LaunchStep:
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, tech_lead_scope=tech_lead_scope)
 
     def handle_session_completion(self, session: Session, status: SessionStatus, *, provider_error_type: "ProviderErrorType | None" = None) -> None:
         _handle_session_completion(
