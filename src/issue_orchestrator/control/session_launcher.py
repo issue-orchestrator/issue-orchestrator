@@ -451,9 +451,10 @@ class SessionLauncher:
 
         if any(s.issue.number == issue.number for s in active_sessions):
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            return LaunchResult(
-                None, False, "Already in active sessions", disposition=LaunchDisposition.WITHDRAWN
-            )
+            # New coding work on a busy issue is not wanted; a tech-lead run of
+            # it waits for that session instead of being dropped (#7455).
+            busy = LaunchDisposition.SUBJECT_BUSY if kind.is_tech_lead else LaunchDisposition.WITHDRAWN
+            return LaunchResult(None, False, "Already in active sessions", disposition=busy)
 
         running = next(
             (name for name in kind.conflicting_terminal_names(issue.number) if self._session_exists(name)),

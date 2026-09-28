@@ -531,7 +531,10 @@ class LaunchSettlement:
                 result.reason,
             )
             return SettlementDecision(WorkDisposal.UNRECORDED, claim, _no_projection)
-        if result.disposition is LaunchDisposition.HELD_BY_RECOVERY:
+        if result.disposition in (
+            LaunchDisposition.HELD_BY_RECOVERY,
+            LaunchDisposition.SUBJECT_BUSY,
+        ):
             # The recovery owner routes this work and then releases its hold
             # (#7455). Nothing about the request failed and nothing was spent:
             # it waits on its queue, exactly as a provider refusal leaves it.

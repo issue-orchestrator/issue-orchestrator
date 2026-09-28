@@ -83,6 +83,10 @@ class LaunchDisposition(Enum):
     #: budget spent, and launches once the hold is gone. Any other block still
     #: withdraws it.
     HELD_BY_RECOVERY = "held_by_recovery"
+    #: Queued work that must wait for another live session on its subject
+    #: (#7455): a tech-lead investigation of an issue a coder is working. It
+    #: stays queued untouched and launches once that session ends.
+    SUBJECT_BUSY = "subject_busy"
     #: The launcher gave up. The queue drops the item.
     PERMANENT_FAILURE = "permanent_failure"
 
@@ -294,7 +298,10 @@ class LaunchStep:
             return cls.launched(result.session)
         if result.disposition is LaunchDisposition.WITHDRAWN:
             return cls.withdrawn(result.reason)
-        if result.disposition is LaunchDisposition.HELD_BY_RECOVERY:
+        if result.disposition in (
+            LaunchDisposition.HELD_BY_RECOVERY,
+            LaunchDisposition.SUBJECT_BUSY,
+        ):
             return cls.waiting(result.reason)
         return cls.not_launched(result.reason or result.disposition.value)
 

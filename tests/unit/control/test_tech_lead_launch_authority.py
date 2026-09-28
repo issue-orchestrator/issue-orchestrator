@@ -711,3 +711,33 @@ def test_a_launch_that_started_nothing_is_still_a_failed_step():
     )
 
     assert harness.authority().launch_step(anchor).outcome is LaunchStepOutcome.NOT_LAUNCHED
+
+
+def _coder_session(issue_number: int) -> SimpleNamespace:
+    """An ordinary coding session on the issue: not a tech-lead run."""
+    return SimpleNamespace(
+        issue=FakeIssue(issue_number),
+        agent_label="agent:backend",
+        tech_lead_scope=None,
+        terminal_id=f"issue-{issue_number}",
+        key=SimpleNamespace(stable_id=lambda: f"code:{issue_number}", kind=SessionKind.CODE),
+    )
+
+
+def test_a_targeted_run_whose_subject_has_a_live_session_waits_for_it():
+    """#7455 review r2: the scope gate holds it (planning and launch share the
+    rule), so the launcher never refuses and drops it."""
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    investigation = _investigation(42)
+    harness = _Harness(
+        pending=[investigation],
+        active=[_coder_session(42)],
+        issues={42: FakeIssue(42)},
+    )
+
+    step = harness.authority().launch_step(investigation)
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert harness.launched == []
+    assert harness.state.pending_tech_lead_reviews == [investigation]
