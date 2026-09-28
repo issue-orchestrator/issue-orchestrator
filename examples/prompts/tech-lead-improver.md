@@ -43,6 +43,9 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
      (true / false / unknown)
    - **`origin`:** did it *first* appear after the start (`after_start`),
      before it (`before_start`), or can't that be established (`unknown`)?
+     `after_start` needs a post-start occurrence **and** records covering the
+     time before the start that show no earlier occurrence. Without that
+     earlier coverage, use `unknown`.
 
    Evidence has two kinds. A **snapshot** (an audit reading taken after the
    start) can support *presence* only. An **occurrence** (a failure, event or
@@ -53,7 +56,8 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    present or recur after the start. If the evidence can't settle whether it
    is live (both `unknown`), still emit it, as `needs_investigation`. Drop pure
    history.
-2. **Triage.** Classify each live anomaly:
+2. **Triage.** Classify each live anomaly (an anomaly whose liveness is
+   `unknown` is classified `unknown` and goes to `needs_investigation`):
    - **expected** (restart handoffs, a known in-flight fix);
    - **already tracked** (cite the open issue);
    - **new defect**.
@@ -71,9 +75,10 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
      depth doesn't allow it.
    - `unknown`: the evidence needed to decide isn't complete.
 
-   The **grading window** runs from the anomaly's earliest known occurrence
-   (its `origin` time, or the earliest cited record) to a fixed cutoff,
-   `audit.json`'s `generated_at`. It's the whole
+   The **grading window** runs from the anomaly's **onset** to a fixed
+   cutoff, `audit.json`'s `generated_at`. Only an **occurrence** can establish
+   onset: the earliest dated failure, event or log record of the anomaly.
+   If you only have snapshots, the onset is `unknown`. It's the whole
    span in which the tech lead could have noticed it. You may grade
    `not_noticed` **only** when both `charter-decisions.json` and
    `case-files.json` report `coverage.complete: true` over a span that
@@ -128,7 +133,7 @@ whole file. Valid findings become the corresponding GitHub artefacts.
       "origin": "after_start | before_start | unknown",
       "observed": [{"at": "<iso>", "kind": "snapshot | occurrence", "source": "<input file>#<record id or audit field>", "supports": "present_after_start | recurs_after_start | origin"}],
       "grading_window": {"from": "<iso | unknown>", "to": "<audit.json generated_at>"},
-      "classification": "new_defect | tracked",
+      "classification": "new_defect | tracked | unknown",
       "tracked_issue": 7491,
       "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
       "stall_evidence": ["<decision id | case-file id>"],
@@ -146,8 +151,13 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 **Field rules (the validator enforces these):**
 - `anomaly_keys` must match keys that exist in `audit.json` or `audit-diff.json`.
 - `classification: tracked` requires `tracked_issue` to be an open issue in
-  `open-issues.json`. `new_defect` forbids `tracked_issue`. Expected items are
-  **not emitted**.
+  `open-issues.json`. `new_defect` forbids `tracked_issue`. `classification:
+  unknown` is allowed only with `output: needs_investigation`. Expected items
+  are **not emitted**.
+- `grading_window.from` must be the timestamp of an `occurrence` entry, or
+  `unknown`; never a snapshot's time. `origin: after_start` needs an
+  `observed` entry of kind `occurrence` that supports `origin`, from a source
+  whose coverage includes time before `engine_started_at`.
 - `present_after_start` and `recurs_after_start` are strings: `"true"`,
   `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
   `needs_investigation`.
