@@ -41,14 +41,11 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    - **`recurs_after_start`:** is there a *new, timestamped* occurrence after
      the start (a failure, log signature or event dated after it)?
      (true / false / unknown)
-   - **`origin`:** did it *first* appear after the start (`after_start`),
-     before it (`before_start`), or can't that be established (`unknown`)?
-     `after_start` needs a post-start occurrence **and** continuous coverage
-     of that source from its **retained-history start** (when the source was
-     created, or the oldest record it keeps) through the engine start, with
-     no earlier occurrence. The audit's `covers_window` proves only its own
-     window, so it can't prove `after_start`. Without full-history coverage,
-     use `unknown`.
+   - **`origin`:** `before_start` if any matching occurrence predates the
+     engine start, otherwise `unknown`. You never claim an anomaly *first*
+     appeared after the start: bounded evidence can't prove it never occurred
+     earlier. Whether it is live is what `present_after_start` and
+     `recurs_after_start` are for.
 
    Evidence has two kinds. A **snapshot** (an audit reading taken after the
    start) can support *presence* only. An **occurrence** (a failure, event or
@@ -73,7 +70,10 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    - `noticed_not_acted`: it flagged or diagnosed it, but no action followed,
      or the action was withheld or refused (check `effect` and `reason`).
    - `acted_not_effective`: its action was applied, but the live signal
-     persists.
+     persists. The linked decision must be applied at or before the audit
+     cutoff, and a live observation (an occurrence or snapshot) dated **after**
+     its application must support the persistence. Without that later
+     observation, grade `unknown` and name it in `missing_evidence`.
    - `not_in_charter`: the right remedy has no action type, or its role or
      depth doesn't allow it.
    - `unknown`: the evidence needed to decide isn't complete.
@@ -135,7 +135,7 @@ whole file. Valid findings become the corresponding GitHub artefacts.
       "anomaly_keys": [{"kind": "<audit kind>", "subject": "<audit subject>", "signature": "<audit signature>"}],
       "present_after_start": "true | false | unknown",
       "recurs_after_start": "true | false | unknown",
-      "origin": "after_start | before_start | unknown",
+      "origin": "before_start | unknown",
       "observed": [{"at": "<iso>", "kind": "snapshot | occurrence", "source": "<input file>#<record id or audit field>", "supports": "present_after_start | recurs_after_start | origin"}],
       "grading_window": {"from": "<iso | unknown>", "to": "<audit.json generated_at>"},
       "classification": "new_defect | tracked | unknown",
@@ -162,22 +162,21 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 - `grading_window.from` must be the timestamp of the **earliest** matching
   `occurrence` in the supplied records (e.g. `first_seen`), or `unknown`;
   never a snapshot's time or a later occurrence.
-- `origin: after_start` needs:
-  - an `occurrence` entry supporting `origin`, whose time is the earliest
-    matching occurrence;
-  - continuous coverage of that source from its retained-history start through
-    `engine_started_at`, with no earlier matching occurrence. The audit's
-    `covers_window` alone is insufficient.
-
-  If any matching occurrence predates the start (e.g. `first_seen` <
-  `engine_started_at`), `origin` is `before_start`.
+- `origin` is `before_start` exactly when an `occurrence` entry dated
+  before `engine_started_at` supports it (e.g. a signature's `first_seen`);
+  otherwise it is `unknown`. There is no `after_start` value.
 - `present_after_start` and `recurs_after_start` are strings: `"true"`,
   `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
   `needs_investigation`.
 - `observed` must cite at least one record, and each entry names the claim
   it `supports`. `present_after_start: "true"` needs a post-start entry of
-  either kind. `recurs_after_start: "true"` and `origin: after_start` need a
-  post-start entry of kind **`occurrence`**; a snapshot never supports them.
+  either kind. `recurs_after_start: "true"` needs a **post**-start entry of
+  kind **`occurrence`**. `origin: before_start` needs a **pre**-start entry
+  of kind **`occurrence`**. A snapshot supports neither.
+- `stall_point: acted_not_effective` requires a `stall_evidence` decision
+  whose application time is at or before `grading_window.to`, and an
+  `observed` entry supporting presence or recurrence dated after that
+  application time.
 - `stall_point: not_noticed` requires `grading_window.from` to be known,
   `grading_window.to` to equal `audit.json`'s `generated_at`, and both
   coverage spans to contain the whole window. If either span ends before
