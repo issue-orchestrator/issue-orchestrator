@@ -7636,3 +7636,28 @@ def test_a_tech_lead_run_of_a_busy_issue_waits_with_its_claim_instead_of_being_d
     assert state.pending_tech_lead_reviews == queued
     assert state.pending_tech_lead_reviews[0].retryable_launch_failures == 0
     assert harness.created == []
+
+
+def test_a_validation_retry_of_a_busy_issue_waits_and_stays_queued(tmp_path: Path) -> None:
+    """#7455 review r4: another live session on the retry's issue is a wait for
+    that session, never a withdrawal that drops the retry and its claim."""
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control import session_routing
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+
+    harness = _ready_harness(tmp_path)
+    state = _pending_state("validation_retry")
+    queued = list(state.pending_validation_retries)
+    other = MagicMock()
+    other.issue.number = 7
+    other.terminal_id = "review-70"
+    state.active_sessions = [other]
+
+    step = session_routing.orchestrator_launch_validation_retry_session(
+        state.pending_validation_retries[0], state, harness.launcher, MagicMock(), harness.claims,
+    )
+
+    assert step.outcome is LaunchStepOutcome.WAITING
+    assert state.pending_validation_retries == queued
+    assert harness.created == []

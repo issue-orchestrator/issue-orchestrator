@@ -433,8 +433,14 @@ class SessionLauncher:
         issue: "IssueProtocol",
         active_sessions: list[Session],
         kind: SessionKind,
+        *,
+        busy: LaunchDisposition,
     ) -> LaunchResult | None:
         """Validate config and check for conflicts before launching.
+
+        ``busy`` is the CALLER's answer when another live session already holds
+        the issue (#7455): fresh issue pickup is withdrawn, but queued work - a
+        tech-lead run, a validation retry - waits for that session.
 
         A running terminal under ANY name this kind's work can hold - including
         the ``issue-N`` a tech lead or a rework's retry ran under before #7347 -
@@ -456,9 +462,6 @@ class SessionLauncher:
 
         if any(s.issue.number == issue.number for s in active_sessions):
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            # New coding work on a busy issue is not wanted; a tech-lead run of
-            # it waits for that session instead of being dropped (#7455).
-            busy = LaunchDisposition.SUBJECT_BUSY if kind.is_tech_lead else LaunchDisposition.WITHDRAWN
             return LaunchResult(None, False, "Already in active sessions", disposition=busy)
 
         running = next(
@@ -692,7 +695,8 @@ class SessionLauncher:
         logger.info(issue_log(issue.number, "Session starting: type=%s title=%s"), kind.value, issue.title)
 
         # Phase 1: Validate preconditions
-        if result := self._check_launch_preconditions(issue, active_sessions, kind):
+        busy = LaunchDisposition.SUBJECT_BUSY if kind.is_tech_lead else LaunchDisposition.WITHDRAWN
+        if result := self._check_launch_preconditions(issue, active_sessions, kind, busy=busy):
             return result
 
         # Safe to access after precondition check - issue.agent_type and agent_config
@@ -1146,7 +1150,9 @@ class SessionLauncher:
                 f"No agent config available for validation retry #{retry.issue_number}",
             )
         issue, agent_config, agent_label = resolved
-        if result := self._check_launch_preconditions(issue, active_sessions, retry.source_kind):
+        if result := self._check_launch_preconditions(
+            issue, active_sessions, retry.source_kind, busy=LaunchDisposition.SUBJECT_BUSY
+        ):
             return result
         prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=retry.source_kind)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):

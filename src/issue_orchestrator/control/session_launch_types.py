@@ -84,8 +84,9 @@ class LaunchDisposition(Enum):
     #: withdraws it.
     HELD_BY_RECOVERY = "held_by_recovery"
     #: Queued work that must wait for another live session on its subject
-    #: (#7455): a tech-lead investigation of an issue a coder is working. It
-    #: stays queued untouched and launches once that session ends.
+    #: (#7455): a tech-lead investigation or a validation retry of an issue
+    #: another session holds. It stays queued untouched and launches once that
+    #: session ends.
     SUBJECT_BUSY = "subject_busy"
     #: The launcher gave up. The queue drops the item.
     PERMANENT_FAILURE = "permanent_failure"
