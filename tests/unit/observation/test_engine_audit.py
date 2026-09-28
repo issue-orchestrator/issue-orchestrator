@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import tempfile
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -374,6 +375,30 @@ def test_a_timeline_repeat_a_later_state_change_ended_is_not_current(
     assert AnomalyKind.NO_PROGRESS_TIMELINE not in _kinds(report)
 
 
+def test_nothing_written_after_the_audit_instant_counts(state, tmp_path) -> None:
+    """The engine keeps writing while it is audited; the report's window has ended."""
+    later = NOW + timedelta(minutes=5)
+    timeline = SqliteTimelineStore(state / cli.TIMELINE_DB)
+    for n in range(6):
+        timeline.append(412, _event("reconciliation.required", later + timedelta(seconds=n), {"reason": "x"}))
+    timeline.close()
+    stamp = later.astimezone().strftime(ROTATING_LOG_DATEFMT)
+    log = state / cli.ENGINE_LOG
+    log.write_text(
+        log.read_text(encoding="utf-8")
+        + "".join(f"{stamp} [WARNING] io: Late failure for issue #412\n" for _ in range(6)),
+        encoding="utf-8",
+    )
+    with tempfile.TemporaryDirectory() as scratch:
+        args = cli.build_parser().parse_args(["--state-dir", str(state), "--repo", REPO, "--no-github"])
+        report = audit_engine(
+            cli._inputs(state, Path(scratch), args), now=NOW, window=timedelta(hours=24)
+        )
+
+    assert all(r.subject != "#412" for r in report.no_progress.timeline_repeats)
+    assert all(s.subject != "#412" for s in report.no_progress.log_signatures)
+
+
 def test_log_repeats_after_a_state_change_count_from_it(state, tmp_path, monkeypatch) -> None:
     report = _run(state, tmp_path, monkeypatch, FakeHost())
 
@@ -628,7 +653,7 @@ def test_the_timeline_reader_refuses_a_schema_it_does_not_know(tmp_path: Path) -
         conn.commit()
 
     with pytest.raises(ReadOnlySqliteAccessError) as refused:
-        list(SqliteTimelineAuditReader(db, timeout=10.0).events_since(NOW - timedelta(days=1)))
+        list(SqliteTimelineAuditReader(db, timeout=10.0).events_between(NOW - timedelta(days=1), NOW))
 
     assert refused.value.reason is ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA
 

@@ -19,6 +19,7 @@ from issue_orchestrator.infra.logging_config import (
     ROTATING_LOG_DATEFMT,
     ROTATING_LOG_FORMAT,
     ContextFormatter,
+    FramedFormatter,
 )
 from issue_orchestrator.observation.engine_log_census import census_log
 from issue_orchestrator.observation.no_progress import (
@@ -28,6 +29,7 @@ from issue_orchestrator.observation.no_progress import (
 )
 
 T0 = datetime(2026, 9, 28, 9, 0, 0).astimezone()
+END = T0 + timedelta(days=1)
 
 
 def _line(
@@ -171,6 +173,7 @@ def test_repeats_are_counted_per_subject_and_since_its_last_state_change() -> No
     census = census_log(
         entries,
         window_start=T0 - timedelta(hours=1),
+        window_end=END,
         # #410's labels changed after its third failure.
         last_state_change={"#410": T0 + timedelta(minutes=2, seconds=30)},
     )
@@ -189,7 +192,7 @@ def test_entries_before_the_window_are_not_counted() -> None:
         _line("boom", at=T0, level=logging.ERROR),
     )
 
-    census = census_log(entries, window_start=T0 - timedelta(hours=1), last_state_change={})
+    census = census_log(entries, window_start=T0 - timedelta(hours=1), window_end=END, last_state_change={})
 
     assert census.first_read_at == T0 - timedelta(hours=2)
     assert census.covers(T0 - timedelta(hours=1)) is True
@@ -230,7 +233,7 @@ def test_fetch_cost_splits_refreshes_by_mode() -> None:
         _fetch("incremental", 93, 31000, T0 + timedelta(hours=1)),
     )
 
-    cost = census_log(entries, window_start=T0, last_state_change={}).fetch_cost
+    cost = census_log(entries, window_start=T0, window_end=END, last_state_change={}).fetch_cost
 
     modes = {m.mode: m for m in cost.by_mode}
     assert (modes["full"].refreshes, modes["full"].gh_calls_median) == (1, 57)
@@ -258,7 +261,7 @@ def test_an_iteration_that_reads_one_issue_twice_is_a_repeat_read() -> None:
         _get(2, T0 + timedelta(minutes=1)),
     )
 
-    cost = census_log(entries, window_start=T0, last_state_change={}).fetch_cost
+    cost = census_log(entries, window_start=T0, window_end=END, last_state_change={}).fetch_cost
 
     assert (cost.cycles, cost.cycles_with_repeat_reads, cost.issue_get_lines) == (2, 1, 6)
     assert cost.worst_cycle is not None
@@ -266,7 +269,7 @@ def test_an_iteration_that_reads_one_issue_twice_is_a_repeat_read() -> None:
 
 
 def test_no_request_lines_reads_as_unmeasured_not_as_clean() -> None:
-    cost = census_log(_entries(_iteration(1)), window_start=T0, last_state_change={}).fetch_cost
+    cost = census_log(_entries(_iteration(1)), window_start=T0, window_end=END, last_state_change={}).fetch_cost
 
     assert (cost.cycles, cost.issue_get_lines, cost.worst_cycle) == (1, 0, None)
 
@@ -319,6 +322,7 @@ def test_a_tail_starting_inside_the_repeated_hour_counts_nothing_it_cannot_date(
         census = census_log(
             read,
             window_start=datetime(2026, 11, 1, 8, 0, tzinfo=UTC),
+            window_end=datetime(2026, 11, 2, tzinfo=UTC),
             last_state_change={},
         )
     finally:
@@ -352,7 +356,7 @@ def test_a_logged_exception_is_part_of_its_signature(tmp_path: Path) -> None:
 
     _excerpt, entries = read_log(log, tail_bytes=1 << 20)
     read = list(entries)
-    census = census_log(read, window_start=T0 - timedelta(hours=1), last_state_change={})
+    census = census_log(read, window_start=T0 - timedelta(hours=1), window_end=END, last_state_change={})
 
     assert [e.exception for e in read] == [
         "KeyError: 'sig-1'",
@@ -363,6 +367,52 @@ def test_a_logged_exception_is_part_of_its_signature(tmp_path: Path) -> None:
         ("operation failed for issue #N | KeyError: 'sig-N'", 2),
         ("operation failed for issue #N | TimeoutError: read N", 1),
     }
+
+
+def test_entries_written_after_the_audit_instant_are_not_counted() -> None:
+    entries = _entries(
+        *(_line("boom", at=T0 + timedelta(minutes=m), level=logging.ERROR) for m in range(3)),
+        *(_line("boom", at=T0 + timedelta(hours=2, minutes=m), level=logging.ERROR) for m in range(5)),
+    )
+
+    census = census_log(
+        entries, window_start=T0, window_end=T0 + timedelta(hours=1), last_state_change={}
+    )
+
+    assert [s.count for s in census.signatures] == [3]
+
+
+def test_a_multiline_message_is_one_entry_however_its_lines_look(tmp_path: Path) -> None:
+    """Captured agent output carries its own timestamps and request lines."""
+    captured = (
+        "[issue-7] LAST OUTPUT:\n"
+        "2026-09-28 09:00:01 [WARNING] io: Reconciliation failed for issue #7\n"
+        'HTTP Request: GET https://api.github.com/repos/o/r/issues/7 "HTTP/1.1 200 OK"\n'
+        "2026-09-28 09:00:02 [INFO] httpx: HTTP Request: GET"
+        ' https://api.github.com/repos/o/r/issues/7 "HTTP/1.1 200 OK"'
+    )
+    log = tmp_path / "orchestrator.log"
+    log.write_text(
+        "\n".join(
+            [
+                _line("[LOOP] Iteration 1 - active=1", level=logging.INFO),
+                _line(
+                    captured,
+                    formatter=FramedFormatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT),
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _excerpt, entries = read_log(log, tail_bytes=1 << 20)
+    read = list(entries)
+    census = census_log(read, window_start=T0 - timedelta(hours=1), window_end=END, last_state_change={})
+
+    assert [e.message.splitlines()[0] for e in read] == ["[LOOP] Iteration 1 - active=1", "[issue-7] LAST OUTPUT:"]
+    assert census.fetch_cost.issue_get_lines == 0
+    assert [(s.subject, s.count) for s in census.signatures] == [("#7", 1)]
 
 
 def test_timezone_of_log_times_is_the_local_zone() -> None:

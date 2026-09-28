@@ -74,8 +74,8 @@ class ClaimAuditReader(Protocol):
 
 
 class TimelineAuditReader(Protocol):
-    def events_since(self, since: datetime) -> Iterable[TimelineEvent]:
-        """Every issue's events at or after ``since``, oldest first."""
+    def events_between(self, start: datetime, end: datetime) -> Iterable[TimelineEvent]:
+        """Every issue's events from ``start`` to ``end`` inclusive, oldest first."""
         ...
 
 

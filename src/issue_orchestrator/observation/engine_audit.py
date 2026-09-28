@@ -155,7 +155,7 @@ def audit_engine(
     timeline_events = read(
         AuditSource.TIMELINE,
         inputs.timeline,
-        lambda r: tuple(_as_engine_event(e) for e in r.events_since(window_start)),
+        lambda r: tuple(_as_engine_event(e) for e in r.events_between(window_start, now)),
     )
     events: tuple[dict[str, Any], ...] = timeline_events or ()
     log_read = read(
@@ -164,6 +164,7 @@ def audit_engine(
         lambda log: _census_log(
             log,
             window_start,
+            now,
             None if timeline_events is None else _last_state_change(events),
         ),
     )
@@ -401,11 +402,17 @@ def _last_state_change(events: Iterable[dict[str, Any]]) -> dict[str, datetime]:
 
 
 def _census_log(
-    log: EngineLog, window_start: datetime, last_state_change: dict[str, datetime] | None
+    log: EngineLog,
+    window_start: datetime,
+    window_end: datetime,
+    last_state_change: dict[str, datetime] | None,
 ) -> tuple[EngineLogExcerpt, LogCensus]:
     excerpt, entries = log.read()
     return excerpt, census_log(
-        entries, window_start=window_start, last_state_change=last_state_change
+        entries,
+        window_start=window_start,
+        window_end=window_end,
+        last_state_change=last_state_change,
     )
 
 

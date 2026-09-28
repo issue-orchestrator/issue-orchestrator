@@ -419,7 +419,7 @@ def _record(row: sqlite3.Row) -> TimelineRecord:
 
 
 class SqliteTimelineAuditReader:
-    """Every issue's events since an instant, read-only (the engine audit, #7490).
+    """Every issue's events in an interval, read-only (the engine audit, #7490).
 
     Not a :class:`SqliteTimelineStore`: opening the store runs its schema
     setup, which DROPS the table on a schema-version mismatch. A reader of
@@ -431,9 +431,9 @@ class SqliteTimelineAuditReader:
         self._db_path = db_path
         self._timeout = timeout
 
-    def events_since(self, since: datetime) -> Iterator[TimelineEvent]:
-        if since.tzinfo is None:
-            raise ValueError("the timeline is read from an aware instant")
+    def events_between(self, start: datetime, end: datetime) -> Iterator[TimelineEvent]:
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("the timeline is read between aware instants")
         with readonly_sqlite_transaction(
             self._db_path, timeout=self._timeout, row_factory=sqlite3.Row
         ) as conn:
@@ -447,9 +447,9 @@ class SqliteTimelineAuditReader:
             # string order is time order; see event_time_bounds.
             rows = conn.execute(
                 "SELECT issue_number, event_id, source_event, timestamp, event, data_json,"
-                " instance_id FROM timeline_events WHERE timestamp >= ?"
+                " instance_id FROM timeline_events WHERE timestamp >= ? AND timestamp <= ?"
                 " ORDER BY timestamp, sequence",
-                (since.astimezone(UTC).isoformat(),),
+                (start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat()),
             )
             for row in rows:
                 yield TimelineEvent(issue_number=int(row["issue_number"]), record=_record(row))

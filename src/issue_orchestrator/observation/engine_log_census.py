@@ -93,9 +93,13 @@ def census_log(
     entries: Iterable[EngineLogEntry],
     *,
     window_start: datetime,
+    window_end: datetime,
     last_state_change: Mapping[str, datetime] | None,
 ) -> LogCensus:
-    """Tally ``entries`` at or after ``window_start`` (see the module docstring).
+    """Tally ``entries`` from ``window_start`` to ``window_end`` (see the module docstring).
+
+    Entries after ``window_end`` (written while the audit ran) belong to the
+    next audit, not to a report that says its window ended before them.
 
     ``last_state_change`` maps a subject (``#N``) to the last instant its
     timeline recorded a state change; a subject absent from it had none.
@@ -117,7 +121,7 @@ def census_log(
             uncertain += 1
             continue
         first_read = entry.at if first_read is None else first_read
-        if entry.at < window_start:
+        if not window_start <= entry.at <= window_end:
             continue
         first = entry.at if first is None else first
         last = entry.at

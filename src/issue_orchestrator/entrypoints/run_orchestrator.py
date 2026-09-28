@@ -342,13 +342,18 @@ def main() -> int:
 
     # Configure logging
     # The shared layout: ``io engine-audit`` parses this log back (#7490).
-    from ..infra.logging_config import ROTATING_LOG_DATEFMT, ROTATING_LOG_FORMAT
+    from ..infra.logging_config import (
+        ROTATING_LOG_DATEFMT,
+        ROTATING_LOG_FORMAT,
+        frame_root_handlers,
+    )
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format=ROTATING_LOG_FORMAT,
         datefmt=ROTATING_LOG_DATEFMT,
     )
+    frame_root_handlers(ROTATING_LOG_FORMAT, ROTATING_LOG_DATEFMT)
 
     # Block SIGTERM/SIGINT process-wide BEFORE any thread is created, so the
     # dedicated sigwaitinfo consumer can read the *sender* of a shutdown signal.

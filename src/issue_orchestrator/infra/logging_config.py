@@ -48,6 +48,11 @@ from typing import Any
 ROTATING_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 ROTATING_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 CONTEXT_LOG_FORMAT = "%(asctime)s [%(process)d] %(name)s %(levelname)s:%(context)s %(message)s"
+#: What starts every further line of a multi-line message, so no line inside
+#: a message can be read back as an entry of its own (captured agent output
+#: carries its own timestamps and request lines; #7490).
+MESSAGE_CONTINUATION = "    | "
+
 #: The ``extra=`` fields :class:`ContextFormatter` renders as ``%(context)s``.
 CONTEXT_LOG_FIELDS = ("run_id", "tick_id", "issue_key", "session_id", "step_id")
 
@@ -122,13 +127,36 @@ def add_rotating_file_handler(log_file: Path, *, level: int) -> bool:
     )
     handler.setLevel(level)
     handler.setFormatter(
-        logging.Formatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
+        FramedFormatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
     )
     root.addHandler(handler)
     return True
 
 
-class ContextFormatter(logging.Formatter):
+class FramedFormatter(logging.Formatter):
+    """A formatter whose record is always one entry when read back.
+
+    Every line after a message's first starts with
+    :data:`MESSAGE_CONTINUATION`. A traceback (``exc_info``) is appended
+    unchanged: it is framed by its own ``Traceback`` header.
+    """
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        message = record.message
+        record.message = message.replace("\n", "\n" + MESSAGE_CONTINUATION)
+        try:
+            return super().formatMessage(record)
+        finally:
+            record.message = message
+
+
+def frame_root_handlers(fmt: str, datefmt: str | None = None) -> None:
+    """Give every root handler a :class:`FramedFormatter` (after ``basicConfig``)."""
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(FramedFormatter(fmt, datefmt=datefmt))
+
+
+class ContextFormatter(FramedFormatter):
     """Formatter that includes context fields from extra= if present."""
 
     def format(self, record: logging.LogRecord) -> str:
