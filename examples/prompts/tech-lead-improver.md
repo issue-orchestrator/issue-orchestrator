@@ -44,9 +44,12 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    - **`origin`:** did it *first* appear after the start (`after_start`),
      before it (`before_start`), or can't that be established (`unknown`)?
 
-   A park created before the start and still present with no new failure
-   after it is `present_after_start: true`, `recurs_after_start: unknown` (or
-   `false` if the records prove no new failure). Keep anomalies that are
+   Evidence has two kinds. A **snapshot** (an audit reading taken after the
+   start) can support *presence* only. An **occurrence** (a failure, event or
+   log record with its own timestamp) is needed for *recurrence* or origin.
+   A park created before the start and still present, with no new failure
+   after it, is `present_after_start: "true"` and `recurs_after_start:
+   "unknown"` (or `"false"` if the records prove no new failure). Keep anomalies that are
    present or recur after the start. If the evidence can't settle whether it
    is live (both `unknown`), still emit it, as `needs_investigation`. Drop pure
    history.
@@ -69,7 +72,8 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
    - `unknown`: the evidence needed to decide isn't complete.
 
    The **grading window** runs from the anomaly's earliest known occurrence
-   (its `origin` time, or the earliest cited record) to now. It's the whole
+   (its `origin` time, or the earliest cited record) to a fixed cutoff,
+   `audit.json`'s `generated_at`. It's the whole
    span in which the tech lead could have noticed it. You may grade
    `not_noticed` **only** when both `charter-decisions.json` and
    `case-files.json` report `coverage.complete: true` over a span that
@@ -119,11 +123,11 @@ whole file. Valid findings become the corresponding GitHub artefacts.
     {
       "id": "<stable slug>",
       "anomaly_keys": [{"kind": "<audit kind>", "subject": "<audit subject>", "signature": "<audit signature>"}],
-      "present_after_start": true,
+      "present_after_start": "true | false | unknown",
       "recurs_after_start": "true | false | unknown",
       "origin": "after_start | before_start | unknown",
-      "observed": [{"at": "<iso>", "source": "<audit field | decision id | case-file id | log signature>"}],
-      "grading_window": {"from": "<iso | unknown>", "to": "<iso>"},
+      "observed": [{"at": "<iso>", "kind": "snapshot | occurrence", "source": "<input file>#<record id or audit field>", "supports": "present_after_start | recurs_after_start | origin"}],
+      "grading_window": {"from": "<iso | unknown>", "to": "<audit.json generated_at>"},
       "classification": "new_defect | tracked",
       "tracked_issue": 7491,
       "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
@@ -144,11 +148,17 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 - `classification: tracked` requires `tracked_issue` to be an open issue in
   `open-issues.json`. `new_defect` forbids `tracked_issue`. Expected items are
   **not emitted**.
-- `observed` must cite at least one record; every `true` value in
-  `present_after_start` / `recurs_after_start` / `origin: after_start` must be
-  backed by an `observed` entry dated after `engine_started_at`.
-- `stall_point: not_noticed` requires `grading_window.from` to be known, and
-  both coverage spans to contain the whole window. Every other grade except
+- `present_after_start` and `recurs_after_start` are strings: `"true"`,
+  `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
+  `needs_investigation`.
+- `observed` must cite at least one record, and each entry names the claim
+  it `supports`. `present_after_start: "true"` needs a post-start entry of
+  either kind. `recurs_after_start: "true"` and `origin: after_start` need a
+  post-start entry of kind **`occurrence`**; a snapshot never supports them.
+- `stall_point: not_noticed` requires `grading_window.from` to be known,
+  `grading_window.to` to equal `audit.json`'s `generated_at`, and both
+  coverage spans to contain the whole window. If either span ends before
+  the cutoff, the grade is `unknown`. Every other grade except
   `unknown` requires `stall_evidence`.
 - `output: needs_investigation` requires `missing_evidence` and forbids
   `root_cause`, `reproduction` and `proposal`. Every other output requires
