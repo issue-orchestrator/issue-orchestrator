@@ -8,6 +8,7 @@ the one port faked at its boundary.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import logging
@@ -226,6 +227,10 @@ def state(tmp_path: Path, make_session) -> Path:
     _claims(state, make_session)
     _timeline(state)
     _log(state)
+    # The fixture's writers are done: close their connections now (the last
+    # close checkpoints the WAL into the main file), so no writer's checkpoint
+    # can land in the middle of a test that compares the live bytes.
+    gc.collect()
     return state
 
 
@@ -385,6 +390,8 @@ def test_the_live_state_is_never_written(state, tmp_path, monkeypatch) -> None:
             if p.is_file() and not p.name.endswith("-shm")
         }
 
+    # No writer holds the state open (see the fixture), so any change is the audit's.
+    assert not list(state.glob("*.sqlite-wal"))
     before = digest()
 
     _run(state, tmp_path, monkeypatch, FakeHost())
