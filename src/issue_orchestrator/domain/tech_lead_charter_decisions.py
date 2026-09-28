@@ -68,8 +68,9 @@ class CharterExecutionResult(str, Enum):
     REFUSED = "refused"
     #: The applier tried and failed, or its result is unknown (the apply raised).
     FAILED = "failed"
-    #: Never attempted: its completion withheld it behind a mandated action
-    #: that did not commit.
+    #: Never attempted: its completion withheld it, and the record's reason
+    #: says why (a mandated action that did not commit, a subject refused
+    #: earlier in the completion, or a raise that stopped the apply).
     WITHHELD = "withheld"
     #: The action liveness owner stopped retrying it (#7350).
     PARKED = "parked"
