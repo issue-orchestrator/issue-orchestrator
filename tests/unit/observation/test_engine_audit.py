@@ -826,6 +826,58 @@ def test_the_report_carries_each_subjects_last_state_change(state, tmp_path, mon
     assert [c.subject for c in report.no_progress.state_changes] == ["#411"]
 
 
+def test_a_store_database_missing_its_tables_is_unread_not_empty(state, tmp_path, monkeypatch) -> None:
+    """Opening the store would create the tables, and read "no parked actions"."""
+    first = _run(state, tmp_path, monkeypatch, FakeHost())
+    previous = tmp_path / "previous.json"
+    previous.write_text(first.model_dump_json(), encoding="utf-8")
+    db = state / cli.ACTION_LIVENESS_DB
+    for sidecar in state.glob(cli.ACTION_LIVENESS_DB + "*"):
+        sidecar.unlink()
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("CREATE TABLE unrelated (x)")
+        conn.commit()
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost(), "--previous", str(previous))
+
+    (reading,) = [r for r in report.sources if r.source is AuditSource.ACTION_LIVENESS]
+    assert reading.status is SourceStatus.UNREADABLE and "action_liveness" in reading.detail
+    assert report.diff is not None
+    assert {a.kind for a in report.diff.unobserved} >= {AnomalyKind.PARKED_ACTION, AnomalyKind.OWED_PAUSE}
+    assert all(a.kind is not AnomalyKind.PARKED_ACTION for a in report.diff.resolved)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("data_json", ""),  # empty: not "{}"
+        ("timestamp", (NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:61:00+00:00")),  # inside the window, not an instant
+    ],
+)
+def test_a_damaged_timeline_row_makes_the_timeline_unread(
+    state, tmp_path, monkeypatch, column, value
+) -> None:
+    with closing(sqlite3.connect(state / cli.TIMELINE_DB)) as conn:
+        conn.execute(
+            f"UPDATE timeline_events SET {column} = ? WHERE sequence = ("
+            "SELECT MIN(sequence) FROM timeline_events WHERE issue_number = 411"
+            " AND source_event = 'issue.labels_changed')",
+            (value,),
+        )
+        if column == "data_json":
+            conn.execute(
+                "UPDATE timeline_events SET data_json = '' WHERE issue_number = 410"
+                " AND source_event = 'reconciliation.required'"
+            )
+        conn.commit()
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    (reading,) = [r for r in report.sources if r.source is AuditSource.TIMELINE]
+    assert reading.status is SourceStatus.UNREADABLE
+    assert AnomalyKind.NO_PROGRESS_TIMELINE not in _kinds(report)
+
+
 def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live.sqlite"
     with closing(sqlite3.connect(live)) as conn:

@@ -204,6 +204,12 @@ _SET_PAUSE_DEBT = (
 _FORGET_PAUSE = "DELETE FROM action_liveness_pause WHERE issue_number=?"
 
 
+#: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
+#: copy of this store's database before opening the store on it: opening
+#: creates missing tables, which would read a damaged file as an empty one.
+AUDIT_TABLES = ("action_liveness", "action_liveness_pause")
+
+
 class SQLiteActionLivenessStore:
     """One connection per thread; writes serialized by a process lock."""
 

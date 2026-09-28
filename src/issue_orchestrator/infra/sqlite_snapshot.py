@@ -85,6 +85,24 @@ def _consistent_copy(live: Path, destination: Path, *, timeout: float) -> bool:
     return intact
 
 
+def require_tables(copy: Path, tables: tuple[str, ...], *, timeout: float) -> Path:
+    """``copy``, if it already holds every one of ``tables``; UNREADABLE otherwise.
+
+    Checked before a store is opened on the copy, because the store's own
+    schema setup would create a missing table and the audit would then read
+    a damaged database as an empty one.
+    """
+    with closing(sqlite3.connect(copy.as_uri() + "?mode=ro", uri=True, timeout=timeout)) as conn:
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = sorted(set(tables) - present)
+    if missing:
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNREADABLE,
+            f"{copy.name} lacks the tables {', '.join(missing)}",
+        )
+    return copy
+
+
 def _identity(path: Path, *, required: bool) -> _Identity:
     try:
         found = os.stat(path)
@@ -110,4 +128,4 @@ def _log_beside(path: Path) -> Path:
     return path.with_name(path.name + "-wal")
 
 
-__all__ = ["SNAPSHOT_ATTEMPTS", "snapshot_sqlite"]
+__all__ = ["SNAPSHOT_ATTEMPTS", "require_tables", "snapshot_sqlite"]

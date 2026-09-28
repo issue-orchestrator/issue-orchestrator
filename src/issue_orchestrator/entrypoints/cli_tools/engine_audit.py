@@ -30,14 +30,23 @@ from typing import Callable, TypeVar
 
 from ...contracts.engine_audit import SourceStatus
 from ...domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
-from ...execution.action_liveness_store import SQLiteActionLivenessStore
+from ...execution.action_liveness_store import (
+    AUDIT_TABLES as ACTION_LIVENESS_AUDIT_TABLES,
+    SQLiteActionLivenessStore,
+)
 from ...execution.pending_work_claim_schema import STORE_FILENAME as PENDING_WORK_CLAIMS_DB
-from ...execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+from ...execution.pending_work_claim_store import (
+    AUDIT_TABLES as CLAIM_AUDIT_TABLES,
+    SqlitePendingWorkClaimStore,
+)
 from ...execution.providers import create_repository_host
 from ...execution.timeline_store import SqliteTimelineAuditReader
 from ...infra.engine_log_reader import read_log
-from ...infra.sqlite_snapshot import snapshot_sqlite
-from ...infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+from ...infra.sqlite_snapshot import require_tables, snapshot_sqlite
+from ...infra.tech_lead_authority_store import (
+    AUDIT_TABLES as TECH_LEAD_AUDIT_TABLES,
+    SqliteTechLeadAuthorityStore,
+)
 from ...infra.validated_work_census import SqliteValidatedWorkCensus
 from ...observation.engine_audit import (
     EngineAuditInputs,
@@ -138,22 +147,26 @@ def _replace_file(path: Path, text: str) -> None:
 
 
 def _inputs(state_dir: Path, scratch: Path, args: argparse.Namespace) -> EngineAuditInputs:
-    def store(name: str, open_copy: Callable[[Path], T]) -> T | Unavailable:
-        copy = _snapshot(state_dir / name, scratch / name)
+    def store(
+        name: str, open_copy: Callable[[Path], T], tables: tuple[str, ...] = ()
+    ) -> T | Unavailable:
+        copy = _snapshot(state_dir / name, scratch / name, tables)
         return copy if isinstance(copy, Unavailable) else open_copy(copy)
 
-    tech_lead = store(TECH_LEAD_AUTHORITY_DB, SqliteTechLeadAuthorityStore)
+    tech_lead = store(TECH_LEAD_AUTHORITY_DB, SqliteTechLeadAuthorityStore, TECH_LEAD_AUDIT_TABLES)
     return EngineAuditInputs(
         repo=args.repo,
         state_dir=state_dir,
         validated_work=store(
             VALIDATED_WORK_DB, lambda p: SqliteValidatedWorkCensus(p, timeout=SQLITE_TIMEOUT)
         ),
-        action_liveness=store(ACTION_LIVENESS_DB, SQLiteActionLivenessStore),
+        action_liveness=store(
+            ACTION_LIVENESS_DB, SQLiteActionLivenessStore, ACTION_LIVENESS_AUDIT_TABLES
+        ),
         tech_lead=tech_lead
         if isinstance(tech_lead, Unavailable)
         else TechLeadReaders(charter=tech_lead.charter_ledger, promotions=tech_lead),
-        claims=store(PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore),
+        claims=store(PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore, CLAIM_AUDIT_TABLES),
         timeline=store(
             TIMELINE_DB, lambda p: SqliteTimelineAuditReader(p, timeout=SQLITE_TIMEOUT)
         ),
@@ -164,10 +177,12 @@ def _inputs(state_dir: Path, scratch: Path, args: argparse.Namespace) -> EngineA
     )
 
 
-def _snapshot(live: Path, copy: Path) -> Path | Unavailable:
-    """The snapshot of ``live``, or why the engine has none to take."""
+def _snapshot(live: Path, copy: Path, tables: tuple[str, ...]) -> Path | Unavailable:
+    """The snapshot of ``live`` holding ``tables``, or why the engine has none to take."""
     try:
-        return snapshot_sqlite(live, copy, timeout=SQLITE_TIMEOUT)
+        return require_tables(
+            snapshot_sqlite(live, copy, timeout=SQLITE_TIMEOUT), tables, timeout=SQLITE_TIMEOUT
+        )
     except ReadOnlySqliteAccessError as error:
         if error.reason is ReadOnlySqliteFailure.DATABASE_ABSENT:
             return Unavailable(SourceStatus.ABSENT, f"no {live.name} in the state directory")

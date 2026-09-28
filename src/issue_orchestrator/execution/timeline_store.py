@@ -406,10 +406,10 @@ def _record(row: sqlite3.Row, *, strict: bool = False) -> TimelineRecord:
     (the engine audit) refuses it instead: facts that could not be read must
     not be counted as a repeat of an empty one.
     """
-    data_json = row["data_json"] or "{}"
+    data_json = row["data_json"] if strict else (row["data_json"] or "{}")
     try:
         data = json.loads(data_json)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         data = None
     if not isinstance(data, dict):
         if strict:
@@ -462,9 +462,23 @@ class SqliteTimelineAuditReader:
                 (start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat()),
             )
             for row in rows:
+                _require_instant(row)
                 yield TimelineEvent(
                     issue_number=int(row["issue_number"]), record=_record(row, strict=True)
                 )
+
+
+def _require_instant(row: sqlite3.Row) -> None:
+    """A row whose timestamp is not an aware instant is damaged: refused, not guessed."""
+    try:
+        instant = datetime.fromisoformat(str(row["timestamp"]))
+    except ValueError:
+        instant = None
+    if instant is None or instant.tzinfo is None:
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNREADABLE,
+            f"timeline event {row['event_id']} has an unreadable timestamp {row['timestamp']!r}",
+        )
 
 
 def _timeline_trace_enabled() -> bool:
