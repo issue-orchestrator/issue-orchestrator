@@ -37,10 +37,9 @@ from ..domain.tech_lead_run import (
     BARRIER_GLOBAL_RUN_ACTIVE,
     BARRIER_GLOBAL_RUN_QUEUED,
     BARRIER_SUBJECT_SESSION_ACTIVE,
-    REASON_ISSUE_CLOSED,
-    REASON_NO_LONGER_BLOCKED,
-    REASON_PAUSED_FOR_RECONCILIATION,
     global_run_precedence,
+    paused_run_refusal,
+    subject_run_refusal,
 )
 from .reconciliation import is_paused_for_reconciliation
 from .tech_lead_run_admission import (
@@ -165,40 +164,24 @@ def issue_run_eligibility(
     classification happens ONCE, so the verdict and the evidence-map context can
     never disagree about which label blocked it.
     """
-    lifecycle = (getattr(issue, "state", "") or "").casefold()
-    if lifecycle and lifecycle != "open":
-        return (
-            REASON_ISSUE_CLOSED,
-            f"Issue #{issue.number} is closed; nothing to investigate.",
-        )
-    if not blocking_label:
-        return (
-            REASON_NO_LONGER_BLOCKED,
-            f"Issue #{issue.number} is no longer blocked; nothing to investigate.",
-        )
-    return paused_subject_refusal(issue)
+    return subject_run_refusal(
+        issue.number,
+        lifecycle=(getattr(issue, "state", "") or "").casefold(),
+        blocked=bool(blocking_label),
+        paused=is_paused_for_reconciliation(issue.labels),
+    )
 
 
 def paused_subject_refusal(issue: "Issue") -> Optional[tuple[str, str]]:
-    """Refuse a run whose subject is paused for reconciliation. None otherwise.
+    """Refuse a run whose subject (or anchor) is paused for reconciliation.
 
-    Every write a tech-lead run makes — the anchor's labels and close, its
-    comments, and the issues and case files it files, which are gated on the
-    anchor too (#6957) — reconciles against this issue, and the mutation gate
-    refuses all of them while the pause label is on it. porchpin #410 carried
-    the pause for two days while two health reviews ran on it for 35 and 57
-    minutes and every output of both was dropped. The pause is a human's to
-    lift, so the run is not started: asked at admission, at plan time, and by
-    the launch authority, for a focused subject and a whole-repository anchor
-    alike.
+    The facts are read here; the decision is the domain's
+    (:func:`..domain.tech_lead_run.paused_run_refusal`). Asked at admission and
+    plan time through :func:`issue_run_eligibility`, and by the launch
+    authority for a whole-repository run's anchor.
     """
-    if not is_paused_for_reconciliation(issue.labels):
-        return None
-    return (
-        REASON_PAUSED_FOR_RECONCILIATION,
-        f"Issue #{issue.number} is paused for reconciliation; every write a"
-        " tech-lead run makes there would be refused until a human lifts the"
-        " pause.",
+    return paused_run_refusal(
+        issue.number, paused=is_paused_for_reconciliation(issue.labels)
     )
 
 
