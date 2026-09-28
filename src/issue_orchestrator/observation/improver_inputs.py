@@ -167,9 +167,11 @@ def case_files_input(
     """Every case file (the ledger is small and never pruned) and every
     tech-lead run that overlaps the window, with what each said.
 
-    Coverage is the run history's: it is the record of when the tech lead
-    looked at all, and it is complete from its first run on unless a row
-    could not be read back.
+    Coverage is the case-file ledger's: its writes are the orchestrator's own
+    durable ones (a failed one fails the action that noticed), so it is
+    complete from its first record on. The run history is not: its writer
+    logs and drops a failed write, so its diagnoses are evidence that the
+    tech lead looked, never proof that it did not.
     """
     diagnoses = tuple(
         diagnosis
@@ -177,29 +179,35 @@ def case_files_input(
         if diagnosis.started_at <= cutoff
         and (diagnosis.ended_at is None or diagnosis.ended_at >= window_start)
     )
-    earliest = engine_local(runs.records[0].started_at) if runs.records else None
-    coverage = _ledger_coverage(
-        earliest,
-        window_start=window_start,
-        cutoff=cutoff,
-        what="the tech-lead run history",
-        empty="no tech-lead run is recorded, so the history cannot show when it began",
+    staged = tuple(
+        staged_file
+        for staged_file in (_case_file(record, cutoff) for record in case_files)
+        if staged_file.recorded_at <= cutoff
     )
-    if runs.unreadable:
-        coverage = coverage.model_copy(
-            update={
-                "complete": False,
-                "detail": f"{runs.unreadable} run record(s) could not be read back",
-            }
-        )
+    stamps = [t for c in staged for t in (c.recorded_at, *(o.recorded_at for o in c.observations))]
     return CaseFilesInput(
-        coverage=coverage,
-        case_files=tuple(_case_file(record) for record in case_files),
+        coverage=_ledger_coverage(
+            min(stamps) if stamps else None,
+            window_start=window_start,
+            cutoff=cutoff,
+            what="the case-file ledger",
+            empty="no case file is recorded, so the ledger cannot show when it began",
+        ),
+        case_files=staged,
+        diagnoses_coverage=Coverage(
+            from_=None,
+            to=cutoff,
+            complete=False,
+            detail="the tech-lead run history is best-effort (a failed write is dropped)"
+            + (f"; {runs.unreadable} row(s) could not be read back" if runs.unreadable else ""),
+        ),
         diagnoses=diagnoses,
     )
 
 
-def _case_file(record: CaseFileRecord) -> StagedCaseFile:
+def _case_file(record: CaseFileRecord, cutoff: datetime) -> StagedCaseFile:
+    """One case file as of ``cutoff``: an observation recorded after it (the
+    snapshot is copied later) is not part of what the audit cut off at."""
     return StagedCaseFile(
         id=f"case-file:{record.signature}",
         signature=record.signature,
@@ -216,11 +224,12 @@ def _case_file(record: CaseFileRecord) -> StagedCaseFile:
                 observation_id=o.observation_id, recorded_at=instant(o.recorded_at)
             )
             for o in record.observations
+            if instant(o.recorded_at) <= cutoff
         ),
     )
 
 
-def engine_local(moment: datetime) -> datetime:
+def engine_local(moment: datetime, *, latest: bool = False) -> datetime:
     """A run record's time as an instant.
 
     The engine stamps a session's ``started_at`` with ``datetime.now()``, so
@@ -228,8 +237,16 @@ def engine_local(moment: datetime) -> datetime:
     Staging reads an engine's state on that same host (its snapshots are byte
     copies of local files), so the host's zone is the engine's. An aware time
     is kept as it is.
+
+    A naive time inside a daylight-saving fold names two instants and the
+    record does not say which. The earliest is returned, or the latest with
+    ``latest=True``, so a run's span is widened to contain both readings
+    rather than guessed.
     """
-    return moment if moment.tzinfo is not None else moment.astimezone()
+    if moment.tzinfo is not None:
+        return moment
+    readings = (moment.replace(fold=0).astimezone(), moment.replace(fold=1).astimezone())
+    return max(readings) if latest else min(readings)
 
 
 def _diagnosis(record: TechLeadRunRecord) -> StagedDiagnosis:
@@ -240,7 +257,7 @@ def _diagnosis(record: TechLeadRunRecord) -> StagedDiagnosis:
         flavor=record.flavor.value,
         phase=record.phase.value,
         started_at=engine_local(record.started_at),
-        ended_at=None if record.ended_at is None else engine_local(record.ended_at),
+        ended_at=None if record.ended_at is None else engine_local(record.ended_at, latest=True),
         subject_issue_number=record.subject_issue_number,
         subject_title=record.subject_title,
         anchor_issue_number=record.anchor_issue_number,
@@ -258,7 +275,9 @@ def _ledger_coverage(
     what: str,
     empty: str,
 ) -> Coverage:
-    if earliest is None:
+    if earliest is None or earliest > cutoff:
+        # Nothing recorded by the cutoff (the snapshot is copied after it, so
+        # a first record can land in between): nothing shows when it began.
         return Coverage(from_=None, to=cutoff, complete=False, detail=empty)
     start = max(window_start, earliest)
     return Coverage(

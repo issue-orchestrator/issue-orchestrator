@@ -199,7 +199,9 @@ def test_case_files_carry_their_bodies_and_runs_in_the_window_are_diagnoses() ->
     assert staged.coverage.contains(WINDOW_START, CUTOFF)
 
 
-def test_a_run_history_row_that_cannot_be_read_back_is_a_hole() -> None:
+def test_the_run_history_never_proves_the_tech_lead_did_not_look() -> None:
+    """Its writer drops a failed write, so its diagnoses are evidence of a
+    look, never a complete record of every look."""
     staged = case_files_input(
         [_case_file()],
         TechLeadRunHistoryRead(records=(_run(CUTOFF - timedelta(hours=50), ended=CUTOFF),), unreadable=1),
@@ -207,7 +209,80 @@ def test_a_run_history_row_that_cannot_be_read_back_is_a_hole() -> None:
         cutoff=CUTOFF,
     )
 
-    assert not staged.coverage.complete
+    assert not staged.diagnoses_coverage.complete
+    assert "could not be read back" in staged.diagnoses_coverage.detail
+    assert staged.coverage.complete  # the case-file ledger's own
+
+
+def test_case_file_coverage_starts_at_the_ledgers_first_record() -> None:
+    young = CaseFileRecord(
+        signature="young", issue_number=1, recorded_at=_at(3), observation_count=1, fix_class="",
+        area="", diagnosis="", disposition="active", retirement_pending=False,
+        observations=(CaseFileObservation("y1", _at(3)),),
+    )
+
+    staged = case_files_input(
+        [young], TechLeadRunHistoryRead(records=(), unreadable=0),
+        window_start=WINDOW_START, cutoff=CUTOFF,
+    )
+
+    assert staged.coverage.from_ == CUTOFF - timedelta(hours=3)
+    assert not case_files_input(
+        [], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF
+    ).coverage.complete
+
+
+def test_what_was_recorded_after_the_cutoff_is_not_staged() -> None:
+    """The snapshot is copied after the audit's cutoff; what lands between is
+    outside the window the coverage speaks for."""
+    late = CaseFileRecord(
+        signature="late", issue_number=2, recorded_at=(CUTOFF + timedelta(minutes=1)).isoformat(),
+        observation_count=1, fix_class="", area="", diagnosis="", disposition="active",
+        retirement_pending=False, observations=(),
+    )
+    observed_late = replace(
+        _case_file(),
+        observations=(
+            *_case_file().observations,
+            CaseFileObservation("o3", (CUTOFF + timedelta(minutes=1)).isoformat()),
+        ),
+    )
+
+    staged = case_files_input(
+        [late, observed_late], TechLeadRunHistoryRead(records=(), unreadable=0),
+        window_start=WINDOW_START, cutoff=CUTOFF,
+    )
+
+    assert [c.signature for c in staged.case_files] == ["sig"]
+    assert [o.observation_id for o in staged.case_files[0].observations] == ["o1", "o2"]
+    assert not charter_decisions_input(
+        [_decision("A1", "post_comment", decided=(CUTOFF + timedelta(minutes=1)).isoformat())],
+        window_start=WINDOW_START, cutoff=CUTOFF,
+    ).coverage.complete
+
+
+def test_a_run_time_in_a_daylight_saving_fold_widens_the_run_to_both_readings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """01:30 on the fall-back night happens twice; the record cannot say which."""
+    import time
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        ambiguous = datetime(2026, 11, 1, 1, 30)
+        staged = case_files_input(
+            [],
+            TechLeadRunHistoryRead(records=(_run(ambiguous, ended=ambiguous),), unreadable=0),
+            window_start=datetime(2026, 10, 31, tzinfo=timezone.utc),
+            cutoff=datetime(2026, 11, 2, tzinfo=timezone.utc),
+        )
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+    [diagnosis] = staged.diagnoses
+    assert diagnosis.started_at == datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)
+    assert diagnosis.ended_at == datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
 
 
 def test_run_times_without_a_zone_are_the_engine_hosts_local_time() -> None:

@@ -194,6 +194,7 @@ def case_files() -> CaseFilesInput:
                 ),
             ),
         ),
+        diagnoses_coverage=Coverage(from_=None, to=CUTOFF, complete=False, detail="best-effort"),
         diagnoses=(
             StagedDiagnosis(
                 id="tech-lead-run:run-1:tech-lead-1", run_key="global:health_review",

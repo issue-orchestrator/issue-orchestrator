@@ -141,8 +141,12 @@ class StagedDiagnosis(_Closed):
 
 
 class CaseFilesInput(_Closed):
+    #: The case-file ledger's: complete from its first record on.
     coverage: Coverage
     case_files: tuple[StagedCaseFile, ...]
+    #: Never complete: the run history is a best-effort receipt (its writer
+    #: drops a failed write), so a missing run proves nothing.
+    diagnoses_coverage: Coverage
     diagnoses: tuple[StagedDiagnosis, ...]
 
 

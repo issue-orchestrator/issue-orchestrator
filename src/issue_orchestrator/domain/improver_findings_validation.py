@@ -30,6 +30,7 @@ Citations are checked, not trusted:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,7 +41,7 @@ from pydantic import ValidationError
 
 from ..contracts.engine_audit import AnomalyKind, AuditDiff, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
-from ..contracts.improver_findings import Finding, ImproverFindings
+from ..contracts.improver_findings import Finding, ImproverFindings, Observed
 from ..contracts.improver_inputs import (
     AUDIT_FILE,
     AUDIT_PREVIOUS_FILE,
@@ -86,6 +87,7 @@ class Rule(StrEnum):
     NOT_NOTICED_NEEDS_PROVEN_ONSET = "not_noticed_needs_proven_onset"
     NOT_NOTICED_NEEDS_COVERAGE = "not_noticed_needs_coverage"
     NOT_NOTICED_CITES_NO_NOTICE = "not_noticed_cites_no_notice"
+    NOT_NOTICED_UNREFERENCED = "not_noticed_unreferenced"
     ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION = "acted_not_effective_needs_applied_decision"
     ACTED_NOT_EFFECTIVE_NEEDS_LATER_OBSERVATION = "acted_not_effective_needs_later_observation"
     NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE = "not_in_charter_cites_charter_or_source"
@@ -250,7 +252,7 @@ class _Checker:
 
     def _finding_rules(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         yield from self._keys_and_classification(f)
-        yield from self._liveness(f)
+        yield from self._liveness(f, records)
         yield from self._citations(f, records)
         yield from self._window(f, records)
         yield from self._stall(f, records)
@@ -269,14 +271,14 @@ class _Checker:
         if f.classification == "unknown" and f.output != "needs_investigation":
             yield Rule.UNKNOWN_CLASSIFICATION_INVESTIGATES, "an unknown classification is only a needs_investigation"
 
-    def _liveness(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+    def _liveness(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         present, recurs = f.present_after_start, f.recurs_after_start
         if present == "unknown" and recurs == "unknown" and f.output != "needs_investigation":
             yield Rule.UNKNOWN_LIVENESS_INVESTIGATES, "liveness is unknown both ways, so it needs investigation"
         if present == "false" and recurs == "false":
             yield Rule.NO_PURE_HISTORY, "neither present nor recurring after the start: history is not emitted"
         yield from self._presence(f)
-        yield from self._recurrence_and_origin(f)
+        yield from self._recurrence_and_origin(f, records)
 
     def _presence(self, f: Finding) -> Iterator[tuple[Rule, str]]:
         keys = {k.key for k in f.anomaly_keys}
@@ -290,8 +292,12 @@ class _Checker:
         if f.present_after_start == "false" and keys & (self._current_keys | self._unobserved_keys):
             yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "the current audit shows it present, or could not observe it"
 
-    def _recurrence_and_origin(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+    def _recurrence_and_origin(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         occurrences = [o for o in f.observed if o.kind == "occurrence"]
+        if f.recurs_after_start == "false" and any(t > self._start for t in records.known_times()):
+            yield Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, (
+                "the staged records show an occurrence after the start, so it recurs"
+            )
         if f.recurs_after_start == "true" and not any(
             o.supports == "recurs_after_start" and o.at > self._start for o in occurrences
         ):
@@ -316,20 +322,20 @@ class _Checker:
             if o.kind == "snapshot":
                 if o.supports != "present_after_start":
                     yield Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, f"a snapshot cannot support {o.supports}"
-                if o.file != AUDIT_FILE or o.at != self._cutoff:
+                if o.file != AUDIT_FILE or o.at != self._cutoff or o.ref not in records.snapshots:
                     yield Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, (
-                        f"{o.source}: a snapshot is the current audit's, dated its generated_at"
+                        f"{o.source}: a snapshot is one of this finding's own anomalies in the"
+                        " current audit (audit.json#/anomalies/<i>), dated its generated_at"
                     )
                 continue
             if o.supports == "present_after_start":
                 yield Rule.OCCURRENCE_IS_A_DATED_RECORD, "an occurrence may since have cleared; it cannot show presence"
-            stamp = records.timestamp_at(o.file, o.ref)
-            if stamp is None:
+            if not records.is_record(o.file, o.ref):
                 yield Rule.OCCURRENCE_IS_A_DATED_RECORD, (
                     f"{o.source} is not a dated record of this finding's anomalies"
                 )
-            elif stamp != o.at:
-                yield Rule.OCCURRENCE_IS_A_DATED_RECORD, f"{o.source} is dated {stamp.isoformat()}, not {o.at.isoformat()}"
+            elif records.dated_field(o) is None:
+                yield Rule.OCCURRENCE_IS_A_DATED_RECORD, f"{o.source} is not dated {o.at.isoformat()}"
 
     def _window(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         window = f.grading_window
@@ -372,6 +378,9 @@ class _Checker:
         window = f.grading_window
         if any(i in self._notice_ids for i in f.stall_evidence):
             yield Rule.NOT_NOTICED_CITES_NO_NOTICE, "it cites a decision, case file or run that refers to it"
+        if window.from_ != "unknown":
+            for notice in _notices_about(self._evidence, f, window.from_, window.to):
+                yield Rule.NOT_NOTICED_UNREFERENCED, f"{notice} refers to it inside the grading window"
         if window.from_ == "unknown" or not records.proves_onset(f, window.from_):
             yield Rule.NOT_NOTICED_NEEDS_PROVEN_ONSET, "the onset is not a proven earliest occurrence"
             return
@@ -428,10 +437,17 @@ class _AnomalyRecords:
     def __init__(self, evidence: StagedEvidence, finding: Finding) -> None:
         self._evidence = evidence
         keys = {k.key for k in finding.anomaly_keys}
-        #: ``(file, pointer) -> time`` for every dated field of a matching record.
-        self._times: dict[tuple[str, str], datetime] = {}
-        #: ``(file, pointer)`` of every onset field (a first occurrence).
-        self._onsets: set[tuple[str, str]] = set()
+        #: ``(file, record pointer) -> {field: time}`` for every dated field of
+        #: a matching record.
+        self._records: dict[tuple[str, str], dict[str, datetime]] = {}
+        #: ``(file, record pointer, field)`` of every onset field (a first occurrence).
+        self._onsets: set[tuple[str, str, str]] = set()
+        #: Pointers to this finding's own anomalies in the CURRENT audit.
+        self.snapshots = frozenset(
+            f"/anomalies/{index}"
+            for index, anomaly in enumerate(evidence.audit.anomalies)
+            if anomaly.key in keys
+        )
         for name, report in ((AUDIT_FILE, evidence.audit), (AUDIT_PREVIOUS_FILE, evidence.previous_audit)):
             if report is not None:
                 self._collect(name, report, keys)
@@ -440,27 +456,48 @@ class _AnomalyRecords:
         for index, s in enumerate(report.no_progress.log_signatures):
             if (AnomalyKind.NO_PROGRESS_LOG.value, s.subject, f"{s.level} {s.logger}: {s.signature}") in keys:
                 base = f"/no_progress/log_signatures/{index}"
-                self._add(name, f"{base}/first_seen", s.first_seen, onset=True)
-                self._add(name, f"{base}/last_seen", s.last_seen, onset=False)
+                self._add(name, base, "first_seen", s.first_seen, onset=True)
+                self._add(name, base, "last_seen", s.last_seen, onset=False)
         if report.action_liveness is not None:
             for index, p in enumerate(report.action_liveness.parked):
                 if (AnomalyKind.PARKED_ACTION.value, p.subject, f"{p.action}:{p.fingerprint}") in keys:
-                    self._add(name, f"/action_liveness/parked/{index}/last_failed_at", p.last_failed_at, onset=False)
+                    self._add(name, f"/action_liveness/parked/{index}", "last_failed_at", p.last_failed_at, onset=False)
         if report.validated_work is not None:
             for index, w in enumerate(report.validated_work.unresolved):
                 if (AnomalyKind.STALE_UNRESOLVED_WORK.value, f"#{w.issue_number}", w.record_id) in keys:
-                    self._add(name, f"/validated_work/unresolved/{index}/created_at", w.created_at, onset=True)
+                    self._add(name, f"/validated_work/unresolved/{index}", "created_at", w.created_at, onset=True)
 
-    def _add(self, name: str, pointer: str, stamp: str, *, onset: bool) -> None:
-        self._times[(name, pointer)] = datetime.fromisoformat(stamp)
+    def _add(self, name: str, record: str, field: str, stamp: str, *, onset: bool) -> None:
+        self._records.setdefault((name, record), {})[field] = datetime.fromisoformat(stamp)
         if onset:
-            self._onsets.add((name, pointer))
+            self._onsets.add((name, record, field))
 
-    def timestamp_at(self, name: str, pointer: str) -> datetime | None:
-        return self._times.get((name, pointer))
+    def _split(self, name: str, pointer: str) -> tuple[tuple[str, str], str | None]:
+        """``(file, record pointer)`` and the field named, if the pointer names one."""
+        record, _, field = pointer.rpartition("/")
+        if (name, record) in self._records and field in self._records[(name, record)]:
+            return (name, record), field
+        return (name, pointer), None
+
+    def is_record(self, name: str, pointer: str) -> bool:
+        return self._split(name, pointer)[0] in self._records
+
+    def dated_field(self, o: Observed) -> str | None:
+        """The dated field an occurrence cites: the one its pointer names, or,
+        for a pointer to the whole record, the one dated ``o.at``."""
+        record, field = self._split(o.file, o.ref)
+        fields = self._records.get(record, {})
+        if field is not None:
+            return field if fields[field] == o.at else None
+        return next((f for f, t in sorted(fields.items()) if t == o.at), None)
+
+    def is_onset(self, o: Observed) -> bool:
+        field = self.dated_field(o)
+        record, _ = self._split(o.file, o.ref)
+        return field is not None and (*record, field) in self._onsets
 
     def known_times(self) -> tuple[datetime, ...]:
-        return tuple(self._times.values())
+        return tuple(t for fields in self._records.values() for t in fields.values())
 
     def proves_onset(self, finding: Finding, onset: datetime) -> bool:
         """Whether ``onset`` is a proven first occurrence: a cited log
@@ -468,7 +505,7 @@ class _AnomalyRecords:
         read shows no earlier occurrence. No other source here says where its
         coverage begins, so no other onset is proven."""
         for o in finding.observed:
-            if o.kind != "occurrence" or o.at != onset or (o.file, o.ref) not in self._onsets:
+            if o.kind != "occurrence" or o.at != onset or not self.is_onset(o):
                 continue
             report = self._evidence.audit if o.file == AUDIT_FILE else self._evidence.previous_audit
             if report is None or not o.ref.startswith("/no_progress/log_signatures/"):
@@ -480,6 +517,45 @@ class _AnomalyRecords:
             if began is not None and datetime.fromisoformat(began) < onset:
                 return True
         return False
+
+
+_ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
+
+
+def _notices_about(
+    evidence: StagedEvidence, finding: Finding, start: datetime, end: datetime
+) -> Iterator[str]:
+    """Staged decisions, case files and runs that refer to the finding's
+    issues between ``start`` and ``end``.
+
+    A reference is structural (a decision about the issue, a run whose
+    subject it is) or a ``#<n>`` mention in what the tech lead wrote. An
+    anomaly of the engine itself names no issue, so nothing refers to it
+    structurally.
+    """
+    numbers = {
+        int(match.group(1))
+        for key in finding.anomaly_keys
+        if (match := _ISSUE_SUBJECT.match(key.subject))
+    }
+    if not numbers:
+        return
+    mentioned = re.compile(r"(?<![\w/])#(?:" + "|".join(map(str, sorted(numbers))) + r")\b")
+    if evidence.decisions is not None:
+        for d in evidence.decisions.decisions:
+            about = d.target_number if d.target_number is not None else d.anchor_issue_number
+            if about in numbers and start <= d.decided_at <= end:
+                yield d.decision_id
+    if evidence.case_files is None:
+        return
+    for c in evidence.case_files.case_files:
+        stamps = (c.recorded_at, *(o.recorded_at for o in c.observations))
+        if mentioned.search(c.body) and any(start <= t <= end for t in stamps):
+            yield c.id
+    for r in evidence.case_files.diagnoses:
+        overlaps = r.started_at <= end and (r.ended_at is None or r.ended_at >= start)
+        if overlaps and (r.subject_issue_number in numbers or mentioned.search(r.body)):
+            yield r.id
 
 
 _MISSING = object()

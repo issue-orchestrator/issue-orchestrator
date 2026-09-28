@@ -41,7 +41,9 @@ from issue_orchestrator.ports.engine_audit import OpenIssueLabels
 from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
 from issue_orchestrator.testing.exam.cases import EXAM_CASE_IDS
 
-NOW = datetime(2026, 9, 28, 18, 0, tzinfo=UTC)
+#: After the fixture's real-clock writes (the case-file ledger stamps its own
+#: rows), so everything the fixture records is inside the audited window.
+NOW = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=1)
 STARTED = NOW - timedelta(hours=6)
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -173,7 +175,7 @@ def test_stages_every_input_the_prompt_lists_from_the_engine_records(state: Path
     decisions = json.loads((data / "charter-decisions.json").read_text())
     assert [d["action_id"] for d in decisions["decisions"]] == ["A2"]
     assert decisions["coverage"]["complete"] is True
-    assert decisions["coverage"]["from"] == "2026-09-27T18:00:00Z"
+    assert datetime.fromisoformat(decisions["coverage"]["from"]) == NOW - timedelta(hours=24)
     cases = json.loads((data / "case-files.json").read_text())
     assert [c["body"] for c in cases["case_files"]] == ["refused every tick"]
     assert len(cases["diagnoses"]) == 1
@@ -300,3 +302,21 @@ def test_a_tech_lead_store_without_its_case_file_tables_is_unreadable_not_empty(
     missing = {i.name: i.detail for i in staged.manifest.inputs if not i.staged}
     assert "case-files.json" in missing
     assert "tech_lead_pattern_observations" in missing["case-files.json"]
+
+
+def test_an_audit_told_not_to_read_github_still_stages_the_open_issues(state: Path, tmp_path: Path) -> None:
+    from issue_orchestrator.contracts.engine_audit import SourceStatus
+    from issue_orchestrator.observation.engine_audit import Unavailable
+
+    outputs = FakeHost()
+    stager = ImproverInputStager(
+        audited_host=Unavailable(SourceStatus.SKIPPED, "--no-github"),
+        outputs_host=outputs,
+        source=FakeSource(),
+        clock=lambda: NOW,
+    )
+
+    staged = stager.stage(_request(state, tmp_path, outputs_repo="porchpin/porchpin"))
+
+    assert outputs.calls == ["issues"]
+    assert json.loads((staged.data_dir / "open-issues.json").read_text())["issues"][0]["number"] == 7491

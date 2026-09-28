@@ -23,7 +23,7 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `exam/<case id>.json` | The latest tech-lead exam scorecard of each case (A/B/C/U …), with the engine commit it ran on; `exam/<case id>.previous.json` is the one before it, where there is one |
 | `charter-decisions.json` | **All** of the tech lead's recorded decisions in the observation window, with stable decision IDs, outcome, effect, reason, `decided_at` and **`applied_at`** (when its effect was applied; absent if never applied), plus a `coverage` block (`from`, `to`, `complete: true/false`) |
 | `charter.json` | The engine's **effective** charter at the latest start: each role's `enabled`/depth/authority and the per-action authority settings, after config overrides |
-| `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies, plus the same `coverage` block |
+| `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies. `coverage` is the case-file ledger's; `diagnoses_coverage` is never complete (the run history is best-effort), so a diagnosis shows a look but a missing one proves nothing |
 | `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
 | `engine-source/` | The io source tree at the engine's commit (read-only) |
@@ -170,7 +170,8 @@ in `engine-source/examples/improver/findings/`.
   reproduction's `fails_on` is that `engine_commit`.
 - **Citations resolve.** An `observed` entry's `source` is a staged file and
   a JSON pointer into it (`audit.json#/anomalies/3`). A **snapshot** cites
-  `audit.json` and is dated its `generated_at`. An **occurrence** cites a
+  one of the finding's own anomalies in `audit.json`
+  (`audit.json#/anomalies/<i>`) and is dated its `generated_at`. An **occurrence** cites a
   dated field of one of the finding's own anomaly records, in `audit.json` or
   `audit-previous.json` (a log signature's `first_seen` or `last_seen`, a
   parked action's `last_failed_at`, an unresolved record's `created_at`), and
@@ -199,7 +200,8 @@ in `engine-source/examples/improver/findings/`.
   kind **`occurrence`**. `origin: before_start` needs a **pre**-start entry
   of kind **`occurrence`**. A snapshot supports neither.
   `present_after_start: "false"` is refused while the current audit still
-  shows the anomaly or could not observe it, and an anomaly neither present
+  shows the anomaly or could not observe it, `recurs_after_start: "false"`
+  while the staged records show an occurrence after the start, and an anomaly neither present
   nor recurring (both `"false"`) is history: don't emit it.
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
   with `applied_at` at or before `grading_window.to`, and an `observed` entry
@@ -214,7 +216,10 @@ in `engine-source/examples/improver/findings/`.
   coverage spans to contain the whole window. If either span ends before
   the cutoff, the grade is `unknown`. Every other grade except
   `unknown` requires `stall_evidence`. A `not_noticed` finding cites no
-  decision, case file or diagnosis: citing one says it was noticed. The only
+  decision, case file or diagnosis: citing one says it was noticed. It is
+  also refused when a staged decision about the anomaly's issue, a case file
+  or a diagnosis naming it (`#<n>`, or as its subject) falls inside the
+  grading window. The only
   onset these inputs can prove is a log signature's `first_seen` inside a log
   read that began before it (the audit's `no_progress.log`).
 - `output: needs_investigation` requires `missing_evidence` and forbids

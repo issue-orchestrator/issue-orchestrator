@@ -189,11 +189,11 @@ class ImproverInputStager:
         data: Path,
         now: datetime,
     ) -> StagedInput:
-        listing: OpenIssueListing = (
-            audited.as_listing()
-            if request.outputs_repo == request.audited_repo
-            else self._outputs_host
-        )
+        # The audit's own listing when it read the same repository; the
+        # outputs host otherwise (another repository, or the audit skipped
+        # GitHub: open issues are needed either way).
+        shared = audited.as_listing() if request.outputs_repo == request.audited_repo else None
+        listing: OpenIssueListing = shared or self._outputs_host
         try:
             issues = listing.list_open_issue_labels_complete()
         except Exception as error:
@@ -327,10 +327,9 @@ class _OnceListing:
     def as_host(self) -> OpenWorkHost | Unavailable:
         return self._host if isinstance(self._host, Unavailable) else _SharedHost(self)
 
-    def as_listing(self) -> OpenIssueListing:
-        if isinstance(self._host, Unavailable):
-            raise ImproverInputsUnavailable(f"GitHub {self._host.status.value}: {self._host.detail}")
-        return _SharedHost(self)
+    def as_listing(self) -> OpenIssueListing | None:
+        """The shared listing, or None when the audit was told not to read GitHub."""
+        return None if isinstance(self._host, Unavailable) else _SharedHost(self)
 
     def issues(self) -> Sequence[OpenIssueLabels]:
         if isinstance(self._host, Unavailable):

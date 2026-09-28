@@ -161,6 +161,8 @@ CASES: list[tuple[Rule, str, Mutation]] = [
                          "source": "audit.json#/action_liveness/parked/0/last_failed_at",
                          "supports": "origin"})),
     (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "capability_issue", _set("recurs_after_start", "true")),
+    # "Does not recur" while the staged records show a post-start occurrence (r1 F2).
+    (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "charter_proposal", _set("recurs_after_start", "false")),
     (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "exam_case",
      _append_observed({**PRE_START_LOG, "supports": "recurs_after_start"})),
     (Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, "exam_case", _set("origin", "unknown")),
@@ -172,11 +174,18 @@ CASES: list[tuple[Rule, str, Mutation]] = [
     (Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, "exam_case", _set("observed.0.supports", "recurs_after_start")),
     (Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, "exam_case", _set("observed.0.at", "2026-09-28T17:59:00+00:00")),
     (Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, "exam_case", _set("observed.0.source", "audit-previous.json#/anomalies/0")),
+    # A snapshot of ANOTHER anomalies' record, or of no anomaly at all (r1 F1).
+    (Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, "charter_proposal", _set("observed.0.source", "audit.json#/anomalies/0")),
+    (Rule.SNAPSHOT_SHOWS_PRESENCE_ONLY, "charter_proposal", _set("observed.0.source", "audit.json#/generated_at")),
     (Rule.OCCURRENCE_IS_A_DATED_RECORD, "exam_case", _set("observed.1.at", "2026-09-28T17:31:00+00:00")),
     (Rule.OCCURRENCE_IS_A_DATED_RECORD, "exam_case", _set("observed.1.source", "audit.json#/no_progress/window_end")),
     (Rule.OCCURRENCE_IS_A_DATED_RECORD, "exam_case",
      _set("observed.1.source", "audit.json#/no_progress/log_signatures/1/last_seen")),
     (Rule.OCCURRENCE_IS_A_DATED_RECORD, "exam_case", _set("observed.1.supports", "present_after_start")),
+    # The whole record may be cited, but only at one of its own dates.
+    (Rule.OCCURRENCE_IS_A_DATED_RECORD, "exam_case",
+     _all(_set("observed.1.source", "audit.json#/no_progress/log_signatures/0"),
+          _set("observed.1.at", "2026-09-28T17:31:00+00:00"))),
     # the grading window
     (Rule.WINDOW_ENDS_AT_AUDIT_CUTOFF, "exam_case", _set("grading_window.to", "2026-09-28T19:00:00+00:00")),
     (Rule.WINDOW_STARTS_AT_EARLIEST_OCCURRENCE, "exam_case", _set("grading_window.from", "2026-09-28T17:30:00+00:00")),
@@ -241,7 +250,11 @@ def test_breaking_one_rule_rejects_the_file_naming_it(
 
 #: Rules broken through the staged EVIDENCE rather than the findings file;
 #: their cases are the tests below.
-EVIDENCE_CASE_RULES = {Rule.NOT_NOTICED_NEEDS_COVERAGE, Rule.PRESENCE_MATCHES_CURRENT_AUDIT}
+EVIDENCE_CASE_RULES = {
+    Rule.NOT_NOTICED_NEEDS_COVERAGE,
+    Rule.PRESENCE_MATCHES_CURRENT_AUDIT,
+    Rule.NOT_NOTICED_UNREFERENCED,
+}
 
 
 def test_every_rule_has_a_case() -> None:
@@ -339,3 +352,57 @@ def test_presence_needs_an_audit_taken_after_the_start(tmp_path: Path) -> None:
     doc["engine_started_at"] = "2026-09-28T18:30:00+00:00"
 
     assert Rule.PRESENCE_MATCHES_CURRENT_AUDIT in _rules(doc, load_staged_evidence(data))
+
+
+def _with_notice(data: Path, name: str, mutate: Callable[[dict], None]) -> StagedEvidence:
+    document = json.loads((data / name).read_text())
+    mutate(document)
+    (data / name).write_text(json.dumps(document))
+    return load_staged_evidence(data)
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate"),
+    [
+        # A decision about #500 inside the grading window (r1 F3).
+        ("charter-decisions.json", lambda d: d["decisions"][1].update(target_number=500)),
+        # A tech-lead run whose subject is #500.
+        ("case-files.json", lambda d: d["diagnoses"][0].update(subject_issue_number=500)),
+        # A run that wrote about #500.
+        ("case-files.json", lambda d: d["diagnoses"][0].update(body="#500 keeps exploding")),
+        # A case file about #500 observed inside the window.
+        ("case-files.json", lambda d: d["case_files"][0].update(body="see #500")),
+    ],
+)
+def test_not_noticed_is_refused_when_a_staged_notice_refers_to_the_anomaly(
+    tmp_path: Path, name: str, mutate: Callable[[dict], None]
+) -> None:
+    evidence = _with_notice(build_improver_data(tmp_path), name, mutate)
+
+    assert Rule.NOT_NOTICED_UNREFERENCED in _rules(example("charter_proposal"), evidence)
+
+
+def test_a_notice_of_another_issue_or_before_the_onset_is_not_a_notice_of_this_one(tmp_path: Path) -> None:
+    def elsewhere(d: dict) -> None:
+        d["decisions"][1].update(target_number=5000)
+        d["decisions"][0].update(target_number=500, decided_at="2026-09-28T12:30:00Z")
+
+    evidence = _with_notice(build_improver_data(tmp_path), "charter-decisions.json", elsewhere)
+
+    assert validate_findings(json.dumps(example("charter_proposal")), evidence).findings
+
+
+def test_an_occurrence_may_cite_its_whole_record_at_one_of_its_dates(evidence: StagedEvidence) -> None:
+    """How a live run cited them: the signature, dated its first_seen or last_seen."""
+    doc = example("exam_case")
+    for entry in _finding(doc)["observed"][1:]:
+        entry["source"] = entry["source"].rsplit("/", 1)[0]
+
+    assert validate_findings(json.dumps(doc), evidence).findings
+
+
+def test_a_whole_record_citation_still_proves_an_onset(evidence: StagedEvidence) -> None:
+    doc = example("charter_proposal")
+    _finding(doc)["observed"][1]["source"] = "audit.json#/no_progress/log_signatures/1"
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "not_noticed"
