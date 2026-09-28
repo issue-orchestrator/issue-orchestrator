@@ -298,6 +298,73 @@ def test_the_repeated_fall_back_hour_is_read_in_log_order(monkeypatch) -> None:
     assert instants == ["07:30", "07:59", "08:30", "09:10"]
 
 
+def test_a_tail_starting_inside_the_repeated_hour_counts_nothing_it_cannot_date(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """With no earlier entry, 01:30 on the fall-back night is 07:30Z or 08:30Z."""
+    import time
+
+    monkeypatch.setenv("TZ", "America/Denver")
+    time.tzset()
+    try:
+        log = tmp_path / "orchestrator.log"
+        log.write_text(
+            "2026-11-01 01:30:00 [WARNING] io: Reconciliation failed for issue #4\n"
+            "2026-11-01 01:31:00 [WARNING] io: Reconciliation failed for issue #4\n"
+            "2026-11-01 02:10:00 [WARNING] io: Reconciliation failed for issue #4\n",
+            encoding="utf-8",
+        )
+        _excerpt, entries = read_log(log, tail_bytes=1 << 20)
+        read = list(entries)
+        census = census_log(
+            read,
+            window_start=datetime(2026, 11, 1, 8, 0, tzinfo=UTC),
+            last_state_change={},
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    assert [e.certain for e in read] == [False, False, True]
+    assert census.uncertain_entries == 2
+    assert [s.count for s in census.signatures] == [1]
+    # The two it could not date may be inside the window: not a complete read.
+    assert census.covers(datetime(2026, 11, 1, 8, 0, tzinfo=UTC)) is False
+
+
+def test_a_logged_exception_is_part_of_its_signature(tmp_path: Path) -> None:
+    formatter = logging.Formatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
+    lines = []
+    for n, error in enumerate((KeyError("sig-1"), TimeoutError("read 3"), KeyError("sig-2"))):
+        try:
+            raise error
+        except Exception:
+            import sys
+
+            record = logging.LogRecord(
+                "io", logging.ERROR, __file__, 1, "operation failed for issue #9", None, sys.exc_info()
+            )
+        record.created = (T0 + timedelta(seconds=n)).timestamp()
+        record.msecs = 0
+        lines.append(formatter.format(record))
+    log = tmp_path / "orchestrator.log"
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    _excerpt, entries = read_log(log, tail_bytes=1 << 20)
+    read = list(entries)
+    census = census_log(read, window_start=T0 - timedelta(hours=1), last_state_change={})
+
+    assert [e.exception for e in read] == [
+        "KeyError: 'sig-1'",
+        "TimeoutError: read 3",
+        "KeyError: 'sig-2'",
+    ]
+    assert {(s.signature, s.count) for s in census.signatures} == {
+        ("operation failed for issue #N | KeyError: 'sig-N'", 2),
+        ("operation failed for issue #N | TimeoutError: read N", 1),
+    }
+
+
 def test_timezone_of_log_times_is_the_local_zone() -> None:
     entry = parse_log_line(_line("x"))
 

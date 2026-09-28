@@ -234,7 +234,29 @@ def find_repeating_failures(
     events: Iterable[Mapping[str, Any]], *, threshold: int = LIVELOCK_THRESHOLD
 ) -> tuple[RepeatingFailure, ...]:
     """Every failure signature that repeated ``threshold``+ times in a row of
-    its subject's history with no state change in between (the peak run)."""
+    its subject's history with no state change in between (the peak run).
+
+    The exam's question: did the engine livelock at any point in its run?"""
+    _running, peak = _runs(events, threshold)
+    return _over(peak, threshold)
+
+
+def find_current_repeats(
+    events: Iterable[Mapping[str, Any]], *, threshold: int = LIVELOCK_THRESHOLD
+) -> tuple[RepeatingFailure, ...]:
+    """Every failure signature whose run at the END of ``events`` is ``threshold``+.
+
+    The audit's question: is the engine livelocked now? A run a later state
+    change ended has been left behind, however long it was.
+    """
+    running, _peak = _runs(events, threshold)
+    return _over(running, threshold)
+
+
+def _runs(
+    events: Iterable[Mapping[str, Any]], threshold: int
+) -> tuple[Counter[tuple[str, str, str]], Counter[tuple[str, str, str]]]:
+    """The running and peak repeat counts of each failure signature."""
     if threshold < 2:
         raise ValueError("a livelock needs a threshold of at least 2 repeats")
     running: Counter[tuple[str, str, str]] = Counter()
@@ -243,7 +265,8 @@ def find_repeating_failures(
         name = str(event.get("type", ""))
         subject = _subject(event)
         if name in STATE_CHANGES:
-            for key in [key for key in running if key[1] == subject]:
+            changed = subjects_changed_by(event)
+            for key in [key for key in running if key[1] in changed]:
                 del running[key]
         elif name == "apply.step_applied" and _payload(event).get("result") == "success":
             step = str(_payload(event).get("step_type", ""))
@@ -255,8 +278,12 @@ def find_repeating_failures(
             key = (name, subject, _detail(event))
             running[key] += 1
             peak[key] = max(peak[key], running[key])
+    return running, peak
+
+
+def _over(counts: Counter[tuple[str, str, str]], threshold: int) -> tuple[RepeatingFailure, ...]:
     return tuple(
         RepeatingFailure(event=name, subject=subject, detail=detail, count=count)
-        for (name, subject, detail), count in sorted(peak.items())
+        for (name, subject, detail), count in sorted(counts.items())
         if count >= threshold
     )

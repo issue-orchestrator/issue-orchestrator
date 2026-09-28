@@ -360,6 +360,20 @@ def test_anomalies_name_what_is_stuck(state, tmp_path, monkeypatch) -> None:
     assert kinds[AnomalyKind.REPEATED_ISSUE_READS] == {("the engine", "repeat_issue_reads")}
 
 
+def test_a_timeline_repeat_a_later_state_change_ended_is_not_current(
+    state, tmp_path, monkeypatch
+) -> None:
+    """#410 failed six times; its labels then change: it progressed."""
+    SqliteTimelineStore(state / cli.TIMELINE_DB).append(
+        410, _event("issue.labels_changed", NOW - timedelta(minutes=10), {})
+    )
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert report.no_progress.timeline_repeats == ()
+    assert AnomalyKind.NO_PROGRESS_TIMELINE not in _kinds(report)
+
+
 def test_log_repeats_after_a_state_change_count_from_it(state, tmp_path, monkeypatch) -> None:
     report = _run(state, tmp_path, monkeypatch, FakeHost())
 

@@ -69,16 +69,24 @@ class LogCensus:
     fetch_cost: FetchCostSection
     #: The first entry read at all, before the window or in it.
     first_read_at: datetime | None
+    #: Entries whose instant could not be told (a tail starting inside the
+    #: fall-back hour); none of them was counted.
+    uncertain_entries: int
     first_entry_at: datetime | None
     last_entry_at: datetime | None
 
     def covers(self, window_start: datetime) -> bool:
-        """Whether the entries read reach back to ``window_start``.
+        """Whether the entries counted are the whole window.
 
-        Only an entry at or before it proves nothing inside the window was
-        cut off by the bounded tail or a rotation.
+        Only an entry at or before ``window_start`` proves nothing inside the
+        window was cut off by the bounded tail or a rotation, and an entry
+        whose instant is unknown may have been in it.
         """
-        return self.first_read_at is not None and self.first_read_at <= window_start
+        return (
+            self.uncertain_entries == 0
+            and self.first_read_at is not None
+            and self.first_read_at <= window_start
+        )
 
 
 def census_log(
@@ -101,7 +109,13 @@ def census_log(
     first_read: datetime | None = None
     first: datetime | None = None
     last: datetime | None = None
+    uncertain = 0
     for entry in entries:
+        if not entry.certain:
+            # Which hour it belongs to is unknown, so it counts for nothing
+            # time-based; the read is incomplete instead (see LogCensus).
+            uncertain += 1
+            continue
         first_read = entry.at if first_read is None else first_read
         if entry.at < window_start:
             continue
@@ -139,6 +153,7 @@ def census_log(
         ),
         fetch_cost=_fetch_cost(fetches, cycles, issue_gets),
         first_read_at=first_read,
+        uncertain_entries=uncertain,
         first_entry_at=first,
         last_entry_at=last,
     )
@@ -150,7 +165,10 @@ def _tally(
     last_state_change: Mapping[str, datetime] | None,
 ) -> None:
     subject = subject_of_text(entry.message)
-    key = (subject, entry.level, entry.logger, normalize_signature(entry.message))
+    signature = normalize_signature(entry.message)
+    if entry.exception:
+        signature += " | " + normalize_signature(entry.exception)
+    key = (subject, entry.level, entry.logger, signature)
     tally = tallies.setdefault(
         key, _SignatureTally(since_state_change=None if last_state_change is None else 0)
     )

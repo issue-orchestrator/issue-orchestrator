@@ -64,7 +64,7 @@ from .engine_log_census import LogCensus, census_log
 from .no_progress import (
     ENGINE_SUBJECT,
     LIVELOCK_THRESHOLD,
-    find_repeating_failures,
+    find_current_repeats,
     subjects_changed_by,
 )
 
@@ -172,7 +172,7 @@ def audit_engine(
             SourceReading(
                 source=AuditSource.LOG,
                 status=SourceStatus.INCOMPLETE,
-                detail="the log read begins after the audit window starts",
+                detail="the log read does not cover the whole audit window",
             )
             if r.source is AuditSource.LOG
             else r
@@ -181,7 +181,7 @@ def audit_engine(
     github = _github(inputs.github, readings)
     repeats = tuple(
         TimelineRepeat(event=r.event, subject=r.subject, detail=r.detail, count=r.count)
-        for r in find_repeating_failures(events)
+        for r in find_current_repeats(events)
     )
     no_progress = NoProgressSection(
         window_start=window_start.isoformat(),

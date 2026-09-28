@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -52,6 +52,14 @@ class EngineLogEntry:
     level: str
     logger: str
     message: str
+    #: False when ``at`` is a guess: a local time in the fall-back hour with
+    #: no earlier entry to say which occurrence it is. Such an entry's instant
+    #: must not decide anything time-based.
+    certain: bool = True
+    #: The exception line closing a traceback logged with this entry
+    #: (``logger.exception``), which is what tells two failures apart when
+    #: their messages are the same; ``""`` without one.
+    exception: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,23 +74,30 @@ class EngineLogExcerpt:
     truncated: bool
 
 
+_TRACEBACK = "Traceback (most recent call last):"
+
 #: How far a log may step backwards (thread interleaving) before an
 #: ambiguous local time is read as the repeated hour's second occurrence.
 _OUT_OF_ORDER = timedelta(minutes=1)
 
 
-def resolve_local_time(local: datetime, previous: datetime | None) -> datetime:
-    """The UTC instant of a naive local log time, given the entry before it.
+def resolve_local_time(local: datetime, previous: datetime | None) -> tuple[datetime, bool]:
+    """The UTC instant of a naive local log time given the entry before it, and
+    whether that instant is certain.
 
     Unambiguous local times have one instant. In a repeated hour the first
     occurrence is taken unless it would put this entry before the previous
-    one: then the log has moved on into the second occurrence.
+    one: then the log has moved on into the second occurrence. With no
+    previous entry (a tail that starts inside the repeated hour) nothing says
+    which occurrence it is, and the instant is uncertain.
     """
     first = local.replace(fold=0).astimezone(UTC)
     second = local.replace(fold=1).astimezone(UTC)
-    if first == second or previous is None or first >= previous - _OUT_OF_ORDER:
-        return first
-    return second
+    if first == second:
+        return first, True
+    if previous is None:
+        return first, False
+    return (first if first >= previous - _OUT_OF_ORDER else second), True
 
 
 def parse_log_line(line: str, *, previous: datetime | None = None) -> EngineLogEntry | None:
@@ -94,11 +109,15 @@ def parse_log_line(line: str, *, previous: datetime | None = None) -> EngineLogE
     match = _ROTATING.match(line) or _CONTEXT.match(line)
     if match is None:
         return None
+    at, certain = resolve_local_time(
+        datetime.strptime(match["at"], "%Y-%m-%d %H:%M:%S"), previous
+    )
     return EngineLogEntry(
-        at=resolve_local_time(datetime.strptime(match["at"], "%Y-%m-%d %H:%M:%S"), previous),
+        at=at,
         level=match["level"],
         logger=match["logger"],
         message=match["message"],
+        certain=certain,
     )
 
 
@@ -127,22 +146,38 @@ def read_log(
 
 
 def _entries(excerpt: EngineLogExcerpt) -> Iterator[EngineLogEntry]:
+    """Entries with the traceback each one carries folded into it.
+
+    An entry is yielded once the next one starts (or the read ends), because
+    its traceback follows it on continuation lines.
+    """
     with excerpt.path.open("rb") as handle:
         handle.seek(excerpt.size - excerpt.bytes_read)
         if excerpt.truncated:
             handle.readline()
         remaining = excerpt.size - handle.tell()
         previous: datetime | None = None
+        pending: EngineLogEntry | None = None
+        traceback = False
+        exception = ""
         for raw in handle:
             if remaining <= 0:
-                return
+                break
             remaining -= len(raw)
-            entry = parse_log_line(
-                raw.decode("utf-8", errors="replace").rstrip("\n"), previous=previous
-            )
-            if entry is not None:
+            line = raw.decode("utf-8", errors="replace").rstrip("\n")
+            entry = parse_log_line(line, previous=previous)
+            if entry is None:
+                traceback = traceback or line.startswith(_TRACEBACK)
+                if traceback and line.strip() and not line.startswith((" ", "\t")):
+                    exception = line.strip()
+                continue
+            if pending is not None:
+                yield replace(pending, exception=exception)
+            pending, traceback, exception = entry, False, ""
+            if entry.certain:
                 previous = entry.at
-                yield entry
+        if pending is not None:
+            yield replace(pending, exception=exception)
 
 
 __all__ = [

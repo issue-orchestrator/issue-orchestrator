@@ -14,6 +14,7 @@ from issue_orchestrator.testing.exam import grade, render_summary
 from issue_orchestrator.testing.exam.cases import HALTED_EXCHANGE_WITH_VALIDATED_WORK
 from issue_orchestrator.observation.no_progress import (
     LIVELOCK_THRESHOLD,
+    find_current_repeats,
     RepeatingFailure,
     find_repeating_failures,
 )
@@ -185,3 +186,14 @@ def test_a_review_refused_every_scan_is_a_livelock() -> None:
         for _ in range(6)
     ]
     assert [r.detail for r in find_repeating_failures(refused)] == ["stale_pending_review:issue_blocked"]
+
+
+def test_the_current_run_forgets_a_run_a_state_change_ended() -> None:
+    """The exam asks "did it ever livelock" (the peak); the audit asks "is it now"."""
+    failures = [_reconcile_tick()[1] for _ in range(6)]
+    changed = {"type": "pr.view_changed", "issue_key": None, "payload": {"issue_number": 410, "pr_number": 12}}
+    events = [*failures, changed, *failures[:2]]
+
+    assert [r.count for r in find_repeating_failures(events)] == [6]
+    assert find_current_repeats(events) == ()
+    assert [r.count for r in find_current_repeats(failures)] == [6]
