@@ -49,6 +49,7 @@ from ..contracts.engine_audit import (
 from ..control.label_manager import TECH_LEAD_NEEDS_HUMAN_LABEL
 from ..control.reconciliation import RECONCILE_PAUSE_LABEL
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
 from ..infra.engine_log_reader import EngineLogEntry, EngineLogExcerpt
 from ..ports.engine_audit import (
     ActionLivenessAuditReader,
@@ -223,8 +224,15 @@ def _read(
     if isinstance(value, Unavailable):
         readings.append(_unavailable(source, value))
         return None
+    try:
+        result = section(value)
+    except ReadOnlySqliteAccessError as error:
+        # A snapshot the reader refuses (unknown schema, damaged rows) is a
+        # source not read, like one that could not be copied.
+        readings.append(_unavailable(source, Unavailable(SourceStatus.UNREADABLE, str(error))))
+        return None
     readings.append(SourceReading(source=source, status=SourceStatus.READ))
-    return section(value)
+    return result
 
 
 def _unavailable(source: AuditSource, value: Unavailable) -> SourceReading:

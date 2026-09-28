@@ -738,6 +738,47 @@ def test_a_failed_report_install_leaves_nothing_beside_the_output(state, tmp_pat
     assert list(out_dir.iterdir()) == []
 
 
+def test_a_timeline_row_the_audit_cannot_decode_makes_the_timeline_unread(
+    state, tmp_path, monkeypatch
+) -> None:
+    with closing(sqlite3.connect(state / cli.TIMELINE_DB)) as conn:
+        conn.execute(
+            "UPDATE timeline_events SET data_json = '{not json' WHERE issue_number = 410"
+            " AND source_event = 'reconciliation.required'"
+        )
+        conn.commit()
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    (reading,) = [r for r in report.sources if r.source is AuditSource.TIMELINE]
+    assert reading.status is SourceStatus.UNREADABLE and "malformed payload" in reading.detail
+    assert AnomalyKind.NO_PROGRESS_TIMELINE not in _kinds(report)
+
+
+def test_a_database_that_cannot_be_copied_is_unreadable_and_leaves_no_copy(
+    state, tmp_path, monkeypatch
+) -> None:
+    real_copy = shutil.copyfile
+
+    def denied(src, dst):
+        if str(src).endswith(cli.ACTION_LIVENESS_DB):
+            real_copy(src, dst)  # a partial copy exists when the read fails
+            raise PermissionError(13, "Permission denied", str(src))
+        return real_copy(src, dst)
+
+    monkeypatch.setattr("issue_orchestrator.infra.sqlite_snapshot.shutil.copyfile", denied)
+    copy = tmp_path / "copy.sqlite"
+
+    with pytest.raises(ReadOnlySqliteAccessError) as refused:
+        snapshot_sqlite(state / cli.ACTION_LIVENESS_DB, copy, timeout=10.0)
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert refused.value.reason is ReadOnlySqliteFailure.UNREADABLE
+    assert not copy.exists()
+    (reading,) = [r for r in report.sources if r.source is AuditSource.ACTION_LIVENESS]
+    assert reading.status is SourceStatus.UNREADABLE
+
+
 def test_a_database_that_changes_under_every_copy_is_unreadable(tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live.sqlite"
     with closing(sqlite3.connect(live)) as conn:

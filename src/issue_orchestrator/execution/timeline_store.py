@@ -399,14 +399,24 @@ class SqliteTimelineStore(TimelineStore):
             )
 
 
-def _record(row: sqlite3.Row) -> TimelineRecord:
-    """One stored row as a record; the one decoding every reader shares."""
+def _record(row: sqlite3.Row, *, strict: bool = False) -> TimelineRecord:
+    """One stored row as a record; the one decoding every reader shares.
+
+    The engine's own readers tolerate a damaged payload as ``{}``. ``strict``
+    (the engine audit) refuses it instead: facts that could not be read must
+    not be counted as a repeat of an empty one.
+    """
     data_json = row["data_json"] or "{}"
     try:
         data = json.loads(data_json)
     except json.JSONDecodeError:
-        data = {}
+        data = None
     if not isinstance(data, dict):
+        if strict:
+            raise ReadOnlySqliteAccessError(
+                ReadOnlySqliteFailure.UNREADABLE,
+                f"timeline event {row['event_id']} has a malformed payload",
+            )
         data = {}
     return TimelineRecord(
         event_id=str(row["event_id"]),
@@ -452,7 +462,9 @@ class SqliteTimelineAuditReader:
                 (start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat()),
             )
             for row in rows:
-                yield TimelineEvent(issue_number=int(row["issue_number"]), record=_record(row))
+                yield TimelineEvent(
+                    issue_number=int(row["issue_number"]), record=_record(row, strict=True)
+                )
 
 
 def _timeline_trace_enabled() -> bool:

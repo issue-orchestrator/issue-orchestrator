@@ -65,6 +65,11 @@ def _consistent_copy(live: Path, destination: Path, *, timeout: float) -> bool:
         # The log was checkpointed away (or the file replaced) mid-copy.
         _discard(destination)
         return False
+    except OSError as error:
+        _discard(destination)
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNREADABLE, f"cannot copy {live}: {error}"
+        ) from error
     if (_identity(live, required=True), _identity(log, required=False)) != before:
         _discard(destination)
         return False
@@ -88,6 +93,10 @@ def _identity(path: Path, *, required: bool) -> _Identity:
             return None
         raise ReadOnlySqliteAccessError(
             ReadOnlySqliteFailure.DATABASE_ABSENT, f"SQLite database is absent: {path}"
+        ) from error
+    except OSError as error:
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNREADABLE, f"cannot inspect {path}: {error}"
         ) from error
     return (found.st_dev, found.st_ino, found.st_size, found.st_mtime_ns)
 
