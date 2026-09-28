@@ -39,8 +39,10 @@ from ..domain.tech_lead_run import (
     BARRIER_SUBJECT_SESSION_ACTIVE,
     REASON_ISSUE_CLOSED,
     REASON_NO_LONGER_BLOCKED,
+    REASON_PAUSED_FOR_RECONCILIATION,
     global_run_precedence,
 )
+from .reconciliation import is_paused_for_reconciliation
 from .tech_lead_run_admission import (
     active_tech_lead_sessions,
     has_active_global_run,
@@ -147,7 +149,9 @@ def issue_run_eligibility(
 ) -> Optional[tuple[str, str]]:
     """Is this issue still worth a tech-lead investigation? None when yes.
 
-    The rule: the issue must be OPEN and must still carry a blocking label.
+    The rule: the issue must be OPEN, must still carry a blocking label, and
+    must not be paused for reconciliation — a paused subject refuses every
+    write the run would make (:func:`paused_subject_refusal`).
     Returned as a ``(reason_code, detail)`` pair so both callers report the same
     machine-readable refusal.
 
@@ -172,7 +176,30 @@ def issue_run_eligibility(
             REASON_NO_LONGER_BLOCKED,
             f"Issue #{issue.number} is no longer blocked; nothing to investigate.",
         )
-    return None
+    return paused_subject_refusal(issue)
+
+
+def paused_subject_refusal(issue: "Issue") -> Optional[tuple[str, str]]:
+    """Refuse a run whose subject is paused for reconciliation. None otherwise.
+
+    Every write a tech-lead run makes — the anchor's labels and close, its
+    comments, and the issues and case files it files, which are gated on the
+    anchor too (#6957) — reconciles against this issue, and the mutation gate
+    refuses all of them while the pause label is on it. porchpin #410 carried
+    the pause for two days while two health reviews ran on it for 35 and 57
+    minutes and every output of both was dropped. The pause is a human's to
+    lift, so the run is not started: asked at admission, at plan time, and by
+    the launch authority, for a focused subject and a whole-repository anchor
+    alike.
+    """
+    if not is_paused_for_reconciliation(issue.labels):
+        return None
+    return (
+        REASON_PAUSED_FOR_RECONCILIATION,
+        f"Issue #{issue.number} is paused for reconciliation; every write a"
+        " tech-lead run makes there would be refused until a human lifts the"
+        " pause.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +250,8 @@ def plan_tech_lead_launch_revalidation(
 
     Global runs are never subject to this: a health-review anchor is not a
     blocked work item, and blocked-label eligibility says nothing about whether
-    the board is still worth auditing.
+    the board is still worth auditing. (A paused anchor is refused by the
+    launch authority, which withdraws the run under its own scope.)
     """
     by_number: dict[int, "Issue"] = {issue.number: issue for issue in subjects}
     by_number.update({issue.number: issue for issue in board})

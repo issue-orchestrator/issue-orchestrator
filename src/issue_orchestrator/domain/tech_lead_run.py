@@ -337,6 +337,13 @@ REASON_TECH_LEAD_DISABLED = "tech_lead_disabled"
 REASON_ISSUE_NOT_FOUND = "issue_not_found"
 REASON_ISSUE_CLOSED = "issue_closed"
 REASON_NO_LONGER_BLOCKED = "no_longer_blocked"
+# The run's subject (a focused investigation's issue, or a whole-repository
+# run's anchor) is paused behind the reconciliation label. Every write the run
+# would make reconciles against that issue, so the gate is bound to refuse all
+# of them: the run would spend a session only for its every output to be
+# dropped (porchpin #410, 2026-09-28). The pause is a human's to lift; the run
+# is not started.
+REASON_PAUSED_FOR_RECONCILIATION = "paused_for_reconciliation"
 REASON_CLAIMED_BY_PEER = "claimed_by_peer"
 REASON_ANCHOR_UNAVAILABLE = "anchor_unavailable"
 # The whole-repository anchor this queued run points at has been CLOSED — the

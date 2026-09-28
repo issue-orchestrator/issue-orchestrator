@@ -28,8 +28,10 @@ from issue_orchestrator.control.actions import ActionResult, CreateTechLeadIssue
 from issue_orchestrator.control.health_review_trigger import (
     HEALTH_REVIEW_ISSUE_TITLE,
     board_review_fingerprint,
+    classify_tech_lead_anchor_issues,
     discover_open_health_review_anchor,
     discover_open_tech_lead_anchor_issues,
+    recover_pending_tech_lead_anchors,
     ensure_on_demand_health_review_anchor,
     health_review_decision,
     health_review_due,
@@ -360,6 +362,52 @@ class TestSharedAnchorDiscovery:
         assert any(
             HEALTH_REVIEW_MARKER_LABEL in call["labels"] for call in tracker.calls
         )
+
+
+class TestPausedAnchorsAreNotAnchors:
+    """porchpin #410 (2026-09-28): the health anchor carried the reconciliation
+    pause for two days and was still THE open anchor, so startup requeued it
+    and two reviews ran on it with every output refused. A paused anchor is
+    left for the human who lifts the pause and never used again."""
+
+    def _paused(self, number: int = 410) -> Issue:
+        return Issue(
+            number=number,
+            title=HEALTH_REVIEW_ISSUE_TITLE,
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL, "in-progress", "io:needs-reconcile"],
+            state="open",
+        )
+
+    def test_a_paused_anchor_does_not_dedup_the_next_due_review(self) -> None:
+        batch_paused = Issue(
+            number=411, title="Tech Lead Batch Review: 5 PRs pending",
+            labels=["agent:tech-lead", "io:needs-reconcile"], state="open",
+        )
+        assert classify_tech_lead_anchor_issues([self._paused(), batch_paused], None) == (None, None)
+
+    def test_a_runnable_anchor_is_still_found_beside_a_paused_one(self) -> None:
+        runnable = Issue(
+            number=414, title=HEALTH_REVIEW_ISSUE_TITLE,
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL], state="open",
+        )
+        assert classify_tech_lead_anchor_issues([self._paused(), runnable], None) == (None, 414)
+        assert discover_open_health_review_anchor(
+            _AnchorTracker([self._paused(), runnable]), _config()) == 414
+
+    def test_on_demand_never_reuses_a_paused_anchor(self) -> None:
+        assert discover_open_health_review_anchor(_AnchorTracker([self._paused()]), _config()) is None
+
+    def test_startup_recovery_does_not_requeue_a_paused_anchor(self) -> None:
+        state = OrchestratorState()
+        recover_pending_tech_lead_anchors(
+            state,
+            repository_host=_AnchorTracker([self._paused()]),
+            config=_config(),
+            session_exists=lambda _name: False,
+            tech_lead_authority=None,
+            claims=MagicMock(),
+        )
+        assert state.pending_tech_lead_reviews == []
 
 
 def _board(*, blocked=(), queue=(), sessions=()) -> OrchestratorState:

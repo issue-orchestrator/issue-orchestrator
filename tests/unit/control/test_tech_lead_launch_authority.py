@@ -51,8 +51,10 @@ from issue_orchestrator.domain.tech_lead_run import (
     REASON_GITHUB_RATE_LIMITED,
     REASON_ISSUE_CLOSED,
     REASON_NO_LONGER_BLOCKED,
+    REASON_PAUSED_FOR_RECONCILIATION,
     REASON_TECH_LEAD_DISABLED,
 )
+from issue_orchestrator.control.reconciliation import RECONCILE_PAUSE_LABEL
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
@@ -373,6 +375,40 @@ def test_a_subject_unblocked_while_queued_is_withdrawn_rather_than_launched():
     assert harness.launch(investigation) is None
     withdrawn = harness.events.payloads(EventName.TECH_LEAD_RUN_WITHDRAWN)
     assert [w["reason"] for w in withdrawn] == [REASON_NO_LONGER_BLOCKED]
+
+
+def test_a_health_review_on_an_anchor_PAUSED_for_reconciliation_is_withdrawn():
+    """porchpin #410 (2026-09-28): the health-review anchor had carried
+    ``io:needs-reconcile`` for two days. Startup requeued it and two reviews ran
+    on it (35 and 57 minutes); the gate refused every write they made against
+    the anchor, so every finding was dropped. A paused anchor is withdrawn --
+    once, so it does not repeat every tick -- instead of launched."""
+    anchor = _health_anchor()
+    paused = FakeIssue(900, labels=("agent:tech-lead", "in-progress", RECONCILE_PAUSE_LABEL))
+    harness = _Harness(pending=[anchor], issues={900: paused})
+
+    step = harness.authority().launch_step(anchor)
+
+    assert step.session is None
+    assert harness.launched == []
+    assert harness.state.pending_tech_lead_reviews == []
+    withdrawn = harness.events.payloads(EventName.TECH_LEAD_RUN_WITHDRAWN)
+    assert [w["reason"] for w in withdrawn] == [REASON_PAUSED_FOR_RECONCILIATION]
+
+
+def test_an_investigation_of_a_PAUSED_subject_is_withdrawn():
+    """Same rule for a focused run: its every write reconciles against the
+    subject, which the pause refuses until a human lifts it."""
+    investigation = _investigation(42)
+    harness = _Harness(
+        pending=[investigation],
+        issues={42: FakeIssue(42, labels=(BLOCKING_LABEL, RECONCILE_PAUSE_LABEL))},
+    )
+
+    assert harness.launch(investigation) is None
+    assert harness.launched == []
+    withdrawn = harness.events.payloads(EventName.TECH_LEAD_RUN_WITHDRAWN)
+    assert [w["reason"] for w in withdrawn] == [REASON_PAUSED_FOR_RECONCILIATION]
 
 
 def test_an_unreadable_subject_keeps_its_run_rather_than_cancelling_it():
