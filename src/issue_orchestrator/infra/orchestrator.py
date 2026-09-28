@@ -365,17 +365,12 @@ class Orchestrator:
             self._launch_tech_lead_by_number,
         )
 
-    # The plan applier's launch callbacks: each returns a typed LaunchStep so a
-    # withdrawn or held request is never applied as a failed launch (#7455).
     def _launch_issue_by_number(self, n: int) -> LaunchStep:
         return _gw_launch_issue_by_number(
             n, self.state.cached_queue_issues, self._attempt_issue_launch, lambda: setattr(self.state, "issues_started_count", self.state.issues_started_count + 1)
         )
 
     def _attempt_issue_launch(self, issue: Issue) -> LaunchStep:
-        # Through the public launch seam; the planner already refuses a second
-        # launch of an issue in one plan (#7454), so a refused issue launch here
-        # is a real failure to start.
         return LaunchStep.of_session(self.launch_session(issue), f"issue #{issue.number} did not start")
 
     def _launch_review_by_number(self, n: int) -> LaunchStep:
@@ -397,7 +392,7 @@ class Orchestrator:
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
     def _launch_tech_lead_by_number(self, n: int) -> LaunchStep:
-        return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_session)
+        return _ch_launch_tech_lead_by_number(n, self.state.pending_tech_lead_reviews, self.launch_tech_lead_step)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]:
         return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
@@ -1090,10 +1085,13 @@ class Orchestrator:
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]:
         return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
 
-    def launch_queued_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
-        return _launch_tech_lead_session(tech_lead, self.state, self.config, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
+    def launch_queued_tech_lead_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
+        return _launch_tech_lead_session(tech_lead, self.state, self.config, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims)
 
     def launch_tech_lead_session(self, tech_lead: PendingTechLeadReview) -> Optional[Session]:
+        return self.launch_tech_lead_step(tech_lead).session
+
+    def launch_tech_lead_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
         with self.state_lock:
             return _launch_tech_lead_run(self, tech_lead)
 

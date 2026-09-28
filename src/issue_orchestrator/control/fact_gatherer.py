@@ -37,6 +37,7 @@ from .host_rate_limit_launch_gate import live_episode_keys
 from .provider_launch_readiness import ProviderLaunchReadiness
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
 from .published_review_release import held_investigation_subjects
+from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds, recovery_held_reviews
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -137,6 +138,8 @@ class FactGatherer:
     published_review: PublishedReviewHolds = field(
         default_factory=lambda: NO_PUBLISHED_REVIEW_HOLDS
     )
+    # The recovery owner's holds, read at planning time (#7455).
+    recovery_holds: RecoveryHolds = field(default_factory=lambda: NO_RECOVERY_HOLDS)
     # Per-target read budget for finding-promotion loop closure (#6957 F5). Owned
     # here because the budget is a fact-gathering concern (it bounds this
     # component's cross-repo reads per tick) and rotates across ticks, so it must
@@ -284,6 +287,7 @@ class FactGatherer:
             tech_lead_subjects=tech_lead_subjects,
             published_review_subjects=held_investigation_subjects(
                 state.pending_tech_lead_reviews, self.published_review),
+            recovery_held_reviews=recovery_held_reviews(state.pending_reviews, self.recovery_holds),
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),

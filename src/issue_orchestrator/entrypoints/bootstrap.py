@@ -807,6 +807,8 @@ def build_orchestrator(
     action_liveness = build_action_liveness(
         config, events=events, action_applier=action_applier, label_manager=label_manager
     )
+    # Planning asks the recovery owner which queued reviews it holds (#7455).
+    fact_gatherer.recovery_holds = validated_work.blocks
     validated_work_recovery = validated_work_bootstrap.build_validated_work_recovery(
         config, owners=validated_work, completion_processor=completion_processor,
         runtime=runtime_lifecycle.core, working_copy=working_copy, fresh_issue_reader=fresh_issue_reader,

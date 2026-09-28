@@ -1166,7 +1166,7 @@ def get_review_machine(
 def launch_tech_lead_by_number(
     n: int,
     pending_tech_lead_reviews: list["PendingTechLeadReview"],
-    launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], Optional["Session"]],
+    launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], "LaunchStep"],
 ) -> "LaunchStep":
     """Launch tech_lead session by number - moved per method table.
 
@@ -1176,6 +1176,4 @@ def launch_tech_lead_by_number(
     t = next((t for t in pending_tech_lead_reviews if t.issue_number == n), None)
     if t is None:
         return LaunchStep.not_queued("tech-lead run", n)
-    return LaunchStep.of_session(
-        launch_tech_lead_session_fn(t), f"tech-lead run for #{n} did not start"
-    )
+    return launch_tech_lead_session_fn(t)

@@ -275,6 +275,10 @@ class LaunchStep:
         return cls.withdrawn(f"no {kind} is queued for #{number}")
 
     @classmethod
+    def waiting(cls, reason: str) -> "LaunchStep":
+        return cls(LaunchStepOutcome.WAITING, None, reason)
+
+    @classmethod
     def not_launched(cls, reason: str) -> "LaunchStep":
         return cls(LaunchStepOutcome.NOT_LAUNCHED, None, reason)
 
@@ -291,7 +295,7 @@ class LaunchStep:
         if result.disposition is LaunchDisposition.WITHDRAWN:
             return cls.withdrawn(result.reason)
         if result.disposition is LaunchDisposition.HELD_BY_RECOVERY:
-            return cls(LaunchStepOutcome.WAITING, None, result.reason)
+            return cls.waiting(result.reason)
         return cls.not_launched(result.reason or result.disposition.value)
 
 

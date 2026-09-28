@@ -115,7 +115,7 @@ class FakeOrchestrator:
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]:
         return None
 
-    def launch_queued_tech_lead_session(self, tech_lead):  # pragma: no cover
+    def launch_queued_tech_lead_step(self, tech_lead):  # pragma: no cover
         raise AssertionError("reconciliation must not launch anything")
 
     def terminate_tech_lead_session(self, session) -> object:

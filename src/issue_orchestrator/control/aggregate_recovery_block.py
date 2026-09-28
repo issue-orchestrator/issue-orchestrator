@@ -116,6 +116,18 @@ class AggregateRecoveryBlocks:
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._admission.has_unresolved_work(issue_number)
 
+    def holds_recovery(self, issue_number: int) -> bool:
+        """Whether this owner holds ``issue_number`` behind ``recovery-pending``.
+
+        The same plan :meth:`_project` projects the label from, read from the
+        local store only (no GitHub read), so planning can ask it every tick
+        (#7455). The owner releases the hold once it has routed the published
+        work, or escalates it; until then a queued review of the issue waits.
+        """
+        return self._records.recovery_block_snapshot(
+            self._repo, issue_number
+        ).plan().recovery_required
+
     def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None:
         return self._admission.evidence_for_id(evidence_id)
 
