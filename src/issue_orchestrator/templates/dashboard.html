@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+{% from "_blocked_custody.html" import custody_block, custody_summary, custody_summary_key %}
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -247,6 +248,12 @@
                         {% endif %}
                         {{ column.title }} <span class="count">{{ column.count }}</span>
                     </h2>
+                    {% if column.id == 'blocked' and column.custody_summary %}
+                    {#- #7331: "is it under control?" — unowned + stale blocked items.
+                        A polite live region; blocked_custody.js rewrites it only when
+                        the summary changes. -#}
+                    <div class="blocked-custody-summary" role="status" aria-live="polite" data-custody-key="{{ custody_summary_key(column.custody_summary) }}">{{ custody_summary(column.custody_summary) }}</div>
+                    {% endif %}
                     <div class="column-cards">
                         {% if column["items"] %}
                             {% for card in column["items"] %}
@@ -294,6 +301,7 @@
                                 <div class="card-line card-muted">{{ card.summary }}</div>
                                 {% endif %}
                                 {% endif %}
+                                {{ custody_block(card.custody) }}
                                 {% if card.provider_badge %}
                                 <div class="card-line card-provider"><span class="provider-badge provider-badge--{{ card.provider_badge.tone }}" title="{{ card.provider_badge.title | e }}"><span class="provider-badge-icon" aria-hidden="true">&#x26A1;</span><span class="provider-badge-text">{{ card.provider_badge.label_text }}</span></span></div>
                                 {% endif %}

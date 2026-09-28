@@ -10,8 +10,8 @@ consistent naming across the codebase. Do not hardcode naming patterns.
 
 from dataclasses import dataclass
 
-# Import SessionType from control layer (canonical location)
-from ...control.session_manager import SessionType
+# The terminal naming lane is derived from the session's kind (#7347).
+from ...domain.session_kind import SessionType
 
 
 @dataclass(frozen=True)

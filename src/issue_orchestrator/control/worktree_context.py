@@ -38,7 +38,7 @@ from ..domain.tech_lead_scratch_identity import ScratchWorktreeIdentity
 from ..domain.session_run import SessionRunAssets
 from ..domain.session_key import SessionKey
 from ..domain.issue_run_allocation import IssueRunAllocation
-from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, ReworkTarget
 from ..ports.issue_run_allocator import IssueRunAllocator
 from .session_launch_types import LaunchDisposition
 from ..ports.session_output import SessionOutput
@@ -150,6 +150,7 @@ class WorktreeContext:
         stack_base_branch: Optional[str] = None,
         scratch: Optional[ScratchWorktreeIdentity] = None,
         preserve_run_dir: Path | None = None,
+        rework_target: ReworkTarget | None = None,
     ) -> "WorktreeContext":
         """Create and prepare a worktree context for a session.
 
@@ -182,6 +183,8 @@ class WorktreeContext:
                 the checkout is clean off the base. Used by a tech_lead failure
                 investigation so it can never mutate the subject it reads
                 (#6823). Takes precedence over ``branch_name``/``stack_base_branch``.
+            rework_target: For a REWORK run, the PR it fixes and its cycle,
+                recorded with the run's allocation (#7347).
 
         Returns:
             WorktreeContext with worktree ready for use, or with error set
@@ -365,6 +368,7 @@ class WorktreeContext:
                 retention_tier=config.session_output_retention_tier,
                 retention_days=config.session_output_retention_days,
                 retention_pinned=False,
+                rework_target=rework_target,
             ))
         except IssueRunEvidenceUnavailable as exc:
             return cls(

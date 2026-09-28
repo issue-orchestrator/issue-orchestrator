@@ -17,6 +17,7 @@ import pytest
 
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.control.actions import CreateTechLeadIssueAction
+from issue_orchestrator.control.session_launch_types import LaunchStep
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.control.retry_history_state import (
     ExpediteEligibility,
@@ -287,7 +288,7 @@ class TestExpediteSlotReleaseIntegration:
         session = Mock()
         session.terminal_id = "issue-101"
         session.issue.number = 101
-        applier.session_launcher = lambda session_type, number: session
+        applier.session_launcher = lambda session_type, number: LaunchStep.launched(session)
 
         # Issue #101 is picked up as an active session.
         result = applier.apply(
@@ -313,7 +314,7 @@ class TestExpediteSlotReleaseIntegration:
         session = Mock()
         session.terminal_id = "issue-55"
         session.issue.number = 55
-        applier.session_launcher = lambda session_type, number: session
+        applier.session_launcher = lambda session_type, number: LaunchStep.launched(session)
 
         result = applier.apply(
             LaunchSessionAction(session_type=SessionType.ISSUE, number=55)

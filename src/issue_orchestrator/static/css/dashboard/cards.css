@@ -86,12 +86,11 @@ body.column-focus-mode .column-expanded {
     border-color: var(--accent);
 }
 
-/* Viewed card dimming */
+/* Viewed cards recede by their frame, never by fading their text: whole-card
+   opacity dropped custody text below readable contrast in both themes (#7331). */
 .expanded-card.viewed {
-    opacity: 0.55;
-}
-.expanded-card.viewed:hover {
-    opacity: 0.85;
+    background: var(--bg-panel-soft);
+    border-style: dashed;
 }
 
 /* Bulk action bar */
@@ -514,4 +513,88 @@ body.column-focus-mode .column-expanded {
 }
 .provider-badge--blocked .provider-badge-text {
     color: var(--danger);
+}
+
+/* Blocked-item custody (#7331). The state is always written as words in the
+   body text colour; the tone colours only the rule beside it (theme
+   variables), so every theme keeps text contrast. Text wraps, never clips. */
+.card-custody {
+    margin-top: 4px;
+    padding-left: 6px;
+    border-left: 3px solid var(--border);
+    font-size: 11px;
+    line-height: 1.4;
+    min-width: 0;
+}
+.custody-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+.custody-label { font-weight: 600; overflow-wrap: anywhere; }
+.custody-age { color: var(--text-muted); }
+.custody--attention { border-left-color: var(--danger); }
+.custody--you { border-left-color: var(--warn); }
+.custody--active { border-left-color: var(--ok); }
+.custody--pending,
+.custody--world,
+.custody--verify { border-left-color: var(--accent); }
+.custody--held { border-left-color: var(--text-muted); }
+.custody-attention {
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    border-radius: 999px;
+    padding: 0 6px;
+    font-weight: 600;
+}
+.custody-why > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    width: fit-content;
+}
+.custody-why > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+.custody-why p,
+.custody-why dl {
+    margin: 4px 0;
+    overflow-wrap: anywhere;
+}
+.custody-charter {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 2px 8px;
+}
+.custody-charter dt { color: var(--text-muted); }
+.custody-charter dd { margin: 0; }
+.issue-row-custody { padding: 0 12px 6px 48px; }
+.blocked-custody-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    padding: 0 8px 6px;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.custody-summary-count {
+    font-weight: 700;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 6px;
+}
+.custody-summary-count.needs-attention { border-color: var(--danger); }
+.custody-summary-count.is-under-control { border-color: var(--ok); }
+.custody-summary-headline { color: var(--text-muted); }
+.custody-summary-states {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: var(--text-muted);
 }

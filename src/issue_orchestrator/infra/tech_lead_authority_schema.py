@@ -104,6 +104,31 @@ CREATE TABLE IF NOT EXISTS tech_lead_dispositions (
     disposition TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tech_lead_charter_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    anchor_issue_number INTEGER NOT NULL,
+    target_number INTEGER,
+    proposal_issue_number INTEGER,
+    role TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_role
+    ON tech_lead_charter_decisions (role, decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_decided
+    ON tech_lead_charter_decisions (decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_run
+    ON tech_lead_charter_decisions (run_id);
+-- list_about_issue (#7331): the board asks once per blocked card, so both
+-- halves of its OR must be index searches, never a ledger scan.
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_target
+    ON tech_lead_charter_decisions (target_number, decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_anchor
+    ON tech_lead_charter_decisions (anchor_issue_number, decided_at);
+CREATE INDEX IF NOT EXISTS tech_lead_charter_decisions_proposal
+    ON tech_lead_charter_decisions (proposal_issue_number, decided_at);
 """
 
 # (table, column, DDL) added after that table first shipped. ``CREATE TABLE IF

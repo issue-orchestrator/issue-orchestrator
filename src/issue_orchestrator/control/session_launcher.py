@@ -46,7 +46,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
     get_completion_path,
 )
 from ..domain.coder_prompt import (
@@ -58,15 +58,16 @@ from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
 from .worktree_context import WorktreeContext, worktree_reuse_options
 from .published_review_launch_gate import refuse_launch_over_published_review
-from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
+from ..infra.validation_retry_prompt import render_validation_retry_prompt
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
     carry_launch_authority_forward,
     resumable_retry_identity,
     failure_investigation_scratch_identity,
-    is_tech_lead_session,
     prepare_tech_lead_session_data,
+    tech_lead_prep_failure,
 )
+from .host_rate_limit_launch_gate import LaunchMutations, apply_launch_mutations, converge_claim
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -97,7 +98,7 @@ from .needs_human_block import (
     SharedNeedsHumanBlock,
 )
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
-from .session_manager import SessionManager, SessionRef
+from .session_manager import SessionManager
 from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
 from .launch_transaction import (
     NO_LAUNCH_WORK_CLAIM,
@@ -105,6 +106,7 @@ from .launch_transaction import (
     SpawnGuard,
     abandon_claim_unless_spawned,
 )
+from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from .session_launch_types import (
     ClaimAcquisitionResult,
     LaunchDisposition,
@@ -116,6 +118,7 @@ from .session_rework_launcher import (
 )
 from .session_review_support import (
     build_review_existing_work,
+    refuse_unlaunchable_review,
     review_launch_validity,
 )
 from .retrospective_review import (
@@ -205,8 +208,12 @@ class SessionLauncher:
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
         coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+        # The validated-work recovery owner's holds (#7455): a review waits only
+        # for a hold that owner confirms, never for a lingering label alone.
+        recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
     ):
         self.config = config
+        self._recovery_holds = recovery_holds
         self.events = events
         self.repository_host = repository_host
         self._action_applier = action_applier
@@ -312,21 +319,11 @@ class SessionLauncher:
             "configuration_mode": self.config.configuration_mode,
             "config_name": self.config.config_name,
             "config_fingerprint": self.config.config_fingerprint,
+            "session_binding_fingerprint": self.config.session_binding_fingerprint,
         }
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
-        all_ok = True
-        for action in actions:
-            result = self._action_applier.apply(action)
-            if not result.success:
-                all_ok = False
-                logger.warning(
-                    "[launch] Failed to apply %s (%s): %s",
-                    action.action_type.value,
-                    context,
-                    result.error,
-                )
-        return all_ok
+        return apply_launch_mutations(self._action_applier.apply, actions, context=context).ok
 
     def escalate_issue_needs_human(
         self,
@@ -435,9 +432,19 @@ class SessionLauncher:
         self,
         issue: "IssueProtocol",
         active_sessions: list[Session],
-        session_name: str,
+        kind: SessionKind,
+        *,
+        busy: LaunchDisposition,
     ) -> LaunchResult | None:
         """Validate config and check for conflicts before launching.
+
+        ``busy`` is the CALLER's answer when another live session already holds
+        the issue (#7455): fresh issue pickup is withdrawn, but queued work - a
+        tech-lead run, a validation retry - waits for that session.
+
+        A running terminal under ANY name this kind's work can hold - including
+        the ``issue-N`` a tech lead or a rework's retry ran under before #7347 -
+        is an existing terminal, not a slot to launch into again.
 
         Returns LaunchResult on failure, None if preconditions pass.
         """
@@ -455,11 +462,15 @@ class SessionLauncher:
 
         if any(s.issue.number == issue.number for s in active_sessions):
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+            return LaunchResult(None, False, "Already in active sessions", disposition=busy)
 
-        if self._session_exists(session_name):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", disposition=LaunchDisposition.EXISTING_TERMINAL)
+        running = next(
+            (name for name in kind.conflicting_terminal_names(issue.number) if self._session_exists(name)),
+            None,
+        )
+        if running is not None:
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", f"terminal session {running} already running")
+            return LaunchResult.terminal_already_running(running)
 
         return None
 
@@ -491,12 +502,15 @@ class SessionLauncher:
             ))
             return ClaimAcquisitionResult(
                 success=False,
-                error=f"Failed to claim issue: {claim_result.error}"
+                error=f"Failed to claim issue: {claim_result.error}",
+                host_rate_limit=claim_result.host_rate_limit,
             )
 
         # Run convergence to confirm ownership
         logger.info(issue_log(issue.number, "Running claim convergence..."))
-        converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
+        converged = converge_claim(self._claim_manager, issue.number, claim_result.lease_id or "")
+        if isinstance(converged, ClaimAcquisitionResult):
+            return converged
 
         if not converged:
             log_transition(
@@ -542,10 +556,6 @@ class SessionLauncher:
             self._claim_manager.release_claim(issue_number, claim.lease_id)
             logger.info(issue_log(issue_number, "Released claim: lease_id=%s"), claim.lease_id)
 
-    def _is_tech_lead_session(self, agent_type: str | None) -> bool:
-        """Check if this agent type is the tech_lead review agent."""
-        return is_tech_lead_session(self.config.tech_lead_review_agent, agent_type)
-
     def _cleanup_pre_active_launch_worktree(
         self,
         issue_number: int,
@@ -581,6 +591,7 @@ class SessionLauncher:
 
     def _prepare_tech_lead_session_data(
         self,
+        kind: SessionKind,
         issue: "IssueProtocol",
         ctx: WorktreeContext,
         tech_lead_scope: "TechLeadLaunchScope | None",
@@ -591,6 +602,7 @@ class SessionLauncher:
         flavors / non-tech-lead / staging failure) for the tech-lead read grant.
         """
         return prepare_tech_lead_session_data(
+            kind=kind,
             config=self.config,
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
@@ -605,46 +617,39 @@ class SessionLauncher:
         )
 
     def _discard_tech_lead_authority_after_failed_launch(
-        self, issue: "IssueProtocol", ctx: WorktreeContext
+        self, kind: SessionKind, ctx: WorktreeContext
     ) -> None:
         """Retention (#6769 F3): a launch that dies after recording its
         tech_lead launch authority must not leak the row — the run never starts,
         so no completion seam will ever discard it."""
-        if not self._is_tech_lead_session(issue.agent_type):
+        if kind is not SessionKind.TECH_LEAD:
             return
         self._tech_lead_authority.discard(
             run_id=ctx.run.run_id, session_name=ctx.run.session_name
         )
 
     def _fail_launch_for_tech_lead_prep(
-        self, issue: "IssueProtocol", ctx: WorktreeContext, session_name: str,
+        self, kind: SessionKind, issue: "IssueProtocol", ctx: WorktreeContext, session_name: str,
         worktree_path: Path, claim: ClaimAcquisitionResult, error: Exception,
         *,
         disposable_worktree: bool,
     ) -> LaunchResult:
         """Fail the launch when required tech_lead inputs cannot be prepared; the
-        result is retry-queued (transient inputs; queue owner bounds retries) and
-        prep's authority row is discarded (post-prep guard never runs here)."""
-        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "tech_lead session data preparation failed")
-        logger.error(issue_log(issue.number, "FAILED: tech_lead session data preparation failed: %s"), error)
-        self.events.publish(make_trace_event(
-            EventName.SESSION_START_FAILED,
-            {
-                "issue_number": issue.number,
-                "session_name": session_name,
-                "reason": "tech_lead_session_data_failed",
-                "error": str(error),
-            },
-        ))
+        result is retry-queued (transient inputs; queue owner bounds retries), or
+        deferred without a spend on a GitHub rate limit (#7297), and prep's
+        authority row is discarded (post-prep guard never runs here)."""
+        result = tech_lead_prep_failure(
+            self.events, issue_number=issue.number, session_name=session_name, error=error
+        )
         self._cleanup_pre_active_launch_worktree(
             issue.number,
             worktree_path,
             disposable=disposable_worktree,
             failure_stage="tech_lead data failure",
         )
-        self._discard_tech_lead_authority_after_failed_launch(issue, ctx)
+        self._discard_tech_lead_authority_after_failed_launch(kind, ctx)
         self._release_claim_if_held(issue.number, claim)
-        return LaunchResult(None, False, f"Tech Lead session data preparation failed: {error}", disposition=LaunchDisposition.RETRYABLE_FAILURE)
+        return result
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
@@ -681,11 +686,17 @@ class SessionLauncher:
             LaunchResult with session if successful
         """
         launch_start = time.time()
-        session_name = f"issue-{issue.number}"
-        logger.info(issue_log(issue.number, "Session starting: type=code title=%s"), issue.title)
+        # THE stamp (#7347): key, terminal, phase, ledger row and events derive from it.
+        kind = SessionKind.for_issue_launch(
+            issue.agent_type, self.config.tech_lead_review_agent,
+            granted_tech_lead_scope=tech_lead_scope is not None,
+        )
+        session_name = kind.terminal_name(issue.number)
+        logger.info(issue_log(issue.number, "Session starting: type=%s title=%s"), kind.value, issue.title)
 
         # Phase 1: Validate preconditions
-        if result := self._check_launch_preconditions(issue, active_sessions, session_name):
+        busy = LaunchDisposition.SUBJECT_BUSY if kind.is_tech_lead else LaunchDisposition.WITHDRAWN
+        if result := self._check_launch_preconditions(issue, active_sessions, kind, busy=busy):
             return result
 
         # Safe to access after precondition check - issue.agent_type and agent_config
@@ -694,12 +705,12 @@ class SessionLauncher:
         agent_config = self.config.agents.get(issue.agent_type)
         assert agent_config is not None  # Validated in preconditions
         issue_key = issue.key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=kind)
 
         _identity_log_extra = log_context(issue_key=issue_key.stable_id(), session_id=session_name)
         logger.info(
             "[launch] Issue session identity: issue=%s issue_key=%s agent=%s task=%s session=%s",
-            issue.number, issue_key, issue.agent_type, TaskKind.CODE.value, session_name,
+            issue.number, issue_key, issue.agent_type, kind.value, session_name,
             extra=_identity_log_extra,
         )
         logger.info(
@@ -709,10 +720,7 @@ class SessionLauncher:
 
         # Phase 2: Resolve required prompt input before any gate that may park
         # the issue by writing a shared label or durable provider record.
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(
-            task=TaskKind.CODE,
-            agent_label=issue.agent_type,
-        )
+        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=kind)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
             return LaunchResult.required_input_unavailable(
                 prepared_coder_prompt.reason
@@ -728,7 +736,7 @@ class SessionLauncher:
             return result
         # An open PR carrying published validated work owns the issue (#7293).
         if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
-                                                         tech_lead=self._is_tech_lead_session(issue.agent_type)):
+                                                         kind=kind, pr_number=None):
             return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
@@ -752,7 +760,7 @@ class SessionLauncher:
                 ),
                 scratch_branch_name,
             )
-        phase_name = "coding-1"  # Initial coding session is always attempt 1
+        phase_name = kind.phase_label(1)  # An issue-lane launch is always attempt 1
         # A tech_lead FAILURE INVESTIGATION reads its focus issue's worktree/branch
         # as evidence and must never mutate them (#6823): it runs in a fresh,
         # disposable scratch worktree on a throwaway branch off the base, keyed
@@ -784,8 +792,7 @@ class SessionLauncher:
                 # it never reuses the focus worktree — so preserve_branch stays
                 # for batch/health tech_lead that DOES reuse its anchor worktree.
                 preserve_branch=(
-                    self._is_tech_lead_session(issue.agent_type)
-                    and not is_scratch_investigation
+                    kind is SessionKind.TECH_LEAD and not is_scratch_investigation
                 ),
             ),
             phase_name=phase_name,
@@ -849,7 +856,7 @@ class SessionLauncher:
         # Write session metadata
         ctx.write_worktree_note()
         ctx.write_session_identity({
-            "task": TaskKind.CODE.value,
+            "task": kind.value,
             "issue_key": issue_key.stable_id(),
             "session_key": session_key.stable_id(),
             "agent": issue.agent_type,
@@ -893,10 +900,11 @@ class SessionLauncher:
             evidence_read_roots: tuple[Path, ...] = ()
             try:
                 evidence_read_roots = self._prepare_tech_lead_session_data(
-                    issue, ctx, tech_lead_scope
+                    kind, issue, ctx, tech_lead_scope
                 )
             except Exception as e:
                 return self._fail_launch_for_tech_lead_prep(
+                    kind,
                     issue,
                     ctx,
                     session_name,
@@ -942,7 +950,7 @@ class SessionLauncher:
             # Add in-progress label
             step_start = time.time()
             in_progress_label = self._lm.in_progress
-            label_ok = self._apply_actions([
+            label = apply_launch_mutations(self._action_applier.apply, [
                 AddLabelAction(
                     issue_number=issue.number,
                     label=in_progress_label,
@@ -950,17 +958,18 @@ class SessionLauncher:
                     issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_in_progress_label")
-            if not label_ok:
+            if not label.ok:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
                 logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-                self.events.publish(make_trace_event(
-                    EventName.SESSION_START_FAILED,
-                    {
-                        "issue_number": issue.number,
-                        "session_name": session_name,
-                        "reason": "in_progress_label_failed",
-                    },
-                ))
+                if label.host_rate_limit is None:  # a rate limit is a deferral the gate announces
+                    self.events.publish(make_trace_event(
+                        EventName.SESSION_START_FAILED,
+                        {
+                            "issue_number": issue.number,
+                            "session_name": session_name,
+                            "reason": "in_progress_label_failed",
+                        },
+                    ))
                 self._cleanup_pre_active_launch_worktree(
                     issue.number,
                     worktree_path,
@@ -968,7 +977,7 @@ class SessionLauncher:
                     failure_stage="in-progress label failure",
                 )
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, "Failed to add in-progress label")
+                return label.refused("Failed to add in-progress label")
             label_time = time.time() - step_start
             logger.info("[launch] Label added in %.1fs", label_time)
 
@@ -986,6 +995,7 @@ class SessionLauncher:
                 issue_title=issue.title,
                 worktree=worktree_path,
                 existing_work=existing_work,
+                task_kind=kind.value,
             )
             rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
@@ -994,7 +1004,7 @@ class SessionLauncher:
                 issue_number=issue.number,
                 issue_title=issue.title,
                 worktree=worktree_path,
-                task_kind=TaskKind.CODE.value,
+                task_kind=kind.value,
                 evidence_read_roots=evidence_read_roots,
                 extra_provider_args=extra_args,
             )
@@ -1089,8 +1099,8 @@ class SessionLauncher:
 
             total_time = time.time() - launch_start
             logger.info(
-                issue_log(issue.number, "Session launched: type=code agent=%s time=%.1fs"),
-                issue.agent_type, total_time
+                issue_log(issue.number, "Session launched: type=%s agent=%s time=%.1fs"),
+                kind.value, issue.agent_type, total_time
             )
 
             full_completion_path = (worktree_path / completion_path).resolve()
@@ -1098,7 +1108,7 @@ class SessionLauncher:
                 "issue_number": issue.number,
                 "session_id": session_name,
                 "agent": issue.agent_type,
-                "task": "code",
+                "task": kind.value,
                 "worktree_path": str(worktree_path),
                 "branch_name": branch_name,
                 "reset_from_scratch": from_scratch_pending,
@@ -1118,7 +1128,7 @@ class SessionLauncher:
             return LaunchResult(session, True)
         finally:
             if not spawn.terminal_spawned:
-                self._discard_tech_lead_authority_after_failed_launch(issue, ctx)
+                self._discard_tech_lead_authority_after_failed_launch(kind, ctx)
                 work_claim.abandon_unspawned(run)
 
     def _admit_validation_retry(
@@ -1140,13 +1150,11 @@ class SessionLauncher:
                 f"No agent config available for validation retry #{retry.issue_number}",
             )
         issue, agent_config, agent_label = resolved
-        session_name = f"issue-{issue.number}"
-        if result := self._check_launch_preconditions(issue, active_sessions, session_name):
+        if result := self._check_launch_preconditions(
+            issue, active_sessions, retry.source_kind, busy=LaunchDisposition.SUBJECT_BUSY
+        ):
             return result
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(
-            task=TaskKind.CODE,
-            agent_label=agent_label,
-        )
+        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=retry.source_kind)
         if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
             return LaunchResult.required_input_unavailable(
                 prepared_coder_prompt.reason
@@ -1154,8 +1162,10 @@ class SessionLauncher:
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
         # A retry of work already published under an open PR must not start a
-        # second coder on that PR's branch (#7293).
-        if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number, tech_lead=False):
+        # second coder on that PR's branch (#7293); a tech lead's retry is a tech-lead
+        # run, and a rework's retry is still that PR's own review cycle.
+        if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
+                                                         kind=retry.source_kind, pr_number=retry.pr_number):
             return result
         return issue, agent_config, agent_label, prepared_coder_prompt
 
@@ -1166,7 +1176,13 @@ class SessionLauncher:
         *,
         work_claim: LaunchWorkClaim = NO_LAUNCH_WORK_CLAIM,
     ) -> LaunchResult:
-        """Launch a coding session that continues after validation failure."""
+        """Relaunch a session whose completion failed validation, AS ITS OWN KIND.
+
+        The retry continues the same work, so it runs as the kind that produced
+        it (``retry.source_kind``, #7347): a rework's retry is a rework session
+        (``rework-N``), a tech lead's retry a tech-lead run (``tech-lead-N``).
+        Before #7347 every retry relaunched as coding work under ``issue-N``.
+        """
         refusal, scratch_identity = resumable_retry_identity(retry)
         if refusal:
             return LaunchResult(
@@ -1176,18 +1192,19 @@ class SessionLauncher:
         if isinstance(admitted, LaunchResult):
             return admitted
         issue, agent_config, agent_label, prepared_coder_prompt = admitted
-        session_name = f"issue-{issue.number}"
+        kind = retry.source_kind
+        session_name = kind.terminal_name(issue.number)
 
         retry_count = max(1, retry.retry_count)
         issue_key = issue.key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=kind)
         logger.info(
             "[launch] Validation retry identity: issue=%s issue_key=%s agent=%s "
             "task=%s session=%s retry_count=%s",
             issue.number,
             issue_key,
             agent_label,
-            TaskKind.CODE.value,
+            kind.value,
             session_name,
             retry_count,
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
@@ -1218,7 +1235,11 @@ class SessionLauncher:
         if not claim.success:
             return claim.as_launch_failure()
 
-        phase_name = f"coding-{retry_count + 1}"
+        # The retry is the next coding iteration of the run it retries: a
+        # rework of cycle N ran as ``coding-(N+1)``, a first coding run as
+        # ``coding-1``.
+        first_attempt = retry.rework_cycle + 1 if retry.rework_cycle is not None else 1
+        phase_name = kind.phase_label(first_attempt + retry_count)
         ctx = WorktreeContext.create(
             command_runner=self._command_runner,
             worktree_manager=self._worktree_manager,
@@ -1246,6 +1267,7 @@ class SessionLauncher:
             stack_base_branch=stack_decision.base_branch,
             scratch=scratch_identity,  # round 16 F2: the DIRECTORY half too
             preserve_run_dir=preserved_source_run(retry),
+            rework_target=retry.rework_target,
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
@@ -1283,17 +1305,19 @@ class SessionLauncher:
             transfer_launch_authority(carried, spawn, work=work_claim, run=run, retry=retry)
         ):
             extra_args = self._extra_provider_args_from_labels(issue.labels)
-            retry_prompt = self._render_validation_retry_prompt(
+            retry_prompt = render_validation_retry_prompt(
                 retry=retry,
-                issue=issue,
-                agent_config=agent_config,
+                issue_number=issue.number,
+                issue_title=issue.title,
+                agent_template=agent_config.retry_prompt_template,
+                config=self.config,
                 retry_count=retry_count,
             )
             retry_prompt = prepared_coder_prompt.compose(retry_prompt)
 
             ctx.write_worktree_note()
             ctx.write_session_identity({
-                "task": TaskKind.CODE.value,
+                "task": kind.value,
                 "issue_key": issue_key.stable_id(),
                 "session_key": session_key.stable_id(),
                 "agent": agent_label,
@@ -1318,18 +1342,14 @@ class SessionLauncher:
                 suffix="validation_retry",
             )
 
-            label_ok = self._apply_actions([
-                AddLabelAction(
-                    issue_number=issue.number,
-                    label=self._lm.in_progress,
-                    reason="validation retry launched",
-                    issue_key=issue.key.stable_id(),
-                ),
-            ], context="launch_validation_retry_in_progress_label")
-            if not label_ok:
+            label = self._retry_in_progress(
+                kind, issue, AddLabelAction, "validation retry launched",
+                "launch_validation_retry_in_progress_label",
+            )
+            if not label.ok:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, "Failed to add in-progress label")
+                return label.refused("Failed to add in-progress label")
 
             prompt_path = self._persist_session_prompt(run.run_dir, retry_prompt)
             self._session_output.write_retry_prompt(run.run_dir, retry_prompt)
@@ -1338,7 +1358,7 @@ class SessionLauncher:
                 issue_number=issue.number,
                 issue_title=issue.title,
                 worktree=worktree_path,
-                task_kind=TaskKind.CODE.value,
+                task_kind=kind.value,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
@@ -1372,14 +1392,10 @@ class SessionLauncher:
             session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
-                self._apply_actions([
-                    RemoveLabelAction(
-                        issue_number=issue.number,
-                        label=self._lm.in_progress,
-                        reason="validation retry session creation failed",
-                        issue_key=issue.key.stable_id(),
-                    ),
-                ], context="launch_validation_retry_session_creation_failed")
+                self._retry_in_progress(
+                    kind, issue, RemoveLabelAction, "validation retry session creation failed",
+                    "launch_validation_retry_session_creation_failed",
+                )
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult.terminal_spawn_failed()
             spawn.mark_spawned()  # terminal RUNNING = irreversible
@@ -1396,10 +1412,15 @@ class SessionLauncher:
                 agent_label=agent_label,
                 validation_retry_count=retry_count,
                 original_prompt=retry.original_prompt,
+                pr_number=retry.pr_number,
+                rework_cycle=retry.rework_cycle,
                 lease_id=claim.lease_id,
                 lease_acquired_at=claim.lease_acquired_at,
                 lease_expires_at=claim.lease_expires_at,
                 scratch_worktree=scratch_identity is not None,
+                # A tech lead's retry is the same logical run: it keeps the grant
+                # its carried launch record holds (#7347 review r8, r9).
+                tech_lead_scope=None if carried is None else carried.authority.launch_scope(),
             )
             log_transition(
                 "issue",
@@ -1414,7 +1435,7 @@ class SessionLauncher:
                 "issue_number": issue.number,
                 "session_id": session_name,
                 "agent": agent_label,
-                "task": "code",
+                "task": kind.value,
                 "worktree_path": str(worktree_path),
                 "branch_name": branch_name,
                 "run_id": run.run_id,
@@ -1426,6 +1447,21 @@ class SessionLauncher:
             }))
             self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
             return LaunchResult(session, True)
+
+    def _retry_in_progress(
+        self, kind: SessionKind, issue: Issue,
+        action: type[AddLabelAction] | type[RemoveLabelAction], reason: str, context: str,
+    ) -> LaunchMutations:
+        """Move a retry's in-progress claim iff its kind's launch holds one (#7347).
+
+        A rework's retry does not: the rework launch never takes the claim.
+        """
+        if not kind.capabilities.holds_issue_custody:
+            return LaunchMutations(True)
+        return apply_launch_mutations(self._action_applier.apply, [action(
+            issue_number=issue.number, label=self._lm.in_progress,
+            reason=reason, issue_key=issue.key.stable_id(),
+        )], context=context)
 
     def _resolve_validation_retry_issue(
         self, retry: PendingValidationRetry
@@ -1448,7 +1484,7 @@ class SessionLauncher:
         # EXACTLY the selected execution role. `Issue.agent_type` returns the
         # FIRST agent label, so APPENDING left an investigation's resumed run
         # reading as the focus issue's coder: authority bypassed, artifact hold
-        # released, run recorded as TaskKind.CODE (#7273 round 2 finding 1).
+        # released, run recorded as SessionKind.CODE (#7273 round 2 finding 1).
         carried = fresh_issue.labels if fresh_issue else []
         labels = [n for n in carried if not str(n).startswith("agent:")] + [agent_label]
         issue = Issue(
@@ -1464,42 +1500,6 @@ class SessionLauncher:
         )
         return issue, agent_config, agent_label
 
-    def _render_validation_retry_prompt(
-        self,
-        *,
-        retry: PendingValidationRetry,
-        issue: Issue,
-        agent_config: AgentConfig,
-        retry_count: int,
-    ) -> str:
-        """Render the prompt used to send a validation failure back to a coder."""
-        if retry.original_prompt and retry.original_prompt.lstrip().startswith("# Validation Retry"):
-            return retry.original_prompt
-        validation_cmd = retry.validation_cmd or self.config.validation.quick.cmd or ""
-        original_task = retry.original_prompt or f"Work on issue #{issue.number}: {issue.title}"
-        template = DEFAULT_RETRY_TEMPLATE
-        template_path = agent_config.retry_prompt_template or self.config.retry.retry_prompt_template
-        if template_path:
-            full_template_path = self.config.repo_root / template_path
-            if full_template_path.exists():
-                try:
-                    template = full_template_path.read_text()
-                except OSError as exc:
-                    logger.warning("Failed to load retry template from %s: %s", full_template_path, exc)
-            else:
-                logger.warning("Retry template not found at %s, using default", full_template_path)
-        display_count = retry_count + 1
-        display_max = self.config.retry.max_validation_retries + 1
-        return template.format(
-            original_task=original_task,
-            validation_cmd=validation_cmd,
-            error_file=retry.validation_error_file or "unknown",
-            error_summary=_truncate_with_tail(retry.validation_error or "Unknown validation error"),
-            retry_count=display_count,
-            max_retries=display_max,
-            retries_remaining=max(0, display_max - display_count),
-        )
-
     def _check_review_preconditions(
         self,
         review: PendingReview,
@@ -1512,47 +1512,28 @@ class SessionLauncher:
         against the live labels, then the two conflict checks and the repo
         config. Returns a :class:`LaunchResult` on failure, ``None`` to proceed.
         """
-        validity = review_launch_validity(
-            review=review,
-            config=self.config,
-            repository_host=self.repository_host,
-            label_manager=self._lm,
-        )
-        if not validity.valid:
-            log_transition(
-                "review",
-                review.pr_number,
-                "QUEUED",
-                "SKIP",
-                f"stale pending review: {validity.reason}",
-            )
-            logger.info(
-                "[launch] Dropping stale pending review: pr=%s issue=%s reason=%s issue_labels=%s pr_labels=%s",
-                review.pr_number,
-                review.issue_number,
-                validity.reason,
-                ",".join(validity.issue_labels) or "(missing)",
-                ",".join(validity.pr_labels) or "(none)",
-            )
-            self.events.publish(
-                make_trace_event(
-                    EventName.REVIEW_SKIPPED,
-                    {
-                        "pr_number": review.pr_number,
-                        "issue_number": review.issue_number,
-                        "reason": f"stale_pending_review:{validity.reason}",
-                    },
-                )
-            )
-            return LaunchResult(None, False, f"Stale pending review: {validity.reason}")
+        if result := refuse_unlaunchable_review(
+            review_launch_validity(
+                review=review,
+                config=self.config,
+                repository_host=self.repository_host,
+                label_manager=self._lm,
+                recovery_holds=self._recovery_holds,
+            ),
+            review,
+            self.events,
+        ):
+            return result
 
         if any(s.terminal_id == session_name for s in active_sessions):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+            return LaunchResult(
+                None, False, "Already in active sessions", disposition=LaunchDisposition.WITHDRAWN
+            )
 
         if self._session_exists(session_name):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", disposition=LaunchDisposition.EXISTING_TERMINAL)
+            return LaunchResult.terminal_already_running(session_name)
 
         if not self.config.repo:
             return LaunchResult(None, False, "No repo configured")
@@ -1580,13 +1561,13 @@ class SessionLauncher:
         if result := self._check_provider_ready(agent_config, review.issue_number):
             return result
 
-        session_name = f"review-{review.pr_number}"
+        session_name = SessionKind.REVIEW.terminal_name(review.pr_number)
         if result := self._check_review_preconditions(
             review, active_sessions, session_name
         ):
             return result
         issue_key = review.issue_key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.REVIEW)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.REVIEW)
         log_transition("review", review.pr_number, "QUEUED", "LAUNCHING", "no conflicts")
         logger.info(
             "[launch] Review session identity: issue=%s issue_key=%s pr=%s agent=%s task=%s session=%s branch=%s",
@@ -1594,7 +1575,7 @@ class SessionLauncher:
             issue_key,
             review.pr_number,
             agent_label,
-            TaskKind.REVIEW.value,
+            SessionKind.REVIEW.value,
             session_name,
             review.branch_name,
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
@@ -1613,7 +1594,7 @@ class SessionLauncher:
         review_machine = self._get_review_machine(review.pr_number, review.issue_number)
         rework_count = review_machine.rework_count if review_machine else 0
         review_attempt = rework_count + 1
-        phase_name = f"review-{review_attempt}"
+        phase_name = SessionKind.REVIEW.phase_label(review_attempt)
         extra_args = self._extra_provider_args_from_labels(review.issue_labels)
 
         # Create and prepare worktree using WorktreeContext
@@ -1673,7 +1654,7 @@ class SessionLauncher:
             # Write session metadata
             ctx.write_worktree_note()
             ctx.write_session_identity({
-                "task": TaskKind.REVIEW.value,
+                "task": SessionKind.REVIEW.value,
                 "issue_key": issue_key.stable_id(),
                 "pr_number": review.pr_number,
                 "session_key": session_key.stable_id(),
@@ -1725,7 +1706,7 @@ class SessionLauncher:
                 worktree=worktree_path,
                 pr_number=review.pr_number,
                 existing_work=existing_work,
-                task_kind=TaskKind.REVIEW.value,
+                task_kind=SessionKind.REVIEW.value,
             )
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command(
@@ -1734,7 +1715,7 @@ class SessionLauncher:
                 worktree=worktree_path,
                 pr_number=review.pr_number,
                 existing_work=existing_work,
-                task_kind=TaskKind.REVIEW.value,
+                task_kind=SessionKind.REVIEW.value,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(
@@ -1889,7 +1870,7 @@ class SessionLauncher:
         if result := self._check_provider_ready(agent_config, review.issue_number):
             return result
 
-        session_name = SessionRef.for_retrospective_review(review.issue_number).name
+        session_name = SessionKind.RETROSPECTIVE_REVIEW.terminal_name(review.issue_number)
         if result := self._check_retrospective_preconditions(
             review, active_sessions, session_name
         ):
@@ -1901,7 +1882,7 @@ class SessionLauncher:
         resolve_prior_pr_for_launch(review, self.repository_host)
 
         issue_key = review.issue_key
-        session_key = SessionKey(issue=issue_key, task=TaskKind.RETROSPECTIVE_REVIEW)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.RETROSPECTIVE_REVIEW)
         log_transition(
             "retrospective-review",
             review.issue_number,
@@ -1936,7 +1917,7 @@ class SessionLauncher:
             branch_name=None,
             enforce_hooks=False,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
-            phase_name="retrospective-review-1",
+            phase_name=SessionKind.RETROSPECTIVE_REVIEW.phase_label(1),
         )
 
         if ctx.error:
@@ -1963,7 +1944,7 @@ class SessionLauncher:
                 event_data={
                     "issue_number": review.issue_number,
                     "reason": str(ctx.error),
-                    "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                    "task": SessionKind.RETROSPECTIVE_REVIEW.value,
                 },
             )
             return LaunchResult(
@@ -1986,7 +1967,7 @@ class SessionLauncher:
 
             ctx.write_worktree_note()
             ctx.write_session_identity({
-                "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                "task": SessionKind.RETROSPECTIVE_REVIEW.value,
                 "issue_key": issue_key.stable_id(),
                 "session_key": session_key.stable_id(),
                 "agent": agent_label,
@@ -2024,7 +2005,7 @@ class SessionLauncher:
                 worktree=worktree_path,
                 pr_number=prompt_pr_number,
                 existing_work=existing_work,
-                task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+                task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
             )
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
@@ -2033,7 +2014,7 @@ class SessionLauncher:
                 issue_title=issue_title,
                 worktree=worktree_path,
                 pr_number=prompt_pr_number,
-                task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+                task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(
@@ -2121,7 +2102,7 @@ class SessionLauncher:
                 "prior_pr_url": review.prior_pr_url,
                 "agent": agent_label,
                 "source_agent": review.agent_label,
-                "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                "task": SessionKind.RETROSPECTIVE_REVIEW.value,
                 "session_name": session_name,
                 "run_id": run.run_id,
                 "run_dir": str(run.run_dir),
@@ -2166,7 +2147,7 @@ class SessionLauncher:
             session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
-            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._apply_actions),
+            scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim

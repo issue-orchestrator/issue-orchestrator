@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
     from types import FrameType
+    from .action_liveness import ActionLivenessOwner
     from ..domain.models import OrchestratorState
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..infra.config import Config
@@ -33,7 +35,6 @@ if TYPE_CHECKING:
 
 from ..events import EventName, EventContext
 from ..ports import EventSink, make_trace_event, RepositoryHost
-from .actions import AddLabelAction
 from .stale_detection import _detect_stale_claims, _detect_stale_in_progress
 from .queue_cache import (
     QueueCache,
@@ -47,7 +48,12 @@ from .tech_lead_artifact_retention import clear_discovered_facts
 from .tech_lead_run_ownership import TechLeadRunOwnership, single_instance_run_ownership
 from .tech_lead_run_wiring import tech_lead_state_handlers
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
-from .reconciliation import ReconciliationRequired, get_pause_label
+from .plan_subject_isolation import PlanSubjectIsolation, action_subjects
+from .reconciliation import ReconciliationRequired, ReconciliationResponse, response_to
+from .planned_action_liveness import PlannedActionLiveness, outcome_of_error, outcome_of_result
+from .action_results import ActionResultType
+from .session_launch_types import hold_deferred_issue_launch
+from ..domain.action_liveness import ActionOutcome
 from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
@@ -139,6 +145,10 @@ class OrchestratorSupport:
     cleanup_manager: "CleanupManager"
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
+    # The durable pending-work ledger. A queued tech-lead run that ends without
+    # launching must retire its deferred row here too, or the per-tick recovery
+    # sweep re-admits it (#7348).
+    pending_work_claims: "PendingWorkClaimStore"
     queue_cache_store: "QueueCacheStore | None" = None
     # Durable tech_lead ledgers (#6780). Anchor intake records a storm cohort
     # here, and the end-of-tick fact clear reads it to hold the cohort's run
@@ -219,6 +229,9 @@ class OrchestratorSupport:
             logger.info("[REFRESH] Manual refresh requested")
 
     def apply_plan(self, plan: "Plan", pause_issue_callback: Callable[[int, str], None]) -> None:
+        liveness = plan.liveness
+        if liveness is None:
+            raise ValueError("an ungated plan cannot be applied: admit it through PlannedActionLiveness first (#7350)")
         if plan.action_count == 0:
             return
 
@@ -226,19 +239,28 @@ class OrchestratorSupport:
 
         applied_count = 0
         failed_count = 0
+        # A refused subject is withheld from the rest of THIS application;
+        # every other subject's actions still run (#7349).
+        isolation = PlanSubjectIsolation()
 
-        for action in plan.actions:
+        for index, action in enumerate(plan.actions):
             if self.state.paused:
                 break
 
-            result_info = self._apply_single_action(action, pause_issue_callback)
+            withheld = isolation.withheld_subject(action)
+            if withheld is not None:
+                self._emit_apply_failed(action, f"withheld: #{withheld} was refused by reconciliation this tick")
+                failed_count += 1
+                continue
+
+            result_info = self._apply_single_action(
+                action, pause_issue_callback, lambda outcome, i=index: liveness.settle(i, outcome)
+            )
             if result_info.success:
                 applied_count += 1
             else:
                 failed_count += 1
-
-            if result_info.halt:
-                break
+            isolation.withhold(result_info.withhold_subjects)
 
         self.events.publish(make_trace_event(EventName.APPLY_COMPLETED, self.event_context.enrich({"applied_steps": applied_count, "failed_steps": failed_count})))
 
@@ -246,30 +268,58 @@ class OrchestratorSupport:
     class _ActionApplyResult:
         """Result of applying a single action."""
         success: bool = False
-        halt: bool = False  # Stop processing remaining actions
+        # Subjects whose remaining actions this application must not run.
+        withhold_subjects: frozenset[int] = frozenset()
 
-    def _apply_single_action(self, action: "Action", pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
-        """Apply a single action and return the result."""
-        from .actions import ActionType
+    def _apply_single_action(
+        self,
+        action: "Action",
+        pause_issue_callback: Callable[[int, str], None],
+        settle: Callable[[ActionOutcome], None],
+    ) -> "_ActionApplyResult":
+        """Apply a single action and its state handler, then settle the WHOLE attempt once.
 
-        # Check tech_lead cooldown
-        if action.action_type == ActionType.CREATE_TECH_LEAD_ISSUE and self._cleanup_manager:
-            if not self._cleanup_manager.should_retry_tech_lead_issue():
-                logger.warning("[PLAN] Skipping tech_lead issue creation due to cooldown")
-                self._emit_apply_failed(action, "tech_lead_issue_creation_cooldown")
-                return self._ActionApplyResult(success=False)
-
+        The liveness outcome is the outcome of the complete path: an applied
+        action whose state handler raises did not succeed (#7350 review r5).
+        """
         try:
             result = self._aa.apply(action)
-            if result.success:
-                return self._handle_action_success(action, result)
-            return self._handle_action_failure(action, result)
+            applied, outcome = self._handle_action_result(action, result), outcome_of_result(result)
         except ReconciliationRequired as rr:
-            return self._handle_reconciliation_error(rr, pause_issue_callback)
+            outcome = outcome_of_error(rr)
+            applied = self._handle_reconciliation_error(action, rr, pause_issue_callback)
         except Exception as e:
+            outcome = outcome_of_error(e)
             logger.exception("Failed to apply action %s: %s", action, e)
             self.events.publish(make_trace_event(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
-            return self._ActionApplyResult(success=False)
+            applied = self._ActionApplyResult(success=False)
+        settle(outcome)
+        return applied
+
+    def _handle_action_result(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
+        """Route an applied result by its type: a SKIPPED step found nothing to
+        do - a withdrawn or waiting launch, work already done - and is neither
+        a success's state change nor a failure (#7455)."""
+        if result.success:
+            return self._handle_action_success(action, result)
+        if result.result_type is ActionResultType.SKIPPED:
+            return self._handle_action_skipped(action, result)
+        return self._handle_action_failure(action, result)
+
+    def _handle_action_skipped(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
+        reason = str(result.details.get("skip_reason", ""))
+        hold_deferred_issue_launch(self.state, action, result)
+        logger.info("[PLAN] Action %s skipped: %s", action.action_type.value, reason)
+        self.events.publish(make_trace_event(
+            EventName.APPLY_STEP_APPLIED,
+            self.event_context.enrich({
+                "step_type": action.action_type.value,
+                "issue_number": self._get_action_issue_number(action),
+                "result": "skipped",
+                "skip_reason": reason,
+            }),
+        ))
+        return self._ActionApplyResult(success=True)
 
     def _handle_action_success(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
         """Handle successful action application."""
@@ -300,29 +350,41 @@ class OrchestratorSupport:
                 self.state.failed_this_cycle.add(issue_number)
                 logger.info("[PLAN] Marked issue #%d failed_this_cycle due to %s failure", issue_number, action.action_type.value)
 
-        # Handle tech_lead issue failure cooldown
-        if action.action_type.value == "create_tech_lead_issue" and self._cleanup_manager:
-            try:
-                self._cleanup_manager.mark_tech_lead_issue_failure()
-            except Exception:
-                pass
-
         self._emit_apply_failed(action, result.error or "unknown")
         return self._ActionApplyResult(success=False)
 
-    def _handle_reconciliation_error(self, rr: ReconciliationRequired, pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
-        """Handle reconciliation required error."""
+    def _handle_reconciliation_error(
+        self, action: "Action", rr: ReconciliationRequired, pause_issue_callback: Callable[[int, str], None]
+    ) -> "_ActionApplyResult":
+        """Respond to the refused subject; withhold only that subject (#7349).
+
+        ``response_to`` owns what a refusal means: observed drift pauses the
+        subject; a subject refused BECAUSE of its pause is not paused again; a
+        subject that could not be read this tick (transient) is deferred, never
+        paused (#7379). Every refusal is published with its response, and the
+        subject's remaining actions are withheld while every other subject's
+        actions still run.
+        """
         issue_number = rr.entity_id
-        logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
+        response = response_to(rr)
         self.events.publish(make_trace_event(
             EventName.RECONCILIATION_REQUIRED,
             self.event_context.enrich({
                 "issue_number": issue_number, "entity_type": rr.entity_type, "reason": rr.reason,
                 "expected_labels": list(rr.expected.labels), "actual_labels": list(rr.actual.labels),
+                "already_paused": response is ReconciliationResponse.ALREADY_PAUSED,
+                "response": response.value,
             }),
         ))
-        pause_issue_callback(issue_number, rr.reason)
-        return self._ActionApplyResult(success=False, halt=True)
+        if response is ReconciliationResponse.PAUSE:
+            logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
+            pause_issue_callback(issue_number, rr.reason)
+        else:
+            logger.warning("[RECONCILIATION] %s #%d refused (%s); withholding its %s this tick",
+                           rr.entity_type, issue_number, response.value, action.action_type.value)
+        return self._ActionApplyResult(
+            success=False, withhold_subjects=action_subjects(action) | {issue_number}
+        )
 
     def _emit_apply_failed(self, action: "Action", error: str) -> None:
         """Emit APPLY_FAILED event."""
@@ -410,15 +472,14 @@ class OrchestratorSupport:
     def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReviewAction
         a = cast(QueueReviewAction, action)
-        if any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
-            return
-        self.state.pending_reviews.append(
+        if not self.state.queue_pending_review(
             PendingReview(
                 issue_key=self.repository_host.create_issue_key(a.issue_number),
                 pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
                 _issue_number=a.issue_number, agent_label=a.agent_label, issue_labels=a.issue_labels,
             )
-        )
+        ):
+            return
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
         self.get_review_machine(a.pr_number, a.issue_number)
 
@@ -427,7 +488,7 @@ class OrchestratorSupport:
         a = cast(QueueRetrospectiveReviewAction, action)
         if self.state.has_pending_or_active_retrospective_review(a.issue_number):
             return
-        self.state.pending_retrospective_reviews.append(
+        if not self.state.queue_pending_retrospective_review(
             PendingRetrospectiveReview(
                 issue_key=self.repository_host.create_issue_key(a.issue_number),
                 issue_number=a.issue_number,
@@ -437,7 +498,8 @@ class OrchestratorSupport:
                 prior_pr_number=a.prior_pr_number,
                 prior_pr_url=a.prior_pr_url, issue_labels=a.issue_labels,
             )
-        )
+        ):
+            return
         log_transition(
             "retrospective-review",
             a.issue_number,
@@ -449,10 +511,8 @@ class OrchestratorSupport:
     def _handle_queue_rework(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReworkAction
         a = cast(QueueReworkAction, action)
-        if any(r.resolve_issue_number() == a.issue_number for r in self.state.pending_reworks):
-            return
         agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
-        self.state.pending_reworks.append(
+        if not self.state.queue_pending_rework(
             PendingRework(
                 self.repository_host.create_issue_key(a.issue_number),
                 agent,
@@ -462,7 +522,8 @@ class OrchestratorSupport:
                 source=a.source,
                 feedback=a.feedback, scoped_request_keys=a.scoped_request_keys,
             )
-        )
+        ):
+            return
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 
     def update_queue_cache(self) -> None:
@@ -483,36 +544,46 @@ class OrchestratorSupport:
 
 def pause_issue_for_reconciliation(
     events: EventSink,
-    action_applier: "ActionApplier",
+    pauses: "ActionLivenessOwner",
     event_context: EventContext,
     issue_number: int,
     reason: str,
 ) -> None:
-    """Pause an issue due to reconciliation failure (state drift)."""
-    pause_label = get_pause_label()
+    """Pause an issue due to reconciliation failure (state drift).
+
+    The pause is owed to the liveness owner, the one owner of every GitHub
+    write the orchestrator owes: a refusal (a rate limit, a 502) is retried
+    there each cycle until the label lands, rather than being reported once
+    and forgotten while the action that found the drift parks. The owner
+    announces a pause that lands; one that did not land now is a visible
+    failed step.
+    """
     try:
-        action_applier.apply(AddLabelAction(
-            issue_number=issue_number,
-            label=pause_label,
-            reason="reconciliation drift detected",
-        ))
-        logger.warning(
-            "[RECONCILIATION] Paused issue #%d with label '%s': %s",
-            issue_number, pause_label, reason
-        )
-        events.publish(make_trace_event(
-            EventName.ISSUE_PAUSED_RECONCILE,
-            event_context.enrich({
-                "issue_number": issue_number,
-                "pause_label": pause_label,
-                "reason": reason,
-            }),
-        ))
+        result = pauses.owe_pause(issue_number, reason, event_context)
     except Exception as e:
-        logger.error(
-            "[RECONCILIATION] Failed to add pause label to #%d: %s",
-            issue_number, e
-        )
+        _report_pause_not_applied(events, event_context, issue_number, str(e))
+        return
+    if not result.committed:
+        _report_pause_not_applied(events, event_context, issue_number, result.error)
+
+
+def _report_pause_not_applied(
+    events: EventSink, event_context: EventContext, issue_number: int, error: str
+) -> None:
+    """A drifted subject whose pause could not be written stays visible.
+
+    The subject is still withheld for the rest of the tick; this makes the
+    missing pause label an explicit failed step rather than a log line.
+    """
+    logger.error("[RECONCILIATION] Failed to add pause label to #%d: %s", issue_number, error)
+    events.publish(make_trace_event(
+        EventName.APPLY_FAILED,
+        event_context.enrich({
+            "step_type": "add_label",
+            "issue_number": issue_number,
+            "error": f"reconciliation pause not applied: {error}",
+        }),
+    ))
 
 
 def emit_heartbeat_if_needed(
@@ -590,6 +661,8 @@ def run_planning_cycle(
     io_claimed_label: str = "io:claimed",
     open_issue_corpus: "OpenIssueCorpusManager | None" = None,
     provider_launch_sampler: "ProviderLaunchReadinessSampler | None" = None,
+    *,
+    action_liveness: PlannedActionLiveness,
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
     now = time.time()
@@ -638,7 +711,10 @@ def run_planning_cycle(
     snapshot = fact_gatherer.create_snapshot(state, state.cached_queue_issues, stale_in_progress_issues=stale_issues, stale_claim_issues=stale_claim_issues, provider_launch=provider_launch)
     _emit_facts_gathered(events, event_context, state, stale_issues)
 
-    plan = planner.plan(snapshot)
+    # The planner re-derives actions from facts; the liveness owner decides
+    # which of them may run now (#7350). Parked and backing-off actions leave
+    # the plan with the owner's reason in ``skipped``.
+    plan = action_liveness.admit(planner.plan(snapshot), snapshot, event_context)
     _emit_plan_computed(events, event_context, plan)
 
     if plan.action_count > 0:
@@ -796,9 +872,8 @@ def _fetch_and_update_queue(
         if queue_cache_store is not None:
             queue_cache.save_snapshot()
 
-        if state.failed_this_cycle:
-            logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
-            state.failed_this_cycle.clear()
+        if failed := state.release_cycle_holds():
+            logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", set(failed))
 
         gh_usage_after = gh_audit.get_live_usage_snapshot()
         gh_calls = int(gh_usage_after.get("total_calls", 0)) - int(gh_usage_before.get("total_calls", 0))

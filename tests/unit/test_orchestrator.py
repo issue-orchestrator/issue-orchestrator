@@ -12,6 +12,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from tests.conftest import MockSessionRunner
 from tests.conftest import operator_paused_state
+from tests.unit.control.liveness_doubles import gated
+from tests.unit.control.liveness_doubles import drain_liveness
+from issue_orchestrator.control.session_launch_types import LaunchStep
 from issue_orchestrator.domain.pause_state import PauseActor, PauseReason
 from issue_orchestrator.infra.orchestrator import Orchestrator
 from issue_orchestrator.entrypoints.run_orchestrator import run_orchestrator
@@ -33,12 +36,14 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchScope,
     TechLeadSessionFlavor,
 )
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.recovery_block import NullRecoveryBlockSweep
+from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScopeSweep
 from issue_orchestrator.ports.retained_claim_maintenance import (
     NullRetainedClaimMaintenance,
 )
@@ -300,8 +305,10 @@ def test_public_pause_requested_during_recovery_stops_the_next_record(
             authority_refresh=MagicMock(),
             claim_maintenance=NullRetainedClaimMaintenance(),
             block_sweep=NullRecoveryBlockSweep(),
+            scope_sweep=NullValidatedWorkScopeSweep(),
             batch_size=2,
             interval_seconds=60,
+            liveness=drain_liveness(),
         ),
     )
     state_lock = _ObservedRLock()
@@ -376,14 +383,17 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     orchestrator.state.active_sessions = [
         SimpleNamespace(
             terminal_id="issue-77",
+            key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
             terminal_id="rework-77",
+            key=SimpleNamespace(kind=SessionKind.REWORK),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
             terminal_id="issue-88",
+            key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=88),
         ),
     ]
@@ -447,6 +457,7 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     tech_lead = SimpleNamespace(
         run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        key=SimpleNamespace(kind=SessionKind.TECH_LEAD),
         scratch_worktree=True, worktree_path=scratch,
         tech_lead_scope=TechLeadLaunchScope(
             flavor=TechLeadSessionFlavor.FAILURE_INVESTIGATION
@@ -454,6 +465,7 @@ def test_terminate_tech_lead_session_is_behavior_complete(sample_config, tmp_pat
     )
     other = SimpleNamespace(
         terminal_id="issue-88", issue=SimpleNamespace(number=88), lease_id=None,
+        key=SimpleNamespace(kind=SessionKind.CODE),
         scratch_worktree=False, worktree_path=None, tech_lead_scope=None,
     )
     orchestrator.state.active_sessions[:] = [tech_lead, other]
@@ -497,6 +509,7 @@ def _terminate_fixture(sample_config, tmp_path):
     tech_lead = SimpleNamespace(
         run_assets=make_session_run_assets(scratch, session_name="coding-1"),
         terminal_id="tech-lead-77", issue=SimpleNamespace(number=77), lease_id="lease-1",
+        key=SimpleNamespace(kind=SessionKind.TECH_LEAD),
         scratch_worktree=True, worktree_path=scratch,
     )
     orchestrator.state.active_sessions[:] = [tech_lead]
@@ -538,10 +551,14 @@ def test_terminate_tech_lead_terminal_failure_does_not_abort_other_effects(
     outcome = orchestrator.terminate_tech_lead_session(tech_lead)
 
     assert outcome.terminal_stopped is False
-    # ...yet claim + worktree still handled, and the session reconciled.
+    # ...yet claim + worktree still handled. The session record is KEPT: a
+    # terminal that would not stop may still be running, and the record is what
+    # stops the recovery sweep re-admitting its work beside it (#7348 r2); the
+    # ordinary completion path reconciles it once the terminal is gone.
     cm.release_claim.assert_called_once_with(77, "lease-1")
     wtm.remove_checkout_and_branch.assert_called_once_with(scratch, force=True)
-    assert orchestrator.state.active_sessions == []
+    assert orchestrator.state.active_sessions == [tech_lead]
+    assert outcome.clean is False
 
 
 def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
@@ -572,10 +589,15 @@ def test_composed_one_shot_timeout_terminates_via_real_driver_and_facade(
     object.__setattr__(orchestrator.deps, "worktree_manager", worktree_manager)
     object.__setattr__(orchestrator.deps, "repository_host", repository_host)
 
+    from tests.unit.session_run_helpers import make_session_run_assets
+
     scratch = tmp_path / "repo-tech-lead-77-abc"
     session = SimpleNamespace(
+        # The real facade's stop preserves the exact run, so the session needs
+        # one; without it the stop failed and termination kept the record.
+        run_assets=make_session_run_assets(scratch, session_name="tech-lead-77"),
         terminal_id="tech-lead-77",
-        key=SimpleNamespace(stable_id=lambda: "tech_lead:77"),
+        key=SimpleNamespace(stable_id=lambda: "tech_lead:77", kind=SessionKind.TECH_LEAD),
         issue=SimpleNamespace(number=77),
         lease_id="lease-1",
         scratch_worktree=True,
@@ -713,7 +735,7 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
     )
 
 
-def create_session(issue, worktree_path=None, branch_name="feature/test", task=TaskKind.CODE):
+def create_session(issue, worktree_path=None, branch_name="feature/test", task=SessionKind.CODE):
     """Helper to create Session objects for testing."""
     if worktree_path is None:
         worktree_path = tempfile.mkdtemp(prefix="io-worktree-")
@@ -723,7 +745,7 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
         timeout_minutes=45,
     )
     issue_key = FakeIssueKey(name=str(issue.number))
-    session_key = SessionKey(issue=issue_key, task=task)
+    session_key = SessionKey(issue=issue_key, kind=task)
     from tests.unit.session_run_helpers import make_session_run_assets
 
     return Session(
@@ -1287,7 +1309,7 @@ class TestLaunchSession:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         from tests.unit.session_run_helpers import make_session_run_assets
 
-        existing = create_session(create_issue(100), sample_config.repo_root, task=TaskKind.REVIEW)
+        existing = create_session(create_issue(100), sample_config.repo_root, task=SessionKind.REVIEW)
         existing.terminal_id = "review-456"
         # An active session always carries typed run assets; the ledger sweep
         # that now runs on every reconcile reads its run key (#6999 F8).
@@ -1435,7 +1457,7 @@ class TestHandleSessionCompletion:
             orchestrator.config,
             session_output=orchestrator.deps.session_output,
             pending_work_claims=orchestrator.deps.pending_work_claims,
-            processing_policy=unprocessed_session_policy(session, orchestrator.config),
+            processing_policy=unprocessed_session_policy(session),
             review_exchange_halted=True,
         )
 
@@ -1622,7 +1644,7 @@ class TestHandleSessionCompletion:
         ]
         assert cleanup_actions == []
 
-        orchestrator._apply_plan(plan)  # noqa: SLF001 - behavior boundary
+        orchestrator._apply_plan(gated(plan))  # noqa: SLF001 - behavior boundary
 
         pair_registry.release.assert_not_called()
         background_jobs.cancel_matching.assert_not_called()
@@ -2106,7 +2128,7 @@ class TestRunLoop:
             # Mock observe_session to return RUNNING (sessions still active)
             mock_observe.return_value = SessionObservationResult.running(runtime_minutes=5.0)
 
-            with patch.object(orchestrator, "launch_session") as mock_launch:
+            with patch.object(orchestrator, "launch_session_step") as mock_launch:
                 await run_loop_one_tick(orchestrator)
 
                 # Should not launch new sessions when at capacity
@@ -2127,8 +2149,8 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
-            mock_launch.return_value = create_session(issue1)
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
+            mock_launch.return_value = LaunchStep.launched(create_session(issue1))
 
             tick_complete = asyncio.Event()
             original_tick = orchestrator.tick
@@ -2161,7 +2183,7 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             mock_launch.side_effect = Exception("Launch failed")
 
             # Run one iteration - should not crash
@@ -2225,7 +2247,7 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             tick_complete = asyncio.Event()
@@ -2280,7 +2302,7 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             # Run one iteration
@@ -2321,7 +2343,7 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             def launch_side_effect(issue):
@@ -2330,10 +2352,10 @@ class TestMaxIssuesToStart:
                 if call_count >= 3:
                     orchestrator.request_shutdown()
                 if call_count == 1:
-                    return create_session(issue1)
+                    return LaunchStep.launched(create_session(issue1))
                 if call_count == 2:
-                    return create_session(issue2)
-                return create_session(issue3)
+                    return LaunchStep.launched(create_session(issue2))
+                return LaunchStep.launched(create_session(issue3))
 
             mock_launch.side_effect = launch_side_effect
 
@@ -2361,7 +2383,7 @@ class TestMaxIssuesToStart:
         # Simulate that we already started 2 issues in previous iterations
         orchestrator.state.issues_started_count = 2
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             await run_loop_one_tick(orchestrator)
 
             # Should not launch any new issues
@@ -2404,11 +2426,11 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
-            mock_launch.return_value = create_session(issue1)
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
+            mock_launch.return_value = LaunchStep.launched(create_session(issue1))
 
             mock_launch.side_effect = lambda issue: (
-                orchestrator.request_shutdown() or create_session(issue1)
+                orchestrator.request_shutdown() or LaunchStep.launched(create_session(issue1))
             )
 
             await orchestrator.run_loop()
@@ -2448,7 +2470,7 @@ class TestMaxIssuesToStart:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        with patch.object(orchestrator, "launch_session") as mock_launch:
+        with patch.object(orchestrator, "launch_session_step") as mock_launch:
             call_count = 0
 
             def launch_side_effect(issue):
@@ -2456,7 +2478,7 @@ class TestMaxIssuesToStart:
                 call_count += 1
                 if call_count >= 2:
                     orchestrator.request_shutdown()
-                return None if call_count == 1 else create_session(issue2)
+                return LaunchStep.not_launched("claimed elsewhere") if call_count == 1 else LaunchStep.launched(create_session(issue2))
 
             mock_launch.side_effect = launch_side_effect
 
@@ -3300,9 +3322,9 @@ class TestPauseBehavior:
             if launch_count == 1:
                 orchestrator.state.pause_state = operator_paused_state()
                 orchestrator.request_shutdown()
-            return create_session(issue)
+            return LaunchStep.launched(create_session(issue))
 
-        with patch.object(orchestrator, "launch_session", side_effect=launch_side_effect) as mock_launch:
+        with patch.object(orchestrator, "launch_session_step", side_effect=launch_side_effect) as mock_launch:
             await orchestrator.run_loop()
 
             # Should only launch 1 issue (paused after first)
@@ -4641,7 +4663,10 @@ class TestAQueuedValidationRetryNamesTheRunItCameFrom:
 
     def _queue_a_retry(self, config, worktree_manager, agent_label: str):
         issue = create_issue(6410, labels=[agent_label])
-        session = create_session(issue)
+        # The kind is the launch stamp for the label (#7347).
+        session = create_session(
+            issue, task=SessionKind.for_issue_launch(agent_label, config.tech_lead_review_agent)
+        )
         session.agent_label = agent_label
         orchestrator = create_test_orchestrator(
             config, worktree_manager=worktree_manager
@@ -4685,3 +4710,43 @@ class TestAQueuedValidationRetryNamesTheRunItCameFrom:
         assert retry.authority_run is None, (
             "a coder retry named an authority row that was never recorded"
         )
+
+
+def test_a_reworks_validation_retry_is_queued_with_its_pr_and_cycle(sample_config, tmp_path):
+    """The producer side of #7347 review round 1 finding 1: the retry of a rework
+    carries the PR it is fixing and its cycle, so the relaunch is that rework."""
+    manager = MagicMock()
+    manager.worktree_path = tmp_path / "worktree"
+    manager.worktree_path.mkdir(parents=True)
+    issue = create_issue(6410, labels=["agent:coder"])
+    session = create_session(issue, task=SessionKind.REWORK)
+    session.agent_label = "agent:coder"
+    session.pr_number = 456
+    session.rework_cycle = 2
+    orchestrator = create_test_orchestrator(sample_config, worktree_manager=manager)
+    track_session(orchestrator, session)
+
+    orchestrator.handle_session_completion(session, SessionStatus.NEEDS_VALIDATION_RETRY)
+
+    [retry] = orchestrator.state.pending_validation_retries
+    assert retry.source_kind is SessionKind.REWORK
+    assert (retry.pr_number, retry.rework_cycle) == (456, 2)
+
+
+def test_the_issue_launch_callback_keeps_the_launch_steps_type(
+    sample_config, mock_repository_host
+):
+    """#7461 review: the ISSUE callback must hand the applier the routed step,
+    not collapse a deferral to "no session" (which the applier fails)."""
+    from issue_orchestrator.control.session_launch_types import LaunchStepOutcome
+    from issue_orchestrator.control.session_manager import SessionType
+
+    issue = create_issue(1, labels=["agent:web"])
+    orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+    orchestrator.state.cached_queue_issues = [issue]
+    waiting = LaunchStep.waiting("provider not ready")
+
+    with patch.object(orchestrator, "launch_session_step", return_value=waiting):
+        step = orchestrator.session_launcher_callback(SessionType.ISSUE, 1)
+
+    assert step.outcome is LaunchStepOutcome.WAITING

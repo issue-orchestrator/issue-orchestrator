@@ -32,6 +32,22 @@
       "rule_id": "control_policy_branch_sites",
       "value": 4
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/blocked_item_custody.py": {
+      "detail": "11 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/blocked_item_custody.py",
+      "path": "src/issue_orchestrator/control/blocked_item_custody.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 11
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/blocked_item_custody_reader.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/blocked_item_custody_reader.py",
+      "path": "src/issue_orchestrator/control/blocked_item_custody_reader.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/cleanup_manager.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -73,12 +89,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "22 branch site(s) mention lifecycle/control terms",
+      "detail": "19 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 22
+      "value": 19
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_record_validation.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1385,12 +1401,12 @@
       "value": 1235
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "2710 lines exceeds budget 800",
+      "detail": "2583 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2710
+      "value": 2583
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_review_exchange.py": {
       "detail": "1506 lines exceeds budget 800",

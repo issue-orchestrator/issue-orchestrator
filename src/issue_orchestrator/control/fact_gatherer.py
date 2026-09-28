@@ -25,6 +25,7 @@ import time
 from collections.abc import Mapping, Sequence
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Callable, Optional, TYPE_CHECKING, cast
 
 from ..infra.config import Config
@@ -32,9 +33,11 @@ from ..events import EventName
 from ..history import issues_held_by_session_history
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
+from .host_rate_limit_launch_gate import live_episode_keys
 from .provider_launch_readiness import ProviderLaunchReadiness
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
 from .published_review_release import held_investigation_subjects
+from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds, recovery_held_reviews
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -135,6 +138,8 @@ class FactGatherer:
     published_review: PublishedReviewHolds = field(
         default_factory=lambda: NO_PUBLISHED_REVIEW_HOLDS
     )
+    # The recovery owner's holds, read at planning time (#7455).
+    recovery_holds: RecoveryHolds = field(default_factory=lambda: NO_RECOVERY_HOLDS)
     # Per-target read budget for finding-promotion loop closure (#6957 F5). Owned
     # here because the budget is a fact-gathering concern (it bounds this
     # component's cross-repo reads per tick) and rotates across ticks, so it must
@@ -250,6 +255,9 @@ class FactGatherer:
             pending_reworks=tuple(state.pending_reworks),
             pending_tech_lead=tuple(state.pending_tech_lead_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
+            host_rate_limit_hold=state.host_rate_limit.open_at(
+                datetime.now(UTC), live=live_episode_keys(state)
+            ),
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,
@@ -279,10 +287,12 @@ class FactGatherer:
             tech_lead_subjects=tech_lead_subjects,
             published_review_subjects=held_investigation_subjects(
                 state.pending_tech_lead_reviews, self.published_review),
+            recovery_held_reviews=recovery_held_reviews(state.pending_reviews, self.recovery_holds),
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
+            launch_deferred_this_cycle=frozenset(state.launch_deferred_this_cycle),
             session_history_issue_numbers=issues_held_by_session_history(state.session_history),
             e2e_occupies_slot=e2e_occupies_slot,
             e2e_due=e2e_due,

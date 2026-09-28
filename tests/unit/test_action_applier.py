@@ -12,6 +12,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCreationOrigin,
 )
 from issue_orchestrator.control.action_applier import ActionApplier
+from issue_orchestrator.control.session_launch_types import LaunchStep
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.actions import (
     ActionType,
@@ -179,6 +180,27 @@ class TestAddLabelAction:
 
         assert not result.success
         assert "API error" in result.error
+
+    def test_rate_limited_label_failure_keeps_its_typed_limit(self, applier, mock_labels):
+        """#7297: a launch must be able to tell a rate-limited write from a failed one."""
+        import httpx
+
+        from issue_orchestrator.adapters.github.rate_limit import github_http_failure
+
+        mock_labels.add_label.side_effect = github_http_failure(
+            "GitHub POST labels failed: 403",
+            status_code=403,
+            headers=httpx.Headers({"retry-after": "120"}),
+            response_text='{"message": "You have exceeded a secondary rate limit"}',
+            method="POST",
+            url="/repos/o/r/issues/123/labels",
+        )
+
+        result = applier.apply(AddLabelAction(issue_number=123, label="in-progress"))
+
+        assert not result.success
+        assert result.host_rate_limit is not None
+        assert result.host_rate_limit.kind == "secondary"
 
     def test_add_label_noop_when_already_present(self, applier, mock_labels):
         """Skip add_label mutation when label is already present."""
@@ -881,7 +903,7 @@ class TestLaunchSessionAction:
         mock_session.terminal_id = "issue-123"
         mock_session.issue.number = 123
 
-        callback = MagicMock(return_value=mock_session)
+        callback = MagicMock(return_value=LaunchStep.launched(mock_session))
         applier.session_launcher = callback
 
         action = LaunchSessionAction(
@@ -897,8 +919,8 @@ class TestLaunchSessionAction:
         assert result.details["issue_number"] == 123
 
     def test_launch_session_callback_fails(self, applier):
-        """Test launch session when callback returns None."""
-        callback = MagicMock(return_value=None)
+        """Test launch session when the launch did not start a session."""
+        callback = MagicMock(return_value=LaunchStep.not_launched("terminal never came up"))
         applier.session_launcher = callback
 
         action = LaunchSessionAction(
@@ -963,7 +985,7 @@ class TestLaunchValidationRetryAction:
         mock_session = MagicMock()
         mock_session.terminal_id = "issue-123"
         mock_session.issue.number = 123
-        callback = MagicMock(return_value=mock_session)
+        callback = MagicMock(return_value=LaunchStep.launched(mock_session))
         applier.validation_retry_launcher = callback
 
         result = applier.apply(LaunchValidationRetryAction(issue_number=123, retry_count=1))
@@ -2543,6 +2565,39 @@ class TestRecoverTerminalIssueAction:
         # Entry stays in its reconcilable status for the next discovery pass.
         assert entry.status == "completed"
 
+    @pytest.mark.parametrize("where", ["close", "evidence"])
+    def test_a_rate_limited_close_on_merge_forwards_its_limit(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager, where,
+    ):
+        """The fallback close and its apply-time evidence reads both keep a
+        typed GitHub rate limit for the liveness owner (#7350 r17)."""
+        from datetime import datetime, timezone
+
+        from issue_orchestrator.control.planned_action_liveness import outcome_of_result
+        from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+        from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+        reset = datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
+        limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+        limited.rate_limit = HostRateLimit(resets_at=reset, kind="primary")
+        self._stub_close_evidence(mock_repository_host)
+        if where == "close":
+            mock_repository_host.update_issue_state.side_effect = limited
+        else:
+            mock_repository_host.issue_closed_on_or_after.side_effect = limited
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "agent:backend"],
+            history_entry=self._awaiting_merge_entry(),
+        )
+
+        result = applier.apply(self._close_on_merge_action())
+
+        assert not result.success
+        assert outcome_of_result(result).retry_at == reset
+
     def test_apply_time_revalidation_preserves_human_reopen(
         self, mock_labels, mock_sessions, mock_events, mock_repository_host,
         real_label_manager,
@@ -2710,6 +2765,41 @@ class TestRecoverTerminalIssueAction:
         assert "reconcilable" in (result.error or "")
         assert entry.status == "completed"
         assert entry.status_reason == "Recovered awaiting merge state on startup"
+
+    def test_a_rate_limited_shed_forwards_its_limit_to_the_outer_result(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        """The liveness owner sees terminal recovery's own result, so the
+        shed's typed GitHub rate limit must survive the wrapping (#7350 r15)."""
+        from datetime import datetime, timezone
+
+        from issue_orchestrator.control.planned_action_liveness import outcome_of_result
+        from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+        from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
+
+        reset = datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
+        limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+        limited.rate_limit = HostRateLimit(resets_at=reset, kind="primary")
+        mock_labels.remove_label.side_effect = limited
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "publish-failed", "agent:backend"],
+            history_entry=self._awaiting_merge_entry(),
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228, pr_number=318, pr_url="https://github.com/test/repo/pull/318",
+            status="merged", source="pull_request", status_reason="merged",
+            issue_key="M1-228", reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert not result.success
+        assert result.host_rate_limit is not None and result.host_rate_limit.resets_at == reset
+        assert outcome_of_result(result).retry_at == reset
+        assert result.details["issue_number"] == 228
 
     def test_sheds_every_transient_label_and_keeps_durable_ones(
         self, mock_labels, mock_sessions, mock_events, mock_repository_host,
@@ -3211,6 +3301,10 @@ class TestClaimGateAudit:
     #   authority on the target issue before invoking the shared recovery
     #   operation; that owner then checks the full launch-bound evidence
     #   snapshot before publishing its retained branch/PR.
+    # - RELEASE_WITHHELD_REVIEW: owner command (#7399) - re-verifies every
+    #   precondition with read-only owners, then performs its only writes
+    #   (pr-pending, review label, blocked-failed) as AddLabel/RemoveLabel
+    #   actions dispatched back through this applier's claim-verified handlers.
     # - DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: orchestrator-owned ledger cleanup
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
@@ -3271,8 +3365,14 @@ class TestClaimGateAudit:
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
         ActionType.RECOVER_VALIDATED_WORK,
+        ActionType.RELEASE_WITHHELD_REVIEW,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+        # Writes only the local charter decision ledger (#7330); no GitHub call.
+        ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS,
+        # Records its decision locally, then dispatches its effect back through
+        # this applier, where the effect's own claim/guard checks run.
+        ActionType.APPLY_CHARTER_AUDITED_ACTION,
         ActionType.RECORD_TECH_LEAD_DISPOSITION,
         # Human outcome delegates every write through guarded label/comment handlers.
         ActionType.ESCALATE_TECH_LEAD_DISPOSITION,

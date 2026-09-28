@@ -242,7 +242,7 @@ All GitHub API calls must go through `execution/github_adapter.py` / `execution/
 
 | Layer | Location | Knows About | Never Knows About |
 |-------|----------|-------------|-------------------|
-| Domain | `domain/`, `models.py` | SessionKey, IssueKey, TaskKind, business rules | GitHub, tmux, file paths |
+| Domain | `domain/`, `models.py` | SessionKey, IssueKey, SessionKind, business rules | GitHub, tmux, file paths |
 | Control | `control/`, `orchestrator.py` | Domain types + opaque IDs (terminal_id) | How terminal_id is encoded |
 | Ports | `ports/` | Abstract interfaces | Implementations |
 | Adapters | `execution/` | Port interfaces + external systems | Domain business logic |
@@ -270,18 +270,24 @@ Use proper identity types, not primitive obsession:
 |---------|---------------|-----|
 | Session slot | `SessionKey` | `tmux_session_name`, `issue.number` |
 | Issue reference | `IssueKey` | `issue_number: int` |
-| Task type | `TaskKind` enum | `"review"`, `"code"` strings |
+| Session kind | `SessionKind` enum (`domain/session_kind.py`) | `"review"`/`"code"` strings, terminal-name prefixes, agent labels |
 
 ```python
 @dataclass(frozen=True)
 class SessionKey:
     """Slot identity for a session. Domain concept."""
     issue: IssueKey
-    task: TaskKind
+    kind: SessionKind
 
     def stable_id(self) -> str:
-        return f"{self.task.value}:{self.issue.stable_id()}"
+        return f"{self.kind.value}:{self.issue.stable_id()}"
 ```
+
+`SessionKind` is stamped ONCE, at launch, persisted in the run ledger and run
+directory, carried through validation retry and restored from the ledger
+(#7347). The terminal name (`kind.terminal_name(n)`), run-phase label
+(`kind.phase_label(n)`) and `SessionType` naming lane (`kind.session_type`) are
+DERIVED from it; nothing reads a kind back from a name or an agent label.
 
 ### Terminal ID is Opaque
 
@@ -313,4 +319,4 @@ If you see these, stop and refactor:
 | `tmux_` prefix in domain | Infrastructure leak | Use opaque `terminal_id` |
 | Parsing session names in control | Control knows too much | Move parsing to adapter |
 | `issue.number` for session lookup | Wrong identity | Use `SessionKey` or `terminal_id` |
-| String literals for task types | No type safety | Use `TaskKind` enum |
+| Kind read from a name, prefix or agent label | Six vocabularies that disagree | Ask `session.key.kind` |

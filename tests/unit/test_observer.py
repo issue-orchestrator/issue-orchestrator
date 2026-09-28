@@ -18,7 +18,8 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReadError
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -107,7 +108,7 @@ def sample_session(sample_agent_config, tmp_path):
         body="Test body",
     )
     issue_key = FakeIssueKey(name="123")
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
     return Session(
         key=session_key,
         issue=issue,
@@ -340,7 +341,7 @@ class TestCheckAllSessions:
         session1 = sample_session
         issue2 = Issue(number=456, title="Issue 2", labels=["agent:web"])
         issue_key2 = FakeIssueKey(name="456")
-        session_key2 = SessionKey(issue=issue_key2, task=TaskKind.CODE)
+        session_key2 = SessionKey(issue=issue_key2, kind=SessionKind.CODE)
         session2 = Session(
             key=session_key2,
             issue=issue2,
@@ -927,7 +928,7 @@ class TestCheckSessionExceptionHandling:
             body="",
         )
         session = Session(
-            key=SessionKey(issue=FakeIssueKey(name="321"), task=TaskKind.CODE),
+            key=SessionKey(issue=FakeIssueKey(name="321"), kind=SessionKind.CODE),
             issue=issue,
             agent_config=sample_agent_config,
             terminal_id="issue-321",
@@ -938,7 +939,7 @@ class TestCheckSessionExceptionHandling:
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
         mock_fresh_issue_reader.read_issue_labels.side_effect = FreshIssueReadError(
-            "could not read fresh labels for issue #321: rate limited"
+            "could not read fresh labels for issue #321: rate limited", transient=True
         )
 
         assert monitor.check_session(session) == expected
@@ -963,7 +964,7 @@ class TestCheckAllSessionsExceptionHandling:
 
         issue2 = Issue(number=456, title="Issue 2", labels=["agent:web"])
         issue_key2 = FakeIssueKey(name="456")
-        session_key2 = SessionKey(issue=issue_key2, task=TaskKind.CODE)
+        session_key2 = SessionKey(issue=issue_key2, kind=SessionKind.CODE)
         session2 = Session(
             key=session_key2,
             issue=issue2,
@@ -1484,3 +1485,31 @@ class TestEmitNoOutputEdgeCases:
 
         # No events should be emitted
         mock_events.publish.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "task",
+    [SessionKind.REVIEW, SessionKind.REWORK, SessionKind.RETROSPECTIVE_REVIEW, SessionKind.TECH_LEAD],
+)
+def test_a_session_that_starts_with_its_pr_open_is_never_exited(
+    monitor, sample_session, mock_session_runner, mock_repository_host, task
+):
+    """#7343: a reviewer's branch always has the PR it reviews open.
+
+    The has-PR rule /exited every porchpin reviewer ~24 s after launch; it
+    is only for a coding session whose work produced the PR.
+    """
+    from dataclasses import replace
+
+    mock_session_runner.session_exists_by_name.return_value = True
+    mock_repository_host.get_prs_for_branch.return_value = [
+        PRInfo(number=376, url="https://...", title="PR", branch="test", labels=[], body="", state="open")
+    ]
+    sample_session.key = replace(sample_session.key, kind=task)
+    sample_session.exit_sent = False
+
+    status = monitor.check_session(sample_session)
+
+    assert status == SessionStatus.RUNNING
+    mock_session_runner.send_to_session_by_name.assert_not_called()
+    assert sample_session.exit_sent is False

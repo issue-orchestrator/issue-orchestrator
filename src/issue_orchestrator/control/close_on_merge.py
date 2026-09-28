@@ -27,6 +27,7 @@ open and schedulable.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, cast
 
 from ..domain.models import (
@@ -35,7 +36,8 @@ from ..domain.models import (
     DiscoveredAwaitingMergeReconciliation,
 )
 from ..domain.pr_issue_reference import declares_partial_delivery
-from ..ports.repository_host import RepositoryHostError
+from ..domain.host_rate_limit import HostRateLimit
+from ..ports.repository_host import RepositoryHostError, host_rate_limit_of
 from .actions import ActionResult, CloseIssueAction
 from .awaiting_merge_post_publish_policy import normalized_state
 from .queue_cache import record_issue_refreshes
@@ -57,6 +59,7 @@ def close_on_merge_evidence(
     issue_number: int,
     merged_at: str | None,
     on_issue_read: Callable[[], None] | None = None,
+    on_unreadable: Callable[[RepositoryHostError], None] | None = None,
 ) -> bool | None:
     """Whether the issue behind a merged PR needs the fallback close — the
     single owner of the destructive precondition.
@@ -81,7 +84,9 @@ def close_on_merge_evidence(
     """
     try:
         issue = get_issue(issue_number)
-    except RepositoryHostError:
+    except RepositoryHostError as error:
+        if on_unreadable is not None:
+            on_unreadable(error)
         logger.warning(
             "Unable to check issue state for merged PR close fallback: "
             "issue=#%d; retrying without mutation",
@@ -104,7 +109,9 @@ def close_on_merge_evidence(
         return False
     try:
         auto_close_fired = closed_on_or_after(issue_number, merged_at)
-    except RepositoryHostError:
+    except RepositoryHostError as error:
+        if on_unreadable is not None:
+            on_unreadable(error)
         logger.warning(
             "Unable to read close events for merged PR close fallback: "
             "issue=#%d; retrying without mutation",
@@ -208,8 +215,8 @@ def run_close_on_merge_fallback(
     repository_host: object,
     action: "RecoverTerminalIssueAction",
     close: "Callable[[CloseIssueAction], ActionResult]",
-) -> tuple[bool, str | None]:
-    """Apply-time owner of the fallback close. Returns (close_applied, error).
+) -> tuple[bool, "CloseFallbackFailure | None"]:
+    """Apply-time owner of the fallback close. Returns (close_applied, failure).
 
     Revalidates the destructive precondition against live state immediately
     before the write — the planner's ``close_issue`` bit is advisory and can
@@ -231,16 +238,19 @@ def run_close_on_merge_fallback(
     reconcilable for retry.
     """
     host = cast("RepositoryHost", repository_host)
+    unreadable: list[RepositoryHostError] = []
     evidence = close_on_merge_evidence(
         get_issue=host.get_issue,
         closed_on_or_after=host.issue_closed_on_or_after,
         issue_number=action.issue_number,
         merged_at=action.merged_at or None,
+        on_unreadable=unreadable.append,
     )
     if evidence is None:
-        return False, (
+        return False, CloseFallbackFailure(
             "close-on-merge revalidation unreadable; awaiting-merge history "
-            "left reconcilable for retry"
+            "left reconcilable for retry",
+            host_rate_limit_of(unreadable[-1]) if unreadable else None,
         )
     if not evidence:
         # Already closed, or deliberately reopened after an auto-close — no
@@ -252,11 +262,21 @@ def run_close_on_merge_fallback(
         reason=action.status_reason or action.reason,
     ))
     if not result.success:
-        return False, (
+        return False, CloseFallbackFailure(
             "close-on-merge fallback failed; awaiting-merge history left "
-            f"reconcilable for retry: {result.error}"
+            f"reconcilable for retry: {result.error}",
+            result.host_rate_limit,
         )
     return True, None
+
+
+@dataclass(frozen=True, slots=True)
+class CloseFallbackFailure:
+    """Why the fallback close did not happen, keeping any typed GitHub rate
+    limit behind it so the action liveness owner waits for its reset (#7350)."""
+
+    reason: str
+    host_rate_limit: "HostRateLimit | None"
 
 
 def close_on_merge_comment(pr_url: str, pr_number: int) -> str:

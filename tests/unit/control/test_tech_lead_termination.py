@@ -17,7 +17,9 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock
 
+from issue_orchestrator.domain.host_rate_limit import HostRateLimitWindow
 from issue_orchestrator.control.tech_lead_run_activity import (
     in_memory_run_activity,
 )
@@ -51,6 +53,7 @@ from issue_orchestrator.domain.validated_work_commands import (
     ValidatedWorkDispositionBatch,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.session_launch_types import LaunchStep
 
 from .run_ledger_doubles import SharedRunLedger
 
@@ -97,6 +100,16 @@ class _State:
         self.active_sessions: list[FakeSession] = []
         self.pending_tech_lead_reviews: list[PendingTechLeadReview] = []
         self.paused = False
+        # The launch authority holds runs while GitHub is rate limited (#7297),
+        # measuring episodes only for work that still exists.
+        self.host_rate_limit = HostRateLimitWindow()
+        self.pending_reviews: list = []
+        self.pending_retrospective_reviews: list = []
+        self.pending_reworks: list = []
+        self.pending_validation_retries: list = []
+        self.cached_queue_issues: list = []
+        # Launched work held by a terminal; termination settles it (#7348).
+        self.in_flight_work: list = []
 
     def drop_active_session(self, terminal_id: str) -> None:
         self.active_sessions = [
@@ -132,6 +145,7 @@ class _Host:
         self.deps = SimpleNamespace(
             run_ownership=self.ownership,
             claim_manager=None,
+            pending_work_claims=MagicMock(),
             state_machine_manager=None,
             worktree_manager=worktrees,
         )
@@ -175,8 +189,9 @@ class _Host:
                 str(label).startswith("blocked") for label in labels
             ),
             events=SimpleNamespace(publish=lambda _e: None),  # type: ignore[arg-type]
-            launch=self._start_session,
+            launch=lambda item: LaunchStep.of_session(self._start_session(item), "the fake launch did not start"),
             activity=in_memory_run_activity(),
+            claims=MagicMock(),
         ).launch(tech_lead)
 
     def _start_session(self, tech_lead: PendingTechLeadReview):
@@ -262,6 +277,34 @@ def test_a_timed_out_global_review_hands_its_repository_wide_hold_back():
     assert result.termination is not None
     assert result.termination.run_released is True
     assert result.termination.clean is True
+
+
+def test_a_run_whose_terminal_would_not_stop_keeps_its_hold_from_a_peer():
+    """#7348 review r3: the terminal may still be running. A peer engine cannot
+    see this engine's session record, so a released hold would let it start a
+    conflicting whole-repository review beside the live one."""
+    from issue_orchestrator.domain.tech_lead_run import global_scope_for_flavor
+
+    class _StuckHost(_Host):
+        def kill_session(self, name: str) -> None:
+            raise RuntimeError("tmux refused the kill")
+
+    host = _StuckHost(flavor=TechLeadSessionFlavor.HEALTH_REVIEW)
+
+    result = run_health_review(
+        host,  # type: ignore[arg-type]
+        now=_clock([0, 10_000]),
+        sleep=_no_sleep,
+        timeout_s=1.0,
+    )
+
+    assert result.termination is not None
+    assert result.termination.terminal_stopped is False
+    assert result.termination.run_released is False
+    assert result.termination.clean is False
+    assert [s.terminal_id for s in host.state.active_sessions] == [f"tech-lead-{ANCHOR}"]
+    peer = host.shared.ownership("engine-b")
+    assert peer.begin_run(global_scope_for_flavor(TechLeadSessionFlavor.HEALTH_REVIEW)).started is False
 
 
 def test_a_timed_out_targeted_investigation_hands_its_run_back_too():

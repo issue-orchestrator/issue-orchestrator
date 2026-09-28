@@ -2,7 +2,10 @@
 
 from ..domain.publication_verification import publication_pr_identity_failure
 from ..domain.exact_git import ExactPushAuthenticationError, ExactPushOutcome
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPullRequest,
     PublicationRemoteError,
     publication_marker,
@@ -23,6 +26,7 @@ from ..domain.validated_work_store import AncestryRelation
 from ..ports.exact_git import ExactGit
 from ..ports.git import GitError
 from ..ports.publication_remote import PublicationRemote
+from ..ports.repository_host import host_rate_limit_of
 
 
 class GitValidatedHeadExecutor:
@@ -55,7 +59,7 @@ class GitValidatedHeadExecutor:
             OSError,
             PublicationRemoteError,
         ) as exc:
-            return self._destination_failure(exc)
+            return self._destination_failure(exc, rate_limit=host_rate_limit_of(exc))
         try:
             observed = self._remote.read_branch(command)
         except PublicationRemoteError as exc:
@@ -65,6 +69,7 @@ class GitValidatedHeadExecutor:
                 None,
                 ValidatedWorkFailure.REMOTE_UNREADABLE,
                 str(exc),
+                rate_limit=host_rate_limit_of(exc),
             )
         if observed == command.target_head_sha:
             return BranchWriteOutcome(
@@ -83,6 +88,7 @@ class GitValidatedHeadExecutor:
                 None,
                 ValidatedWorkFailure.WORKSPACE_INTEGRITY,
                 str(exc),
+                rate_limit=host_rate_limit_of(exc),
             )
         if refusal is not None:
             return BranchWriteOutcome(
@@ -114,15 +120,10 @@ class GitValidatedHeadExecutor:
                 None,
                 ValidatedWorkFailure.PUSH_FAILED,
                 str(exc),
+                rate_limit=host_rate_limit_of(exc),
             )
         except ValueError as exc:
-            return BranchWriteOutcome(
-                BranchWriteStatus.REJECTED,
-                observed,
-                None,
-                ValidatedWorkFailure.WORKSPACE_INTEGRITY,
-                str(exc),
-            )
+            return self._rejected_push(observed, str(exc), rate_limit=host_rate_limit_of(exc))
         if result.outcome is ExactPushOutcome.PUSHED:
             return BranchWriteOutcome(
                 BranchWriteStatus.PUSHED,
@@ -148,7 +149,36 @@ class GitValidatedHeadExecutor:
         )
 
     @staticmethod
-    def _destination_failure(exc: Exception) -> BranchWriteOutcome:
+    def _rejected_push(
+        observed: str | None, message: str, *, rate_limit: HostRateLimit | None
+    ) -> BranchWriteOutcome:
+        """A refused push is definite, unless the host only refused to answer yet."""
+        return BranchWriteOutcome(
+            BranchWriteStatus.REJECTED
+            if rate_limit is None
+            else BranchWriteStatus.TRANSIENT_FAILURE,
+            observed,
+            None,
+            ValidatedWorkFailure.WORKSPACE_INTEGRITY,
+            message,
+            rate_limit=rate_limit,
+        )
+
+    @staticmethod
+    def _destination_failure(
+        exc: Exception, *, rate_limit: HostRateLimit | None
+    ) -> BranchWriteOutcome:
+        if rate_limit is not None:
+            # The host refused to answer until its reset: nothing about the
+            # destination is known yet, so this is a wait, not a rejection.
+            return BranchWriteOutcome(
+                BranchWriteStatus.TRANSIENT_FAILURE,
+                None,
+                None,
+                ValidatedWorkFailure.REMOTE_UNREADABLE,
+                str(exc),
+                rate_limit=rate_limit,
+            )
         auth_failure = isinstance(exc, ExactPushAuthenticationError)
         return BranchWriteOutcome(
             BranchWriteStatus.TRANSIENT_FAILURE
@@ -227,7 +257,10 @@ class GitValidatedHeadExecutor:
             return self._create_or_recover(command)
         except PublicationRemoteError as exc:
             return self._pr_failure(
-                ValidatedWorkFailure.REMOTE_UNREADABLE, str(exc), transient=True
+                ValidatedWorkFailure.REMOTE_UNREADABLE,
+                str(exc),
+                transient=True,
+                rate_limit=host_rate_limit_of(exc),
             )
 
     def _create_or_recover(
@@ -235,21 +268,61 @@ class GitValidatedHeadExecutor:
     ) -> PrEnsureOutcome:
         try:
             created = self._remote.create_pr(command)
-        except PublicationRemoteError:
-            # A lost response is not proof of no effect. Adopt ONLY this operation's marker.
-            candidates = tuple(
-                pr
-                for pr in self._remote.list_prs(command)
-                if pr.branch == command.branch_name
+        except PublicationPrCreateRejected as rejected:
+            return self._create_refused(
+                command, rejected, rate_limit=host_rate_limit_of(rejected)
             )
-            if len(candidates) > 1:
-                return self._pr_failure(
-                    ValidatedWorkFailure.DUPLICATE_OPEN_PR, "Multiple PRs after create"
-                )
-            if len(candidates) != 1:
-                raise
-            return self._adopt_candidate(command, candidates[0])
-        return self._confirm_created(command, created)
+        except PublicationRemoteError as lost:
+            # A lost response is not proof of no effect. Adopt ONLY this
+            # operation's marker, outside the handler: what the listing finds
+            # is a fresh observation, not a result built from this error.
+            lost_response = lost
+        else:
+            return self._confirm_created(command, created)
+        adopted = self._adopt_listed(command)
+        if adopted is None:
+            raise lost_response
+        return adopted
+
+    def _create_refused(
+        self,
+        command: PublishValidatedHeadCommand,
+        rejected: PublicationPrCreateRejected,
+        *,
+        rate_limit: HostRateLimit | None,
+    ) -> PrEnsureOutcome:
+        """A definite refusal created nothing; only an existing PR may be adopted."""
+        if rejected.rejection is PrCreateRejection.NO_COMMITS:
+            return self._pr_failure(
+                ValidatedWorkFailure.PR_CREATE_NO_COMMITS, str(rejected), rate_limit=rate_limit
+            )
+        if rejected.rejection is PrCreateRejection.INVALID:
+            return self._pr_failure(
+                ValidatedWorkFailure.PR_CREATE_REJECTED, str(rejected), rate_limit=rate_limit
+            )
+        adopted = self._adopt_listed(command)
+        if adopted is not None:
+            return adopted
+        # The host names a PR its listing does not show yet. That is lag, not a
+        # refusal of the work; the store's attempt budget bounds the retries.
+        return self._pr_failure(
+            ValidatedWorkFailure.REMOTE_UNREADABLE,
+            f"{rejected}; the existing PR is not listed yet",
+            transient=True,
+            rate_limit=rate_limit,
+        )
+
+    def _adopt_listed(self, command: PublishValidatedHeadCommand) -> PrEnsureOutcome | None:
+        candidates = tuple(
+            pr for pr in self._remote.list_prs(command) if pr.branch == command.branch_name
+        )
+        if len(candidates) > 1:
+            return self._pr_failure(
+                ValidatedWorkFailure.DUPLICATE_OPEN_PR, "Multiple PRs after create"
+            )
+        if len(candidates) != 1:
+            return None
+        return self._adopt_candidate(command, candidates[0])
 
     def _adopt_candidate(
         self, command: PublishValidatedHeadCommand, pr: PublicationPullRequest
@@ -308,6 +381,7 @@ class GitValidatedHeadExecutor:
                 transient=True,
                 observed=created,
                 attribution=PullRequestAttribution.CREATED,
+                rate_limit=host_rate_limit_of(exc),
             )
 
     def _checked_pr(
@@ -328,6 +402,7 @@ class GitValidatedHeadExecutor:
                     transient=True,
                     observed=pr,
                     attribution=attribution,
+                    rate_limit=host_rate_limit_of(exc),
                 )
             if (
                 pr.head_sha != command.target_head_sha
@@ -367,15 +442,20 @@ class GitValidatedHeadExecutor:
         transient: bool = False,
         observed: PublicationPullRequest | None = None,
         attribution: PullRequestAttribution = PullRequestAttribution.NONE,
+        rate_limit: HostRateLimit | None = None,
     ) -> PrEnsureOutcome:
+        # A rate limit is always a wait for the host's reset, never a refusal.
         return PrEnsureOutcome(
-            PrEnsureStatus.TRANSIENT_FAILURE if transient else PrEnsureStatus.REFUSED,
+            PrEnsureStatus.TRANSIENT_FAILURE
+            if transient or rate_limit is not None
+            else PrEnsureStatus.REFUSED,
             observed.number if observed else None,
             observed.url if observed else None,
             observed.head_sha if observed else None,
             failure,
             message,
             attribution,
+            rate_limit,
         )
 
     def publish_or_reconcile(

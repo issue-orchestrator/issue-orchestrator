@@ -16,6 +16,7 @@ from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .scoped_rework_proposals import ReworkProposalView
+from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.scoped_rework import (
     TechLeadProposalCommand,
     TechLeadProposalCommandOutcome,
@@ -25,6 +26,7 @@ from ..domain.scoped_rework import ReworkReceipt, ReworkRequest
 from ..domain.session_run import SessionRunIdentity
 from ..events import EventName
 from ..ports import EventSink, RepositoryHost, make_trace_event
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
 from .actions import Action, ActionResult, AddCommentAction, AddLabelAction, RemoveLabelAction, RequestReworkAction
 from .claim_gate import ClaimLostError
@@ -137,8 +139,12 @@ class RequestReworkExecutor:
         except (ClaimLostError, ReconciliationRequired):
             raise
         except Exception as exc:
-            return ActionResult.fail(
-                action, f"Scoped rework did not finish: {exc}", request_key=request.key
+            return replace(
+                ActionResult.fail(
+                    action, f"Scoped rework did not finish: {exc}", request_key=request.key
+                ),
+                # Kept typed (#7297): a launch reconciling a merged PR defers on it.
+                host_rate_limit=host_rate_limit_of(exc),
             )
 
     def stale_reason(self, request: ReworkRequest, pr: PRInfo | None, issue: Issue | None) -> str | None:
@@ -188,7 +194,9 @@ class RequestReworkExecutor:
     def _mutate(self, action: RequestReworkAction, mutation: Action) -> None:
         result = self.mutate(action, mutation)
         if not result.success:
-            raise RuntimeError(f"Scoped mutation did not commit: {result.error}")
+            raise RuntimeError(f"Scoped mutation did not commit: {result.error}") from (
+                rate_limit_cause(result.host_rate_limit)
+            )
 
     def _forward_fix(self, action: RequestReworkAction, issue: Issue) -> ReworkReceipt:
         request = action.request

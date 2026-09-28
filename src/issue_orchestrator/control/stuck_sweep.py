@@ -65,7 +65,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..domain.models import DiscoveredFailure, SessionStatus
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL, TECH_LEAD_OBSERVATION_LABEL
+from .stuck_sweep_state import persist_stuck_sweep_state
 from ..ports.repository_host import (
     RepositoryHostError,
     RepositoryScanIncompleteError,
@@ -170,28 +172,37 @@ def stuck_sweep_due(config: "Config", state: "OrchestratorState", now: float) ->
     point is to feed the reactive tech_lead pipeline; without either there is
     nothing to re-inject into.
     """
+    due_at = stuck_sweep_next_due_at(config, state)
+    return due_at is not None and now >= due_at
+
+
+def stuck_sweep_next_due_at(config: "Config", state: "OrchestratorState") -> float | None:
+    """When the sweep next runs (epoch seconds), or None when it never will.
+
+    The ONE deadline rule: :func:`stuck_sweep_due` gates on it, and the board's
+    custody owner (#7331) reports it, so neither can promise a different time.
+    """
     sweep = config.tech_lead.stuck_sweep
     if not sweep.enabled:
-        return False
+        return None
     if not (config.tech_lead_enabled and config.tech_lead_review_on_failure):
-        return False
+        return None
     interval_seconds = sweep.interval_minutes * 60
     if interval_seconds <= 0:
         # Defense-in-depth against the every-tick-scan trap: config validation
         # already rejects interval_minutes < 1 when enabled (#6823), but a
         # 0/negative interval reaching here must NOT be treated as "always due".
-        return False
+        return None
     # Due at the LATER of the success cadence and the failure backoff. Two
     # deadlines, because a failed sweep must not stamp the success timestamp —
     # it genuinely did not sweep — yet without a deadline of its own that
     # silently means "rescan on every tick", i.e. hundreds of full scans an
     # hour for a failure that cannot clear. See
     # STUCK_SWEEP_FAILURE_RETRY_SECONDS.
-    due_at = max(
+    return max(
         state.last_stuck_sweep_at + interval_seconds,
         state.last_stuck_sweep_failure_at + STUCK_SWEEP_FAILURE_RETRY_SECONDS,
     )
-    return now >= due_at
 
 
 def run_stuck_sweep(
@@ -372,53 +383,6 @@ def _clear_recovered_counters(state: "OrchestratorState", scan: "_StuckScan",
             del state.recovery_attempts[number]
 
 
-def hydrate_stuck_sweep_state(
-    state: "OrchestratorState",
-    store: "QueueCacheStore | None",
-) -> None:
-    """Restore the durable sweep timer and recovery counters at startup.
-
-    The recovery counter is crash-safe truth: without it a restart would reset
-    every issue's budget to 0 and re-inject an already-exhausted issue forever.
-    Loaded unconditionally when a store is present (even when the sweep is
-    disabled) so the counters survive an enable/disable toggle.
-    """
-    if store is None:
-        return
-    state.last_stuck_sweep_at = store.load_last_stuck_sweep_at()
-    state.recovery_attempts = store.load_recovery_attempts()
-    # Unacknowledged escalations survive a restart so an exhausted issue is
-    # re-escalated until its needs-human label lands (#6824 R1).
-    state.pending_stuck_sweep_escalations = store.load_pending_escalations()
-    state.review_release_budgets = store.load_review_release_budgets()
-
-
-def persist_stuck_sweep_state(
-    state: "OrchestratorState",
-    store: "QueueCacheStore | None",
-) -> None:
-    """Persist the sweep timer + recovery counters; degrade on failure.
-
-    A persist failure is logged, not raised: the sweep already mutated
-    in-memory state and a restart re-hydrates from the store, so a lost write
-    at worst re-sweeps one issue early or under-counts one attempt — never a
-    crash on the observation path (mirrors ``record_health_review_creation``).
-    """
-    if store is None:
-        return
-    try:
-        store.save_last_stuck_sweep_at(state.last_stuck_sweep_at)
-        store.save_recovery_attempts(state.recovery_attempts)
-        store.save_pending_escalations(state.pending_stuck_sweep_escalations)
-        store.save_review_release_budgets(state.review_release_budgets)
-    except Exception:
-        logger.warning(
-            "[STUCK_SWEEP] failed to persist recovery counters; a restart "
-            "re-hydrates them from the queue-cache store",
-            exc_info=True,
-        )
-
-
 def _scan_stuck_issues(
     config: "Config",
     repository_host: "RepositoryHost",
@@ -471,6 +435,8 @@ def _scan_stuck_issues(
             needs_human_numbers.add(issue.number)
         if issue.number in base_owned:
             continue
+        if not SessionKind.issue_is_work_item(issue.agent_type, config.tech_lead_review_agent):
+            continue  # tech-lead machinery, never stuck work (#7347 blind spot 7)
         if _reconciler_owns(issue, label_manager, provider_circuit_open):
             owned.add(issue.number)
             continue
@@ -784,6 +750,7 @@ def run_stuck_sweep_cycle(
     # One-shot: consumed by the next snapshot (a failed apply is simply the
     # next sweep's failed cycle, never a blind per-tick re-send).
     state.stuck_sweep_review_releases = list(result.released_for_review)
+    state.stuck_sweep_held_for_review = frozenset(result.held_for_review)
     state.last_stuck_sweep_at = now
     state.last_stuck_sweep_failure_at = 0.0
     persist_stuck_sweep_state(state, queue_cache_store)

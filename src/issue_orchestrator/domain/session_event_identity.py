@@ -3,7 +3,7 @@
 Five separate payload builders in ``control.completion_handler`` and several more
 in ``control.session_launcher`` each hand-assembled the same identity dict out of
 ``Session`` internals -- ``session.issue.number``, ``session.terminal_id``,
-``session.agent_label``, ``session.key.task.value``, ``session.rework_cycle``.
+``session.agent_label``, ``session.key.kind.value``, ``session.rework_cycle``.
 Adding one more identity field to that shape meant editing every site and hoping
 none was missed, which is precisely how the #6969 discriminator went missing in
 the first place: there was no owner to add it to.
@@ -101,7 +101,7 @@ class SessionEventIdentity:
             issue_number=session.issue.number,
             session_id=session.terminal_id,
             agent=session.agent_label,
-            task=session.key.task.value,
+            task=session.key.kind.value,
             rework_cycle=session.rework_cycle,
             timeline_actor=timeline_actor_for_session(session),
         )

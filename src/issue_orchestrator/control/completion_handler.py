@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..domain.issue_key import StableIssueId
+from .session_launch_types import LaunchStep
 from ..domain.completion_processing import CompletionPublication
 from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.run_manifest import RunManifest
@@ -42,7 +43,7 @@ from ..domain.models import (
     session_history_status_from_session_status,
 )
 from ..domain.session_event_identity import SessionEventIdentity
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..ports import (
     EventSink,
     Issue,
@@ -551,7 +552,7 @@ class CompletionHandler:
         return SessionHistoryEntry(
             issue_number=session.issue.number,
             title=session.issue.title,
-            agent_type=session.issue.agent_type or "unknown",
+            agent_type=session.agent_label or "unknown",
             status=session_history_status_from_session_status(status),
             runtime_minutes=session.runtime_minutes,
             pr_url=pr_url,
@@ -644,7 +645,7 @@ class CompletionHandler:
         """Emit events for a completed session (coding/rework only)."""
         # Review sessions get their events from _publish_review_outcome().
         # Retrospective review sessions complete through label/state actions.
-        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind.capabilities.reports_verdict:
             return
 
         identity = SessionEventIdentity.of(session)
@@ -746,11 +747,10 @@ class CompletionHandler:
         self._update_issue_machine(session, status, pr_url)
 
         # 3. Update review state machine
-        is_review = session.terminal_id.startswith("review-")
-        is_rework = session.terminal_id.startswith("rework-")
-        if is_review and status == SessionStatus.COMPLETED:
+        kind = session.key.kind
+        if kind is SessionKind.REVIEW and status == SessionStatus.COMPLETED:
             self._update_review_machine(session)
-        elif is_rework and status == SessionStatus.COMPLETED:
+        elif kind is SessionKind.REWORK and status == SessionStatus.COMPLETED:
             self._complete_rework_review_machine(session)
 
     def _update_session_machine(
@@ -791,7 +791,7 @@ class CompletionHandler:
             logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
             # Only trigger pr_created for issue sessions (not review/rework sessions)
             # Review/rework sessions work on issues that already have PRs
-            is_issue_session = session.terminal_id.startswith("issue-")
+            is_issue_session = session.key.kind.capabilities.open_pr_means_done
             if status == SessionStatus.COMPLETED and pr_url and is_issue_session:
                 if issue_machine.can_transition("pr_created"):
                     logger.info(
@@ -992,11 +992,9 @@ class CompletionHandler:
         if not self._cleanup_actions_requested():
             return CleanupDecision.none()
 
-        is_work_session = session.key.task not in {
-            TaskKind.REVIEW,
-            TaskKind.RETROSPECTIVE_REVIEW,
-            TaskKind.REWORK,
-        }
+        # Only a session whose own PR is its output waits for that PR's review
+        # before its worktree goes (#7347: a tech-lead run no longer does).
+        is_work_session = session.key.kind.capabilities.open_pr_means_done
 
         if is_work_session and pr_url and pr_number and self._should_wait_for_review_before_cleanup():
             pending_cleanup = PendingCleanup(
@@ -1044,7 +1042,7 @@ class CompletionHandler:
         Note: This returns True even for dry-run PRs (so pr-pending label gets added).
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
-        is_review_session = session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}
+        is_review_session = session.key.kind.capabilities.reports_verdict
         should_queue = should_queue_pr_review(
             has_pr=bool(pr_url),
             code_review_agent_configured=bool(self.config.code_review_agent),
@@ -1084,7 +1082,7 @@ class CompletionHandler:
         """Return label actions after an approved local review exchange."""
         if not review_exchange_completed or not pr_url:
             return ()
-        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+        if session.key.kind.capabilities.reports_verdict:
             return ()
         return (
             AddLabelAction(
@@ -1141,21 +1139,21 @@ class CompletionHandler:
 def launch_review_by_number(
     n: int,
     pending_reviews: list["PendingReview"],
-    launch_review_session_fn: Callable[["PendingReview"], Optional["Session"]],
-) -> Optional["Session"]:
-    """Launch review session by number - moved per method table."""
+    launch_review_session_fn: Callable[["PendingReview"], "LaunchStep"],
+) -> "LaunchStep":
+    """Launch the review queued for PR ``n``; no queued review is no failure (#7455)."""
     r = next((r for r in pending_reviews if r.pr_number == n), None)
-    return launch_review_session_fn(r) if r else None
+    return launch_review_session_fn(r) if r else LaunchStep.not_queued("review", n)
 
 
 def launch_rework_by_number(
     n: int,
     pending_reworks: list["PendingRework"],
-    launch_rework_session_fn: Callable[["PendingRework"], Optional["Session"]],
-) -> Optional["Session"]:
-    """Launch rework session by number - moved per method table."""
+    launch_rework_session_fn: Callable[["PendingRework"], "LaunchStep"],
+) -> "LaunchStep":
+    """Launch the rework queued for issue ``n``; none queued is no failure (#7455)."""
     r = next((r for r in pending_reworks if r.resolve_issue_number() == n), None)
-    return launch_rework_session_fn(r) if r else None
+    return launch_rework_session_fn(r) if r else LaunchStep.not_queued("rework", n)
 
 
 def get_review_machine(
@@ -1168,12 +1166,14 @@ def get_review_machine(
 def launch_tech_lead_by_number(
     n: int,
     pending_tech_lead_reviews: list["PendingTechLeadReview"],
-    launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], Optional["Session"]],
-) -> Optional["Session"]:
+    launch_tech_lead_session_fn: Callable[["PendingTechLeadReview"], "LaunchStep"],
+) -> "LaunchStep":
     """Launch tech_lead session by number - moved per method table.
 
     Queue lifecycle (removal vs retention) is owned by the launch wrapper
     (``orchestrator_launch_tech_lead_session``), like the review/rework lookups.
     """
     t = next((t for t in pending_tech_lead_reviews if t.issue_number == n), None)
-    return launch_tech_lead_session_fn(t) if t else None
+    if t is None:
+        return LaunchStep.not_queued("tech-lead run", n)
+    return launch_tech_lead_session_fn(t)

@@ -136,6 +136,16 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
+        # The action liveness owner's retry budgets and parks (#7350). Losing it
+        # resets every budget, which is how a loop that parked comes back.
+        SQLiteDatabase(
+            key="action_liveness",
+            label="Action Liveness",
+            path_fn=lambda cfg: _state_db(cfg, "action_liveness.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
         # Rebuildable GitHub open-issue fingerprint cache used by the tech-lead
         # create_issue dedup gate (#6881).
         SQLiteDatabase(

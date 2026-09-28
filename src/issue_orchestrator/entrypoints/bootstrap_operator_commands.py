@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..control.action_liveness import ActionLivenessOwner
     from ..control.needs_human_block import SharedNeedsHumanBlock
     from ..control.published_review_custody import PublishedReviewHolds
     from ..control.label_manager import LabelManager
@@ -35,6 +36,7 @@ def build_operator_issue_command_factory(
     fresh_issue_reader: "FreshIssueReader",
     queue_cache_store: "QueueCacheStore",
     published_review: "PublishedReviewHolds",
+    action_liveness: "ActionLivenessOwner",
 ) -> "OperatorIssueCommandFactory":
     """Implement ``ports.operator_issue_commands.OperatorIssueCommandFactory``."""
     from ..control.operator_issue_command_runner import OperatorIssueCommandRunner
@@ -60,6 +62,7 @@ def build_operator_issue_command_factory(
             # A fresh index per command: one operator request lists open PRs
             # at most once, however many issues it retries (#7293).
             open_prs=OpenPullRequestIndex(repository_host, repo_slug=require_repo(config)),
+            liveness=action_liveness,
         )
 
     return factory

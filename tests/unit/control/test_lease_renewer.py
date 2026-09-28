@@ -9,7 +9,7 @@ import pytest
 from issue_orchestrator.control.lease_renewer import LeaseRenewer
 from issue_orchestrator.domain.claim import ClaimFetchError
 from issue_orchestrator.domain.lease_config import LeaseConfig
-from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
+from issue_orchestrator.domain.models import Issue, Session, SessionKey, SessionKind
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -51,7 +51,7 @@ def create_test_session(
     """Create a test session with configurable lease expiry and verification times."""
     issue_key = MagicMock()
     issue_key.stable_id.return_value = f"issue-{issue_number}"
-    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
 
     now = datetime.now()
     lease_acquired_at = now - timedelta(seconds=lease_acquired_seconds_ago) if lease_id else None

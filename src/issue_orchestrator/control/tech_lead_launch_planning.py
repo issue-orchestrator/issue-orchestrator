@@ -36,6 +36,7 @@ from ..domain.tech_lead_run import (
     BARRIER_GLOBAL_AWAITING_DRAIN,
     BARRIER_GLOBAL_RUN_ACTIVE,
     BARRIER_GLOBAL_RUN_QUEUED,
+    BARRIER_SUBJECT_SESSION_ACTIVE,
     REASON_ISSUE_CLOSED,
     REASON_NO_LONGER_BLOCKED,
     global_run_precedence,
@@ -91,7 +92,10 @@ def plan_tech_lead_launch_gate(
        the shared ledger promotes by, so the two can never nominate different
        winners and stall each other (#6994 round 5 F16).
     2. An ACTIVE global run holds everything back until it completes.
-    3. Otherwise every queued targeted run is launchable; the numeric budget
+    3. A targeted run whose subject already has a live session waits for it
+       (#7455): starting it would be refused at launch, and refusing it there
+       used to drop it.
+    4. Otherwise every queued targeted run is launchable; the numeric budget
        (``worker_budget.tech_lead_slot_availability``) slices it downstream,
        which is exactly why no capacity arithmetic happens here.
 
@@ -105,7 +109,7 @@ def plan_tech_lead_launch_gate(
 
     global_queued = tuple(item for item in items if is_global_pending(item))
     if global_queued:
-        if active_tech_lead_sessions(config, active_sessions):
+        if active_tech_lead_sessions(active_sessions):
             return TechLeadLaunchGate((), items, BARRIER_GLOBAL_AWAITING_DRAIN)
         # Whose turn it is comes from the SHARED authority, never from where a
         # run happens to sit in this engine's list. Startup recovery preserves
@@ -122,9 +126,15 @@ def plan_tech_lead_launch_gate(
         return TechLeadLaunchGate(
             (first,), held, BARRIER_GLOBAL_RUN_QUEUED if held else None
         )
-    if has_active_global_run(config, active_sessions):
+    if has_active_global_run(active_sessions):
         return TechLeadLaunchGate((), items, BARRIER_GLOBAL_RUN_ACTIVE)
-    return TechLeadLaunchGate(items, ())
+    busy = {session.issue.number for session in active_sessions}
+    held = tuple(item for item in items if item.issue_number in busy)
+    return TechLeadLaunchGate(
+        tuple(item for item in items if item.issue_number not in busy),
+        held,
+        BARRIER_SUBJECT_SESSION_ACTIVE if held else None,
+    )
 
 
 # ----------------------------------------------------------------------

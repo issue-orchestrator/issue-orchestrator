@@ -2,6 +2,7 @@
 
 # ruff: noqa: F403,F405
 
+from issue_orchestrator.domain.session_kind import SessionKind
 from types import SimpleNamespace
 
 from tests.unit import test_web as _support
@@ -314,14 +315,17 @@ class TestHistoryEndpoints:
         mock_orch.state.active_sessions = [
             SimpleNamespace(
                 terminal_id="issue-4057",
+                key=SimpleNamespace(kind=SessionKind.CODE),
                 issue=SimpleNamespace(number=4057),
             ),
             SimpleNamespace(
                 terminal_id="rework-4057",
+                key=SimpleNamespace(kind=SessionKind.REWORK),
                 issue=SimpleNamespace(number=4057),
             ),
             SimpleNamespace(
                 terminal_id="issue-999",
+                key=SimpleNamespace(kind=SessionKind.CODE),
                 issue=SimpleNamespace(number=999),
             ),
         ]

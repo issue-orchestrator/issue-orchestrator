@@ -18,9 +18,12 @@ from ..ports.validated_work_drain import (
     ValidatedWorkDrainQueue,
     ValidatedWorkDrainRequest,
     ValidatedWorkRecoveryOperation,
+    ValidatedWorkScopeSweep,
 )
 from ..ports.recovery_block import RecoveryBlockSweep
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.retained_claim_maintenance import RetainedClaimMaintenanceOwner
+from .recovery_drain_liveness import RecoveryDrainLiveness
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +34,18 @@ class RecoveryDrain:
     def __init__(self, *, queue: ValidatedWorkDrainQueue, operation: ValidatedWorkRecoveryOperation,
                  authority_refresh: ValidatedWorkAuthorityRefreshOperation,
                  claim_maintenance: RetainedClaimMaintenanceOwner,
-                 block_sweep: RecoveryBlockSweep, batch_size: int, interval_seconds: int,
+                 block_sweep: RecoveryBlockSweep, scope_sweep: ValidatedWorkScopeSweep,
+                 batch_size: int, interval_seconds: int,
+                 liveness: RecoveryDrainLiveness,
                  clock: Callable[[], float] = time.monotonic) -> None:
         require_positive(batch_size, "recovery batch size")
         require_positive(interval_seconds, "recovery interval")
         self._queue, self._operation, self._authority_refresh = queue, operation, authority_refresh
         self._block_sweep = block_sweep
+        self._scope_sweep = scope_sweep
         self._claim_maintenance = claim_maintenance
         self._batch_size, self._interval, self._clock = batch_size, interval_seconds, clock
+        self._liveness = liveness
         self._after = ""
         self._next_at = float("-inf")
 
@@ -48,6 +55,7 @@ class RecoveryDrain:
             record_id=command.authority.record_id,
             evidence_id=command.evidence_id,
             approved=command.authority,
+            issue_number=command.issue_number,
         )
 
     def preflight(
@@ -59,8 +67,20 @@ class RecoveryDrain:
     def recover(
         self, command: StoredEvidenceCommand, state: OrchestratorState
     ) -> RecoveryCompleted | RecoveryAttemptPending:
-        """Execute explicit recovery through the same per-record operation."""
-        return self._operation.run(self._request(command), state)
+        """Execute explicit recovery through the same per-record operation.
+
+        An operator asked for this, so it runs whatever the liveness owner holds
+        (#7350); its outcome is still recorded, and a success releases a park.
+        """
+        request = self._request(command)
+        key = self._liveness.key(request)
+        try:
+            result = self._operation.run(request, state)
+        except Exception as error:
+            self._liveness.settle_explicit(request.record_id, key, error)
+            raise
+        self._liveness.settle_explicit(request.record_id, key, result)
+        return result
 
     def tick(
         self, state: OrchestratorState, admission: RecoveryDrainAdmission
@@ -75,6 +95,9 @@ class RecoveryDrain:
         self._next_at = started + self._interval
         try:
             claim_maintenance = self._claim_maintenance.reconcile(admission)
+            # Before publication: a record recovery never owned resolves here
+            # even in states no publication lane selects (#7323).
+            scope_sweep = self._scope_sweep.tick(admission)
             block_sweep = self._block_sweep.tick(admission)
             requests = self._queue.drain_requests(
                 after_record_id=self._after,
@@ -98,11 +121,22 @@ class RecoveryDrain:
                     if completed_batch and len(requests) < self._batch_size
                     else items[-1].record_id
                 )
-            return RecoveryDrainReport(tuple(items), claim_maintenance, block_sweep)
+            return RecoveryDrainReport(tuple(items), claim_maintenance, block_sweep, scope_sweep)
         finally:
             self._next_at = self._clock() + self._interval
 
     def _advance(self, request: ValidatedWorkDrainRequest, state: OrchestratorState) -> RecoveryDrainItem:
+        # Consult the liveness owner before selecting the record again (#7350):
+        # a record parked on unchanged facts is held, never retried every pass.
+        # It still yields an item, so the round-robin cursor moves past it.
+        key = self._liveness.key(request)
+        if key is None:
+            held = RecoveryAttemptPending("Held by action liveness: a fact read for the record failed")
+            return RecoveryDrainItem(request.record_id, request.evidence_id, held)
+        decision = self._liveness.admit(key)
+        if not decision.admitted:
+            held = RecoveryAttemptPending(f"Held by action liveness: {decision.describe()}")
+            return RecoveryDrainItem(request.record_id, request.evidence_id, held)
         try:
             result = (
                 self._authority_refresh.run(request)
@@ -113,5 +147,10 @@ class RecoveryDrain:
             # The operation has joined children and exited its lease before this
             # boundary observes an error. Custody and unknown attempts survive.
             logger.exception("Recovery drain operation failed for record %s", request.record_id)
-            result = RecoveryAttemptPending(f"Recovery drain operation failed: {error}")
+            self._liveness.settle_error(key, error)
+            result = RecoveryAttemptPending(
+                f"Recovery drain operation failed: {error}", rate_limit=host_rate_limit_of(error)
+            )
+            return RecoveryDrainItem(request.record_id, request.evidence_id, result)
+        self._liveness.settle(key, result)
         return RecoveryDrainItem(request.record_id, request.evidence_id, result)

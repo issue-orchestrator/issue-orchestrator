@@ -829,12 +829,13 @@ _NON_PROVIDER_TEXT_CLASSIFIERS = frozenset(
         # --- git and GitHub responses, not a provider CLI ---
         "adapters/github/github_adapter.py::GitHubAdapter.create_issue._check",
         "adapters/github/http_client.py::classify_github_http_failure",
+        "adapters/github/publication_remote.py::_create_rejection",
+        "adapters/github/rate_limit.py::github_rate_limit",
         "adapters/worktree/_worktree.py::_delete_remote_branch",
         "adapters/worktree/worktree_policy.py::ValidateOrDeletePolicy._check_broken_git_state",
         "control/completion_pr_collision.py::is_pr_collision_error",
         "control/completion_pr_collision.py::_is_raw_no_commits_error",
         "control/completion_processor.py::CompletionProcessor._is_non_fast_forward",
-        "control/issue_fetch_resilience.py::_looks_like_rate_limit",
         "execution/git_push_operations.py::determine_retryable",
         "execution/git_exact_operations.py::GitExactOperations.push_exact",
         "execution/git_push_operations.py::get_preflight_fix_hint",
@@ -865,6 +866,11 @@ _NON_PROVIDER_TEXT_CLASSIFIERS = frozenset(
         # table this guardrail removed from the same module cannot come back
         # beside it.
         "infra/hooks/_ai_gate.py::_detect_blocked_from_output",
+        # --- test support: grading a tech lead's written decision (#7304) ---
+        # The tech-lead exam checks whether a finished run's decision/report
+        # NAMES a known root cause. That text is the run's own artifact, read
+        # after the fact by a test harness, never provider CLI output.
+        "testing/exam/case.py::TermGroup.matched_term",
         # --- session transcripts, read after the fact ---
         #
         # These four do read agent output, so the exemption is narrower than it

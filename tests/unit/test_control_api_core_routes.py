@@ -1077,6 +1077,7 @@ class TestStatusEndpoint:
         mock_orch.state.active_sessions = [
             SimpleNamespace(
                 terminal_id="issue-42",
+                agent_label="agent:test",
                 issue=SimpleNamespace(
                     number=42,
                     title="Test issue",
@@ -1088,6 +1089,7 @@ class TestStatusEndpoint:
             ),
             SimpleNamespace(
                 terminal_id="issue-43",
+                agent_label="agent:test",
                 issue=SimpleNamespace(
                     number=43,
                     title="Slow issue",

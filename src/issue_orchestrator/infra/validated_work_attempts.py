@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.validated_work import (
     LineageRole,
     ValidatedWorkState,
@@ -37,6 +38,7 @@ from .validated_work_rows import (
     has_successful_attempt,
     latest_attempt,
     record_row,
+    spent_attempts,
 )
 
 PUBLISH_ATTEMPT_LIMIT = 5
@@ -85,7 +87,7 @@ class PublishAttemptWriter:
             evidence_id=evidence.evidence_id,
         ):
             return None
-        if count >= PUBLISH_ATTEMPT_LIMIT:
+        if spent_attempts(conn, claim.record_id) >= PUBLISH_ATTEMPT_LIMIT:
             self.fail(
                 conn,
                 claim,
@@ -141,6 +143,7 @@ class PublishAttemptWriter:
         outcome: Status,
         failure: Failure | None,
         finished_at: str,
+        rate_limit: HostRateLimit | None,
     ) -> bool:
         if (
             not self._claims.holds(conn, claim)
@@ -170,20 +173,24 @@ class PublishAttemptWriter:
             outcome=outcome,
             failure=failure,
             finished_at=finished_at,
+            rate_limited=rate_limit is not None,
         )
         conn.execute(
-            "UPDATE validated_work_publish_attempts SET outcome=?,failure=?,finished_at=? WHERE record_id=? AND attempt_no=? AND outcome='' AND fence=?",
+            "UPDATE validated_work_publish_attempts SET outcome=?,failure=?,finished_at=?,rate_limited=? WHERE record_id=? AND attempt_no=? AND outcome='' AND fence=?",
             (
                 outcome.value,
                 failure.value if failure else "",
                 completed.finished_at,
+                int(completed.rate_limited),
                 claim.record_id,
                 attempt.attempt_no,
                 claim.fence,
             ),
         )
         if attempt_requires_failure(
-            outcome, attempt_no=attempt.attempt_no, limit=PUBLISH_ATTEMPT_LIMIT
+            outcome,
+            spent=spent_attempts(conn, claim.record_id),
+            limit=PUBLISH_ATTEMPT_LIMIT,
         ):
             assert failure is not None
             self.fail(conn, claim, failure, failure.value, finished_at)

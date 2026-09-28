@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..domain.budgeted_validation import BudgetedValidationNotice
+from ..domain.host_rate_limit import RateLimitEpisode
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -52,6 +53,7 @@ class E2ESlotSignals:
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
+    from .planned_action_liveness import PlanLiveness
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,9 @@ class OrchestratorSnapshot:
     # Queued failure-investigation subjects whose published validated work an
     # open PR now carries (#7293): their review owns them; withdraw the run.
     published_review_subjects: frozenset[int] = frozenset()
+    # Queued reviews (PR numbers) whose issue the validated-work recovery owner
+    # holds behind recovery-pending (#7455): they wait, launching nothing.
+    recovery_held_reviews: frozenset[int] = frozenset()
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
@@ -112,6 +117,9 @@ class OrchestratorSnapshot:
     stale_claim_issues: tuple[Issue, ...] = field(default_factory=tuple)
     # Issues that failed this cycle - skip until cache refresh (prevents immediate retry)
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
+    # Issues whose launch waited this cycle (#7461 review): not re-planned
+    # until the next refresh, and not a failure.
+    launch_deferred_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
     session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
     # E2E-as-first-class-workload facts (e2e.occupies_session_slot). Both are
@@ -131,6 +139,11 @@ class OrchestratorSnapshot:
     provider_launch: ProviderLaunchReadiness = field(
         default_factory=ProviderLaunchReadiness.empty
     )
+    # The host rate-limit episode still holding launches back when the tick
+    # sampled it (#7297), or None when launches may proceed. While set, the
+    # planner launches nothing: every launch path's preparation reads GitHub,
+    # and asking before the reset only turns a known wait into a failure.
+    host_rate_limit_hold: Optional[RateLimitEpisode] = None
 
     @property
     def active_count(self) -> int:
@@ -225,6 +238,7 @@ class OrchestratorSnapshot:
             stale_in_progress_issues=tuple(stale_in_progress_issues),
             stale_claim_issues=tuple(stale_claim_issues),
             failed_this_cycle=frozenset(state.failed_this_cycle),
+            launch_deferred_this_cycle=frozenset(state.launch_deferred_this_cycle),
         )
 
 
@@ -247,6 +261,14 @@ class Plan:
 
     actions: tuple[Action, ...]
     skipped: tuple[SkippedItem, ...]
+    #: Set by the liveness gate (#7350): the key each action was admitted
+    #: under. ``None`` until the plan is gated, and an ungated plan cannot be
+    #: applied - every applied action's outcome must reach the liveness owner.
+    liveness: Optional["PlanLiveness"] = None
+
+    def __post_init__(self) -> None:
+        if self.liveness is not None and len(self.liveness.keys) != len(self.actions):
+            raise ValueError("a gated plan needs exactly one liveness key per action")
 
     @classmethod
     def empty(cls) -> "Plan":

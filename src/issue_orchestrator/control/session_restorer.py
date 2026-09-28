@@ -18,16 +18,19 @@ from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+    from ..ports.recorded_run_reader import RecordedRunReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
 
 from ..infra.repo_scope import require_repo
+from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable, ReworkTarget
 from ..domain.issue_key import GitHubIssueKey
-from ..domain.session_key import SessionKey, TaskKind
+from ..domain.session_key import SessionKey
+from ..domain.session_kind import SessionKind
 from ..domain.models import Issue, RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
 from ..domain.session_run import SessionRunAssets
 from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
-from .tech_lead_session_policy import recover_tech_lead_launch_scope
+from .tech_lead_scope_recovery import recover_tech_lead_launch_scope
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,15 @@ class SessionConfigurationIdentityVerificationError(SessionConfigurationIdentity
     """A surviving session's effective launch configuration cannot be verified."""
 
 
+class RestoredSessionRoleUnrecordedError(RuntimeError):
+    """A surviving session's run has no durably recorded role to restore it as.
+
+    Its kind and agent label are what every later decision about it rests on;
+    restoring it under a guessed role is how a tech-lead run came back as the
+    focus issue's coder (#7273, #7347). It is left untracked instead.
+    """
+
+
 class SessionRestorer:
     """Handles restoring session tracking after orchestrator restart.
 
@@ -67,11 +79,17 @@ class SessionRestorer:
         config: "Config",
         repository_host: RepositoryHost,
         working_copy: WorkingCopy,
+        *,
+        run_ledger: "RecordedRunReader",
         tech_lead_authority: "TechLeadAuthorityStore | None" = None,
     ):
         self.config = config
         self.repository_host = repository_host
         self.working_copy = working_copy
+        # The durable run ledger is where a surviving session's KIND and agent
+        # role come back from (#7347): both were recorded at allocation, before
+        # the terminal spawned, outside the agent-writable run directory.
+        self._run_ledger = run_ledger
         # Durable cohort ledger, read when rebuilding a restored health
         # review's owned scope (#6994 round 1 F3). Optional so unrelated tests
         # need not wire it; without it a restored storm review still recovers
@@ -121,6 +139,27 @@ class SessionRestorer:
                 print(f"  Warning: Failed to restore session for #{issue_number}: {e}")
 
         return restored
+
+    def predates_run_roles(self, session_info: DiscoveredSession) -> bool:
+        """Whether this registry entry's run was allocated before roles were recorded.
+
+        Such a run has a ledger row whose role is NULL (#7189 added the role
+        columns). Agents are PTY children that do not survive an engine stop,
+        so an entry like this at startup is a stale registry row, not a live
+        session: the caller treats it as dead - no restore, no quarantine,
+        its claim requeued by the dead-run sweep. Anything else, including an
+        entry whose run cannot be read at all, is left to normal restoration.
+        """
+        run_dir = session_info.get("run_dir")
+        if type(run_dir) is not str or not run_dir:
+            return False
+        try:
+            run_assets = self._required_run_assets(
+                session_info, self.canonical_terminal_id(session_info)
+            )
+            return self._run_ledger.recorded_run(run_assets).agent_label is None
+        except (SessionConfigurationIdentityVerificationError, IssueRunEvidenceUnavailable):
+            return False  # unreadable: the normal restore path decides (and reports) it
 
     def canonical_terminal_id(self, session_info: DiscoveredSession) -> str:
         """Return the canonical terminal id for a discovered or known terminal."""
@@ -193,16 +232,9 @@ class SessionRestorer:
                 )
             identity = loaded
 
-        identity_keys = (
-            "configuration_mode",
-            "config_name",
-            "config_fingerprint",
-        )
-        recorded_values = tuple(identity.get(key) for key in identity_keys)
-        current_values = (
-            self.config.configuration_mode,
-            self.config.config_name,
-            self.config.config_fingerprint,
+        recorded_values = tuple(
+            identity.get(key)
+            for key in ("configuration_mode", "config_name", "config_fingerprint")
         )
         if not all(isinstance(value, str) for value in recorded_values):
             raise SessionConfigurationIdentityVerificationError(
@@ -210,7 +242,26 @@ class SessionRestorer:
                 f"{identity_path} lacks mode, config name, or effective fingerprint"
             )
         recorded_identity = cast(tuple[str, str, str], recorded_values)
-        if recorded_identity != current_values:
+        # The session is bound to the settings a running engine does NOT apply
+        # live (``session_binding_fingerprint``, hashed from the operator's
+        # input, so schema growth and default changes never move it). A
+        # session launched before that stamp existed recorded only the old
+        # whole-dataclass hash, which no later code can recompute: for it,
+        # only mode and config name are verifiable (a one-way legacy read).
+        legacy = "session_binding_fingerprint" not in identity
+        binding = identity.get("session_binding_fingerprint")
+        if not legacy and not isinstance(binding, str):
+            raise SessionConfigurationIdentityVerificationError(
+                f"Cannot verify configuration identity for live session {session_name}: "
+                f"{identity_path} has a malformed session binding fingerprint"
+            )
+        if legacy:
+            logger.warning(
+                "Live session %s predates session binding fingerprints; verifying "
+                "its configuration mode and name only", session_name,
+            )
+        bound_mismatch = not legacy and binding != self.config.session_binding_fingerprint
+        if recorded_identity[:2] != (self.config.configuration_mode, self.config.config_name) or bound_mismatch:
             recorded_mode, recorded_config, recorded_fingerprint = recorded_identity
             raise SessionConfigurationModeMismatchError(
                 "Cannot start Repository Engine with configuration "
@@ -218,7 +269,7 @@ class SessionRestorer:
                 f"({self.config.config_fingerprint[:12]}): live session {session_name!r} "
                 f"was launched with {recorded_mode!r}/{recorded_config!r} "
                 f"({recorded_fingerprint[:12]}). Drain or terminate live sessions before "
-                "switching or editing configuration."
+                "switching configuration or editing a setting that requires a restart."
             )
 
     def _restore_single_session(
@@ -233,7 +284,6 @@ class SessionRestorer:
         """
         issue_number = self._issue_number(session_info)
         tab_name = str(session_info.get("tab_name") or "")
-        is_review = session_info["is_review"]
         session_name = self.canonical_terminal_id(session_info)
 
         # Skip if already tracking this session
@@ -243,12 +293,11 @@ class SessionRestorer:
 
         run_assets = self._required_run_assets(session_info, session_name)
         self._assert_restored_session_mode(run_assets, session_name)
+        kind, agent_label, rework_target = self._recorded_role(run_assets, session_name)
 
-        # Determine session type and session_name
-        restored_pr_number: int | None = None
-        if is_review and not session_name.startswith(
-            RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
-        ):
+        # A rework's PR and cycle come from its own ledger row (#7347).
+        restored_pr_number = rework_target.pr_number if rework_target is not None else None
+        if kind is SessionKind.REVIEW:
             match = _REVIEW_SESSION_RE.match(session_name)
             restored_pr_number = int(match.group(1)) if match else issue_number
 
@@ -264,11 +313,6 @@ class SessionRestorer:
             return None
 
         issue_obj = self.repository_host.get_issue(issue_number)
-        agent_config = None
-
-        if issue_obj and issue_obj.agent_type:
-            agent_config = self.config.agents.get(issue_obj.agent_type)
-
         if not issue_obj:
             # Create minimal issue object for reviews or if issue not found
             issue_obj = Issue(
@@ -278,25 +322,23 @@ class SessionRestorer:
                 repo=require_repo(self.config),
             )
 
-        if not agent_config:
-            # Use first available agent config as fallback
-            agent_config = next(iter(self.config.agents.values()), None)
-
-        if not agent_config:
-            logger.warning(
-                "No agent config available for session %s - skipping", session_name
-            )
-            return None
+        # The run's recorded agent role, never ``issue_obj.agent_type``: that is
+        # whichever ``agent:`` label the tracker lists first, which for a
+        # failure investigation is the focus issue's coder (#7273, #7347). The
+        # configuration fingerprint was verified above, so a recorded label
+        # that is not configured is corruption, not a settings edit.
+        try:
+            agent_config = self.config.agents[agent_label]
+        except KeyError:
+            raise RestoredSessionRoleUnrecordedError(
+                f"live session {session_name} was launched as agent "
+                f"{agent_label!r}, which this configuration does not define"
+            ) from None
 
         # Create session with domain identity
         issue_key = GitHubIssueKey(repo=require_repo(self.config), external_id=str(issue_number))
-        task_kind = _restored_task_kind(session_name, is_review)
-        session_key = SessionKey(issue=issue_key, task=task_kind)
-        # Use the agent type from issue labels, or the first available agent as fallback
-        agent_label_val = issue_obj.agent_type or next(
-            iter(self.config.agents.keys()), "unknown"
-        )
-        if task_kind is TaskKind.REWORK and self.tech_lead_authority is not None:
+        session_key = SessionKey(issue=issue_key, kind=kind)
+        if kind is SessionKind.REWORK and self.tech_lead_authority is not None:
             from .scoped_rework import note_scoped_rework_started
             note_scoped_rework_started(self.tech_lead_authority, run_assets.identity)
         return Session(
@@ -307,15 +349,34 @@ class SessionRestorer:
             worktree_path=worktree_path,
             branch_name=branch_name,
             run_assets=run_assets,
-            agent_label=agent_label_val,
+            agent_label=agent_label,
             pr_number=restored_pr_number,
+            rework_cycle=rework_target.cycle if rework_target is not None else None,
             # Rebuild the tech-lead launch grant from durable truth. Without it
             # a restored whole-board review stops acting as the exclusive
             # barrier it is, and the dashboard misreports it (#6994 F3).
             tech_lead_scope=recover_tech_lead_launch_scope(
-                self.config, issue_obj, self.tech_lead_authority
+                kind, self.config, issue_obj, self.tech_lead_authority, run_assets.identity
             ),
         )
+
+    def _recorded_role(
+        self, run_assets: SessionRunAssets, session_name: str
+    ) -> tuple[SessionKind, str, ReworkTarget | None]:
+        """The kind, agent role and rework target the ledger recorded for this run.
+
+        Replaces reading the kind off the terminal-name prefix and the role off
+        the issue's first agent label (#7347). Legacy ledger rows decode through
+        ``SessionKind.from_ledger_stamps``; a row that never recorded a role
+        (pre-role-recording allocations) is refused rather than guessed.
+        """
+        record = self._run_ledger.recorded_run(run_assets)
+        if record.agent_label is None:
+            raise RestoredSessionRoleUnrecordedError(
+                f"live session {session_name} run {run_assets.run_id} has no "
+                "durably recorded role; it will not be restored under a guess"
+            )
+        return record.session_key.kind, record.agent_label, record.rework_target
 
     def _required_run_assets(
         self,
@@ -382,11 +443,3 @@ class SessionRestorer:
             return int(match.group(1))
         return None
 
-
-def _restored_task_kind(session_name: str, is_review: bool) -> TaskKind:
-    """Preserve the worker lane when adopting a canonical terminal."""
-    if session_name.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX):
-        return TaskKind.RETROSPECTIVE_REVIEW
-    if session_name.startswith("rework-"):
-        return TaskKind.REWORK
-    return TaskKind.REVIEW if is_review else TaskKind.CODE

@@ -7,6 +7,7 @@ from issue_orchestrator.ports.tech_lead_run_record_store import (
     NO_TECH_LEAD_RUN_HISTORY,
 )
 from issue_orchestrator.ports.provider_resilience import NO_PROVIDER_CIRCUIT_STATUS
+from issue_orchestrator.ports.blocked_item_custody import NO_ENGINE_CUSTODY
 from tests.unit import test_web as _support
 from tests.unit.route_helpers import iter_route_paths
 from tests.unit.test_web import *  # noqa: F403
@@ -416,6 +417,7 @@ class TestIssueRowsEndpoint:
                 # supply one explicitly rather than default to "healthy".
                 self.provider_circuit = NO_PROVIDER_CIRCUIT_STATUS
                 self.tech_lead_run_history = NO_TECH_LEAD_RUN_HISTORY
+                self.blocked_item_custody = NO_ENGINE_CUSTODY
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
@@ -451,6 +453,7 @@ class TestIssueRowsEndpoint:
                 # supply one explicitly rather than default to "healthy".
                 self.provider_circuit = NO_PROVIDER_CIRCUIT_STATUS
                 self.tech_lead_run_history = NO_TECH_LEAD_RUN_HISTORY
+                self.blocked_item_custody = NO_ENGINE_CUSTODY
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())

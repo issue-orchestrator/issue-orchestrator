@@ -14,6 +14,8 @@ affordance lit on an issue that has nothing left to investigate.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from pathlib import Path
 
 from issue_orchestrator.control.actions import ActionType, DropTechLeadAction
@@ -281,6 +283,7 @@ def _apply_withdrawal(state: OrchestratorState, action: DropTechLeadAction) -> l
     tick = _Tick()
     tick.state = state  # type: ignore[attr-defined]
     tick.events = events  # type: ignore[attr-defined]
+    tick.pending_work_claims = MagicMock()  # type: ignore[attr-defined]
     # The apply seam hands the run's shared claim back; a real ownership owner
     # over the single-instance store keeps that observable without a fake.
     tick.run_ownership = TechLeadRunOwnership(  # type: ignore[attr-defined]
@@ -474,6 +477,37 @@ def test_an_unreadable_subject_keeps_its_run_rather_than_cancelling_it():
 
     assert _tech_lead_launches(plan) == [42]
     assert _withdrawals(plan) == []
+
+
+def test_a_closed_subject_is_withdrawn_even_while_github_holds_launches():
+    """Codex r7 (#7297): withdrawal needs no launch, so a rate-limit hold must
+    not keep a finished investigation queued until the reset."""
+    from datetime import UTC, datetime, timedelta
+
+    from issue_orchestrator.domain.host_rate_limit import (
+        HostRateLimit,
+        HostRateLimitWindow,
+    )
+
+    now = datetime.now(UTC)
+    window = HostRateLimitWindow()
+    window.observe(
+        HostRateLimit(resets_at=now + timedelta(minutes=30), kind="primary"),
+        now,
+        "review", live=frozenset({"review"}),
+    )
+    plan = _planner().plan(
+        make_snapshot(
+            issues=[_issue(42, ["agent:backend", "blocked-failed"], state="closed")],
+            pending_tech_lead=[_investigation(42)],
+            host_rate_limit_hold=window.open_at(now, live=frozenset({"review"})),
+        )
+    )
+
+    assert plan.actions_of_type(ActionType.LAUNCH_SESSION) == []
+    assert [(w.issue_number, w.reason) for w in _withdrawals(plan)] == [
+        (42, REASON_ISSUE_CLOSED)
+    ]
 
 
 def test_a_subject_whose_published_pr_is_under_review_is_withdrawn_not_launched():

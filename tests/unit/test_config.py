@@ -177,7 +177,7 @@ class TestConfig:
         assert config.repo is None
         assert config.web_port == 0
         assert config.control_api_port == 0
-        assert config.session_interactions.enabled is False
+        assert config.session_interactions.enabled is True
 
     def test_github_auth_kwargs(self):
         """GitHub auth helper exposes the repo-scoped auth settings."""
@@ -1119,7 +1119,7 @@ labels:
         """Test that queue_refresh_seconds defaults to 600."""
         config = Config()
         assert config.queue_refresh_seconds == 600
-        assert config.session_interactions.enabled is False
+        assert config.session_interactions.enabled is True
         assert config.fetch_layer_enabled is True
         assert config.fetch_layer_network_sync_seconds == 60
         assert config.fetch_layer_full_scan_interval_seconds == 1800
@@ -1179,20 +1179,51 @@ worktrees:
 
         assert config.session_interactions.enabled is True
 
-    def test_session_interactions_omitted_from_to_event_dict_when_disabled(self):
+    def test_session_interactions_default_on_when_omitted(self, tmp_path):
+        """#7343: io must answer the startup screens its own setup produces
+        (untrusted worktrees -> Codex "Folder access"), so omission means on."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+""")
+
+        assert Config.load(config_file).session_interactions.enabled is True
+
+    def test_session_interactions_explicit_false_opts_out(self, tmp_path):
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+execution:
+  session_interactions:
+    enabled: false
+""")
+
+        assert Config.load(config_file).session_interactions.enabled is False
+
+    def test_session_interactions_omitted_from_to_event_dict_when_enabled(self):
         config = Config()
 
         result = config.to_event_dict()
 
         assert "session_interactions" not in result["execution"]
 
-    def test_session_interactions_included_in_to_event_dict_when_enabled(self):
+    def test_session_interactions_included_in_to_event_dict_when_disabled(self):
         config = Config()
-        config.session_interactions.enabled = True
+        config.session_interactions.enabled = False
 
         result = config.to_event_dict()
 
-        assert result["execution"]["session_interactions"] == {"enabled": True}
+        assert result["execution"]["session_interactions"] == {"enabled": False}
 
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""
@@ -3759,6 +3790,7 @@ tech_lead:
             "kill_hung_session": "propose",
             "request_rework": "propose",
             "recover_validated_work": "propose",
+            "release_withheld_review": "execute",
         }
 
     def test_tech_lead_authority_defaults(self):
@@ -3847,15 +3879,36 @@ tech_lead:
         with pytest.raises(ValueError, match="tech_lead.authority.post_comment"):
             Config.load(config_file)
 
-    @pytest.mark.parametrize("key", ["reset_retry", "kill_hung_session"])
-    def test_tech_lead_authority_act_level_execute_is_valid_at_startup(self, key):
-        """Both current act-level actions have direct executors."""
+    def test_tech_lead_authority_kill_execute_is_valid_at_startup(self):
+        """kill_hung_session has a direct, generation-bound executor."""
         config = Config()
-        setattr(config.tech_lead.authority, key, "execute")
+        config.tech_lead.authority.kill_hung_session = "execute"
 
         errors = config.validate()
 
-        assert not any(f"tech_lead.authority.{key}" in e for e in errors), errors
+        assert not any("tech_lead.authority.kill_hung_session" in e for e in errors), errors
+
+    def test_tech_lead_authority_reset_retry_execute_is_a_startup_error(self):
+        """Reset from scratch is destructive: 'execute' would be a silent no-op
+        because the charter never runs it unattended, so it is refused (#7330)."""
+        config = Config()
+        config.tech_lead.authority.reset_retry = "execute"
+
+        errors = config.validate()
+
+        assert any(
+            "tech_lead.authority.reset_retry" in e and "destructive" in e for e in errors
+        ), errors
+
+    def test_tech_lead_authority_reset_retry_execute_is_rejected_on_load(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "repo:\n  root: /tmp/repo\n"
+            "tech_lead:\n  authority:\n    reset_retry: execute\n"
+        )
+
+        with pytest.raises(ValueError, match="reset_retry.*destructive"):
+            Config.load(config_file)
 
     def test_tech_lead_authority_mode_for_floor_and_unknown(self):
         """escalate_to_human always executes; unknown action types raise."""

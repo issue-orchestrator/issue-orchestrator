@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from .label_manager import LabelManager
+
+
+class LabelledIssue(Protocol):
+    """All review validity reads of an issue: its labels."""
+
+    @property
+    def labels(self) -> Sequence[str]: ...
+
+
+@dataclass(frozen=True)
+class _IssueLabels:
+    labels: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -37,7 +49,7 @@ def evaluate_review_validity(
     *,
     config: "Config",
     label_manager: "LabelManager",
-    issue: "Issue | None",
+    issue: LabelledIssue | None,
     pr: "PRInfo | None" = None,
     review_label_confirmed: bool = False,
 ) -> ReviewValidity:
@@ -121,4 +133,54 @@ def evaluate_review_validity(
         reason="ok",
         issue_labels=issue_labels,
         pr_labels=pr_labels,
+    )
+
+
+@dataclass(frozen=True)
+class ReviewWithholding:
+    """This owner's answer twice: as the labels stand, and without one block.
+
+    ``current`` is exactly what review discovery decides for the PR today;
+    ``without_block`` is the same decision with ``block_label`` taken off the
+    issue and nothing else changed. The review is withheld ONLY by that block
+    when today's answer is ``issue_blocked`` and the answer without it admits
+    the review (#7399) - no second copy of the validity rules is consulted.
+    """
+
+    current: ReviewValidity
+    without_block: ReviewValidity
+    block_label: str
+
+    @property
+    def withheld_only_by_block(self) -> bool:
+        return (
+            not self.current.valid
+            and self.current.reason == "issue_blocked"
+            and self.without_block.valid
+        )
+
+
+def evaluate_review_withholding(
+    *,
+    config: "Config",
+    label_manager: "LabelManager",
+    issue: LabelledIssue,
+    pr: "PRInfo",
+    block_label: str,
+) -> ReviewWithholding:
+    """Whether ``block_label`` on ``issue`` is all that keeps ``pr`` from review.
+
+    The review label is NOT taken as confirmed: a PR that lost it is withheld
+    by more than the block, because discovery would not list it at all.
+    """
+    folded = block_label.casefold()
+    released = _IssueLabels(tuple(name for name in issue.labels if name.casefold() != folded))
+    return ReviewWithholding(
+        current=evaluate_review_validity(
+            config=config, label_manager=label_manager, issue=issue, pr=pr
+        ),
+        without_block=evaluate_review_validity(
+            config=config, label_manager=label_manager, issue=released, pr=pr
+        ),
+        block_label=block_label,
     )

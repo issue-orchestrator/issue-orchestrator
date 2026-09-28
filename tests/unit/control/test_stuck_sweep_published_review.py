@@ -158,7 +158,7 @@ def test_an_exhausted_investigation_does_not_block_the_release_that_supersedes_i
 
 
 def test_the_remedy_a_budget_counts_survives_a_restart():
-    from issue_orchestrator.control.stuck_sweep import (
+    from issue_orchestrator.control.stuck_sweep_state import (
         hydrate_stuck_sweep_state,
         persist_stuck_sweep_state,
     )
@@ -366,3 +366,42 @@ def test_an_exhausted_release_budget_keeps_its_escalation():
     snapshot = gatherer.create_snapshot(state, issues=[_failed(HELD)])
 
     assert snapshot.stuck_sweep_escalations == (HELD,)
+
+
+def test_the_board_names_the_review_hold_the_sweep_observed():
+    """#7331: the sweep's hold reaches the custody owner, not "nobody"."""
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.control.blocked_item_custody_reader import (
+        StateBlockedItemCustodyReader,
+    )
+    from issue_orchestrator.domain.blocked_item_custody import CustodyState
+    from issue_orchestrator.ports.blocked_item_custody import NO_ACTION_LIVENESS_OWNER
+    from issue_orchestrator.ports.provider_resilience import StaticProviderCircuitStatusReader
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+    lm = LabelManager(_config())
+    records = {HELD: (disposition(HELD, ValidatedWorkState.RECOVERED, pr_number=500),)}
+    blocked_pr = pr(HELD, 500, labels=(lm.blocked_failed,))
+    gatherer = _gatherer([_failed(HELD)], records=records, prs={HELD: [blocked_pr]})
+    state = OrchestratorState(cached_scope_issues=[_failed(HELD)])
+
+    gatherer.create_snapshot(state, issues=[])
+
+    assert state.stuck_sweep_held_for_review == frozenset({HELD})
+    config = _config()
+    reader = StateBlockedItemCustodyReader(
+        config=config,
+        state=lambda: state,
+        labels=lm,
+        authority=InMemoryTechLeadAuthorityStore(),
+        needs_human_causes=lambda numbers: {n: frozenset() for n in numbers},
+        provider_lanes=lambda _agent: (),
+        provider_circuits=StaticProviderCircuitStatusReader(),
+        parked_actions=NO_ACTION_LIVENESS_OWNER,
+        clock=lambda: datetime.now(timezone.utc),
+    )
+    custody = reader.read([HELD]).for_issue(HELD)
+    assert custody.state is CustodyState.HELD
+    assert "open PR whose review owns it" in custody.reason
+    assert not custody.needs_attention

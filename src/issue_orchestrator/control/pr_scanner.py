@@ -51,6 +51,17 @@ class RepositoryScanner(Protocol):
 
 
 @dataclass(frozen=True)
+class ReviewAdmission:
+    """Review discovery's per-PR gate before validity: linked issue and verdict."""
+
+    issue_number: int
+    admitted: bool
+    why: str
+    #: The linked issue, when the scope check already read it.
+    issue: "Issue | None" = None
+
+
+@dataclass(frozen=True)
 class ReviewScan:
     """Result of one review scan.
 
@@ -125,6 +136,42 @@ class PRScanner:
         """Load the current issue->branch map for scan-time scoping."""
         return self._issue_branches()
 
+    @property
+    def reviews_discoverable(self) -> bool:
+        """Whether review discovery runs at all: without it no PR is ever
+        queued for review, whatever its validity (#7399)."""
+        return bool(self._discovery_label())
+
+    def _discovery_label(self) -> str | None:
+        """The label review discovery lists PRs by, or ``None`` when it does
+        not run: it needs a review agent to launch and that label."""
+        return self.config.code_review_label if self.config.code_review_agent else None
+
+    def review_admission(self, pr: PRInfo, issue_branches: Mapping[int, str]) -> "ReviewAdmission":
+        """Whether review discovery would consider ``pr`` at all, before validity.
+
+        The scan's own per-PR gate, shared with the tech lead's review release
+        (#7399) so the two cannot disagree: the PR's linked issue must be in
+        the configured scope, and the PR must be on the issue's active branch
+        (a prior attempt's PR is never reviewed).
+        """
+        issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
+        scope = self._review_scope.check_issue_number(issue_number, pr.number)
+        if not scope.in_scope:
+            return ReviewAdmission(issue_number, False, f"issue #{issue_number} {scope.reason}")
+        scoped = scope_prs_to_active_issue_branch(issue_number, [pr], issue_branches=issue_branches)
+        if not scoped.matching:
+            logger.info(
+                "[SCANNER] Ignoring review PR from prior attempt: pr=%d issue=%d branch=%s expected_branch=%s",
+                pr.number,
+                issue_number,
+                pr.branch,
+                scoped.expected_branch,
+            )
+            return ReviewAdmission(issue_number, False,
+                                   f"PR #{pr.number} is not on #{issue_number}'s active branch {scoped.expected_branch}")
+        return ReviewAdmission(issue_number, True, "admitted", scope.issue)
+
     def scan_for_reviews(
         self,
         already_queued: Sequence[PendingReview],
@@ -145,14 +192,15 @@ class PRScanner:
             The PendingReviews to queue, plus every PR skipped for a blocking
             label on its issue or on itself.
         """
-        if not self.config.code_review_agent or not self.config.code_review_label:
+        review_label = self._discovery_label()
+        if not review_label:
             return ReviewScan(reviews=[], blocked=[])
 
         with gh_audit.context(
             reason=gh_audit.AuditReason.PR_SCAN,
             scope=gh_audit.AuditScope.PERIODIC,
         ):
-            prs = self.repository.get_prs_with_label(self.config.code_review_label)
+            prs = self.repository.get_prs_with_label(review_label)
         results: list[PendingReview] = []
         blocked: list[BlockedOpenPRObservation] = []
 
@@ -176,29 +224,12 @@ class PRScanner:
             if session_name in active_review_sessions:
                 continue
 
-            issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
-
-            # Skip PRs whose linked issue is outside configured scope
-            scope = self._review_scope.check_issue_number(issue_number, pr.number)
-            if not scope.in_scope:
+            admission = self.review_admission(pr, issue_branches)
+            if not admission.admitted:
                 continue
+            issue_number = admission.issue_number
 
-            scoped = scope_prs_to_active_issue_branch(
-                issue_number,
-                [pr],
-                issue_branches=issue_branches,
-            )
-            if not scoped.matching:
-                logger.info(
-                    "[SCANNER] Ignoring review PR from prior attempt: pr=%d issue=%d branch=%s expected_branch=%s",
-                    pr.number,
-                    issue_number,
-                    pr.branch,
-                    scoped.expected_branch,
-                )
-                continue
-
-            issue = scope.issue if scope.issue is not None else self.repository.get_issue(issue_number)
+            issue = admission.issue if admission.issue is not None else self.repository.get_issue(issue_number)
             validity = evaluate_review_validity(
                 config=self.config,
                 label_manager=self._lm,

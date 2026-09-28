@@ -146,8 +146,13 @@ class _Harness:
             )
         return self.applier.apply(action)
 
-    def apply_all(self, actions):
-        return [self.apply(action) for action in actions]
+    def apply_all(self, actions, on_result=None):
+        results = []
+        for action in actions:
+            results.append(self.apply(action))
+            if on_result is not None:
+                on_result(results[-1])
+        return results
 
     def finish(self):
         return apply_completion_actions_gated(

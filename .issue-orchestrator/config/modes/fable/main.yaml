@@ -171,6 +171,22 @@ validation:
       cadence:
         max_merges_since_success: 10
         max_delay_hours: 24
+    tech-lead-exam:
+      # The live tech-lead exam (#7304): plants known faults (A/B/C) and an
+      # upgrade with work in flight (U), runs the real engine and tech lead
+      # against GitHub, and grades the outcome. It costs real model calls and
+      # GitHub budget (~45 min for all four cases), so it runs on this cadence
+      # rather than in the PR gate; a failure narrows to the regressing merge.
+      enabled: true
+      # Case U upgrades from ten merges back: the span one cadence covers.
+      command: [make, test-tech-lead-exam, EXAM_ENGINE_REF=HEAD, EXAM_BASE_REF=HEAD~10]
+      setup_command: [make, venv-fast]
+      issue_agent_label: agent:backend
+      branch: main
+      timeout_seconds: 5400
+      cadence:
+        max_merges_since_success: 10
+        max_delay_hours: 24
   # TEMPORARILY on the direct backend — see #7163.
   #
   # The condor backend submits the unit lane with `request_cpus = 3` and then
@@ -220,12 +236,14 @@ tech_lead:
   # total live agents are then bounded at max_concurrent_sessions + 1.
   max_concurrent: 1
   # Direct actions execute through owners that revalidate their exact observed
-  # authority immediately before mutating.
+  # authority immediately before mutating. reset_retry (reset from scratch) is
+  # destructive and always needs operator approval (#7330), so it stays at its
+  # default, propose.
   authority:
-    reset_retry: execute
     kill_hung_session: execute
     request_rework: execute
     recover_validated_work: execute
+    release_withheld_review: execute
     # Auto-file create_issue follow-ups directly (the default), made explicit now
     # that it is safe: duplicate proposals are deduped against the full open
     # backlog (#6880 gate + #6882 trusted SQL corpus), so the tech lead cannot

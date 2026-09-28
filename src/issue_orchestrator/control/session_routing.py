@@ -39,15 +39,16 @@ from .pending_session_queues import (
     TECH_LEAD_LAUNCH_RETRY_LIMIT,
     PendingSessionQueues,
 )
+from .host_rate_limit_launch_gate import HostRateLimitLaunchGate
 from .in_flight_work import InFlightWorkLedger
 from .launch_transaction import (
     LaunchSettlement,
     PendingWorkLaunchClaim,
     RetryPlan,
 )
-from .session_launch_types import LaunchDisposition
+from .session_launch_types import LaunchDisposition, LaunchStep
 from .session_launcher import SessionLauncher
-from .session_manager import SessionManager, SessionRef
+from .session_manager import SessionManager
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -66,7 +67,7 @@ def orchestrator_launch_review_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a review session and update orchestrator queues."""
     pending_queues = PendingSessionQueues(state)
     # One object for the whole launch: the launcher holds the claim durably
@@ -75,16 +76,20 @@ def orchestrator_launch_review_session(
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.REVIEW, review), claims=claims
     )
-    result = session_launcher.launch_review_session(
-        review, state.active_sessions, work_claim=work
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_review_session(
+            review, state.active_sessions, work_claim=work
+        ),
+        issue_number=review.issue_number,
+        work=PendingWorkKind.REVIEW.value,
     )
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_review(review.pr_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=review.issue_number,
-                session_name=f"review-{review.pr_number}",
+                session_name=terminal,
                 is_review=True,
                 tab_name=f"Review PR #{review.pr_number}",
             ),
@@ -101,27 +106,27 @@ def orchestrator_launch_retrospective_review_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a retrospective review session and update orchestrator queues."""
     pending_queues = PendingSessionQueues(state)
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.RETROSPECTIVE_REVIEW, review),
         claims=claims,
     )
-    result = session_launcher.launch_retrospective_review_session(
-        review,
-        state.active_sessions,
-        work_claim=work,
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_retrospective_review_session(
+            review, state.active_sessions, work_claim=work
+        ),
+        issue_number=review.issue_number,
+        work=PendingWorkKind.RETROSPECTIVE_REVIEW.value,
     )
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_retrospective_review(review.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=review.issue_number,
-                session_name=SessionRef.for_retrospective_review(
-                    review.issue_number
-                ).name,
+                session_name=terminal,
                 is_review=True,
             ),
             state=state,
@@ -137,16 +142,20 @@ def orchestrator_launch_rework_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a rework session and update orchestrator queues."""
     pending_queues = PendingSessionQueues(state)
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.REWORK, rework), claims=claims
     )
-    result = session_launcher.launch_rework_session(
-        rework, state.active_sessions, work_claim=work
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_rework_session(
+            rework, state.active_sessions, work_claim=work
+        ),
+        issue_number=rework.resolve_issue_number(),
+        work=PendingWorkKind.REWORK.value,
     )
-    def _restore_rework() -> Optional[Session]:
+    def _restore_rework(terminal: str) -> Optional[Session]:
         issue_number = rework.resolve_issue_number()
         if issue_number is None:
             logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
@@ -154,7 +163,7 @@ def orchestrator_launch_rework_session(
         return _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=issue_number,
-                session_name=f"rework-{issue_number}",
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -175,22 +184,26 @@ def orchestrator_launch_validation_retry_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a validation retry session and update retry queue tracking."""
     pending_queues = PendingSessionQueues(state)
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.VALIDATION_RETRY, retry), claims=claims
     )
-    result = session_launcher.launch_validation_retry_session(
-        retry, state.active_sessions, work_claim=work
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_validation_retry_session(
+            retry, state.active_sessions, work_claim=work
+        ),
+        issue_number=retry.issue_number,
+        work=PendingWorkKind.VALIDATION_RETRY.value,
     )
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_validation_retry(retry.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=retry.issue_number,
-                session_name=f"issue-{retry.issue_number}",
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -208,7 +221,7 @@ def orchestrator_launch_tech_lead_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
     claims: PendingWorkClaimStore,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch a queued tech_lead session and update orchestrator queues.
 
     The pending-tech-lead queue carries every tech_lead variant — threshold-created
@@ -224,13 +237,17 @@ def orchestrator_launch_tech_lead_session(
     :class:`PendingSessionQueues` on success, on restore of an existing
     terminal, and on permanent launch failure (labels-as-truth recovers a
     dropped batch at startup; a dropped investigation is a best-effort audit).
-    It is retained in exactly three cases:
+    It is retained in exactly four cases:
 
     - ``EXISTING_TERMINAL`` — a terminal that could not be restored yet;
     - ``PROVIDER_DEFERRED`` — the provider refused before anything was
       attempted. Nothing about the investigation failed, so it keeps its full
       retry budget and simply waits for a tick when the provider is ready
       (#6999 F10);
+    - ``HOST_RATE_LIMITED`` — GitHub refused on a rate limit with a known
+      reset (#7297). Also no budget spent: the gate defers every launch until
+      the reset, and only a limit that holds past its deferral bound comes
+      back as a ``RETRYABLE_FAILURE`` that counts;
     - ``RETRYABLE_FAILURE`` — the launch attempt failed transiently BEFORE the
       session started: required-input prep, or a terminal that never came up.
       For failure investigations the queued item is the only record of the
@@ -258,14 +275,19 @@ def orchestrator_launch_tech_lead_session(
     work = PendingWorkLaunchClaim(
         claim=PendingWorkClaim(PendingWorkKind.TECH_LEAD, tech_lead), claims=claims
     )
-    result = session_launcher.launch_issue_session(
-        # repo is REQUIRED, not decorative: it becomes `issue_scope` in the run
-        # ledger via `Issue.key.scope()`, and an empty one poisons the row so the
-        # session can never terminalize (#7255 -- 218 re-completions in 2h).
-        Issue(tech_lead.issue_number, tech_lead.title, [agent], repo=require_repo(config)),
-        state.active_sessions,
-        tech_lead_scope=tech_lead.launch_scope(),
-        work_claim=work,
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_issue_session(
+            # repo is REQUIRED, not decorative: it becomes `issue_scope` in the
+            # run ledger via `Issue.key.scope()`, and an empty one poisons the
+            # row so the session can never terminalize (#7255 -- 218
+            # re-completions in 2h).
+            Issue(tech_lead.issue_number, tech_lead.title, [agent], repo=require_repo(config)),
+            state.active_sessions,
+            tech_lead_scope=tech_lead.launch_scope(),
+            work_claim=work,
+        ),
+        issue_number=tech_lead.issue_number,
+        work=PendingWorkKind.TECH_LEAD.value,
     )
 
     def _plan_retry(_claim: PendingWorkClaim) -> RetryPlan:
@@ -290,10 +312,10 @@ def orchestrator_launch_tech_lead_session(
     return LaunchSettlement(
         work=work,
         remove=lambda: pending_queues.remove_tech_lead(tech_lead.issue_number),
-        restore_existing=lambda: _restore_existing_terminal(
+        restore_existing=lambda terminal: _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=tech_lead.issue_number,
-                session_name=f"issue-{tech_lead.issue_number}",
+                session_name=terminal,
                 is_review=False,
             ),
             state=state,
@@ -368,15 +390,26 @@ def _commit_dropped_tech_lead(
     return False
 
 
+def _rate_limit_gate(
+    state: "OrchestratorState", session_launcher: SessionLauncher
+) -> HostRateLimitLaunchGate:
+    """Every launch below passes the host's rate-limit window first (#7297).
+
+    One gate over the one shared window, so a limit observed by any launch
+    path defers all of them, and none counts the wait as a failure.
+    """
+    return HostRateLimitLaunchGate.for_state(state, session_launcher.events)
+
+
 def session_launcher_callback(
     session_type: "SessionType",
     number: int,
-    launch_issue_fn: Callable[[int], Optional[Session]],
-    launch_review_fn: Callable[[int], Optional[Session]],
-    launch_retrospective_review_fn: Callable[[int], Optional[Session]],
-    launch_rework_fn: Callable[[int], Optional[Session]],
-    launch_tech_lead_fn: Callable[[int], Optional[Session]],
-) -> Optional[Session]:
+    launch_issue_fn: Callable[[int], LaunchStep],
+    launch_review_fn: Callable[[int], LaunchStep],
+    launch_retrospective_review_fn: Callable[[int], LaunchStep],
+    launch_rework_fn: Callable[[int], LaunchStep],
+    launch_tech_lead_fn: Callable[[int], LaunchStep],
+) -> LaunchStep:
     """Route SessionManager launch callbacks by session type."""
     from .session_manager import SessionType
 
@@ -439,12 +472,18 @@ def restore_running_sessions(
     from .claim_quarantine import QuarantineSubject
 
     ledger = InFlightWorkLedger(state, claims)
+    # A registry row whose run predates run-role recording cannot be a live
+    # session (agents do not survive an engine stop): it is treated as dead,
+    # never quarantined, and its claim is requeued by the sweep below.
+    stale = [info for info in running if session_restorer.predates_run_roles(info)]
+    for info in stale:
+        logger.warning(
+            "[ORPHAN] Registry entry %s predates run-role recording; treating its "
+            "run as ended, its queued work is requeued", info.get("session_name"),
+        )
+    running = [info for info in running if info not in stale]
     restored = session_restorer.restore_sessions(running, state.active_sessions)
-    restoration = ledger.rehydrate(
-        restored,
-        agent_configs=session_restorer.config.agents,
-        tech_lead_label=session_restorer.config.tech_lead_review_agent,
-    )
+    restoration = ledger.rehydrate(restored)
     for quarantined in restoration.quarantined:
         quarantine.quarantine(
             QuarantineSubject.live_run_with_unreadable_claim(quarantined)
@@ -552,18 +591,24 @@ def orchestrator_launch_session(
     session_restorer: "SessionRestorer | None" = None,
     *,
     tech_lead_scope: TechLeadLaunchScope | None = None,
-) -> Optional[Session]:
+) -> LaunchStep:
     """Launch an issue session and update active-session tracking."""
-    result = session_launcher.launch_issue_session(
-        issue, state.active_sessions, tech_lead_scope=tech_lead_scope
+    result = _rate_limit_gate(state, session_launcher).launch(
+        lambda: session_launcher.launch_issue_session(
+            issue, state.active_sessions, tech_lead_scope=tech_lead_scope
+        ),
+        issue_number=issue.number,
+        work="issue",
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
-    elif result.disposition is LaunchDisposition.EXISTING_TERMINAL and session_restorer is not None:
+        return LaunchStep.launched(result.session)
+    if result.disposition is LaunchDisposition.EXISTING_TERMINAL and session_restorer is not None:
+        assert result.existing_terminal is not None  # the result type's invariant
         restored = _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
                 issue_number=issue.number,
-                session_name=f"issue-{issue.number}",
+                session_name=result.existing_terminal,
                 is_review=False,
             ),
             state=state,
@@ -571,5 +616,5 @@ def orchestrator_launch_session(
             session_restorer=session_restorer,
         )
         if restored:
-            return restored
-    return result.session if result.success else None
+            return LaunchStep.launched(restored)
+    return LaunchStep.of_result(result)

@@ -8,7 +8,7 @@ from issue_orchestrator.domain.coder_prompt import (
     CoderPromptAddendumUnavailable,
     PreparedCoderPromptAddendum,
 )
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.internal_review_prompt import (
     FileInternalReviewPromptAddendum,
     build_coder_prompt_addendum_provider,
@@ -31,17 +31,15 @@ def _provider(
         enabled=enabled,
         max_rounds=max_rounds,
         instructions_path=instructions_path,
-        tech_lead_agent_label_supplier=lambda: None,
     )
 
 
 def _prepare(
     provider: FileInternalReviewPromptAddendum,
     *,
-    task: TaskKind = TaskKind.CODE,
-    agent_label: str = "agent:dev",
+    kind: SessionKind = SessionKind.CODE,
 ) -> PreparedCoderPromptAddendum | CoderPromptAddendumUnavailable:
-    return provider.prepare(task=task, agent_label=agent_label)
+    return provider.prepare(kind=kind)
 
 
 def test_disabled_provider_does_not_require_instruction_file(tmp_path: Path) -> None:
@@ -98,45 +96,12 @@ def test_loaded_config_normalizes_instruction_path_before_runtime_read(
     config = Config.load(config_path)
     config.repo_root = tmp_path
 
-    preparation = build_coder_prompt_addendum_provider(config).prepare(
-        task=TaskKind.CODE,
-        agent_label="agent:dev",
-    )
+    preparation = build_coder_prompt_addendum_provider(config).prepare(kind=SessionKind.CODE)
 
     assert isinstance(preparation, PreparedCoderPromptAddendum)
     addendum = preparation.addendum
     assert addendum is not None
     assert "Review the coder's work." in addendum
-
-
-def test_built_provider_reads_live_tech_lead_agent_label(tmp_path: Path) -> None:
-    instructions = tmp_path / ".io" / "internal-review.md"
-    instructions.parent.mkdir()
-    instructions.write_text("Review the coder's work.", encoding="utf-8")
-    config_path = tmp_path / ".issue-orchestrator.yaml"
-    config_path.write_text(
-        "review:\n"
-        "  tech_lead_review_agent: agent:old-tech-lead\n"
-        "  internal:\n"
-        "    enabled: true\n",
-        encoding="utf-8",
-    )
-    config = Config.load(config_path)
-    config.repo_root = tmp_path
-    provider = build_coder_prompt_addendum_provider(config)
-
-    config.tech_lead_review_agent = "agent:new-tech-lead"
-
-    assert provider.prepare(
-        task=TaskKind.CODE,
-        agent_label="agent:new-tech-lead",
-    ) == PreparedCoderPromptAddendum(None)
-    old_label_preparation = provider.prepare(
-        task=TaskKind.CODE,
-        agent_label="agent:old-tech-lead",
-    )
-    assert isinstance(old_label_preparation, PreparedCoderPromptAddendum)
-    assert old_label_preparation.addendum is not None
 
 
 def test_enabled_provider_fails_when_instruction_file_is_missing(
@@ -189,32 +154,16 @@ def test_enabled_provider_rejects_symlink_escape(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("task", "agent_label"),
-    [
-        (TaskKind.REVIEW, "agent:reviewer"),
-        (TaskKind.RETROSPECTIVE_REVIEW, "agent:reviewer"),
-        (TaskKind.TECH_LEAD, "agent:tech-lead"),
-        (TaskKind.CODE, "agent:tech-lead"),
-        (TaskKind.CODE, "agent:architecture"),
-    ],
+    "kind",
+    [SessionKind.REVIEW, SessionKind.RETROSPECTIVE_REVIEW, SessionKind.TECH_LEAD, SessionKind.HISTORICAL],
 )
-def test_non_coder_roles_do_not_read_instruction_file(
+def test_non_coder_kinds_do_not_read_instruction_file(
     tmp_path: Path,
-    task: TaskKind,
-    agent_label: str,
+    kind: SessionKind,
 ) -> None:
-    provider = _provider(tmp_path)
-    if agent_label == "agent:architecture":
-        provider = FileInternalReviewPromptAddendum(
-            repository_root=tmp_path,
-            enabled=True,
-            max_rounds=5,
-            instructions_path=".io/internal-review.md",
-            tech_lead_agent_label_supplier=lambda: "agent:architecture",
-        )
+    """Only coding and rework sessions get the addendum; the kind decides.
 
-    assert _prepare(
-        provider,
-        task=task,
-        agent_label=agent_label,
-    ) == PreparedCoderPromptAddendum(None)
+    A tech-lead run used to launch stamped CODE and had to be excluded again by
+    its agent label; its own kind now excludes it (#7347).
+    """
+    assert _prepare(_provider(tmp_path), kind=kind) == PreparedCoderPromptAddendum(None)

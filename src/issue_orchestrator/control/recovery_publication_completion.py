@@ -49,7 +49,8 @@ class RecoveryPublicationCompletion:
         observed = perform(lambda: self._verifier.confirm_target(command))
         confirmed = target_from_verification(prepared, observed)
         if confirmed != target:
-            return RecoveryAttemptPending("Publication no longer matches the finalization target", observed.failure)
+            return RecoveryAttemptPending("Publication no longer matches the finalization target",
+                                          observed.failure, rate_limit=observed.rate_limit)
         request = PublishedWorkFinalizationRequest(
             state, token, claim, record.finalization_phase, target,
             RetryReviewRouting(target.key.branch_name, False,
@@ -61,10 +62,12 @@ class RecoveryPublicationCompletion:
         )
         finalized = self._finalizer.finalize(request)
         if finalized.status is not FinalizationStatus.FINALIZED:
-            return RecoveryAttemptPending(finalized.message, finalized.failure)
+            return RecoveryAttemptPending(finalized.message, finalized.failure,
+                                          rate_limit=finalized.rate_limit)
         observed = perform(lambda: self._verifier.confirm_target(command))
         if target_from_verification(prepared, observed) != target:
-            return RecoveryAttemptPending("Publication changed before durable resolution", observed.failure)
+            return RecoveryAttemptPending("Publication changed before durable resolution",
+                                          observed.failure, rate_limit=observed.rate_limit)
         if not recovery_resolution_complete(record, target):
             resolved = perform(lambda: self._store.resolve_published(
                 claim, record_id=claim.record_id, published_head_sha=target.key.validated_head_sha,

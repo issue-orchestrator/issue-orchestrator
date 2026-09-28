@@ -10,11 +10,13 @@ from .actions import (
     ActionResult,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
+from .tech_lead_charter_lifecycle import link_approved_proposal
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
 if TYPE_CHECKING:
@@ -29,6 +31,7 @@ _TechLeadOpAction = TypeVar(
     KillHungSessionAction,
     RequestReworkAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
 )
 
 
@@ -52,16 +55,6 @@ def _terminal_outcome_comment(
     return None
 
 
-def _proposal_op_type(action: _TechLeadOpAction) -> str:
-    if isinstance(action, RequestReworkAction):
-        return "request_rework"
-    if isinstance(action, ResetRetryIssueAction):
-        return "reset_retry"
-    if isinstance(action, KillHungSessionAction):
-        return "kill_hung_session"
-    return "recover_validated_work"
-
-
 def finalize_tech_lead_op_execution(
     result: ActionResult,
     action: _TechLeadOpAction,
@@ -74,7 +67,7 @@ def finalize_tech_lead_op_execution(
     proposal_issue = action.proposal_issue_number
     if not proposal_issue:
         return result
-    op_type = _proposal_op_type(action)
+    op_type = action.op_type
     comment = _terminal_outcome_comment(result, op_type, action.issue_number)
     if comment is None:
         return result
@@ -85,6 +78,10 @@ def finalize_tech_lead_op_execution(
             " TechLeadAuthorityStore wired into this applier",
         )
     try:
+        # Link the outcome BEFORE the proposal closes: a closed proposal whose
+        # op row survives is what terminal cleanup reads as "declined", so the
+        # approval must already be on the record by then (#7330 review r2 F1).
+        link_approved_proposal(ops, proposal_issue, applied=result.success)
         if before_finalize_write is not None:
             before_finalize_write()
         repository_host.add_comment(proposal_issue, comment)

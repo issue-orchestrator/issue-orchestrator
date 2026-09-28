@@ -662,7 +662,7 @@ def apply_append_pattern_observation(
             "Failed to append pattern observation for signature %r",
             action.pattern_signature,
         )
-        return ActionResult.fail(action, str(exc))
+        return ActionResult.fail_from(action, exc)
     if outcome.deduplicated:
         return ActionResult.ok(
             action, issue_number=action.issue_number, deduplicated=True

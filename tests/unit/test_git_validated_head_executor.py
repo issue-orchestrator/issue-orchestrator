@@ -6,6 +6,8 @@ import pytest
 
 from issue_orchestrator.domain.exact_git import ExactPushOutcome
 from issue_orchestrator.domain.publication_remote import (
+    PrCreateRejection,
+    PublicationPrCreateRejected,
     PublicationPullRequest,
     PublicationPrState,
     PublicationRemoteError,
@@ -26,6 +28,7 @@ from issue_orchestrator.execution.git_validated_head_executor import (
     GitValidatedHeadExecutor,
 )
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+from .control.liveness_doubles import rate_limited
 from .git_escrow_support import git_rig
 
 
@@ -35,7 +38,12 @@ class Remote:
         self.prs = []
         self.created = 0
         self.read_error = False
+        # What a failed read was raised from (a typed rate limit, say).
+        self.read_error_cause = None
         self.lost_create = False
+        self.create_rejection = None
+        self.adopt_on_exists = False
+        self.rejected_creates = 0
         self.on_branch_read = None
         self.stale_pr_head = None
 
@@ -44,7 +52,7 @@ class Remote:
 
     def read_branch(self, command):
         if self.read_error:
-            raise PublicationRemoteError("offline")
+            raise PublicationRemoteError("offline") from self.read_error_cause
         result = self.rig.git.run(
             self.rig.remote,
             ["rev-parse", "--verify", f"refs/heads/{command.branch_name}"],
@@ -74,6 +82,13 @@ class Remote:
         )
 
     def create_pr(self, command):
+        if self.create_rejection is not None:
+            # A host refusal creates nothing; "already exists" names a PR
+            # this operation made earlier, visible only on a later listing.
+            self.rejected_creates += 1
+            if self.create_rejection is PrCreateRejection.ALREADY_EXISTS and self.adopt_on_exists:
+                self.add_pr(command)
+            raise PublicationPrCreateRejected(self.create_rejection, "PR create refused: host said no")
         self.created += 1
         pr = self.add_pr(
             command, body=publication_marker(command.issue_number, command.branch_name)
@@ -168,6 +183,31 @@ def test_failed_read_is_never_absence(setup):
     assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
     assert outcome.push_outcome is None
     assert remote.created == 0
+
+
+@pytest.mark.parametrize("stage", ["branch", "pr"])
+def test_a_rate_limited_remote_read_carries_its_limit_to_the_outcome(setup, stage):
+    """The executor catches remote errors into outcomes, so the outcome is
+    the only place the host's reset can travel to the liveness owner (#7350)."""
+    rig, remote, executor, command = setup
+    remote.read_error_cause = limited = rate_limited()
+    if stage == "branch":
+        remote.read_error = True
+    else:
+        rig.run("push", "origin", f"{rig.target}:refs/heads/feature")
+        listed = remote.list_prs
+
+        def list_then_fail(command):
+            remote.read_error = True
+            return listed(command)
+
+        remote.list_prs = list_then_fail
+
+    outcome = executor.publish_or_reconcile(command)
+
+    assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
+    assert outcome.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert outcome.rate_limit == limited.rate_limit
 
 
 def test_auth_failure_during_destination_resolution_is_retryable_without_effect(setup):
@@ -520,3 +560,43 @@ def test_the_typed_partial_claim_decides_not_the_rendered_body(setup):
 def test_publication_content_refuses_an_untyped_partial_claim():
     with pytest.raises(ValueError, match="typed partial claim"):
         PublicationContent("#1: Feature", "Refs #1", True, "yes")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("rejection", "failure"),
+    [
+        (PrCreateRejection.NO_COMMITS, ValidatedWorkFailure.PR_CREATE_NO_COMMITS),
+        (PrCreateRejection.INVALID, ValidatedWorkFailure.PR_CREATE_REJECTED),
+    ],
+)
+def test_definite_create_refusal_is_permanent_not_transient(setup, rejection, failure):
+    """#7346: a 422 used to surface as REMOTE_UNREADABLE and retry forever."""
+    rig, remote, executor, command = setup
+    remote.create_rejection = rejection
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.REJECTED
+    assert not outcome.retryable
+    assert outcome.failure is failure
+    assert outcome.pr_number is None
+    assert outcome.observed_remote_head_sha == rig.target
+    assert remote.rejected_creates == 1 and remote.created == 0
+
+
+def test_already_exists_refusal_adopts_this_operations_pr(setup):
+    rig, remote, executor, command = setup
+    remote.create_rejection = PrCreateRejection.ALREADY_EXISTS
+    remote.adopt_on_exists = True
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.PUBLISHED
+    assert outcome.pr_attribution is PullRequestAttribution.OPERATION_MARKER
+    assert outcome.pr_head_sha == rig.target
+    assert remote.created == 0
+
+
+def test_already_exists_refusal_without_a_listed_pr_is_bounded_lag(setup):
+    _, remote, executor, command = setup
+    remote.create_rejection = PrCreateRejection.ALREADY_EXISTS
+    outcome = executor.publish_or_reconcile(command)
+    assert outcome.status is PublishValidatedHeadStatus.TRANSIENT_FAILURE
+    assert outcome.failure is ValidatedWorkFailure.REMOTE_UNREADABLE
+    assert "not listed yet" in outcome.message

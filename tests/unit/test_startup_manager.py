@@ -159,6 +159,7 @@ def startup_manager(
         issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         startup_worktree_reconciler=_startup_worktree_reconciler(),
         label_store=mock_label_store,
+        pending_work_claims=MagicMock(),
     )
 
 
@@ -381,6 +382,7 @@ class TestStartupManagerInProgressIssues:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=queue_cache_store,
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         mock_state = MagicMock()
@@ -566,6 +568,7 @@ class TestStartupManagerLabelStoreReconcile:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=store,
+            pending_work_claims=MagicMock(),
         )
 
         # Warm cache snapshot captured before recovery: still in-progress.
@@ -638,6 +641,7 @@ class TestStartupManagerLabelStoreReconcile:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=queue_cache_store,
             label_store=store,
+            pending_work_claims=MagicMock(),
         )
         return sm, store, mock_repository_host
 
@@ -1338,6 +1342,7 @@ class TestStartupManagerResumePartialWork:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         await manager.run_startup(sample_state)
@@ -1398,6 +1403,7 @@ class TestStartupManagerResumePartialWork:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         await manager.run_startup(sample_state)
@@ -1546,7 +1552,7 @@ class TestStartupManagerValidationRetryRecovery:
 
         Regression for #6426: a validation-state.json left under a
         ``...__retrospective-review-<issue>`` run (pre-fix bug or crash boundary)
-        must not relaunch as TaskKind.CODE and open a PR on an empty branch.
+        must not relaunch as SessionKind.CODE and open a PR on an empty branch.
         """
         mock_config.worktree_base = tmp_path
         worktree = tmp_path / f"{mock_config.repo_root.name}-42"
@@ -1595,7 +1601,7 @@ class TestStartupManagerValidationRetryRecovery:
 
         Regression for #6426: provenance must be explicit. An unclassified
         ``...__mystery-<issue>`` run with retry state must not be silently
-        relaunched as a coding (TaskKind.CODE) validation retry.
+        relaunched as a coding (SessionKind.CODE) validation retry.
         """
         mock_config.worktree_base = tmp_path
         worktree = tmp_path / f"{mock_config.repo_root.name}-42"
@@ -1725,6 +1731,7 @@ class TestStartupGitHubCallBudget:
             update_queue_cache_fn=lambda: None,
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1758,6 +1765,7 @@ class TestStartupGitHubCallBudget:
             update_queue_cache_fn=lambda: None,
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1784,6 +1792,7 @@ class TestStartupGitHubCallBudget:
             update_queue_cache_fn=lambda: None,
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1837,6 +1846,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1875,6 +1885,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         state = OrchestratorState()
@@ -1907,6 +1918,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         state = OrchestratorState()
@@ -1945,6 +1957,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
+            pending_work_claims=MagicMock(),
         )
 
         caplog.clear()
@@ -2049,8 +2062,64 @@ class TestStartupSweepsThePendingWorkLedger:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
+            pending_work_claims=MagicMock(),
         )
 
         await manager.run_startup(sample_state)
 
         restore_sessions_fn.assert_called_once_with([])
+
+
+@pytest.mark.parametrize(
+    ("live_terminal", "cleared"),
+    [
+        # A tech-lead run is ``tech-lead-N`` since #7347 and holds the claim.
+        ("tech-lead-7", False),
+        ("issue-7", False),
+        # A rework never holds the issue's in-progress claim.
+        ("rework-7", True),
+        (None, True),
+    ],
+)
+def test_an_in_progress_issue_is_orphaned_only_when_no_claim_holder_is_live(
+    mock_config,
+    mock_events,
+    mock_runner,
+    mock_repository_host,
+    mock_action_applier,
+    mock_issue_branches_fn,
+    mock_label_store,
+    sample_state,
+    live_terminal,
+    cleared,
+):
+    manager = StartupManager(
+        config=mock_config,
+        events=mock_events,
+        runner=mock_runner,
+        repository_host=mock_repository_host,
+        action_applier=mock_action_applier,
+        issue_branches_fn=mock_issue_branches_fn,
+        session_exists_fn=lambda name: name == live_terminal,
+        restore_sessions_fn=MagicMock(),
+        launch_session_fn=lambda issue: None,
+        update_queue_cache_fn=lambda: None,
+        issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        startup_worktree_reconciler=_startup_worktree_reconciler(),
+        label_store=mock_label_store,
+        pending_work_claims=MagicMock(),
+    )
+    mock_action_applier.apply.return_value = MagicMock(success=True)
+    issue = Issue(7, "Anchor", labels=["in-progress", "agent:tech-lead"], repo="owner/repo")
+    resume: list = []
+
+    manager._analyze_and_handle_issue(sample_state, issue, {}, resume, "agent:tech-lead")
+
+    removed = [
+        call.args[0]
+        for call in mock_action_applier.apply.call_args_list
+        if isinstance(call.args[0], RemoveLabelAction)
+        and call.args[0].label == "in-progress"
+    ]
+    assert bool(removed) is cleared
+    assert resume == []

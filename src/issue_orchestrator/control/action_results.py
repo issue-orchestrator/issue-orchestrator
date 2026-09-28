@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
+from ..ports.repository_host import host_rate_limit_of
 
 if TYPE_CHECKING:
     from .action_base import Action
@@ -42,6 +44,9 @@ class ActionResult:
     error: Optional[str] = None
     details: dict[str, Any] = field(default_factory=dict)
     validated_work: ValidatedWorkDispositionBatch | None = None
+    #: Set when the mutation failed because the repository host refused it on
+    #: a rate limit (#7297), so a launch can defer instead of failing.
+    host_rate_limit: HostRateLimit | None = None
 
     @property
     def success(self) -> bool:
@@ -90,6 +95,43 @@ class ActionResult:
         )
 
     @classmethod
+    def fail_limited(
+        cls,
+        action: "Action",
+        error: str,
+        host_rate_limit: HostRateLimit | None,
+        **details: str | int | bool | list[str] | None,
+    ) -> "ActionResult":
+        """A failure forwarding a typed GitHub rate limit a composite applier
+        observed in a result or exception it wrapped (#7350), so the liveness
+        owner waits for its reset instead of spending an attempt."""
+        return cls(
+            action=action,
+            result_type=ActionResultType.FAILURE,
+            error=error,
+            details=details,
+            host_rate_limit=host_rate_limit,
+        )
+
+    @classmethod
+    def fail_from(
+        cls, action: "Action", error: Exception, **details: str | int | bool | list[str] | None
+    ) -> "ActionResult":
+        """A failure raised by ``error``, keeping any typed host rate limit behind it.
+
+        Every applier that turns a caught exception into a failure uses this, so
+        the action liveness owner sees a GitHub rate limit as a wait until its
+        reset rather than as a spent attempt (#7350).
+        """
+        return cls(
+            action=action,
+            result_type=ActionResultType.FAILURE,
+            error=str(error),
+            details=details,
+            host_rate_limit=host_rate_limit_of(error),
+        )
+
+    @classmethod
     def skip(
         cls,
         action: "Action",
@@ -120,3 +162,29 @@ class SupportsApplyAction(Protocol):
     """
 
     def apply(self, action: "Action") -> ActionResult: ...
+
+
+@dataclass
+class FailureCollector:
+    """The failures of a composite applier's several writes, as ONE result.
+
+    Keeps each caught exception's typed GitHub rate limit (#7350): the result
+    carries the one that lifts last, since before it at least one write would
+    be refused again, so the liveness owner waits instead of spending attempts.
+    """
+
+    messages: list[str] = field(default_factory=list)
+    limits: list[HostRateLimit] = field(default_factory=list)
+
+    def add(self, message: str, error: Exception) -> None:
+        self.messages.append(message)
+        limit = host_rate_limit_of(error)
+        if limit is not None:
+            self.limits.append(limit)
+
+    def __bool__(self) -> bool:
+        return bool(self.messages)
+
+    def result(self, action: "Action") -> ActionResult:
+        latest = max(self.limits, key=lambda limit: limit.resets_at) if self.limits else None
+        return ActionResult.fail_limited(action, "; ".join(self.messages), latest)

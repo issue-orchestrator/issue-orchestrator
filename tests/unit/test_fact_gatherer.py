@@ -26,7 +26,8 @@ from issue_orchestrator.domain.models import (
     SessionHistoryEntry,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -112,6 +113,75 @@ def sample_state():
 def fact_gatherer(mock_config, mock_repository_host):
     """Create a FactGatherer instance."""
     return FactGatherer(config=mock_config, repository_host=mock_repository_host)
+
+
+class TestFactGathererHostRateLimit:
+    """#7297: the planner can only honour a rate-limit window the tick sampled."""
+
+    def test_open_window_reaches_the_snapshot(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        from datetime import UTC, datetime, timedelta
+
+        from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
+        from issue_orchestrator.domain.host_rate_limit import HostRateLimit
+
+        now = datetime.now(UTC)
+        resets = now + timedelta(minutes=30)
+        sample_state.host_rate_limit.observe(
+            HostRateLimit(resets_at=resets, kind="primary", resource="search"), now,
+            "tech_lead", live=live_episode_keys(sample_state),
+        )
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.host_rate_limit_hold is not None
+        assert snapshot.host_rate_limit_hold.limit.resets_at == resets
+
+    def test_no_window_leaves_launches_free(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.host_rate_limit_hold is None
+
+
+class TestFactGathererRecoveryHeldReviews:
+    """#7455: planning sees which queued reviews the recovery owner holds."""
+
+    def test_a_review_whose_issue_the_recovery_owner_holds_is_reported_held(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
+        from issue_orchestrator.domain.models import PendingReview
+
+        for pr, issue in ((70, 7), (80, 8)):
+            assert sample_state.queue_pending_review(
+                PendingReview(FakeIssueKey(name=str(issue)), pr, "url", "branch", issue)
+            )
+        held_issues = {7}
+        fact_gatherer.recovery_holds = Mock(
+            holds_recovery=lambda issue_number: issue_number in held_issues
+        )
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.recovery_held_reviews == frozenset({70})
+
+    def test_an_unreadable_hold_leaves_the_decision_to_launch_time(
+        self, fact_gatherer, sample_state, sample_issues
+    ):
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
+        from issue_orchestrator.domain.models import PendingReview
+
+        assert sample_state.queue_pending_review(
+            PendingReview(FakeIssueKey(name="7"), 70, "url", "branch", 7)
+        )
+        fact_gatherer.recovery_holds = Mock(holds_recovery=Mock(side_effect=OSError("locked")))
+
+        snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
+
+        assert snapshot.recovery_held_reviews == frozenset()
 
 
 class TestFactGathererE2ESlotFacts:
@@ -201,7 +271,7 @@ class TestFactGathererCreateSnapshot:
     ):
         """Test snapshot includes active sessions."""
         issue_key = FakeIssueKey(name=str(sample_issues[0].number))
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_key = SessionKey(issue=issue_key, kind=SessionKind.CODE)
         session = Session(
             key=session_key,
             issue=sample_issues[0],
@@ -1654,6 +1724,7 @@ class TestCaseFileScanClassification:
         publisher = TechLeadBoardPublisher(
             board_path=tech_lead_board_path(tmp_path),
             authority=InMemoryTechLeadAuthorityStore(),
+            held_actions=lambda: (),
         )
         gatherer = FactGatherer(
             config=mock_config,
@@ -1833,6 +1904,7 @@ class TestApprovalBacklogFacts:
         publisher = TechLeadBoardPublisher(
             board_path=tech_lead_board_path(tmp_path),
             authority=InMemoryTechLeadAuthorityStore(),
+            held_actions=lambda: (),
         )
         gatherer = self._gatherer(
             mock_config, mock_repository_host, board_publisher=publisher

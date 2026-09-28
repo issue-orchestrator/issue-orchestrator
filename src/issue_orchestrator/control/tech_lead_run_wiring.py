@@ -39,9 +39,11 @@ if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from ..infra.config import Config
     from ..ports import EventSink, RepositoryHost
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import Session
+    from .session_launch_types import LaunchStep
     from .action_applier import ActionResult
     from .tech_lead_run_ownership import TechLeadRunOwnership
     from .actions import (
@@ -67,6 +69,7 @@ class HealthReviewAnchorLifecycle:
     config: "Config"
     repository_host: "RepositoryHost"
     action_applier: object
+    claims: "PendingWorkClaimStore"
     queue_cache_store: object = None
     tech_lead_authority: object = None
     now: float = 0.0
@@ -83,6 +86,7 @@ class HealthReviewAnchorLifecycle:
             action_applier=self.action_applier,  # type: ignore[arg-type]
             queue_cache_store=self.queue_cache_store,  # type: ignore[arg-type]
             tech_lead_authority=self.tech_lead_authority,  # type: ignore[arg-type]
+            claims=self.claims,
             now=self.now or _time.time(),
         )
 
@@ -154,6 +158,9 @@ class TechLeadTickDependencies(Protocol):
     @property
     def run_ownership(self) -> "TechLeadRunOwnership": ...
 
+    @property
+    def pending_work_claims(self) -> "PendingWorkClaimStore": ...
+
 
 def admit_planned_tech_lead_investigation(
     action: "QueueTechLeadAction", tick: TechLeadTickDependencies
@@ -175,6 +182,7 @@ def admit_planned_tech_lead_investigation(
             config=tick.config,
             repository_host=tick.repository_host,
             action_applier=tick.action_applier,
+            claims=tick.pending_work_claims,
             queue_cache_store=tick.queue_cache_store,
             tech_lead_authority=tick.tech_lead_authority,
         ),
@@ -299,6 +307,7 @@ def intake_owned_tech_lead_anchor(
         tick.state,
         cast("QueueCacheStore | None", tick.queue_cache_store),
         cast("TechLeadAuthorityStore | None", tick.tech_lead_authority),
+        claims=tick.pending_work_claims,
     )
     return True
 
@@ -310,36 +319,29 @@ def withdraw_revalidated_tech_lead_run(
 
     The apply seam owns the mutation, but not the RULE: the planner already
     asked :func:`..control.tech_lead_run_admission.issue_run_eligibility`, and
-    the typed refusal it produced rides on the action. Removal goes through
-    :class:`PendingSessionQueues`, the single writer for this queue, and the
-    withdrawal is published so a run that vanished between queueing and launch
-    is machine-readable rather than only a log line.
+    the typed refusal it produced rides on the action. The withdrawal itself
+    goes through the one owner that ends a queued run -- queue entry, durable
+    claim and shared run hold together (#7348) -- so the per-tick recovery
+    sweep cannot re-admit the run it just withdrew.
     """
-    from ..events import EventName
-    from ..ports import make_trace_event
-    from .pending_session_queues import PendingSessionQueues
+    from .queued_work_retirement import (
+        QueuedWorkRetirement,
+        withdraw_queued_tech_lead_run,
+    )
 
-    scope = IssueInvestigationScope(action.issue_number)
-    PendingSessionQueues(tick.state).remove_tech_lead(action.issue_number)
-    # The run no longer exists, so its shared claim must go back immediately:
-    # leaving it held would make a peer wait out the whole lease before it could
-    # investigate the same subject.
-    tick.run_ownership.release(scope.run_key)
     logger.info(
         "[TECH_LEAD] Withdrew queued investigation for #%d before launch: %s",
         action.issue_number,
         action.reason,
     )
-    tick.events.publish(
-        make_trace_event(
-            EventName.TECH_LEAD_RUN_WITHDRAWN,
-            {
-                "run_key": scope.run_key,
-                "issue_number": action.issue_number,
-                "reason": action.reason,
-                "detail": action.detail,
-            },
-        )
+    withdraw_queued_tech_lead_run(
+        QueuedWorkRetirement(tick.state, tick.pending_work_claims),
+        tick.run_ownership,
+        tick.events,
+        run_key=IssueInvestigationScope(action.issue_number).run_key,
+        issue_number=action.issue_number,
+        reason=action.reason,
+        detail=action.detail,
     )
 
 
@@ -389,9 +391,9 @@ class TechLeadFacadeHost(Protocol):
 
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]: ...
 
-    def launch_queued_tech_lead_session(
+    def launch_queued_tech_lead_step(
         self, tech_lead: PendingTechLeadReview
-    ) -> "Optional[Session]": ...
+    ) -> "LaunchStep": ...
 
     def terminate_tech_lead_session(self, session: "Session") -> object: ...
 
@@ -475,19 +477,19 @@ def reconcile_orchestrator_tech_lead_ownership(
 def _withdraw_lost_queued_runs(
     orchestrator: TechLeadFacadeHost, lost: set[str]
 ) -> None:
-    from .pending_session_queues import PendingSessionQueues
-    from .tech_lead_run_admission import run_key_of_pending
+    from .queued_work_retirement import QueuedWorkRetirement
 
-    queues = PendingSessionQueues(orchestrator.state)
-    for item in list(orchestrator.state.pending_tech_lead_reviews):
-        if run_key_of_pending(item) in lost:
-            logger.warning(
-                "[TECH_LEAD] Withdrawing queued %s for #%d: another orchestrator"
-                " now owns this run",
-                item.flavor.value,
-                item.issue_number,
-            )
-            queues.remove_tech_lead(item.issue_number)
+    retired = QueuedWorkRetirement(
+        orchestrator.state,
+        orchestrator.deps.pending_work_claims,  # type: ignore[attr-defined]
+    ).retire_tech_lead_run_keys(frozenset(lost))
+    for item in retired:
+        logger.warning(
+            "[TECH_LEAD] Withdrew queued %s for #%d: another orchestrator"
+            " now owns this run",
+            item.flavor.value,
+            item.issue_number,
+        )
 
 
 def _stop_unowned_active_sessions(
@@ -501,9 +503,7 @@ def _stop_unowned_active_sessions(
     """
     from .tech_lead_run_admission import active_tech_lead_sessions, scope_of_session
 
-    for session in active_tech_lead_sessions(
-        orchestrator.config, list(orchestrator.state.active_sessions)
-    ):
+    for session in active_tech_lead_sessions(list(orchestrator.state.active_sessions)):
         scope = scope_of_session(session)
         if scope is None or scope.run_key not in lost:
             continue
@@ -540,7 +540,7 @@ def _publish_ownership_change(
 
 def orchestrator_launch_tech_lead_run(
     orchestrator: TechLeadFacadeHost, tech_lead: PendingTechLeadReview
-) -> "Optional[Session]":
+) -> "LaunchStep":
     """Start one queued tech-lead run through the SINGLE launch authority.
 
     Both launch paths — the in-tick applier (via the session-launcher callback)
@@ -559,9 +559,10 @@ def orchestrator_launch_tech_lead_run(
         repository_host=deps.repository_host,  # type: ignore[attr-defined]
         is_blocking_any=LabelManager(orchestrator.config).is_blocking_any,
         events=deps.events,  # type: ignore[attr-defined]
-        launch=orchestrator.launch_queued_tech_lead_session,
+        launch=orchestrator.launch_queued_tech_lead_step,
         activity=deps.tech_lead_run_activity,  # type: ignore[attr-defined]
-    ).launch(tech_lead)
+        claims=deps.pending_work_claims,  # type: ignore[attr-defined]
+    ).launch_step(tech_lead)
 
 
 def _facade_anchor_lifecycle(
@@ -574,6 +575,7 @@ def _facade_anchor_lifecycle(
         config=orchestrator.config,
         repository_host=deps.repository_host,  # type: ignore[attr-defined]
         action_applier=deps.action_applier,  # type: ignore[attr-defined]
+        claims=deps.pending_work_claims,  # type: ignore[attr-defined]
         queue_cache_store=deps.queue_cache_store,  # type: ignore[attr-defined]
         tech_lead_authority=deps.tech_lead_authority,  # type: ignore[attr-defined]
     )

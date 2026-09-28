@@ -1,0 +1,28 @@
+{#- Blocked-item custody (#7331): first-paint twin of static/js/dashboard/blocked_custody.js.
+    Renders the server-derived payload only; the markup must match the JS
+    renderer byte for byte (pinned by tests/unit/test_blocked_custody_render.py). -#}
+{%- set CUSTODY_ICONS = {
+    'unowned': '!',
+    'queued_for_tech_lead': '⏳',
+    'investigating': '🔎',
+    'waiting_on_you': '✋',
+    'being_fixed': '🛠',
+    'waiting_on_world': '🌐',
+    'held': '⏸',
+    'verify': '✓',
+} -%}
+{%- macro custody_charter(charter) -%}
+<dl class="custody-charter"><dt>Charter role</dt><dd>{{ charter.role | e }}</dd><dt>Action</dt><dd>{{ charter.action | e }} (needs depth {{ charter.required_depth | e }})</dd><dt>Outcome</dt><dd>{{ charter.outcome_label | e }}{% if charter.lifecycle_label %} ({{ charter.lifecycle_label | e }}){% endif %}</dd><dt>Dials</dt><dd>depth {{ charter.role_depth | e }}, authority {{ charter.role_authority | e }}{% if not charter.role_enabled %}, role disabled{% endif %}; ceiling {{ charter.action_ceiling | e }} from <code>{{ charter.ceiling_source | e }}</code></dd><dt>Charter reason</dt><dd>{{ charter.reason | e }}</dd>{% if charter.proposal_issue_number > 0 %}<dt>Proposal</dt><dd>#{{ charter.proposal_issue_number }}</dd>{% endif %}</dl>
+{%- endmacro -%}
+{%- macro custody_block(custody) -%}
+{%- if custody -%}
+<div class="card-custody custody--{{ custody.tone | e }}" data-custody-state="{{ custody.state | e }}"><div class="card-line custody-line"><span class="custody-icon" aria-hidden="true">{{ CUSTODY_ICONS.get(custody.state, '') }}</span><span class="custody-label">{{ custody.label | e }}</span><span class="custody-age"> · {{ custody.age_label | e }}</span>{% if custody.needs_attention %}<span class="custody-attention">Needs attention</span>{% endif %}</div><details class="custody-why"><summary>Why this state?</summary><p class="custody-reason">{{ custody.reason | e }}</p><p class="custody-meta">Owner: {{ custody.owner | e }}. {% if custody.since %}In this state since <span data-dashboard-timestamp="{{ custody.since | e }}" data-dashboard-timestamp-fallback="{{ custody.since | e }}">{{ custody.since | e }}</span> ({{ custody.since_basis | e }}).{% else %}No fact dates when it entered this state.{% endif %}{% if custody.stale_after_label %} Counts as stale after {{ custody.stale_after_label | e }}.{% endif %}</p>{% if custody.attention_text %}<p class="custody-attention-text">{{ custody.attention_text | e }}</p>{% endif %}{% if custody.charter %}{{ custody_charter(custody.charter) }}{% endif %}</details></div>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro custody_summary(summary) -%}
+{%- set under_control = summary.needs_attention == 0 -%}
+<span class="custody-summary-count{% if under_control %} is-under-control{% else %} needs-attention{% endif %}">{% if under_control %}Under control{% else %}{{ summary.needs_attention }} need{% if summary.needs_attention == 1 %}s{% endif %} attention{% endif %}</span><span class="custody-summary-headline">{{ summary.headline | e }}</span>{% if summary.by_state %}<ul class="custody-summary-states" aria-label="Blocked items by custody">{% for entry in summary.by_state %}<li>{{ entry.label | e }}: {{ entry.count }}</li>{% endfor %}</ul>{% endif %}
+{%- endmacro -%}
+{%- macro custody_summary_key(summary) -%}
+{{ summary.total }}|{{ summary.needs_attention }}|{{ summary.unowned }}|{{ summary.stale }}|{{ summary.headline }}|{% for entry in summary.by_state %}{{ entry.state }}:{{ entry.count }}{% if not loop.last %},{% endif %}{% endfor %}
+{%- endmacro -%}

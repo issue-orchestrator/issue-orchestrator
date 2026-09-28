@@ -52,6 +52,7 @@ from issue_orchestrator.execution.pending_work_claim_store import (
 from issue_orchestrator.control.reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
+    get_pause_label,
 )
 from issue_orchestrator.control.tech_lead_needs_human_reconcile import (
     TechLeadNeedsHumanLifecycle,
@@ -62,7 +63,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionKey,
-    TaskKind,
+    SessionKind,
 )
 from issue_orchestrator.events import EventName
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -146,7 +147,7 @@ class _RecordingApplier:
 def _session(issue_number: int, tmp_path: Path) -> Session:
     """A real active-session shape; reconcile only reads ``issue.number``."""
     return Session(
-        key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+        key=SessionKey(issue=FakeIssueKey(str(issue_number)), kind=SessionKind.CODE),
         issue=Issue(
             number=issue_number,
             title=f"Issue {issue_number}",
@@ -523,13 +524,19 @@ class TestReconcileGuards:
 
 
 class TestPrefixResolvedPauseLabel:
-    def test_forbidden_pause_label_honors_configured_prefix(
+    def test_forbidden_pause_label_is_the_label_the_pause_writes(
         self, sample_config, mock_event_sink
     ):
-        """The pause label in the guard is resolved through LabelManager."""
+        """The guard forbids the pause label the orchestrator actually WRITES.
+
+        #7349: the pause writer has one spelling, ``io:needs-reconcile``, on
+        every repository. Resolving it through the configured prefix made this
+        guard forbid ``bot:needs-reconcile`` -- a label nothing ever writes --
+        so a paused issue passed it.
+        """
         sample_config.label_prefix = "bot"
         labels = LabelManager(sample_config)
-        assert labels.needs_reconcile == "bot:needs-reconcile"
+        assert labels.needs_reconcile == get_pause_label()
 
         live: dict[int, set[str]] = {903: set()}
         lifecycle, applier = _lifecycle(
@@ -545,7 +552,7 @@ class TestPrefixResolvedPauseLabel:
 
         assert applier.applied, "escalation should have produced guarded actions"
         assert all(
-            "bot:needs-reconcile" in a.expected.forbidden_labels
+            get_pause_label() in a.expected.forbidden_labels
             for a in applier.applied
         )
 

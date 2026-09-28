@@ -28,7 +28,7 @@ Usage:
 import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, TypeVar
 
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from .budgeted_validation_reporting import ReportBudgetedValidationAction
@@ -39,7 +39,9 @@ from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
-from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
+from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
+from .action_results import FailureCollector
+from .session_launch_types import LaunchStep, launch_step_result
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
@@ -59,9 +61,8 @@ if TYPE_CHECKING:
     from .tech_lead_kill_session import TechLeadKillSessionExecutor
     from .scoped_rework import RequestReworkExecutor
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
-    from .tech_lead_validated_work_recovery import (
-        TechLeadValidatedWorkRecoveryExecutor,
-    )
+    from .tech_lead_validated_work_recovery import TechLeadValidatedWorkRecoveryExecutor
+    from .tech_lead_review_release import TechLeadReviewReleaseExecutor
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
 from .label_mutation_stats import LabelMutationStatField, LabelMutationStats
@@ -79,6 +80,7 @@ from .needs_human_block import (
 from .reconciliation import ReconciliationRequired
 from .claim_gate import ClaimGate, ClaimLostError
 from .review_exchange_lifecycle import (
+    ISSUE_RUNTIME_SESSION_TYPES,
     IssueRuntimeLifecycleOwners,
 
 )
@@ -104,6 +106,7 @@ from .actions import (
     CreateTechLeadIssueAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
@@ -126,10 +129,10 @@ from .tech_lead_reset_retry import apply_surface_tech_lead_proposal
 logger = logging.getLogger(__name__)
 
 # Type alias for session launcher callback
-# Takes (session_type, number) and returns Optional[Session]
+# Takes (session_type, number) and returns the typed LaunchStep (#7455)
 # This allows orchestrator to inject entity lookup + SessionLauncher
-SessionLauncherCallback = Callable[[SessionType, int], Optional[Session]]
-ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
+SessionLauncherCallback = Callable[[SessionType, int], LaunchStep]
+ValidationRetryLauncherCallback = Callable[[int], LaunchStep]
 
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
@@ -141,6 +144,7 @@ _TechLeadOpAction = TypeVar(
     KillHungSessionAction,
     RequestReworkAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
 )
 @dataclass
 class ActionApplier:
@@ -210,9 +214,8 @@ class ActionApplier:
     tech_lead_reset_retry: Optional["TechLeadResetRetryExecutor"] = None
     tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
     request_rework: Optional["RequestReworkExecutor"] = None
-    recover_validated_work: Optional[
-        "TechLeadValidatedWorkRecoveryExecutor"
-    ] = None
+    recover_validated_work: Optional["TechLeadValidatedWorkRecoveryExecutor"] = None
+    release_withheld_review: Optional["TechLeadReviewReleaseExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     pattern_registry: Optional["PatternCaseFileRegistry"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
@@ -252,24 +255,28 @@ class ActionApplier:
             raise
         except Exception as e:
             logger.exception(f"Action failed: {action}")
-            result = ActionResult.fail(action, str(e))
+            result = ActionResult.fail_from(action, e)
 
         self._emit_action_end(action, result)
         return result
 
-    def apply_all(self, actions: Sequence[Action]) -> list[ActionResult]:
-        """Apply multiple actions in sequence.
+    def apply_all(
+        self, actions: Sequence[Action], on_result: Callable[[ActionResult], None] | None = None
+    ) -> list[ActionResult]:
+        """Apply actions in sequence, returning their results in order.
 
-        Args:
-            actions: The actions to apply
-
-        Returns:
-            List of ActionResults
+        ``on_result`` is told each result as it lands, so a caller keeps the
+        progress of a batch whose later action raises (#7362).
         """
         self._active_label_mutation_stats = LabelMutationStats()
         self._active_label_mutation_by_issue = {}
         try:
-            return [self.apply(action) for action in actions]
+            results: list[ActionResult] = []
+            for action in actions:
+                results.append(self.apply(action))
+                if on_result is not None:
+                    on_result(results[-1])
+            return results
         finally:
             self._emit_label_mutation_summary()
             self._active_label_mutation_stats = None
@@ -305,10 +312,12 @@ class ActionApplier:
             **tech_lead_action_handlers(
                 create_tech_lead_issue=self._apply_create_tech_lead_issue,
                 surface_proposal=self._apply_surface_tech_lead_proposal,
-                reset_retry=self._apply_reset_retry_issue,
-                kill_hung_session=self._apply_kill_hung_session,
+                reset_retry=self._tech_lead_op(ResetRetryIssueAction, lambda: self.tech_lead_reset_retry),
+                kill_hung_session=self._tech_lead_op(KillHungSessionAction, lambda: self.tech_lead_kill_session),
                 request_rework=self._apply_request_rework,
-                recover_validated_work=self._apply_recover_validated_work,
+                recover_validated_work=self._tech_lead_op(RecoverValidatedWorkAction, lambda: self.recover_validated_work),
+                release_withheld_review=self._tech_lead_op(
+                    ReleaseWithheldReviewAction, lambda: self.release_withheld_review),
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
@@ -334,7 +343,9 @@ class ActionApplier:
 
         handler = handlers.get(action.action_type)
         if handler is None:
-            return ActionResult.skip(
+            # A missing handler is a defect, not "nothing to do": it must stay a
+            # failure now that skips are no longer applied as failures (#7455).
+            return ActionResult.fail(
                 action, f"No handler for action type: {action.action_type}"
             )
 
@@ -416,7 +427,7 @@ class ActionApplier:
                 reason=action.reason,
                 detail=str(e),
             )
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _acquire_block(self, action: AddLabelAction) -> BlockOutcome:
         """Hand the governed label to its owner, which applies AND records it."""
@@ -558,7 +569,7 @@ class ActionApplier:
                 reason=action.reason,
                 detail=str(e),
             )
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _apply_provider_impact(self, action: Action) -> ActionResult:
         """Move an issue across the provider-availability boundary (#5980)."""
@@ -576,7 +587,8 @@ class ActionApplier:
             require_expected=self._require_expected, verify_claim=self._verify_claim_before_write,
             events=self.events, authority=self.tech_lead_ops,
             reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session,
-            rework=self.request_rework, recovery=self.recover_validated_work)
+            rework=self.request_rework, recovery=self.recover_validated_work,
+            release=self.release_withheld_review)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""
@@ -709,7 +721,7 @@ class ActionApplier:
                 action.state,
                 e,
             )
-            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
+            return ActionResult.fail_from(action, e, issue_number=action.issue_number)
 
     @property
     def _gate(self) -> ReconciliationGate:
@@ -851,7 +863,7 @@ class ActionApplier:
         if not should_proceed:
             return ActionResult.fail(action, f"Reconciliation failed: {msg}")
 
-        errors = []
+        errors = FailureCollector()
 
         # Add labels. A collection is exactly where the governed block could be
         # smuggled past its owner, so the capability refuses it by value and the
@@ -864,7 +876,7 @@ class ActionApplier:
                 self._record_label_stat(action.issue_number, "label_add_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"add {label}: {e}")
+                errors.add(f"add {label}: {e}", e)
 
         # Remove labels
         for label in action.remove_labels:
@@ -875,10 +887,10 @@ class ActionApplier:
                 self._record_label_stat(action.issue_number, "label_remove_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"remove {label}: {e}")
+                errors.add(f"remove {label}: {e}", e)
 
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return errors.result(action)
 
         self._emit_issue_labels_changed(
             action.issue_number,
@@ -921,7 +933,7 @@ class ActionApplier:
         to_remove = self.label_manager.recovered_workflow_labels(sorted(current))
 
         removed: list[str] = []
-        errors: list[str] = []
+        errors = FailureCollector()
         for label in to_remove:
             self._record_label_stat(action.issue_number, "label_remove_attempted")
             try:
@@ -961,14 +973,14 @@ class ActionApplier:
                 removed.append(label)
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
-                errors.append(f"remove {label}: {e}")
+                errors.add(f"remove {label}: {e}", e)
 
         if removed:
             self._emit_issue_labels_changed(
                 action.issue_number, [], removed, issue_key=action.issue_key
             )
         if errors:
-            return ActionResult.fail(action, "; ".join(errors))
+            return errors.result(action)
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,
@@ -1007,8 +1019,9 @@ class ActionApplier:
 
         # Use the callback if provided (preferred path - handles entity lookup)
         if self.session_launcher is not None:
-            session = self.session_launcher(action.session_type, action.number)
-            if session:
+            step = self.session_launcher(action.session_type, action.number)
+            session = step.session
+            if session is not None:
                 # An expedited issue that is now an active session has jumped
                 # the lane: free its cap slot (via the queue owner, never a
                 # direct priority_queue mutation) so the next urgent tech-lead
@@ -1020,11 +1033,9 @@ class ActionApplier:
                     session_name=session.terminal_id,
                     issue_number=session.issue.number,
                 )
-            else:
-                return ActionResult.fail(
-                    action,
-                    f"Failed to launch {action.session_type} session for #{action.number}"
-                )
+            return launch_step_result(
+                action, step, f"Failed to launch {action.session_type} session for #{action.number}"
+            )
 
         # Fallback: use command/working_dir from action (for testing or direct calls)
         if not action.command or not action.working_dir:
@@ -1063,16 +1074,15 @@ class ActionApplier:
                 "No validation_retry_launcher callback configured",
             )
 
-        session = self.validation_retry_launcher(action.issue_number)
-        if session:
+        step = self.validation_retry_launcher(action.issue_number)
+        if step.session is not None:
             return ActionResult.ok(
                 action,
-                session_name=session.terminal_id,
-                issue_number=session.issue.number,
+                session_name=step.session.terminal_id,
+                issue_number=step.session.issue.number,
             )
-        return ActionResult.fail(
-            action,
-            f"Failed to launch validation retry for issue #{action.issue_number}",
+        return launch_step_result(
+            action, step, f"Failed to launch validation retry for issue #{action.issue_number}"
         )
 
     def _apply_stop_session(self, action: Action) -> ActionResult:
@@ -1080,7 +1090,7 @@ class ActionApplier:
         assert isinstance(action, StopSessionAction)
 
         ref = SessionRef(session_type=action.session_type, number=action.number)
-        if ref.session_type in {SessionType.ISSUE, SessionType.REWORK}:
+        if ref.session_type in ISSUE_RUNTIME_SESSION_TYPES:
             termination = self.runtime_lifecycle.terminate(ref.number, "session-stopped")
             result = ActionResult.ok(action, session_name=ref.name) if termination.stopped_session_ids else ActionResult.skip(action, f"Session {ref.name} not running")
             return replace(result, validated_work=termination.validated_work, details={**result.details,
@@ -1115,7 +1125,7 @@ class ActionApplier:
         *,
         reason: str,
     ) -> "ReviewExchangeCancellation | None":
-        if ref.session_type not in {SessionType.ISSUE, SessionType.REWORK}:
+        if ref.session_type not in ISSUE_RUNTIME_SESSION_TYPES:
             return None
         return self._cancel_review_exchange_for_issue(ref.number, reason=reason)
 
@@ -1337,17 +1347,18 @@ class ActionApplier:
             # Close-on-merge fallback (porchpin #81): revalidation ordering
             # and rationale live in run_close_on_merge_fallback — the module
             # owns the destructive precondition; the planner's bit is advisory.
-            close_applied, close_error = run_close_on_merge_fallback(
+            close_applied, close_failure = run_close_on_merge_fallback(
                 repository_host=self.repository_host,
                 action=action,
                 close=self._apply_close_issue,
             )
-            if close_error is not None:
+            if close_failure is not None:
                 # Fail without any further mutation (no shed, no history);
                 # the entry stays reconcilable for retry.
-                return ActionResult.fail(
+                return ActionResult.fail_limited(
                     action,
-                    close_error,
+                    close_failure.reason,
+                    close_failure.host_rate_limit,
                     issue_number=action.issue_number,
                     pr_number=action.pr_number,
                 )
@@ -1361,10 +1372,11 @@ class ActionApplier:
         )
         if not shed_result.success:
             # Do not finalize history; keep the entry reconcilable for retry.
-            return ActionResult.fail(
+            return ActionResult.fail_limited(
                 action,
                 "recovered-label shed failed; awaiting-merge history left "
                 f"reconcilable for retry: {shed_result.error}",
+                shed_result.host_rate_limit,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
             )
@@ -1382,9 +1394,10 @@ class ActionApplier:
             )
         )
         if not history_result.success:
-            return ActionResult.fail(
+            return ActionResult.fail_limited(
                 action,
                 history_result.error or "history reconciliation failed",
+                history_result.host_rate_limit,
                 issue_number=action.issue_number,
                 pr_number=action.pr_number,
             )
@@ -1497,11 +1510,16 @@ class ActionApplier:
         assert isinstance(action, SurfaceTechLeadProposalAction)
         return apply_surface_tech_lead_proposal(action, self.events)
 
-    def _apply_reset_retry_issue(self, action: Action) -> ActionResult:
-        """Delegate reset preconditions and execution to its injected owner."""
-        assert isinstance(action, ResetRetryIssueAction)
-        executor = self.tech_lead_reset_retry
-        return self._apply_tech_lead_op(action, executor.apply if executor else None, "reset_retry")
+    def _tech_lead_op(
+        self, action_cls: "type[_TechLeadOpAction]", executor: "Callable[[], Any]"
+    ) -> Callable[[Action], ActionResult]:
+        """An act-level op's handler: its injected owner applies it, re-validating
+        its own preconditions; the proposal is finalized here (#6764/#6778)."""
+        def run(action: Action) -> ActionResult:
+            assert isinstance(action, action_cls)
+            owner = executor()
+            return self._apply_tech_lead_op(action, owner.apply if owner else None, action.op_type)
+        return run
 
     def apply_scoped_rework_mutation(
         self, parent: RequestReworkAction, mutation: Action
@@ -1520,24 +1538,7 @@ class ActionApplier:
         self._verify_claim_before_write(action, action.issue_number)
         self._verify_claim_before_write(action, action.request.target.pr_number)
         executor = self.request_rework
-        return self._apply_tech_lead_op(action, executor.apply if executor else None, "request_rework")
-
-    def _apply_recover_validated_work(self, action: Action) -> ActionResult:
-        assert isinstance(action, RecoverValidatedWorkAction)
-        executor = self.recover_validated_work
-        return self._apply_tech_lead_op(
-            action,
-            executor.apply if executor else None,
-            "recover_validated_work",
-        )
-
-    def _apply_kill_hung_session(self, action: Action) -> ActionResult:
-        """Execute an APPROVED kill_hung_session op via the injected owner
-        (#6778) — same pause gate / stale policy / finalization shape as
-        reset_retry."""
-        assert isinstance(action, KillHungSessionAction)
-        executor = self.tech_lead_kill_session
-        return self._apply_tech_lead_op(action, executor.apply if executor else None, "kill_hung_session")
+        return self._apply_tech_lead_op(action, executor.apply if executor else None, action.op_type)
 
     def _apply_tech_lead_op(
         self,
@@ -1697,7 +1698,7 @@ class ActionApplier:
                 self.on_worktree_removed(action.worktree_path)
             return ActionResult.ok(action, worktree_path=action.worktree_path, validated_work=batch)
         except Exception as e:
-            return ActionResult.fail(action, str(e))
+            return ActionResult.fail_from(action, e)
 
     def _emit_issue_labels_changed(
         self,

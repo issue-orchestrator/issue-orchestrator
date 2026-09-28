@@ -237,7 +237,7 @@ def test_resolution_rolls_back_subject_fact_and_ancestors_when_waiter_verificati
         store.record_attempt_outcome(
             token,
             attempt,
-            outcome=PublishValidatedHeadStatus.PUBLISHED,
+            rate_limit=None, outcome=PublishValidatedHeadStatus.PUBLISHED,
             failure=None,
             finished_at=LATER,
         )

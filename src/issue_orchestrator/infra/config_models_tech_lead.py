@@ -12,6 +12,11 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..domain.tech_lead_artifacts import UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS
+from .config_models_tech_lead_custody import TechLeadCustodyConfig
+from .config_models_tech_lead_charter import (
+    TechLeadCharterConfig,
+    destructive_execute_error,
+)
 from .config_models_promotion_auth import (
     PromotionTargetGitHubAuthConfig,
     parse_promotion_target_auth,
@@ -53,6 +58,7 @@ TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "kill_hung_session",
     "request_rework",
     "recover_validated_work",
+    "release_withheld_review",
 )
 
 
@@ -70,13 +76,16 @@ class TechLeadAuthorityConfig:
 
     ``escalate_to_human`` and ``defer_to_tracker`` are intentionally not
     fields: they are the non-configurable floor and always execute
-    (``TECH_LEAD_AUTHORITY_FLOOR_ACTIONS``). Act-level actions
-    (``reset_retry``, ``kill_hung_session``) default to ``propose``.
-    Both act-level actions honor ``execute`` with execution-time
-    re-validation: ``reset_retry`` uses the reset+retry-from-scratch owner;
-    ``kill_hung_session`` terminates only the exact session generation that
-    was active when the decision was planned. Under ``propose`` they ship as
-    gated proposal issues (#6778).
+    (``TECH_LEAD_AUTHORITY_FLOOR_ACTIONS``). Act-level actions default to
+    ``propose`` and ship as gated proposal issues (#6778).
+    ``kill_hung_session`` honors ``execute``, terminating only the exact session
+    generation that was active when the decision was planned. ``reset_retry``
+    is destructive (reset from scratch) and always needs approval (#7330):
+    ``execute`` is rejected.
+
+    These modes are per-action CEILINGS that the ``tech_lead.charter`` role
+    dials compose with; ``control.tech_lead_charter_policy`` is the one owner
+    that reads them.
     """
 
     post_comment: str = "execute"
@@ -86,6 +95,10 @@ class TechLeadAuthorityConfig:
     kill_hung_session: str = "propose"
     request_rework: str = "propose"
     recover_validated_work: str = "propose"
+    # Not destructive (it only removes the issue's own blocked-failed, #7399),
+    # so the per-action ceiling stays open and the charter's flow-role dials
+    # decide execute versus propose.
+    release_withheld_review: str = "execute"
 
     @classmethod
     def from_mapping(cls, data: dict) -> "TechLeadAuthorityConfig":
@@ -99,6 +112,9 @@ class TechLeadAuthorityConfig:
                     f"tech_lead.authority.{key} must be one of"
                     f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {value!r}"
                 )
+            destructive = destructive_execute_error(key, value)
+            if destructive:
+                raise ValueError(destructive)
             values[key] = value
         return cls(**values)
 
@@ -138,6 +154,9 @@ class TechLeadAuthorityConfig:
                     f"tech_lead.authority.{key} must be one of"
                     f" {list(TECH_LEAD_AUTHORITY_MODES)}, got {mode!r}"
                 )
+            destructive = destructive_execute_error(key, mode)
+            if destructive:
+                errors.append(destructive)
         for key in sorted(UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS):
             if getattr(self, key) == "execute":
                 errors.append(
@@ -626,6 +645,9 @@ class TechLeadConfig:
     # Per-action-type graduated authority for tech_lead decision proposals
     authority: TechLeadAuthorityConfig = field(default_factory=TechLeadAuthorityConfig)
 
+    # Per-role depth x authority dials (#7330); composes with ``authority``
+    charter: TechLeadCharterConfig = field(default_factory=TechLeadCharterConfig)
+
     # Trusted open-issue corpus and lexical backstop for create_issue proposals
     dedup: TechLeadDedupConfig = field(default_factory=TechLeadDedupConfig)
 
@@ -636,6 +658,9 @@ class TechLeadConfig:
 
     # Tech-lead attention sweep for stuck issues (ADR-0031, #6823)
     stuck_sweep: StuckSweepConfig = field(default_factory=StuckSweepConfig)
+
+    # When a blocked item's custody state counts as stale (#7331)
+    custody: TechLeadCustodyConfig = field(default_factory=TechLeadCustodyConfig)
 
     # Finding-promotion lane: pattern case file -> gated runnable issue (#6957)
     findings: TechLeadFindingsConfig = field(default_factory=TechLeadFindingsConfig)
@@ -662,6 +687,7 @@ class TechLeadConfig:
             "max_concurrent": self.max_concurrent,
             "max_expedited": self.max_expedited,
             "authority": self.authority.to_event_dict(),
+            "charter": self.charter.to_event_dict(),
             "dedup": {
                 "enabled": self.dedup.enabled,
                 "similarity_threshold": self.dedup.similarity_threshold,
@@ -677,6 +703,7 @@ class TechLeadConfig:
                 "max_recovery_attempts": self.stuck_sweep.max_recovery_attempts,
             },
             "findings": self.findings.to_event_dict(),
+            "custody": self.custody.to_event_dict(),
             "write_health_stale_after_hours": self.write_health_stale_after_hours,
         }
 
@@ -711,6 +738,8 @@ class TechLeadConfig:
             )
         errors.extend(self.dedup.startup_errors())
         errors.extend(self.findings.startup_errors())
+        errors.extend(self.charter.startup_errors())
+        errors.extend(self.custody.startup_errors())
         return errors
 
 

@@ -36,6 +36,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.issue_disposition_gate import IssueDispositionMutationGate
 from ..ports.published_work_finalization import FinalizationPhaseRecorder
 from ..ports.recovery_block import RecoveryBlockStore
+from ..ports.repository_host import host_rate_limit_of
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
 from ..ports.synchronous_effects import SynchronousEffectScope
@@ -115,6 +116,18 @@ class AggregateRecoveryBlocks:
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._admission.has_unresolved_work(issue_number)
 
+    def holds_recovery(self, issue_number: int) -> bool:
+        """Whether this owner holds ``issue_number`` behind ``recovery-pending``.
+
+        The same plan :meth:`_project` projects the label from, read from the
+        local store only (no GitHub read), so planning can ask it every tick
+        (#7455). The owner releases the hold once it has routed the published
+        work, or escalates it; until then a queued review of the issue waits.
+        """
+        return self._records.recovery_block_snapshot(
+            self._repo, issue_number
+        ).plan().recovery_required
+
     def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None:
         return self._admission.evidence_for_id(evidence_id)
 
@@ -130,9 +143,13 @@ class AggregateRecoveryBlocks:
                 )
                 return self._project(snapshot.plan(), effects)
         except RecoveryMutationBusy as error:
-            return RecoveryBlockReconcileOutcome(Status.BUSY, (), str(error))
+            return RecoveryBlockReconcileOutcome(
+                Status.BUSY, (), str(error), rate_limit=host_rate_limit_of(error)
+            )
         except Exception as error:
-            return RecoveryBlockReconcileOutcome(Status.RETRY, (), str(error))
+            return RecoveryBlockReconcileOutcome(
+                Status.RETRY, (), str(error), rate_limit=host_rate_limit_of(error)
+            )
 
     def release_published_record(
         self, request: RecoveryBlockReleaseRequest
@@ -149,12 +166,17 @@ class AggregateRecoveryBlocks:
                     RecoveryBlockReleaseStatus.RELEASED,
                     result.labels_removed,
                     result.message,
+                    rate_limit=result.rate_limit,
                 )
         except (ValidatedWorkClaimLost, ValidatedWorkAuthorityUnavailable):
             raise
         except Exception as error:
             return RecoveryBlockReleaseOutcome(
-                record_id, RecoveryBlockReleaseStatus.REFUSED, (), str(error)
+                record_id,
+                RecoveryBlockReleaseStatus.REFUSED,
+                (),
+                str(error),
+                rate_limit=host_rate_limit_of(error),
             )
 
     def _admit_release(

@@ -12,7 +12,8 @@ from issue_orchestrator.domain.completion_intake import (
 )
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from tests.conftest import (
     MockEventSink,
@@ -55,7 +56,7 @@ def configured_scenario_run(scenario_repo, validation_cmd):
             worktree_path=worktree,
             session_name="issue-1",
             issue_number=1,
-            session_key=SessionKey(FakeIssueKey("1", config.repo), TaskKind.CODE),
+            session_key=SessionKey(FakeIssueKey("1", config.repo), SessionKind.CODE),
             agent_label="agent:coder",
             backend="subprocess",
         )

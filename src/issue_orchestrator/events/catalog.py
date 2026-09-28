@@ -104,6 +104,14 @@ class EventName(str, Enum):
     # and it refused — an expired login, or a CLI that is not installed. Nothing
     # ran, so there is nothing to explain about the work itself.
     SESSION_LAUNCH_BLOCKED_PROVIDER = "session.launch_blocked_provider"
+    # A launch deferred because the repository host refused on a rate limit
+    # with a known reset (#7297). Deliberately NOT a start failure: the work
+    # keeps its retry budget and waits for ``resets_at``. The payload says
+    # when, which budget ran out, how long the limit has held, and whether the
+    # item is past its deferral bound (``past_deferral_bound``). Past it, an
+    # attempted launch's refusal is handed back as a failure for the queue's
+    # budget to count, so a limit that never lifts still reaches a human.
+    SESSION_LAUNCH_DEFERRED_RATE_LIMIT = "session.launch_deferred_rate_limit"
     # A session that *did* launch and is being terminated because its provider
     # is not authenticated. A separate name because the reader's question is
     # different — "what happened to my running session" versus "why did nothing
@@ -330,6 +338,12 @@ class EventName(str, Enum):
     RECONCILIATION_WARNING = "reconciliation.warning"
     RECONCILIATION_REQUIRED = "reconciliation.required"  # Drift detected, action blocked
     ISSUE_PAUSED_RECONCILE = "issue.paused_reconcile"  # Issue paused due to drift
+
+    # =========================================================================
+    # Action liveness (#7350): a replanned action stopped, or started again
+    # =========================================================================
+    ACTION_PARKED = "action.parked"  # Failed permanently / needs a human / budget spent
+    ACTION_RELEASED = "action.released"  # Progress, changed facts, or operator retry
     VALIDATED_WORK_DISPOSITION_OBSERVED = "validated_work.disposition_observed"
     VALIDATED_WORK_ABANDONED = "validated_work.abandoned"
     VALIDATED_WORK_CAPTURE_FAILED = "validated_work.capture_failed"  # Teardown capture faulted; transition continued
@@ -468,6 +482,7 @@ class PublicEventName(str, Enum):
     SESSION_TIMEOUT = "session.timeout"
     SESSION_BLOCKED = "session.blocked"
     SESSION_LAUNCH_BLOCKED_PROVIDER = "session.launch_blocked_provider"
+    SESSION_LAUNCH_DEFERRED_RATE_LIMIT = "session.launch_deferred_rate_limit"
     SESSION_PROVIDER_AUTH_TERMINATED = "session.provider_auth_terminated"
     SESSION_CLAIM_UNREADABLE = "session.claim_unreadable"
     SESSION_RUN_UNRESTORABLE = "session.run_unrestorable"
@@ -520,6 +535,9 @@ class PublicEventName(str, Enum):
 
     PROVIDER_ISSUE_BLOCKED = "provider.issue_blocked"
     PROVIDER_ISSUE_UNBLOCKED = "provider.issue_unblocked"
+
+    ACTION_PARKED = "action.parked"
+    ACTION_RELEASED = "action.released"
 
     PUBLISH_FAILED = "publish.failed"
 

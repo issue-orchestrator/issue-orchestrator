@@ -88,8 +88,8 @@ def invalid_record_actions(
 
     issue_number = session.issue.number
     in_progress_label = labels.in_progress
-    issue_work = session.terminal_id.startswith("issue-")
-    session_kind = session.terminal_id.split("-", 1)[0]
+    issue_work = session.key.kind.capabilities.holds_issue_custody
+    session_kind = session.key.kind.session_type.value
     failure = _field(detail, "completion_load_failure") or "invalid_schema"
     parse_error = (
         _field(detail, "completion_parse_error")

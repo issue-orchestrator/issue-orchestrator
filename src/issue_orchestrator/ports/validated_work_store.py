@@ -1,6 +1,7 @@
 """Transactional disposition and fence contracts. Implementations own all atomicity."""
 
 from __future__ import annotations
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.validated_work import ValidatedWorkFailure, ValidatedWorkState
 from ..domain.validated_work_claim import (
     ProcessIdentity,
@@ -48,6 +49,21 @@ class ValidatedWorkStore(Protocol):
     def abandon_if_current(
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome: ...
+
+    def retire_outside_scope(
+        self,
+        claim: ValidatedWorkClaim,
+        *,
+        evidence_ids: frozenset[str],
+        actor: str,
+        reason: str,
+    ) -> bool:
+        """Resolve, under the caller's claim, a record recovery never owned (#7323).
+
+        ``evidence_ids`` is every current and attached evidence the caller
+        proved outside recovery scope; any other set refuses with no write.
+        """
+        ...
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch: ...
 
@@ -140,6 +156,7 @@ class ValidatedWorkStore(Protocol):
         outcome: PublishValidatedHeadStatus,
         failure: ValidatedWorkFailure | None,
         finished_at: str,
+        rate_limit: HostRateLimit | None,
     ) -> bool: ...
 
     def record_finalization_phase(

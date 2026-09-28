@@ -10,7 +10,6 @@ Cleanup is deferred when:
 """
 
 import logging
-import time
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
@@ -23,6 +22,7 @@ if TYPE_CHECKING:
     from ..ports import RepositoryHost
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.pull_request_tracker import PRInfo
+    from .orchestrator_deps import OrchestratorDeps
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +57,6 @@ class CleanupManager:
         self._session_exists = session_exists_fn
         self._get_worktree_path = get_worktree_path_fn
         self._get_session_name = get_session_name_fn
-        self._tech_lead_issue_last_failure: float | None = None
-
-    def should_retry_tech_lead_issue(self, cooldown_seconds: int = 60) -> bool:
-        """Throttle tech_lead issue creation failures to avoid tight retry loops."""
-        now = time.time()
-        if self._tech_lead_issue_last_failure is None:
-            return True
-        return (now - self._tech_lead_issue_last_failure) >= cooldown_seconds
-
-    def mark_tech_lead_issue_failure(self) -> None:
-        """Record a tech_lead issue creation failure for throttling."""
-        self._tech_lead_issue_last_failure = time.time()
 
     def process_deferred_cleanups(
         self,
@@ -386,3 +374,20 @@ class CleanupManager:
                         pr.number, e
                     )
         return fixed_count
+
+
+def build_cleanup_manager(config: "Config", deps: "OrchestratorDeps") -> CleanupManager:
+    """The engine's cleanup manager, bound to its session and worktree owners."""
+    from .session_routing import kill_session, session_exists
+    from .worktree_manager import get_session_name, get_worktree_path
+
+    return CleanupManager(
+        config,
+        deps.repository_host,
+        deps.worktree_manager,
+        lambda name: kill_session(name, deps.session_manager, deps.events),
+        lambda name: session_exists(name, deps.session_manager, deps.events),
+        lambda issue_number, agent_config: get_worktree_path(config, issue_number, agent_config),
+        lambda number, session_type="issue": get_session_name(number, session_type),
+        deps.runtime_lifecycle,
+    )

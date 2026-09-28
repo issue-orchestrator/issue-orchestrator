@@ -34,14 +34,20 @@ wait out a lease for work that never started.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
+from ..domain.host_rate_limit import RateLimitEpisode, episode_key
 from ..domain.models import PendingTechLeadReview
+from ..domain.pending_work import PendingWorkKind
+from ..ports.repository_host import host_rate_limit_of
+from .host_rate_limit_launch_gate import HostRateLimitLaunchGate, live_episode_keys
 from ..domain.tech_lead_run import (
     REASON_ANCHOR_CLOSED,
     REASON_ANCHOR_UNREADABLE,
     REASON_CLAIMED_BY_PEER,
+    REASON_GITHUB_RATE_LIMITED,
     REASON_NO_TECH_LEAD_AGENT,
     REASON_RUN_CLAIM_UNAVAILABLE,
     REASON_TECH_LEAD_DISABLED,
@@ -55,11 +61,13 @@ from .tech_lead_launch_planning import (
 )
 from .tech_lead_run_admission import scope_of_pending
 from .tech_lead_run_ownership import RunExecutionVerdict
+from .session_launch_types import LaunchStep
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, Session
     from ..infra.config import Config
     from ..ports import EventSink, Issue, RepositoryHost
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from .tech_lead_run_activity import TechLeadRunActivity
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
@@ -102,8 +110,9 @@ class TechLeadLaunchAuthority:
         repository_host: "Optional[RepositoryHost]",
         is_blocking_any: "Callable[[Sequence[str]], bool]",
         events: "EventSink",
-        launch: "Callable[[PendingTechLeadReview], Optional[Session]]",
+        launch: "Callable[[PendingTechLeadReview], LaunchStep]",
         activity: "TechLeadRunActivity",
+        claims: "PendingWorkClaimStore",
     ) -> None:
         self._state = state
         self._config = config
@@ -113,28 +122,41 @@ class TechLeadLaunchAuthority:
         self._events = events
         self._launch = launch
         self._activity = activity
+        self._claims = claims
 
     def launch(self, tech_lead: PendingTechLeadReview) -> "Optional[Session]":
         """Start ``tech_lead`` if — and only if — it may still start."""
+        return self.launch_step(tech_lead).session
+
+    def launch_step(self, tech_lead: PendingTechLeadReview) -> LaunchStep:
+        """:meth:`launch`, saying what the step came to (#7455).
+
+        A refusal that withdrew the run is a withdrawal and one that keeps it
+        queued is a wait; neither is a failed launch, and the plan applier must
+        not report either as one.
+        """
         scope = scope_of_pending(tech_lead)
         refusal = self._refusal_for(tech_lead, scope)
         if refusal is not None:
             self._report(refusal)
+            reason = f"{refusal.reason}: {refusal.detail}"
             if not refusal.retained:
                 self._withdraw(tech_lead, refusal)
-            return None
-        session = self._launch(tech_lead)
+                return LaunchStep.withdrawn(reason)
+            return LaunchStep.waiting(reason)
+        step = self._launch(tech_lead)
+        session = step.session
         if session is None:
             # Nothing is executing this run, so the exclusive hold must go back
             # immediately; leaving it would make every other tech-lead run wait
             # out a lease for a session that never started.
             self._ownership.end_run(scope.run_key)
-            return None
+            return step
         # ADR-0033: the run's LOCAL record opens here, at the same single gate
         # that guarantees one session per run — so the history can never show a
         # run this authority refused, nor miss one it allowed (#6858).
         self._activity.note_started(session)
-        return session
+        return step
 
     # ------------------------------------------------------------------
     # The three gates, cheapest local evidence first
@@ -155,9 +177,28 @@ class TechLeadLaunchAuthority:
                 if explicitly_disabled
                 else "No tech lead agent is configured for this repository.",
             )
+        # Checked before AND after revalidation (#7297): an open window means
+        # no read is attempted, and a read the host refused proves nothing
+        # about the subject, so it must neither fall through to a launch "on
+        # the evidence we have" nor read as "unreadable".
+        episode = self._open_rate_limit(tech_lead)
+        if episode is not None and not episode.bound_exceeded:
+            return self._rate_limit_hold(tech_lead, scope, episode)
         withdrawal = self._revalidate_subject(tech_lead, scope)
-        if withdrawal is not None:
+        episode = self._open_rate_limit(tech_lead)
+        if episode is None:
+            if withdrawal is not None:
+                return withdrawal
+        elif not episode.bound_exceeded:
+            return self._rate_limit_hold(tech_lead, scope, episode)
+        elif withdrawal is not None and not withdrawal.retained:
+            # Positive evidence still wins past the bound: a subject read that
+            # got through and shows the run is finished withdraws it.
             return withdrawal
+        # Past the deferral bound a run is no longer held on the window or on
+        # an unreadable subject: the launch is attempted, and a refusal it
+        # meets once it holds its durable claim is counted against the queue's
+        # budget, so a limit that never lifts still reaches its escalation.
         barrier = self._local_scope_barrier(tech_lead)
         if barrier is not None:
             # The gate's own barrier vocabulary is the reason, so a local
@@ -169,6 +210,30 @@ class TechLeadLaunchAuthority:
                 f"Held by tech-lead scope exclusivity ({barrier}).",
             )
         return self._shared_execution_refusal(tech_lead, scope)
+
+    def _open_rate_limit(
+        self, tech_lead: PendingTechLeadReview
+    ) -> Optional[RateLimitEpisode]:
+        return self._state.host_rate_limit.open_at(
+            datetime.now(UTC),
+            episode_key(PendingWorkKind.TECH_LEAD.value, tech_lead.issue_number),
+            live=live_episode_keys(self._state),
+        )
+
+    @staticmethod
+    def _rate_limit_hold(
+        tech_lead: PendingTechLeadReview,
+        scope: TechLeadRunScope,
+        episode: RateLimitEpisode,
+    ) -> TechLeadLaunchRefusal:
+        """Hold the run while the host's rate-limit window is open."""
+        return TechLeadLaunchRefusal(
+            scope.run_key,
+            tech_lead.issue_number,
+            REASON_GITHUB_RATE_LIMITED,
+            f"GitHub rate limit ({episode.limit.kind}) holds launches until"
+            f" {episode.limit.resets_at.isoformat()}.",
+        )
 
     def _revalidate_subject(
         self, tech_lead: PendingTechLeadReview, scope: TechLeadRunScope
@@ -284,6 +349,16 @@ class TechLeadLaunchAuthority:
                 admission.barrier_reason or REASON_LAUNCH_SCOPE_BARRIER,
                 admission.detail,
             )
+        if admission.host_rate_limit is not None:
+            # The shared ledger was refused on a rate limit (#7297): hold the
+            # run on the same window every launch honours, so the ledger is
+            # not asked again - by this run or any other - before the reset.
+            episode = HostRateLimitLaunchGate.for_state(self._state, self._events).observe(
+                admission.host_rate_limit,
+                issue_number=tech_lead.issue_number,
+                work=PendingWorkKind.TECH_LEAD.value,
+            )
+            return self._rate_limit_hold(tech_lead, scope, episode)
         if admission.verdict is RunExecutionVerdict.UNAVAILABLE:
             return TechLeadLaunchRefusal(
                 scope.run_key,
@@ -305,21 +380,24 @@ class TechLeadLaunchAuthority:
     def _withdraw(
         self, tech_lead: PendingTechLeadReview, refusal: TechLeadLaunchRefusal
     ) -> None:
-        """Remove a run whose subject stopped being worth investigating."""
-        from .pending_session_queues import PendingSessionQueues
+        """Remove a run whose subject stopped being worth investigating.
 
-        PendingSessionQueues(self._state).remove_tech_lead(tech_lead.issue_number)
-        self._ownership.release(refusal.run_key)
-        self._events.publish(
-            make_trace_event(
-                EventName.TECH_LEAD_RUN_WITHDRAWN,
-                {
-                    "run_key": refusal.run_key,
-                    "issue_number": refusal.issue_number,
-                    "reason": refusal.reason,
-                    "detail": refusal.detail,
-                },
-            )
+        Through the same owner as plan-time withdrawal, so the run's durable
+        claim is retired with its queue entry (#7348).
+        """
+        from .queued_work_retirement import (
+            QueuedWorkRetirement,
+            withdraw_queued_tech_lead_run,
+        )
+
+        withdraw_queued_tech_lead_run(
+            QueuedWorkRetirement(self._state, self._claims),
+            self._ownership,
+            self._events,
+            run_key=refusal.run_key,
+            issue_number=tech_lead.issue_number,
+            reason=refusal.reason,
+            detail=refusal.detail,
         )
 
     def _report(self, refusal: TechLeadLaunchRefusal) -> None:
@@ -353,7 +431,13 @@ class TechLeadLaunchAuthority:
         assert self._repository_host is not None
         try:
             return self._repository_host.get_issue(number)
-        except Exception as exc:  # pragma: no cover - transport specific
+        except Exception as exc:
+            if (limit := host_rate_limit_of(exc)) is not None:
+                # Opens the window every launch honours (#7297), so the planner
+                # stops re-reading this subject every tick until the reset.
+                HostRateLimitLaunchGate.for_state(self._state, self._events).observe(
+                    limit, issue_number=number, work=PendingWorkKind.TECH_LEAD.value
+                )
             logger.warning(
                 "[TECH_LEAD_RUN] Could not revalidate subject #%d before launch:"
                 " %s; launching on the evidence we have",

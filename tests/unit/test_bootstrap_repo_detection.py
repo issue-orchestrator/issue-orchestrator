@@ -10,11 +10,13 @@ from issue_orchestrator.entrypoints.bootstrap import (
     Dependencies,
     build_orchestrator as _build_orchestrator,
     build_orchestrator_for_testing,
-    _check_github_token_scopes,
     _create_planner,
     _validation_attempt_key_factory,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
+from issue_orchestrator.entrypoints.bootstrap_github_scopes import (
+    check_github_token_scopes as _check_github_token_scopes,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.secret_env import EXTRA_FORBIDDEN_ENV_VARS_ENV
@@ -292,7 +294,7 @@ class TestCheckGithubTokenScopes:
         github_adapter = MagicMock()
         github_adapter.get_token_scopes.side_effect = Exception("API error")
 
-        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+        with patch("issue_orchestrator.entrypoints.bootstrap_github_scopes.logger") as mock_logger:
             # Should not raise, just log warning
             _check_github_token_scopes(config, github_adapter)
             mock_logger.warning.assert_called()
@@ -306,7 +308,7 @@ class TestCheckGithubTokenScopes:
         github_adapter = MagicMock()
         github_adapter.get_token_scopes.return_value = ["repo", "workflow"]
 
-        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+        with patch("issue_orchestrator.entrypoints.bootstrap_github_scopes.logger") as mock_logger:
             _check_github_token_scopes(config, github_adapter)
             mock_logger.info.assert_called()
             assert "token scopes" in mock_logger.info.call_args[0][0].lower()
@@ -320,7 +322,7 @@ class TestCheckGithubTokenScopes:
         github_adapter = MagicMock()
         github_adapter.get_token_scopes.return_value = []
 
-        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+        with patch("issue_orchestrator.entrypoints.bootstrap_github_scopes.logger") as mock_logger:
             _check_github_token_scopes(config, github_adapter)
             mock_logger.info.assert_called()
             assert "unavailable" in mock_logger.info.call_args[0][0].lower()
@@ -333,7 +335,7 @@ class TestCheckGithubTokenScopes:
         github_adapter = MagicMock()
         github_adapter.auth_kind = "github_app"
 
-        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+        with patch("issue_orchestrator.entrypoints.bootstrap_github_scopes.logger") as mock_logger:
             _check_github_token_scopes(config, github_adapter)
 
         github_adapter.get_token_scopes.assert_not_called()

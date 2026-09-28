@@ -155,7 +155,7 @@ def test_missing_or_conflicting_terminal_outcomes_fail(actions):
 
 
 @pytest.mark.parametrize(
-    "remedy", ["reset_retry", "escalate_to_human"]
+    "remedy", ["reset_retry", "escalate_to_human", "release_withheld_review"]
 )
 def test_immediate_remedies_and_human_handoff_are_terminal(remedy):
     action = ProposedTechLeadAction(
@@ -300,3 +300,55 @@ def test_empty_lowering_cannot_satisfy_trusted_investigation_obligations():
         [*planned, AddCommentAction(number=FOCUS, comment="success-only")], issue_number=FOCUS)
     assert error is None and evaluate_required_act_level_outcome(results).failed
     host.add_comment.assert_not_called()
+
+
+# -- release_withheld_review satisfies an investigation only when effective (#7399)
+
+
+def _release_results(outcome: str):
+    from issue_orchestrator.control.actions import ActionResult, ReleaseWithheldReviewAction
+    from issue_orchestrator.control.tech_lead_completion_gate import require_investigation_terminal_effect
+
+    release = ReleaseWithheldReviewAction(
+        issue_number=FOCUS, proposal_id="A2", anchor_issue_number=FOCUS,
+        observed_at="2026-09-27T14:12:09+00:00", source_session_name="tech-lead-6410",
+    )
+    from issue_orchestrator.control.required_issue_comment import RequiredTechLeadDiagnosisAction
+
+    obligation_action = build_investigation_obligation(
+        _decision(_diagnosis(), _defer()), focus_issue_number=FOCUS)
+    [intent] = obligation_action.diagnoses
+    diagnosis = RequiredTechLeadDiagnosisAction(number=FOCUS, comment=intent.comment, intent=intent)
+    planned = require_investigation_terminal_effect([release], obligation=obligation_action)
+    obligation, bound = planned
+    assert isinstance(bound, ReleaseWithheldReviewAction) and bound.requires_effective_disposition
+    result = {
+        "released": ActionResult.ok(bound, issue_number=FOCUS),
+        "already_admitted": ActionResult.skip(
+            bound, "stale", refusal="review_not_withheld", terminal_disposition_satisfied=True),
+        "refused": ActionResult.skip(
+            bound, "stale", refusal="checks_not_green", terminal_disposition_satisfied=False),
+        "failed": ActionResult.fail(bound, "pr-pending not added"),
+    }[outcome]
+    return [ActionResult.ok(obligation), ActionResult.ok(diagnosis), result]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "committed"),
+    [("released", True), ("already_admitted", True), ("refused", False), ("failed", False)],
+)
+def test_a_release_satisfies_the_investigation_only_when_effective(outcome: str, committed: bool):
+    from issue_orchestrator.control.tech_lead_completion_gate import evaluate_required_act_level_outcome
+
+    assert evaluate_required_act_level_outcome(_release_results(outcome)).committed is committed
+
+
+def test_an_executed_recovery_is_a_terminal_remedy_for_its_focus():
+    """recover_validated_work is an allowed terminal disposition, so its
+    effective execution must satisfy the investigation it concludes."""
+    from issue_orchestrator.control.actions import RecoverValidatedWorkAction
+    from issue_orchestrator.control.tech_lead_completion_obligations import is_focus_terminal_remedy
+
+    recovery = RecoverValidatedWorkAction(authority=_validated_work_authority(), proposal_id="A2")
+    assert is_focus_terminal_remedy(recovery, FOCUS)
+    assert not is_focus_terminal_remedy(recovery, FOCUS + 1)

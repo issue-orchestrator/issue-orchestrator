@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from ..domain.completion_processing import CompletionPublication
 from ..domain.models import DiscoveredReview, Session, SessionStatus
-from ..domain.session_key import TaskKind
+from ..domain.session_kind import SessionKind
 from ..infra.logging_config import log_context
 from ..ports import RepositoryHost
 
@@ -76,7 +76,7 @@ class CompletionPrLookup:
         if status != SessionStatus.COMPLETED:
             return NO_COMPLETION_PR
 
-        if session.key.task == TaskKind.RETROSPECTIVE_REVIEW:
+        if session.key.kind == SessionKind.RETROSPECTIVE_REVIEW:
             return NO_COMPLETION_PR
 
         if pr_url_hint:

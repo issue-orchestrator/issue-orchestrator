@@ -14,10 +14,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
+from ..domain.host_rate_limit import HostRateLimit
 from ..domain.retention_clock import retention_instant
 from ..domain.recovery_block import RecoveryBlockSnapshot, RecoveryCleanupKey
 from ..domain.published_work_finalization import FinalizationCheckpoint, PublishedWorkTarget
 
+from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import (
     ResolutionKind,
     ValidatedWorkFailure,
@@ -142,6 +144,11 @@ class SqliteValidatedWorkStore:
     ) -> tuple[ValidatedWorkDrainRequest, ...]:
         return self._snapshots.drain_requests(after_record_id=after_record_id, limit=limit)
 
+    def unresolved_records(
+        self, *, after_record_id: str, limit: int
+    ) -> tuple[RecoveryRecordRequest, ...]:
+        return self._snapshots.unresolved_records(after_record_id=after_record_id, limit=limit)
+
     def get(self, record_id: str) -> ValidatedWorkDisposition:
         with self._db.transaction() as conn:
             return disposition(conn, record_id)
@@ -154,6 +161,22 @@ class SqliteValidatedWorkStore:
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome:
         return self._abandonment.abandon_if_current(command)
+
+    def retire_outside_scope(
+        self,
+        claim: ValidatedWorkClaim,
+        *,
+        evidence_ids: frozenset[str],
+        actor: str,
+        reason: str,
+    ) -> bool:
+        with self._db.transaction(write=True) as conn:
+            if not self._claims.holds(conn, claim):
+                return False
+            return self._abandonment.retire_outside_scope(
+                conn, claim.record_id, claim.fence,
+                evidence_ids=evidence_ids, actor=actor, reason=reason,
+            )
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._snapshots.for_issue(issue_number)
@@ -405,6 +428,7 @@ class SqliteValidatedWorkStore:
         outcome: PublishValidatedHeadStatus,
         failure: ValidatedWorkFailure | None,
         finished_at: str,
+        rate_limit: HostRateLimit | None,
     ) -> bool:
         with self._db.transaction(write=True) as conn:
             return self._attempts.outcome(
@@ -414,6 +438,7 @@ class SqliteValidatedWorkStore:
                 outcome=outcome,
                 failure=failure,
                 finished_at=finished_at,
+                rate_limit=rate_limit,
             )
 
     def read_finalization_checkpoint(

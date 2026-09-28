@@ -39,12 +39,11 @@ pair lands (see ``tech_lead_session_policy`` / ``tech_lead_completion``).
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Iterable, Optional, Sequence
 
 from .health_review_body import PERIODIC_HEALTH_REVIEW_BODY, problem_storm_body
+from ..domain.session_kind import SessionKind
 from ..domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
     TechLeadCreationOrigin,
@@ -67,6 +66,7 @@ if TYPE_CHECKING:
     )
     from ..infra.config import Config
     from ..ports import Issue, RepositoryHost
+    from ..ports.pending_work_claim_store import PendingWorkClaimStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .pending_session_queues import TechLeadQueueOutcome
@@ -242,17 +242,24 @@ def discover_open_health_review_anchor(
     Callers invoke this only while a creation decision is actually pending
     (GitHub API discipline — see ``FactGatherer.gather_tech_lead_facts``).
     """
+    scoped = health_review_anchor_issues(repository_host, config, state="open")
+    return scoped[0].number if scoped else None
+
+
+def health_review_anchor_issues(
+    repository_host: "RepositoryHost", config: "Config", *, state: str
+) -> list["Issue"]:
+    """In-scope marker-labeled health anchors in ``state`` ("open" / "all")."""
     issues = repository_host.list_issues(
         labels=_anchor_query_labels(config, HEALTH_REVIEW_MARKER_LABEL),
-        state="open",
+        state=state,
         limit=_ANCHOR_SCAN_LIMIT,
     )
-    scoped = [
+    return [
         issue
         for issue in _scoped_issues(issues, config.filtering.label)
         if has_health_review_marker(issue.labels)
     ]
-    return scoped[0].number if scoped else None
 
 
 def classify_tech_lead_anchor_issues(
@@ -421,6 +428,7 @@ def _queue_anchor_by_marker(
     title: str,
     labels: Iterable[str],
     *,
+    claims: "PendingWorkClaimStore",
     storm_problems: tuple["DiscoveredFailure", ...] = (),
 ) -> "TechLeadQueueOutcome":
     """Route an orchestrator-created anchor to its variant's owner queue op.
@@ -431,6 +439,7 @@ def _queue_anchor_by_marker(
     :class:`PendingSessionQueues` instead of overloading batch intake.
     """
     from .pending_session_queues import PendingSessionQueues
+    from .queued_work_retirement import QueuedWorkRetirement
 
     queues = PendingSessionQueues(state)
     if has_health_review_marker(labels):
@@ -438,7 +447,12 @@ def _queue_anchor_by_marker(
             problem.issue_number for problem in storm_problems
         )
         if storm_issue_numbers:
-            queues.remove_failure_investigations(storm_issue_numbers)
+            # The storm review now covers these investigations, so each one
+            # ENDS here -- durable claim included, or the per-tick recovery
+            # sweep re-admits it behind the review (#7348).
+            QueuedWorkRetirement(state, claims).retire_failure_investigations(
+                storm_issue_numbers
+            )
         return queues.queue_health_review(
             issue_number,
             title,
@@ -492,6 +506,8 @@ def intake_created_tech_lead_anchor(
     state: "OrchestratorState",
     store: "Optional[QueueCacheStore]",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
+    *,
+    claims: "PendingWorkClaimStore",
 ) -> "TechLeadQueueOutcome":
     """Route a successfully created tech_lead anchor into the pending queue.
 
@@ -509,8 +525,11 @@ def intake_created_tech_lead_anchor(
         issue_number,
         action.title,
         action.labels,
+        claims=claims,
         storm_problems=action.storm_problems if persisted else (),
     )
+    from .health_review_cadence import record_health_review_creation
+
     record_health_review_creation(action, state, store)
     return outcome
 
@@ -519,6 +538,8 @@ def queue_recovered_tech_lead_anchor(
     state: "OrchestratorState",
     issue: "Issue",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]" = None,
+    *,
+    claims: "PendingWorkClaimStore",
 ) -> "TechLeadQueueOutcome":
     """Route a recovered open anchor into the pending queue (startup).
 
@@ -553,6 +574,7 @@ def queue_recovered_tech_lead_anchor(
         issue.number,
         issue.title,
         issue.labels,
+        claims=claims,
         storm_problems=cohort or (),
     )
 
@@ -565,6 +587,7 @@ def ensure_on_demand_health_review_anchor(
     action_applier: "SupportsApplyAction",
     queue_cache_store: "Optional[QueueCacheStore]",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]",
+    claims: "PendingWorkClaimStore",
     now: float,
 ) -> "Optional[PendingTechLeadReview]":
     """Discover-or-create the health-review anchor and queue it for launch NOW.
@@ -604,7 +627,9 @@ def ensure_on_demand_health_review_anchor(
             )
             return None
         logger.info("Reusing open health-review anchor #%d on demand", existing)
-        queue_recovered_tech_lead_anchor(state, issue, tech_lead_authority)
+        queue_recovered_tech_lead_anchor(
+            state, issue, tech_lead_authority, claims=claims
+        )
         anchor_number: Optional[int] = existing
     else:
         anchor_number = _create_on_demand_health_anchor(
@@ -613,6 +638,7 @@ def ensure_on_demand_health_review_anchor(
             action_applier=action_applier,
             queue_cache_store=queue_cache_store,
             tech_lead_authority=tech_lead_authority,
+            claims=claims,
             now=now,
         )
         if anchor_number is None:
@@ -627,6 +653,7 @@ def _create_on_demand_health_anchor(
     action_applier: "SupportsApplyAction",
     queue_cache_store: "Optional[QueueCacheStore]",
     tech_lead_authority: "Optional[TechLeadAuthorityStore]",
+    claims: "PendingWorkClaimStore",
     now: float,
 ) -> Optional[int]:
     """Shape + create + intake a fresh on-demand health-review anchor.
@@ -660,7 +687,8 @@ def _create_on_demand_health_anchor(
         )
         return None
     intake_created_tech_lead_anchor(
-        action, issue_number, state, queue_cache_store, tech_lead_authority
+        action, issue_number, state, queue_cache_store, tech_lead_authority,
+        claims=claims,
     )
     return issue_number
 
@@ -692,6 +720,7 @@ def recover_pending_tech_lead_anchors(
     config: "Config",
     session_exists: Callable[[str], bool],
     tech_lead_authority: "TechLeadAuthorityStore | None",
+    claims: "PendingWorkClaimStore",
 ) -> None:
     """Requeue open tech_lead anchors on startup (crash-safe label recovery).
 
@@ -742,14 +771,17 @@ def recover_pending_tech_lead_anchors(
     if case_files:
         print(f"  Skipped {len(case_files)} pattern case file(s) (#6781)")
     for issue in anchors:
-        if session_exists(f"issue-{issue.number}"):
+        # Every lane a tech-lead run may hold, the pre-#7347 ``issue-N`` too.
+        if any(map(session_exists, SessionKind.TECH_LEAD.conflicting_terminal_names(issue.number))):
             print(f"  tech_lead issue #{issue.number}: Already running")
             continue
         # The ADR-0031 §4 marker label declares the anchor's variant; the
         # owner routes it (#6768 B5: queued flavor reaches launch verbatim)
         # and rehydrates a storm anchor's cohort from the durable ledger
         # (#6780: the recovered anchor must keep its act-level scope).
-        outcome = queue_recovered_tech_lead_anchor(state, issue, tech_lead_authority)
+        outcome = queue_recovered_tech_lead_anchor(
+            state, issue, tech_lead_authority, claims=claims
+        )
         if outcome is TechLeadQueueOutcome.DUPLICATE:
             print(f"  tech_lead issue #{issue.number}: Already queued")
             continue
@@ -759,125 +791,3 @@ def recover_pending_tech_lead_anchors(
             f"  Found {len(state.pending_tech_lead_reviews)} tech_lead review(s)"
             " to process"
         )
-
-
-def record_health_review_creation(
-    action: CreateTechLeadIssueAction,
-    state: "OrchestratorState",
-    store: "Optional[QueueCacheStore]",
-    now: Optional[float] = None,
-) -> None:
-    """Record a successful anchor creation (marker-labeled actions only).
-
-    Stamps the in-memory state (stops the next tick re-firing) and persists
-    the marker durably (stops a restart re-firing). Persistence failure is
-    logged, not raised: the created issue must not be reported as an apply
-    failure, the in-memory stamp plus the open anchor's marker label guard
-    the current process, and a restart reconciles the durable value from the
-    anchor issue itself (:func:`hydrate_last_health_review_at`) — the
-    external side effect and the durable timestamp cannot silently diverge.
-    """
-    if not has_health_review_marker(action.labels):
-        return
-    stamped_at = time.time() if now is None else now
-    state.last_health_review_at = stamped_at
-    # Record the board the trigger DECIDED on, carried verbatim on the action —
-    # never a fresh recompute. By now the anchor has been created and queued
-    # into state.pending_tech_lead_reviews, which is itself part of the board, so
-    # recomputing here would stamp a transient state that only exists between
-    # creation and launch and that the board never returns to. The gate would
-    # then never match and would re-fire every interval forever — the exact
-    # waste this trigger exists to prevent.
-    #
-    # "" (a storm anchor planned without facts) means "never reviewed", which
-    # makes the next due review fire: fail toward reviewing, never toward
-    # silent suppression.
-    state.last_reviewed_board_fingerprint = action.health_review_fingerprint
-    if store is None:
-        return
-    try:
-        store.save_last_health_review_at(stamped_at)
-        store.save_last_reviewed_board_fingerprint(
-            state.last_reviewed_board_fingerprint
-        )
-    except Exception:
-        logger.warning(
-            "Failed to persist health-review markers; a restart reconciles the "
-            "interval from the anchor issue and re-reviews on any board change",
-            exc_info=True,
-        )
-
-
-def hydrate_last_health_review_at(
-    config: "Config",
-    state: "OrchestratorState",
-    store: "Optional[QueueCacheStore]",
-    repository_host: "RepositoryHost",
-) -> None:
-    """Hydrate the last-fired marker at startup, reconciling with anchor truth.
-
-    The store is the fast path, but the anchor issues themselves are the
-    crash-safe truth (ADR-0013): if persisting the stamp failed after an
-    anchor was created (disk full, SQLite error), the store is BEHIND — once
-    that anchor closes, plain store hydration would re-fire the review before
-    the interval elapses. Reconcile by deriving the last-fired time from the
-    newest marker-labeled anchor in scope (open or closed) and taking the
-    newer of the two; the reconciled value is persisted back so the store
-    self-heals. Costs one GitHub call, at startup, only when the trigger is
-    armed.
-    """
-    stored = store.load_last_health_review_at() if store is not None else 0.0
-    state.last_health_review_at = stored
-    # Rehydrate the reviewed-board fingerprint so a restart does not re-walk an
-    # unchanged board. There is no anchor-issue truth for it (unlike the
-    # timestamp), so a lost value stays "" and the next due review fires — the
-    # fail-toward-reviewing side.
-    state.last_reviewed_board_fingerprint = (
-        store.load_last_reviewed_board_fingerprint() if store is not None else ""
-    )
-    if health_review_interval_minutes(config) <= 0:
-        return
-    anchored = most_recent_health_anchor_created_at(repository_host, config)
-    if anchored <= stored:
-        return
-    logger.info(
-        "Reconciled last_health_review_at from anchor truth: store=%.2f anchor=%.2f",
-        stored,
-        anchored,
-    )
-    state.last_health_review_at = anchored
-    if store is None:
-        return
-    try:
-        store.save_last_health_review_at(anchored)
-    except Exception:
-        logger.warning(
-            "Failed to self-heal persisted last_health_review_at; the next "
-            "restart will reconcile from the anchor issue again",
-            exc_info=True,
-        )
-
-
-def most_recent_health_anchor_created_at(
-    repository_host: "RepositoryHost", config: "Config"
-) -> float:
-    """Created-at epoch of the newest in-scope health anchor (0.0 when none)."""
-    issues = repository_host.list_issues(
-        labels=_anchor_query_labels(config, HEALTH_REVIEW_MARKER_LABEL),
-        state="all",
-        limit=_ANCHOR_SCAN_LIMIT,
-    )
-    scoped = [
-        issue
-        for issue in _scoped_issues(issues, config.filtering.label)
-        if has_health_review_marker(issue.labels)
-    ]
-    return max((_created_at_epoch(issue) for issue in scoped), default=0.0)
-
-
-def _created_at_epoch(issue: "Issue") -> float:
-    """Parse an issue's ISO-8601 ``created_at`` into an epoch timestamp."""
-    raw = issue.created_at
-    if raw is None:
-        return 0.0
-    return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()

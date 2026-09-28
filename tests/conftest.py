@@ -57,7 +57,8 @@ from issue_orchestrator.ports.pull_request_tracker import (
 )
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
-from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_key import SessionKey
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 TEST_ADMIN_TOKEN = "test-admin-token"
@@ -81,6 +82,20 @@ def completion_intake_fixture(tmp_path):
 def completion_intake(completion_intake_fixture):
     """Inject the real receipt lifetime through the typed runtime port."""
     return completion_intake_fixture.runtime
+
+
+@pytest.fixture(autouse=True)
+def isolate_web_orchestrator_globals():
+    """Restore the web entrypoints' orchestrator/server globals after each test.
+
+    A test that installs a stub orchestrator and does not put the previous one
+    back used to leak it into whichever test that xdist worker ran next (see
+    ``tests/web_globals.py``).
+    """
+    from tests.web_globals import web_globals_isolated
+
+    with web_globals_isolated():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -1111,6 +1126,7 @@ def build_test_orchestrator_deps(
         config=config,
         repository_host=repo_host,
         working_copy=working_copy,
+        run_ledger=issue_run_ledger,
     )
 
     _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)
@@ -1287,8 +1303,15 @@ def build_test_orchestrator_deps(
         validated_work=validated_work, working_copy=evidence_working_copy,
         sessions=_session_manager, pair_registry=pair_registry, supervisor=None,
         publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
+        base_branch=lambda _issue, _worktree: "main",
+        pending_work_claims=pending_work_claims,
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
+    from issue_orchestrator.entrypoints.bootstrap_action_liveness import build_action_liveness
+    action_liveness = build_action_liveness(
+        config, events=events, action_applier=_action_applier, label_manager=label_manager,
+        charter=tech_lead_authority.charter_ledger,
+    )
 
     from issue_orchestrator.ports.validated_work_drain import (
         NullValidatedWorkRecoveryDrain,
@@ -1368,6 +1391,7 @@ def build_test_orchestrator_deps(
             fresh_issue_reader=fresh_reader,
             queue_cache_store=infra_services.queue_cache_store,
             published_review=runtime_lifecycle.published_review,
+            action_liveness=action_liveness.owner,
         ),
         repository_host=repo_host,
         e2e_issue_tracker=e2e_issue_tracker,
@@ -1413,6 +1437,7 @@ def build_test_orchestrator_deps(
         ),
         publish_recovery=publish_recovery,
         validated_work_recovery=NullValidatedWorkRecoveryDrain(),
+        action_liveness=action_liveness,
         services=infra_services,
     )
 
@@ -1587,13 +1612,13 @@ def make_session(sample_agent_config, tmp_path):
     Usage:
         def test_something(make_session):
             session = make_session(issue_number=123)
-            session = make_session(issue_number=456, task=TaskKind.REVIEW)
+            session = make_session(issue_number=456, task=SessionKind.REVIEW)
     """
     def _make_session(
         issue_number: int = 123,
         issue_title: str = "Test Issue",
         issue_labels: list[str] | None = None,
-        task: TaskKind = TaskKind.CODE,
+        task: SessionKind = SessionKind.CODE,
         repo: str = "test/repo",
         terminal_id: str | None = None,
         branch_name: str | None = None,
@@ -1606,13 +1631,13 @@ def make_session(sample_agent_config, tmp_path):
             labels=issue_labels or [],
         )
         issue_key = FakeIssueKey(name=str(issue_number))
-        session_key = SessionKey(issue=issue_key, task=task)
+        session_key = SessionKey(issue=issue_key, kind=task)
 
         # Generate defaults based on task type
         if terminal_id is None:
-            if task == TaskKind.REVIEW:
+            if task == SessionKind.REVIEW:
                 terminal_id = f"review-{issue_number}"
-            elif task == TaskKind.REWORK:
+            elif task == SessionKind.REWORK:
                 terminal_id = f"rework-{issue_number}"
             else:
                 terminal_id = f"issue-{issue_number}"

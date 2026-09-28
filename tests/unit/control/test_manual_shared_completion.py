@@ -12,7 +12,7 @@ from issue_orchestrator.domain.completion_processing import ProcessingResult
 from issue_orchestrator.domain.exact_git import ExactPushOutcome
 from issue_orchestrator.domain.manual_publication import PreparedManualPublication
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
-from issue_orchestrator.domain.session_key import TaskKind
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.validated_head_publication import BranchWriteOutcome, BranchWriteStatus, PrEnsureOutcome, PrEnsureStatus, PullRequestAttribution
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
@@ -57,7 +57,7 @@ def test_new_and_existing_manual_prs_use_shared_policy_and_preserve_requested_ef
     locators = replace(locators, pr_number=existing_pr)
     prepared = owner.prepare_manual_publication(locators, "Feature")
     assert isinstance(prepared, PreparedManualPublication), prepared
-    assert prepared.processing_policy == CompletionProcessingPolicy("agent:test", TaskKind.CODE)
+    assert prepared.processing_policy == CompletionProcessingPolicy("agent:test", SessionKind.CODE)
     target = prepared.command.target_head_sha
     number = existing_pr or 42
     def push(command):
@@ -89,6 +89,6 @@ def test_shared_source_policy_refusal_prevents_every_remote_publication_step(sha
     assert isinstance(result.processing, ProcessingResult)
     assert not result.processing.success
     assert result.processing.intake_receipt == locators.intake_receipt
-    assert result.processing.require_processing_policy() == CompletionProcessingPolicy("agent:test", TaskKind.CODE)
+    assert result.processing.require_processing_policy() == CompletionProcessingPolicy("agent:test", SessionKind.CODE)
     executor.push_validated_head.assert_not_called()
     executor.ensure_pull_request.assert_not_called()

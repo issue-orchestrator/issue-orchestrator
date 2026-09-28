@@ -73,6 +73,7 @@ from .actions import (
     AddLabelAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseWithheldReviewAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
@@ -84,6 +85,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from .action_applier import ActionApplier
     from .label_manager import LabelManager
+    from .tech_lead_charter_lifecycle import CompletionEffectLinks
 
 from .tech_lead_completion_gate import (
     RequiredActLevelOutcome as RequiredActLevelOutcome,
@@ -398,10 +400,38 @@ def apply_completion_actions_gated(
     outcome, then re-raise. With no mandated action the whole list applies in one
     pass — behavior for ordinary completions is unchanged.
     """
-    mandated, remainder = partition_required_act_level_actions(actions)
-    applied, error = _apply_completion_action_batch(
-        action_applier, mandated or list(actions), issue_number
+    from .tech_lead_charter_lifecycle import CompletionEffectLinks, link_or_log
+    from .tech_lead_charter_records import partition_charter_records
+
+    # The charter decisions are an audit of what was DECIDED, so they land
+    # before the gate and whatever the mandated outcome; a failed audit write
+    # withholds every effect (#7330 review F2).
+    audit, actions = partition_charter_records(actions)
+    audited, error = _apply_completion_action_batch(action_applier, audit, issue_number)
+    if error is not None or not all(result.success for result in audited):
+        return audited, error or RuntimeError("tech-lead charter decisions were not recorded")
+    # What really happened to each executed decision's effects is linked back
+    # to its record once the gate has run them, so no verdict reads as a
+    # remedy that took effect when it did not (#7362).
+    links = CompletionEffectLinks(planned=actions)
+    applied, error = _apply_gated_effects(action_applier, actions, issue_number, links)
+    link_or_log(
+        lambda: links.link(lambda: action_applier.tech_lead_ops),
+        f"issue #{issue_number}'s completion effects",
     )
+    return audited + applied, error
+
+
+def _apply_gated_effects(
+    action_applier: "ActionApplier",
+    actions: Sequence[Action],
+    issue_number: int,
+    links: "CompletionEffectLinks",
+) -> tuple[list[ActionResult], BaseException | None]:
+    """The mandated act-level actions first, then the rest only if they commit."""
+    mandated, remainder = partition_required_act_level_actions(actions)
+    first = mandated or list(actions)
+    applied, error = _apply_completion_action_batch(action_applier, first, issue_number, links)
     if (
         not mandated
         or error is not None
@@ -418,7 +448,7 @@ def apply_completion_actions_gated(
             )
         return applied, error
     remainder_applied, error = _apply_completion_action_batch(
-        action_applier, remainder, issue_number
+        action_applier, remainder, issue_number, links
     )
     return applied + remainder_applied, error
 
@@ -427,6 +457,7 @@ def _apply_completion_action_batch(
     action_applier: "ActionApplier",
     actions: Sequence[Action],
     issue_number: int,
+    links: "CompletionEffectLinks | None" = None,
 ) -> tuple[list[ActionResult], BaseException | None]:
     """Apply one batch of actions, capturing a raise past the runtime-kill boundary.
 
@@ -441,10 +472,16 @@ def _apply_completion_action_batch(
         len(actions),
         [type(action).__name__ for action in actions],
     )
+    landed: list[ActionResult] = []
     try:
         # `or []` tolerates test doubles whose apply_all returns None.
-        return list(action_applier.apply_all(list(actions)) or []), None
+        results = list(action_applier.apply_all(list(actions), on_result=landed.append) or [])
     except Exception as exc:
+        if links is not None:
+            # What landed before the raise stands; the raise is the next one's.
+            links.applied(actions, landed)
+            if len(landed) < len(actions):
+                links.raised(actions[len(landed)], exc)
         logger.warning(
             issue_log(
                 issue_number,
@@ -454,6 +491,9 @@ def _apply_completion_action_batch(
             exc,
         )
         return [], exc
+    if links is not None:
+        links.applied(actions, results)
+    return results, None
 
 
 def required_act_level_outcome_after_apply(
@@ -637,6 +677,12 @@ def _failure_surface_identity(
             action.issue_number,
             "recover_validated_work",
             f"retained validated work for issue #{action.issue_number}",
+        )
+    if isinstance(action, ReleaseWithheldReviewAction):
+        return (
+            action.issue_number,
+            "release_withheld_review",
+            f"the withheld review of issue #{action.issue_number}'s PR",
         )
     return (
         fallback_issue_number,
