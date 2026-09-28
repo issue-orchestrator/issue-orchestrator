@@ -32,17 +32,24 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
 
 ## Method
 
-1. **Observe.** Read `audit-diff.json` first. For each anomaly, record two
-   separate facts, and never infer one from the other:
-   - **`recurs_after_start`:** is there a *timestamped* occurrence after the
-     latest engine start? (true / false / unknown)
+1. **Observe.** Read `audit-diff.json` first. For each anomaly, record three
+   separate facts, each backed by a cited record, and never infer one from
+   another:
+   - **`present_after_start`:** is it still present (e.g. a record still
+     parked, a label still set) after the latest engine start? (true / false /
+     unknown)
+   - **`recurs_after_start`:** is there a *new, timestamped* occurrence after
+     the start (a failure, log signature or event dated after it)?
+     (true / false / unknown)
    - **`origin`:** did it *first* appear after the start (`after_start`),
      before it (`before_start`), or can't that be established (`unknown`)?
 
-   A record that is still parked, but was created before the start, recurs
-   after the start. It did not originate there. Use `unknown` whenever the
-   records don't carry the timestamp needed. Keep anomalies that recur after
-   the start; drop pure history.
+   A park created before the start and still present with no new failure
+   after it is `present_after_start: true`, `recurs_after_start: unknown` (or
+   `false` if the records prove no new failure). Keep anomalies that are
+   present or recur after the start. If the evidence can't settle whether it
+   is live (both `unknown`), still emit it, as `needs_investigation`. Drop pure
+   history.
 2. **Triage.** Classify each live anomaly:
    - **expected** (restart handoffs, a known in-flight fix);
    - **already tracked** (cite the open issue);
@@ -61,23 +68,33 @@ that need it. **Absence of evidence is "unobserved", never "fixed".**
      depth doesn't allow it.
    - `unknown`: the evidence needed to decide isn't complete.
 
-   You may grade `not_noticed` **only** when `charter-decisions.json` and
-   `case-files.json` both have `coverage.complete: true` over the anomaly's
-   observation window, and nothing in them refers to it. Cite the decision
-   and case-file IDs that support every other grade.
+   The **grading window** runs from the anomaly's earliest known occurrence
+   (its `origin` time, or the earliest cited record) to now. It's the whole
+   span in which the tech lead could have noticed it. You may grade
+   `not_noticed` **only** when both `charter-decisions.json` and
+   `case-files.json` report `coverage.complete: true` over a span that
+   **contains the whole grading window**, and nothing in them refers to the
+   anomaly. If the window's start is `unknown` or not covered, grade
+   `unknown`. Cite the decision and case-file IDs that support every other
+   grade.
 4. **Find the root cause before proposing anything.** Trace it in the engine
    source to the owner that makes the wrong decision. Name the file and
    function. **Fix the class, not the instance:** enumerate every other site
    with the same shape. If two subsystems each behave correctly and fail only
    together, say which interaction is missing an owner.
-5. **Require a reproduction.** Every defect output must specify a test or
-   exam case that is expected to **fail on the current engine commit**. You
-   can't run it; the orchestrator does. It runs each proposed reproduction on
-   the stated commit and **rejects the finding if it passes there**. Specify
-   it precisely:
-   - the planted, reachable state;
-   - the outcome assertions, which must be independent of the fix;
-   - for an exam case, a **new, unique case ID**.
+5. **Specify a reproduction; a coder proves it.** You are read-only, so you
+   *specify* the reproduction, and the proof comes later in two stages:
+   - **You** specify, precisely enough that a coder can implement it without
+     guessing:
+     - the harness (the exam case module, or the test file or directory);
+     - the planted, reachable state;
+     - the outcome assertions, which must be independent of any fix;
+     - for an exam case, a **new, unique case ID**.
+   - **The issue the orchestrator files** requires the reproduction to be
+     implemented *first*, and review confirms it **fails on the stated engine
+     commit** before any fix is accepted. If the implemented reproduction
+     *passes* there, the finding is closed as `not_reproduced` and counts
+     against you.
 
    If you can't specify one precisely, you don't understand the defect yet,
    so use `needs_investigation`.
@@ -102,15 +119,18 @@ whole file. Valid findings become the corresponding GitHub artefacts.
     {
       "id": "<stable slug>",
       "anomaly_keys": [{"kind": "<audit kind>", "subject": "<audit subject>", "signature": "<audit signature>"}],
-      "recurs_after_start": true,
+      "present_after_start": true,
+      "recurs_after_start": "true | false | unknown",
       "origin": "after_start | before_start | unknown",
+      "observed": [{"at": "<iso>", "source": "<audit field | decision id | case-file id | log signature>"}],
+      "grading_window": {"from": "<iso | unknown>", "to": "<iso>"},
       "classification": "new_defect | tracked",
       "tracked_issue": 7491,
       "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
       "stall_evidence": ["<decision id | case-file id>"],
       "output": "exam_case | capability_issue | charter_proposal | prompt_proposal | needs_investigation",
       "root_cause": {"owner": "<module:function>", "why": "<one paragraph>", "same_shape_sites": ["<module:function>"]},
-      "reproduction": {"kind": "exam_case | unit_test | integration_test", "case_id": "<new unique id, exam_case only>", "planted_state": "<reachable state>", "assertions": ["<outcome that fails today>"]},
+      "reproduction": {"kind": "exam_case | unit_test | integration_test", "harness": "<exam case module | test path>", "case_id": "<new unique id, exam_case only>", "planted_state": "<reachable state>", "assertions": ["<outcome that fails today>"], "fails_on": "<engine commit>"},
       "proposal": "<the concrete change, as small as it can be>",
       "missing_evidence": ["<what would be needed>"]
     }
@@ -124,14 +144,21 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 - `classification: tracked` requires `tracked_issue` to be an open issue in
   `open-issues.json`. `new_defect` forbids `tracked_issue`. Expected items are
   **not emitted**.
-- `stall_point: not_noticed` requires complete coverage (see step 3). Every
-  other grade requires `stall_evidence`, except `unknown`.
+- `observed` must cite at least one record; every `true` value in
+  `present_after_start` / `recurs_after_start` / `origin: after_start` must be
+  backed by an `observed` entry dated after `engine_started_at`.
+- `stall_point: not_noticed` requires `grading_window.from` to be known, and
+  both coverage spans to contain the whole window. Every other grade except
+  `unknown` requires `stall_evidence`.
 - `output: needs_investigation` requires `missing_evidence` and forbids
   `root_cause`, `reproduction` and `proposal`. Every other output requires
   `root_cause`, `reproduction` and `proposal`.
 - `output: exam_case` requires `reproduction.kind: exam_case` and a
   `case_id` that is **not** an existing case ID. It adds a case; you may
   never change, remove or loosen an existing case or grader.
+- A reproduction is proven only once a coder has implemented it and review
+  has seen it fail on `fails_on`. Until then the finding is `specified`,
+  never `reproduced`.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only over the same case set; an
   `interventions.json` window has to match the comparison window.
