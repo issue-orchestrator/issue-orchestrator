@@ -21,7 +21,12 @@ from typing import Any, Protocol
 
 from ..contracts.improver_findings import Finding
 from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord, RunOutcome
-from ..control.improver_effects import CommentImproverEvidence, plan_effect
+from ..control.improver_effects import (
+    IMPROVER_LABEL,
+    CommentImproverEvidence,
+    plan_effect,
+    title_token,
+)
 from ..ports.engine_audit import OpenIssueLabels
 from ..ports.improver import ImproverRunStore
 from ..ports.repository_host import host_rate_limit_of
@@ -43,6 +48,8 @@ class ImproverIssueHost(Protocol):
     def find_issue_by_marker(
         self, *, title: str, marker: str, authoritative: bool = False
     ) -> int | None: ...
+
+    def find_open_issue_by_marker(self, *, label: str, marker: str) -> int | None: ...
 
 
 class ImproverEffects:
@@ -157,14 +164,19 @@ class ImproverEffects:
                     "at": self._clock(), "detail": "", "error": None,
                 }
             )
-        number = None
         if receipt.create_attempted_at is not None:
             # An earlier POST's result was lost. Prove by the body marker,
-            # over every issue open or closed, whether it filed one; a
-            # listing of open issues may not show a fresh one yet.
+            # over every issue open or closed, whether it filed one.
             number = self._host.find_issue_by_marker(
                 title=command.title, marker=command.marker, authoritative=True
             )
+        else:
+            # Another run may have filed the same finding a moment ago, which
+            # the open listing need not show yet: an uncached, complete read
+            # of the open improver issues settles it before any POST.
+            number = self._host.find_open_issue_by_marker(label=IMPROVER_LABEL, marker=command.marker)
+            if number is not None:
+                return self._apply(run, finding, receipt, {**open_issues, number: _carrying(number, receipt.key)}, persist)
         if number is None:
             persist(receipt.model_copy(update={"create_attempted_at": self._clock()}))
             created = self._host.create_issue(
@@ -181,6 +193,11 @@ class ImproverEffects:
                 "create_attempted_at": receipt.create_attempted_at or self._clock(),
             }
         )
+
+
+def _carrying(number: int, key: str) -> OpenIssueLabels:
+    """An open issue known (by its body marker) to carry the finding ``key``."""
+    return OpenIssueLabels(number=number, title=title_token(key), labels=(IMPROVER_LABEL,))
 
 
 def _replaced(

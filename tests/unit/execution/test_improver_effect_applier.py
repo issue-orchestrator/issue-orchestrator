@@ -236,3 +236,21 @@ def test_every_filed_body_carries_its_findings_marker(tmp_path: Path) -> None:
     [run] = _effects(store, host).apply_pending()
 
     assert host.created[0]["body"].startswith(f"<!-- io-improver-finding:{run.effects[0].key} -->")
+
+
+def test_a_later_run_finds_an_issue_the_open_listing_does_not_show_yet(tmp_path: Path) -> None:
+    """Run A files; run B accepts the same finding before the listing shows
+    A's issue. B comments there instead of filing a duplicate (r3 F1)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "a", example("capability_issue"))
+    _effects(store, host).apply_pending()
+    host.stale_listing = True
+    _run(store, "b", example("capability_issue"))
+
+    runs = _effects(store, host).apply_pending()
+
+    assert host.create_calls == 1
+    [b] = [r for r in runs if r.run_id == "b"]
+    assert b.effects[0].status is EffectStatus.COMMENTED
+    assert b.effects[0].issue_number == host.created[0]["number"]
+    assert [n for n, _ in host.comments] == [host.created[0]["number"]]

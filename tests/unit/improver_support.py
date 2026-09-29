@@ -309,6 +309,13 @@ class FakeIssueHost:
         created = {c["number"] for c in self.created}
         return [i for i in self.open if not (self.stale_listing and i.number in created)]
 
+    def find_open_issue_by_marker(self, *, label, marker):  # type: ignore[no-untyped-def]
+        """Uncached: sees what the (possibly stale) open listing does not."""
+        return next(
+            (c["number"] for c in self.created if marker in c["body"] and label in (c["labels"] or ())),
+            None,
+        )
+
     def find_issue_by_marker(self, *, title, marker, authoritative=False):  # type: ignore[no-untyped-def]
         assert authoritative
         return next((c["number"] for c in self.created if marker in c["body"]), None)
