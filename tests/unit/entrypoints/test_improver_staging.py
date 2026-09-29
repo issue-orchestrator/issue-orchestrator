@@ -366,3 +366,21 @@ def test_no_decision_dated_inside_coverage_is_missing_from_the_copy(
     [late] = [d for d in live if d.action_id == "LATE"]
     assert datetime.fromisoformat(late.decided_at) > datetime.fromisoformat(decisions["coverage"]["to"])
 
+
+def test_an_unreadable_scorecard_is_left_out_and_named(state: Path, tmp_path: Path) -> None:
+    """One written in place mid-run, or cut short by a crash (3b r1 F6): the
+    run goes on without it, and no exam trend is comparable."""
+    exam = tmp_path / "exam-out"
+    exam.mkdir()
+    for stamp in ("1", "2"):
+        (exam / f"A-one-x-{stamp}.json").write_text(json.dumps({
+            "schema_version": 1, "case_id": "A-one", "engine_commit": COMMIT,
+            "passed": True, "failures": [],
+        }))
+    (exam / "A-one-x-3.json").write_text('{"schema_version": 1, "case_')
+
+    staged = _stager(FakeHost(), FakeHost()).stage(_request(state, tmp_path, exam_dir=exam))
+
+    entry = next(i for i in staged.manifest.inputs if i.name == "exam")
+    assert "A-one-x-3.json" in entry.detail
+    assert staged.manifest.exam_scores_comparable is False

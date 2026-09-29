@@ -128,12 +128,19 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
    or real external responses. Don't propose hardening against hypothetical
    corruption.
 
-## Outputs (the only thing you write)
+## Outputs (the only thing you produce)
 
-Write `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-findings.json`. The orchestrator
-validates it **strictly**: unknown fields, contradictory combinations,
-nonexistent audit keys, or a tracked issue that isn't open all reject the
-whole file. Valid findings become the corresponding GitHub artefacts.
+You run in a read-only sandbox, so you write no file: **your final message is
+`improver-findings.json`**. Make it exactly one JSON document and nothing else
+(no prose around it); the orchestrator saves it as
+`$ISSUE_ORCHESTRATOR_RUN_DIR/improver-findings.json` and validates it
+**strictly**: unknown fields, contradictory combinations, nonexistent audit
+keys, or a tracked issue that isn't open all reject the whole file, and a
+rejected file changes nothing. Valid findings become GitHub artefacts, filed by
+the orchestrator: a `tracked` finding comments its evidence on the tracked
+issue; any other files one issue (or comments on the open issue an earlier run
+filed for the same finding), and a proposal is labelled for the operator's
+decision, never applied.
 
 ```json
 {

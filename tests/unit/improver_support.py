@@ -257,3 +257,82 @@ EXAMPLE_NAMES = (
     "prompt_proposal",
     "needs_investigation",
 )
+
+
+# -- fakes for the run and its effects (#7490 step 3b) -------------------------
+
+
+class MemoryRunStore:
+    """An :class:`~issue_orchestrator.ports.improver.ImproverRunStore` in a tmp dir."""
+
+    def __init__(self, root: Path) -> None:
+        from issue_orchestrator.execution.improver_run_store import FileImproverRunStore
+
+        self._files = FileImproverRunStore(root)
+        self.recorded: list = []
+
+    def exclusive(self):  # type: ignore[no-untyped-def]
+        return self._files.exclusive()
+
+    def new_run_dir(self, run_id: str) -> Path:
+        return self._files.new_run_dir(run_id)
+
+    def record(self, run) -> None:  # type: ignore[no-untyped-def]
+        self.recorded.append(run)
+        self._files.record(run)
+
+    def runs(self):  # type: ignore[no-untyped-def]
+        return self._files.runs()
+
+    def accepted_findings(self, run):  # type: ignore[no-untyped-def]
+        return self._files.accepted_findings(run)
+
+
+class FakeIssueHost:
+    """The repository-host calls the improver's effects make, recorded."""
+
+    def __init__(self, open_issues: list | None = None) -> None:
+        from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+
+        self.open = list(open_issues or [OpenIssueLabels(number=OPEN_TRACKER, title="Fetch cost", labels=())])
+        self.created: list[dict] = []
+        self.comments: list[tuple[int, str]] = []
+        self.fail_on_create: Exception | None = None
+        #: Raise AFTER the issue is created: the POST landed, its result was lost.
+        self.lose_create_result: Exception | None = None
+        #: Newly created issues the open listing does not show yet.
+        self.stale_listing = False
+        self.create_calls = 0
+        self.next_number = 9000
+
+    def list_open_issue_labels_complete(self):  # type: ignore[no-untyped-def]
+        created = {c["number"] for c in self.created}
+        return [i for i in self.open if not (self.stale_listing and i.number in created)]
+
+    def find_open_issue_by_marker(self, *, marker):  # type: ignore[no-untyped-def]
+        """Uncached, by body: sees what the (stale, retitled) listing does not."""
+        return next((c["number"] for c in self.created if marker in c["body"]), None)
+
+    def find_issue_by_marker(self, *, title, marker, authoritative=False):  # type: ignore[no-untyped-def]
+        assert authoritative
+        return next((c["number"] for c in self.created if marker in c["body"]), None)
+
+    def create_issue(self, title, body, labels=None, milestone=None):  # type: ignore[no-untyped-def]
+        self.create_calls += 1
+        if self.fail_on_create is not None:
+            raise self.fail_on_create
+        from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+
+        self.next_number += 1
+        self.created.append({"title": title, "body": body, "labels": labels, "number": self.next_number})
+        self.open.append(OpenIssueLabels(number=self.next_number, title=title, labels=tuple(labels or ())))
+        if self.lose_create_result is not None:
+            raise self.lose_create_result
+        return {"number": self.next_number, "html_url": f"https://x/{self.next_number}"}
+
+    def add_comment(self, issue_or_pr_number, body):  # type: ignore[no-untyped-def]
+        self.comments.append((issue_or_pr_number, body))
+        return "https://x/comment"
+
+    def issue_comment_marker_present(self, issue_number, marker):  # type: ignore[no-untyped-def]
+        return any(n == issue_number and marker in body for n, body in self.comments)

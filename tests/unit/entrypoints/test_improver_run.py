@@ -1,0 +1,286 @@
+"""One improver run: stage, agent, validate, record, apply (#7490)."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE
+from issue_orchestrator.contracts.improver_run import EffectStatus, RunOutcome
+from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
+from issue_orchestrator.entrypoints.improver_run import ImproverRun, ImproverRunRequest, findings_text, render_run
+from issue_orchestrator.entrypoints.improver_staging import (
+    ImproverInputsUnavailable,
+    ImproverStagingRequest,
+    StagedImproverInputs,
+    load_staged_evidence,
+)
+from issue_orchestrator.ports.improver import ImproverAgentResult
+from tests.unit.improver_support import (
+    FakeIssueHost,
+    MemoryRunStore,
+    audits,
+    build_improver_data,
+    example,
+)
+
+NOW = datetime(2026, 9, 28, 19, 0, tzinfo=UTC)
+
+
+class FakeStager:
+    def __init__(self, unavailable: str | None = None) -> None:
+        self.unavailable = unavailable
+        self.requests: list[ImproverStagingRequest] = []
+
+    def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs:
+        self.requests.append(request)
+        if self.unavailable:
+            raise ImproverInputsUnavailable(self.unavailable)
+        data = build_improver_data(request.run_dir)
+        evidence = load_staged_evidence(data)
+        _, current = audits()
+        assert evidence.audit.generated_at == current.generated_at
+        from issue_orchestrator.contracts.improver_inputs import InputsManifest
+
+        manifest = InputsManifest.model_validate_json((data / "inputs.json").read_text())
+        return StagedImproverInputs(data_dir=data, manifest=manifest, audit=current)
+
+
+class FakeAgent:
+    def __init__(self, message: str | None, detail: str = "codex finished") -> None:
+        self.message = message
+        self.detail = detail
+        self.prompts: list[str] = []
+
+    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+        self.prompts.append(prompt)
+        return ImproverAgentResult(self.message, self.detail)
+
+
+def _request(audited_repo: str = "porchpin/porchpin") -> ImproverRunRequest:
+    return ImproverRunRequest(
+        state_dir=Path("/engine/state"), audited_repo=audited_repo,
+        outputs_repo="issue-orchestrator/issue-orchestrator", exam_dir=None,
+        window=timedelta(hours=24), log_tail_bytes=1024,
+    )
+
+
+_RUNS = iter(range(10**6))
+
+
+def _improver(store: MemoryRunStore, host: FakeIssueHost, agent: FakeAgent, stager: FakeStager | None = None) -> ImproverRun:
+    # Each improver's clock starts a day after the previous one's, so runs order by time.
+    start = NOW + timedelta(days=next(_RUNS))
+    clock = iter(start + timedelta(minutes=i) for i in range(1000))
+    return ImproverRun(
+        store=store,
+        stager=stager or FakeStager(),
+        agent=agent,
+        effects=ImproverEffects(
+            store=store, host=host, outputs_repo="issue-orchestrator/issue-orchestrator", clock=lambda: NOW
+        ),
+        prompt="THE PROMPT",
+        clock=lambda: next(clock),
+    )
+
+
+def _findings(*names: str) -> str:
+    docs = [example(n) for n in names]
+    merged = docs[0]
+    merged["findings"] = [f for d in docs for f in d["findings"]]
+    return json.dumps(merged)
+
+
+def test_an_accepted_run_is_recorded_graded_and_its_effects_applied(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent(_findings("exam_case", "prompt_proposal"))
+
+    record = _improver(store, host, agent).run(_request())
+
+    assert record.outcome is RunOutcome.ACCEPTED and record.outcome.exit_code == 0
+    assert [g.stall_point for g in record.grades] == ["noticed_not_acted", "not_in_charter"]
+    assert [(m.stall_point, m.previous, m.current) for m in record.stall_points] == [
+        ("not_in_charter", None, 1), ("noticed_not_acted", None, 1),
+    ]
+    assert [e.status for e in record.effects] == [EffectStatus.FILED, EffectStatus.COMMENTED]
+    assert len(host.created) == 1 and len(host.comments) == 1
+    assert record.engine_commit == "0123456789abcdef0123456789abcdef01234567"
+    assert (Path(record.run_dir) / FINDINGS_FILE).is_file()
+    assert agent.prompts[0].startswith(f"ISSUE_ORCHESTRATOR_RUN_DIR={record.run_dir}\n\nTHE PROMPT")
+    assert "stalled at noticed_not_acted" in render_run(record)
+
+
+def test_the_next_run_diffs_against_the_last_audit_and_grades_the_trend(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    first = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request())
+    stager = FakeStager()
+
+    second = _improver(store, host, FakeAgent(_findings("charter_proposal")), stager).run(_request())
+
+    assert stager.requests[0].previous_audit == Path(first.run_dir) / "improver-data" / "audit.json"
+    moves = {m.stall_point: (m.previous, m.current) for m in second.stall_points}
+    assert moves == {"noticed_not_acted": (1, 0), "not_noticed": (0, 1)}
+
+
+def test_a_rejected_output_is_recorded_with_its_reasons_and_nothing_is_applied(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    doc = json.loads(_findings("exam_case", "capability_issue"))
+    doc["findings"][1]["reproduction"]["fails_on"] = "HEAD"
+
+    record = _improver(store, host, FakeAgent(json.dumps(doc))).run(_request())
+
+    assert record.outcome is RunOutcome.REJECTED and record.outcome.exit_code == 1
+    assert any("reproduction_fails_on_engine_commit" in r for r in record.rejections)
+    assert record.effects == () and record.grades == ()
+    assert host.created == [] and host.comments == []
+
+
+def test_an_agent_that_does_not_finish_is_unavailable(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    record = _improver(store, host, FakeAgent(None, "codex timed out after 5400s")).run(_request())
+
+    assert record.outcome is RunOutcome.AGENT_FAILED and record.outcome.exit_code == 75
+    assert "timed out" in record.detail
+    assert host.created == []
+
+
+def test_inputs_that_cannot_be_staged_end_the_run_unavailable(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent("{}")
+
+    record = _improver(store, host, agent, FakeStager("no engine-start.json")).run(_request())
+
+    assert record.outcome is RunOutcome.UNAVAILABLE and record.outcome.exit_code == 75
+    assert agent.prompts == []
+    assert record.audit_staged is False
+
+
+def test_a_run_first_applies_what_an_earlier_run_still_owes(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("down")
+    owed = _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+    assert owed.outcome is RunOutcome.ACCEPTED and owed.exit_code == 75
+    assert owed.pending_effects
+    host.fail_on_create = None
+
+    _improver(store, host, FakeAgent(None, "codex exited 1")).run(_request())
+
+    assert [e.status for e in next(r for r in store.runs() if r.run_id == owed.run_id).effects] == [EffectStatus.FILED]
+
+
+def test_the_findings_are_the_final_message_or_its_one_fenced_block() -> None:
+    assert findings_text('  {"a": 1}\n') == '{"a": 1}\n'
+    assert findings_text('```json\n{"a": 1}\n```') == '{"a": 1}\n'
+    assert findings_text('Here you go:\n```json\n{"a": 1}\n```') == 'Here you go:\n```json\n{"a": 1}\n```\n'
+
+
+def test_a_run_that_must_not_apply_records_its_effects_as_owed(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    record = _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.ACCEPTED
+    assert [e.status for e in record.effects] == [EffectStatus.PENDING]
+    assert host.created == [] and host.comments == []
+
+
+def test_a_run_never_starts_while_another_holds_the_store(tmp_path: Path) -> None:
+    from issue_orchestrator.execution.improver_run_store import FileImproverRunStore
+    from issue_orchestrator.ports.improver import ImproverStoreBusy
+    import pytest
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent(_findings("capability_issue"))
+
+    with FileImproverRunStore(tmp_path).exclusive():
+        with pytest.raises(ImproverStoreBusy):
+            _improver(store, host, agent).run(_request())
+
+    assert agent.prompts == [] and store.runs() == ()
+
+
+def test_a_run_whose_effects_an_earlier_failure_blocks_is_unavailable(tmp_path: Path) -> None:
+    """An older owed effect keeps failing, so this run's are not tried: it
+    must not exit green (r1 F4)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("down")
+    _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+
+    current = _improver(store, host, FakeAgent(_findings("prompt_proposal"))).run(_request())
+
+    assert current.outcome is RunOutcome.ACCEPTED and current.exit_code == 75
+    assert host.comments == []
+    assert "earlier run" in current.effects[0].detail
+    host.fail_on_create = None
+
+
+def test_the_previous_audit_and_grades_are_the_same_engines(tmp_path: Path) -> None:
+    """A, then B (accepted, other grades), then A: A diffs and grades against A (r1 F5, r2 F3)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    first = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request("a/a"))
+    _improver(store, host, FakeAgent(_findings("prompt_proposal"))).run(_request("b/b"))
+    _improver(store, host, FakeAgent("not json")).run(_request("b/b"))
+    stager = FakeStager()
+
+    third = _improver(store, host, FakeAgent(_findings("charter_proposal")), stager).run(_request("a/a"))
+
+    assert stager.requests[0].previous_audit == Path(first.run_dir) / "improver-data" / "audit.json"
+    assert {m.stall_point: m.previous for m in third.stall_points} == {
+        "noticed_not_acted": 1, "not_noticed": 0,
+    }
+
+
+def test_a_run_with_nothing_of_its_own_is_not_green_while_an_earlier_run_is_owed(tmp_path: Path) -> None:
+    """r2 F1: an accepted empty findings file, an older effect still failing."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("down")
+    older = _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+    empty = json.loads(_findings("capability_issue"))
+    empty["findings"] = []
+
+    current = _improver(store, host, FakeAgent(json.dumps(empty))).run(_request())
+
+    assert current.effects == () and current.exit_code == 75
+    assert current.owed_by_earlier_runs == (older.run_id,)
+    assert f"still owed by earlier runs: {older.run_id}" in render_run(current)
+
+
+def test_the_rendered_run_names_an_effects_error(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("500")
+
+    record = _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+
+    assert "error: RuntimeError: 500" in render_run(record)
+
+
+def test_a_run_for_another_repository_than_its_effects_is_refused(tmp_path: Path) -> None:
+    import pytest
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    request = ImproverRunRequest(
+        state_dir=Path("/s"), audited_repo="a/a", outputs_repo="other/repo", exam_dir=None,
+        window=timedelta(hours=24), log_tail_bytes=1,
+    )
+
+    with pytest.raises(ValueError, match="other/repo"):
+        _improver(store, host, FakeAgent("{}")).run(request)
+
+
+def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path) -> None:
+    """3b r6 F1: e.g. the permission profile refuses a Codex config."""
+
+    class Refused:
+        def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+            raise RuntimeError("legacy sandbox_mode disables the permission profile")
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    record = _improver(store, host, Refused()).run(_request())  # type: ignore[arg-type]
+
+    [stored] = store.runs()
+    assert stored.outcome is RunOutcome.AGENT_FAILED and stored.exit_code == 75
+    assert "sandbox_mode" in stored.detail and stored.effects == ()
+    assert record == stored
