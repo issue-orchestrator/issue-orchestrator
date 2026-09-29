@@ -185,7 +185,7 @@ def case_files() -> CaseFilesInput:
                 id="case-file:validation-retry-refused", signature="validation-retry-refused",
                 issue_number=372, recorded_at=datetime.fromisoformat("2026-09-28T13:10:00+00:00"),
                 observation_count=1, fix_class="code", area="", disposition="active",
-                retirement_pending=False, body="#410's validation retry is refused every tick.",
+                retirement_pending=False, body="#410's validation retry is refused every tick.", body_known=True,
                 observations=(
                     CaseFileObservationInput(
                         observation_id="run-1:tl:A1",

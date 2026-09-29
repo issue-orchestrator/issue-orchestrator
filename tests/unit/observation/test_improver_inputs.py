@@ -428,3 +428,25 @@ def test_a_run_that_ended_after_the_cutoff_was_still_running_at_it() -> None:
 
     [diagnosis] = staged.diagnoses
     assert (diagnosis.phase, diagnosis.ended_at, diagnosis.body) == ("running", None, "")
+
+
+def test_a_case_file_revised_after_the_cutoff_stages_no_body() -> None:
+    """3a r7 F2: a later observation may have written the diagnosis, so the
+    body as of the cutoff is unknown and can never read as a notice."""
+    revised = replace(
+        _case_file(),
+        observations=(
+            *_case_file().observations,
+            CaseFileObservation("late", (CUTOFF + timedelta(minutes=1)).isoformat()),
+        ),
+    )
+
+    [staged] = case_files_input(
+        [revised], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF,
+    ).case_files
+
+    assert (staged.body, staged.body_known, staged.observation_count) == ("", False, 2)
+    [kept] = case_files_input(
+        [_case_file()], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF,
+    ).case_files
+    assert (kept.body, kept.body_known) == ("the diagnosis", True)
