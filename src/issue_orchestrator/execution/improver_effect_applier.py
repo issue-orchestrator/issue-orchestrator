@@ -66,6 +66,10 @@ class ImproverEffects:
     def outputs_repo(self) -> str:
         return self._outputs_repo
 
+    def owing_runs(self) -> tuple[str, ...]:
+        """Accepted runs that still owe this repository an effect, oldest first."""
+        return tuple(run.run_id for run in self._owing())
+
     def apply_pending(self) -> tuple[ImproverRunRecord, ...]:
         """Apply every accepted run's pending effects, oldest run first.
 
@@ -73,12 +77,7 @@ class ImproverEffects:
         pending) and any other failure is recorded on its receipt, which
         stays pending, before the batch stops. Returns the runs it updated.
         """
-        owing = [
-            run for run in reversed(self._store.runs())
-            if run.outcome is RunOutcome.ACCEPTED
-            and run.pending_effects
-            and run.outputs_repo == self._outputs_repo
-        ]
+        owing = self._owing()
         if not owing:
             return ()
         try:
@@ -94,6 +93,14 @@ class ImproverEffects:
             if stopped:
                 break
         return tuple(updated)
+
+    def _owing(self) -> list[ImproverRunRecord]:
+        return [
+            run for run in reversed(self._store.runs())
+            if run.outcome is RunOutcome.ACCEPTED
+            and run.pending_effects
+            and run.outputs_repo == self._outputs_repo
+        ]
 
     def _apply_run(
         self, run: ImproverRunRecord, open_issues: dict[int, OpenIssueLabels]

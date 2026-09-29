@@ -116,6 +116,9 @@ class ImproverRunRecord(_Closed):
     #: The latest exam result of each case the run saw.
     exam_scores: tuple[ExamScore, ...] = ()
     effects: tuple[EffectReceipt, ...] = ()
+    #: Earlier runs whose effects were still owed when this run finished:
+    #: a run is not green while the improver owes GitHub anything.
+    owed_by_earlier_runs: tuple[str, ...] = ()
 
     @property
     def pending_effects(self) -> tuple[EffectReceipt, ...]:
@@ -127,7 +130,7 @@ class ImproverRunRecord(_Closed):
         not all applied (failed, deferred by a rate limit, or stopped behind
         an earlier run's) is unavailable: its findings stand and the next
         run or ``improver apply`` applies them."""
-        if self.outcome is RunOutcome.ACCEPTED and self.pending_effects:
+        if self.outcome is RunOutcome.ACCEPTED and (self.pending_effects or self.owed_by_earlier_runs):
             return 75
         return self.outcome.exit_code
 

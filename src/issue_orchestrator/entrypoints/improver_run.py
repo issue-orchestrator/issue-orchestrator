@@ -179,7 +179,13 @@ class ImproverRun:
         if not apply:
             return accepted
         self._effects.apply_pending()
-        return self._explain_unapplied(next(r for r in self._store.runs() if r.run_id == accepted.run_id))
+        current = self._explain_unapplied(next(r for r in self._store.runs() if r.run_id == accepted.run_id))
+        earlier = tuple(r for r in self._effects.owing_runs() if r != current.run_id)
+        if not earlier:
+            return current
+        owed = current.model_copy(update={"owed_by_earlier_runs": earlier})
+        self._store.record(owed)
+        return owed
 
     def _explain_unapplied(self, run: ImproverRunRecord) -> ImproverRunRecord:
         """Say why effects left pending without a reason of their own were
@@ -263,8 +269,11 @@ def render_run(record: ImproverRunRecord) -> str:
         f"  effect {e.finding_id}: {e.status.value}"
         + (f" #{e.issue_number}" if e.issue_number else "")
         + (f" ({e.detail})" if e.detail else "")
+        + (f" error: {e.error}" if e.error else "")
         for e in record.effects
     ]
+    if record.owed_by_earlier_runs:
+        lines.append(f"  still owed by earlier runs: {', '.join(record.owed_by_earlier_runs)}")
     return "\n".join(lines)
 
 

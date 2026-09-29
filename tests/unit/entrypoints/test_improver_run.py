@@ -217,16 +217,43 @@ def test_a_run_whose_effects_an_earlier_failure_blocks_is_unavailable(tmp_path: 
 
 
 def test_the_previous_audit_and_grades_are_the_same_engines(tmp_path: Path) -> None:
-    """A, then B (rejected), then A: A diffs and grades against A (r1 F5)."""
+    """A, then B (accepted, other grades), then A: A diffs and grades against A (r1 F5, r2 F3)."""
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
     first = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request("a/a"))
+    _improver(store, host, FakeAgent(_findings("prompt_proposal"))).run(_request("b/b"))
     _improver(store, host, FakeAgent("not json")).run(_request("b/b"))
     stager = FakeStager()
 
     third = _improver(store, host, FakeAgent(_findings("charter_proposal")), stager).run(_request("a/a"))
 
     assert stager.requests[0].previous_audit == Path(first.run_dir) / "improver-data" / "audit.json"
-    assert {m.stall_point: m.previous for m in third.stall_points}["noticed_not_acted"] == 1
+    assert {m.stall_point: m.previous for m in third.stall_points} == {
+        "noticed_not_acted": 1, "not_noticed": 0,
+    }
+
+
+def test_a_run_with_nothing_of_its_own_is_not_green_while_an_earlier_run_is_owed(tmp_path: Path) -> None:
+    """r2 F1: an accepted empty findings file, an older effect still failing."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("down")
+    older = _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+    empty = json.loads(_findings("capability_issue"))
+    empty["findings"] = []
+
+    current = _improver(store, host, FakeAgent(json.dumps(empty))).run(_request())
+
+    assert current.effects == () and current.exit_code == 75
+    assert current.owed_by_earlier_runs == (older.run_id,)
+    assert f"still owed by earlier runs: {older.run_id}" in render_run(current)
+
+
+def test_the_rendered_run_names_an_effects_error(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("500")
+
+    record = _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+
+    assert "error: RuntimeError: 500" in render_run(record)
 
 
 def test_a_run_for_another_repository_than_its_effects_is_refused(tmp_path: Path) -> None:
