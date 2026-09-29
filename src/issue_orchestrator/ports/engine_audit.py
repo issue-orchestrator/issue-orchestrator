@@ -16,6 +16,7 @@ from typing import Protocol
 from ..domain.action_liveness import LivenessRow
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from ..domain.tech_lead_findings import PromotedFinding
+from ..domain.tech_lead_run_record import TechLeadRunRecord
 from .action_liveness import PendingPause
 from .pending_work_claim_store import QuarantineRecord, UnreadableClaim, UnresolvedClaim
 from .pull_request_tracker import PRInfo
@@ -40,10 +41,34 @@ class ValidatedWorkCensus:
 
 @dataclass(frozen=True, slots=True)
 class OpenIssueLabels:
-    """One open issue and every label on it."""
+    """One open issue, its title and every label on it."""
 
     number: int
+    title: str
     labels: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CaseFileObservation:
+    observation_id: str
+    recorded_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CaseFileRecord:
+    """One pattern case file as the tech lead's ledger holds it, with its
+    diagnosis (the body the tech lead wrote) and every observation of it."""
+
+    signature: str
+    issue_number: int
+    recorded_at: str
+    observation_count: int
+    fix_class: str
+    area: str
+    diagnosis: str
+    disposition: str
+    retirement_pending: bool
+    observations: tuple[CaseFileObservation, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +93,29 @@ class CharterAuditReader(Protocol):
     def effect_counts(self) -> tuple[tuple[str, str, str, str, int], ...]: ...
 
     def list_recent(self, *, limit: int = 100) -> tuple[TechLeadCharterDecision, ...]: ...
+
+    def list_all(self) -> tuple[TechLeadCharterDecision, ...]:
+        """Every recorded decision, oldest decided first. Nothing prunes the
+        ledger, so from its first record on it is complete."""
+        ...
+
+
+class CaseFileAuditReader(Protocol):
+    def list_case_file_records(self) -> tuple[CaseFileRecord, ...]:
+        """Every case file with its observations. Nothing prunes either."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class TechLeadRunHistoryRead:
+    """Every run record read, and how many rows could not be read back."""
+
+    records: tuple[TechLeadRunRecord, ...]
+    unreadable: int
+
+
+class TechLeadRunAuditReader(Protocol):
+    def all_runs(self) -> TechLeadRunHistoryRead: ...
 
 
 class PromotionAuditReader(Protocol):
@@ -102,11 +150,16 @@ class OpenWorkHost(Protocol):
 
 __all__ = [
     "ActionLivenessAuditReader",
+    "CaseFileAuditReader",
+    "CaseFileObservation",
+    "CaseFileRecord",
     "CharterAuditReader",
     "ClaimAuditReader",
     "OpenIssueLabels",
     "OpenWorkHost",
     "PromotionAuditReader",
+    "TechLeadRunAuditReader",
+    "TechLeadRunHistoryRead",
     "TimelineAuditReader",
     "TimelineEvent",
     "UnresolvedWorkRecord",

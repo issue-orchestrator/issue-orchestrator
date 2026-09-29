@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "engine_commit": "0123456789abcdef0123456789abcdef01234567",
+  "engine_started_at": "2026-09-28T12:00:00+00:00",
+  "findings": [
+    {
+      "id": "needs-human-353",
+      "anomaly_keys": [
+        {
+          "kind": "attention_label",
+          "subject": "#353",
+          "signature": "needs-human"
+        }
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "unknown",
+      "observed": [
+        {
+          "at": "2026-09-28T18:00:00+00:00",
+          "kind": "snapshot",
+          "source": "audit.json#/anomalies/2",
+          "supports": "present_after_start"
+        }
+      ],
+      "grading_window": {
+        "from": "unknown",
+        "to": "2026-09-28T18:00:00+00:00"
+      },
+      "classification": "unknown",
+      "stall_point": "unknown",
+      "stall_evidence": [],
+      "output": "needs_investigation",
+      "missing_evidence": [
+        "when needs-human was added to #353 and by whom (GitHub label events are not staged)"
+      ]
+    }
+  ],
+  "trend": {
+    "exam_scores": "unobserved",
+    "operator_interventions": "unobserved",
+    "notes": "No previous exam run over the same case set; interventions are only partly recorded, so neither series is comparable."
+  }
+}

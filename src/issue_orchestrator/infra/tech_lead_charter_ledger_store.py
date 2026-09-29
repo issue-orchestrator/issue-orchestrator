@@ -250,6 +250,15 @@ class SqliteTechLeadCharterLedger:
             (d.role.value, d.action_kind, d.outcome.value, d.effect) for d in self._all()
         )
 
+    def list_all(self) -> tuple[TechLeadCharterDecision, ...]:
+        """Every decision, oldest decided first (#7490: the improver's window)."""
+        return _decode(
+            self._connection().execute(
+                "SELECT record FROM tech_lead_charter_decisions"
+                " ORDER BY decided_at ASC, decision_id ASC"
+            )
+        )
+
     def _all(self) -> tuple[TechLeadCharterDecision, ...]:
         """Every decision, decoded, so counts read the domain's fields rather
         than JSON paths that could drift from them."""

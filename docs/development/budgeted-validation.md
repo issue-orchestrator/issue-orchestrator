@@ -125,6 +125,10 @@ case runs the real engine and tech lead against GitHub and grades the outcome, s
 regression in how the tech lead handles a known fault is found within ten merges
 and narrowed to the merge that caused it. Run a single case by hand with
 `make test-tech-lead-exam EXAM_CASE=<A|B|C|U> EXAM_ENGINE_REF=<ref>`.
+Scorecards are written under the repository's common Git directory, in
+`io-tech-lead-exam/` (override with `EXAM_OUT=<dir>`), so they outlive the
+suite's temporary checkout; the tech-lead improver (#7490) stages the latest
+two of each case from there.
 
 Pass `--config path/to/config.yaml` to select a specific YAML configuration.
 `run` is an explicit forced request. `check` still coalesces with another worker.

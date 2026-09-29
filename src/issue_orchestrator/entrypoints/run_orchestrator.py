@@ -21,6 +21,7 @@ import logging
 import os
 import signal
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -256,7 +257,7 @@ async def run(
         release_lock,
         touch_lock,
     )
-    from .engine_startup import EngineStartup
+    from .engine_startup import EngineStartup, record_engine_start
 
     _assert_expected_identity(repo_root)
 
@@ -274,6 +275,7 @@ async def run(
         config_fingerprint=config.config_fingerprint,
     )
     logger.info("Lock acquired: pid=%d, port=%s", lock_info.pid, lock_info.http_port)
+    record_engine_start(config, repo_root=repo_root, now=datetime.now(UTC))
 
     # Register cleanup on exit
     def cleanup():

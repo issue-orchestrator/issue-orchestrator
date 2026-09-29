@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "engine_commit": "0123456789abcdef0123456789abcdef01234567",
+  "engine_started_at": "2026-09-28T12:00:00+00:00",
+  "findings": [
+    {
+      "id": "unnoticed-boom",
+      "anomaly_keys": [
+        {
+          "kind": "no_progress_log",
+          "subject": "#500",
+          "signature": "ERROR io.boom: exploded"
+        }
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "true",
+      "origin": "unknown",
+      "observed": [
+        {
+          "at": "2026-09-28T18:00:00+00:00",
+          "kind": "snapshot",
+          "source": "audit.json#/anomalies/3",
+          "supports": "present_after_start"
+        },
+        {
+          "at": "2026-09-28T13:00:00+00:00",
+          "kind": "occurrence",
+          "source": "audit.json#/no_progress/log_signatures/1/first_seen",
+          "supports": "recurs_after_start"
+        }
+      ],
+      "grading_window": {
+        "from": "2026-09-28T13:00:00+00:00",
+        "to": "2026-09-28T18:00:00+00:00"
+      },
+      "classification": "new_defect",
+      "stall_point": "not_noticed",
+      "stall_evidence": [],
+      "output": "charter_proposal",
+      "root_cause": {
+        "owner": "issue_orchestrator.control.tech_lead_evidence:build_evidence_map",
+        "why": "The health review's evidence map omits log signatures, so a repeating error never reaches the tech lead.",
+        "same_shape_sites": []
+      },
+      "reproduction": {
+        "kind": "integration_test",
+        "harness": "tests/integration/test_tech_lead_evidence.py",
+        "planted_state": "An engine log repeating one ERROR for an issue with no state change.",
+        "assertions": [
+          "the staged evidence map names the repeating signature"
+        ],
+        "fails_on": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "proposal": "Enable the platform role's health review to read log signatures (tech_lead.charter.platform.depth: fix)."
+    }
+  ],
+  "trend": {
+    "exam_scores": "unobserved",
+    "operator_interventions": "unobserved",
+    "notes": "No previous exam run over the same case set; interventions are only partly recorded, so neither series is comparable."
+  }
+}

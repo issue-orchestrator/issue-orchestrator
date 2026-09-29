@@ -34,6 +34,15 @@ STALE_CLAIM_PAUSED_FOR_RECONCILE = "C-stale-claim-paused-for-reconcile"
 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-review"
 UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
 
+#: Every case id the exam defines. A new case (the improver's ``exam_case``
+#: output, #7490) must use an id outside this set: cases are add-only.
+EXAM_CASE_IDS: tuple[str, ...] = (
+    HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+    BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+    STALE_CLAIM_PAUSED_FOR_RECONCILE,
+    UPGRADE_WITH_WORK_IN_FLIGHT,
+)
+
 #: Case U's two in-flight items.
 CODING = "coding"
 REVIEW = "review"

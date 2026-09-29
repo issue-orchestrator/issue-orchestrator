@@ -60,6 +60,7 @@ from ..domain.tech_lead_session import (
     TechLeadLaunchAuthority,
     TechLeadShippedFixSummary,
 )
+from ..ports.engine_audit import CaseFileRecord
 from ..ports.tech_lead_authority import (
     TechLeadAuthorityConflictError,
     TechLeadOpConflictError as TechLeadOpConflictError,
@@ -109,7 +110,12 @@ def _promotion_from_row(row: sqlite3.Row) -> PromotedFinding:
 #: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
 #: copy of this store's database before opening the store on it: opening
 #: creates missing tables, which would read a damaged file as an empty one.
-AUDIT_TABLES = ("tech_lead_charter_decisions", "tech_lead_promoted_findings")
+AUDIT_TABLES = (
+    "tech_lead_charter_decisions",
+    "tech_lead_promoted_findings",
+    "tech_lead_patterns",
+    "tech_lead_pattern_observations",
+)
 
 
 class SqliteTechLeadAuthorityStore:
@@ -477,6 +483,10 @@ class SqliteTechLeadAuthorityStore:
 
     def list_pattern_evidence(self) -> tuple[PatternEvidence, ...]:
         return patterns.list_evidence(self._get_connection())
+
+    def list_case_file_records(self) -> tuple[CaseFileRecord, ...]:
+        """Every case file with its observations (#7490, the improver's staging)."""
+        return patterns.list_case_file_records(self._get_connection())
 
     # -- Promoted findings (#6957) ------------------------------------------
 

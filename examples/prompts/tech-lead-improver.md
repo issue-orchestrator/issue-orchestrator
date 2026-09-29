@@ -20,16 +20,19 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `audit-previous.json` | The previous run's audit. Diff against it |
 | `audit-diff.json` | New / resolved / persisting / unobserved anomalies between the two |
 | `engine-start.json` | When the engine last started and the commit it runs. Separate **since this start** from **history** |
-| `exam/*.json` | Latest tech-lead exam scorecards (A/B/C/U …) with the engine commit each ran on |
+| `exam/<case id>.json` | The latest tech-lead exam scorecard of each case (A/B/C/U …), with the engine commit it ran on; `exam/<case id>.previous.json` is the one before it, where there is one |
 | `charter-decisions.json` | **All** of the tech lead's recorded decisions in the observation window, with stable decision IDs, outcome, effect, reason, `decided_at` and **`applied_at`** (when its effect was applied; absent if never applied), plus a `coverage` block (`from`, `to`, `complete: true/false`) |
 | `charter.json` | The engine's **effective** charter at the latest start: each role's `enabled`/depth/authority and the per-action authority settings, after config overrides |
-| `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies, plus the same `coverage` block |
+| `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies. `coverage` is the case-file ledger's; `diagnoses_coverage` is never complete (the run history is best-effort), so a diagnosis shows a look but a missing one proves nothing |
 | `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
-| Engine source | The io source tree at the engine's commit (read-only) |
+| `engine-source/` | The io source tree at the engine's commit (read-only) |
+| `inputs.json` | What was staged, what is missing and why, and every exam case ID that already exists |
 
 If an input is missing or marked partial, say so and don't draw conclusions
-that need it. **Absence of evidence is "unobserved", never "fixed".**
+that need it. A live engine's ledgers cannot yet prove their coverage complete
+(a record dated before the cutoff can commit after the copy, #7525), so until
+they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved", never "fixed".**
 
 ## Method
 
@@ -144,12 +147,14 @@ whole file. Valid findings become the corresponding GitHub artefacts.
       "present_after_start": "true | false | unknown",
       "recurs_after_start": "true | false | unknown",
       "origin": "before_start | unknown",
-      "observed": [{"at": "<iso>", "kind": "snapshot | occurrence", "source": "<input file>#<record id or audit field>", "supports": "present_after_start | recurs_after_start | origin"}],
+      "observed": [{"at": "<iso>", "kind": "snapshot | occurrence", "source": "<input file>#<JSON pointer, e.g. /anomalies/3>", "supports": "present_after_start | recurs_after_start | origin"}],
       "grading_window": {"from": "<iso | unknown>", "to": "<audit.json generated_at>"},
       "classification": "new_defect | tracked | unknown",
       "tracked_issue": 7491,
       "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
-      "stall_evidence": ["<decision id | case-file id>"],
+      "remedy_action_kind": "<not_in_charter only: the existing action type a cited charter setting holds back>",
+      "missing_action_kind": "<not_in_charter only: the action type that would express the remedy and does not exist>",
+      "stall_evidence": ["<decision id | case-file id | diagnosis id | charter.json#<JSON pointer> | engine-source:<path>>"],
       "output": "exam_case | capability_issue | charter_proposal | prompt_proposal | needs_investigation",
       "root_cause": {"owner": "<module:function>", "why": "<one paragraph>", "same_shape_sites": ["<module:function>"]},
       "reproduction": {"kind": "exam_case | unit_test | integration_test", "harness": "<exam case module | test path>", "case_id": "<new unique id, exam_case only>", "planted_state": "<reachable state>", "assertions": ["<outcome that fails today>"], "fails_on": "<engine commit>"},
@@ -161,7 +166,23 @@ whole file. Valid findings become the corresponding GitHub artefacts.
 }
 ```
 
+One valid example of each output, written against a small staged engine, is
+in `engine-source/examples/improver/findings/`.
+
 **Field rules (the validator enforces these):**
+- `engine_commit` and `engine_started_at` are `engine-start.json`'s, and a
+  reproduction's `fails_on` is that `engine_commit`.
+- **Citations resolve.** An `observed` entry's `source` is a staged file and
+  a JSON pointer into it (`audit.json#/anomalies/3`). A **snapshot** cites
+  one of the finding's own anomalies in `audit.json`
+  (`audit.json#/anomalies/<i>`) and is dated its `generated_at`. An **occurrence** cites a
+  dated field of one of the finding's own anomaly records, in `audit.json` or
+  `audit-previous.json` (a log signature's `first_seen` or `last_seen`, a
+  parked action's `last_failed_at`, an unresolved record's `created_at`), and
+  its `at` is that field's value, at or before `audit.json`'s `generated_at`. Each `stall_evidence` item is a
+  `decision_id` from `charter-decisions.json`, a case-file or diagnosis `id`
+  from `case-files.json`, `charter.json#<JSON pointer>` to a setting, or
+  `engine-source:<path>` to a file of the source.
 - `anomaly_keys` must match keys that exist in `audit.json` or `audit-diff.json`.
 - `classification: tracked` requires `tracked_issue` to be an open issue in
   `open-issues.json`. `new_defect` forbids `tracked_issue`. `classification:
@@ -172,7 +193,8 @@ whole file. Valid findings become the corresponding GitHub artefacts.
   never a snapshot's time or a later occurrence.
 - `origin` is `before_start` exactly when an `occurrence` entry dated
   before `engine_started_at` supports it (e.g. a signature's `first_seen`);
-  otherwise it is `unknown`. There is no `after_start` value.
+  otherwise it is `unknown`. There is no `after_start` value. When the staged records hold an occurrence of the anomaly dated before
+  the start, `origin` must be `before_start` (cite it).
 - `present_after_start` and `recurs_after_start` are strings: `"true"`,
   `"false"` or `"unknown"`. If both are `"unknown"`, the output must be
   `needs_investigation`.
@@ -182,31 +204,60 @@ whole file. Valid findings become the corresponding GitHub artefacts.
   presence). `recurs_after_start: "true"` needs a **post**-start entry of
   kind **`occurrence`**. `origin: before_start` needs a **pre**-start entry
   of kind **`occurrence`**. A snapshot supports neither.
+  Evidence that settles a fact must be followed: presence is `"true"` when
+  the current audit (taken after the start) shows the anomaly, and
+  recurrence `"true"` when a staged occurrence falls after the start.
+  `present_after_start: "false"` is refused while the current audit still
+  shows the anomaly or could not observe it, `recurs_after_start: "false"`
+  while the staged records show an occurrence after the start, and an anomaly neither present
+  nor recurring (both `"false"`) is history: don't emit it.
+- `noticed_not_acted` and `acted_not_effective` must cite at least one
+  decision, case file or diagnosis (a source file shows no notice).
+- For `noticed_not_acted` and `acted_not_effective`, every cited decision,
+  case file or diagnosis must refer to the anomaly's own issue (a decision
+  about it, a run on it, or a `#<n>` mention).
+- `noticed_not_acted` is refused when a remedy (an approvable or destructive
+  action) about the anomaly's issue was applied by the cutoff: that is
+  `acted_not_effective`.
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
   with `applied_at` at or before `grading_window.to`, and an `observed` entry
   supporting presence or recurrence dated after that `applied_at`.
 - `stall_point: not_in_charter` requires citing either the source (for a
   missing action type) or the `charter.json` settings that forbid the role or
-  depth.
+  depth. Name exactly one of: `remedy_action_kind`, an existing action a
+  cited setting of **that action or its role** holds back (a disabled role,
+  `propose` authority or ceiling, a depth short of what it needs, an outcome
+  other than `executed`); or `missing_action_kind`, a kind **not** in
+  `charter.json`'s `actions`, with the source cited. Both fields are only for
+  `not_in_charter`.
 - `stall_point: not_noticed` requires a **proven** onset (the occurrence
   source's coverage starts before `grading_window.from`, with no earlier
   occurrence), `grading_window.from` to be known,
   `grading_window.to` to equal `audit.json`'s `generated_at`, and both
   coverage spans to contain the whole window. If either span ends before
   the cutoff, the grade is `unknown`. Every other grade except
-  `unknown` requires `stall_evidence`.
+  `unknown` requires `stall_evidence`. A `not_noticed` finding cites no
+  decision, case file or diagnosis: citing one says it was noticed. It is
+  also refused when a staged decision about the anomaly's issue, a case file
+  or a diagnosis naming it (`#<n>`, or as its subject) falls inside the
+  grading window. The only
+  onset these inputs can prove is a log signature's `first_seen` inside a log
+  read that began before it (the audit's `no_progress.log`).
 - `output: needs_investigation` requires `missing_evidence` and forbids
   `root_cause`, `reproduction` and `proposal`. Every other output requires
   `root_cause`, `reproduction` and `proposal`.
 - `output: exam_case` requires `reproduction.kind: exam_case` and a
-  `case_id` that is **not** an existing case ID. It adds a case; you may
+  `case_id` that is **not** an existing case ID (`inputs.json` lists them);
+  only an `exam_case` reproduction names a `case_id`. It adds a case; you may
   never change, remove or loosen an existing case or grader.
 - A reproduction is proven only once a coder has implemented it and review
   has seen it fail on `fails_on`. Until then the finding is `specified`,
   never `reproduced`.
 - `trend` values are `unobserved` whenever the series is absent or not
-  comparable. Exam scores are comparable only over the same case set; an
-  `interventions.json` window has to match the comparison window.
+  comparable. Exam scores are comparable only when `exam/` holds a previous
+  scorecard for exactly the cases it holds a latest one for.
+  `interventions.json` is never complete (not every intervention is recorded),
+  so `operator_interventions` is `unobserved` until it is.
 
 What each output means:
 - **`exam_case`:** a new exam case for a class of miss.

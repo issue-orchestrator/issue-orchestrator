@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
+from ..contracts.engine_start import ActionAuthority, EffectiveCharter
 from ..domain.tech_lead_charter import (
     CHARTER_ACTION_CLASSES,
     PROMOTE_FINDING_KIND,
@@ -119,6 +120,37 @@ class TechLeadCharterPolicy:
             role: {outcome: tuple(items) for outcome, items in by_outcome.items()}
             for role, by_outcome in grouped.items()
         }
+
+    def effective_charter(self) -> EffectiveCharter:
+        """Every role's dials and every kind's verdict, as this engine decides them.
+
+        What the engine-start record persists (#7490), so a reader outside the
+        engine sees the settings after config overrides rather than the source
+        defaults. Built from :meth:`outcomes_by_role`, the same computation the
+        prompt projection and the board render from.
+        """
+        return EffectiveCharter.model_validate(
+            {
+                "roles": {
+                    role.value: self.charter.for_role(role).to_dict() for role in CharterRole
+                },
+                "actions": {
+                    verdict.kind: ActionAuthority(
+                        role=verdict.role.value,
+                        required_depth=verdict.required_depth.value,
+                        binding=verdict.action_class.binding.value,
+                        action_ceiling=verdict.action_ceiling.value,
+                        ceiling_source=verdict.ceiling_source,
+                        outcome=verdict.outcome.value,
+                        reason_code=verdict.reason_code.value,
+                    )
+                    for by_outcome in self.outcomes_by_role().values()
+                    for verdicts in by_outcome.values()
+                    for verdict in verdicts
+                },
+                "promotion_lane": self.findings.promote,
+            }
+        )
 
 
 @dataclass(frozen=True)

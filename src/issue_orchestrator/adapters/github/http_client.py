@@ -2235,8 +2235,8 @@ class GitHubHttpClient:
 
     def list_open_issue_labels_complete(
         self, *, page_cap: int = 20
-    ) -> list[tuple[int, tuple[str, ...]]]:
-        """Every open issue's number and labels, or an error: never a partial list.
+    ) -> list[tuple[int, str, tuple[str, ...]]]:
+        """Every open issue's number, title and labels, or an error: never a partial list.
 
         Walks GraphQL ``issues(states: OPEN)`` by CURSOR, like
         :meth:`list_open_prs_complete`: an issue closing mid-walk cannot shift
@@ -2251,12 +2251,12 @@ class GitHubHttpClient:
                 issues(states: OPEN, first: 100, after: $after,
                        orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number labels(first: 100) { totalCount nodes { name } } }
+                    nodes { number title labels(first: 100) { totalCount nodes { name } } }
                 }
             }
         }
         """
-        issues: list[tuple[int, tuple[str, ...]]] = []
+        issues: list[tuple[int, str, tuple[str, ...]]] = []
         after: str | None = None
         for _page in range(page_cap):
             result = self._graphql(
@@ -2278,8 +2278,12 @@ class GitHubHttpClient:
                 raise self._incomplete_open_issues("reported another page without a cursor")
         raise self._incomplete_open_issues(f"exceeded the {page_cap * 100}-issue page cap")
 
-    def _open_issue_labels(self, node: object) -> tuple[int, tuple[str, ...]]:
-        if not isinstance(node, dict) or type(node.get("number")) is not int:
+    def _open_issue_labels(self, node: object) -> tuple[int, str, tuple[str, ...]]:
+        if (
+            not isinstance(node, dict)
+            or type(node.get("number")) is not int
+            or not isinstance(node.get("title"), str)
+        ):
             raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
         labels = node.get("labels")
         if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
@@ -2291,7 +2295,7 @@ class GitHubHttpClient:
             raise self._incomplete_open_issues(
                 f"returned issue #{node['number']} with only some of its labels"
             )
-        return node["number"], tuple(str(n) for n in names)
+        return node["number"], node["title"], tuple(str(n) for n in names)
 
     def _incomplete_open_issues(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(

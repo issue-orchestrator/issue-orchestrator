@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "engine_commit": "0123456789abcdef0123456789abcdef01234567",
+  "engine_started_at": "2026-09-28T12:00:00+00:00",
+  "findings": [
+    {
+      "id": "refused-retry-tracked",
+      "anomaly_keys": [
+        {
+          "kind": "no_progress_log",
+          "subject": "#410",
+          "signature": "WARNING io.retry: validation retry refused"
+        }
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "true",
+      "origin": "before_start",
+      "observed": [
+        {
+          "at": "2026-09-28T18:00:00+00:00",
+          "kind": "snapshot",
+          "source": "audit.json#/anomalies/0",
+          "supports": "present_after_start"
+        },
+        {
+          "at": "2026-09-28T17:30:00+00:00",
+          "kind": "occurrence",
+          "source": "audit.json#/no_progress/log_signatures/0/last_seen",
+          "supports": "recurs_after_start"
+        },
+        {
+          "at": "2026-09-27T09:00:00+00:00",
+          "kind": "occurrence",
+          "source": "audit-previous.json#/no_progress/log_signatures/0/first_seen",
+          "supports": "origin"
+        }
+      ],
+      "grading_window": {
+        "from": "2026-09-27T09:00:00+00:00",
+        "to": "2026-09-28T18:00:00+00:00"
+      },
+      "classification": "tracked",
+      "tracked_issue": 7491,
+      "stall_point": "not_in_charter",
+      "stall_evidence": [
+        "charter.json#/actions/reset_retry/outcome",
+        "engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"
+      ],
+      "output": "prompt_proposal",
+      "root_cause": {
+        "owner": "issue_orchestrator.domain.tech_lead_charter:CHARTER_ACTION_CLASSES",
+        "why": "No action type clears a refused retry, so the tech lead can only escalate.",
+        "same_shape_sites": []
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/test_tech_lead_charter.py",
+        "planted_state": "A refused validation retry on an issue the tech lead diagnosed.",
+        "assertions": [
+          "the tech lead prompt names the remedy it may take"
+        ],
+        "fails_on": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "proposal": "Tell the tech lead to escalate a refused retry with the refusal's reason instead of re-flagging it.",
+      "remedy_action_kind": "reset_retry"
+    }
+  ],
+  "trend": {
+    "exam_scores": "unobserved",
+    "operator_interventions": "unobserved",
+    "notes": "No previous exam run over the same case set; interventions are only partly recorded, so neither series is comparable."
+  }
+}

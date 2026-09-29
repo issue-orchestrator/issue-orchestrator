@@ -1225,10 +1225,10 @@ class GitHubAdapter:
         ]
 
     def list_open_issue_labels_complete(self) -> list[OpenIssueLabels]:
-        """Every open issue with its labels, cursor-paged; raises rather than truncating."""
+        """Every open issue with its title and labels, cursor-paged; raises rather than truncating."""
         return [
-            OpenIssueLabels(number=number, labels=labels)
-            for number, labels in self._client.list_open_issue_labels_complete()
+            OpenIssueLabels(number=number, title=title, labels=labels)
+            for number, title, labels in self._client.list_open_issue_labels_complete()
         ]
 
     def list_open_prs_complete(self) -> list[PRInfo]:

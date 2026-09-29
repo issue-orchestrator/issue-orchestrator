@@ -14,6 +14,7 @@ from ..domain.tech_lead_findings import (
     PatternEvidence,
 )
 from typing import cast
+from ..ports.engine_audit import CaseFileObservation, CaseFileRecord
 from ..ports.tech_lead_authority import (
     TechLeadPatternConflictError,
     UnknownTechLeadPatternError,
@@ -321,3 +322,34 @@ def list_evidence(conn: sqlite3.Connection) -> tuple[PatternEvidence, ...]:
         " ORDER BY signature",
     ).fetchall()
     return tuple(_evidence_from_row(row) for row in rows)
+
+
+def list_case_file_records(conn: sqlite3.Connection) -> tuple[CaseFileRecord, ...]:
+    """Every case file with its diagnosis and observations (#7490)."""
+    observations: dict[str, list[CaseFileObservation]] = {}
+    for row in conn.execute(
+        "SELECT signature, observation_id, recorded_at FROM tech_lead_pattern_observations"
+        " ORDER BY recorded_at, observation_id"
+    ):
+        observations.setdefault(row["signature"], []).append(
+            CaseFileObservation(observation_id=row["observation_id"], recorded_at=row["recorded_at"])
+        )
+    return tuple(
+        CaseFileRecord(
+            signature=row["signature"],
+            issue_number=row["issue_number"],
+            recorded_at=row["recorded_at"],
+            observation_count=row["observation_count"],
+            fix_class=row["fix_class"],
+            area=row["area"],
+            diagnosis=row["diagnosis"],
+            disposition=row["disposition"],
+            retirement_pending=bool(row["retirement_pending"]),
+            observations=tuple(observations.get(row["signature"], ())),
+        )
+        for row in conn.execute(
+            "SELECT signature, issue_number, recorded_at, observation_count, fix_class,"
+            " area, diagnosis, disposition, retirement_pending FROM tech_lead_patterns"
+            " ORDER BY recorded_at, signature"
+        )
+    )
