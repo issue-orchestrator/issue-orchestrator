@@ -177,7 +177,7 @@ in `engine-source/examples/improver/findings/`.
   dated field of one of the finding's own anomaly records, in `audit.json` or
   `audit-previous.json` (a log signature's `first_seen` or `last_seen`, a
   parked action's `last_failed_at`, an unresolved record's `created_at`), and
-  its `at` is that field's value. Each `stall_evidence` item is a
+  its `at` is that field's value, at or before `audit.json`'s `generated_at`. Each `stall_evidence` item is a
   `decision_id` from `charter-decisions.json`, a case-file or diagnosis `id`
   from `case-files.json`, `charter.json#<JSON pointer>` to a setting, or
   `engine-source:<path>` to a file of the source.

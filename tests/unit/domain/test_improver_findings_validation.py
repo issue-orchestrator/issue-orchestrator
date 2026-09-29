@@ -271,6 +271,7 @@ def test_breaking_one_rule_rejects_the_file_naming_it(
 #: Rules broken through the staged EVIDENCE rather than the findings file;
 #: their cases are the tests below.
 EVIDENCE_CASE_RULES = {
+    Rule.OCCURRENCE_BY_THE_CUTOFF,
     Rule.NOT_NOTICED_NEEDS_COVERAGE,
     Rule.PRESENCE_MATCHES_CURRENT_AUDIT,
     Rule.NOT_NOTICED_UNREFERENCED,
@@ -446,3 +447,21 @@ def test_a_restrictive_charter_setting_is_a_valid_not_in_charter_citation(eviden
     _finding(doc)["stall_evidence"] = ["charter.json#/roles/general/authority"]
 
     assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "not_in_charter"
+
+
+def test_an_occurrence_dated_after_the_cutoff_is_outside_the_window(tmp_path: Path) -> None:
+    """3a r10: a parked action written between the cutoff and the copy."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "audit.json",
+        lambda d: d["action_liveness"]["parked"][0].update(last_failed_at="2026-09-28T18:00:01+00:00"),
+    )
+    doc = example("capability_issue")
+    _finding(doc)["recurs_after_start"] = "true"
+    _finding(doc)["origin"] = "unknown"
+    _finding(doc)["grading_window"]["from"] = "unknown"
+    _finding(doc)["observed"][1] = {
+        "at": "2026-09-28T18:00:01+00:00", "kind": "occurrence",
+        "source": "audit.json#/action_liveness/parked/0/last_failed_at", "supports": "recurs_after_start",
+    }
+
+    assert Rule.OCCURRENCE_BY_THE_CUTOFF in _rules(doc, evidence)

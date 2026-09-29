@@ -77,6 +77,7 @@ class Rule(StrEnum):
     CITATION_RESOLVES = "citation_resolves"
     SNAPSHOT_SHOWS_PRESENCE_ONLY = "snapshot_shows_presence_only"
     OCCURRENCE_IS_A_DATED_RECORD = "occurrence_is_a_dated_record"
+    OCCURRENCE_BY_THE_CUTOFF = "occurrence_by_the_cutoff"
     PRESENCE_MATCHES_CURRENT_AUDIT = "presence_matches_current_audit"
     RECURRENCE_NEEDS_POST_START_OCCURRENCE = "recurrence_needs_post_start_occurrence"
     ORIGIN_MATCHES_PRE_START_OCCURRENCE = "origin_matches_pre_start_occurrence"
@@ -336,6 +337,10 @@ class _Checker:
                 continue
             if o.supports == "present_after_start":
                 yield Rule.OCCURRENCE_IS_A_DATED_RECORD, "an occurrence may since have cleared; it cannot show presence"
+            if o.at > self._cutoff:
+                # A store is copied after the cutoff, so it can hold a later
+                # record; it is outside the window the audit speaks for.
+                yield Rule.OCCURRENCE_BY_THE_CUTOFF, f"{o.source} is dated after the audit cutoff"
             if not records.is_record(o.file, o.ref):
                 yield Rule.OCCURRENCE_IS_A_DATED_RECORD, (
                     f"{o.source} is not a dated record of this finding's anomalies"
