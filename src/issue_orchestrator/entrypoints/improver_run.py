@@ -151,9 +151,17 @@ class ImproverRun:
                 "exam_scores": _exam_scores(evidence),
             }
         )
-        answer = self._agent.run(
-            prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}", run_dir=run_dir
-        )
+        try:
+            answer = self._agent.run(
+                prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}", run_dir=run_dir
+            )
+        except Exception as error:
+            # The agent could not even be launched (an incompatible Codex
+            # config refused by the sandbox profile, a missing binary): the
+            # run is recorded unavailable, never lost without a record.
+            return self._finish(
+                base, RunOutcome.AGENT_FAILED, f"agent not launched: {type(error).__name__}: {error}"
+            )
         if answer.final_message is None:
             return self._finish(base, RunOutcome.AGENT_FAILED, answer.detail)
         text = findings_text(answer.final_message)

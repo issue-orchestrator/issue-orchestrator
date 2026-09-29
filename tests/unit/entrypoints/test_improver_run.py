@@ -267,3 +267,20 @@ def test_a_run_for_another_repository_than_its_effects_is_refused(tmp_path: Path
 
     with pytest.raises(ValueError, match="other/repo"):
         _improver(store, host, FakeAgent("{}")).run(request)
+
+
+def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path) -> None:
+    """3b r6 F1: e.g. the permission profile refuses a Codex config."""
+
+    class Refused:
+        def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+            raise RuntimeError("legacy sandbox_mode disables the permission profile")
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    record = _improver(store, host, Refused()).run(_request())  # type: ignore[arg-type]
+
+    [stored] = store.runs()
+    assert stored.outcome is RunOutcome.AGENT_FAILED and stored.exit_code == 75
+    assert "sandbox_mode" in stored.detail and stored.effects == ()
+    assert record == stored

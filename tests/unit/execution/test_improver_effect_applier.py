@@ -289,3 +289,16 @@ def test_a_retitled_unlabelled_issue_still_carries_its_finding(tmp_path: Path) -
 
     assert host.create_calls == 1
     assert runs["b"].effects[0].issue_number == filed
+
+
+def test_a_tracked_issue_closed_since_staging_gets_no_comment(tmp_path: Path) -> None:
+    """3b r6 F2: the receipt stays owed with the reason; nothing is posted."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("prompt_proposal"))
+    host.open = [i for i in host.open if i.number != OPEN_TRACKER]
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert host.comments == []
+    assert run.effects[0].status is EffectStatus.PENDING
+    assert "no longer open" in (run.effects[0].error or "")

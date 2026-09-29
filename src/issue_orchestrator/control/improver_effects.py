@@ -99,6 +99,10 @@ class CommentImproverEvidence:
 ImproverEffectCommand = FileImproverIssue | CommentImproverEvidence
 
 
+class TrackedIssueNotOpen(RuntimeError):
+    """A tracked finding's issue closed after the inputs were staged."""
+
+
 def plan_effect(
     run: ImproverRunRecord,
     finding: Finding,
@@ -108,6 +112,11 @@ def plan_effect(
     """The one GitHub effect an accepted finding asks for, deduplicated
     against ``open_issues``."""
     target = finding.tracked_issue if finding.classification == "tracked" else None
+    if target is not None and target not in open_issues:
+        raise TrackedIssueNotOpen(
+            f"tracked issue #{target} of {finding.id} is no longer open; its evidence is not"
+            " commented on a closed issue"
+        )
     if target is None:
         token = title_token(key)
         target = next((n for n, i in sorted(open_issues.items()) if token in i.title), None)
@@ -195,6 +204,7 @@ __all__ = [
     "CommentImproverEvidence",
     "FileImproverIssue",
     "ImproverEffectCommand",
+    "TrackedIssueNotOpen",
     "finding_key",
     "finding_marker",
     "issue_body",
