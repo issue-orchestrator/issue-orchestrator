@@ -15,7 +15,7 @@ improver prompt's: *absence of evidence is not evidence*. A source reports
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..contracts.engine_start import EngineStartRecord
@@ -103,6 +103,31 @@ def applied_at(decision: TechLeadCharterDecision) -> datetime | None:
     return None
 
 
+def as_of(decision: TechLeadCharterDecision, cutoff: datetime) -> TechLeadCharterDecision:
+    """``decision`` as the ledger held it at ``cutoff``.
+
+    The snapshot is copied after the audit's cutoff, so an applier result or
+    a proposal outcome linked in between is not part of what the audit saw:
+    it is projected away (an executed decision back to unlinked, a gated one
+    back to awaiting approval). A link with no time is treated as late.
+    """
+    if decision.execution is not None and (
+        decision.execution_at is None or instant(decision.execution_at) > cutoff
+    ):
+        decision = replace(decision, execution=None, execution_reason=None, execution_at=None)
+    if (
+        decision.lifecycle is not None
+        and decision.lifecycle is not CharterProposalLifecycle.AWAITING_APPROVAL
+        and (decision.lifecycle_updated_at is None or instant(decision.lifecycle_updated_at) > cutoff)
+    ):
+        decision = replace(
+            decision,
+            lifecycle=CharterProposalLifecycle.AWAITING_APPROVAL,
+            lifecycle_updated_at=decision.decided_at,
+        )
+    return decision
+
+
 def charter_decisions_input(
     ledger: Sequence[TechLeadCharterDecision], *, window_start: datetime, cutoff: datetime
 ) -> CharterDecisionsInput:
@@ -113,11 +138,12 @@ def charter_decisions_input(
     may still persist (``acted_not_effective``).
     """
     staged = []
-    for decision in ledger:
-        decided = instant(decision.decided_at)
-        applied = applied_at(decision)
+    for recorded in ledger:
+        decided = instant(recorded.decided_at)
         if decided > cutoff:
             continue
+        decision = as_of(recorded, cutoff)
+        applied = applied_at(decision)
         if decided < window_start and (applied is None or applied < window_start):
             continue
         staged.append(_staged_decision(decision, decided, applied))

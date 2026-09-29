@@ -398,3 +398,21 @@ def test_a_case_file_observed_after_the_cutoff_leaves_the_ledger_unproven() -> N
 
     assert not staged.coverage.complete
     assert "sig" in staged.coverage.detail
+
+
+def test_a_result_linked_after_the_cutoff_is_not_part_of_what_the_audit_saw() -> None:
+    """The snapshot is copied after the cutoff (r4 F2): an applier result or
+    an approval linked in between is projected away."""
+    late = (CUTOFF + timedelta(minutes=1)).isoformat()
+    executed = _applied(_decision("A1", "post_comment", decided=_at(2)), late)
+    approved = replace(
+        _decision("A2", "reset_retry", decided=_at(2)),
+        lifecycle=CharterProposalLifecycle.APPROVED_APPLIED,
+        lifecycle_updated_at=late,
+    )
+
+    staged = charter_decisions_input([executed, approved], window_start=WINDOW_START, cutoff=CUTOFF)
+
+    assert [(d.effect, d.applied_at) for d in staged.decisions] == [
+        ("unlinked", None), ("awaiting_approval", None),
+    ]

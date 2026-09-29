@@ -180,6 +180,9 @@ CASES: list[tuple[Rule, str, Mutation]] = [
      _all(_drop_observed(2), _set("origin", "unknown"), _set("grading_window.from", "unknown"))),
     # Someone else's decision is not this anomaly noticed (r2 F2).
     (Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY, "exam_case", _set("stall_evidence", ["D2"])),
+    # A source file shows no notice (r4 F1).
+    (Rule.NOTICED_CITES_A_NOTICE, "exam_case",
+     _set("stall_evidence", ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"])),
     # citations
     (Rule.CITATION_RESOLVES, "exam_case", _set("observed.0.source", "audit.json#/anomalies/99")),
     (Rule.CITATION_RESOLVES, "exam_case", _set("observed.0.source", "unstaged.json#/anomalies/0")),

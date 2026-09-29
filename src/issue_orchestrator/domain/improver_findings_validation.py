@@ -89,6 +89,7 @@ class Rule(StrEnum):
     NOT_NOTICED_CITES_NO_NOTICE = "not_noticed_cites_no_notice"
     NOT_NOTICED_UNREFERENCED = "not_noticed_unreferenced"
     STALL_EVIDENCE_ABOUT_THE_ANOMALY = "stall_evidence_about_the_anomaly"
+    NOTICED_CITES_A_NOTICE = "noticed_cites_a_notice"
     ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION = "acted_not_effective_needs_applied_decision"
     ACTED_NOT_EFFECTIVE_NEEDS_LATER_OBSERVATION = "acted_not_effective_needs_later_observation"
     NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE = "not_in_charter_cites_charter_or_source"
@@ -375,9 +376,14 @@ class _Checker:
                 yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "cite the charter.json setting or the source that lacks the action"
 
     def _evidence_about(self, f: Finding) -> Iterator[tuple[Rule, str]]:
-        """A cited decision, case file or run must refer to the finding's own
-        issue: someone else's remedy does not show this anomaly noticed or
-        acted on. An engine anomaly names no issue, so this cannot be checked."""
+        """A notice grade cites a notice, and every cited decision, case file
+        or run refers to the finding's own issue: someone else's remedy does
+        not show this anomaly noticed or acted on. An engine anomaly names no
+        issue, so only the first can be checked for it."""
+        if not any(item in self._notice_ids for item in f.stall_evidence):
+            yield Rule.NOTICED_CITES_A_NOTICE, (
+                f"{f.stall_point} must cite the decision, case file or diagnosis that noticed it"
+            )
         if not _issue_numbers(f):
             return
         about = set(_notices_about(self._evidence, f, None, None))

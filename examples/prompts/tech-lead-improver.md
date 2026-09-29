@@ -204,6 +204,8 @@ in `engine-source/examples/improver/findings/`.
   shows the anomaly or could not observe it, `recurs_after_start: "false"`
   while the staged records show an occurrence after the start, and an anomaly neither present
   nor recurring (both `"false"`) is history: don't emit it.
+- `noticed_not_acted` and `acted_not_effective` must cite at least one
+  decision, case file or diagnosis (a source file shows no notice).
 - For `noticed_not_acted` and `acted_not_effective`, every cited decision,
   case file or diagnosis must refer to the anomaly's own issue (a decision
   about it, a run on it, or a `#<n>` mention).
