@@ -118,8 +118,11 @@ class StagedCaseFile(_Closed):
     #: be later than the cutoff. Context, never evidence of a notice.
     disposition: str
     retirement_pending: bool
-    #: The diagnosis the tech lead recorded for it.
+    #: The diagnosis the tech lead recorded for it, as of the cutoff.
     body: str
+    #: False when an observation after the cutoff may have rewritten it: the
+    #: body is then unknown and staged empty.
+    body_known: bool
     observations: tuple[CaseFileObservationInput, ...]
 
 

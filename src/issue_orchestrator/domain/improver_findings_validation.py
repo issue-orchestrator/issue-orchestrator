@@ -372,8 +372,14 @@ class _Checker:
         elif f.stall_point == "not_in_charter":
             if self._evidence.charter is None:
                 yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
-            if not any(i.startswith((CHARTER_CITATION, ENGINE_SOURCE_CITATION)) for i in evidence):
-                yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "cite the charter.json setting or the source that lacks the action"
+            if not any(
+                i.startswith(ENGINE_SOURCE_CITATION) or self._restrictive_setting(i) for i in evidence
+            ):
+                yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                    "cite a charter.json setting that restricts (a disabled role, a propose"
+                    " authority, a depth short of restructure, an action not executed) or the"
+                    " source that lacks the action"
+                )
 
     def _evidence_about(self, f: Finding) -> Iterator[tuple[Rule, str]]:
         """A notice grade cites a notice, and every cited decision, case file
@@ -390,6 +396,16 @@ class _Checker:
         for item in f.stall_evidence:
             if item in self._notice_ids and item not in about:
                 yield Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY, f"{item} does not refer to the anomaly's issue"
+
+    def _restrictive_setting(self, item: str) -> bool:
+        """Whether ``item`` cites a ``charter.json`` setting whose VALUE holds
+        something back; a permissive one shows nothing is out of charter."""
+        if not item.startswith(CHARTER_CITATION):
+            return False
+        pointer = item[len(CHARTER_CITATION):]
+        value = _resolve(self._evidence.documents, CHARTER_FILE, pointer)
+        field = pointer.rsplit("/", 1)[-1]
+        return _RESTRICTIVE.get(field, lambda _v: False)(value)
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -544,6 +560,16 @@ class _AnomalyRecords:
                 return True
         return False
 
+
+#: For each charter.json field, which values restrict what the tech lead may do.
+_RESTRICTIVE = {
+    "enabled": lambda v: v is False,
+    "authority": lambda v: v == "propose",
+    "action_ceiling": lambda v: v == "propose",
+    "depth": lambda v: v in ("workaround", "fix"),
+    "outcome": lambda v: v != "executed",
+    "promotion_lane": lambda v: v != "auto",
+}
 
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 

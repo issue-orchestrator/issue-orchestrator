@@ -221,7 +221,9 @@ in `engine-source/examples/improver/findings/`.
   supporting presence or recurrence dated after that `applied_at`.
 - `stall_point: not_in_charter` requires citing either the source (for a
   missing action type) or the `charter.json` settings that forbid the role or
-  depth.
+  depth; a cited setting must actually restrict (a disabled role, `propose`
+  authority or ceiling, a depth short of `restructure`, an action that is not
+  `executed`).
 - `stall_point: not_noticed` requires a **proven** onset (the occurrence
   source's coverage starts before `grading_window.from`, with no earlier
   occurrence), `grading_window.from` to be known,

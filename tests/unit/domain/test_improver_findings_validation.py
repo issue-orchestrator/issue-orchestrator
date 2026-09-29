@@ -230,6 +230,11 @@ CASES: list[tuple[Rule, str, Mutation]] = [
                               "source": "audit.json#/action_liveness/parked/0/last_failed_at",
                               "supports": "recurs_after_start"}))),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal", _set("stall_evidence", ["D1"])),
+    # A setting that resolves but restricts nothing shows nothing out of charter (r7 F3).
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
+     _set("stall_evidence", ["D1", "charter.json#/roles/flow/enabled"])),
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
+     _set("stall_evidence", ["D1", "charter.json#/actions/post_comment/outcome"])),
     # outputs
     (Rule.INVESTIGATION_SHAPE, "needs_investigation", _set("missing_evidence", [])),
     (Rule.INVESTIGATION_SHAPE, "needs_investigation", _set("proposal", "do something")),
@@ -434,3 +439,10 @@ def test_acted_not_effective_needs_an_applied_decision_about_its_own_issue(tmp_p
 
     assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in rules
     assert Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY in rules
+
+
+def test_a_restrictive_charter_setting_is_a_valid_not_in_charter_citation(evidence: StagedEvidence) -> None:
+    doc = example("prompt_proposal")
+    _finding(doc)["stall_evidence"] = ["charter.json#/roles/general/authority"]
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "not_in_charter"

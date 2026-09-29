@@ -250,24 +250,29 @@ def case_files_input(
 
 def _case_file(record: CaseFileRecord, cutoff: datetime) -> StagedCaseFile:
     """One case file as of ``cutoff``: an observation recorded after it (the
-    snapshot is copied later) is not part of what the audit cut off at."""
+    snapshot is copied later) is not part of what the audit cut off at, and
+    since such an observation may have supplied the diagnosis (the ledger
+    keeps only the current one), the body as of the cutoff is then unknown:
+    staged empty, with ``body_known`` False, so it can never read as a notice."""
+    kept = tuple(o for o in record.observations if instant(o.recorded_at) <= cutoff)
+    revised = len(kept) != len(record.observations)
     return StagedCaseFile(
         id=f"case-file:{record.signature}",
         signature=record.signature,
         issue_number=record.issue_number,
         recorded_at=instant(record.recorded_at),
-        observation_count=record.observation_count,
+        observation_count=len(kept) if revised else record.observation_count,
         fix_class=record.fix_class,
         area=record.area,
         disposition=record.disposition,
         retirement_pending=record.retirement_pending,
-        body=record.diagnosis,
+        body="" if revised else record.diagnosis,
+        body_known=not revised,
         observations=tuple(
             CaseFileObservationInput(
                 observation_id=o.observation_id, recorded_at=instant(o.recorded_at)
             )
-            for o in record.observations
-            if instant(o.recorded_at) <= cutoff
+            for o in kept
         ),
     )
 
