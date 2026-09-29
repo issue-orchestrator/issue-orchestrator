@@ -381,3 +381,20 @@ def test_an_unread_timeline_is_named_among_what_is_not_derivable() -> None:
 
     assert not any("timeline" in source for source in staged.derived_from)
     assert any("absent: no timeline.sqlite" in gap for gap in staged.not_derivable)
+
+
+def test_a_case_file_observed_after_the_cutoff_leaves_the_ledger_unproven() -> None:
+    """The observation may have supplied its diagnosis after the cutoff (r3):
+    the body as of the cutoff is unknown, so coverage is not complete."""
+    observed_late = replace(
+        _case_file(),
+        observations=(CaseFileObservation("late", (CUTOFF + timedelta(minutes=1)).isoformat()),),
+    )
+
+    staged = case_files_input(
+        [observed_late], TechLeadRunHistoryRead(records=(), unreadable=0),
+        window_start=WINDOW_START, cutoff=CUTOFF,
+    )
+
+    assert not staged.coverage.complete
+    assert "sig" in staged.coverage.detail

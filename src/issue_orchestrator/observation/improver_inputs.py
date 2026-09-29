@@ -185,14 +185,31 @@ def case_files_input(
         if staged_file.recorded_at <= cutoff
     )
     stamps = [t for c in staged for t in (c.recorded_at, *(o.recorded_at for o in c.observations))]
+    coverage = _ledger_coverage(
+        min(stamps) if stamps else None,
+        window_start=window_start,
+        cutoff=cutoff,
+        what="the case-file ledger",
+        empty="no case file is recorded, so the ledger cannot show when it began",
+    )
+    # An observation after the cutoff may have supplied a case file's
+    # diagnosis (the ledger keeps only the current one), so that body is not
+    # known as of the cutoff: nothing proves what the ledger said then.
+    revised = sorted(
+        record.signature
+        for record in case_files
+        if any(instant(o.recorded_at) > cutoff for o in record.observations)
+    )
+    if revised:
+        coverage = coverage.model_copy(
+            update={
+                "complete": False,
+                "detail": "observed after the cutoff, so their bodies as of it are unknown: "
+                + ", ".join(revised),
+            }
+        )
     return CaseFilesInput(
-        coverage=_ledger_coverage(
-            min(stamps) if stamps else None,
-            window_start=window_start,
-            cutoff=cutoff,
-            what="the case-file ledger",
-            empty="no case file is recorded, so the ledger cannot show when it began",
-        ),
+        coverage=coverage,
         case_files=staged,
         diagnoses_coverage=Coverage(
             from_=None,
