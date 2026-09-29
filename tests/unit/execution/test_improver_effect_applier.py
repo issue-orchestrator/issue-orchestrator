@@ -24,7 +24,10 @@ from tests.unit.improver_support import OPEN_TRACKER, FakeIssueHost, MemoryRunSt
 NOW = datetime(2026, 9, 28, 19, 0, tzinfo=UTC)
 
 
-def _run(store: MemoryRunStore, run_id: str, *docs: dict, outcome: RunOutcome = RunOutcome.ACCEPTED) -> ImproverRunRecord:
+def _run(
+    store: MemoryRunStore, run_id: str, *docs: dict, outcome: RunOutcome = RunOutcome.ACCEPTED,
+    audited_repo: str = "porchpin/porchpin",
+) -> ImproverRunRecord:
     merged = json.loads(json.dumps(docs[0]))
     merged["findings"] = [f for d in docs for f in d["findings"]]
     findings = ImproverFindings.model_validate_json(json.dumps(merged))
@@ -32,9 +35,9 @@ def _run(store: MemoryRunStore, run_id: str, *docs: dict, outcome: RunOutcome = 
     (run_dir / FINDINGS_FILE).write_text(json.dumps(merged))
     record = ImproverRunRecord(
         run_id=run_id, started_at=NOW, finished_at=NOW, outcome=outcome, detail="",
-        audited_repo="porchpin/porchpin", outputs_repo="io/io", run_dir=str(run_dir),
+        audited_repo=audited_repo, outputs_repo="io/io", run_dir=str(run_dir),
         engine_commit=merged["engine_commit"],
-        effects=planned_effects(findings) if outcome is RunOutcome.ACCEPTED else (),
+        effects=planned_effects(findings, audited_repo) if outcome is RunOutcome.ACCEPTED else (),
     )
     store.record(record)
     return record
@@ -84,7 +87,7 @@ def test_a_tracked_finding_comments_its_evidence_on_the_tracked_issue(tmp_path: 
 
 def test_a_finding_an_open_issue_already_carries_is_commented_there_not_filed_again(tmp_path: Path) -> None:
     doc = example("capability_issue")
-    key = finding_key(ImproverFindings.model_validate_json(json.dumps(doc)).findings[0])
+    key = finding_key(ImproverFindings.model_validate_json(json.dumps(doc)).findings[0], "porchpin/porchpin")
     host = FakeIssueHost([OpenIssueLabels(number=555, title=f"{title_token(key)} Capability gap: x", labels=())])
     store = MemoryRunStore(tmp_path)
     _run(store, "r2", doc)
@@ -181,8 +184,9 @@ def test_a_findings_identity_is_what_it_asks_about_which_anomalies() -> None:
         update={"reproduction": finding.reproduction.model_copy(update={"case_id": "E-other"})}  # type: ignore[union-attr]
     )
 
-    assert finding_key(renamed) == finding_key(finding)
-    assert finding_key(other_case) != finding_key(finding)
+    assert finding_key(renamed, "a/a") == finding_key(finding, "a/a")
+    assert finding_key(other_case, "a/a") != finding_key(finding, "a/a")
+    assert finding_key(finding, "b/b") != finding_key(finding, "a/a")
 
 
 def test_effects_owed_to_another_repository_are_never_applied_here(tmp_path: Path) -> None:
@@ -254,3 +258,16 @@ def test_a_later_run_finds_an_issue_the_open_listing_does_not_show_yet(tmp_path:
     assert b.effects[0].status is EffectStatus.COMMENTED
     assert b.effects[0].issue_number == host.created[0]["number"]
     assert [n for n, _ in host.comments] == [host.created[0]["number"]]
+
+
+def test_the_same_finding_about_two_engines_files_two_issues(tmp_path: Path) -> None:
+    """Both engines report #500; each engine's issue is its own (r4 F1)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "a", example("capability_issue"), audited_repo="a/a")
+    _run(store, "b", example("capability_issue"), audited_repo="b/b")
+
+    runs = {r.run_id: r for r in _effects(store, host).apply_pending()}
+
+    assert host.create_calls == 2 and host.comments == []
+    assert runs["a"].effects[0].key != runs["b"].effects[0].key
+    assert runs["b"].effects[0].issue_number == host.created[1]["number"]

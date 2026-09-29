@@ -174,7 +174,7 @@ class ImproverRun:
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.audited_repo),
             trend=findings.trend,
-            effects=planned_effects(findings),
+            effects=planned_effects(findings, request.audited_repo),
         )
         if not apply:
             return accepted

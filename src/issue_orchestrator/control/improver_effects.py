@@ -48,9 +48,11 @@ _LABELS: dict[str, tuple[str, ...]] = {
 }
 
 
-def finding_key(finding: Finding) -> str:
-    """A finding's identity across runs: what it asks for, about which anomalies."""
+def finding_key(finding: Finding, audited_repo: str) -> str:
+    """A finding's identity across runs: what it asks for, about which
+    anomalies of which engine (two engines' anomalies share keys like #500)."""
     identity = {
+        "audited_repo": audited_repo,
         "output": finding.output,
         "anomalies": sorted(list(k.key) for k in finding.anomaly_keys),
         "case_id": finding.reproduction.case_id if finding.reproduction else None,
@@ -66,10 +68,10 @@ def finding_marker(key: str) -> str:
     return f"<!-- io-improver-finding:{key} -->"
 
 
-def planned_effects(findings: ImproverFindings) -> tuple[EffectReceipt, ...]:
+def planned_effects(findings: ImproverFindings, audited_repo: str) -> tuple[EffectReceipt, ...]:
     """One pending effect per accepted finding."""
     return tuple(
-        EffectReceipt(finding_id=f.id, key=finding_key(f), status=EffectStatus.PENDING)
+        EffectReceipt(finding_id=f.id, key=finding_key(f, audited_repo), status=EffectStatus.PENDING)
         for f in findings.findings
     )
 
