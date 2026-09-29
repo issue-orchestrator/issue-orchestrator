@@ -61,7 +61,8 @@
         ],
         "fails_on": "0123456789abcdef0123456789abcdef01234567"
       },
-      "proposal": "Tell the tech lead to escalate a refused retry with the refusal's reason instead of re-flagging it."
+      "proposal": "Tell the tech lead to escalate a refused retry with the refusal's reason instead of re-flagging it.",
+      "remedy_action_kind": "reset_retry"
     }
   ],
   "trend": {

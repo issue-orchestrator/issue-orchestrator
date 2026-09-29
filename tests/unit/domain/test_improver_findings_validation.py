@@ -242,14 +242,20 @@ CASES: list[tuple[Rule, str, Mutation]] = [
      _set("stall_evidence", ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"])),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
      _all(_set("stall_evidence", ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"]),
-          _set("missing_action_kind", "reset_retry"))),
+          _drop("remedy_action_kind"), _set("missing_action_kind", "reset_retry"))),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "exam_case", _set("missing_action_kind", "clear_refusal")),
+    # A restrictive setting of ANOTHER role does not hold this remedy back (r14 F2).
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
+     _all(_set("remedy_action_kind", "post_comment"),
+          _set("stall_evidence", ["charter.json#/roles/general/authority"]))),
+    # Both kinds named at once.
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal", _set("missing_action_kind", "clear_it")),
     # An existing kind claimed missing beside a restrictive citation (r13).
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal", _set("missing_action_kind", "reset_retry")),
     # A missing kind with no source citation.
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
      _all(_set("stall_evidence", ["charter.json#/actions/reset_retry/outcome"]),
-          _set("missing_action_kind", "clear_validation_refusal"))),
+          _drop("remedy_action_kind"), _set("missing_action_kind", "clear_validation_refusal"))),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
      _set("stall_evidence", ["D1", "charter.json#/actions/post_comment/outcome"])),
     # outputs
@@ -461,11 +467,12 @@ def test_acted_not_effective_needs_an_applied_decision_about_its_own_issue(tmp_p
     assert Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY in rules
 
 
-def test_a_restrictive_charter_setting_is_a_valid_not_in_charter_citation(evidence: StagedEvidence) -> None:
+def test_a_setting_that_holds_the_remedy_back_is_a_valid_not_in_charter_citation(evidence: StagedEvidence) -> None:
     doc = example("prompt_proposal")
-    _finding(doc)["stall_evidence"] = ["charter.json#/roles/general/authority"]
+    _finding(doc)["remedy_action_kind"] = "promote_finding"
+    _finding(doc)["stall_evidence"] = ["charter.json#/actions/promote_finding/action_ceiling"]
 
-    assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "not_in_charter"
+    assert validate_findings(json.dumps(doc), evidence).findings[0].remedy_action_kind == "promote_finding"
 
 
 def test_an_occurrence_dated_after_the_cutoff_is_outside_the_window(tmp_path: Path) -> None:
@@ -500,5 +507,6 @@ def test_a_missing_action_kind_with_its_source_is_a_valid_not_in_charter_claim(e
     doc = example("prompt_proposal")
     _finding(doc)["stall_evidence"] = ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"]
     _finding(doc)["missing_action_kind"] = "clear_validation_refusal"
+    del _finding(doc)["remedy_action_kind"]
 
     assert validate_findings(json.dumps(doc), evidence).findings[0].missing_action_kind == "clear_validation_refusal"

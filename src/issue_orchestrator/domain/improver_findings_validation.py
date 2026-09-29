@@ -258,8 +258,10 @@ class _Checker:
     def _finding_rules(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         yield from self._keys_and_classification(f)
         yield from self._liveness(f, records)
-        if f.missing_action_kind is not None and f.stall_point != "not_in_charter":
-            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "missing_action_kind belongs to a not_in_charter grade"
+        if f.stall_point != "not_in_charter" and (f.missing_action_kind or f.remedy_action_kind):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                "missing_action_kind and remedy_action_kind belong to a not_in_charter grade"
+            )
         yield from self._citations(f, records)
         yield from self._window(f, records)
         yield from self._stall(f, records)
@@ -386,23 +388,32 @@ class _Checker:
             yield from checks[f.stall_point]()
 
     def _not_in_charter(self, f: Finding) -> Iterator[tuple[Rule, str]]:
-        """Out of charter because a setting restricts the remedy (cite it), or
-        because no action type expresses it (name the missing kind, which the
-        effective charter must not have, and cite the source that lacks it)."""
+        """Out of charter in exactly one of two ways: an existing remedy
+        (``remedy_action_kind``) that a cited charter.json setting of ITS
+        action or role holds back, or a missing one (``missing_action_kind``,
+        absent from the effective charter, with the source cited)."""
         charter = self._evidence.charter
         if charter is None:
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
             return
-        missing = f.missing_action_kind
-        cites_source = any(i.startswith(ENGINE_SOURCE_CITATION) for i in f.stall_evidence)
-        if missing is not None and not cites_source:
-            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "a missing action kind is shown by citing the source"
-        if missing is None and not any(self._restrictive_setting(i) for i in f.stall_evidence):
+        remedy, missing = f.remedy_action_kind, f.missing_action_kind
+        if (remedy is None) == (missing is None):
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
-                "cite a charter.json setting that restricts (a disabled role, a propose"
-                " authority, a depth short of restructure, an action not executed), or name"
-                " the missing_action_kind and cite the source that lacks it"
+                "name exactly one of remedy_action_kind (held back by a cited setting) or"
+                " missing_action_kind (absent, with the source cited)"
             )
+        if remedy is not None and not any(
+            _holds_back(charter, remedy, i[len(CHARTER_CITATION):], self._evidence.documents)
+            for i in f.stall_evidence
+            if i.startswith(CHARTER_CITATION)
+        ):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                f"cite a charter.json setting of {remedy} or its role that holds it back"
+                " (a disabled role, propose authority or ceiling, a depth short of what it"
+                " needs, an outcome other than executed)"
+            )
+        if missing is not None and not any(i.startswith(ENGINE_SOURCE_CITATION) for i in f.stall_evidence):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "a missing action kind is shown by citing the source"
         if missing is not None and missing in charter.actions:
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
                 f"{missing} is an action kind the effective charter already has"
@@ -423,16 +434,6 @@ class _Checker:
         for item in f.stall_evidence:
             if item in self._notice_ids and item not in about:
                 yield Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY, f"{item} does not refer to the anomaly's issue"
-
-    def _restrictive_setting(self, item: str) -> bool:
-        """Whether ``item`` cites a ``charter.json`` setting whose VALUE holds
-        something back; a permissive one shows nothing is out of charter."""
-        if not item.startswith(CHARTER_CITATION):
-            return False
-        pointer = item[len(CHARTER_CITATION):]
-        value = _resolve(self._evidence.documents, CHARTER_FILE, pointer)
-        field = pointer.rsplit("/", 1)[-1]
-        return _RESTRICTIVE.get(field, lambda _v: False)(value)
 
     def _acted_on(self, f: Finding) -> Iterator[tuple[Rule, str]]:
         """A remedy about the anomaly's issue that was applied by the cutoff
@@ -602,15 +603,32 @@ class _AnomalyRecords:
 #: Bindings whose actions move their target (``TechLeadCharterDecision.is_remedy``).
 _REMEDY_BINDINGS = frozenset({"approvable", "destructive"})
 
-#: For each charter.json field, which values restrict what the tech lead may do.
-_RESTRICTIVE = {
-    "enabled": lambda v: v is False,
-    "authority": lambda v: v == "propose",
-    "action_ceiling": lambda v: v == "propose",
-    "depth": lambda v: v in ("workaround", "fix"),
-    "outcome": lambda v: v != "executed",
-    "promotion_lane": lambda v: v != "auto",
-}
+_DEPTH_RANK = {"workaround": 0, "fix": 1, "restructure": 2}
+
+
+def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: Mapping[str, Any]) -> bool:
+    """Whether ``charter.json#pointer`` is a setting of action ``kind`` (or of
+    its role) whose value keeps the tech lead from executing it."""
+    action = charter.actions.get(kind)
+    if action is None or _resolve(documents, CHARTER_FILE, pointer) is _MISSING:
+        return False
+    parts = pointer.strip("/").split("/")
+    if parts == ["actions", kind, "outcome"]:
+        return action.outcome != "executed"
+    if parts == ["actions", kind, "action_ceiling"]:
+        return action.action_ceiling == "propose"
+    if parts == ["promotion_lane"]:
+        return kind == "promote_finding" and charter.promotion_lane != "auto"
+    if len(parts) != 3 or parts[:2] != ["roles", action.role] or action.binding in ("floor", "advisory"):
+        # Floors and advice are never restricted by their role's dials.
+        return False
+    dials = charter.roles[action.role]
+    return {
+        "enabled": not dials.enabled,
+        "authority": dials.authority == "propose",
+        "depth": _DEPTH_RANK[dials.depth] < _DEPTH_RANK[action.required_depth],
+    }.get(parts[2], False)
+
 
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 

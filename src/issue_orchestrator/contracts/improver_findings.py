@@ -116,6 +116,9 @@ class Finding(_Closed):
     #: ``not_in_charter`` because no action type expresses the remedy: the
     #: kind that would, which must not exist in the effective charter.
     missing_action_kind: NonEmpty | None = None
+    #: ``not_in_charter`` because a charter setting holds back an EXISTING
+    #: remedy: that remedy's action kind.
+    remedy_action_kind: NonEmpty | None = None
     output: Output
     root_cause: RootCause | None = None
     reproduction: Reproduction | None = None
