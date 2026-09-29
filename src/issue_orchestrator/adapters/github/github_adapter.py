@@ -34,7 +34,7 @@ from .http_client import (
     build_github_auth,
     classify_github_http_failure,
 )
-from .marker_recovery import find_marker_issue, prove_marker_issue, prove_open_labelled_marker_issue
+from .marker_recovery import find_marker_issue, prove_marker_issue, prove_open_marker_issue
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from .adapter_cache import GitHubAdapterCacheSupport
@@ -568,10 +568,10 @@ class GitHubAdapter:
         )
         return found.number if found is not None else None
 
-    def find_open_issue_by_marker(self, *, label: str, marker: str) -> int | None:
-        """The open ``label`` issue whose body carries ``marker``; None proves
-        there is none (uncached, complete or raising)."""
-        found = prove_open_labelled_marker_issue(self._client, label=label, marker=marker)
+    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
+        """The open issue whose body carries ``marker``; None proves there is
+        none (uncached, complete or raising)."""
+        found = prove_open_marker_issue(self._client, marker=marker)
         return found.number if found is not None else None
 
     def get_default_branch(self) -> str:

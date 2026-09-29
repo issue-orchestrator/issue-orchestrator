@@ -271,3 +271,21 @@ def test_the_same_finding_about_two_engines_files_two_issues(tmp_path: Path) -> 
     assert host.create_calls == 2 and host.comments == []
     assert runs["a"].effects[0].key != runs["b"].effects[0].key
     assert runs["b"].effects[0].issue_number == host.created[1]["number"]
+
+
+def test_a_retitled_unlabelled_issue_still_carries_its_finding(tmp_path: Path) -> None:
+    """An operator retitles and unlabels an open improver issue; its body
+    marker still identifies the finding (r5 F2)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "a", example("capability_issue"))
+    _effects(store, host).apply_pending()
+    filed = host.created[0]["number"]
+    host.open = [i if i.number != filed else OpenIssueLabels(number=filed, title="Operator's title", labels=())
+                 for i in host.open]
+    host.created[0]["labels"] = []
+    _run(store, "b", example("capability_issue"))
+
+    runs = {r.run_id: r for r in _effects(store, host).apply_pending()}
+
+    assert host.create_calls == 1
+    assert runs["b"].effects[0].issue_number == filed

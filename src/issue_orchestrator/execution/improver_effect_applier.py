@@ -49,7 +49,7 @@ class ImproverIssueHost(Protocol):
         self, *, title: str, marker: str, authoritative: bool = False
     ) -> int | None: ...
 
-    def find_open_issue_by_marker(self, *, label: str, marker: str) -> int | None: ...
+    def find_open_issue_by_marker(self, *, marker: str) -> int | None: ...
 
 
 class ImproverEffects:
@@ -171,10 +171,11 @@ class ImproverEffects:
                 title=command.title, marker=command.marker, authoritative=True
             )
         else:
-            # Another run may have filed the same finding a moment ago, which
-            # the open listing need not show yet: an uncached, complete read
-            # of the open improver issues settles it before any POST.
-            number = self._host.find_open_issue_by_marker(label=IMPROVER_LABEL, marker=command.marker)
+            # Another run may have filed the same finding a moment ago (the
+            # open listing need not show it yet), or an operator may have
+            # retitled or relabelled it: an uncached, complete read of every
+            # open issue's body settles it before any POST.
+            number = self._host.find_open_issue_by_marker(marker=command.marker)
             if number is not None:
                 return self._apply(run, finding, receipt, {**open_issues, number: _carrying(number, receipt.key)}, persist)
         if number is None:

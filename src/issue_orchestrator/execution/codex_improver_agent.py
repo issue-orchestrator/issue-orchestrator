@@ -1,8 +1,15 @@
-"""Run the improver on Codex, non-interactively and read-only (#7490).
+"""Run the improver on Codex, non-interactively and sandboxed (#7490).
 
-``codex exec`` in the run directory with the ``read-only`` sandbox: the agent
-can read the staged inputs and the engine source there, and can write
-nothing, reach no network and push nothing. Its final message IS its output;
+``codex exec`` under the orchestrator's own Codex permission profile
+(:func:`~.agent_runner_providers.sandbox.build_codex_sandbox_argv`, the one
+owner of how an agent's reads and writes are bounded): the staged run
+directory is READ-only, the agent's commands may write only an empty scratch
+workspace inside it, the network is off, and the credential stores every
+agent is denied (``~/.config/gh``, ``~/.ssh``, ``~/.codex``, ...) are denied
+here too, so no token can be read and carried into a finding and from there
+into a filed issue. Codex's legacy ``--sandbox read-only`` cannot express
+those denies (and disables the profile), so it is not used. The agent's
+environment is also allowlisted. Its final message IS its output;
 Codex writes it to a file (``--output-last-message``) and the orchestrator
 takes it from there. ``--ephemeral`` keeps the session out of Codex's own
 history, and the prompt goes as the last argument, as every Codex launch in
@@ -15,11 +22,20 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from ..domain.sandbox_scope import (
+    DEFAULT_SANDBOX_DENY_ENV,
+    DEFAULT_SANDBOX_DENY_READ_FILES,
+    SandboxScope,
+)
 from ..ports.command_runner import CommandRunner
 from ..ports.improver import ImproverAgentResult
+from .agent_runner_providers.sandbox import build_codex_sandbox_argv
 
 #: Where Codex leaves the agent's last message, inside the run directory.
 FINAL_MESSAGE_FILE = "improver-final-message.txt"
+#: The only place the agent's commands may write: an empty Git repository
+#: inside the run directory (the permission profile pins a Git worktree).
+AGENT_WORKSPACE = "agent-workspace"
 
 
 #: What the agent's environment may carry: what a process needs to run, and
@@ -48,24 +64,39 @@ class CodexImproverAgent:
         self._model = model
         self._timeout = timeout_seconds
 
+    @staticmethod
+    def scope(run_dir: Path) -> SandboxScope:
+        workspace = run_dir / AGENT_WORKSPACE
+        return SandboxScope(
+            working_directory=workspace,
+            read_roots=(workspace, run_dir),
+            write_roots=(workspace,),
+            egress="model-only",
+            deny_env=DEFAULT_SANDBOX_DENY_ENV,
+            deny_read_files=DEFAULT_SANDBOX_DENY_READ_FILES,
+        )
+
     def argv(self, *, prompt: str, run_dir: Path) -> list[str]:
         # stdin is /dev/null: ``codex exec`` appends a PIPED stdin to the
         # prompt, and would wait on one inherited from a runner that never
         # closes it.
         return [
             "/bin/sh", "-c", 'exec "$@" </dev/null', "sh",
-            "codex", "exec",
-            "--sandbox", "read-only",
+            "codex", *build_codex_sandbox_argv(self.scope(run_dir)), "exec",
             "--skip-git-repo-check",
             "--ephemeral",
             "--color", "never",
-            "--cd", str(run_dir),
             "--model", self._model,
             "--output-last-message", str(run_dir / FINAL_MESSAGE_FILE),
             prompt,
         ]
 
     def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+        workspace = run_dir / AGENT_WORKSPACE
+        workspace.mkdir()
+        initialized = self._runner.run(["git", "init", "-q", str(workspace)], timeout_seconds=60)
+        if initialized.returncode:
+            raise RuntimeError(f"cannot prepare the agent workspace: {initialized.stderr.strip()}")
         result = self._runner.run(
             self.argv(prompt=prompt, run_dir=run_dir),
             cwd=run_dir,

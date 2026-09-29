@@ -267,12 +267,12 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         """
         ...
 
-    def find_open_issue_by_marker(self, *, label: str, marker: str) -> int | None:
-        """The OPEN issue carrying ``label`` whose body holds ``marker`` (#7490).
+    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
+        """The OPEN issue whose body holds ``marker`` (#7490).
 
-        Authoritative over that scope: None proves there is none, and a read
-        that cannot prove it raises. Uncached, so an issue filed a moment ago
-        is seen, and label-scoped, so it costs a page or two.
+        Authoritative over every open issue, whatever its title or labels
+        became: None proves there is none, and a read that cannot prove it
+        raises. Uncached, so an issue filed a moment ago is seen.
         """
         ...
 
