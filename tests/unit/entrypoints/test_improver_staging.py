@@ -335,34 +335,35 @@ def test_the_case_file_ledger_is_staged_without_a_run_history(state: Path, tmp_p
     assert "tech-lead run history absent" in cases["diagnoses_coverage"]["detail"]
 
 
-def test_the_cutoff_is_taken_after_every_store_is_copied(
+def test_no_decision_dated_inside_coverage_is_missing_from_the_copy(
     state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Whatever a copy holds was written before the cutoff, so nothing the
-    engine writes while staging runs can pose as part of the window (3a r5)."""
+    """3a r6: the engine keeps writing while staging copies its stores. A
+    decision recorded after the ledger was copied must fall outside the
+    coverage staging claims, so the cutoff is taken before any copy."""
     from issue_orchestrator.entrypoints import improver_staging
 
-    order: list[str] = []
-    for name in ("snapshot_engine", "snapshot_tech_lead_runs"):
-        real = getattr(improver_staging, name)
+    real = improver_staging.snapshot_tech_lead_runs
 
-        def recorded(*args, _real=real, _name=name, **kwargs):  # type: ignore[no-untyped-def]
-            order.append(_name)
-            return _real(*args, **kwargs)
+    def engine_writes_after_the_ledger_copy(state_dir, *args, **kwargs):  # type: ignore[no-untyped-def]
+        store = SqliteTechLeadAuthorityStore(state_dir / "tech_lead_authority.sqlite")
+        store.charter_ledger.record_decisions([_decision("LATE", datetime.now(UTC))])
+        del store
+        gc.collect()
+        return real(state_dir, *args, **kwargs)
 
-        monkeypatch.setattr(improver_staging, name, recorded)
+    monkeypatch.setattr(improver_staging, "snapshot_tech_lead_runs", engine_writes_after_the_ledger_copy)
+    stager = ImproverInputStager(
+        audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(),
+        clock=lambda: datetime.now(UTC),
+    )
 
-    def clock() -> datetime:
-        order.append("cutoff")
-        return NOW
+    staged = stager.stage(_request(state, tmp_path))
 
-    ImproverInputStager(
-        audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), clock=clock
-    ).stage(_request(state, tmp_path))
-
-    assert order == ["snapshot_engine", "snapshot_tech_lead_runs", "cutoff"]
-
-
+    decisions = json.loads((staged.data_dir / "charter-decisions.json").read_text())
+    live = SqliteTechLeadAuthorityStore(state / "tech_lead_authority.sqlite").charter_ledger.list_all()
+    [late] = [d for d in live if d.action_id == "LATE"]
+    assert datetime.fromisoformat(late.decided_at) > datetime.fromisoformat(decisions["coverage"]["to"])
 
 
 def test_an_unreadable_scorecard_is_left_out_and_named(state: Path, tmp_path: Path) -> None:

@@ -136,6 +136,14 @@ class ImproverInputStager:
         self._clock = clock
 
     def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs:
+        # The cutoff is taken BEFORE any store is copied, so every record
+        # written by the cutoff is in the copies. A copy may also hold later
+        # writes; each source is projected back to the cutoff by its own
+        # timestamps (decisions by ``as_of``, case files by their
+        # observations, runs by ``run_as_of``), and the log and timeline are
+        # read to the cutoff. Taking it after the copy instead would claim
+        # coverage over writes the copy missed.
+        now = self._clock()
         data = request.run_dir / IMPROVER_DATA_DIRNAME
         data.mkdir(parents=True, exist_ok=False)
         entries: list[StagedInput] = []
@@ -157,12 +165,6 @@ class ImproverInputStager:
                 github=audited.as_host(),
             )
             runs_store = snapshot_tech_lead_runs(request.state_dir, Path(scratch))
-            # The cutoff is taken AFTER every store is copied: whatever a copy
-            # holds was written before it, so no later write (a result
-            # linked, a run concluded, a case file revised) can pose as part
-            # of the window. What is read live (the log, the pause journal,
-            # GitHub) is filtered to the cutoff or read after it.
-            now = self._clock()
             audit = audit_engine(snapshot.audit, now=now, window=request.window)
             audit, previous_entries = _with_previous(audit, request.previous_audit, data)
             _write(data / AUDIT_FILE, audit)

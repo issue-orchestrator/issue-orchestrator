@@ -40,7 +40,7 @@ from ..domain.tech_lead_charter_decisions import (
     TechLeadCharterDecision,
 )
 from ..events.catalog import EventName
-from ..domain.tech_lead_run_record import TechLeadRunRecord
+from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 from ..ports.engine_audit import CaseFileRecord, TechLeadRunHistoryRead, TimelineEvent
 
 #: The timeline reason the dashboard's Reset & Retry records (``ISSUE_UNBLOCKED``).
@@ -201,7 +201,7 @@ def case_files_input(
     """
     diagnoses = tuple(
         diagnosis
-        for diagnosis in map(_diagnosis, runs.records)
+        for diagnosis in (_diagnosis(run_as_of(record, cutoff)) for record in runs.records)
         if diagnosis.started_at <= cutoff
         and (diagnosis.ended_at is None or diagnosis.ended_at >= window_start)
     )
@@ -290,6 +290,27 @@ def engine_local(moment: datetime, *, latest: bool = False) -> datetime:
         return moment
     readings = (moment.replace(fold=0).astimezone(), moment.replace(fold=1).astimezone())
     return max(readings) if latest else min(readings)
+
+
+def run_as_of(record: TechLeadRunRecord, cutoff: datetime) -> TechLeadRunRecord:
+    """``record`` as the run history held it at ``cutoff``.
+
+    A run that ended after the cutoff was still running then: what it
+    concluded (its detail and counts, written at the end) is not part of the
+    window, and what it said before is not recorded, so it is staged as
+    running with nothing said.
+    """
+    if record.ended_at is None or engine_local(record.ended_at, latest=True) <= cutoff:
+        return record
+    return replace(
+        record,
+        phase=TechLeadRunPhase.RUNNING,
+        ended_at=None,
+        detail="",
+        findings=0,
+        proposals=0,
+        artifacts=None,
+    )
 
 
 def _diagnosis(record: TechLeadRunRecord) -> StagedDiagnosis:

@@ -416,3 +416,15 @@ def test_a_result_linked_after_the_cutoff_is_not_part_of_what_the_audit_saw() ->
     assert [(d.effect, d.applied_at) for d in staged.decisions] == [
         ("unlinked", None), ("awaiting_approval", None),
     ]
+
+
+def test_a_run_that_ended_after_the_cutoff_was_still_running_at_it() -> None:
+    """3a r5: what it concluded later is not a notice inside the window."""
+    late = _run(CUTOFF - timedelta(hours=2), ended=CUTOFF + timedelta(minutes=5), detail="#500 explodes")
+
+    staged = case_files_input(
+        [], TechLeadRunHistoryRead(records=(late,), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF,
+    )
+
+    [diagnosis] = staged.diagnoses
+    assert (diagnosis.phase, diagnosis.ended_at, diagnosis.body) == ("running", None, "")
