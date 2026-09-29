@@ -12,6 +12,7 @@ the orchestrator passes it.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from ..ports.command_runner import CommandRunner
@@ -19,6 +20,24 @@ from ..ports.improver import ImproverAgentResult
 
 #: Where Codex leaves the agent's last message, inside the run directory.
 FINAL_MESSAGE_FILE = "improver-final-message.txt"
+
+
+#: What the agent's environment may carry: what a process needs to run, and
+#: Codex's own configuration and authentication. Nothing else passes, so no
+#: repository-host credential (GH_TOKEN, a configured token variable, ...)
+#: can reach the agent and, through a finding's free text, a filed issue.
+_PASSED_NAMES = frozenset(
+    {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM", "TZ", "OPENAI_API_KEY"}
+)
+_PASSED_PREFIXES = ("LC_", "CODEX_")
+
+
+def agent_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in environ.items()
+        if name in _PASSED_NAMES or name.startswith(_PASSED_PREFIXES)
+    }
 
 
 class CodexImproverAgent:
@@ -50,7 +69,7 @@ class CodexImproverAgent:
         result = self._runner.run(
             self.argv(prompt=prompt, run_dir=run_dir),
             cwd=run_dir,
-            env={**os.environ, "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir)},
+            env={**agent_environment(os.environ), "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir)},
             timeout_seconds=self._timeout,
         )
         (run_dir / "improver-agent.log").write_text(
@@ -61,9 +80,10 @@ class CodexImproverAgent:
         if result.returncode:
             return ImproverAgentResult(None, f"codex exited {result.returncode}: {result.stderr.strip()[-500:]}")
         message = run_dir / FINAL_MESSAGE_FILE
-        if not message.is_file():
+        text = message.read_text(encoding="utf-8") if message.is_file() else ""
+        if not text.strip():
             return ImproverAgentResult(None, "codex finished without a final message")
-        return ImproverAgentResult(message.read_text(encoding="utf-8"), "codex finished")
+        return ImproverAgentResult(text, "codex finished")
 
 
 __all__ = ["CodexImproverAgent", "FINAL_MESSAGE_FILE"]

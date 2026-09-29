@@ -54,6 +54,8 @@ def test_codex_runs_read_only_in_the_run_dir_and_its_last_message_is_the_output(
         (CommandResult(-9, "", "", timed_out=True), None, "timed out"),
         (CommandResult(2, "", "quota exhausted"), None, "exited 2: quota exhausted"),
         (CommandResult(0, "", ""), None, "without a final message"),
+        # An empty final message is no output, not a rejected file (r1 F6).
+        (CommandResult(0, "", ""), "  \n", "without a final message"),
     ],
 )
 def test_no_output_says_why(tmp_path: Path, result: CommandResult, message: str | None, detail: str) -> None:
@@ -61,3 +63,18 @@ def test_no_output_says_why(tmp_path: Path, result: CommandResult, message: str 
 
     assert answer.final_message is None
     assert detail in answer.detail
+
+
+def test_no_repository_host_credential_reaches_the_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A token could otherwise end up in a finding's free text, and so in a
+    filed issue (r1 F3). Codex's own configuration still passes."""
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "ISSUE_ORCH_GITHUB_TOKEN", "PORCHPIN_BOT_TOKEN"):
+        monkeypatch.setenv(name, "secret")
+    monkeypatch.setenv("CODEX_HOME", "/codex")
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+
+    _agent(runner).run(prompt="P", run_dir=tmp_path)
+
+    env = runner.calls[0]["env"]
+    assert "secret" not in env.values()
+    assert env["CODEX_HOME"] == "/codex" and "PATH" in env

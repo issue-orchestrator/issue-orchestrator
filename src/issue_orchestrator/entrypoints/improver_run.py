@@ -117,6 +117,11 @@ class ImproverRun:
             return self._run(request, apply=apply)
 
     def _run(self, request: ImproverRunRequest, *, apply: bool) -> ImproverRunRecord:
+        if request.outputs_repo != self._effects.outputs_repo:
+            raise ValueError(
+                f"the run files into {request.outputs_repo} but its effects apply to"
+                f" {self._effects.outputs_repo}"
+            )
         if apply:
             self._effects.apply_pending()
         started = self._clock()
@@ -133,7 +138,9 @@ class ImproverRun:
             run_dir=str(run_dir),
         )
         try:
-            staged = self._stager.stage(request.staging(run_dir, self._previous_audit()))
+            staged = self._stager.stage(
+                request.staging(run_dir, self._previous_audit(request.audited_repo))
+            )
         except ImproverInputsUnavailable as error:
             return self._finish(base, RunOutcome.UNAVAILABLE, f"inputs unavailable: {error}")
         evidence = load_staged_evidence(staged.data_dir)
@@ -165,13 +172,33 @@ class ImproverRun:
             RunOutcome.ACCEPTED,
             f"{len(findings.findings)} finding(s) accepted",
             grades=_grades(findings),
-            stall_points=self._stall_point_moves(findings),
+            stall_points=self._stall_point_moves(findings, request.audited_repo),
             trend=findings.trend,
             effects=planned_effects(findings),
         )
-        if apply:
-            self._effects.apply_pending()
-        return next(r for r in self._store.runs() if r.run_id == accepted.run_id)
+        if not apply:
+            return accepted
+        self._effects.apply_pending()
+        return self._explain_unapplied(next(r for r in self._store.runs() if r.run_id == accepted.run_id))
+
+    def _explain_unapplied(self, run: ImproverRunRecord) -> ImproverRunRecord:
+        """Say why effects left pending without a reason of their own were
+        not tried: an earlier run's effect stopped the batch first."""
+        silent = [e for e in run.pending_effects if e.error is None and not e.detail]
+        if not silent:
+            return run
+        explained = run.model_copy(
+            update={
+                "effects": tuple(
+                    e.model_copy(update={"detail": "not tried: an earlier run's effect stopped the batch"})
+                    if e in silent
+                    else e
+                    for e in run.effects
+                )
+            }
+        )
+        self._store.record(explained)
+        return explained
 
     def _finish(self, base: ImproverRunRecord, outcome: RunOutcome, detail: str, **fields: object) -> ImproverRunRecord:
         record = base.model_copy(
@@ -180,16 +207,24 @@ class ImproverRun:
         self._store.record(record)
         return record
 
-    def _previous_audit(self) -> Path | None:
+    def _previous_audit(self, audited_repo: str) -> Path | None:
+        """The latest staged audit of the SAME engine's repository."""
         for run in self._store.runs():
-            if run.audit_staged:
+            if run.audit_staged and run.audited_repo == audited_repo:
                 return Path(run.run_dir) / IMPROVER_DATA_DIRNAME / AUDIT_FILE
         return None
 
-    def _stall_point_moves(self, findings: ImproverFindings) -> tuple[StallPointMove, ...]:
+    def _stall_point_moves(
+        self, findings: ImproverFindings, audited_repo: str
+    ) -> tuple[StallPointMove, ...]:
         current = Counter(f.stall_point for f in findings.findings)
         previous_run = next(
-            (r for r in self._store.runs() if r.outcome is RunOutcome.ACCEPTED), None
+            (
+                r
+                for r in self._store.runs()
+                if r.outcome is RunOutcome.ACCEPTED and r.audited_repo == audited_repo
+            ),
+            None,
         )
         previous = None if previous_run is None else Counter(g.stall_point for g in previous_run.grades)
         points = sorted(set(current) | set(previous or ()))

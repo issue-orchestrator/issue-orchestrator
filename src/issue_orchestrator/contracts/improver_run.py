@@ -63,6 +63,10 @@ class EffectReceipt(_Closed):
     #: The last application error that was not a rate limit (a rate limit
     #: only defers). Kept on the receipt until an application succeeds.
     error: str | None = None
+    #: Set, durably, just before an issue is created: a POST whose result was
+    #: lost may still have filed it, so the next attempt first proves by the
+    #: body marker whether it did, and never POSTs twice.
+    create_attempted_at: AwareDatetime | None = None
 
 
 class FindingGrade(_Closed):
@@ -119,10 +123,11 @@ class ImproverRunRecord(_Closed):
 
     @property
     def exit_code(self) -> int:
-        """The outcome's code, except that an accepted run whose effects
-        failed (not merely deferred by a rate limit) is unavailable: its
-        findings stand and the next run applies them."""
-        if self.outcome is RunOutcome.ACCEPTED and any(e.error for e in self.pending_effects):
+        """The outcome's code, except that an accepted run whose effects are
+        not all applied (failed, deferred by a rate limit, or stopped behind
+        an earlier run's) is unavailable: its findings stand and the next
+        run or ``improver apply`` applies them."""
+        if self.outcome is RunOutcome.ACCEPTED and self.pending_effects:
             return 75
         return self.outcome.exit_code
 

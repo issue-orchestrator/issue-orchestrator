@@ -40,14 +40,31 @@ class ImproverIssueHost(Protocol):
 
     def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]: ...
 
+    def find_issue_by_marker(
+        self, *, title: str, marker: str, authoritative: bool = False
+    ) -> int | None: ...
+
 
 class ImproverEffects:
+    """Applies the effects owed to ONE repository, ``outputs_repo``, whose host
+    ``host`` is; a run filed for another repository is never touched here."""
+
     def __init__(
-        self, *, store: ImproverRunStore, host: ImproverIssueHost, clock: Callable[[], datetime]
+        self,
+        *,
+        store: ImproverRunStore,
+        host: ImproverIssueHost,
+        outputs_repo: str,
+        clock: Callable[[], datetime],
     ) -> None:
         self._store = store
         self._host = host
+        self._outputs_repo = outputs_repo
         self._clock = clock
+
+    @property
+    def outputs_repo(self) -> str:
+        return self._outputs_repo
 
     def apply_pending(self) -> tuple[ImproverRunRecord, ...]:
         """Apply every accepted run's pending effects, oldest run first.
@@ -58,7 +75,9 @@ class ImproverEffects:
         """
         owing = [
             run for run in reversed(self._store.runs())
-            if run.outcome is RunOutcome.ACCEPTED and run.pending_effects
+            if run.outcome is RunOutcome.ACCEPTED
+            and run.pending_effects
+            and run.outputs_repo == self._outputs_repo
         ]
         if not owing:
             return ()
@@ -83,8 +102,13 @@ class ImproverEffects:
         for index, receipt in enumerate(run.effects):
             if receipt.status is not EffectStatus.PENDING:
                 continue
+            def persist(intent: EffectReceipt, *, at: int = index) -> None:
+                nonlocal run
+                run = run.model_copy(update={"effects": _replaced(run.effects, at, intent)})
+                self._store.record(run)
+
             try:
-                applied = self._apply(run, findings[receipt.finding_id], receipt, open_issues)
+                applied = self._apply(run, findings[receipt.finding_id], receipt, open_issues, persist)
             except Exception as error:
                 return self._stopped(run, index, error), True
             run = run.model_copy(update={"effects": _replaced(run.effects, index, applied)})
@@ -113,6 +137,7 @@ class ImproverEffects:
         finding: Finding,
         receipt: EffectReceipt,
         open_issues: dict[int, OpenIssueLabels],
+        persist: Callable[[EffectReceipt], None],
     ) -> EffectReceipt:
         command = plan_effect(run, finding, receipt.key, open_issues)
         if isinstance(command, CommentImproverEvidence):
@@ -125,17 +150,28 @@ class ImproverEffects:
                     "at": self._clock(), "detail": "", "error": None,
                 }
             )
-        created = self._host.create_issue(
-            title=command.title, body=command.body, labels=list(command.labels)
-        )
-        if not created or not isinstance(created.get("number"), int):
-            raise RuntimeError(f"creating the improver issue for {finding.id} returned no issue number")
-        number = created["number"]
+        number = None
+        if receipt.create_attempted_at is not None:
+            # An earlier POST's result was lost. Prove by the body marker,
+            # over every issue open or closed, whether it filed one; a
+            # listing of open issues may not show a fresh one yet.
+            number = self._host.find_issue_by_marker(
+                title=command.title, marker=command.marker, authoritative=True
+            )
+        if number is None:
+            persist(receipt.model_copy(update={"create_attempted_at": self._clock()}))
+            created = self._host.create_issue(
+                title=command.title, body=command.body, labels=list(command.labels)
+            )
+            if not created or not isinstance(created.get("number"), int):
+                raise RuntimeError(f"creating the improver issue for {finding.id} returned no issue number")
+            number = created["number"]
         open_issues[number] = OpenIssueLabels(number=number, title=command.title, labels=command.labels)
         return receipt.model_copy(
             update={
                 "status": EffectStatus.FILED, "issue_number": number,
                 "at": self._clock(), "detail": "", "error": None,
+                "create_attempted_at": receipt.create_attempted_at or self._clock(),
             }
         )
 

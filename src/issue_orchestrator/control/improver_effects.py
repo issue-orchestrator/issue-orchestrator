@@ -62,6 +62,10 @@ def title_token(key: str) -> str:
     return f"[improver:{key}]"
 
 
+def finding_marker(key: str) -> str:
+    return f"<!-- io-improver-finding:{key} -->"
+
+
 def planned_effects(findings: ImproverFindings) -> tuple[EffectReceipt, ...]:
     """One pending effect per accepted finding."""
     return tuple(
@@ -72,9 +76,11 @@ def planned_effects(findings: ImproverFindings) -> tuple[EffectReceipt, ...]:
 
 @dataclass(frozen=True)
 class FileImproverIssue:
-    """File one new issue for a finding."""
+    """File one new issue for a finding. ``marker`` is in its body, so a
+    creation whose result was lost can be proven filed or absent."""
 
     title: str
+    marker: str
     body: str
     labels: tuple[str, ...]
 
@@ -112,9 +118,11 @@ def plan_effect(
             f" (engine `{run.engine_commit}`): stalled at `{finding.stall_point}`.\n\n"
             f"{_finding_json(finding)}",
         )
+    marker = finding_marker(key)
     return FileImproverIssue(
         title=f"{title_token(key)} {_summary(finding)}",
-        body=issue_body(run, finding),
+        marker=marker,
+        body=f"{marker}\n{issue_body(run, finding)}",
         labels=_LABELS[finding.output],
     )
 
@@ -186,6 +194,7 @@ __all__ = [
     "FileImproverIssue",
     "ImproverEffectCommand",
     "finding_key",
+    "finding_marker",
     "issue_body",
     "plan_effect",
     "planned_effects",

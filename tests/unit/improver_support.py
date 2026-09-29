@@ -298,12 +298,23 @@ class FakeIssueHost:
         self.created: list[dict] = []
         self.comments: list[tuple[int, str]] = []
         self.fail_on_create: Exception | None = None
+        #: Raise AFTER the issue is created: the POST landed, its result was lost.
+        self.lose_create_result: Exception | None = None
+        #: Newly created issues the open listing does not show yet.
+        self.stale_listing = False
+        self.create_calls = 0
         self.next_number = 9000
 
     def list_open_issue_labels_complete(self):  # type: ignore[no-untyped-def]
-        return list(self.open)
+        created = {c["number"] for c in self.created}
+        return [i for i in self.open if not (self.stale_listing and i.number in created)]
+
+    def find_issue_by_marker(self, *, title, marker, authoritative=False):  # type: ignore[no-untyped-def]
+        assert authoritative
+        return next((c["number"] for c in self.created if marker in c["body"]), None)
 
     def create_issue(self, title, body, labels=None, milestone=None):  # type: ignore[no-untyped-def]
+        self.create_calls += 1
         if self.fail_on_create is not None:
             raise self.fail_on_create
         from issue_orchestrator.ports.engine_audit import OpenIssueLabels
@@ -311,6 +322,8 @@ class FakeIssueHost:
         self.next_number += 1
         self.created.append({"title": title, "body": body, "labels": labels, "number": self.next_number})
         self.open.append(OpenIssueLabels(number=self.next_number, title=title, labels=tuple(labels or ())))
+        if self.lose_create_result is not None:
+            raise self.lose_create_result
         return {"number": self.next_number, "html_url": f"https://x/{self.next_number}"}
 
     def add_comment(self, issue_or_pr_number, body):  # type: ignore[no-untyped-def]

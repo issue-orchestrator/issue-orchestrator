@@ -361,3 +361,25 @@ def test_the_cutoff_is_taken_after_every_store_is_copied(
     ).stage(_request(state, tmp_path))
 
     assert order == ["snapshot_engine", "snapshot_tech_lead_runs", "cutoff"]
+||||||| parent of a33dc6f (Review r1: effects bound to their repository, crash-proof creation, no host credentials for the agent (#7490 step 3b))
+
+
+
+
+def test_an_unreadable_scorecard_is_left_out_and_named(state: Path, tmp_path: Path) -> None:
+    """One written in place mid-run, or cut short by a crash (3b r1 F6): the
+    run goes on without it, and no exam trend is comparable."""
+    exam = tmp_path / "exam-out"
+    exam.mkdir()
+    for stamp in ("1", "2"):
+        (exam / f"A-one-x-{stamp}.json").write_text(json.dumps({
+            "schema_version": 1, "case_id": "A-one", "engine_commit": COMMIT,
+            "passed": True, "failures": [],
+        }))
+    (exam / "A-one-x-3.json").write_text('{"schema_version": 1, "case_')
+
+    staged = _stager(FakeHost(), FakeHost()).stage(_request(state, tmp_path, exam_dir=exam))
+
+    entry = next(i for i in staged.manifest.inputs if i.name == "exam")
+    assert "A-one-x-3.json" in entry.detail
+    assert staged.manifest.exam_scores_comparable is False

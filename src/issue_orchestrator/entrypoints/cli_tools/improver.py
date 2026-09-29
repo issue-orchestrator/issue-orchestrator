@@ -168,7 +168,9 @@ def _store() -> FileImproverRunStore:
 
 
 def _effects(outputs_repo: str, store: FileImproverRunStore) -> ImproverEffects:
-    return ImproverEffects(store=store, host=create_repository_host(outputs_repo), clock=_now)
+    return ImproverEffects(
+        store=store, host=create_repository_host(outputs_repo), outputs_repo=outputs_repo, clock=_now
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -201,7 +203,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"improver run: {busy}", file=sys.stderr)
         return EXIT_UNAVAILABLE
     print(render_run(record))
-    return record.exit_code
+    # --no-apply leaves effects owed on purpose; only its outcome counts.
+    return record.outcome.exit_code if args.no_apply else record.exit_code
 
 
 def apply(outputs_repo: str) -> int:

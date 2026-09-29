@@ -41,7 +41,7 @@ def _run(store: MemoryRunStore, run_id: str, *docs: dict, outcome: RunOutcome = 
 
 
 def _effects(store: MemoryRunStore, host: FakeIssueHost) -> ImproverEffects:
-    return ImproverEffects(store=store, host=host, clock=lambda: NOW)
+    return ImproverEffects(store=store, host=host, outputs_repo="io/io", clock=lambda: NOW)
 
 
 def test_each_output_files_one_issue_labelled_for_what_it_asks(tmp_path: Path) -> None:
@@ -183,3 +183,56 @@ def test_a_findings_identity_is_what_it_asks_about_which_anomalies() -> None:
 
     assert finding_key(renamed) == finding_key(finding)
     assert finding_key(other_case) != finding_key(finding)
+
+
+def test_effects_owed_to_another_repository_are_never_applied_here(tmp_path: Path) -> None:
+    """The host is one repository's; a run filed for another is left owed (r1 F1)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("capability_issue"))
+
+    elsewhere = ImproverEffects(store=store, host=host, outputs_repo="other/repo", clock=lambda: NOW)
+
+    assert elsewhere.apply_pending() == ()
+    assert host.created == [] and store.runs()[0].pending_effects
+    [run] = _effects(store, host).apply_pending()
+    assert run.effects[0].status is EffectStatus.FILED
+
+
+def test_a_creation_whose_result_was_lost_is_proven_before_it_is_retried(tmp_path: Path) -> None:
+    """The POST filed the issue, then its response was lost; the open listing
+    does not show it yet. The retry finds it by its body marker (r1 F2)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("capability_issue"))
+    host.lose_create_result = RuntimeError("connection reset")
+    host.stale_listing = True
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert run.effects[0].status is EffectStatus.PENDING
+    assert run.effects[0].create_attempted_at is not None
+    host.lose_create_result = None
+    [run] = _effects(store, host).apply_pending()
+    assert host.create_calls == 1
+    assert run.effects[0].status is EffectStatus.FILED
+    assert run.effects[0].issue_number == host.created[0]["number"]
+
+
+def test_a_creation_proven_not_to_have_landed_is_retried(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("capability_issue"))
+    host.fail_on_create = RuntimeError("502 before the write")
+    _effects(store, host).apply_pending()
+    host.fail_on_create = None
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert host.create_calls == 2 and len(host.created) == 1
+    assert run.effects[0].status is EffectStatus.FILED
+
+
+def test_every_filed_body_carries_its_findings_marker(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("capability_issue"))
+    [run] = _effects(store, host).apply_pending()
+
+    assert host.created[0]["body"].startswith(f"<!-- io-improver-finding:{run.effects[0].key} -->")

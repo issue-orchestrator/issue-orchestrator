@@ -28,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ..contracts.engine_audit import AuditDiff, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
@@ -171,8 +171,8 @@ class ImproverInputStager:
             window_start = now - request.window
             entries += _stage_tech_lead(snapshot, runs_store, request, data, window_start, now)
         entries.append(self._stage_open_issues(request, audited, data, now))
-        series = _stage_exam(request.exam_dir, data)
-        entries.append(_exam_entry(series, request.exam_dir))
+        series, unreadable_cards = _stage_exam(request.exam_dir, data)
+        entries.append(_exam_entry(series, request.exam_dir, unreadable_cards))
         try:
             self._source.export(start.engine_commit, data / ENGINE_SOURCE_DIRNAME)
         except Exception as error:
@@ -184,7 +184,7 @@ class ImproverInputStager:
             outputs_repo=request.outputs_repo,
             inputs=tuple(entries),
             existing_exam_case_ids=tuple(sorted({*EXAM_CASE_IDS, *series.latest, *series.previous})),
-            exam_scores_comparable=series.comparable,
+            exam_scores_comparable=series.comparable and not unreadable_cards,
         )
         _write(data / INPUTS_FILE, manifest)
         return StagedImproverInputs(data_dir=data, manifest=manifest, audit=audit)
@@ -292,40 +292,58 @@ def _stage_tech_lead(
     return entries
 
 
-def _stage_exam(exam_dir: Path | None, data: Path) -> ExamSeries:
-    series = exam_series(() if exam_dir is None or not exam_dir.is_dir() else _scorecards(exam_dir))
+def _stage_exam(exam_dir: Path | None, data: Path) -> tuple[ExamSeries, tuple[str, ...]]:
+    """The staged series, and the scorecard files that could not be read.
+
+    A scorecard is written in place, so one being written (or cut short by a
+    crash) is unreadable. It is left out and named rather than failing every
+    run on it; with any left out, no exam trend is comparable.
+    """
+    cards, unreadable = ([], ()) if exam_dir is None or not exam_dir.is_dir() else _scorecards(exam_dir)
+    series = exam_series(cards)
     target = data / EXAM_DIRNAME
     target.mkdir()
     for case_id, card in series.latest.items():
         (target / f"{case_id}.json").write_text(card.text, encoding="utf-8")
     for case_id, card in series.previous.items():
         (target / f"{case_id}{PREVIOUS_SCORECARD_SUFFIX}").write_text(card.text, encoding="utf-8")
-    return series
+    return series, unreadable
 
 
-def _scorecards(exam_dir: Path) -> list[Scorecard]:
+def _scorecards(exam_dir: Path) -> tuple[list[Scorecard], tuple[str, ...]]:
     """Every scorecard the exam wrote (``<case>-<sha>-<time>.json``), not its
-    raw observations (``*.observation.json``)."""
+    raw observations (``*.observation.json``), and the ones not readable."""
     cards = []
+    unreadable = []
     for path in sorted(exam_dir.glob("*.json")):
         if path.name.endswith(".observation.json"):
             continue
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+            head = ScorecardHead.model_validate(json.loads(text))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError):
+            unreadable.append(path.name)
+            continue
         cards.append(
             Scorecard(
                 written_at=datetime.fromtimestamp(os.stat(path).st_mtime, tz=UTC),
-                head=ScorecardHead.model_validate(json.loads(text)),
+                head=head,
                 text=text,
             )
         )
-    return cards
+    return cards, tuple(unreadable)
 
 
-def _exam_entry(series: ExamSeries, exam_dir: Path | None) -> StagedInput:
+def _exam_entry(series: ExamSeries, exam_dir: Path | None, unreadable: tuple[str, ...]) -> StagedInput:
+    skipped = f"; unreadable, left out: {', '.join(unreadable)}" if unreadable else ""
     if not series.latest:
-        return _missing(EXAM_DIRNAME, f"no scorecards in {exam_dir}")
-    comparable = "comparable" if series.comparable else "not comparable (case sets differ)"
-    return _staged(EXAM_DIRNAME, f"{len(series.latest)} case(s); previous scores {comparable}")
+        return _missing(EXAM_DIRNAME, f"no scorecards in {exam_dir}{skipped}")
+    comparable = (
+        "comparable"
+        if series.comparable and not unreadable
+        else "not comparable (case sets differ, or a scorecard is unreadable)"
+    )
+    return _staged(EXAM_DIRNAME, f"{len(series.latest)} case(s); previous scores {comparable}{skipped}")
 
 
 class _OnceListing:

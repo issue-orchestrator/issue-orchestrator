@@ -58,21 +58,28 @@ class FakeAgent:
         return ImproverAgentResult(self.message, self.detail)
 
 
-def _request() -> ImproverRunRequest:
+def _request(audited_repo: str = "porchpin/porchpin") -> ImproverRunRequest:
     return ImproverRunRequest(
-        state_dir=Path("/engine/state"), audited_repo="porchpin/porchpin",
+        state_dir=Path("/engine/state"), audited_repo=audited_repo,
         outputs_repo="issue-orchestrator/issue-orchestrator", exam_dir=None,
         window=timedelta(hours=24), log_tail_bytes=1024,
     )
 
 
+_RUNS = iter(range(10**6))
+
+
 def _improver(store: MemoryRunStore, host: FakeIssueHost, agent: FakeAgent, stager: FakeStager | None = None) -> ImproverRun:
-    clock = iter(NOW + timedelta(minutes=i) for i in range(1000))
+    # Each improver's clock starts a day after the previous one's, so runs order by time.
+    start = NOW + timedelta(days=next(_RUNS))
+    clock = iter(start + timedelta(minutes=i) for i in range(1000))
     return ImproverRun(
         store=store,
         stager=stager or FakeStager(),
         agent=agent,
-        effects=ImproverEffects(store=store, host=host, clock=lambda: NOW),
+        effects=ImproverEffects(
+            store=store, host=host, outputs_repo="issue-orchestrator/issue-orchestrator", clock=lambda: NOW
+        ),
         prompt="THE PROMPT",
         clock=lambda: next(clock),
     )
@@ -192,3 +199,44 @@ def test_a_run_never_starts_while_another_holds_the_store(tmp_path: Path) -> Non
             _improver(store, host, agent).run(_request())
 
     assert agent.prompts == [] and store.runs() == ()
+
+
+def test_a_run_whose_effects_an_earlier_failure_blocks_is_unavailable(tmp_path: Path) -> None:
+    """An older owed effect keeps failing, so this run's are not tried: it
+    must not exit green (r1 F4)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    host.fail_on_create = RuntimeError("down")
+    _improver(store, host, FakeAgent(_findings("capability_issue"))).run(_request())
+
+    current = _improver(store, host, FakeAgent(_findings("prompt_proposal"))).run(_request())
+
+    assert current.outcome is RunOutcome.ACCEPTED and current.exit_code == 75
+    assert host.comments == []
+    assert "earlier run" in current.effects[0].detail
+    host.fail_on_create = None
+
+
+def test_the_previous_audit_and_grades_are_the_same_engines(tmp_path: Path) -> None:
+    """A, then B (rejected), then A: A diffs and grades against A (r1 F5)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    first = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request("a/a"))
+    _improver(store, host, FakeAgent("not json")).run(_request("b/b"))
+    stager = FakeStager()
+
+    third = _improver(store, host, FakeAgent(_findings("charter_proposal")), stager).run(_request("a/a"))
+
+    assert stager.requests[0].previous_audit == Path(first.run_dir) / "improver-data" / "audit.json"
+    assert {m.stall_point: m.previous for m in third.stall_points}["noticed_not_acted"] == 1
+
+
+def test_a_run_for_another_repository_than_its_effects_is_refused(tmp_path: Path) -> None:
+    import pytest
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    request = ImproverRunRequest(
+        state_dir=Path("/s"), audited_repo="a/a", outputs_repo="other/repo", exam_dir=None,
+        window=timedelta(hours=24), log_tail_bytes=1,
+    )
+
+    with pytest.raises(ValueError, match="other/repo"):
+        _improver(store, host, FakeAgent("{}")).run(request)
