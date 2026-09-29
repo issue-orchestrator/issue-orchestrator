@@ -61,6 +61,7 @@ from ..contracts.improver_inputs import (
 from ..domain.improver_findings_validation import StagedEvidence, parse_documents
 from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
 from ..infra.engine_start_record import EngineStartRecordUnavailable, read_engine_start
+from ..infra.tech_lead_run_record_store import SqliteTechLeadRunRecordStore
 from ..infra.pause_journal import PAUSE_JOURNAL_FILENAME, JsonlPauseJournal
 from ..observation.engine_audit import Unavailable, audit_engine
 from ..observation.engine_audit_diff import IncomparableAuditError, diff_reports, load_report
@@ -135,7 +136,6 @@ class ImproverInputStager:
         self._clock = clock
 
     def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs:
-        now = self._clock()
         data = request.run_dir / IMPROVER_DATA_DIRNAME
         data.mkdir(parents=True, exist_ok=False)
         entries: list[StagedInput] = []
@@ -156,13 +156,20 @@ class ImproverInputStager:
                 log_tail_bytes=request.log_tail_bytes,
                 github=audited.as_host(),
             )
+            runs_store = snapshot_tech_lead_runs(request.state_dir, Path(scratch))
+            # The cutoff is taken AFTER every store is copied: whatever a copy
+            # holds was written before it, so no later write (a result
+            # linked, a run concluded, a case file revised) can pose as part
+            # of the window. What is read live (the log, the pause journal,
+            # GitHub) is filtered to the cutoff or read after it.
+            now = self._clock()
             audit = audit_engine(snapshot.audit, now=now, window=request.window)
             audit, previous_entries = _with_previous(audit, request.previous_audit, data)
             _write(data / AUDIT_FILE, audit)
             entries += [_staged(AUDIT_FILE, "partial" if audit.partial else "all sources read")]
             entries += previous_entries
             window_start = now - request.window
-            entries += _stage_tech_lead(snapshot, request, Path(scratch), data, window_start, now)
+            entries += _stage_tech_lead(snapshot, runs_store, request, data, window_start, now)
         entries.append(self._stage_open_issues(request, audited, data, now))
         series = _stage_exam(request.exam_dir, data)
         entries.append(_exam_entry(series, request.exam_dir))
@@ -235,8 +242,8 @@ def _with_previous(
 
 def _stage_tech_lead(
     snapshot: EngineSnapshot,
+    runs_store: SqliteTechLeadRunRecordStore | Unavailable,
     request: ImproverStagingRequest,
-    scratch: Path,
     data: Path,
     window_start: datetime,
     cutoff: datetime,
@@ -256,7 +263,6 @@ def _stage_tech_lead(
     decisions = charter_decisions_input(ledger, window_start=window_start, cutoff=cutoff)
     _write(data / CHARTER_DECISIONS_FILE, decisions)
     entries = [_staged(CHARTER_DECISIONS_FILE, decisions.coverage.detail)]
-    runs_store = snapshot_tech_lead_runs(request.state_dir, scratch)
     # The case-file ledger stands on its own; an unreadable run history only
     # leaves the diagnoses (never complete anyway) empty, and says why.
     runs = (

@@ -333,3 +333,31 @@ def test_the_case_file_ledger_is_staged_without_a_run_history(state: Path, tmp_p
     assert cases["coverage"]["complete"] is True
     assert cases["diagnoses"] == [] and cases["diagnoses_coverage"]["complete"] is False
     assert "tech-lead run history absent" in cases["diagnoses_coverage"]["detail"]
+
+
+def test_the_cutoff_is_taken_after_every_store_is_copied(
+    state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever a copy holds was written before the cutoff, so nothing the
+    engine writes while staging runs can pose as part of the window (3a r5)."""
+    from issue_orchestrator.entrypoints import improver_staging
+
+    order: list[str] = []
+    for name in ("snapshot_engine", "snapshot_tech_lead_runs"):
+        real = getattr(improver_staging, name)
+
+        def recorded(*args, _real=real, _name=name, **kwargs):  # type: ignore[no-untyped-def]
+            order.append(_name)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(improver_staging, name, recorded)
+
+    def clock() -> datetime:
+        order.append("cutoff")
+        return NOW
+
+    ImproverInputStager(
+        audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), clock=clock
+    ).stage(_request(state, tmp_path))
+
+    assert order == ["snapshot_engine", "snapshot_tech_lead_runs", "cutoff"]
