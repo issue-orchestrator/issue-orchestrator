@@ -202,6 +202,9 @@ in `engine-source/examples/improver/findings/`.
   presence). `recurs_after_start: "true"` needs a **post**-start entry of
   kind **`occurrence`**. `origin: before_start` needs a **pre**-start entry
   of kind **`occurrence`**. A snapshot supports neither.
+  Evidence that settles a fact must be followed: presence is `"true"` when
+  the current audit (taken after the start) shows the anomaly, and
+  recurrence `"true"` when a staged occurrence falls after the start.
   `present_after_start: "false"` is refused while the current audit still
   shows the anomaly or could not observe it, `recurs_after_start: "false"`
   while the staged records show an occurrence after the start, and an anomaly neither present
@@ -211,6 +214,9 @@ in `engine-source/examples/improver/findings/`.
 - For `noticed_not_acted` and `acted_not_effective`, every cited decision,
   case file or diagnosis must refer to the anomaly's own issue (a decision
   about it, a run on it, or a `#<n>` mention).
+- `noticed_not_acted` is refused when a remedy (an approvable or destructive
+  action) about the anomaly's issue was applied by the cutoff: that is
+  `acted_not_effective`.
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
   with `applied_at` at or before `grading_window.to`, and an `observed` entry
   supporting presence or recurrence dated after that `applied_at`.

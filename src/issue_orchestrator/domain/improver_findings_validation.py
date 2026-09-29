@@ -91,6 +91,7 @@ class Rule(StrEnum):
     NOT_NOTICED_UNREFERENCED = "not_noticed_unreferenced"
     STALL_EVIDENCE_ABOUT_THE_ANOMALY = "stall_evidence_about_the_anomaly"
     NOTICED_CITES_A_NOTICE = "noticed_cites_a_notice"
+    NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY = "noticed_not_acted_without_an_applied_remedy"
     ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION = "acted_not_effective_needs_applied_decision"
     ACTED_NOT_EFFECTIVE_NEEDS_LATER_OBSERVATION = "acted_not_effective_needs_later_observation"
     NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE = "not_in_charter_cites_charter_or_source"
@@ -294,10 +295,14 @@ class _Checker:
                 yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "presence needs a snapshot from the current audit"
         if f.present_after_start == "false" and keys & (self._current_keys | self._unobserved_keys):
             yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "the current audit shows it present, or could not observe it"
+        if f.present_after_start == "unknown" and keys & self._current_keys and self._cutoff > self._start:
+            yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "the current audit, taken after the start, shows it present"
 
     def _recurrence_and_origin(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         occurrences = [o for o in f.observed if o.kind == "occurrence"]
-        if f.recurs_after_start == "false" and any(t > self._start for t in records.known_times()):
+        if f.recurs_after_start != "true" and any(
+            self._start < t <= self._cutoff for t in records.known_times()
+        ):
             yield Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, (
                 "the staged records show an occurrence after the start, so it recurs"
             )
@@ -370,6 +375,8 @@ class _Checker:
                 yield Rule.STALL_EVIDENCE_RESOLVES, f"{item!r} is not a staged decision, case file, run, charter setting or source file"
         if f.stall_point in ("noticed_not_acted", "acted_not_effective"):
             yield from self._evidence_about(f)
+        if f.stall_point == "noticed_not_acted":
+            yield from self._acted_on(f)
         if f.stall_point == "not_noticed":
             yield from self._not_noticed(f, records)
         elif f.stall_point == "acted_not_effective":
@@ -411,6 +418,17 @@ class _Checker:
         value = _resolve(self._evidence.documents, CHARTER_FILE, pointer)
         field = pointer.rsplit("/", 1)[-1]
         return _RESTRICTIVE.get(field, lambda _v: False)(value)
+
+    def _acted_on(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+        """A remedy about the anomaly's issue that was applied by the cutoff
+        means the tech lead acted: the grade is acted_not_effective."""
+        about = set(_notices_about(self._evidence, f, None, None))
+        for decision_id in sorted(about & set(self._decisions)):
+            d = self._decisions[decision_id]
+            if d.binding in _REMEDY_BINDINGS and d.applied_at is not None and d.applied_at <= self._cutoff:
+                yield Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY, (
+                    f"{decision_id} was applied: the tech lead acted, so grade acted_not_effective"
+                )
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -565,6 +583,9 @@ class _AnomalyRecords:
                 return True
         return False
 
+
+#: Bindings whose actions move their target (``TechLeadCharterDecision.is_remedy``).
+_REMEDY_BINDINGS = frozenset({"approvable", "destructive"})
 
 #: For each charter.json field, which values restrict what the tech lead may do.
 _RESTRICTIVE = {

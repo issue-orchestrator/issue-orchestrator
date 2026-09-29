@@ -163,6 +163,9 @@ CASES: list[tuple[Rule, str, Mutation]] = [
           _set("anomaly_keys.0", {"kind": "no_progress_log", "subject": "#410",
                                   "signature": "WARNING io.retry: validation retry refused"}))),
     (Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "needs_investigation", _set("present_after_start", "false")),
+    # "unknown" while the current audit's snapshot settles it (r11 F1).
+    (Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "charter_proposal",
+     _all(_set("present_after_start", "unknown"), _drop_observed(0))),
     (Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "capability_issue",
      _set("observed.0", {"at": "2026-09-28T10:00:00+00:00", "kind": "occurrence",
                          "source": "audit.json#/action_liveness/parked/0/last_failed_at",
@@ -170,6 +173,7 @@ CASES: list[tuple[Rule, str, Mutation]] = [
     (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "capability_issue", _set("recurs_after_start", "true")),
     # "Does not recur" while the staged records show a post-start occurrence (r1 F2).
     (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "charter_proposal", _set("recurs_after_start", "false")),
+    (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "exam_case", _set("recurs_after_start", "unknown")),
     (Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, "exam_case",
      _append_observed({**PRE_START_LOG, "supports": "recurs_after_start"})),
     (Rule.ORIGIN_MATCHES_PRE_START_OCCURRENCE, "exam_case", _set("origin", "unknown")),
@@ -271,6 +275,7 @@ def test_breaking_one_rule_rejects_the_file_naming_it(
 #: Rules broken through the staged EVIDENCE rather than the findings file;
 #: their cases are the tests below.
 EVIDENCE_CASE_RULES = {
+    Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY,
     Rule.OCCURRENCE_BY_THE_CUTOFF,
     Rule.NOT_NOTICED_NEEDS_COVERAGE,
     Rule.PRESENCE_MATCHES_CURRENT_AUDIT,
@@ -465,3 +470,13 @@ def test_an_occurrence_dated_after_the_cutoff_is_outside_the_window(tmp_path: Pa
     }
 
     assert Rule.OCCURRENCE_BY_THE_CUTOFF in _rules(doc, evidence)
+
+
+def test_noticed_not_acted_is_refused_when_a_remedy_about_it_was_applied(tmp_path: Path) -> None:
+    """3a r11 F2: an applied remedy about #410 means it was acted on."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "charter-decisions.json",
+        lambda d: d["decisions"][0].update(binding="approvable", applied_at="2026-09-28T14:00:00Z"),
+    )
+
+    assert Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY in _rules(example("exam_case"), evidence)
