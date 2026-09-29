@@ -393,16 +393,17 @@ class _Checker:
         if charter is None:
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
             return
-        if any(self._restrictive_setting(i) for i in f.stall_evidence):
-            return
         missing = f.missing_action_kind
-        if missing is None or not any(i.startswith(ENGINE_SOURCE_CITATION) for i in f.stall_evidence):
+        cites_source = any(i.startswith(ENGINE_SOURCE_CITATION) for i in f.stall_evidence)
+        if missing is not None and not cites_source:
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "a missing action kind is shown by citing the source"
+        if missing is None and not any(self._restrictive_setting(i) for i in f.stall_evidence):
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
                 "cite a charter.json setting that restricts (a disabled role, a propose"
                 " authority, a depth short of restructure, an action not executed), or name"
                 " the missing_action_kind and cite the source that lacks it"
             )
-        elif missing in charter.actions:
+        if missing is not None and missing in charter.actions:
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
                 f"{missing} is an action kind the effective charter already has"
             )

@@ -244,6 +244,12 @@ CASES: list[tuple[Rule, str, Mutation]] = [
      _all(_set("stall_evidence", ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"]),
           _set("missing_action_kind", "reset_retry"))),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "exam_case", _set("missing_action_kind", "clear_refusal")),
+    # An existing kind claimed missing beside a restrictive citation (r13).
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal", _set("missing_action_kind", "reset_retry")),
+    # A missing kind with no source citation.
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
+     _all(_set("stall_evidence", ["charter.json#/actions/reset_retry/outcome"]),
+          _set("missing_action_kind", "clear_validation_refusal"))),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
      _set("stall_evidence", ["D1", "charter.json#/actions/post_comment/outcome"])),
     # outputs
