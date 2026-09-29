@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from itertools import chain
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -77,6 +78,7 @@ class Rule(StrEnum):
     CITATION_RESOLVES = "citation_resolves"
     SNAPSHOT_SHOWS_PRESENCE_ONLY = "snapshot_shows_presence_only"
     OCCURRENCE_IS_A_DATED_RECORD = "occurrence_is_a_dated_record"
+    OCCURRENCE_BY_THE_CUTOFF = "occurrence_by_the_cutoff"
     PRESENCE_MATCHES_CURRENT_AUDIT = "presence_matches_current_audit"
     RECURRENCE_NEEDS_POST_START_OCCURRENCE = "recurrence_needs_post_start_occurrence"
     ORIGIN_MATCHES_PRE_START_OCCURRENCE = "origin_matches_pre_start_occurrence"
@@ -90,6 +92,7 @@ class Rule(StrEnum):
     NOT_NOTICED_UNREFERENCED = "not_noticed_unreferenced"
     STALL_EVIDENCE_ABOUT_THE_ANOMALY = "stall_evidence_about_the_anomaly"
     NOTICED_CITES_A_NOTICE = "noticed_cites_a_notice"
+    NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY = "noticed_not_acted_without_an_applied_remedy"
     ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION = "acted_not_effective_needs_applied_decision"
     ACTED_NOT_EFFECTIVE_NEEDS_LATER_OBSERVATION = "acted_not_effective_needs_later_observation"
     NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE = "not_in_charter_cites_charter_or_source"
@@ -255,6 +258,10 @@ class _Checker:
     def _finding_rules(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         yield from self._keys_and_classification(f)
         yield from self._liveness(f, records)
+        if f.stall_point != "not_in_charter" and (f.missing_action_kind or f.remedy_action_kind):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                "missing_action_kind and remedy_action_kind belong to a not_in_charter grade"
+            )
         yield from self._citations(f, records)
         yield from self._window(f, records)
         yield from self._stall(f, records)
@@ -293,10 +300,14 @@ class _Checker:
                 yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "presence needs a snapshot from the current audit"
         if f.present_after_start == "false" and keys & (self._current_keys | self._unobserved_keys):
             yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "the current audit shows it present, or could not observe it"
+        if f.present_after_start == "unknown" and keys & self._current_keys and self._cutoff > self._start:
+            yield Rule.PRESENCE_MATCHES_CURRENT_AUDIT, "the current audit, taken after the start, shows it present"
 
     def _recurrence_and_origin(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         occurrences = [o for o in f.observed if o.kind == "occurrence"]
-        if f.recurs_after_start == "false" and any(t > self._start for t in records.known_times()):
+        if f.recurs_after_start != "true" and any(
+            self._start < t <= self._cutoff for t in records.known_times()
+        ):
             yield Rule.RECURRENCE_NEEDS_POST_START_OCCURRENCE, (
                 "the staged records show an occurrence after the start, so it recurs"
             )
@@ -336,6 +347,10 @@ class _Checker:
                 continue
             if o.supports == "present_after_start":
                 yield Rule.OCCURRENCE_IS_A_DATED_RECORD, "an occurrence may since have cleared; it cannot show presence"
+            if o.at > self._cutoff:
+                # A store is copied after the cutoff, so it can hold a later
+                # record; it is outside the window the audit speaks for.
+                yield Rule.OCCURRENCE_BY_THE_CUTOFF, f"{o.source} is dated after the audit cutoff"
             if not records.is_record(o.file, o.ref):
                 yield Rule.OCCURRENCE_IS_A_DATED_RECORD, (
                     f"{o.source} is not a dated record of this finding's anomalies"
@@ -363,23 +378,46 @@ class _Checker:
         for item in evidence:
             if not self._stall_citation_resolves(item):
                 yield Rule.STALL_EVIDENCE_RESOLVES, f"{item!r} is not a staged decision, case file, run, charter setting or source file"
-        if f.stall_point in ("noticed_not_acted", "acted_not_effective"):
-            yield from self._evidence_about(f)
-        if f.stall_point == "not_noticed":
-            yield from self._not_noticed(f, records)
-        elif f.stall_point == "acted_not_effective":
-            yield from self._acted_not_effective(f)
-        elif f.stall_point == "not_in_charter":
-            if self._evidence.charter is None:
-                yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
-            if not any(
-                i.startswith(ENGINE_SOURCE_CITATION) or self._restrictive_setting(i) for i in evidence
-            ):
-                yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
-                    "cite a charter.json setting that restricts (a disabled role, a propose"
-                    " authority, a depth short of restructure, an action not executed) or the"
-                    " source that lacks the action"
-                )
+        checks: dict[str, Callable[[], Iterator[tuple[Rule, str]]]] = {
+            "noticed_not_acted": lambda: chain(self._evidence_about(f), self._acted_on(f)),
+            "acted_not_effective": lambda: chain(self._evidence_about(f), self._acted_not_effective(f)),
+            "not_noticed": lambda: self._not_noticed(f, records),
+            "not_in_charter": lambda: self._not_in_charter(f),
+        }
+        if f.stall_point in checks:
+            yield from checks[f.stall_point]()
+
+    def _not_in_charter(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+        """Out of charter in exactly one of two ways: an existing remedy
+        (``remedy_action_kind``) that a cited charter.json setting of ITS
+        action or role holds back, or a missing one (``missing_action_kind``,
+        absent from the effective charter, with the source cited)."""
+        charter = self._evidence.charter
+        if charter is None:
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
+            return
+        remedy, missing = f.remedy_action_kind, f.missing_action_kind
+        if (remedy is None) == (missing is None):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                "name exactly one of remedy_action_kind (held back by a cited setting) or"
+                " missing_action_kind (absent, with the source cited)"
+            )
+        if remedy is not None and not any(
+            _holds_back(charter, remedy, i[len(CHARTER_CITATION):], self._evidence.documents)
+            for i in f.stall_evidence
+            if i.startswith(CHARTER_CITATION)
+        ):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                f"cite a charter.json setting of {remedy} or its role that holds it back"
+                " (a disabled role, propose authority or ceiling, a depth short of what it"
+                " needs, an outcome other than executed)"
+            )
+        if missing is not None and not any(i.startswith(ENGINE_SOURCE_CITATION) for i in f.stall_evidence):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "a missing action kind is shown by citing the source"
+        if missing is not None and missing in charter.actions:
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                f"{missing} is an action kind the effective charter already has"
+            )
 
     def _evidence_about(self, f: Finding) -> Iterator[tuple[Rule, str]]:
         """A notice grade cites a notice, and every cited decision, case file
@@ -397,15 +435,16 @@ class _Checker:
             if item in self._notice_ids and item not in about:
                 yield Rule.STALL_EVIDENCE_ABOUT_THE_ANOMALY, f"{item} does not refer to the anomaly's issue"
 
-    def _restrictive_setting(self, item: str) -> bool:
-        """Whether ``item`` cites a ``charter.json`` setting whose VALUE holds
-        something back; a permissive one shows nothing is out of charter."""
-        if not item.startswith(CHARTER_CITATION):
-            return False
-        pointer = item[len(CHARTER_CITATION):]
-        value = _resolve(self._evidence.documents, CHARTER_FILE, pointer)
-        field = pointer.rsplit("/", 1)[-1]
-        return _RESTRICTIVE.get(field, lambda _v: False)(value)
+    def _acted_on(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+        """A remedy about the anomaly's issue that was applied by the cutoff
+        means the tech lead acted: the grade is acted_not_effective."""
+        about = set(_notices_about(self._evidence, f, None, None))
+        for decision_id in sorted(about & set(self._decisions)):
+            d = self._decisions[decision_id]
+            if d.binding in _REMEDY_BINDINGS and d.applied_at is not None and d.applied_at <= self._cutoff:
+                yield Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY, (
+                    f"{decision_id} was applied: the tech lead acted, so grade acted_not_effective"
+                )
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -561,15 +600,35 @@ class _AnomalyRecords:
         return False
 
 
-#: For each charter.json field, which values restrict what the tech lead may do.
-_RESTRICTIVE = {
-    "enabled": lambda v: v is False,
-    "authority": lambda v: v == "propose",
-    "action_ceiling": lambda v: v == "propose",
-    "depth": lambda v: v in ("workaround", "fix"),
-    "outcome": lambda v: v != "executed",
-    "promotion_lane": lambda v: v != "auto",
-}
+#: Bindings whose actions move their target (``TechLeadCharterDecision.is_remedy``).
+_REMEDY_BINDINGS = frozenset({"approvable", "destructive"})
+
+_DEPTH_RANK = {"workaround": 0, "fix": 1, "restructure": 2}
+
+
+def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: Mapping[str, Any]) -> bool:
+    """Whether ``charter.json#pointer`` is a setting of action ``kind`` (or of
+    its role) whose value keeps the tech lead from executing it."""
+    action = charter.actions.get(kind)
+    if action is None or _resolve(documents, CHARTER_FILE, pointer) is _MISSING:
+        return False
+    parts = pointer.strip("/").split("/")
+    if parts == ["actions", kind, "outcome"]:
+        return action.outcome != "executed"
+    if parts == ["actions", kind, "action_ceiling"]:
+        return action.action_ceiling == "propose"
+    if parts == ["promotion_lane"]:
+        return kind == "promote_finding" and charter.promotion_lane != "auto"
+    if len(parts) != 3 or parts[:2] != ["roles", action.role] or action.binding in ("floor", "advisory"):
+        # Floors and advice are never restricted by their role's dials.
+        return False
+    dials = charter.roles[action.role]
+    return {
+        "enabled": not dials.enabled,
+        "authority": dials.authority == "propose",
+        "depth": _DEPTH_RANK[dials.depth] < _DEPTH_RANK[action.required_depth],
+    }.get(parts[2], False)
+
 
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 

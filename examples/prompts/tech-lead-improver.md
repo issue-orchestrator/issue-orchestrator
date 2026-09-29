@@ -159,6 +159,8 @@ decision, never applied.
       "classification": "new_defect | tracked | unknown",
       "tracked_issue": 7491,
       "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
+      "remedy_action_kind": "<not_in_charter only: the existing action type a cited charter setting holds back>",
+      "missing_action_kind": "<not_in_charter only: the action type that would express the remedy and does not exist>",
       "stall_evidence": ["<decision id | case-file id | diagnosis id | charter.json#<JSON pointer> | engine-source:<path>>"],
       "output": "exam_case | capability_issue | charter_proposal | prompt_proposal | needs_investigation",
       "root_cause": {"owner": "<module:function>", "why": "<one paragraph>", "same_shape_sites": ["<module:function>"]},
@@ -184,7 +186,7 @@ in `engine-source/examples/improver/findings/`.
   dated field of one of the finding's own anomaly records, in `audit.json` or
   `audit-previous.json` (a log signature's `first_seen` or `last_seen`, a
   parked action's `last_failed_at`, an unresolved record's `created_at`), and
-  its `at` is that field's value. Each `stall_evidence` item is a
+  its `at` is that field's value, at or before `audit.json`'s `generated_at`. Each `stall_evidence` item is a
   `decision_id` from `charter-decisions.json`, a case-file or diagnosis `id`
   from `case-files.json`, `charter.json#<JSON pointer>` to a setting, or
   `engine-source:<path>` to a file of the source.
@@ -209,6 +211,9 @@ in `engine-source/examples/improver/findings/`.
   presence). `recurs_after_start: "true"` needs a **post**-start entry of
   kind **`occurrence`**. `origin: before_start` needs a **pre**-start entry
   of kind **`occurrence`**. A snapshot supports neither.
+  Evidence that settles a fact must be followed: presence is `"true"` when
+  the current audit (taken after the start) shows the anomaly, and
+  recurrence `"true"` when a staged occurrence falls after the start.
   `present_after_start: "false"` is refused while the current audit still
   shows the anomaly or could not observe it, `recurs_after_start: "false"`
   while the staged records show an occurrence after the start, and an anomaly neither present
@@ -218,14 +223,20 @@ in `engine-source/examples/improver/findings/`.
 - For `noticed_not_acted` and `acted_not_effective`, every cited decision,
   case file or diagnosis must refer to the anomaly's own issue (a decision
   about it, a run on it, or a `#<n>` mention).
+- `noticed_not_acted` is refused when a remedy (an approvable or destructive
+  action) about the anomaly's issue was applied by the cutoff: that is
+  `acted_not_effective`.
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
   with `applied_at` at or before `grading_window.to`, and an `observed` entry
   supporting presence or recurrence dated after that `applied_at`.
 - `stall_point: not_in_charter` requires citing either the source (for a
   missing action type) or the `charter.json` settings that forbid the role or
-  depth; a cited setting must actually restrict (a disabled role, `propose`
-  authority or ceiling, a depth short of `restructure`, an action that is not
-  `executed`).
+  depth. Name exactly one of: `remedy_action_kind`, an existing action a
+  cited setting of **that action or its role** holds back (a disabled role,
+  `propose` authority or ceiling, a depth short of what it needs, an outcome
+  other than `executed`); or `missing_action_kind`, a kind **not** in
+  `charter.json`'s `actions`, with the source cited. Both fields are only for
+  `not_in_charter`.
 - `stall_point: not_noticed` requires a **proven** onset (the occurrence
   source's coverage starts before `grading_window.from`, with no earlier
   occurrence), `grading_window.from` to be known,
