@@ -113,6 +113,9 @@ class Finding(_Closed):
     tracked_issue: Annotated[int, Field(gt=0)] | None = None
     stall_point: StallPoint
     stall_evidence: tuple[NonEmpty, ...] = ()
+    #: ``not_in_charter`` because no action type expresses the remedy: the
+    #: kind that would, which must not exist in the effective charter.
+    missing_action_kind: NonEmpty | None = None
     output: Output
     root_cause: RootCause | None = None
     reproduction: Reproduction | None = None

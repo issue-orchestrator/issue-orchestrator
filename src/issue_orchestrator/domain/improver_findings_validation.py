@@ -258,6 +258,8 @@ class _Checker:
     def _finding_rules(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
         yield from self._keys_and_classification(f)
         yield from self._liveness(f, records)
+        if f.missing_action_kind is not None and f.stall_point != "not_in_charter":
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "missing_action_kind belongs to a not_in_charter grade"
         yield from self._citations(f, records)
         yield from self._window(f, records)
         yield from self._stall(f, records)
@@ -384,15 +386,25 @@ class _Checker:
             yield from checks[f.stall_point]()
 
     def _not_in_charter(self, f: Finding) -> Iterator[tuple[Rule, str]]:
-        if self._evidence.charter is None:
+        """Out of charter because a setting restricts the remedy (cite it), or
+        because no action type expresses it (name the missing kind, which the
+        effective charter must not have, and cite the source that lacks it)."""
+        charter = self._evidence.charter
+        if charter is None:
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
-        if not any(
-            i.startswith(ENGINE_SOURCE_CITATION) or self._restrictive_setting(i) for i in f.stall_evidence
-        ):
+            return
+        if any(self._restrictive_setting(i) for i in f.stall_evidence):
+            return
+        missing = f.missing_action_kind
+        if missing is None or not any(i.startswith(ENGINE_SOURCE_CITATION) for i in f.stall_evidence):
             yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
                 "cite a charter.json setting that restricts (a disabled role, a propose"
-                " authority, a depth short of restructure, an action not executed) or the"
-                " source that lacks the action"
+                " authority, a depth short of restructure, an action not executed), or name"
+                " the missing_action_kind and cite the source that lacks it"
+            )
+        elif missing in charter.actions:
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                f"{missing} is an action kind the effective charter already has"
             )
 
     def _evidence_about(self, f: Finding) -> Iterator[tuple[Rule, str]]:

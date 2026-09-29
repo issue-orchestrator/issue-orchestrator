@@ -237,6 +237,13 @@ CASES: list[tuple[Rule, str, Mutation]] = [
     # A setting that resolves but restricts nothing shows nothing out of charter (r7 F3).
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
      _set("stall_evidence", ["D1", "charter.json#/roles/flow/enabled"])),
+    # A source citation claims a MISSING kind: it must be named, and absent (r12).
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
+     _set("stall_evidence", ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"])),
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
+     _all(_set("stall_evidence", ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"]),
+          _set("missing_action_kind", "reset_retry"))),
+    (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "exam_case", _set("missing_action_kind", "clear_refusal")),
     (Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "prompt_proposal",
      _set("stall_evidence", ["D1", "charter.json#/actions/post_comment/outcome"])),
     # outputs
@@ -331,6 +338,7 @@ def test_not_in_charter_without_a_staged_charter_is_unknown(tmp_path: Path) -> N
     (data / "charter.json").unlink()
     doc = example("prompt_proposal")
     _finding(doc)["stall_evidence"] = ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"]
+    _finding(doc)["missing_action_kind"] = "clear_validation_refusal"
 
     assert Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE in _rules(doc, load_staged_evidence(data))
 
@@ -480,3 +488,11 @@ def test_noticed_not_acted_is_refused_when_a_remedy_about_it_was_applied(tmp_pat
     )
 
     assert Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY in _rules(example("exam_case"), evidence)
+
+
+def test_a_missing_action_kind_with_its_source_is_a_valid_not_in_charter_claim(evidence: StagedEvidence) -> None:
+    doc = example("prompt_proposal")
+    _finding(doc)["stall_evidence"] = ["engine-source:src/issue_orchestrator/domain/tech_lead_charter.py"]
+    _finding(doc)["missing_action_kind"] = "clear_validation_refusal"
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].missing_action_kind == "clear_validation_refusal"

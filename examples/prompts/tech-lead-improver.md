@@ -152,6 +152,7 @@ whole file. Valid findings become the corresponding GitHub artefacts.
       "classification": "new_defect | tracked | unknown",
       "tracked_issue": 7491,
       "stall_point": "not_noticed | noticed_not_acted | acted_not_effective | not_in_charter | unknown",
+      "missing_action_kind": "<not_in_charter only: the action type that would express the remedy and does not exist>",
       "stall_evidence": ["<decision id | case-file id | diagnosis id | charter.json#<JSON pointer> | engine-source:<path>>"],
       "output": "exam_case | capability_issue | charter_proposal | prompt_proposal | needs_investigation",
       "root_cause": {"owner": "<module:function>", "why": "<one paragraph>", "same_shape_sites": ["<module:function>"]},
@@ -224,7 +225,9 @@ in `engine-source/examples/improver/findings/`.
   missing action type) or the `charter.json` settings that forbid the role or
   depth; a cited setting must actually restrict (a disabled role, `propose`
   authority or ceiling, a depth short of `restructure`, an action that is not
-  `executed`).
+  `executed`). For a missing action type, set `missing_action_kind` to a
+  kind that is **not** in `charter.json`'s `actions` and cite the source;
+  `missing_action_kind` is only for `not_in_charter`.
 - `stall_point: not_noticed` requires a **proven** onset (the occurrence
   source's coverage starts before `grading_window.from`, with no earlier
   occurrence), `grading_window.from` to be known,
