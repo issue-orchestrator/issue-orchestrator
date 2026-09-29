@@ -361,7 +361,6 @@ def test_the_cutoff_is_taken_after_every_store_is_copied(
     ).stage(_request(state, tmp_path))
 
     assert order == ["snapshot_engine", "snapshot_tech_lead_runs", "cutoff"]
-||||||| parent of a33dc6f (Review r1: effects bound to their repository, crash-proof creation, no host credentials for the agent (#7490 step 3b))
 
 
 
