@@ -114,6 +114,8 @@ class StagedCaseFile(_Closed):
     observation_count: int
     fix_class: str
     area: str
+    #: The lifecycle as the COPY holds it: its writer keeps no time, so it may
+    #: be later than the cutoff. Context, never evidence of a notice.
     disposition: str
     retirement_pending: bool
     #: The diagnosis the tech lead recorded for it.
