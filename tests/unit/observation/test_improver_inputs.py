@@ -465,3 +465,24 @@ def test_a_live_ledger_whose_commit_boundary_is_unproven_never_claims_complete()
 
     for coverage in (decisions.coverage, cases.coverage):
         assert not coverage.complete and "#7525" in coverage.detail
+
+
+def test_a_run_that_may_have_started_after_the_cutoff_is_not_staged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """3a r9: fall-back night, cutoff at the first 01:59; a run stamped naive
+    01:01 may be the second 01:01, after the cutoff, so it is left out."""
+    import time
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        cutoff = datetime(2026, 11, 1, 1, 59).astimezone()  # the first (EDT) reading
+        staged = case_files_input(
+            [],
+            TechLeadRunHistoryRead(records=(_run(datetime(2026, 11, 1, 1, 1), ended=None),), unreadable=0),
+            window_start=cutoff - timedelta(hours=24), cutoff=cutoff, coverage_proven=True,
+        )
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+
+    assert staged.diagnoses == ()

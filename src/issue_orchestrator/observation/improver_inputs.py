@@ -207,7 +207,13 @@ def case_files_input(
     """
     diagnoses = tuple(
         diagnosis
-        for diagnosis in (_diagnosis(run_as_of(record, cutoff)) for record in runs.records)
+        for diagnosis in (
+            _diagnosis(run_as_of(record, cutoff))
+            for record in runs.records
+            # Only a run that had started by the cutoff under EVERY reading
+            # of its naive start (a daylight-saving fold names two).
+            if engine_local(record.started_at, latest=True) <= cutoff
+        )
         if diagnosis.started_at <= cutoff
         and (diagnosis.ended_at is None or diagnosis.ended_at >= window_start)
     )
