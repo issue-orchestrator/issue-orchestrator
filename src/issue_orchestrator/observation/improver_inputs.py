@@ -129,7 +129,11 @@ def as_of(decision: TechLeadCharterDecision, cutoff: datetime) -> TechLeadCharte
 
 
 def charter_decisions_input(
-    ledger: Sequence[TechLeadCharterDecision], *, window_start: datetime, cutoff: datetime
+    ledger: Sequence[TechLeadCharterDecision],
+    *,
+    window_start: datetime,
+    cutoff: datetime,
+    coverage_proven: bool,
 ) -> CharterDecisionsInput:
     """Every decision made in the window, and every older one applied in it.
 
@@ -155,6 +159,7 @@ def charter_decisions_input(
             cutoff=cutoff,
             what="the charter ledger",
             empty="the ledger holds no decision, so it cannot show when it began recording",
+            proven=coverage_proven,
         ),
         decisions=tuple(staged),
     )
@@ -189,6 +194,7 @@ def case_files_input(
     *,
     window_start: datetime,
     cutoff: datetime,
+    coverage_proven: bool,
 ) -> CaseFilesInput:
     """Every case file (the ledger is small and never pruned) and every
     tech-lead run that overlaps the window, with what each said.
@@ -217,6 +223,7 @@ def case_files_input(
         cutoff=cutoff,
         what="the case-file ledger",
         empty="no case file is recorded, so the ledger cannot show when it began",
+        proven=coverage_proven,
     )
     # An observation after the cutoff may have supplied a case file's
     # diagnosis (the ledger keeps only the current one), so that body is not
@@ -336,6 +343,15 @@ def _diagnosis(record: TechLeadRunRecord) -> StagedDiagnosis:
     )
 
 
+#: Why a live ledger's coverage is not proven complete (#7525).
+UNPROVEN_COMMIT_BOUNDARY = (
+    "not proven: a record dated before the cutoff can commit after the copy (a"
+    " decision is dated when planned and recorded when applied, or replayed"
+    " after a crash with its original date), and nothing yet records commit"
+    " order (#7525)"
+)
+
+
 def _ledger_coverage(
     earliest: datetime | None,
     *,
@@ -343,12 +359,18 @@ def _ledger_coverage(
     cutoff: datetime,
     what: str,
     empty: str,
+    proven: bool,
 ) -> Coverage:
+    """The span a never-pruned ledger covers: from its first record on, when
+    ``proven`` (every record dated by the cutoff is known to be in the
+    copy); otherwise the same span, never claimed complete."""
     if earliest is None or earliest > cutoff:
         # Nothing recorded by the cutoff (the snapshot is copied after it, so
         # a first record can land in between): nothing shows when it began.
         return Coverage(from_=None, to=cutoff, complete=False, detail=empty)
     start = max(window_start, earliest)
+    if not proven:
+        return Coverage(from_=start, to=cutoff, complete=False, detail=f"{what}: {UNPROVEN_COMMIT_BOUNDARY}")
     return Coverage(
         from_=start,
         to=cutoff,
@@ -484,6 +506,7 @@ __all__ = [
     "NOT_DERIVABLE_INTERVENTIONS",
     "RESET_RETRY_REASON",
     "Scorecard",
+    "UNPROVEN_COMMIT_BOUNDARY",
     "UnparseableTimestampError",
     "applied_at",
     "case_files_input",

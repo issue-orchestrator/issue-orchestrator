@@ -30,7 +30,9 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `inputs.json` | What was staged, what is missing and why, and every exam case ID that already exists |
 
 If an input is missing or marked partial, say so and don't draw conclusions
-that need it. **Absence of evidence is "unobserved", never "fixed".**
+that need it. A live engine's ledgers cannot yet prove their coverage complete
+(a record dated before the cutoff can commit after the copy, #7525), so until
+they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved", never "fixed".**
 
 ## Method
 
