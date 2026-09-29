@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from itertools import chain
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -373,25 +374,26 @@ class _Checker:
         for item in evidence:
             if not self._stall_citation_resolves(item):
                 yield Rule.STALL_EVIDENCE_RESOLVES, f"{item!r} is not a staged decision, case file, run, charter setting or source file"
-        if f.stall_point in ("noticed_not_acted", "acted_not_effective"):
-            yield from self._evidence_about(f)
-        if f.stall_point == "noticed_not_acted":
-            yield from self._acted_on(f)
-        if f.stall_point == "not_noticed":
-            yield from self._not_noticed(f, records)
-        elif f.stall_point == "acted_not_effective":
-            yield from self._acted_not_effective(f)
-        elif f.stall_point == "not_in_charter":
-            if self._evidence.charter is None:
-                yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
-            if not any(
-                i.startswith(ENGINE_SOURCE_CITATION) or self._restrictive_setting(i) for i in evidence
-            ):
-                yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
-                    "cite a charter.json setting that restricts (a disabled role, a propose"
-                    " authority, a depth short of restructure, an action not executed) or the"
-                    " source that lacks the action"
-                )
+        checks: dict[str, Callable[[], Iterator[tuple[Rule, str]]]] = {
+            "noticed_not_acted": lambda: chain(self._evidence_about(f), self._acted_on(f)),
+            "acted_not_effective": lambda: chain(self._evidence_about(f), self._acted_not_effective(f)),
+            "not_noticed": lambda: self._not_noticed(f, records),
+            "not_in_charter": lambda: self._not_in_charter(f),
+        }
+        if f.stall_point in checks:
+            yield from checks[f.stall_point]()
+
+    def _not_in_charter(self, f: Finding) -> Iterator[tuple[Rule, str]]:
+        if self._evidence.charter is None:
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, "charter.json was not staged, so the grade is unknown"
+        if not any(
+            i.startswith(ENGINE_SOURCE_CITATION) or self._restrictive_setting(i) for i in f.stall_evidence
+        ):
+            yield Rule.NOT_IN_CHARTER_CITES_CHARTER_OR_SOURCE, (
+                "cite a charter.json setting that restricts (a disabled role, a propose"
+                " authority, a depth short of restructure, an action not executed) or the"
+                " source that lacks the action"
+            )
 
     def _evidence_about(self, f: Finding) -> Iterator[tuple[Rule, str]]:
         """A notice grade cites a notice, and every cited decision, case file
