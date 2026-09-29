@@ -262,7 +262,11 @@ def _stage_tech_lead(
         why = f"tech-lead authority store unreadable: {error}"
         return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
                 _missing(INTERVENTIONS_FILE, why)]
-    decisions = charter_decisions_input(ledger, window_start=window_start, cutoff=cutoff)
+    # A live engine's ledgers cannot yet prove that every record dated by the
+    # cutoff had committed when they were copied (#7525).
+    decisions = charter_decisions_input(
+        ledger, window_start=window_start, cutoff=cutoff, coverage_proven=False
+    )
     _write(data / CHARTER_DECISIONS_FILE, decisions)
     entries = [_staged(CHARTER_DECISIONS_FILE, decisions.coverage.detail)]
     # The case-file ledger stands on its own; an unreadable run history only
@@ -272,7 +276,9 @@ def _stage_tech_lead(
         if isinstance(runs_store, Unavailable)
         else runs_store.all_runs()
     )
-    staged = case_files_input(case_files, runs, window_start=window_start, cutoff=cutoff)
+    staged = case_files_input(
+        case_files, runs, window_start=window_start, cutoff=cutoff, coverage_proven=False
+    )
     if isinstance(runs_store, Unavailable):
         staged = staged.model_copy(update={"diagnoses_coverage": staged.diagnoses_coverage.model_copy(
             update={"detail": f"tech-lead run history {runs_store.status.value}: {runs_store.detail}"}

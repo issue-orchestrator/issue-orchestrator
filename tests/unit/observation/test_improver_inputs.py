@@ -122,7 +122,7 @@ def test_the_window_keeps_decisions_made_in_it_and_older_ones_applied_in_it() ->
     staged = charter_decisions_input(
         [old_applied_before, old_applied_in_window, in_window, after_cutoff],
         window_start=WINDOW_START,
-        cutoff=CUTOFF,
+        cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert [d.action_id for d in staged.decisions] == ["A1", "A3"]
@@ -131,7 +131,7 @@ def test_the_window_keeps_decisions_made_in_it_and_older_ones_applied_in_it() ->
 
 def test_a_ledger_older_than_the_window_covers_the_whole_window() -> None:
     staged = charter_decisions_input(
-        [_decision("A1", "post_comment", decided=_at(40))], window_start=WINDOW_START, cutoff=CUTOFF
+        [_decision("A1", "post_comment", decided=_at(40))], window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert staged.coverage.complete
@@ -140,7 +140,7 @@ def test_a_ledger_older_than_the_window_covers_the_whole_window() -> None:
 
 def test_a_ledger_younger_than_the_window_covers_only_from_its_first_record() -> None:
     staged = charter_decisions_input(
-        [_decision("A1", "post_comment", decided=_at(3))], window_start=WINDOW_START, cutoff=CUTOFF
+        [_decision("A1", "post_comment", decided=_at(3))], window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert staged.coverage.from_ == CUTOFF - timedelta(hours=3)
@@ -148,7 +148,7 @@ def test_a_ledger_younger_than_the_window_covers_only_from_its_first_record() ->
 
 
 def test_an_empty_ledger_covers_nothing() -> None:
-    staged = charter_decisions_input([], window_start=WINDOW_START, cutoff=CUTOFF)
+    staged = charter_decisions_input([], window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True)
 
     assert not staged.coverage.complete
     assert staged.coverage.from_ is None
@@ -190,7 +190,7 @@ def test_case_files_carry_their_bodies_and_runs_in_the_window_are_diagnoses() ->
         [_case_file()],
         TechLeadRunHistoryRead(records=(early, overlapping, running), unreadable=0),
         window_start=WINDOW_START,
-        cutoff=CUTOFF,
+        cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert [c.body for c in staged.case_files] == ["the diagnosis"]
@@ -206,7 +206,7 @@ def test_the_run_history_never_proves_the_tech_lead_did_not_look() -> None:
         [_case_file()],
         TechLeadRunHistoryRead(records=(_run(CUTOFF - timedelta(hours=50), ended=CUTOFF),), unreadable=1),
         window_start=WINDOW_START,
-        cutoff=CUTOFF,
+        cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert not staged.diagnoses_coverage.complete
@@ -223,12 +223,12 @@ def test_case_file_coverage_starts_at_the_ledgers_first_record() -> None:
 
     staged = case_files_input(
         [young], TechLeadRunHistoryRead(records=(), unreadable=0),
-        window_start=WINDOW_START, cutoff=CUTOFF,
+        window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert staged.coverage.from_ == CUTOFF - timedelta(hours=3)
     assert not case_files_input(
-        [], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF
+        [], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     ).coverage.complete
 
 
@@ -250,14 +250,14 @@ def test_what_was_recorded_after_the_cutoff_is_not_staged() -> None:
 
     staged = case_files_input(
         [late, observed_late], TechLeadRunHistoryRead(records=(), unreadable=0),
-        window_start=WINDOW_START, cutoff=CUTOFF,
+        window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert [c.signature for c in staged.case_files] == ["sig"]
     assert [o.observation_id for o in staged.case_files[0].observations] == ["o1", "o2"]
     assert not charter_decisions_input(
         [_decision("A1", "post_comment", decided=(CUTOFF + timedelta(minutes=1)).isoformat())],
-        window_start=WINDOW_START, cutoff=CUTOFF,
+        window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     ).coverage.complete
 
 
@@ -275,8 +275,7 @@ def test_a_run_time_in_a_daylight_saving_fold_widens_the_run_to_both_readings(
             [],
             TechLeadRunHistoryRead(records=(_run(ambiguous, ended=ambiguous),), unreadable=0),
             window_start=datetime(2026, 10, 31, tzinfo=timezone.utc),
-            cutoff=datetime(2026, 11, 2, tzinfo=timezone.utc),
-        )
+            cutoff=datetime(2026, 11, 2, tzinfo=timezone.utc), coverage_proven=True)
     finally:
         monkeypatch.delenv("TZ")
         time.tzset()
@@ -292,8 +291,7 @@ def test_run_times_without_a_zone_are_the_engine_hosts_local_time() -> None:
         [],
         TechLeadRunHistoryRead(records=(_run(local, ended=None),), unreadable=0),
         window_start=local.astimezone() - timedelta(hours=1),
-        cutoff=local.astimezone() + timedelta(hours=1),
-    )
+        cutoff=local.astimezone() + timedelta(hours=1), coverage_proven=True)
 
     assert staged.diagnoses[0].started_at == local.astimezone()
 
@@ -393,7 +391,7 @@ def test_a_case_file_observed_after_the_cutoff_leaves_the_ledger_unproven() -> N
 
     staged = case_files_input(
         [observed_late], TechLeadRunHistoryRead(records=(), unreadable=0),
-        window_start=WINDOW_START, cutoff=CUTOFF,
+        window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     )
 
     assert not staged.coverage.complete
@@ -411,7 +409,7 @@ def test_a_result_linked_after_the_cutoff_is_not_part_of_what_the_audit_saw() ->
         lifecycle_updated_at=late,
     )
 
-    staged = charter_decisions_input([executed, approved], window_start=WINDOW_START, cutoff=CUTOFF)
+    staged = charter_decisions_input([executed, approved], window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True)
 
     assert [(d.effect, d.applied_at) for d in staged.decisions] == [
         ("unlinked", None), ("awaiting_approval", None),
@@ -423,7 +421,7 @@ def test_a_run_that_ended_after_the_cutoff_was_still_running_at_it() -> None:
     late = _run(CUTOFF - timedelta(hours=2), ended=CUTOFF + timedelta(minutes=5), detail="#500 explodes")
 
     staged = case_files_input(
-        [], TechLeadRunHistoryRead(records=(late,), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF,
+        [], TechLeadRunHistoryRead(records=(late,), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     )
 
     [diagnosis] = staged.diagnoses
@@ -442,11 +440,28 @@ def test_a_case_file_revised_after_the_cutoff_stages_no_body() -> None:
     )
 
     [staged] = case_files_input(
-        [revised], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF,
+        [revised], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     ).case_files
 
     assert (staged.body, staged.body_known, staged.observation_count) == ("", False, 2)
     [kept] = case_files_input(
-        [_case_file()], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF,
+        [_case_file()], TechLeadRunHistoryRead(records=(), unreadable=0), window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=True,
     ).case_files
     assert (kept.body, kept.body_known) == ("the diagnosis", True)
+
+
+def test_a_live_ledger_whose_commit_boundary_is_unproven_never_claims_complete() -> None:
+    """3a r8: a decision dated before the cutoff can commit after the copy
+    (planned, then applied; or replayed after a crash with its date), so
+    without a commit-order fact coverage is never complete (#7525)."""
+    decisions = charter_decisions_input(
+        [_decision("A1", "post_comment", decided=_at(40))],
+        window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=False,
+    )
+    cases = case_files_input(
+        [_case_file()], TechLeadRunHistoryRead(records=(), unreadable=0),
+        window_start=WINDOW_START, cutoff=CUTOFF, coverage_proven=False,
+    )
+
+    for coverage in (decisions.coverage, cases.coverage):
+        assert not coverage.complete and "#7525" in coverage.detail

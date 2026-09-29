@@ -174,7 +174,8 @@ def test_stages_every_input_the_prompt_lists_from_the_engine_records(state: Path
     }
     decisions = json.loads((data / "charter-decisions.json").read_text())
     assert [d["action_id"] for d in decisions["decisions"]] == ["A2"]
-    assert decisions["coverage"]["complete"] is True
+    # A live ledger's commit boundary is not proven yet (#7525).
+    assert decisions["coverage"]["complete"] is False and "#7525" in decisions["coverage"]["detail"]
     assert datetime.fromisoformat(decisions["coverage"]["from"]) == NOW - timedelta(hours=24)
     cases = json.loads((data / "case-files.json").read_text())
     assert [c["body"] for c in cases["case_files"]] == ["refused every tick"]
@@ -330,7 +331,7 @@ def test_the_case_file_ledger_is_staged_without_a_run_history(state: Path, tmp_p
 
     cases = json.loads((staged.data_dir / "case-files.json").read_text())
     assert [c["signature"] for c in cases["case_files"]] == ["retry-refused"]
-    assert cases["coverage"]["complete"] is True
+    assert cases["coverage"]["complete"] is False and "#7525" in cases["coverage"]["detail"]
     assert cases["diagnoses"] == [] and cases["diagnoses_coverage"]["complete"] is False
     assert "tech-lead run history absent" in cases["diagnoses_coverage"]["detail"]
 
