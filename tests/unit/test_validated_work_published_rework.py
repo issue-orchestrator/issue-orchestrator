@@ -1170,3 +1170,28 @@ def test_a_never_captured_run_whose_worktree_is_gone_is_decided_once(rig, monkey
     assert second.dispositions == first.dispositions
     assert [p for p in fetches.paths if not p.exists()] == []
     assert decided >= 1 and len(fetches.paths) == decided  # decided once, then retained
+
+
+def test_a_removed_runs_garbage_collected_commit_is_skipped_not_retried_into_failure(rig, monkeypatch):
+    """Review r1: if the never-captured validated commit was collected after
+    its worktree and branch went, there is nothing to preserve. The capture
+    says so and completes; it does not fail every issue-wide capture."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    base = rig.git.run(rig.origin, ["rev-parse", "main"]).stdout.strip()
+    rig.git.run(rig.worktree, ["push", "-q", "origin", "HEAD:refs/heads/main"])
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coding) is False
+    rig.git.run(rig.repo, ["worktree", "remove", "--force", str(rig.worktree)])
+    rig.git.run(rig.repo, ["branch", "-q", "-D", BRANCH])
+    rig.git.run(rig.origin, ["update-ref", "refs/heads/main", base])  # force-pushed back
+    rig.git.run(rig.repo, ["fetch", "-q", "--prune", "origin"])
+    rig.git.run(rig.origin, ["reflog", "expire", "--expire=now", "--all"])
+    rig.git.run(rig.origin, ["gc", "-q", "--prune=now"])
+    rig.git.run(rig.repo, ["reflog", "expire", "--expire=now", "--all"])
+    rig.git.run(rig.repo, ["gc", "-q", "--prune=now"])
+    assert rig.git.run(rig.repo, ["cat-file", "-e", w1], check=False).returncode != 0
+
+    for reason in ("escalated-to-human", "startup-reconciliation"):
+        batch = rig.lifecycle.preserve(ISSUE, reason)  # strict: a raise would refuse it
+        assert not batch.found_work

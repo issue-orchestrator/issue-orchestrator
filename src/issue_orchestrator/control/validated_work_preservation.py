@@ -252,6 +252,17 @@ class ValidatedWorkPreservationService:
             # no workspace left to observe, so it is preserved unbound - parked
             # for a decision, once, and retained from then on.
             head, bound = candidate.validation.head_sha, False
+            if self._working_copy.compare_commits(
+                self._repository, left=head, right=head,
+            ) is not AncestryRelation.EQUAL:
+                # Garbage-collected since: there is nothing left to preserve,
+                # and refusing every later capture would not bring it back.
+                logger.warning(
+                    "[VALIDATED_WORK] Not capturing issue #%d run %s: its worktree is "
+                    "removed and validated commit %s no longer exists in %s",
+                    command.issue_number, candidate.run.run.run_id, head, self._repository,
+                )
+                return
         else:
             observed_head = self._working_copy.get_head_sha(worktree)
             if observed_head is None:

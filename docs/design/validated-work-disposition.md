@@ -1408,7 +1408,12 @@ run whose base contained its head at capture, after which the base moved back.
 There is no workspace left to observe, so the validated commit is preserved
 unbound as `PARKED(WORKSPACE_INTEGRITY)`, and it is retained from then on.
 Previously the capture raised "worktree HEAD cannot be established" on every
-issue-wide capture.
+issue-wide capture. If the validated commit has since been garbage-collected,
+there is nothing left to preserve. The capture logs a warning saying so and
+completes, instead of failing every later capture.
+
+Pinning such pre-escrow heads durably, before branch cleanup, would be an
+intake/cleanup custody change. It is out of scope here.
 
 ### 2.7 The completion's own push is a publication route (porchpin #186)
 
