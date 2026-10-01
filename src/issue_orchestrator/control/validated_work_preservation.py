@@ -69,7 +69,13 @@ class ValidatedWorkPreservationService:
         # capture - that row is the durable decision - so it is never judged
         # again: no base fetch, no GitHub read (porchpin 2026-10-01: one
         # failed fetch per retained record per escalation and per startup).
-        prepared = self._intake.prepare_termination(command.run_evidence, command.scope)
+        # The scope rule gates every path, the retained one included: a
+        # tech-lead completion admitted before the rule is retired, never
+        # counted as this run's recovered work.
+        prepared = tuple(
+            c for c in self._intake.prepare_termination(command.run_evidence, command.scope)
+            if self._in_scope(c)
+        )
         decided = tuple(c for c in prepared if self._retained(c, command))
         candidates = tuple(
             candidate
@@ -89,6 +95,24 @@ class ValidatedWorkPreservationService:
                 candidate_key(c, command.issue_number) for c in (*decided, *selected)
             ),
         )
+
+    @staticmethod
+    def _in_scope(candidate: PreparedCompletionEvidence) -> bool:
+        """Whether the run's KIND makes its completion the issue's deliverable.
+
+        A tech-lead run is recorded against its subject issue, but its branch
+        is its own and its completion already decides what that branch
+        publishes - taking it as the subject's work put a ``recovery-pending``
+        on the subject that no publication ever released (#7323, #7346).
+        """
+        role = candidate.role
+        if recovery_owns(role):
+            return True
+        logger.info(
+            "[VALIDATED_WORK] Not capturing issue #%d run %s: %s",
+            role.issue_number, candidate.run.run.run_id, outside_scope_reason(role),
+        )
+        return False
 
     def _retained(self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand) -> bool:
         """Whether this completion's evidence is already retained.
@@ -113,24 +137,13 @@ class ValidatedWorkPreservationService:
             ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
         ],
     ) -> bool:
-        """Whether this completion is validated work recovery must hold (#7347).
+        """Whether this in-scope completion is validated work recovery must hold (#7347).
 
-        Two facts, both required. The run's KIND must make its completion the
-        issue's deliverable (``capturable``): a tech-lead run is recorded
-        against its subject issue, but its branch is its own and its
-        completion already decides what that branch publishes - taking it as
-        the subject's work put a ``recovery-pending`` on the subject that no
-        publication ever released (#7323, #7346). And its validated head must
-        have commits ahead of the base its PR targets: a head the base already
-        contains is nothing to preserve, and a PR of it is refused by the host.
+        Its validated head must have commits ahead of the base its PR targets:
+        a head the base already contains is nothing to preserve, and a PR of
+        it is refused by the host. (The run-kind rule is ``_in_scope``.)
         """
         role = candidate.role
-        if not recovery_owns(role):
-            logger.info(
-                "[VALIDATED_WORK] Not capturing issue #%d run %s: %s",
-                role.issue_number, candidate.run.run.run_id, outside_scope_reason(role),
-            )
-            return False
         base = self._pull_request_base(candidate, command, observations)
         # Read fresh from the remote: a cached tracking ref of a base that has
         # since been force-pushed would drop real work. A base that cannot be
