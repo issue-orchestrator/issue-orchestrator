@@ -1195,3 +1195,27 @@ def test_a_removed_runs_garbage_collected_commit_is_skipped_not_retried_into_fai
     for reason in ("escalated-to-human", "startup-reconciliation"):
         batch = rig.lifecycle.preserve(ISSUE, reason)  # strict: a raise would refuse it
         assert not batch.found_work
+
+
+def test_an_issue_wide_replay_never_captures_an_older_completion_of_retained_work(rig, monkeypatch):
+    """Review (#7552 r3): two completions validated the same head. The older
+    one found no work beyond the base; after the base moved back the newer one
+    was captured. An issue-wide replay keeps exactly that evidence - the
+    retained shortcut must not promote the superseded older completion."""
+    first = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, first, "coding-1")
+    base = rig.git.run(rig.origin, ["rev-parse", "main"]).stdout.strip()
+    rig.git.run(rig.worktree, ["push", "-q", "origin", "HEAD:refs/heads/main"])
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=first) is False
+    rig.git.run(rig.origin, ["update-ref", "refs/heads/main", base])  # the base moves back
+    second = _run(rig, SessionKind.REWORK, "coding-2", f"rework-{ISSUE}")
+    assert _validate(rig, second, "coding-2") == w1
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"rework-{ISSUE}", "session-completion", run=second)
+    (kept,) = rig.store.retained_evidence(ISSUE)
+    fetches = _FetchSpy(monkeypatch)
+
+    rig.lifecycle.preserve(ISSUE, "escalated-to-human")
+
+    assert rig.store.retained_evidence(ISSUE) == (kept,)
+    assert fetches.paths == []

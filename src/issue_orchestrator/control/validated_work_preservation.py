@@ -76,23 +76,25 @@ class ValidatedWorkPreservationService:
             c for c in self._intake.prepare_termination(command.run_evidence, command.scope)
             if self._in_scope(c)
         )
-        decided = tuple(c for c in prepared if self._retained(c, command))
-        candidates = tuple(
-            candidate
-            for candidate in prepared
+        # Select the newest completion per work first, exactly as before, so
+        # the retained shortcut below can never promote an older, superseded
+        # completion of the same work into a fresh capture.
+        selected = newest_per_work(prepared, command.issue_number)
+        decided = tuple(c for c in selected if self._retained(c, command))
+        undecided = tuple(
+            candidate for candidate in selected
             if candidate not in decided and self._captures(candidate, command, observations)
         )
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")
         self._repair.require_issue_custody(command.issue_number)
-        selected = newest_per_work(candidates, command.issue_number)
-        for candidate in selected:
+        for candidate in undecided:
             self._capture(candidate, command, observations)
         return replace(
             self._store.for_issue(command.issue_number),
             captured_keys=frozenset(
-                candidate_key(c, command.issue_number) for c in (*decided, *selected)
+                candidate_key(c, command.issue_number) for c in (*decided, *undecided)
             ),
         )
 
