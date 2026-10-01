@@ -1506,14 +1506,26 @@ routes. It asks the open PR first, and only a head no open PR carries costs the
 merged-PR read. Capture and the scope sweep both ask through it, so a capture
 made after the merge is resolved the same way.
 
-**The store.** `record_pr_publication` records the merged PR's head as the
-lineage fact, with provenance `OBSERVED_MERGE` and `published_pr_number` set to
-the PR. It follows the same rules as §2.7. Reclassification then resolves every
-record that head contains as `RECOVERED(LANDED_VIA_MERGED_PR)`, named for the
-PR and with its escrow and pins kept. `LineagePublication.contained_kind` makes
-that choice: `OBSERVED_MERGE` naming a PR lands records, and every other
-published head contains them. Such records are `published_by_its_pr`, so
-recovery does not claim to hold them.
+**The store records a landing beside the fact, never in it.**
+`record_pr_publication` writes a merged proof to
+`validated_work_lineage_landings` as `(lineage, PR, head at merge)`. That table
+is append-only, and a merged PR's head cannot move, so the store refuses a
+second proof of the same PR with a different head.
+
+The lineage fact is left alone. It is what the branch publishes now, and it is
+what recovery sequences from. A reused branch can carry an older landing next
+to a newer open PR that has diverged from it. Replacing the fact with the old
+merged head would strand work that is sequenced from the open PR. Landing an
+open PR at the same head after its merge is a new landing, so the records it
+contains resolve as landed.
+
+**Classification checks landings before the fact.** A record that any landing
+contains resolves as `RECOVERED(LANDED_VIA_MERGED_PR)`. It is named for that
+PR, keeps its escrow and pins, and is `published_by_its_pr`, so recovery does
+not claim to hold it. Shipping is final, whatever the branch publishes now. A
+record that no landing contains falls through to the fact's §2.1.4 rules,
+which are unchanged. Once a landed record is resolved, its divergent peers
+stop forcing one another to park.
 
 **What stays unresolved:**
 - A closed PR that was never merged.
@@ -1521,13 +1533,6 @@ recovery does not claim to hold them.
 - A `refs/pull/N/head` that cannot be fetched or no longer matches GitHub's
   head at merge.
 - An unreadable remote.
-
-**Known edge.** A reused branch with an older merged PR and a newer open PR can
-move the fact back to the merged head while proving a record that only the
-merged PR carries. The next capture on the open PR records the open head again
-(§2.7). A descendant queued from the open head meanwhile parks
-`REMOTE_BASELINE_UNPROVEN` for a decision. That decision is a park, never a
-publish.
 
 ## 3. Composition and control flow
 

@@ -862,7 +862,7 @@ def _squash_merge(rig) -> str:
 
 
 def test_parked_records_a_squash_merged_pr_landed_resolve(rig, make_session, monkeypatch):
-    _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    w1, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
     pr_head = _squash_merge(rig)
     squash = rig.git.run(rig.origin, ["rev-parse", "main"]).stdout.strip()
     for disposition in parked:  # the squash commit does not contain the work
@@ -882,7 +882,8 @@ def test_parked_records_a_squash_merged_pr_landed_resolve(rig, make_session, mon
         assert record.disposition.pr_number == PR
         pinned = record.current_evidence.admission.pinned_ref
         assert rig.git.run(rig.repo, ["rev-parse", pinned]).stdout.strip() == disposition.key.validated_head_sha
-    assert _fact(rig).published_head_sha == pr_head
+    # A landing sits beside the lineage fact; it never replaces it (§2.8).
+    assert _fact(rig).published_head_sha == w1
     assert RECOVERY_PENDING not in rig.labels.labels
 
 
@@ -959,3 +960,97 @@ def test_a_merged_pr_whose_head_carries_the_work_proves_the_landing(relation):
         _merged(HEAD), repo_slug=REPO, branch_name=BRANCH, fetched_head_sha=HEAD, relation=relation)
     assert proof == LandedViaMergedPullRequest(PR, HEAD)
     assert proof.provenance is PublicationProvenance.OBSERVED_MERGE
+
+
+
+# -- landings beside the fact (review r1) ---------------------------------------
+
+
+def _graph_store(tmp_path):
+    from tests.unit.validated_work_support import Rig
+    return Rig(tmp_path / "work.sqlite")
+
+
+def test_a_landing_never_strands_work_sequenced_from_a_newer_open_pr(tmp_path):
+    """Review r1: on a reused branch, an older merged PR landed ``DIVERGENT``
+    while a newer open PR publishes ``TIP``. Proving the old landing resolves
+    the record it carries, and leaves the open PR's fact - and the unpublished
+    descendant sequenced from it - exactly as they were."""
+    from tests.unit.validated_work_support import DIVERGENT, ROOT, TIP, capture
+
+    rig = _graph_store(tmp_path)
+    beyond = f"{9:040x}"
+    rig.graph.parents[beyond] = TIP
+    store = rig.open()
+    old = capture(DIVERGENT, run="run-old", state=ValidatedWorkState.PARKED,
+                  failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="captured", expected=ROOT)
+    store.admit(old)
+    open_key = old.evidence.identity.key.__class__("owner/repo", 6914, "feature", TIP)
+    assert store.record_pr_publication(
+        open_key, published=PublishedOnOpenPullRequest(92, TIP), observed_at="2026-09-30T10:00:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    newer = capture(beyond, run="run-new", expected=TIP, pr=92)
+    store.admit(newer)
+    # The two unresolved heads diverge, so both park until one resolves.
+    assert {store.get(r.evidence.record_id).failure for r in (old, newer)} == {
+        ValidatedWorkFailure.DIVERGENT_VALIDATED_HEADS}
+
+    status = store.record_pr_publication(
+        old.evidence.identity.key, published=LandedViaMergedPullRequest(91, DIVERGENT),
+        observed_at="2026-09-30T11:00:00+00:00",
+    )
+
+    assert status is PrPublicationStatus.ADVANCED
+    landed = store.get(old.evidence.record_id)
+    assert (landed.state, landed.pr_number, landed.published_head_sha) == (ValidatedWorkState.RECOVERED, 91, DIVERGENT)
+    assert store.record_for_id(old.evidence.record_id).resolution_kind is ResolutionKind.LANDED_VIA_MERGED_PR
+    fact = store.lineage_publication(canonical_lineage_key(open_key))
+    assert (fact.published_head_sha, fact.published_pr_number) == (TIP, 92)
+    still = store.get(newer.evidence.record_id)
+    assert (still.state, still.lineage_role) == (ValidatedWorkState.QUEUED, LineageRole.HEAD)
+
+
+def test_an_open_prs_merge_at_the_same_head_lands_what_it_carried(tmp_path):
+    """Review r1: PR 91 was recorded open at ``L``, then merged without a new
+    push. Its landing is new, and a later capture it contains is LANDED."""
+    from tests.unit.validated_work_support import L, ROOT, V, capture
+
+    store = _graph_store(tmp_path).open()
+    key = capture(L).evidence.identity.key
+    assert store.record_pr_publication(
+        key, published=PublishedOnOpenPullRequest(91, L), observed_at="2026-09-30T10:00:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+
+    assert store.record_pr_publication(
+        key, published=LandedViaMergedPullRequest(91, L), observed_at="2026-09-30T11:00:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    late = capture(V, run="run-late", expected=ROOT)
+    store.admit(late)
+
+    assert store.record_for_id(late.evidence.record_id).resolution_kind is ResolutionKind.LANDED_VIA_MERGED_PR
+    # The same merged PR proven again is already recorded; a moved head is refused.
+    assert store.record_pr_publication(
+        key, published=LandedViaMergedPullRequest(91, L), observed_at="2026-09-30T12:00:00+00:00",
+    ) is PrPublicationStatus.ALREADY_PUBLISHED
+    assert store.record_pr_publication(
+        capture(V).evidence.identity.key, published=LandedViaMergedPullRequest(91, V),
+        observed_at="2026-09-30T12:00:00+00:00",
+    ) is PrPublicationStatus.CONTAINMENT_UNPROVEN
+
+
+def test_an_existing_store_gains_the_landings_table_on_open(tmp_path):
+    import sqlite3
+
+    from issue_orchestrator.infra.validated_work_rows import DispositionDatabase
+
+    path = tmp_path / "work.sqlite"
+    DispositionDatabase(path)
+    with sqlite3.connect(path) as conn:  # a store from before landings existed
+        conn.execute("DROP TABLE validated_work_lineage_landings")
+
+    DispositionDatabase(path)
+
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='validated_work_lineage_landings'"
+        ).fetchone()

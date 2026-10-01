@@ -174,9 +174,7 @@ class LineagePublication:
     published_via: PublicationProvenance
     published_pre_push_expected: str
     published_at: str
-    # The PR a PR-observed publication came through: required for an open PR
-    # (OBSERVED_OPEN_PR), named for a merged PR when known (OBSERVED_MERGE),
-    # never for our own push. 0 means none.
+    # The open PR an OBSERVED_OPEN_PR publication was observed on; 0 otherwise.
     published_pr_number: int = 0
 
     def __post_init__(self) -> None:
@@ -192,18 +190,33 @@ class LineagePublication:
                 raise ValueError("an observed publication proves no pre-push baseline")
         if type(self.published_pr_number) is not int or self.published_pr_number < 0:
             raise ValueError("published PR number must be a non-negative int")
-        if self.published_via is PublicationProvenance.OBSERVED_OPEN_PR and not self.published_pr_number:
-            raise ValueError("an open-PR publication names its PR")
-        if self.published_via is PublicationProvenance.PUSHED_BY_OWNER and self.published_pr_number:
-            raise ValueError("our own push names no PR")
+        if (self.published_pr_number > 0) is not (
+            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
+        ):
+            raise ValueError("exactly an open-PR publication names its PR")
 
-    @property
-    def contained_kind(self) -> ResolutionKind:
-        """How a record this head contains is resolved: a merged PR named by
-        the fact LANDED it; any other published head CONTAINS it."""
-        if self.published_via is PublicationProvenance.OBSERVED_MERGE and self.published_pr_number:
-            return ResolutionKind.LANDED_VIA_MERGED_PR
-        return ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
+
+@dataclass(frozen=True, slots=True)
+class LineageLanding:
+    """A merged PR of the lineage's branch and its head at merge (§2.8).
+
+    Terminal and append-only, so it lives beside the lineage fact rather than
+    in it: the fact is what the branch publishes NOW and sequences recovery,
+    while a landing only says which validated heads already shipped. A reused
+    branch can carry both an older landing and a newer, divergent open PR.
+    """
+
+    lineage_key: str
+    pr_number: int
+    head_sha: str
+    landed_at: str
+
+    def __post_init__(self) -> None:
+        require_text(self.lineage_key, "lineage_key")
+        if type(self.pr_number) is not int or self.pr_number <= 0:
+            raise ValueError("a landing names its merged PR")
+        require_sha(self.head_sha)
+        require_text(self.landed_at, "landed_at")
 
 
 @dataclass(frozen=True, slots=True)

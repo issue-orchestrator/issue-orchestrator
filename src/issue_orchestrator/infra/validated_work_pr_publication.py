@@ -23,7 +23,10 @@ from ..domain.validated_work import (
     canonical_lineage_key,
     canonical_record_id,
 )
-from ..domain.validated_work_remote_authority import PullRequestPublication
+from ..domain.validated_work_remote_authority import (
+    LandedViaMergedPullRequest,
+    PullRequestPublication,
+)
 from ..domain.validated_work_store import (
     AncestryRelation as Relation,
     CommitReference,
@@ -73,6 +76,8 @@ def record_pr_publication(
         (lineage_key,),
     ).fetchone():
         return Status.PUBLICATION_IN_FLIGHT
+    if isinstance(published, LandedViaMergedPullRequest):
+        return _record_landing(conn, lineage, lineage_key, published, observed_at)
     fact = publication(conn, lineage_key)
     if fact is not None:
         if fact.published_head_sha == published.head_sha and (
@@ -98,7 +103,7 @@ def record_pr_publication(
             lineage_key,
             published.head_sha,
             canonical_record_id(key),
-            published.provenance.value,
+            PublicationProvenance.OBSERVED_OPEN_PR.value,
             "",
             observed_at,
             published.pr_number,
@@ -106,5 +111,37 @@ def record_pr_publication(
     )
     # Every record this resolves is stamped with the PR by the classifier
     # (``published_pr_number``), as is any later admission contained in it.
+    lineage.classify(conn, lineage_key, observed_at)
+    return Status.ADVANCED
+
+
+def _record_landing(
+    conn: sqlite3.Connection,
+    lineage: LineageClassifier,
+    lineage_key: str,
+    landed: LandedViaMergedPullRequest,
+    observed_at: str,
+) -> Status:
+    """Record a merged PR's head at merge as a landing, then reclassify.
+
+    A landing never touches the lineage fact: the fact is what the branch
+    publishes now, and on a reused branch that can be a newer, divergent open
+    PR whose baseline recovery still sequences from. A merged PR's head is
+    immutable, so a second proof of the same PR is already recorded - even
+    after the same head was first recorded as that PR's open publication,
+    the landing is new and resolves its ancestors as landed.
+    """
+    recorded = conn.execute(
+        "SELECT head_sha FROM validated_work_lineage_landings WHERE lineage_key=? AND pr_number=?",
+        (lineage_key, landed.pr_number),
+    ).fetchone()
+    if recorded is not None:
+        if recorded["head_sha"] != landed.head_sha:
+            return Status.CONTAINMENT_UNPROVEN  # a merged PR's head cannot move
+        return Status.ALREADY_PUBLISHED
+    conn.execute(
+        "INSERT INTO validated_work_lineage_landings (lineage_key,pr_number,head_sha,landed_at) VALUES (?,?,?,?)",
+        (lineage_key, landed.pr_number, landed.head_sha, observed_at),
+    )
     lineage.classify(conn, lineage_key, observed_at)
     return Status.ADVANCED

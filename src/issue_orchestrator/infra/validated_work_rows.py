@@ -26,6 +26,7 @@ from ..domain.validated_work_store import (
     EvidenceAdmission,
     EvidenceRole,
     EvidenceRow,
+    LineageLanding,
     LineagePublication,
     PublicationProvenance,
     PublishAttempt,
@@ -187,6 +188,16 @@ def publication(
         row["published_pre_push_expected"],
         row["published_at"],
         row["published_pr_number"],
+    )
+
+
+def landings(conn: sqlite3.Connection, lineage_key: str) -> tuple[LineageLanding, ...]:
+    return tuple(
+        LineageLanding(row["lineage_key"], row["pr_number"], row["head_sha"], row["landed_at"])
+        for row in conn.execute(
+            "SELECT * FROM validated_work_lineage_landings WHERE lineage_key=? ORDER BY pr_number DESC",
+            (lineage_key,),
+        )
     )
 
 
