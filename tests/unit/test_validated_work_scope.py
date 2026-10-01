@@ -169,7 +169,7 @@ def _rig(tmp_path, agent_label):
         # No remote in this rig: the base is unreadable, so the kind alone
         # decides here (the ahead-of-base rule has its own tests).
         base_branch=lambda _issue, _worktree: "main",
-        carriage=PullRequestCarriage(git=wc, observer=observer))
+        carriage=PullRequestCarriage(git=wc, observer=observer), repository=repo)
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()

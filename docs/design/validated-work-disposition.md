@@ -1388,6 +1388,28 @@ records, one stranded in `PUBLISHING`). Review runs publish nothing.
   record's publication or operator abandonment; a record proven in scope is
   remembered by its immutable current evidence id.
 
+**Issue-wide captures decide each completion once (porchpin, 2026-10-01).** An
+issue-wide capture re-prepares *every* completion the issue ever had. That
+includes a post-publish escalation's exchange cancel, startup worktree
+reconciliation, and a reset. A completion whose evidence is already retained
+was decided at its first capture, and that row is the durable decision. So it
+is skipped before any base fetch or GitHub read.
+
+Before this, the ahead-of-base check fetched `main` inside each such run's
+worktree, which cleanup had long since removed. That produced one
+`Could not fetch origin/main in .../porchpin-N` per retained record per
+capture.
+
+**Base and PR refs are read in the base repository.** It always exists and
+shares every run's objects, unlike a run's worktree.
+
+**A never-captured run whose worktree is gone is preserved once.** This is a
+run whose base contained its head at capture, after which the base moved back.
+There is no workspace left to observe, so the validated commit is preserved
+unbound as `PARKED(WORKSPACE_INTEGRITY)`, and it is retained from then on.
+Previously the capture raised "worktree HEAD cannot be established" on every
+issue-wide capture.
+
 ### 2.7 The completion's own push is a publication route (porchpin #186)
 
 A coding or rework completion that pushes its branch and reuses or opens the

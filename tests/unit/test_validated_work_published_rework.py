@@ -197,7 +197,7 @@ def rig(tmp_path):
         custody=ValidatedWorkCustody(escrow, aggregate),
         repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
         working_copy=wc, observer=github, base_branch=lambda _issue, _worktree: "main",
-        carriage=PullRequestCarriage(git=wc, observer=github))
+        carriage=PullRequestCarriage(git=wc, observer=github), repository=repo)
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
@@ -1100,3 +1100,73 @@ def test_a_landed_heads_pin_can_never_be_released(rig, make_session, monkeypatch
         rig.wc.delete_pinned_ref(rig.repo, ref=ref, sha=pr_head)
 
     assert rig.wc.verify_ref(rig.repo, ref=ref, sha=pr_head)
+
+
+# -- issue-wide captures after cleanup (porchpin 2026-10-01 io audit) -----------
+#
+# Every issue-wide capture (a post-publish escalation's exchange cancel, startup
+# worktree reconciliation, a reset) re-prepares EVERY completion the issue ever
+# had. For each one, the ahead-of-base check fetched ``main`` inside that run's
+# worktree - long removed by cleanup - before noticing the run's work was
+# already retained: 133 "Could not fetch origin/main in .../porchpin-N"
+# warnings, one per retained record per capture, plus the GitHub reads.
+
+
+class _FetchSpy:
+    def __init__(self, monkeypatch):
+        self.paths: list[Path] = []
+        real = GitWorkingCopy.fetch_remote_branch_head
+
+        def spy(wc, where, branch):
+            self.paths.append(Path(where))
+            return real(wc, where, branch)
+
+        monkeypatch.setattr(GitWorkingCopy, "fetch_remote_branch_head", spy)
+
+
+def test_issue_wide_captures_after_cleanup_never_re_decide_retained_work(rig, make_session, monkeypatch):
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coding)
+    (retained,) = rig.store.for_issue(ISSUE).dispositions
+    rig.git.run(rig.repo, ["worktree", "remove", "--force", str(rig.worktree)])  # cleanup
+    fetches = _FetchSpy(monkeypatch)
+    reads = rig.github.reads
+
+    for reason in ("escalated-to-human", "startup-reconciliation", "escalated-to-human"):
+        batch = rig.lifecycle.preserve(ISSUE, reason)
+        assert [d.record_id for d in batch.dispositions] == [retained.record_id]
+
+    assert [p for p in fetches.paths if not p.exists()] == []
+    assert fetches.paths == []  # already decided: no base read at all
+    assert rig.github.reads == reads
+    assert rig.store.get(retained.record_id) == retained
+
+
+def test_a_never_captured_run_whose_worktree_is_gone_is_decided_once(rig, monkeypatch):
+    """The base contained the run's head at its capture, so nothing was
+    retained; cleanup then removed the worktree, and the base was force-pushed
+    back. Its validated commit is work again but there is no workspace to
+    observe: it is preserved unbound, parked for a decision, exactly once."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    base = rig.git.run(rig.origin, ["rev-parse", "main"]).stdout.strip()
+    rig.git.run(rig.worktree, ["push", "-q", "origin", "HEAD:refs/heads/main"])
+    assert rig.lifecycle.preserve_completed_run(ISSUE, f"issue-{ISSUE}", "session-completion", run=coding) is False
+    assert not rig.store.for_issue(ISSUE).found_work
+    rig.git.run(rig.repo, ["worktree", "remove", "--force", str(rig.worktree)])
+    rig.git.run(rig.origin, ["update-ref", "refs/heads/main", base])  # force-pushed back
+    fetches = _FetchSpy(monkeypatch)
+
+    first = rig.lifecycle.preserve(ISSUE, "escalated-to-human")
+    decided = len(fetches.paths)
+    second = rig.lifecycle.preserve(ISSUE, "startup-reconciliation")
+
+    (parked,) = first.dispositions
+    assert parked.key.validated_head_sha == w1
+    assert (parked.state, parked.failure) == (ValidatedWorkState.PARKED, ValidatedWorkFailure.WORKSPACE_INTEGRITY)
+    assert second.dispositions == first.dispositions
+    assert [p for p in fetches.paths if not p.exists()] == []
+    assert decided >= 1 and len(fetches.paths) == decided  # decided once, then retained
