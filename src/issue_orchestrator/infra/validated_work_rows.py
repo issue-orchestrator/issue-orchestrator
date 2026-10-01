@@ -167,7 +167,7 @@ def disposition(conn: sqlite3.Connection, record_id: str) -> ValidatedWorkDispos
         row["published_pr_number"] or evidence.admission.evidence.observations.pr_number,
         row["published_head_sha"] or None,
         resolution,
-        published_by_open_pr=row["published_pr_number"] > 0,  # stamped only on RECOVERED
+        published_by_its_pr=row["published_pr_number"] > 0,  # stamped only on RECOVERED
     )
 
 

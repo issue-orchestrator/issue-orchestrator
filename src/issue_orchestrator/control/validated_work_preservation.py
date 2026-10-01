@@ -27,7 +27,7 @@ from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from ..ports.working_copy import WorkingCopy
 from .validated_work_capture import ValidatedWorkCustody
 from .validated_work_escrow import EscrowReconciliation
-from .validated_work_published_head import OpenPullRequestCarriage
+from .validated_work_published_head import PullRequestCarriage
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class ValidatedWorkPreservationService:
                  custody: ValidatedWorkCustody, repair: EscrowReconciliation,
                  working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver,
                  base_branch: Callable[[int, Path], str | None],
-                 carriage: OpenPullRequestCarriage) -> None:
+                 carriage: PullRequestCarriage) -> None:
         self._intake = intake
         self._store = store
         self._custody = custody
@@ -124,11 +124,12 @@ class ValidatedWorkPreservationService:
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
         observed: ValidatedWorkRemoteFacts, evidence: ValidatedWorkEvidence,
     ) -> None:
-        """Before admission: record the head the issue's open PR already publishes.
+        """Before admission: record the head a PR already publishes.
 
-        When the completion's own push put this validated head on its open PR,
-        that PR head is the lineage's published head. Recording it first makes
-        admission resolve the capture as contained in it
+        When the completion's own push put this validated head on its open PR
+        - or a merged PR of the branch already landed it - that PR head is the
+        lineage's published head. Recording it first makes admission resolve
+        the capture as contained in it
         (RECOVERED, ``recovery-pending`` never asserted, the PR's work under
         published-review custody) instead of classifying a rebased rework
         against the lineage's older head and parking it divergent (porchpin
@@ -138,14 +139,14 @@ class ValidatedWorkPreservationService:
         holds the capture like any other.
         """
         key = evidence.identity.key
-        published = self._carriage.carried(
-            observed, repo_slug=key.repo_slug, branch_name=key.branch_name,
+        published = self._carriage.proof(
+            ValidatedWorkRemoteRequest(key.repo_slug, command.issue_number, key.branch_name),
             validated_head_sha=key.validated_head_sha,
-            repository=candidate.entry.run.worktree_path,
+            repository=candidate.entry.run.worktree_path, facts=observed,
         )
         if published is None:
             return
-        status = self._store.record_open_pr_publication(
+        status = self._store.record_pr_publication(
             key, published=published, observed_at=command.run_evidence.observed_at,
         )
         logger.info(

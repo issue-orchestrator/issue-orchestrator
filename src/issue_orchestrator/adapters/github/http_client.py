@@ -1869,8 +1869,10 @@ class GitHubHttpClient:
             raise GitHubHttpError("Malformed publication PR response")
         return payload
 
-    def read_publication_prs(self, branch: str) -> list[dict[str, Any]]:
-        """Complete, uncached branch candidate set; refuse a capped scan."""
+    def read_publication_prs(self, branch: str, *, state: str = "open") -> list[dict[str, Any]]:
+        """Complete, uncached branch candidate set in ``state``; refuse a capped scan."""
+        if state not in {"open", "closed"}:
+            raise ValueError("publication PR state must be open or closed")
         owner = self._config.repo.split("/")[0]
         result: list[dict[str, Any]] = []
         for page in range(1, 21):
@@ -1879,7 +1881,7 @@ class GitHubHttpClient:
                 f"/repos/{self._config.repo}/pulls",
                 params={
                     "head": f"{owner}:{branch}",
-                    "state": "open",
+                    "state": state,
                     "per_page": 100,
                     "page": page,
                 },

@@ -40,7 +40,7 @@ from issue_orchestrator.control.validated_work_capture import ValidatedWorkCusto
 from issue_orchestrator.control.validated_work_effects import FencedValidatedWorkEffects
 from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
 from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
-from issue_orchestrator.control.validated_work_published_head import OpenPullRequestCarriage
+from issue_orchestrator.control.validated_work_published_head import PullRequestCarriage
 from issue_orchestrator.control.validated_work_scope_retirement import (
     RETIREMENT_ACTOR, OutOfScopeRecordRetirement, OutOfScopeRetirementSweep,
 )
@@ -162,13 +162,14 @@ def _rig(tmp_path, agent_label):
         reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
+    observer.merged_pull_requests.return_value = ()
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
         working_copy=wc, observer=observer,
         # No remote in this rig: the base is unreadable, so the kind alone
         # decides here (the ahead-of-base rule has its own tests).
         base_branch=lambda _issue, _worktree: "main",
-        carriage=OpenPullRequestCarriage(git=wc))
+        carriage=PullRequestCarriage(git=wc, observer=observer))
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()

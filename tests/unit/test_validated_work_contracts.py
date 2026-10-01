@@ -11,6 +11,7 @@ from issue_orchestrator.domain.validated_work import (
     ValidatedWorkFailure as Failure,
     ValidatedWorkState as State,
 )
+from issue_orchestrator.domain.validated_work import ResolutionKind
 from issue_orchestrator.domain.validated_work_store import (
     DispositionPhase,
     LineagePublication,
@@ -164,14 +165,20 @@ def test_an_observed_publication_cannot_invent_a_pre_push_baseline(observed):
         LineagePublication("lineage", V, "record", observed.value, "", AT)
 
 
-@pytest.mark.parametrize(("via", "pr"), [
-    (PublicationProvenance.OBSERVED_OPEN_PR, 0),
-    (PublicationProvenance.PUSHED_BY_OWNER, 7),
-    (PublicationProvenance.OBSERVED_MERGE, 7),
+@pytest.mark.parametrize(("via", "pr", "refusal"), [
+    (PublicationProvenance.OBSERVED_OPEN_PR, 0, "names its PR"),
+    (PublicationProvenance.PUSHED_BY_OWNER, 7, "names no PR"),
 ])
-def test_only_an_open_pr_publication_names_its_pr(via, pr):
-    with pytest.raises(ValueError, match="names its PR"):
+def test_a_publication_names_its_pr_exactly_when_a_pr_published_it(via, pr, refusal):
+    with pytest.raises(ValueError, match=refusal):
         LineagePublication("lineage", V, "record", via, "", AT, pr)
+
+
+@pytest.mark.parametrize("pr", [0, 7])
+def test_an_observed_merge_may_name_the_pr_it_landed_through(pr):
+    fact = LineagePublication("lineage", V, "record", PublicationProvenance.OBSERVED_MERGE, "", AT, pr)
+    landed = ResolutionKind.LANDED_VIA_MERGED_PR if pr else ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
+    assert fact.contained_kind is landed
 
 
 @pytest.mark.parametrize(

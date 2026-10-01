@@ -1416,15 +1416,15 @@ So the open PR is the third verified publication route:
 - exactly one open PR of this repository on the run's branch
   (`classify_remote_pr`);
 - the PR head equals the branch head the remote reported and the head just
-  fetched (`OpenPullRequestCarriage` fetches fresh and never trusts a cached
+  fetched (`PullRequestCarriage` fetches fresh and never trusts a cached
   tracking ref);
 - the validated head equals that head or is an ancestor of it.
 
 No PR, several PRs, a closed PR, a moved branch, an unreadable remote or an
 unanswerable ancestry each prove nothing, and admission proceeds as before.
 
-**The record** is `record_open_pr_publication`
-(`infra/validated_work_open_pr.py`), one write transaction owned by the store:
+**The record** is `record_pr_publication`
+(`infra/validated_work_pr_publication.py`), one write transaction owned by the store:
 
 - The store re-verifies the containment with its own ancestry. It never takes
   the caller's word for it.
@@ -1446,7 +1446,7 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   was resolved now or is admitted later. A record captured before its PR
   existed then still names the PR that carries it, and published-review
   custody keeps guarding that PR after later pushes. The disposition exposes
-  the stamp as `published_by_open_pr`. Divergent unresolved
+  the stamp as `published_by_its_pr`. Divergent unresolved
   records stay parked, because the PR genuinely does not carry them. A later
   unpublished descendant, captured with the PR head as its expectation, is
   sequenced from that head exactly as §2.1.4 prescribes for
@@ -1460,14 +1460,14 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   resolves as contained, so `recovery-pending` is never asserted, and the
   RECOVERED record keeps the PR under published-review custody (#7293).
   `recovery_holds_captured_work` does not count records that are
-  `published_by_open_pr`, because recovery routed nothing for them. A halted
+  `published_by_its_pr`, because recovery routed nothing for them. A halted
   exchange therefore keeps its own block rather than deferring to a recovery
   that will never act (#7295). The answer is read from the durable record, so
   a replayed capture gives it again. Evidence that fails re-verification stays
   `FAILED`, and recovery holds it.
 - **Records captured before this rule** are reached by
   `OutOfScopeRetirementSweep`. For every in-scope record that is not
-  `PUBLISHING`, it asks `OpenPullRequestPublication`. That records the
+  `PUBLISHING`, it asks `PullRequestPublicationRecorder`. That records the
   publication through `AggregateRecoveryBlocks`, which re-projects the issue's
   block. The porchpin records resolve on the first drain pass after the
   upgrade. A record's scope, once proven, is remembered for the process. Its
@@ -1476,6 +1476,58 @@ unanswerable ancestry each prove nothing, and admission proceeds as before.
   release a parked record without any new capture. Cold readers require the
   new column, so an unmigrated store reads as `UNSUPPORTED_SCHEMA` instead of
   failing in the mapper.
+
+### 2.8 A merged PR is a publication route too, even a squash merge (porchpin #26, #320)
+
+After §2.7 shipped, three records stayed `DIVERGENT_VALIDATED_HEADS`. Their PRs
+(#376, #386) had been squash-merged. §2.7 proves containment only against an
+*open* PR head, and after a squash merge none is left: the branch may be
+deleted, and the squash commit on the base contains none of the branch's
+commits. Those records would stay parked forever.
+
+The §3.5 design already asked for this outcome: a merged PR whose head
+contains the validated head should resolve the record. But `resolve_observed_merge`
+had no production caller, so nothing delivered it.
+
+**The proof** is `landed_via_merged_pull_request`
+(`domain/validated_work_remote_authority.py`), and every fact must agree:
+
+- the PR is merged, of this repository (head and base), and from this branch;
+- its head at merge, as GitHub reports it (`head.sha`), equals the head just
+  fetched from `refs/pull/N/head`. GitHub keeps that ref after the branch is
+  deleted, and `WorkingCopy.fetch_pull_request_head` fetches it;
+- the validated head equals that head or is an ancestor of it.
+
+**Who proves and records it.** The proof needs no PR number on the record. The
+candidates are the branch's merged PRs
+(`ValidatedWorkCaptureObserver.merged_pull_requests`, one uncached read of the
+branch's closed PRs). `PullRequestCarriage.proof` is the one owner of both
+routes. It asks the open PR first, and only a head no open PR carries costs the
+merged-PR read. Capture and the scope sweep both ask through it, so a capture
+made after the merge is resolved the same way.
+
+**The store.** `record_pr_publication` records the merged PR's head as the
+lineage fact, with provenance `OBSERVED_MERGE` and `published_pr_number` set to
+the PR. It follows the same rules as §2.7. Reclassification then resolves every
+record that head contains as `RECOVERED(LANDED_VIA_MERGED_PR)`, named for the
+PR and with its escrow and pins kept. `LineagePublication.contained_kind` makes
+that choice: `OBSERVED_MERGE` naming a PR lands records, and every other
+published head contains them. Such records are `published_by_its_pr`, so
+recovery does not claim to hold them.
+
+**What stays unresolved:**
+- A closed PR that was never merged.
+- A merged head that does not carry the record.
+- A `refs/pull/N/head` that cannot be fetched or no longer matches GitHub's
+  head at merge.
+- An unreadable remote.
+
+**Known edge.** A reused branch with an older merged PR and a newer open PR can
+move the fact back to the merged head while proving a record that only the
+merged PR carries. The next capture on the open PR records the open head again
+(§2.7). A descendant queued from the open head meanwhile parks
+`REMOTE_BASELINE_UNPROVEN` for a decision. That decision is a park, never a
+publish.
 
 ## 3. Composition and control flow
 

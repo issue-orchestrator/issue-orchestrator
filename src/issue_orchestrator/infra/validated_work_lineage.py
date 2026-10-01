@@ -39,6 +39,7 @@ class LineageDecision:
     contained_at: str = ""
     # The open PR the containing head was observed on (OBSERVED_OPEN_PR), else 0.
     contained_pr: int = 0
+    contained_kind: ResolutionKind = ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
     reachable: bool = True
 
     @property
@@ -218,10 +219,11 @@ class LineageClassifier:
             if self.verifies(decision.evidence):
                 decision.state, decision.failure = State.RECOVERED, None
                 decision.reason, decision.contained_at = (
-                    ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD.value,
+                    fact.contained_kind.value,
                     fact.published_head_sha,
                 )
                 decision.contained_pr = fact.published_pr_number
+                decision.contained_kind = fact.contained_kind
             else:
                 decision.state, decision.failure, decision.reason = (
                     State.FAILED,
@@ -385,7 +387,7 @@ class LineageClassifier:
                 "finalization_phase='complete', published_pr_number=? WHERE record_id=?",
                 (
                     decision.contained_at,
-                    ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD.value,
+                    decision.contained_kind.value,
                     at,
                     at,
                     decision.contained_pr,

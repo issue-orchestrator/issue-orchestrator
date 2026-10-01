@@ -281,7 +281,7 @@ def build_validated_work_recovery(
     from ..control.retry_review_routing import RetryReviewPolicy
     from ..control.validated_work_scope_retirement import OutOfScopeRetirementSweep
     from ..control.validated_work_published_head import (
-        OpenPullRequestCarriage, OpenPullRequestPublication,
+        PullRequestCarriage, PullRequestPublicationRecorder,
     )
     from ..control.review_exchange_lifecycle import OtherRuntimeActivity
     from ..control.staged_published_work_finalizer import StagedPublishedWorkFinalizer
@@ -375,9 +375,8 @@ def build_validated_work_recovery(
             store=owners.records,
             execution=owners.execution,
             retirement=owners.scope_retirement,
-            publication=OpenPullRequestPublication(
-                observer=owners.capture_observer,
-                carriage=OpenPullRequestCarriage(git=working_copy),
+            publication=PullRequestPublicationRecorder(
+                carriage=PullRequestCarriage(git=working_copy, observer=owners.capture_observer),
                 store=owners.store,
                 repository=config.repo_root,
                 now=lambda: datetime.now(timezone.utc).isoformat(),

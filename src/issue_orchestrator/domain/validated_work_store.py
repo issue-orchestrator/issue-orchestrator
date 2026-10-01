@@ -174,15 +174,13 @@ class LineagePublication:
     published_via: PublicationProvenance
     published_pre_push_expected: str
     published_at: str
-    # The open PR an OBSERVED_OPEN_PR publication was observed on; 0 otherwise.
+    # The PR a PR-observed publication came through: required for an open PR
+    # (OBSERVED_OPEN_PR), named for a merged PR when known (OBSERVED_MERGE),
+    # never for our own push. 0 means none.
     published_pr_number: int = 0
 
     def __post_init__(self) -> None:
         require_text(self.lineage_key, "lineage_key")
-        if (self.published_pr_number > 0) is not (
-            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
-        ):
-            raise ValueError("exactly an open-PR publication names its PR")
         require_text(self.published_by_record_id, "published_by_record_id")
         require_sha(self.published_head_sha)
         require_text(self.published_at, "published_at")
@@ -192,6 +190,20 @@ class LineagePublication:
             require_sha(self.published_pre_push_expected)
             if self.published_via is not PublicationProvenance.PUSHED_BY_OWNER:
                 raise ValueError("an observed publication proves no pre-push baseline")
+        if type(self.published_pr_number) is not int or self.published_pr_number < 0:
+            raise ValueError("published PR number must be a non-negative int")
+        if self.published_via is PublicationProvenance.OBSERVED_OPEN_PR and not self.published_pr_number:
+            raise ValueError("an open-PR publication names its PR")
+        if self.published_via is PublicationProvenance.PUSHED_BY_OWNER and self.published_pr_number:
+            raise ValueError("our own push names no PR")
+
+    @property
+    def contained_kind(self) -> ResolutionKind:
+        """How a record this head contains is resolved: a merged PR named by
+        the fact LANDED it; any other published head CONTAINS it."""
+        if self.published_via is PublicationProvenance.OBSERVED_MERGE and self.published_pr_number:
+            return ResolutionKind.LANDED_VIA_MERGED_PR
+        return ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +215,7 @@ class PublicationResolution:
     classified_waiters: tuple[ValidatedWorkDisposition, ...]
 
 
-class OpenPrPublicationStatus(StrEnum):
+class PrPublicationStatus(StrEnum):
     """What recording an open PR's publication did to the lineage fact."""
 
     ADVANCED = "advanced"  # the fact now names the PR head; the lineage was reclassified
@@ -214,7 +226,7 @@ class OpenPrPublicationStatus(StrEnum):
     @property
     def reclassified_lineage(self) -> bool:
         """Whether the lineage's records were reclassified, so its block may have moved."""
-        return self is OpenPrPublicationStatus.ADVANCED
+        return self is PrPublicationStatus.ADVANCED
 
 
 class LineageResolutionRefusal(StrEnum):

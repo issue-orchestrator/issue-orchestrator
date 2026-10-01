@@ -49,7 +49,7 @@ from issue_orchestrator.control.validated_work_effects import FencedValidatedWor
 from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
 from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
 from issue_orchestrator.control.validated_work_published_head import (
-    OpenPullRequestCarriage, OpenPullRequestPublication,
+    PullRequestCarriage, PullRequestPublicationRecorder,
 )
 from issue_orchestrator.control.validated_work_scope_retirement import (
     OutOfScopeRecordRetirement, OutOfScopeRetirementSweep,
@@ -70,9 +70,10 @@ from issue_orchestrator.domain.validated_work import (
 )
 from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
 from issue_orchestrator.domain.validated_work_remote_authority import (
-    PublishedOnOpenPullRequest, carried_by_open_pull_request,
+    LandedViaMergedPullRequest, PublishedOnOpenPullRequest, carried_by_open_pull_request,
+    landed_via_merged_pull_request,
 )
-from issue_orchestrator.domain.validated_work_store import AncestryRelation, OpenPrPublicationStatus
+from issue_orchestrator.domain.validated_work_store import AncestryRelation, PrPublicationStatus
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.git_tools import create_git
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -116,6 +117,22 @@ class GitHubPulls:
         self.open = True
         self.unreadable = False
         self.reads = 0
+        # Set once PR #381 is merged: GitHub then lists it as merged, its
+        # head frozen at ``refs/pull/381/head``.
+        self.merged = False
+
+    def merged_pull_requests(self, request):
+        self.reads += 1
+        if self.unreadable:
+            raise PublicationRemoteError("GitHub is unreadable")
+        assert (request.repo_slug, request.issue_number, request.branch_name) == (REPO, ISSUE, BRANCH)
+        if not self.merged:
+            return ()
+        head = self._git.run(self._origin, ["rev-parse", f"refs/pull/{PR}/head"]).stdout.strip()
+        return (PublicationPullRequest(
+            PR, f"https://github.com/{REPO}/pull/{PR}", REPO, REPO, BRANCH, "main", head,
+            PublicationPrState.MERGED, "Closes #186",
+        ),)
 
     def observe(self, request):
         self.reads += 1
@@ -124,7 +141,7 @@ class GitHubPulls:
         assert (request.repo_slug, request.issue_number, request.branch_name) == (REPO, ISSUE, BRANCH)
         listed = self._git.run(self._origin, ["for-each-ref", "--format=%(objectname)", f"refs/heads/{BRANCH}"])
         head = listed.stdout.strip() or None
-        if head is None or not self.open:
+        if head is None or not self.open or self.merged:
             return ValidatedWorkRemoteFacts(head, ())
         return ValidatedWorkRemoteFacts(head, (PublicationPullRequest(
             PR, f"https://github.com/{REPO}/pull/{PR}", REPO, REPO, BRANCH, "main", head,
@@ -180,7 +197,7 @@ def rig(tmp_path):
         custody=ValidatedWorkCustody(escrow, aggregate),
         repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
         working_copy=wc, observer=github, base_branch=lambda _issue, _worktree: "main",
-        carriage=OpenPullRequestCarriage(git=wc))
+        carriage=PullRequestCarriage(git=wc, observer=github))
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
@@ -407,9 +424,9 @@ def test_the_store_verifies_containment_itself(rig, make_session):
     ahead = _commit(rig.git, rig.worktree, "ahead", "not published")
 
     # A caller's proof that does not hold is refused, not trusted.
-    assert rig.store.record_open_pr_publication(
+    assert rig.store.record_pr_publication(
         _key(ahead), published=PublishedOnOpenPullRequest(PR, w1), observed_at="2026-09-28T12:00:00+00:00",
-    ) is OpenPrPublicationStatus.CONTAINMENT_UNPROVEN
+    ) is PrPublicationStatus.CONTAINMENT_UNPROVEN
     assert _fact(rig).published_head_sha == w1
 
 
@@ -434,11 +451,11 @@ def test_the_fact_follows_a_pr_forced_back_to_an_ancestor(rig, make_session):
     fact = _fact(rig)
     assert (fact.published_head_sha, fact.published_pr_number) == (w1, PR)
     (published,) = [d for d in rig.store.for_issue(ISSUE).dispositions if d.key.validated_head_sha == w1]
-    assert published.published_by_open_pr
+    assert published.published_by_its_pr
     # The same PR's publication of the same head is already recorded.
-    assert rig.store.record_open_pr_publication(
+    assert rig.store.record_pr_publication(
         _key(w1), published=PublishedOnOpenPullRequest(PR, w1), observed_at="2026-09-28T12:00:00+00:00",
-    ) is OpenPrPublicationStatus.ALREADY_PUBLISHED
+    ) is PrPublicationStatus.ALREADY_PUBLISHED
 
 
 def test_a_record_another_owner_resolved_is_not_reported_published(rig, make_session, monkeypatch):
@@ -455,9 +472,9 @@ def test_a_record_another_owner_resolved_is_not_reported_published(rig, make_ses
             assert rig.store.retire_outside_scope(claim, evidence_ids=frozenset({target.evidence_id}),
                                                   actor="another-owner", reason="resolved elsewhere")
             assert rig.store.relinquish_claim(claim)
-        return OpenPrPublicationStatus.PUBLICATION_IN_FLIGHT
+        return PrPublicationStatus.PUBLICATION_IN_FLIGHT
 
-    monkeypatch.setattr(rig.aggregate, "record_open_pr_publication", another_owner_first)
+    monkeypatch.setattr(rig.aggregate, "record_pr_publication", another_owner_first)
 
     report = _sweep(rig).tick(lambda: RecoveryDrainMode.ACTIVE)
 
@@ -470,10 +487,10 @@ def test_an_in_flight_recovery_publication_keeps_the_lineage(rig, make_session):
     w1 = _recovery_published_first_head(rig)
     held = _publishing_rework(rig, make_session)
 
-    assert rig.store.record_open_pr_publication(
+    assert rig.store.record_pr_publication(
         _key(held.key.validated_head_sha), published=PublishedOnOpenPullRequest(PR, held.key.validated_head_sha),
         observed_at="2026-09-28T12:00:00+00:00",
-    ) is OpenPrPublicationStatus.PUBLICATION_IN_FLIGHT
+    ) is PrPublicationStatus.PUBLICATION_IN_FLIGHT
     assert _fact(rig).published_head_sha == w1
 
 
@@ -484,7 +501,7 @@ def _legacy_parked_records(rig, make_session, monkeypatch):
     """Capture exactly as the regressed engine did: no publication proof."""
     w1 = _recovery_published_first_head(rig)
     with monkeypatch.context() as legacy:
-        legacy.setattr(OpenPullRequestCarriage, "carried", lambda *_args, **_kwargs: None)
+        legacy.setattr(PullRequestCarriage, "proof", lambda *_args, **_kwargs: None)
         v1, v2, holds = _rework_published_by_its_completion(rig, make_session)
     assert holds is True
     parked = [d for d in rig.store.for_issue(ISSUE).dispositions if d.state is ValidatedWorkState.PARKED]
@@ -497,8 +514,8 @@ def _legacy_parked_records(rig, make_session, monkeypatch):
 def _sweep(rig):
     return OutOfScopeRetirementSweep(
         source=rig.store, store=rig.store, execution=rig.execution, retirement=rig.retirement,
-        publication=OpenPullRequestPublication(
-            observer=rig.github, carriage=OpenPullRequestCarriage(git=rig.wc), store=rig.aggregate,
+        publication=PullRequestPublicationRecorder(
+            carriage=PullRequestCarriage(git=rig.wc, observer=rig.github), store=rig.aggregate,
             repository=rig.repo, now=lambda: "2026-09-28T13:00:00+00:00"),
         batch_size=5, liveness=drain_liveness(records=rig.store))
 
@@ -633,10 +650,10 @@ def test_the_admission_only_store_records_an_open_prs_publication_the_same_way(t
     store.admit(admission)
     key = admission.evidence.identity.key
 
-    status = store.record_open_pr_publication(
+    status = store.record_pr_publication(
         key, published=PublishedOnOpenPullRequest(91, L), observed_at="2026-09-28T13:00:00+00:00")
 
-    assert status is OpenPrPublicationStatus.ADVANCED
+    assert status is PrPublicationStatus.ADVANCED
     (disposition,) = store.for_issue(key.issue_number).dispositions
     assert (disposition.state, disposition.published_head_sha) == (ValidatedWorkState.RECOVERED, L)
 
@@ -767,8 +784,8 @@ def test_a_parked_record_published_later_is_released_on_the_next_recheck(rig, ma
     now = [1000.0]
     sweep = OutOfScopeRetirementSweep(
         source=rig.store, store=rig.store, execution=rig.execution, retirement=rig.retirement,
-        publication=OpenPullRequestPublication(
-            observer=rig.github, carriage=OpenPullRequestCarriage(git=rig.wc), store=rig.aggregate,
+        publication=PullRequestPublicationRecorder(
+            carriage=PullRequestCarriage(git=rig.wc, observer=rig.github), store=rig.aggregate,
             repository=rig.repo, now=lambda: "2026-09-28T13:00:00+00:00"),
         batch_size=5, liveness=drain_liveness(records=rig.store),
         publication_recheck_seconds=600, clock=lambda: now[0])
@@ -805,7 +822,7 @@ def test_the_completion_superseding_its_own_publication_reopens_nothing(rig, mak
     _push(rig)
     assert rig.lifecycle.preserve_completed_run(ISSUE, f"rework-{ISSUE}", "session-completion", run=second) is False
     (w2_record,) = [d for d in rig.store.for_issue(ISSUE).dispositions if d.key.validated_head_sha == w2]
-    assert w2_record.published_by_open_pr
+    assert w2_record.published_by_its_pr
     if superseded_by == "rebase":
         _rework_rebases_onto_moved_main(rig)
     else:
@@ -817,3 +834,128 @@ def test_the_completion_superseding_its_own_publication_reopens_nothing(rig, mak
     assert rig.store.get(w2_record.record_id).state is ValidatedWorkState.RECOVERED
     assert not rig.store.has_unresolved_work(ISSUE)
     assert RECOVERY_PENDING not in rig.labels.labels
+
+
+# -- merged PRs (porchpin #26, #320) ------------------------------------------
+#
+# After #7497 resolved records an OPEN PR carries, three porchpin records stayed
+# ``divergent_validated_heads``: their PRs had been squash-merged. There is no
+# open PR head any more, the branch may be deleted, and the squash commit on
+# ``main`` contains none of the original commits. The proof is the merged PR's
+# head at merge - GitHub keeps it at ``refs/pull/N/head`` - and the record's
+# validated head is that head or one of its ancestors. The bare remote plays
+# GitHub's squash merge: a new commit on ``main``, the head branch deleted,
+# ``refs/pull/381/head`` left at the PR's last head.
+
+
+def _squash_merge(rig) -> str:
+    """GitHub's squash merge of PR #381, then its head branch deleted."""
+    pr_head = rig.git.run(rig.origin, ["rev-parse", f"refs/heads/{BRANCH}"]).stdout.strip()
+    rig.git.run(rig.origin, ["update-ref", f"refs/pull/{PR}/head", pr_head])
+    rig.git.run(rig.repo, ["fetch", "-q", "origin", "main", BRANCH])
+    rig.git.run(rig.repo, ["checkout", "-q", "--detach", "origin/main"])
+    rig.git.run(rig.repo, ["merge", "-q", "--squash", f"origin/{BRANCH}"])
+    rig.git.run(rig.repo, ["commit", "-q", "-m", f"#186 (#{PR})"])
+    rig.git.run(rig.repo, ["push", "-q", "origin", "HEAD:refs/heads/main", f":refs/heads/{BRANCH}"])
+    rig.github.merged = True
+    return pr_head
+
+
+def test_parked_records_a_squash_merged_pr_landed_resolve(rig, make_session, monkeypatch):
+    _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    pr_head = _squash_merge(rig)
+    squash = rig.git.run(rig.origin, ["rev-parse", "main"]).stdout.strip()
+    for disposition in parked:  # the squash commit does not contain the work
+        assert rig.git.run(rig.repo, ["merge-base", "--is-ancestor", disposition.key.validated_head_sha, squash],
+                           check=False).returncode != 0
+
+    report = _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    assert report.scope_sweep.retired == ()
+    assert report.scope_sweep.published
+    assert not rig.store.has_unresolved_work(ISSUE)
+    for disposition in parked:
+        record = rig.store.record_for_id(disposition.record_id)
+        assert record.disposition.state is ValidatedWorkState.RECOVERED
+        assert record.resolution_kind is ResolutionKind.LANDED_VIA_MERGED_PR
+        assert record.disposition.published_head_sha == pr_head
+        assert record.disposition.pr_number == PR
+        pinned = record.current_evidence.admission.pinned_ref
+        assert rig.git.run(rig.repo, ["rev-parse", pinned]).stdout.strip() == disposition.key.validated_head_sha
+    assert _fact(rig).published_head_sha == pr_head
+    assert RECOVERY_PENDING not in rig.labels.labels
+
+
+def test_a_capture_after_its_pr_merged_records_the_landing(rig, make_session):
+    """The same owner at capture: a run whose PR was squash-merged before its
+    terminal capture (a late session-cleanup) is landed, not parked."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    w1 = _commit(rig.git, rig.worktree, "journey", "first attempt")
+    _validate(rig, coding, "coding-1")
+    _push(rig)
+    pr_head = _squash_merge(rig)
+
+    assert rig.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=coding) is False
+
+    (landed,) = rig.store.for_issue(ISSUE).dispositions
+    record = rig.store.record_for_id(landed.record_id)
+    assert (record.disposition.state, record.resolution_kind) == (
+        ValidatedWorkState.RECOVERED, ResolutionKind.LANDED_VIA_MERGED_PR)
+    assert (pr_head, record.disposition.pr_number) == (w1, PR)
+    assert rig.labels.operations == []
+
+
+@pytest.mark.parametrize("doubt", ["not-carried", "pull-ref-gone", "unreadable"])
+def test_a_merged_pr_that_is_not_proven_to_have_landed_it_leaves_it_parked(rig, make_session, monkeypatch, doubt):
+    _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    _squash_merge(rig)
+    if doubt == "not-carried":
+        # GitHub reports a head at merge that carries none of the parked work.
+        rig.git.run(rig.repo, ["checkout", "-q", "--detach", "origin/main~1"])
+        rig.git.run(rig.repo, ["commit", "-q", "--allow-empty", "-m", "unrelated"])
+        rig.git.run(rig.repo, ["push", "-q", "origin", f"HEAD:refs/pull/{PR}/head", "--force"])
+    elif doubt == "pull-ref-gone":
+        rig.git.run(rig.origin, ["update-ref", "-d", f"refs/pull/{PR}/head",
+                                 rig.git.run(rig.origin, ["rev-parse", f"refs/pull/{PR}/head"]).stdout.strip()])
+        monkeypatch.setattr(rig.github, "merged_pull_requests", lambda request: (PublicationPullRequest(
+            PR, f"https://github.com/{REPO}/pull/{PR}", REPO, REPO, BRANCH, "main", parked[0].key.validated_head_sha,
+            PublicationPrState.MERGED, ""),))
+    else:
+        rig.github.unreadable = True
+
+    _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    for disposition in parked:
+        assert rig.store.get(disposition.record_id).state is ValidatedWorkState.PARKED
+    assert RECOVERY_PENDING in rig.labels.labels
+
+
+def _merged(head, *, state=PublicationPrState.MERGED, branch=BRANCH, repo=REPO):
+    return PublicationPullRequest(PR, f"https://github.com/{REPO}/pull/{PR}", repo, repo, branch, "main",
+                                  head, state, "")
+
+
+@pytest.mark.parametrize(("pr", "fetched", "relation"), [
+    (_merged(HEAD, state=PublicationPrState.CLOSED), HEAD, AncestryRelation.EQUAL),
+    (_merged(HEAD, state=PublicationPrState.OPEN), HEAD, AncestryRelation.EQUAL),
+    (_merged(HEAD, branch="another-branch"), HEAD, AncestryRelation.EQUAL),
+    (_merged(HEAD, repo="fork/repo"), HEAD, AncestryRelation.EQUAL),
+    (_merged(HEAD), OTHER, AncestryRelation.EQUAL),
+    (_merged(HEAD), None, None),
+    (_merged(HEAD), HEAD, AncestryRelation.DESCENDANT),
+    (_merged(HEAD), HEAD, AncestryRelation.DIVERGENT),
+    (_merged(HEAD), HEAD, AncestryRelation.RIGHT_UNREACHABLE),
+], ids=["closed-unmerged", "open", "other-branch", "fork", "pull-ref-moved", "pull-ref-unfetchable",
+        "head-ahead-of-pr", "divergent", "unreachable"])
+def test_only_every_fact_agreeing_proves_a_landing(pr, fetched, relation):
+    assert landed_via_merged_pull_request(
+        pr, repo_slug=REPO, branch_name=BRANCH, fetched_head_sha=fetched, relation=relation) is None
+
+
+@pytest.mark.parametrize("relation", [AncestryRelation.EQUAL, AncestryRelation.ANCESTOR])
+def test_a_merged_pr_whose_head_carries_the_work_proves_the_landing(relation):
+    proof = landed_via_merged_pull_request(
+        _merged(HEAD), repo_slug=REPO, branch_name=BRANCH, fetched_head_sha=HEAD, relation=relation)
+    assert proof == LandedViaMergedPullRequest(PR, HEAD)
+    assert proof.provenance is PublicationProvenance.OBSERVED_MERGE

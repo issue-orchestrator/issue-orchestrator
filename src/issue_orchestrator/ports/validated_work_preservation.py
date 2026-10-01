@@ -3,10 +3,10 @@
 from typing import Protocol
 from ..domain.validated_work_commands import AutomaticCaptureCommand, ValidatedWorkDispositionBatch
 from ..domain.validated_work import ValidatedWorkKey
-from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
+from ..domain.validated_work_remote_authority import PullRequestPublication
 from ..domain.validated_work_store import (
     AdmissionOutcome, EvidenceAdmission, EvidenceAdmissionSelection, EvidenceLookup, EvidenceRow,
-    OpenPrPublicationStatus,
+    PrPublicationStatus,
 )
 
 
@@ -17,9 +17,9 @@ class ValidatedWorkAdmissionStore(Protocol):
     def has_unresolved_work(self, issue_number: int) -> bool: ...
     def evidence_for_id(self, evidence_id: str) -> EvidenceLookup | None: ...
 
-    def record_open_pr_publication(
-        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
-    ) -> OpenPrPublicationStatus:
+    def record_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PullRequestPublication, observed_at: str,
+    ) -> PrPublicationStatus:
         """Record that the issue's open PR publishes a head containing ``key``'s head.
 
         The store verifies the containment itself, then advances the

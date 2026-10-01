@@ -1,13 +1,15 @@
-"""Record the lineage head an open PR publishes, then reclassify the lineage.
+"""Record the lineage head a PR publishes, then reclassify the lineage.
 
-The third verified publication route (§2.1.4): the issue's completion pushed
-its own validated work into its open PR. The store records that head as the
-lineage's published head, with provenance ``OBSERVED_OPEN_PR``, only after it
-has itself verified that a validated head of the lineage is contained in it.
-Reclassifying against the new fact is what resolves contained records
-``RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)``. Before this route existed,
-recovery compared a rework's rebased heads with the lineage's older published
-head and parked them as divergent (porchpin #186).
+Two verified publication routes that are not recovery's own push (§2.1.4,
+§2.7): the completion's push observed on the issue's open PR, and a merged PR
+of the branch (§3.5), proven by its head at merge - a squash merge leaves
+none of the branch's commits on the base. The store records that head as the
+lineage's published head only after it has itself verified that a validated
+head of the lineage is contained in it. Reclassifying against the new fact is
+what resolves the contained records: ``CONTAINED_IN_PUBLISHED_HEAD`` for an
+open PR, ``LANDED_VIA_MERGED_PR`` for a merged one. Before these routes
+existed, recovery parked such records ``divergent_validated_heads`` forever
+(porchpin #186, #26, #320).
 """
 
 from __future__ import annotations
@@ -21,25 +23,29 @@ from ..domain.validated_work import (
     canonical_lineage_key,
     canonical_record_id,
 )
-from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
+from ..domain.validated_work_remote_authority import PullRequestPublication
 from ..domain.validated_work_store import (
     AncestryRelation as Relation,
     CommitReference,
-    OpenPrPublicationStatus as Status,
+    PrPublicationStatus as Status,
 )
 from .validated_work_lineage import LineageClassifier
 from .validated_work_rows import publication
 
 
-def record_open_pr_publication(
+def record_pr_publication(
     conn: sqlite3.Connection,
     lineage: LineageClassifier,
     *,
     key: ValidatedWorkKey,
-    published: PublishedOnOpenPullRequest,
+    published: PullRequestPublication,
     observed_at: str,
 ) -> Status:
-    """Advance the lineage fact to the open PR's head when it carries ``key``'s head.
+    """Advance the lineage fact to a PR's head when it carries ``key``'s head.
+
+    The PR is the issue's open PR (``OBSERVED_OPEN_PR``), or a merged PR of the
+    branch, whose head at merge is the published head even when a squash
+    merge left none of its commits on the base (``OBSERVED_MERGE``).
 
     Rules, all inside the caller's write transaction:
 
@@ -92,7 +98,7 @@ def record_open_pr_publication(
             lineage_key,
             published.head_sha,
             canonical_record_id(key),
-            PublicationProvenance.OBSERVED_OPEN_PR.value,
+            published.provenance.value,
             "",
             observed_at,
             published.pr_number,

@@ -174,6 +174,15 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
+    def fetch_pull_request_head(self, repository: Path, number: int) -> str | None:
+        """PR ``number``'s head as the remote keeps it (``refs/pull/N/head``), fetched now.
+
+        That ref outlives the PR's branch, so it still names a merged PR's
+        head after the branch is deleted. ``None`` when the remote cannot be
+        read or has no such PR - never a guess.
+        """
+        ...
+
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch.
 
