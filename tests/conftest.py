@@ -1305,6 +1305,7 @@ def build_test_orchestrator_deps(
         publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
         base_branch=lambda _issue, _worktree: "main",
         pending_work_claims=pending_work_claims,
+        repository=config.repo_root,
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
     from issue_orchestrator.entrypoints.bootstrap_action_liveness import build_action_liveness

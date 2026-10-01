@@ -169,7 +169,7 @@ def _rig(tmp_path, agent_label):
         # No remote in this rig: the base is unreadable, so the kind alone
         # decides here (the ahead-of-base rule has its own tests).
         base_branch=lambda _issue, _worktree: "main",
-        carriage=PullRequestCarriage(git=wc, observer=observer))
+        carriage=PullRequestCarriage(git=wc, observer=observer), repository=repo)
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
@@ -994,3 +994,18 @@ def test_porchpin_410_a_legacy_tech_lead_completion_is_retired_once_and_never_pr
         if e.event_type is EventName.VALIDATED_WORK_ABANDONED
     ]
     assert len(retirements) == 1  # retired once, never re-judged
+
+
+def test_a_replayed_capture_of_a_retained_tech_lead_record_holds_nothing(tech_lead, monkeypatch):
+    """Review (#7552 r2): the retained-first shortcut must not bypass the
+    scope rule. A tech-lead completion admitted before the rule is still
+    retained; replaying its selected-run capture reports no recovery custody."""
+    _legacy_capture(tech_lead, monkeypatch)
+
+    batch = tech_lead.lifecycle.preserve_completed_terminal(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=tech_lead.run)
+
+    assert batch.captured_keys == frozenset()
+    assert batch.recovery_holds_captured_work is False
+    assert tech_lead.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=tech_lead.run) is False

@@ -37,7 +37,7 @@ class ValidatedWorkPreservationService:
                  custody: ValidatedWorkCustody, repair: EscrowReconciliation,
                  working_copy: WorkingCopy, observer: ValidatedWorkCaptureObserver,
                  base_branch: Callable[[int, Path], str | None],
-                 carriage: PullRequestCarriage) -> None:
+                 carriage: PullRequestCarriage, repository: Path) -> None:
         self._intake = intake
         self._store = store
         self._custody = custody
@@ -47,6 +47,10 @@ class ValidatedWorkPreservationService:
         # The ref a head must be ahead of to be work: the base its PR targets.
         self._base_branch = base_branch
         self._carriage = carriage
+        # The base repository: it always exists, shares every run's objects,
+        # and is where base and PR refs are read - never a run's worktree,
+        # which cleanup removes while the run's completion stays a candidate.
+        self._repository = repository
 
     def has_unresolved_work(self, issue_number: int) -> bool:
         return self._store.has_unresolved_work(issue_number)
@@ -60,21 +64,73 @@ class ValidatedWorkPreservationService:
         observations: dict[
             ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
         ] = {}
-        candidates = tuple(
-            candidate
-            for candidate in self._intake.prepare_termination(command.run_evidence, command.scope)
-            if self._captures(candidate, command, observations)
+        # An issue-wide capture re-prepares EVERY completion the issue ever
+        # had. One whose evidence is already retained was decided at its first
+        # capture - that row is the durable decision - so it is never judged
+        # again: no base fetch, no GitHub read (porchpin 2026-10-01: one
+        # failed fetch per retained record per escalation and per startup).
+        # The scope rule gates every path, the retained one included: a
+        # tech-lead completion admitted before the rule is retired, never
+        # counted as this run's recovered work.
+        prepared = tuple(
+            c for c in self._intake.prepare_termination(command.run_evidence, command.scope)
+            if self._in_scope(c)
+        )
+        # Select the newest completion per work first, exactly as before, so
+        # the retained shortcut below can never promote an older, superseded
+        # completion of the same work into a fresh capture.
+        selected = newest_per_work(prepared, command.issue_number)
+        decided = tuple(c for c in selected if self._retained(c, command))
+        undecided = tuple(
+            candidate for candidate in selected
+            if candidate not in decided and self._captures(candidate, command, observations)
         )
         report = self._repair.reconcile_escrow_orphans()
         if report.problems:
             raise CompletionIntakeError(f"escrow custody requires repair: {report.problems}")
         self._repair.require_issue_custody(command.issue_number)
-        selected = newest_per_work(candidates, command.issue_number)
-        for candidate in selected:
+        for candidate in undecided:
             self._capture(candidate, command, observations)
         return replace(
             self._store.for_issue(command.issue_number),
-            captured_keys=frozenset(candidate_key(c, command.issue_number) for c in selected),
+            captured_keys=frozenset(
+                candidate_key(c, command.issue_number) for c in (*decided, *undecided)
+            ),
+        )
+
+    @staticmethod
+    def _in_scope(candidate: PreparedCompletionEvidence) -> bool:
+        """Whether the run's KIND makes its completion the issue's deliverable.
+
+        A tech-lead run is recorded against its subject issue, but its branch
+        is its own and its completion already decides what that branch
+        publishes - taking it as the subject's work put a ``recovery-pending``
+        on the subject that no publication ever released (#7323, #7346).
+        """
+        role = candidate.role
+        if recovery_owns(role):
+            return True
+        logger.info(
+            "[VALIDATED_WORK] Not capturing issue #%d run %s: %s",
+            role.issue_number, candidate.run.run.run_id, outside_scope_reason(role),
+        )
+        return False
+
+    def _retained(self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand) -> bool:
+        """Whether this completion's evidence is already retained.
+
+        Both legal identity forms are checked, before any mutable workspace or
+        remote fact is observed: this preserves the first capture's branch
+        binding and observations after the run's runtime is released.
+        """
+        if candidate.run.branch_name is None:
+            raise CompletionIntakeError("exact run has no recorded branch binding")
+        return any(
+            self._store.evidence_for_id(candidate_evidence(
+                candidate, issue_number=command.issue_number, head=candidate.validation.head_sha,
+                branch_verified=bound, captured_at=command.run_evidence.observed_at,
+            ).evidence_id) is not None
+            for bound in (True, False)
         )
 
     def _captures(
@@ -83,32 +139,21 @@ class ValidatedWorkPreservationService:
             ValidatedWorkRemoteRequest, ValidatedWorkRemoteFacts | _RemoteUnavailable
         ],
     ) -> bool:
-        """Whether this completion is validated work recovery must hold (#7347).
+        """Whether this in-scope completion is validated work recovery must hold (#7347).
 
-        Two facts, both required. The run's KIND must make its completion the
-        issue's deliverable (``capturable``): a tech-lead run is recorded
-        against its subject issue, but its branch is its own and its
-        completion already decides what that branch publishes - taking it as
-        the subject's work put a ``recovery-pending`` on the subject that no
-        publication ever released (#7323, #7346). And its validated head must
-        have commits ahead of the base its PR targets: a head the base already
-        contains is nothing to preserve, and a PR of it is refused by the host.
+        Its validated head must have commits ahead of the base its PR targets:
+        a head the base already contains is nothing to preserve, and a PR of
+        it is refused by the host. (The run-kind rule is ``_in_scope``.)
         """
         role = candidate.role
-        if not recovery_owns(role):
-            logger.info(
-                "[VALIDATED_WORK] Not capturing issue #%d run %s: %s",
-                role.issue_number, candidate.run.run.run_id, outside_scope_reason(role),
-            )
-            return False
-        worktree = candidate.entry.run.worktree_path
         base = self._pull_request_base(candidate, command, observations)
         # Read fresh from the remote: a cached tracking ref of a base that has
         # since been force-pushed would drop real work. A base that cannot be
         # read or established proves nothing: the head is preserved.
-        base_sha = None if base is None else self._working_copy.fetch_remote_branch_head(worktree, base)
+        base_sha = None if base is None else self._working_copy.fetch_remote_branch_head(
+            self._repository, base)
         relation = None if base_sha is None else self._working_copy.compare_commits(
-            worktree, left=candidate.validation.head_sha, right=base_sha,
+            self._repository, left=candidate.validation.head_sha, right=base_sha,
         )
         if relation in (AncestryRelation.EQUAL, AncestryRelation.ANCESTOR):
             logger.info(
@@ -142,7 +187,7 @@ class ValidatedWorkPreservationService:
         published = self._carriage.proof(
             ValidatedWorkRemoteRequest(key.repo_slug, command.issue_number, key.branch_name),
             validated_head_sha=key.validated_head_sha,
-            repository=candidate.entry.run.worktree_path, facts=observed,
+            repository=self._repository, facts=observed,
         )
         if published is None:
             return
@@ -213,21 +258,33 @@ class ValidatedWorkPreservationService:
         branch_name = candidate.run.branch_name
         if branch_name is None:
             raise CompletionIntakeError("exact run has no recorded branch binding")
-        # Both legal identity forms are checked before observing mutable workspace facts.
-        # This preserves first-capture branch binding and observations after runtime release.
-        for bound in (True, False):
-            identity = candidate_evidence(candidate, issue_number=command.issue_number,
-                head=candidate.validation.head_sha, branch_verified=bound,
-                captured_at=command.run_evidence.observed_at)
-            retained = self._store.evidence_for_id(identity.evidence_id)
-            if retained is not None:
-                return
         worktree = candidate.entry.run.worktree_path
-        head = self._working_copy.get_head_sha(worktree)
-        if head is None:
-            raise CompletionIntakeError("candidate worktree HEAD cannot be established")
-        branch = self._working_copy.get_branch_status(worktree)
-        bound = branch is not None and branch.branch == branch_name
+        removed = not worktree.exists()
+        if removed:
+            # Cleanup removed the worktree before this completion was ever
+            # captured (decided "no work beyond base", then the base moved).
+            # The validated commit lives in the shared object store; there is
+            # no workspace left to observe, so it is preserved unbound - parked
+            # for a decision, once, and retained from then on.
+            head, bound = candidate.validation.head_sha, False
+            if self._working_copy.compare_commits(
+                self._repository, left=head, right=head,
+            ) is not AncestryRelation.EQUAL:
+                # Garbage-collected since: there is nothing left to preserve,
+                # and refusing every later capture would not bring it back.
+                logger.warning(
+                    "[VALIDATED_WORK] Not capturing issue #%d run %s: its worktree is "
+                    "removed and validated commit %s no longer exists in %s",
+                    command.issue_number, candidate.run.run.run_id, head, self._repository,
+                )
+                return
+        else:
+            observed_head = self._working_copy.get_head_sha(worktree)
+            if observed_head is None:
+                raise CompletionIntakeError("candidate worktree HEAD cannot be established")
+            head = observed_head
+            branch = self._working_copy.get_branch_status(worktree)
+            bound = branch is not None and branch.branch == branch_name
         remote_status = RemoteBaselineStatus.UNOBSERVED
         expected_remote_head_sha = None
         pr_number = None
@@ -257,7 +314,8 @@ class ValidatedWorkPreservationService:
             AutomaticCaptureDecision(
                 state, failure,
                 command.reason + ("; queued for automatic recovery" if failure is None
-                                  else "; preserved pending recovery approval"),
+                                  else "; worktree removed before capture, preserved pending recovery approval"
+                                  if removed else "; preserved pending recovery approval"),
             ))
 
 

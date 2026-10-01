@@ -105,7 +105,7 @@ def custody(tmp_path):
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
         custody=ValidatedWorkCustody(escrow, store), repair=repair, working_copy=wc,
         observer=observer, base_branch=lambda issue, worktree: base["ref"](issue, worktree),
-        carriage=PullRequestCarriage(git=wc, observer=observer))
+        carriage=PullRequestCarriage(git=wc, observer=observer), repository=repo)
     source = IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-07T00:00:00Z")
     sessions = Mock()
     sessions.exists.return_value = False
