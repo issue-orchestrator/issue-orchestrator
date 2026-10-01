@@ -20,6 +20,9 @@ from .git_push_operations import GitAuthEnvProvider
 from .git_exact_context import ExactPushContextOwner, require_remote
 
 _PREFIXES = ("refs/issue-orchestrator/validated/", "refs/issue-orchestrator/observed/")
+# Landed merged-PR heads (§2.8) are pinned like escrow, but are not escrow:
+# escrow reconciliation enumerates only ``_PREFIXES`` and never sees them.
+_PINNABLE = (*_PREFIXES, "refs/issue-orchestrator/landed/")
 
 
 class GitExactOperations:
@@ -28,7 +31,7 @@ class GitExactOperations:
         self._auth = auth
 
     def _check_ref(self, repository: Path, ref: str) -> None:
-        if not ref.startswith(_PREFIXES):
+        if not ref.startswith(_PINNABLE):
             raise ValueError("ref must belong to validated-work retention")
         self._git.run(repository, ["check-ref-format", ref])
 
@@ -97,6 +100,9 @@ class GitExactOperations:
         return RetainedRef(ref, sha) if sha is not None else None
 
     def delete_pinned_ref(self, repository: Path, *, ref: str, sha: str) -> None:
+        # Only escrow is ever released; a landed merged-PR pin is permanent.
+        if not ref.startswith(_PREFIXES):
+            raise ValueError("only escrow retention pins may be released")
         if not self.verify_ref(repository, ref=ref, sha=sha):
             raise ValueError("retention pin missing or changed; retained")
         self._git.run(repository, ["update-ref", "--no-deref", "-d", ref, sha])

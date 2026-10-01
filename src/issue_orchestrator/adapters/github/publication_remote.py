@@ -129,6 +129,20 @@ class GitHubValidatedWorkCaptureObserver:
         except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 
+    def merged_pull_requests(
+        self, request: ValidatedWorkRemoteRequest
+    ) -> tuple[PublicationPullRequest, ...]:
+        if request.repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            closed = self._client.read_publication_prs(request.branch_name, state="closed")
+            return tuple(
+                pr for pr in (_pull_request(raw) for raw in closed)
+                if pr.state is PublicationPrState.MERGED
+            )
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
+
 
 class GitHubPublicationRemote:
     def __init__(self, client: GitHubHttpClient, *, repo_slug: str) -> None:

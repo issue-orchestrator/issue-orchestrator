@@ -9,7 +9,7 @@ from ..control.fact_gatherer import FactGatherer
 from ..control.issue_run_evidence import IssueRunEvidenceService
 from ..control.published_review_custody import BranchPullRequestReader, PublishedReviewCustody
 from ..control.validated_work_preservation import ValidatedWorkPreservationService
-from ..control.validated_work_published_head import OpenPullRequestCarriage
+from ..control.validated_work_published_head import PullRequestCarriage
 from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.event_sink import EventSink
@@ -47,7 +47,7 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
     preservation = ValidatedWorkPreservationService(intake=intake, store=validated_work.store,
         custody=validated_work.custody, repair=validated_work.repair, working_copy=working_copy,
         observer=validated_work.capture_observer, base_branch=base_branch,
-        carriage=OpenPullRequestCarriage(git=working_copy))
+        carriage=PullRequestCarriage(git=working_copy, observer=validated_work.capture_observer))
     published_review = PublishedReviewCustody(validated_work.store, pull_requests)
     if stuck_sweep is not None:
         # The sweep asks the very owner the reset gate enforces (#7293).

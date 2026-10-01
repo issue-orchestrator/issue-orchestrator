@@ -13,6 +13,15 @@ class ValidatedWorkAncestry(Protocol):
         """Compare pinned exact commits, identifying which object is unreachable."""
         ...
 
+    def retain(self, reference: CommitReference) -> bool:
+        """Pin ``reference.key.validated_head_sha`` at ``reference.pinned_ref``.
+
+        For a landed merged-PR head (§2.8): GC must never collect the object a
+        landing proves against, once the fetched tracking ref is pruned. True
+        when the ref now names exactly that commit; never moves an existing pin.
+        """
+        ...
+
 
 class ValidatedWorkArtifactVerifier(Protocol):
     def verifies(self, evidence: EvidenceRow) -> bool:

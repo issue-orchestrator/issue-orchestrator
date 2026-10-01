@@ -23,13 +23,13 @@ from ..domain.recovery_block import (
 )
 from ..domain.validated_work import ValidatedWorkKey
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
-from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
+from ..domain.validated_work_remote_authority import PullRequestPublication
 from ..domain.validated_work_store import (
     AdmissionOutcome,
     EvidenceAdmission,
     EvidenceLookup,
     EvidenceRow,
-    OpenPrPublicationStatus,
+    PrPublicationStatus,
 )
 from ..domain.validated_work_execution import (
     ValidatedWorkClaimLost,
@@ -113,9 +113,9 @@ class AggregateRecoveryBlocks:
                 ) from error
             return outcome
 
-    def record_open_pr_publication(
-        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
-    ) -> OpenPrPublicationStatus:
+    def record_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PullRequestPublication, observed_at: str,
+    ) -> PrPublicationStatus:
         """Record the open PR's published head, then re-project the issue's block.
 
         Reclassifying the lineage against that head can resolve every record
@@ -128,7 +128,7 @@ class AggregateRecoveryBlocks:
             # Only records that were unresolved can change: a local read spares
             # the fresh GitHub label read when nothing could have.
             held = self._admission.has_unresolved_work(key.issue_number)
-            recorded = self._admission.record_open_pr_publication(
+            recorded = self._admission.record_pr_publication(
                 key, published=published, observed_at=observed_at,
             )
             if held and recorded.reclassified_lineage:

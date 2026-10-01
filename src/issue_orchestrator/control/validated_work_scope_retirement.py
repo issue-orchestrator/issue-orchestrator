@@ -37,7 +37,7 @@ from ..ports.validated_work_drain import RecoveryDrainAdmission, ValidatedWorkSc
 from ..ports.validated_work_effects import ValidatedWorkEffectAuthority
 from ..ports.validated_work_execution import ValidatedWorkExecutionOwner
 from ..ports.validated_work_store import ValidatedWorkStore
-from .validated_work_published_head import OpenPullRequestPublication
+from .validated_work_published_head import PullRequestPublicationRecorder
 
 if TYPE_CHECKING:
     from .recovery_drain_liveness import RecoveryDrainLiveness
@@ -192,7 +192,7 @@ class OutOfScopeRetirementSweep:
 
     def __init__(self, *, source: ValidatedWorkScopeSource, store: ValidatedWorkStore,
                  execution: ValidatedWorkExecutionOwner, retirement: OutOfScopeRecordRetirement,
-                 publication: OpenPullRequestPublication,
+                 publication: PullRequestPublicationRecorder,
                  batch_size: int, liveness: "RecoveryDrainLiveness",
                  publication_recheck_seconds: float = PUBLICATION_RECHECK_SECONDS,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -266,7 +266,7 @@ class OutOfScopeRetirementSweep:
         record = self._store.record_for_id(record_id)
         if record.resolution_kind is ResolutionKind.OUTSIDE_RECOVERY_SCOPE:
             return _BY_STATUS[ScopeRetirementStatus.RETIRED]
-        if record.disposition.published_by_open_pr:
+        if record.disposition.published_by_its_pr:
             return _PUBLISHED
         return _NOT_JUDGED
 

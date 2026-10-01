@@ -6,16 +6,16 @@ from collections.abc import Iterator
 import sqlite3
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.validated_work import ValidatedWorkKey, ValidatedWorkState
-from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
+from ..domain.validated_work_remote_authority import PullRequestPublication
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 from ..domain.validated_work_store import (
     AdmissionOutcome, EvidenceAdmission, EvidenceAdmissionSelection, EvidenceLookup, EvidenceRow,
-    OpenPrPublicationStatus,
+    PrPublicationStatus,
 )
 from ..ports.validated_work_verification import ValidatedWorkAncestry, ValidatedWorkArtifactVerifier
 from .validated_work_admission import EvidenceAdmissionWriter
 from .validated_work_lineage import LineageClassifier
-from .validated_work_open_pr import record_open_pr_publication
+from .validated_work_pr_publication import record_pr_publication
 from .validated_work_rows import DispositionDatabase, disposition
 from .validated_work_snapshots import DispositionSnapshots
 
@@ -42,12 +42,12 @@ class SqliteValidatedWorkIntakeStore:
             status = self._admission.admit(conn, admission)
             return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
 
-    def record_open_pr_publication(
-        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
-    ) -> OpenPrPublicationStatus:
+    def record_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PullRequestPublication, observed_at: str,
+    ) -> PrPublicationStatus:
         try:
             with self._db.transaction(write=True) as conn:
-                return record_open_pr_publication(
+                return record_pr_publication(
                     conn, self._lineage, key=key, published=published, observed_at=observed_at,
                 )
         except sqlite3.Error as exc:

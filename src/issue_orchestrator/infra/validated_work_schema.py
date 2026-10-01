@@ -115,6 +115,16 @@ CREATE INDEX IF NOT EXISTS ix_validated_work_lineage
 -- What has actually been published for this issue+branch (§2.1.4). Advanced by
 -- every verified publication route: our own push, an observed merged PR, and
 -- the completion's own push observed on its open PR (§2.7).
+-- Merged PRs of the lineage's branch and each one's head at merge (§2.8):
+-- the validated heads they contain shipped, even through a squash merge.
+CREATE TABLE IF NOT EXISTS validated_work_lineage_landings (
+    lineage_key   TEXT NOT NULL,
+    pr_number     INTEGER NOT NULL,
+    head_sha      TEXT NOT NULL,
+    landed_at     TEXT NOT NULL,
+    PRIMARY KEY (lineage_key, pr_number)
+);
+
 CREATE TABLE IF NOT EXISTS validated_work_lineage (
     lineage_key                 TEXT PRIMARY KEY,
     published_head_sha          TEXT NOT NULL DEFAULT '',

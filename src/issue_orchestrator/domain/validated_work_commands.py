@@ -310,7 +310,7 @@ class ValidatedWorkDisposition:
     resolution: OperatorResolution | None = None
     # RECOVERED inside a head its issue's open PR publishes (§2.7): the
     # completion's own push published it, and recovery routed nothing.
-    published_by_open_pr: bool = False
+    published_by_its_pr: bool = False
 
     @property
     def unresolved(self) -> bool:
@@ -398,13 +398,13 @@ class ValidatedWorkDispositionBatch:
         FAILED asserts ``needs-human``) or has routed the published PR to
         review (RECOVERED). A record for work no captured run validated says
         nothing about this run, so it does not count. Neither does work its
-        issue's open PR publishes (``published_by_open_pr``): the completion's
+        issue's open PR publishes (``published_by_its_pr``): the completion's
         own push published it and recovery routed nothing (porchpin #186). The
         answer is read from the durable record, so a replayed capture gives it
         again.
         """
         return any(
-            d.key in self.captured_keys and not d.published_by_open_pr
+            d.key in self.captured_keys and not d.published_by_its_pr
             and d.state is not ValidatedWorkState.ABANDONED
             for d in self.dispositions
         )

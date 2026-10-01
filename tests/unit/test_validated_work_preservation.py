@@ -25,7 +25,7 @@ from issue_orchestrator.control.review_exchange_lifecycle import (
 from issue_orchestrator.control.validated_work_capture import ValidatedWorkCustody
 from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
 from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
-from issue_orchestrator.control.validated_work_published_head import OpenPullRequestCarriage
+from issue_orchestrator.control.validated_work_published_head import PullRequestCarriage
 from issue_orchestrator.domain.completion_intake import CompletionIntakeError, IntakeClosed
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.domain.issue_run_allocation import IssueRunAllocation
@@ -96,6 +96,7 @@ def custody(tmp_path):
     repair = EscrowReconciliation(escrow=escrow, store=store, intake=ledger)
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
+    observer.merged_pull_requests.return_value = ()
     # The base each capture compares against; a test may swap in the
     # production resolver (the stack-aware PullRequestBaseBranch). With no
     # ``origin`` the base cannot be fetched and every head is preserved; a
@@ -104,7 +105,7 @@ def custody(tmp_path):
     preservation = ValidatedWorkPreservationService(intake=intake, store=store,
         custody=ValidatedWorkCustody(escrow, store), repair=repair, working_copy=wc,
         observer=observer, base_branch=lambda issue, worktree: base["ref"](issue, worktree),
-        carriage=OpenPullRequestCarriage(git=wc))
+        carriage=PullRequestCarriage(git=wc, observer=observer))
     source = IssueRunEvidenceService(ledger, live_runs=lambda issue: (), now=lambda: "2026-09-07T00:00:00Z")
     sessions = Mock()
     sessions.exists.return_value = False

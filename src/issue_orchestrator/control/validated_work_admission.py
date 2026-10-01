@@ -1,8 +1,8 @@
 """One admission owner orders immutable receipts, including orphan replay."""
 
 from ..domain.validated_work import ValidatedWorkKey
-from ..domain.validated_work_remote_authority import PublishedOnOpenPullRequest
-from ..domain.validated_work_store import (EvidenceAdmission, EvidenceAdmissionSelection, AdmissionOutcome, EvidenceLookup, EvidenceRow, OpenPrPublicationStatus)
+from ..domain.validated_work_remote_authority import PullRequestPublication
+from ..domain.validated_work_store import (EvidenceAdmission, EvidenceAdmissionSelection, AdmissionOutcome, EvidenceLookup, EvidenceRow, PrPublicationStatus)
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionBackend
@@ -32,10 +32,10 @@ class RankedEvidenceAdmission:
             if outcome is not None:
                 return outcome
 
-    def record_open_pr_publication(
-        self, key: ValidatedWorkKey, *, published: PublishedOnOpenPullRequest, observed_at: str,
-    ) -> OpenPrPublicationStatus:
-        return self._store.record_open_pr_publication(key, published=published, observed_at=observed_at)
+    def record_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PullRequestPublication, observed_at: str,
+    ) -> PrPublicationStatus:
+        return self._store.record_pr_publication(key, published=published, observed_at=observed_at)
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._store.for_issue(issue_number)

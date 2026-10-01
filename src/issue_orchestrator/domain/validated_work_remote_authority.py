@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, replace
 
-from .publication_remote import PublicationPrState
+from .publication_remote import PublicationPrState, PublicationPullRequest
 from .validated_work import (
     LineageRole,
     RemoteBaselineStatus,
@@ -13,7 +13,7 @@ from .validated_work import (
 )
 from .validated_work_capture import ValidatedWorkRemoteFacts
 from .validated_work_commands import ValidatedWorkAuthoritySnapshot
-from .validated_work import require_positive, require_sha
+from .validated_work import PublicationProvenance, require_positive, require_sha
 from .validated_work_store import AncestryRelation, ValidatedWorkRecord
 
 
@@ -187,11 +187,48 @@ class PublishedOnOpenPullRequest:
         require_positive(self.pr_number, "pr_number")
         require_sha(self.head_sha)
 
+    @property
+    def provenance(self) -> PublicationProvenance:
+        return PublicationProvenance.OBSERVED_OPEN_PR
+
     def describe(self, validated_head_sha: str) -> str:
         return (
             f"validated head {validated_head_sha[:12]} is already published: open PR "
             f"#{self.pr_number}'s head {self.head_sha[:12]} carries it"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class LandedViaMergedPullRequest:
+    """Proof a validated head landed: a merged PR of its branch carried it.
+
+    ``head_sha`` is the PR's head at merge - GitHub's ``head.sha`` for a merged
+    PR, kept at ``refs/pull/N/head`` after the branch is deleted - and the
+    validated head is that head or an ancestor of it. A squash merge's commit
+    on the base contains none of the branch's commits, so the PR head, not
+    the merge commit, is the proof.
+    """
+
+    pr_number: int
+    head_sha: str
+
+    def __post_init__(self) -> None:
+        require_positive(self.pr_number, "pr_number")
+        require_sha(self.head_sha)
+
+    @property
+    def provenance(self) -> PublicationProvenance:
+        return PublicationProvenance.OBSERVED_MERGE
+
+    def describe(self, validated_head_sha: str) -> str:
+        return (
+            f"validated head {validated_head_sha[:12]} landed: merged PR "
+            f"#{self.pr_number}'s head {self.head_sha[:12]} carries it"
+        )
+
+
+#: Either route by which a PR, not recovery, published a validated head.
+PullRequestPublication = PublishedOnOpenPullRequest | LandedViaMergedPullRequest
 
 
 def carried_by_open_pull_request(
@@ -217,3 +254,30 @@ def carried_by_open_pull_request(
         return None
     assert fetched_head_sha is not None  # classify_remote_pr proved the branch head
     return PublishedOnOpenPullRequest(pr_number, fetched_head_sha)
+
+
+def landed_via_merged_pull_request(
+    pr: PublicationPullRequest,
+    *,
+    repo_slug: str,
+    branch_name: str,
+    fetched_head_sha: str | None,
+    relation: AncestryRelation | None,
+) -> LandedViaMergedPullRequest | None:
+    """Whether this merged PR is PROVEN to have landed the validated head.
+
+    Every fact must agree: the PR is merged, of this repository (head and
+    base), from this branch; its head at merge, as GitHub reports it, is the
+    head just fetched from ``refs/pull/N/head``; and the validated head is
+    that head or an ancestor of it. Anything else leaves the work held.
+    """
+    if (
+        pr.state is not PublicationPrState.MERGED
+        or pr.head_repo != repo_slug
+        or pr.base_repo != repo_slug
+        or pr.branch != branch_name
+        or fetched_head_sha != pr.head_sha
+        or relation not in (AncestryRelation.EQUAL, AncestryRelation.ANCESTOR)
+    ):
+        return None
+    return LandedViaMergedPullRequest(pr.number, pr.head_sha)

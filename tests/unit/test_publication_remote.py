@@ -354,3 +354,30 @@ def test_rate_limited_create_is_never_a_definite_refusal():
         response_text=_unprocessable("No commits between main and feature").text,
     )
     assert _create_rejection(exc) is None
+
+
+def test_capture_observer_lists_only_the_branchs_merged_prs_uncached(remote_factory):
+    """Merged PRs of the branch, read from GitHub's closed set: a PR closed
+    without merging is not a landing (porchpin #26/#320)."""
+    requests = []
+    merged = dict(pr_payload(), number=3, state="closed", merged_at="2026-09-28T23:39:31Z")
+    abandoned = dict(pr_payload(), number=4, state="closed", merged_at=None)
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=[merged, abandoned])
+
+    observer = remote_factory(handler, capture=True)
+    prs = observer.merged_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
+
+    assert [(pr.number, pr.state, pr.head_sha) for pr in prs] == [(3, PublicationPrState.MERGED, SHA)]
+    (request,) = requests
+    assert request.url.params["state"] == "closed"
+    assert request.url.params["head"] == "owner:feature"
+    assert "if-none-match" not in request.headers
+
+
+def test_an_unreadable_merged_pr_scan_is_a_remote_error(remote_factory):
+    observer = remote_factory(lambda _request: httpx.Response(401, json={"message": "bad"}), capture=True)
+    with pytest.raises(PublicationRemoteError):
+        observer.merged_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))

@@ -16,6 +16,7 @@ from ..domain.validated_work_store import (
     AncestryRelation as Relation,
     CommitReference,
     EvidenceRow,
+    LineageLanding,
     LineagePublication,
     PublicationProvenance,
 )
@@ -24,7 +25,7 @@ from ..ports.validated_work_verification import (
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
 )
-from .validated_work_rows import current_evidence, publication, refresh_observations
+from .validated_work_rows import current_evidence, landings, publication, refresh_observations
 
 
 @dataclass
@@ -39,6 +40,7 @@ class LineageDecision:
     contained_at: str = ""
     # The open PR the containing head was observed on (OBSERVED_OPEN_PR), else 0.
     contained_pr: int = 0
+    contained_kind: ResolutionKind = ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
     reachable: bool = True
 
     @property
@@ -72,6 +74,12 @@ class LineageClassifier:
             raise TypeError("ancestry provider must return a typed relation")
         return relation
 
+    def retain(self, reference: CommitReference) -> bool:
+        result = self._ancestry.retain(reference)
+        if type(result) is not bool:
+            raise TypeError("ancestry provider must return bool")
+        return result
+
     def verifies(self, evidence: EvidenceRow) -> bool:
         result = self._verifier.verifies(evidence)
         if type(result) is not bool:
@@ -97,7 +105,7 @@ class LineageClassifier:
             return
         fact = publication(conn, lineage_key)
         decisions = [self._restore_gate(conn, row, reconsider) for row in rows]
-        readable = self._classify_publication(conn, decisions, fact)
+        readable = self._classify_publication(conn, decisions, fact, landings(conn, lineage_key))
         self._classify_peers(readable)
         # Vacate the unique drainable slot before installing a descendant. The
         # intermediate state is private to this IMMEDIATE transaction.
@@ -187,6 +195,7 @@ class LineageClassifier:
         conn: sqlite3.Connection,
         decisions: list[LineageDecision],
         fact: LineagePublication | None,
+        landed: tuple[LineageLanding, ...],
     ) -> list[LineageDecision]:
         readable: list[LineageDecision] = []
         for decision in decisions:
@@ -196,10 +205,47 @@ class LineageClassifier:
             ):
                 self._unreachable(decision)
                 continue
+            if self._within_landing(decision, landed):
+                continue
             if fact is not None and self._against_publication(conn, decision, fact):
                 continue
             readable.append(decision)
         return readable
+
+    def _within_landing(
+        self, decision: LineageDecision, landed: tuple[LineageLanding, ...]
+    ) -> bool:
+        """Resolve a record a merged PR's head at merge contains (§2.8).
+
+        Checked before the lineage fact: shipping is final, whatever the
+        branch publishes now. Only containment counts - a head ahead of or
+        beside every landing is left to the fact's rules.
+        """
+        for landing in landed:
+            # Through its pin: a landing whose pin is gone proves nothing.
+            head = CommitReference(
+                replace(decision.reference.key, validated_head_sha=landing.head_sha), landing.ref
+            )
+            if self.compare(decision.reference, head) not in {Relation.EQUAL, Relation.ANCESTOR}:
+                continue
+            self._contained(decision, landing.head_sha, landing.pr_number,
+                            ResolutionKind.LANDED_VIA_MERGED_PR)
+            return True
+        return False
+
+    def _contained(
+        self, decision: LineageDecision, head_sha: str, pr_number: int, kind: ResolutionKind
+    ) -> None:
+        if self.verifies(decision.evidence):
+            decision.state, decision.failure = State.RECOVERED, None
+            decision.reason, decision.contained_at = kind.value, head_sha
+            decision.contained_pr, decision.contained_kind = pr_number, kind
+        else:
+            decision.state, decision.failure, decision.reason = (
+                State.FAILED,
+                Failure.ARTIFACT_HASH_MISMATCH,
+                Failure.ARTIFACT_HASH_MISMATCH.value,
+            )
 
     def _against_publication(
         self,
@@ -215,19 +261,8 @@ class LineageClassifier:
         )  # durable published object; not a mutable branch
         relation = self.compare(decision.reference, reference)
         if relation in {Relation.EQUAL, Relation.ANCESTOR}:
-            if self.verifies(decision.evidence):
-                decision.state, decision.failure = State.RECOVERED, None
-                decision.reason, decision.contained_at = (
-                    ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD.value,
-                    fact.published_head_sha,
-                )
-                decision.contained_pr = fact.published_pr_number
-            else:
-                decision.state, decision.failure, decision.reason = (
-                    State.FAILED,
-                    Failure.ARTIFACT_HASH_MISMATCH,
-                    Failure.ARTIFACT_HASH_MISMATCH.value,
-                )
+            self._contained(decision, fact.published_head_sha, fact.published_pr_number,
+                            ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD)
             return True
         if relation is Relation.DESCENDANT:
             self._sequence_baseline(conn, decision, fact)
@@ -385,7 +420,7 @@ class LineageClassifier:
                 "finalization_phase='complete', published_pr_number=? WHERE record_id=?",
                 (
                     decision.contained_at,
-                    ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD.value,
+                    decision.contained_kind.value,
                     at,
                     at,
                     decision.contained_pr,

@@ -179,10 +179,6 @@ class LineagePublication:
 
     def __post_init__(self) -> None:
         require_text(self.lineage_key, "lineage_key")
-        if (self.published_pr_number > 0) is not (
-            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
-        ):
-            raise ValueError("exactly an open-PR publication names its PR")
         require_text(self.published_by_record_id, "published_by_record_id")
         require_sha(self.published_head_sha)
         require_text(self.published_at, "published_at")
@@ -192,6 +188,45 @@ class LineagePublication:
             require_sha(self.published_pre_push_expected)
             if self.published_via is not PublicationProvenance.PUSHED_BY_OWNER:
                 raise ValueError("an observed publication proves no pre-push baseline")
+        if type(self.published_pr_number) is not int or self.published_pr_number < 0:
+            raise ValueError("published PR number must be a non-negative int")
+        if (self.published_pr_number > 0) is not (
+            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
+        ):
+            raise ValueError("exactly an open-PR publication names its PR")
+
+
+@dataclass(frozen=True, slots=True)
+class LineageLanding:
+    """A merged PR of the lineage's branch and its head at merge (§2.8).
+
+    Terminal and append-only, so it lives beside the lineage fact rather than
+    in it: the fact is what the branch publishes NOW and sequences recovery,
+    while a landing only says which validated heads already shipped. A reused
+    branch can carry both an older landing and a newer, divergent open PR.
+    """
+
+    lineage_key: str
+    pr_number: int
+    head_sha: str
+    landed_at: str
+
+    def __post_init__(self) -> None:
+        require_text(self.lineage_key, "lineage_key")
+        if type(self.pr_number) is not int or self.pr_number <= 0:
+            raise ValueError("a landing names its merged PR")
+        require_sha(self.head_sha)
+        require_text(self.landed_at, "landed_at")
+
+    @property
+    def ref(self) -> str:
+        """The pin that keeps the head at merge reachable after the branch and
+        its fetched tracking ref are gone."""
+        return landing_ref(self.lineage_key, self.pr_number)
+
+
+def landing_ref(lineage_key: str, pr_number: int) -> str:
+    return f"refs/issue-orchestrator/landed/{lineage_key.replace(':', '-')}/{pr_number}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +238,7 @@ class PublicationResolution:
     classified_waiters: tuple[ValidatedWorkDisposition, ...]
 
 
-class OpenPrPublicationStatus(StrEnum):
+class PrPublicationStatus(StrEnum):
     """What recording an open PR's publication did to the lineage fact."""
 
     ADVANCED = "advanced"  # the fact now names the PR head; the lineage was reclassified
@@ -214,7 +249,7 @@ class OpenPrPublicationStatus(StrEnum):
     @property
     def reclassified_lineage(self) -> bool:
         """Whether the lineage's records were reclassified, so its block may have moved."""
-        return self is OpenPrPublicationStatus.ADVANCED
+        return self is PrPublicationStatus.ADVANCED
 
 
 class LineageResolutionRefusal(StrEnum):
