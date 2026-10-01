@@ -74,6 +74,12 @@ class LineageClassifier:
             raise TypeError("ancestry provider must return a typed relation")
         return relation
 
+    def retain(self, reference: CommitReference) -> bool:
+        result = self._ancestry.retain(reference)
+        if type(result) is not bool:
+            raise TypeError("ancestry provider must return bool")
+        return result
+
     def verifies(self, evidence: EvidenceRow) -> bool:
         result = self._verifier.verifies(evidence)
         if type(result) is not bool:
@@ -216,8 +222,9 @@ class LineageClassifier:
         beside every landing is left to the fact's rules.
         """
         for landing in landed:
+            # Through its pin: a landing whose pin is gone proves nothing.
             head = CommitReference(
-                replace(decision.reference.key, validated_head_sha=landing.head_sha), ""
+                replace(decision.reference.key, validated_head_sha=landing.head_sha), landing.ref
             )
             if self.compare(decision.reference, head) not in {Relation.EQUAL, Relation.ANCESTOR}:
                 continue

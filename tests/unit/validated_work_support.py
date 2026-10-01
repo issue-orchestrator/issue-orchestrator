@@ -71,6 +71,9 @@ class GraphAncestry:
             return AncestryRelation.DESCENDANT
         return AncestryRelation.DIVERGENT
 
+    def retain(self, reference: CommitReference) -> bool:
+        return reference.key.validated_head_sha not in self.missing
+
     def contains(self, head: str, ancestor: str) -> bool:
         while head in self.parents:
             head = self.parents[head]

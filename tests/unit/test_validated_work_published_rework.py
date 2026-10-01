@@ -1054,3 +1054,34 @@ def test_an_existing_store_gains_the_landings_table_on_open(tmp_path):
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='validated_work_lineage_landings'"
         ).fetchone()
+
+
+def test_a_landed_head_stays_reachable_after_its_tracking_ref_is_pruned_and_gc_runs(rig, make_session, monkeypatch):
+    """Review r2: a squash-merged PR head that no validated record pins is
+    kept by the landing's own pin, so later classification still proves
+    containment after ``git fetch --prune`` and ``git gc`` remove the rest."""
+    from issue_orchestrator.domain.validated_work_store import CommitReference, landing_ref
+
+    _, v2, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    pr_head = _commit(rig.git, rig.worktree, "polish", "a commit after the last validation")
+    _push(rig)
+    assert _squash_merge(rig) == pr_head
+    _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+    assert not rig.store.has_unresolved_work(ISSUE)
+    # Everything but the pins forgets the PR head: branch, tracking refs, reflogs.
+    rig.git.run(rig.worktree, ["checkout", "-q", "--detach", "origin/main"])
+    rig.git.run(rig.repo, ["branch", "-q", "-D", BRANCH])
+    for ref in (f"refs/remotes/origin/pull/{PR}/head", f"refs/remotes/origin/{BRANCH}"):
+        rig.git.run(rig.repo, ["update-ref", "-d", ref], check=False)
+    rig.git.run(rig.repo, ["reflog", "expire", "--expire=now", "--all"])
+    rig.git.run(rig.repo, ["gc", "-q", "--prune=now"])
+
+    key = parked[0].key
+    lineage_key = canonical_lineage_key(key)
+    ancestry = GitValidatedWorkAncestry(repository=rig.repo, repo_slug=REPO, git=rig.wc)
+    record = rig.store.record_for_id(parked[0].record_id)
+    relation = ancestry.compare(
+        CommitReference(key, record.current_evidence.admission.pinned_ref),
+        CommitReference(ValidatedWorkKey(REPO, ISSUE, BRANCH, pr_head), landing_ref(lineage_key, PR)),
+    )
+    assert relation is AncestryRelation.ANCESTOR

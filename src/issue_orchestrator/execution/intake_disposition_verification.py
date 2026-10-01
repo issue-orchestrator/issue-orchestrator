@@ -25,6 +25,13 @@ class IntakeDispositionVerification:
             and result.stdout.strip() == reference.key.validated_head_sha
         )
 
+    def retain(self, reference: CommitReference) -> bool:
+        if not reference.pinned_ref.startswith("refs/issue-orchestrator/landed/"):
+            return False
+        sha = reference.key.validated_head_sha
+        self._git.run(self._repo, ["update-ref", "--no-deref", reference.pinned_ref, sha, "0" * 40], check=False)
+        return self._exists(reference)
+
     def compare(
         self, left: CommitReference, right: CommitReference
     ) -> AncestryRelation:

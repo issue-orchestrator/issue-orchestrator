@@ -218,6 +218,16 @@ class LineageLanding:
         require_sha(self.head_sha)
         require_text(self.landed_at, "landed_at")
 
+    @property
+    def ref(self) -> str:
+        """The pin that keeps the head at merge reachable after the branch and
+        its fetched tracking ref are gone."""
+        return landing_ref(self.lineage_key, self.pr_number)
+
+
+def landing_ref(lineage_key: str, pr_number: int) -> str:
+    return f"refs/issue-orchestrator/landed/{lineage_key.replace(':', '-')}/{pr_number}"
+
 
 @dataclass(frozen=True, slots=True)
 class PublicationResolution:

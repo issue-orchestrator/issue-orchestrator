@@ -1512,6 +1512,16 @@ made after the merge is resolved the same way.
 is append-only, and a merged PR's head cannot move, so the store refuses a
 second proof of the same PR with a different head.
 
+**Each landing pins its head before its row commits.** The ref is
+`refs/issue-orchestrator/landed/<lineage>/<PR>`, written through
+`ValidatedWorkAncestry.retain` (an immutable pin, never moved). Nothing else
+keeps the commit reachable once `git fetch --prune` drops the fetched
+`refs/remotes/origin/pull/N/head` and a squash merge has put none of the
+branch's commits on the base. Classification compares against that pin, so a
+landing whose pin is gone proves nothing and leaves records unresolved. These
+pins are not escrow: escrow reconciliation enumerates only
+`validated/` and `observed/`, so it never sees or releases them.
+
 The lineage fact is left alone. It is what the branch publishes now, and it is
 what recovery sequences from. A reused branch can carry an older landing next
 to a newer open PR that has diverged from it. Replacing the fact with the old

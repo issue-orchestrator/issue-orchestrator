@@ -28,6 +28,7 @@ from ..domain.validated_work_remote_authority import (
     PullRequestPublication,
 )
 from ..domain.validated_work_store import (
+    landing_ref,
     AncestryRelation as Relation,
     CommitReference,
     PrPublicationStatus as Status,
@@ -77,7 +78,7 @@ def record_pr_publication(
     ).fetchone():
         return Status.PUBLICATION_IN_FLIGHT
     if isinstance(published, LandedViaMergedPullRequest):
-        return _record_landing(conn, lineage, lineage_key, published, observed_at)
+        return _record_landing(conn, lineage, key, published, observed_at)
     fact = publication(conn, lineage_key)
     if fact is not None:
         if fact.published_head_sha == published.head_sha and (
@@ -118,7 +119,7 @@ def record_pr_publication(
 def _record_landing(
     conn: sqlite3.Connection,
     lineage: LineageClassifier,
-    lineage_key: str,
+    key: ValidatedWorkKey,
     landed: LandedViaMergedPullRequest,
     observed_at: str,
 ) -> Status:
@@ -131,6 +132,7 @@ def _record_landing(
     after the same head was first recorded as that PR's open publication,
     the landing is new and resolves its ancestors as landed.
     """
+    lineage_key = canonical_lineage_key(key)
     recorded = conn.execute(
         "SELECT head_sha FROM validated_work_lineage_landings WHERE lineage_key=? AND pr_number=?",
         (lineage_key, landed.pr_number),
@@ -139,6 +141,11 @@ def _record_landing(
         if recorded["head_sha"] != landed.head_sha:
             return Status.CONTAINMENT_UNPROVEN  # a merged PR's head cannot move
         return Status.ALREADY_PUBLISHED
+    # Pin the head at merge before the row commits: once the fetched tracking
+    # ref is pruned, nothing else keeps a squash-merged head reachable.
+    pin = CommitReference(replace(key, validated_head_sha=landed.head_sha), landing_ref(lineage_key, landed.pr_number))
+    if not lineage.retain(pin):
+        return Status.CONTAINMENT_UNPROVEN
     conn.execute(
         "INSERT INTO validated_work_lineage_landings (lineage_key,pr_number,head_sha,landed_at) VALUES (?,?,?,?)",
         (lineage_key, landed.pr_number, landed.head_sha, observed_at),
