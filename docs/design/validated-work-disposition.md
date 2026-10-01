@@ -1520,7 +1520,9 @@ keeps the commit reachable once `git fetch --prune` drops the fetched
 branch's commits on the base. Classification compares against that pin, so a
 landing whose pin is gone proves nothing and leaves records unresolved. These
 pins are not escrow: escrow reconciliation enumerates only
-`validated/` and `observed/`, so it never sees or releases them.
+`validated/` and `observed/`, so it never sees them, and
+`delete_pinned_ref` refuses every ref outside escrow, so nothing can release a
+landing's pin.
 
 The lineage fact is left alone. It is what the branch publishes now, and it is
 what recovery sequences from. A reused branch can carry an older landing next

@@ -100,6 +100,9 @@ class GitExactOperations:
         return RetainedRef(ref, sha) if sha is not None else None
 
     def delete_pinned_ref(self, repository: Path, *, ref: str, sha: str) -> None:
+        # Only escrow is ever released; a landed merged-PR pin is permanent.
+        if not ref.startswith(_PREFIXES):
+            raise ValueError("only escrow retention pins may be released")
         if not self.verify_ref(repository, ref=ref, sha=sha):
             raise ValueError("retention pin missing or changed; retained")
         self._git.run(repository, ["update-ref", "--no-deref", "-d", ref, sha])

@@ -1085,3 +1085,18 @@ def test_a_landed_head_stays_reachable_after_its_tracking_ref_is_pruned_and_gc_r
         CommitReference(ValidatedWorkKey(REPO, ISSUE, BRANCH, pr_head), landing_ref(lineage_key, PR)),
     )
     assert relation is AncestryRelation.ANCESTOR
+
+
+def test_a_landed_heads_pin_can_never_be_released(rig, make_session, monkeypatch):
+    """Review r3: escrow release deletes pins; a landing's pin is not escrow."""
+    from issue_orchestrator.domain.validated_work_store import landing_ref
+
+    _, v2, _ = _legacy_parked_records(rig, make_session, monkeypatch)
+    pr_head = _squash_merge(rig)
+    _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+    ref = landing_ref(canonical_lineage_key(ValidatedWorkKey(REPO, ISSUE, BRANCH, v2)), PR)
+
+    with pytest.raises(ValueError, match="only escrow"):
+        rig.wc.delete_pinned_ref(rig.repo, ref=ref, sha=pr_head)
+
+    assert rig.wc.verify_ref(rig.repo, ref=ref, sha=pr_head)
