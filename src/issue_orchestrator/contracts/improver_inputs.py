@@ -219,7 +219,10 @@ class InputsManifest(_Closed):
     """``inputs.json``: what was staged, when, for which engine."""
 
     staged_at: AwareDatetime
-    audited_repo: str
+    #: The audited engine's Control Center key; every finding's ``engine.id``.
+    engine_id: str = Field(min_length=1)
+    #: The repository the audited engine works; every finding's ``engine.repo``.
+    audited_repo: str = Field(min_length=1)
     outputs_repo: str
     inputs: tuple[StagedInput, ...]
     #: Every exam case id that exists (the registry and every staged

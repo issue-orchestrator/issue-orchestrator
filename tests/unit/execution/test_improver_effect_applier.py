@@ -11,10 +11,12 @@ from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverRunR
 from issue_orchestrator.control.improver_effects import (
     IMPROVER_LABEL,
     OPERATOR_DECISION_LABEL,
+    TARGET_OPERATOR_LABEL,
     finding_key,
     planned_effects,
     title_token,
 )
+from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.domain.host_rate_limit import HostRateLimit
 from issue_orchestrator.ports.engine_audit import OpenIssueLabels
@@ -24,10 +26,15 @@ from tests.unit.improver_support import OPEN_TRACKER, FakeIssueHost, MemoryRunSt
 NOW = datetime(2026, 9, 28, 19, 0, tzinfo=UTC)
 
 
+def _engine(repo: str, engine_id: str | None = None) -> EngineRef:
+    return EngineRef(engine_id or f"repo-{repo.replace('/', '-')}", repo, Path("/state"))
+
+
 def _run(
     store: MemoryRunStore, run_id: str, *docs: dict, outcome: RunOutcome = RunOutcome.ACCEPTED,
-    audited_repo: str = "porchpin/porchpin",
+    audited_repo: str = "porchpin/porchpin", outputs_repo: str = "io/io",
 ) -> ImproverRunRecord:
+    engine = _engine(audited_repo)
     merged = json.loads(json.dumps(docs[0]))
     merged["findings"] = [f for d in docs for f in d["findings"]]
     findings = ImproverFindings.model_validate_json(json.dumps(merged))
@@ -35,9 +42,9 @@ def _run(
     (run_dir / FINDINGS_FILE).write_text(json.dumps(merged))
     record = ImproverRunRecord(
         run_id=run_id, started_at=NOW, finished_at=NOW, outcome=outcome, detail="",
-        audited_repo=audited_repo, outputs_repo="io/io", run_dir=str(run_dir),
-        engine_commit=merged["engine_commit"],
-        effects=planned_effects(findings, audited_repo) if outcome is RunOutcome.ACCEPTED else (),
+        engine_id=engine.engine_id, audited_repo=audited_repo, outputs_repo=outputs_repo,
+        run_dir=str(run_dir), engine_commit=merged["engine_commit"],
+        effects=planned_effects(findings, engine) if outcome is RunOutcome.ACCEPTED else (),
     )
     store.record(record)
     return record
@@ -87,7 +94,7 @@ def test_a_tracked_finding_comments_its_evidence_on_the_tracked_issue(tmp_path: 
 
 def test_a_finding_an_open_issue_already_carries_is_commented_there_not_filed_again(tmp_path: Path) -> None:
     doc = example("capability_issue")
-    key = finding_key(ImproverFindings.model_validate_json(json.dumps(doc)).findings[0], "porchpin/porchpin")
+    key = finding_key(ImproverFindings.model_validate_json(json.dumps(doc)).findings[0], _engine("porchpin/porchpin"))
     host = FakeIssueHost([OpenIssueLabels(number=555, title=f"{title_token(key)} Capability gap: x", labels=())])
     store = MemoryRunStore(tmp_path)
     _run(store, "r2", doc)
@@ -184,9 +191,12 @@ def test_a_findings_identity_is_what_it_asks_about_which_anomalies() -> None:
         update={"reproduction": finding.reproduction.model_copy(update={"case_id": "E-other"})}  # type: ignore[union-attr]
     )
 
-    assert finding_key(renamed, "a/a") == finding_key(finding, "a/a")
-    assert finding_key(other_case, "a/a") != finding_key(finding, "a/a")
-    assert finding_key(finding, "b/b") != finding_key(finding, "a/a")
+    a = _engine("a/a")
+    assert finding_key(renamed, a) == finding_key(finding, a)
+    assert finding_key(other_case, a) != finding_key(finding, a)
+    assert finding_key(finding, _engine("b/b")) != finding_key(finding, a)
+    # Two engines working one repository (#7567) are two identities.
+    assert finding_key(finding, _engine("a/a", "repo-other")) != finding_key(finding, a)
 
 
 def test_effects_owed_to_another_repository_are_never_applied_here(tmp_path: Path) -> None:
@@ -289,6 +299,37 @@ def test_a_retitled_unlabelled_issue_still_carries_its_finding(tmp_path: Path) -
 
     assert host.create_calls == 1
     assert runs["b"].effects[0].issue_number == filed
+
+
+def test_a_charter_proposal_about_a_target_repository_goes_to_its_operator(tmp_path: Path) -> None:
+    """#7567: porchpin's charter is porchpin's own config. It is filed in io
+    (nothing is written to porchpin), labelled for porchpin's operator."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("charter_proposal"), example("capability_issue"))
+
+    _effects(store, host).apply_pending()
+
+    proposal = next(c for c in host.created if "Charter proposal" in c["title"])
+    capability = next(c for c in host.created if "Capability gap" in c["title"])
+    assert TARGET_OPERATOR_LABEL in proposal["labels"]
+    assert OPERATOR_DECISION_LABEL in proposal["labels"]
+    assert "For the operator of `porchpin/porchpin`" in proposal["body"]
+    assert proposal["title"].endswith("(porchpin/porchpin)")
+    # An io-code defect from the same engine is io's own work.
+    assert TARGET_OPERATOR_LABEL not in capability["labels"]
+    assert "For the operator" not in capability["body"]
+    assert "engine `repo-porchpin-porchpin`" in capability["body"]
+
+
+def test_a_charter_proposal_about_ios_own_engine_stays_ios(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", example("charter_proposal"), audited_repo="io/io")
+
+    _effects(store, host).apply_pending()
+
+    [proposal] = host.created
+    assert TARGET_OPERATOR_LABEL not in proposal["labels"]
+    assert OPERATOR_DECISION_LABEL in proposal["labels"]
 
 
 def test_a_tracked_issue_closed_since_staging_gets_no_comment(tmp_path: Path) -> None:

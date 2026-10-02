@@ -12,6 +12,15 @@ run is :mod:`..execution.improver_effect_applier`:
   operator's decision (nothing is ever applied), a ``needs_investigation``
   names the evidence it lacks.
 
+Every effect is filed in io (the outputs repository), never in the audited
+engine's repository: the improver writes nothing to a target repository. What
+a finding is ABOUT decides who acts on it (:func:`effect_route`): a finding
+about io's code or prompts is io's; a ``charter_proposal`` from another
+repository's engine concerns that repository's own configuration (its
+tech-lead charter), so it is labelled :data:`TARGET_OPERATOR_LABEL` and names
+the repository whose operator decides. Every title and body names the engine
+and repository the finding came from.
+
 Deduplication is against OPEN issues: every filed issue's title carries the
 finding's identity (``[improver:<key>]``), so a finding an open issue already
 carries — filed by an earlier run, or by this one before a crash lost its
@@ -30,15 +39,19 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 
 from ..contracts.improver_findings import Finding, ImproverFindings
 from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord
+from ..domain.engine_activity import EngineRef
 from ..ports.engine_audit import OpenIssueLabels
 
 #: Every improver issue carries this label, so an operator can find them all.
 IMPROVER_LABEL = "improver"
 #: A proposal waits for this decision; the orchestrator never applies one.
 OPERATOR_DECISION_LABEL = "needs-operator-decision"
+#: A proposal about a target repository's own configuration, for ITS operator.
+TARGET_OPERATOR_LABEL = "improver:target-operator"
 _LABELS: dict[str, tuple[str, ...]] = {
     "exam_case": (IMPROVER_LABEL, "improver:exam-case"),
     "capability_issue": (IMPROVER_LABEL, "improver:capability"),
@@ -48,11 +61,30 @@ _LABELS: dict[str, tuple[str, ...]] = {
 }
 
 
-def finding_key(finding: Finding, audited_repo: str) -> str:
+class EffectRoute(StrEnum):
+    #: About io's code, prompts or exam: io's own work.
+    IO = "io"
+    #: About the audited repository's own configuration: a proposal for its operator.
+    TARGET_OPERATOR = "target_operator"
+
+
+def effect_route(run: ImproverRunRecord, finding: Finding) -> EffectRoute:
+    """Who acts on a finding. Only a charter proposal is about a repository's
+    own configuration (the effective charter is its config's); for io's own
+    engine that operator is io's, so only another repository's engine routes
+    one to its operator."""
+    if finding.output == "charter_proposal" and run.audited_repo != run.outputs_repo:
+        return EffectRoute.TARGET_OPERATOR
+    return EffectRoute.IO
+
+
+def finding_key(finding: Finding, engine: EngineRef) -> str:
     """A finding's identity across runs: what it asks for, about which
-    anomalies of which engine (two engines' anomalies share keys like #500)."""
+    anomalies of which engine (two engines' anomalies share keys like #500,
+    and two engines may work one repository)."""
     identity = {
-        "audited_repo": audited_repo,
+        "engine_id": engine.engine_id,
+        "audited_repo": engine.repo,
         "output": finding.output,
         "anomalies": sorted(list(k.key) for k in finding.anomaly_keys),
         "case_id": finding.reproduction.case_id if finding.reproduction else None,
@@ -68,10 +100,10 @@ def finding_marker(key: str) -> str:
     return f"<!-- io-improver-finding:{key} -->"
 
 
-def planned_effects(findings: ImproverFindings, audited_repo: str) -> tuple[EffectReceipt, ...]:
+def planned_effects(findings: ImproverFindings, engine: EngineRef) -> tuple[EffectReceipt, ...]:
     """One pending effect per accepted finding."""
     return tuple(
-        EffectReceipt(finding_id=f.id, key=finding_key(f, audited_repo), status=EffectStatus.PENDING)
+        EffectReceipt(finding_id=f.id, key=finding_key(f, engine), status=EffectStatus.PENDING)
         for f in findings.findings
     )
 
@@ -125,16 +157,19 @@ def plan_effect(
         return CommentImproverEvidence(
             issue_number=target,
             marker=marker,
-            body=f"{marker}\n**Improver run `{run.run_id}`** saw this again"
-            f" (engine `{run.engine_commit}`): stalled at `{finding.stall_point}`.\n\n"
+            body=f"{marker}\n**Improver run `{run.run_id}`** saw this again on `{run.audited_repo}`"
+            f" (engine `{run.engine_id}` at `{run.engine_commit}`): stalled at"
+            f" `{finding.stall_point}`.\n\n"
             f"{_finding_json(finding)}",
         )
     marker = finding_marker(key)
+    route = effect_route(run, finding)
+    labels = _LABELS[finding.output]
     return FileImproverIssue(
-        title=f"{title_token(key)} {_summary(finding)}",
+        title=f"{title_token(key)} {_summary(finding)} ({run.audited_repo})",
         marker=marker,
         body=f"{marker}\n{issue_body(run, finding)}",
-        labels=_LABELS[finding.output],
+        labels=(*labels, TARGET_OPERATOR_LABEL) if route is EffectRoute.TARGET_OPERATOR else labels,
     )
 
 
@@ -154,11 +189,23 @@ def issue_body(run: ImproverRunRecord, finding: Finding) -> str:
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490), run `{run.run_id}` against"
-            f" `{run.audited_repo}` at engine `{run.engine_commit}`.",
+            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
+            *_route_note(run, finding),
             f"**Stalled at:** `{finding.stall_point}`. **Classification:** `{finding.classification}`.",
             _definition_of_done(finding),
             _finding_json(finding),
         )
+    )
+
+
+def _route_note(run: ImproverRunRecord, finding: Finding) -> tuple[str, ...]:
+    if effect_route(run, finding) is not EffectRoute.TARGET_OPERATOR:
+        return ()
+    return (
+        f"**For the operator of `{run.audited_repo}`.** This proposal concerns that"
+        " repository's own configuration (its tech-lead charter), not io's code. It is"
+        " filed here because the improver never writes to a target repository; that"
+        " repository's operator decides, and applies it there.",
     )
 
 
@@ -201,10 +248,13 @@ def _finding_json(finding: Finding) -> str:
 __all__ = [
     "IMPROVER_LABEL",
     "OPERATOR_DECISION_LABEL",
+    "TARGET_OPERATOR_LABEL",
     "CommentImproverEvidence",
+    "EffectRoute",
     "FileImproverIssue",
     "ImproverEffectCommand",
     "TrackedIssueNotOpen",
+    "effect_route",
     "finding_key",
     "finding_marker",
     "issue_body",

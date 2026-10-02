@@ -63,6 +63,9 @@ from issue_orchestrator.testing.exam.cases import EXAM_CASE_IDS
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "improver" / "findings"
 
 ENGINE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+#: The audited engine's Control Center key (``configured_repository_key``) and repository.
+ENGINE_ID = "repo-02325ef2feefc7529b158ab553af3781d95ca51db1a1afd57ce5b07e4fc8cbbe"
+AUDITED_REPO = "porchpin/porchpin"
 STARTED = datetime.fromisoformat("2026-09-28T12:00:00+00:00")
 CUTOFF = datetime.fromisoformat("2026-09-28T18:00:00+00:00")
 PREVIOUS = CUTOFF - timedelta(days=1)
@@ -236,7 +239,7 @@ def build_improver_data(root: Path, *, exam_comparable: bool = False) -> Path:
     source.mkdir(parents=True)
     (source / Path(SOURCE_FILE).name).write_text("# charter\n", encoding="utf-8")
     write("inputs.json", (InputsManifest(
-        staged_at=CUTOFF, audited_repo="porchpin/porchpin",
+        staged_at=CUTOFF, engine_id=ENGINE_ID, audited_repo=AUDITED_REPO,
         outputs_repo="issue-orchestrator/issue-orchestrator",
         inputs=(StagedInput(name="audit.json", staged=True, detail=""),),
         existing_exam_case_ids=EXAM_CASE_IDS,

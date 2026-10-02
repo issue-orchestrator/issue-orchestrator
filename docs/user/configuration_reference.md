@@ -259,6 +259,18 @@ cannot be interpreted as another.
 | `setup_command` | `[]` | Optional dependency setup command, run in each isolated checkout before tests. |
 | `timeout_seconds` | `3600` | Deadline for one test command, including a bisection probe. |
 | `setup_timeout_seconds` | `900` | Deadline for dependency setup in one checkout. |
+| `cadence.kind` | `code_change` | `code_change` (default): due when io's code changed. `engine_activity`: due when a running engine has new activity (see below). |
 | `cadence.max_merges_since_success` | `10` | Run when this many PRs have merged since the last successful suite run. |
 | `cadence.max_delay_hours` | `24` | Maximum hours since successful coverage before changed code is due, even below the merge threshold. |
+
+With `cadence.kind: engine_activity` the suite grades engine behaviour,
+not io code: it is due only when an engine Control Center registers has new
+activity since the last successful run, at most once per window, and a failure
+is never bisected over io commits.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `cadence.kind` | `required` | Due when a running engine has new tech-lead decisions, completions or audit anomalies since the last successful run, independent of io merges. |
+| `cadence.max_delay_hours` | `24` | At most one scheduled run per this many hours; also how recently an engine must have run to be observed. |
+| `cadence.probe_interval_minutes` | `60` | While a window is open and no engine is active, re-observe the engines at most this often. |
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

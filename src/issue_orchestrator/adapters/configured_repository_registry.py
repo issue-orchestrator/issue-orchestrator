@@ -75,7 +75,14 @@ class RegisteredConfiguredRepositoryRegistry:
         return None
 
 
+def registered_repositories() -> Sequence[RegisteredRepository]:
+    """Every repository the Control Center registry holds."""
+    return _registered_repositories()
+
+
 __all__ = [
     "RegisteredConfiguredRepositoryRegistry",
+    "RegisteredRepository",
+    "registered_repositories",
     "configured_repository_key",
 ]

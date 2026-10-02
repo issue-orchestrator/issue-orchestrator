@@ -8,21 +8,33 @@ from uuid import uuid4
 from ..domain.budgeted_validation import (
     BisectRange, BudgetedValidationHistory, BudgetedValidationOutcome,
     BudgetedValidationProbe, BudgetedValidationRun, BudgetedValidationSuite,
+    ValidationCadence,
 )
+from ..domain.engine_activity import EngineActivityCadence, EngineActivityObservation
 from ..ports.budgeted_validation import (
     BudgetedValidationExecutor, BudgetedValidationJournal, BudgetedValidationRepository,
     BudgetedValidationStore,
 )
 from ..ports.contained_validation import ContainedValidationPending
+from ..ports.engine_activity import EngineActivityProbe
+
+#: An engine-activity suite grades engine BEHAVIOUR: its failure is not a
+#: property of an io commit, so no commit range is bisected for it.
+NOT_BISECTED_DIAGNOSIS = (
+    "Engine-activity suite: it grades engine behaviour, not io code, so no io commit is"
+    " accused and nothing is bisected. Read the run's evidence."
+)
 
 
 class BudgetedValidationCycle:
     def __init__(self, *, store: BudgetedValidationStore, repository: BudgetedValidationRepository,
-                 executor: BudgetedValidationExecutor, clock: Callable[[], datetime]) -> None:
+                 executor: BudgetedValidationExecutor, clock: Callable[[], datetime],
+                 activity: EngineActivityProbe) -> None:
         self._store = store
         self._repository = repository
         self._executor = executor
         self._clock = clock
+        self._activity = activity
 
     def run(self, suites: tuple[BudgetedValidationSuite, ...], *, force: bool = False) -> bool:
         """One repository-wide lease coalesces all callers, modes and worktrees."""
@@ -47,14 +59,15 @@ class BudgetedValidationCycle:
         if pending is not None and pending.finished_at is None:
             self._resume_pending(journal, suite, history)
             return
-        watermark = history.scheduling_watermark
-        since_attempt = self._repository.changes(watermark.probe.commit, head) if watermark else ()
-        if not force and not history.scheduled_due(
-            now=now, cadence=suite.cadence, head=head,
-            integrations_since_attempt=self._repository.merged_count(since_attempt),
-        ):
+        cadence = suite.cadence
+        activity: EngineActivityObservation | None = None
+        if isinstance(cadence, EngineActivityCadence):
+            history, activity = self._activity_due(journal, suite, history, cadence, now, force=force)
+            if activity is None:
+                return
+        elif not force and not self._code_change_due(history, cadence, head, now):
             return
-        history = self._probe(journal, suite, history, head, "scheduled")
+        history = self._probe(journal, suite, history, head, "scheduled", activity=activity)
         if history.latest is None:
             raise RuntimeError("Executed probe produced no history")
         if history.latest.finished_at is None:
@@ -63,6 +76,41 @@ class BudgetedValidationCycle:
         if not failure.is_failure:
             return
         self._start_diagnosis(journal, suite, history)
+
+    def _code_change_due(self, history: BudgetedValidationHistory, cadence: ValidationCadence,
+                         head: str, now: datetime) -> bool:
+        watermark = history.scheduling_watermark
+        since_attempt = self._repository.changes(watermark.probe.commit, head) if watermark else ()
+        return history.scheduled_due(
+            now=now, cadence=cadence, head=head,
+            integrations_since_attempt=self._repository.merged_count(since_attempt),
+        )
+
+    def _activity_due(
+        self, journal: BudgetedValidationJournal, suite: BudgetedValidationSuite,
+        history: BudgetedValidationHistory, cadence: EngineActivityCadence, now: datetime,
+        *, force: bool,
+    ) -> tuple[BudgetedValidationHistory, EngineActivityObservation | None]:
+        """The activity a due run is started for, or None when not due.
+
+        Never consults io's integrations: only the engines' activity since the
+        last successful run's watermark, at most once per window. Each look
+        is recorded, so an idle window re-probes only per probe interval.
+        """
+        last = history.scheduling_watermark
+        if not force and not cadence.should_observe(
+            now=now, last_attempt_at=last.started_at if last else None,
+            last_probe=history.last_activity_probe,
+        ):
+            return history, None
+        observation = self._activity.observe(
+            now=now, since=cadence.observe_since(now=now, baseline=history.activity_baseline),
+        )
+        history = replace(history, last_activity_probe=observation)
+        journal.write(suite, history)
+        if force or cadence.due(observation=observation, baseline=history.activity_baseline):
+            return history, observation
+        return history, None
 
     def _resume_pending(self, journal: BudgetedValidationJournal,
                         suite: BudgetedValidationSuite,
@@ -107,6 +155,9 @@ class BudgetedValidationCycle:
         if (failure is None or failure.finished_at is None
                 or failure.purpose != "scheduled" or not failure.probe.is_failure):
             raise ValueError("diagnosis requires a completed scheduled failure")
+        if isinstance(suite.cadence, EngineActivityCadence):
+            journal.write(suite, history.with_diagnosis(NOT_BISECTED_DIAGNOSIS))
+            return
         green = history.last_success
         changes = self._repository.changes(
             green.probe.commit, failure.probe.commit,
@@ -135,12 +186,13 @@ class BudgetedValidationCycle:
         )
 
     def _probe(self, journal: BudgetedValidationJournal, suite: BudgetedValidationSuite,
-               history: BudgetedValidationHistory, commit: str, purpose: str) -> BudgetedValidationHistory:
+               history: BudgetedValidationHistory, commit: str, purpose: str,
+               *, activity: EngineActivityObservation | None = None) -> BudgetedValidationHistory:
         started = self._clock()
         run_id = uuid4().hex
         pending = BudgetedValidationRun(run_id, started, None,
             BudgetedValidationProbe(commit, BudgetedValidationOutcome.UNAVAILABLE, ""), purpose,
-            suite)
+            suite, activity)
         journal.write(suite, history.append(pending))
         try:
             probe = self._executor.probe(suite, commit, run_id)
@@ -148,7 +200,7 @@ class BudgetedValidationCycle:
             return history.append(pending)
         if probe.commit != commit:
             raise ValueError("Validation result belongs to a different commit")
-        complete = BudgetedValidationRun(run_id, started, self._clock(), probe, purpose, suite)
+        complete = BudgetedValidationRun(run_id, started, self._clock(), probe, purpose, suite, activity)
         history = history.append(complete)
         journal.write(suite, history)
         return history

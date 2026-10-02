@@ -8,6 +8,7 @@ from pathlib import Path
 
 from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE
 from issue_orchestrator.contracts.improver_run import EffectStatus, RunOutcome
+from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.entrypoints.improver_run import ImproverRun, ImproverRunRequest, findings_text, render_run
 from issue_orchestrator.entrypoints.improver_staging import (
@@ -58,9 +59,14 @@ class FakeAgent:
         return ImproverAgentResult(self.message, self.detail)
 
 
-def _request(audited_repo: str = "porchpin/porchpin") -> ImproverRunRequest:
+def _request(audited_repo: str = "porchpin/porchpin", engine_id: str | None = None) -> ImproverRunRequest:
+    engine = EngineRef(
+        engine_id=engine_id or f"repo-{audited_repo.replace('/', '-')}",
+        repo=audited_repo,
+        state_dir=Path("/engine/state"),
+    )
     return ImproverRunRequest(
-        state_dir=Path("/engine/state"), audited_repo=audited_repo,
+        engine=engine,
         outputs_repo="issue-orchestrator/issue-orchestrator", exam_dir=None,
         window=timedelta(hours=24), log_tail_bytes=1024,
     )
@@ -232,6 +238,25 @@ def test_the_previous_audit_and_grades_are_the_same_engines(tmp_path: Path) -> N
     }
 
 
+def test_two_engines_of_one_repository_never_diff_against_each_other(tmp_path: Path) -> None:
+    """#7567: engines are keyed by their Control Center key, not their repository
+    (an io worktree's engine and io's own both work issue-orchestrator)."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    first = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request("a/a", "repo-one"))
+    _improver(store, host, FakeAgent(_findings("prompt_proposal"))).run(_request("a/a", "repo-two"))
+    stager = FakeStager()
+
+    third = _improver(store, host, FakeAgent(_findings("charter_proposal")), stager).run(
+        _request("a/a", "repo-one")
+    )
+
+    assert third.engine_id == "repo-one"
+    assert stager.requests[0].previous_audit == Path(first.run_dir) / "improver-data" / "audit.json"
+    assert {m.stall_point: m.previous for m in third.stall_points} == {
+        "noticed_not_acted": 1, "not_noticed": 0,
+    }
+
+
 def test_a_run_with_nothing_of_its_own_is_not_green_while_an_earlier_run_is_owed(tmp_path: Path) -> None:
     """r2 F1: an accepted empty findings file, an older effect still failing."""
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
@@ -261,7 +286,7 @@ def test_a_run_for_another_repository_than_its_effects_is_refused(tmp_path: Path
 
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
     request = ImproverRunRequest(
-        state_dir=Path("/s"), audited_repo="a/a", outputs_repo="other/repo", exam_dir=None,
+        engine=EngineRef("repo-a", "a/a", Path("/s")), outputs_repo="other/repo", exam_dir=None,
         window=timedelta(hours=24), log_tail_bytes=1,
     )
 

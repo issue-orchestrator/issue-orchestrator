@@ -18,7 +18,7 @@ NOW = datetime(2026, 9, 28, 19, 0, tzinfo=UTC)
 def _record(run_id: str, at: datetime, outcome: RunOutcome = RunOutcome.REJECTED) -> ImproverRunRecord:
     return ImproverRunRecord(
         run_id=run_id, started_at=at, finished_at=at, outcome=outcome, detail="",
-        audited_repo="a/b", outputs_repo="a/b", run_dir="/x",
+        engine_id="repo-a-b", audited_repo="a/b", outputs_repo="a/b", run_dir="/x",
     )
 
 

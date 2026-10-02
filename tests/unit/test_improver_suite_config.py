@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from issue_orchestrator.domain.budgeted_validation import ValidationCadence
+from issue_orchestrator.domain.engine_activity import EngineActivityCadence
 from issue_orchestrator.infra.budgeted_validation_config import parse_budgeted_validation
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,7 +26,10 @@ def test_the_improver_suite_runs_daily_and_is_off_by_default(config: Path) -> No
     improver = suites["tech-lead-improver"]
     assert improver.enabled is False
     assert improver.command == ("make", "tech-lead-improver")
-    assert improver.cadence.max_delay_hours == 24
+    # Due on engine activity at most daily, never on io merges (#7567); the
+    # exam, which tests code, stays on the code-change cadence.
+    assert improver.cadence == EngineActivityCadence(max_delay_hours=24)
+    assert isinstance(suites["tech-lead-exam"].cadence, ValidationCadence)
     assert improver.timeout_seconds >= 90 * 60 + 600
     assert "tech-lead-exam" in suites
 
@@ -34,5 +39,7 @@ def test_the_make_target_runs_the_improver_on_codex() -> None:
 
     target = makefile.split("tech-lead-improver: sync-deps", 1)[1].split("\n\n", 1)[0]
     assert "cli_tools.improver run" in target
+    # By default every engine Control Center runs is audited (#7567).
+    assert "--recent-hours $(IMPROVER_RECENT_HOURS)" in target
     assert "--model $(IMPROVER_MODEL)" in target
     assert '--exam-dir "$(EXAM_OUT)"' in target

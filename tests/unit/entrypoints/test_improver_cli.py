@@ -46,8 +46,8 @@ def test_staging_an_engine_without_a_start_record_exits_unavailable(
             raise AssertionError
 
     monkeypatch.setattr(improver, "create_repository_host", lambda repo: Host())
-    state = tmp_path / "state"
-    state.mkdir()
+    state = tmp_path / "repo" / ".issue-orchestrator" / "state"
+    state.mkdir(parents=True)
 
     code = improver.main([
         "stage", "--state-dir", str(state), "--audited-repo", "o/r", "--outputs-repo", "o/r",

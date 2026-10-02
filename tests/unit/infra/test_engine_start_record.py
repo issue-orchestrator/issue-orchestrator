@@ -22,6 +22,7 @@ NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 
 def test_a_start_records_the_engine_commit_and_its_effective_charter(tmp_path: Path) -> None:
     config = Config()
+    config.repo = "porchpin/porchpin"
     config.tech_lead.charter.flow.authority = "propose"
     config.tech_lead.findings.promote = "off"
 
@@ -29,6 +30,8 @@ def test_a_start_records_the_engine_commit_and_its_effective_charter(tmp_path: P
 
     record = read_engine_start(state_dir(tmp_path))
     assert record.started_at == NOW
+    # The engine's identity for outside readers: the repository it started for (#7567).
+    assert record.repo == "porchpin/porchpin"
     assert record.engine_commit  # this test runs from a source checkout
     assert record.charter.roles["flow"].authority == "propose"
     assert record.charter.actions["create_issue"].outcome == "proposed"

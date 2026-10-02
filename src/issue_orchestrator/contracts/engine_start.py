@@ -16,7 +16,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-ENGINE_START_SCHEMA_VERSION = 1
+ENGINE_START_SCHEMA_VERSION = 2
 
 
 class _Closed(BaseModel):
@@ -57,8 +57,13 @@ class EffectiveCharter(_Closed):
 
 
 class EngineStartRecord(_Closed):
-    schema_version: Literal[1] = ENGINE_START_SCHEMA_VERSION
+    schema_version: Literal[2] = ENGINE_START_SCHEMA_VERSION
     started_at: AwareDatetime
+    #: ``owner/repo`` the engine works, as its config said at this start: the
+    #: engine's identity for any outside reader (#7567). A config edited or
+    #: re-selected later does not re-attribute this state. None when the
+    #: config named no repository.
+    repo: str | None
     #: The io source commit the engine runs (its code, not the target repo);
     #: None for an install with no source identity (a wheel).
     engine_commit: str | None = Field(min_length=1)

@@ -149,6 +149,11 @@ CASES: list[tuple[Rule, str, Mutation]] = [
     (Rule.ENGINE_IDENTITY, "exam_case", _top("engine_commit", "f" * 40)),
     (Rule.ENGINE_IDENTITY, "exam_case", _top("engine_started_at", "2026-09-28T11:00:00+00:00")),
     (Rule.UNIQUE_FINDING_IDS, "capability_issue", _duplicate_finding),
+    # the engine tag (#7567)
+    (Rule.SCHEMA, "exam_case", _drop("engine")),
+    (Rule.SCHEMA, "exam_case", _top("schema_version", 1)),
+    (Rule.ENGINE_TAG_MATCHES_INPUTS, "exam_case", _set("engine.id", "repo-" + "a" * 64)),
+    (Rule.ENGINE_TAG_MATCHES_INPUTS, "capability_issue", _set("engine.repo", "issue-orchestrator/issue-orchestrator")),
     # anomaly keys and classification
     (Rule.ANOMALY_KEY_EXISTS, "exam_case", _set("anomaly_keys.0.subject", "#999")),
     (Rule.TRACKED_ISSUE_OPEN, "prompt_proposal", _set("tracked_issue", 1)),
@@ -300,6 +305,17 @@ EVIDENCE_CASE_RULES = {
     Rule.PRESENCE_MATCHES_CURRENT_AUDIT,
     Rule.NOT_NOTICED_UNREFERENCED,
 }
+
+
+def test_a_finding_about_one_engine_is_rejected_against_another_engines_inputs(tmp_path: Path) -> None:
+    """Two engines are audited per sweep (#7567): a finding valid for porchpin's
+    staged inputs is refused when validated against another engine's."""
+    data = build_improver_data(tmp_path)
+    manifest = json.loads((data / "inputs.json").read_text())
+    manifest["engine_id"] = "repo-" + "b" * 64
+    (data / "inputs.json").write_text(json.dumps(manifest))
+
+    assert _rules(example("exam_case"), load_staged_evidence(data)) == {Rule.ENGINE_TAG_MATCHES_INPUTS}
 
 
 def test_every_rule_has_a_case() -> None:
