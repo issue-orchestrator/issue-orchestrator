@@ -65,6 +65,8 @@ MAX_RESOLUTION_CHILDREN = 3
 MAX_RESOLUTION_EVIDENCE = 10
 MAX_RESOLUTION_TEXT_CHARS = 20_000
 MAX_RESOLUTION_TITLE_CHARS = 300
+#: A child becomes a GitHub issue, whose title GitHub caps at 256 characters.
+MAX_CHILD_TITLE_CHARS = 256
 
 
 class ResolutionKind(StrEnum):
@@ -123,7 +125,7 @@ class ResolutionChild:
     after: str | int | None = None
 
     def __post_init__(self) -> None:
-        _require_text(self.title, "child title", MAX_RESOLUTION_TITLE_CHARS)
+        _require_text(self.title, "child title", MAX_CHILD_TITLE_CHARS)
         _require_text(self.body, "child body", MAX_RESOLUTION_TEXT_CHARS)
         if (self.edge is None) != (self.after is None):
             raise ValueError("a split child names both its edge and what it comes after, or neither")

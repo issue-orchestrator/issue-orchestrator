@@ -140,3 +140,13 @@ def test_markers_record_each_discharged_cause_by_decision() -> None:
         NeedsHumanCause.AGENT_COMPLETION: frozenset({"run-1/A1", "run-2/A4"}),
         NeedsHumanCause.SESSION_LIFECYCLE: frozenset({"run-1/A1"}),
     }
+
+
+def test_a_child_title_github_would_refuse_rejects_the_decision() -> None:
+    """r6 F1: GitHub caps an issue title at 256 characters; a longer child
+    title would fail mid-split, after earlier children were filed."""
+    children = [{"title": "First half", "body": "One."}, {"title": "x" * 257, "body": "Two."}]
+    with pytest.raises(ValueError, match="256"):
+        BlockResolution.from_mapping(_data(kind="split", children=children, parent="narrow"), context="A1")
+    children[1]["title"] = "x" * 256
+    BlockResolution.from_mapping(_data(kind="split", children=children, parent="narrow"), context="A1")
