@@ -339,9 +339,14 @@ class _Checker:
             if finding is None:
                 yield Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, f"#{n}: no finding {account.finding_id} in the file"
                 return
-            if f"#{n}" not in {k.subject for k in finding.anomaly_keys}:
+            blocks = {b.label for b in item.blocking_labels}
+            if not any(
+                k.kind == AnomalyKind.ATTENTION_LABEL.value and k.subject == f"#{n}" and k.signature in blocks
+                for k in finding.anomaly_keys
+            ):
                 yield Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, (
-                    f"#{n}: finding {finding.id} names no anomaly of #{n} (its attention_label in audit.json)"
+                    f"#{n}: finding {finding.id} names none of its blocks (an attention_label of #{n}"
+                    f" signed {', '.join(sorted(blocks))})"
                 )
             if finding.present_after_start != "true":
                 yield Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, (

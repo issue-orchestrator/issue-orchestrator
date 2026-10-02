@@ -134,3 +134,17 @@ def test_an_add_that_could_not_read_presence_moves_no_known_onset() -> None:
     )
 
     assert staged.items[0].blocked_since == t0
+
+
+def test_an_add_that_could_not_read_presence_is_no_onset() -> None:
+    """r2 F2: with no earlier onset retained, an uncertain add leaves it unknown."""
+    events = [
+        _event(262, "issue.labels_changed", CUTOFF - timedelta(hours=3), added=["needs-human"], removed=[],
+               presence_unknown=True),
+    ]
+
+    staged = blocked_items_input(
+        ISSUES, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert staged.items[0].blocking_labels[0].since_at is None and staged.items[0].blocked_since is None

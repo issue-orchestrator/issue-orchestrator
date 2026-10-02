@@ -30,7 +30,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from ..contracts.engine_audit import AuditDiff, AuditSource, EngineAuditReport
+from ..contracts.engine_audit import AuditDiff, AuditSource, EngineAuditReport, SourceStatus
 from ..contracts.engine_start import EffectiveCharter
 from ..contracts.improver_inputs import (
     AUDIT_DIFF_FILE,
@@ -348,10 +348,13 @@ def _stage_blocked_items(
     anomaly of the audit, and the other stores' snapshot copies."""
     if audit.github is None:
         reading = next(r for r in audit.sources if r.source is AuditSource.GITHUB)
-        return _missing(
-            BLOCKED_ITEMS_FILE,
-            f"the audited repository's open issues were not read ({reading.status.value}: {reading.detail})",
-        )
+        why = f"the audited repository's open issues were not read ({reading.status.value}: {reading.detail})"
+        if reading.status is not SourceStatus.SKIPPED:
+            # The objective cannot be measured: a run that accepted findings
+            # now would account for no blocked item and drop every live one.
+            raise ImproverInputsUnavailable(f"{BLOCKED_ITEMS_FILE}: {why}")
+        # The operator chose not to read GitHub (--no-github): said, not hidden.
+        return _missing(BLOCKED_ITEMS_FILE, why)
     issues = audited.issues()
     claims = snapshot.claims
     causes = (

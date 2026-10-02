@@ -541,3 +541,20 @@ def test_a_blind_run_hides_the_excluded_issues_from_open_issues(state: Path, tmp
     entry = next(i for i in staged.manifest.inputs if i.name == "open-issues.json")
     # Not even the numbers: naming them would point the improver at them.
     assert "7592" not in entry.detail and "7593" not in entry.detail
+
+
+def test_blocked_items_unread_after_the_issue_listing_make_the_run_unavailable(state: Path, tmp_path: Path) -> None:
+    """r2 F1: the issues read, then the PR listing hit a rate limit. The audit
+    drops its GitHub section, so no blocked item could be accounted for: the
+    run must not accept findings that silently drop every live block."""
+    limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+    limited.rate_limit = HostRateLimit(resets_at=NOW + timedelta(minutes=5), kind="primary")
+
+    class PrsLimited(FakeHost):
+        def list_open_prs_complete(self) -> list:
+            raise limited
+
+    audited = PrsLimited(issues=[OpenIssueLabels(number=364, title="parked", labels=("needs-human",))])
+
+    with pytest.raises(ImproverInputsUnavailable, match="blocked-items.json"):
+        _stager(audited, FakeHost()).stage(_request(state, tmp_path))

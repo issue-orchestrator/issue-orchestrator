@@ -672,3 +672,18 @@ def test_acted_not_effective_needs_a_remedy_applied_inside_the_window(tmp_path: 
     )
 
     assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in _rules(example("capability_issue"), evidence)
+
+
+def test_a_finding_about_another_anomaly_of_the_issue_does_not_account_for_its_block(tmp_path: Path) -> None:
+    """r2 F3: #353 also has an owed pause; a finding keyed only to that leaves its block unexamined."""
+    def owed_pause(d: dict) -> None:
+        d["anomalies"].append({
+            "kind": "owed_pause", "sources": ["action_liveness"], "subject": "#353",
+            "signature": "reconcile_pause", "detail": "owed", "count": 1,
+        })
+
+    evidence = _with_notice(build_improver_data(tmp_path), "audit.json", owed_pause)
+    doc = example("needs_investigation")
+    _finding(doc)["anomaly_keys"] = [{"kind": "owed_pause", "subject": "#353", "signature": "reconcile_pause"}]
+
+    assert Rule.BLOCKED_ITEM_FINDING_ABOUT_IT in _rules(doc, evidence)

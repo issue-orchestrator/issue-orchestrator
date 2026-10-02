@@ -310,9 +310,10 @@ in `engine-source/examples/improver/findings/`.
   has seen it fail on `fails_on`. Until then the finding is `specified`,
   never `reproduced`.
 - **Every blocked item is accounted for.** `blocked_items` names each item
-  of `blocked-items.json` exactly once and nothing else (empty when it was
-  not staged). A `finding` account names, in `finding_id`, a finding of this
-  file with an anomaly key of that issue (`subject` `#<n>`) and
+  of `blocked-items.json` exactly once and nothing else (empty only when
+  the operator ran the audit without GitHub, so it was not staged). A `finding` account names, in `finding_id`, a finding of this
+  file keyed to one of the item's blocks (an `attention_label` anomaly
+  with `subject` `#<n>` and a blocking label as `signature`) and
   `present_after_start: "true"`. An `awaiting_operator` account cites in
   `evidence` an `escalate_to_human` or `defer_to_tracker` decision from
   that item's `decisions`, applied after its `blocked_since`
