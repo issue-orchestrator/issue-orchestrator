@@ -351,4 +351,3 @@ def triage_coverage_violation(
             + ", ".join(f"#{number}" for number in missing)
         )
     return None
-
