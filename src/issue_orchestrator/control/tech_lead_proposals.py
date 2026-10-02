@@ -214,13 +214,14 @@ def _decision_section(op: StoredTechLeadOp) -> str:
 {filed}
 ### What approving does
 
-1. Retries #{op.target_issue_number} through the operator's own retry (its
-   blocking labels come off; a cause the retry may not override, such as a
-   claim quarantine, stops here and this proposal closes saying so).
-2. Files the issues above, if any, with #{op.target_issue_number}'s own labels
+1. Files the issues above, if any, with #{op.target_issue_number}'s own labels
    and milestone.
-3. Posts this decision on #{op.target_issue_number}, so the session that resumes
+2. Posts this decision on #{op.target_issue_number}, so the session that resumes
    it works to it.
+3. Retries #{op.target_issue_number} last, through the operator's own retry (its
+   blocking labels come off). If the item closed or is no longer blocked, or a
+   cause the retry may not override (such as a claim quarantine) holds it, the
+   item is not retried and this proposal closes saying so.
 
 """
 

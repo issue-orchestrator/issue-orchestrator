@@ -862,12 +862,18 @@ def test_the_latest_triage_survives_any_amount_of_later_history(store) -> None:
     assert ledger.latest_triage_for_issue(14) is None
 
 
-def test_a_decision_retry_receipt_lives_until_its_op_is_discarded(store) -> None:
-    """#7593 review r2: the durable receipt an approved decision's replay reads."""
-    store.record_decision_retry(proposal_issue_number=950)
-    store.record_decision_retry(proposal_issue_number=950)  # idempotent
+def test_a_decision_retry_is_bracketed_until_its_op_is_discarded(store) -> None:
+    """#7593 review r2/r3: the write-ahead record an approved decision's replay reads."""
+    from issue_orchestrator.ports.operator_decision_retries import DecisionRetryState
 
-    assert store.decision_retried(proposal_issue_number=950) is True
-    assert store.decision_retried(proposal_issue_number=951) is False
+    assert store.decision_retry_state(proposal_issue_number=950) is None
+    store.begin_decision_retry(proposal_issue_number=950)
+    assert store.decision_retry_state(proposal_issue_number=950) is DecisionRetryState.BEGUN
+    store.commit_decision_retry(proposal_issue_number=950)
+    assert store.decision_retry_state(proposal_issue_number=950) is DecisionRetryState.COMMITTED
+    assert store.decision_retry_state(proposal_issue_number=951) is None
+    store.begin_decision_retry(proposal_issue_number=951)
+    store.abandon_decision_retry(proposal_issue_number=951)
+    assert store.decision_retry_state(proposal_issue_number=951) is None
     store.discard_op(issue_number=950)
-    assert store.decision_retried(proposal_issue_number=950) is False
+    assert store.decision_retry_state(proposal_issue_number=950) is None

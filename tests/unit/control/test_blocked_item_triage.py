@@ -29,14 +29,18 @@ from issue_orchestrator.control.tech_lead_operator_decision import (
 from issue_orchestrator.control.tech_lead_proposals import plan_approved_tech_lead_op_executions
 from issue_orchestrator.domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
+    TriageAgenda,
+    TriageAgendaItem,
     TriageGrant,
     block_fingerprint,
+    render_triage_instructions,
 )
 from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.domain.tech_lead_artifacts import (
     DecisionFollowUp,
     ProposedTechLeadAction,
+    TRIAGE_CLASS_ACTION_TYPES,
     TechLeadDecision,
     TriageClass,
 )
@@ -61,12 +65,15 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadLaunchAuthority,
     TechLeadSessionFlavor,
 )
+from issue_orchestrator.control.tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.operator_decision_retries import DecisionRetryState
 from issue_orchestrator.ports.operator_issue_commands import (
     OperatorCommandIntent,
     OperatorCommandOutcome,
     OperatorCommandStatus,
 )
+from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from issue_orchestrator.ports.timeline_store import TimelineRecord
 
 ANCHOR = 900
@@ -354,6 +361,29 @@ def test_a_class_only_lands_on_its_own_action_types() -> None:
         ).validate()
 
 
+
+def test_a_remedy_is_an_action_on_the_item_never_a_pr_rework() -> None:
+    """#7593 review r3: request_rework targets a PR, and the engine refuses a
+    blocked issue's rework, so it can be no blocked item's remedy; the
+    remedies the triage prompt offers must all be valid."""
+    with pytest.raises(ValueError, match="cannot carry triage_class remedy"):
+        ProposedTechLeadAction(
+            id="A1", action_type="request_rework", target_number=379, target_is_pr=True,
+            body="b", finding_ids=("T1",), triage_class=TriageClass.REMEDY,
+        ).validate()
+    for action_type in ("release_withheld_review", "recover_validated_work", "kill_hung_session", "reset_retry"):
+        assert action_type in TRIAGE_CLASS_ACTION_TYPES[TriageClass.REMEDY]
+        assert f"`{action_type}`" in render_triage_instructions(TriageAgenda(
+            items=(TriageAgendaItem(
+                issue_number=262, title="t", labels=("needs-human",), blocking_labels=("needs-human",),
+                needs_human_causes=(), fingerprint="needs-human", agent_question=None,
+                reason="never triaged", prior=None,
+            ),),
+            in_force=(), deferred=(),
+        ))
+    assert "request_rework" not in TRIAGE_CLASS_ACTION_TYPES[TriageClass.REMEDY]
+
+
 # -- planning: the split question becomes an approvable proposal ----------------
 
 
@@ -422,7 +452,7 @@ class _Host:
     calls: list[str] = field(default_factory=list)
     create_error: Exception | None = None
     comment_failures: set[int] = field(default_factory=set)
-    retried: set[int] = field(default_factory=set)
+    retries: InMemoryTechLeadAuthorityStore = field(default_factory=InMemoryTechLeadAuthorityStore)
 
     def get_issue(self, number: int) -> Issue | None:
         return self.issues.get(number)
@@ -473,7 +503,7 @@ def _executor(host: _Host, retry, *, held: tuple[str, ...] = (), authority=None)
         find_issue_by_marker=host.find_issue_by_marker,
         create_issue=host.create_issue, comment_marker_present=host.comment_marker_present,
         apply_action=host.apply, require_authority=authority or (lambda action, number: None),
-        record_decision_retry=host.retried.add, decision_retried=host.retried.__contains__,
+        retries=host.retries,
     )
 
 
@@ -530,6 +560,63 @@ def test_a_replay_after_the_retry_committed_never_retries_again() -> None:
 
     assert replay.success and replay.details["replayed"] is True
     assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+
+
+class _EngineStopped(BaseException):
+    """The process dying between the retry's GitHub write and its receipt."""
+
+
+def _retry_then_stop(host: _Host):
+    def retry(number: int) -> OperatorCommandOutcome:
+        host.issues[number] = _issue(number, "agent:backend", "priority:high")  # labels came off
+        raise _EngineStopped
+
+    return retry
+
+
+def test_a_replay_after_the_engine_stopped_mid_retry_never_retries_a_new_block() -> None:
+    """#7593 review r3: the retry committed and the engine stopped before it
+    was recorded; the item asked again since. The replay cannot tell that from
+    a retry that never happened, so it retries nothing, keeps the new
+    needs-human, and keeps the proposal (a failure, never a stale close)."""
+    host = _Host({262: _blocked_target()})
+    with pytest.raises(_EngineStopped):
+        _executor(host, _retry_then_stop(host)).apply(_approved())
+    host.issues[262] = _issue(262, "agent:backend", "needs-human")  # raised since
+
+    replay = _executor(host, lambda n: pytest.fail("retried twice")).apply(_approved())
+
+    assert not replay.success and replay.details.get("mode") != STALE_DOWNGRADE_MODE
+    assert "not retried a second time" in (replay.error or "")
+    assert host.issues[262].labels == ["agent:backend", "needs-human"]
+    assert host.calls.count("retry:262") == 1
+
+
+def test_a_replay_after_the_engine_stopped_mid_retry_finishes_an_unblocked_item() -> None:
+    """The same interruption, but the item is still unblocked: that is the
+    retry's own work, so the replay finishes the applied marker instead of
+    closing the approval as stale."""
+    host = _Host({262: _blocked_target()})
+    with pytest.raises(_EngineStopped):
+        _executor(host, _retry_then_stop(host)).apply(_approved())
+
+    replay = _executor(host, lambda n: pytest.fail("retried twice")).apply(_approved())
+
+    assert replay.success and replay.details["replayed"] is True
+    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+    assert host.retries.decision_retry_state(proposal_issue_number=950) is DecisionRetryState.COMMITTED
+
+
+def test_an_unsettled_retry_may_be_attempted_again() -> None:
+    """A retry that settled without committing is abandoned, not left begun,
+    so its replay retries normally rather than handing the proposal back."""
+    host = _Host({262: _blocked_target()})
+    incomplete = _outcome(OperatorCommandStatus.INCOMPLETE, failed=("pr-pending",))
+    assert not _executor(host, lambda n: incomplete).apply(_approved()).success
+
+    replay = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED)).apply(_approved())
+
+    assert replay.success and host.calls.count("retry:262") == 2
 
 
 def test_a_failed_follow_up_leaves_the_item_blocked_and_the_replay_resumes() -> None:

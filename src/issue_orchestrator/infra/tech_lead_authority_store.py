@@ -34,6 +34,7 @@ from . import tech_lead_patterns_sql as patterns
 from . import tech_lead_proposal_sql
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
 from .scoped_rework_receipts import load_receipt, save_receipt, list_receipts
+from ..ports.operator_decision_retries import DecisionRetryState
 
 import json
 import logging
@@ -300,19 +301,33 @@ class SqliteTechLeadAuthorityStore:
             return None
         return StoredTechLeadOp.from_dict(json.loads(row["op"]))
 
-    def record_decision_retry(self, *, proposal_issue_number: int) -> None:
+    def begin_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._set_decision_retry(proposal_issue_number, DecisionRetryState.BEGUN)
+
+    def commit_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._set_decision_retry(proposal_issue_number, DecisionRetryState.COMMITTED)
+
+    def abandon_decision_retry(self, *, proposal_issue_number: int) -> None:
         with self._transaction() as tx:
             tx.execute(
-                "INSERT OR IGNORE INTO tech_lead_decision_retries"
-                " (proposal_issue_number, retried_at) VALUES (?, ?)",
-                (proposal_issue_number, datetime.now(timezone.utc).isoformat()),
+                "DELETE FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+                (proposal_issue_number,),
             )
 
-    def decision_retried(self, *, proposal_issue_number: int) -> bool:
-        return self._get_connection().execute(
-            "SELECT 1 FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+    def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None:
+        row = self._get_connection().execute(
+            "SELECT state FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
             (proposal_issue_number,),
-        ).fetchone() is not None
+        ).fetchone()
+        return None if row is None else DecisionRetryState(str(row[0]))
+
+    def _set_decision_retry(self, proposal_issue_number: int, state: DecisionRetryState) -> None:
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT OR REPLACE INTO tech_lead_decision_retries"
+                " (proposal_issue_number, state, recorded_at) VALUES (?, ?, ?)",
+                (proposal_issue_number, state.value, datetime.now(timezone.utc).isoformat()),
+            )
 
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""

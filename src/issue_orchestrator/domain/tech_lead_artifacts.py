@@ -144,8 +144,10 @@ TRIAGE_CLASS_ACTION_TYPES: Mapping[TriageClass, frozenset[str]] = {
     TriageClass.HUMAN_HAND_OVER: frozenset({"escalate_to_human"}),
     TriageClass.EXPLAINED: frozenset({"post_comment"}),
     # defer_to_tracker is a failure investigation's disposition only, and a
-    # triage is a health review's: it cannot carry one.
-    TriageClass.REMEDY: ACT_LEVEL_TECH_LEAD_ACTIONS - {"propose_decision"},
+    # triage is a health review's: it cannot carry one. request_rework targets
+    # a PR, never the blocked issue, and the engine refuses a blocked issue's
+    # rework anyway, so it does not move the item (#7593 review r3).
+    TriageClass.REMEDY: ACT_LEVEL_TECH_LEAD_ACTIONS - {"propose_decision", "request_rework"},
 }
 
 

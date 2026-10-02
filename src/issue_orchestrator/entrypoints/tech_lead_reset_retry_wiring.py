@@ -126,12 +126,7 @@ def build_tech_lead_operator_decision_executor(
         comment_marker_present=host.issue_comment_marker_present,
         apply_action=deps.action_applier.apply,
         require_authority=deps.action_applier.require_mutation_authority,
-        record_decision_retry=lambda proposal: deps.tech_lead_authority.record_decision_retry(
-            proposal_issue_number=proposal
-        ),
-        decision_retried=lambda proposal: deps.tech_lead_authority.decision_retried(
-            proposal_issue_number=proposal
-        ),
+        retries=deps.tech_lead_authority,
     )
 
 

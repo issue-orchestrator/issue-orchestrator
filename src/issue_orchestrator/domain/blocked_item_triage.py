@@ -221,8 +221,9 @@ def render_triage_instructions(agenda: TriageAgenda) -> str:
         "  who acts next. For an engine defect, name the defect and the open issue",
         "  that tracks it (file one with `create_issue` if none exists).",
         "- `remedy` + an act-level action on the item (`release_withheld_review`,",
-        "  `recover_validated_work`, `request_rework`, `kill_hung_session`,",
-        "  `reset_retry`), when the engine can move it itself.",
+        "  `recover_validated_work`, `kill_hung_session`, `reset_retry`), when the",
+        "  engine can move it itself. A blocked item's PR is never reworked: the",
+        "  engine refuses a blocked issue's rework, so `request_rework` is no remedy.",
         "",
         "Items owed a triage this run:",
     ]

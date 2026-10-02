@@ -20,14 +20,17 @@ gated until everything the resumed session needs exists:
    one owner of which labels a retry clears. The item stays blocked until the
    decision and its follow-ups are on GitHub, so no session resumes it
    without them.
-5. **Record that the retry committed**, durably in the authority store, then
-   mark the proposal applied with a comment. A replay of the op (a marker or
-   finalize write that failed) finds the receipt and never retries again, so a
-   ``needs-human`` raised after the retry is never cleared; it only finishes
-   the marker.
+5. **Bracket the retry durably** (``ports/operator_decision_retries``): begun
+   before it, committed after, then mark the proposal applied with a comment.
+   A replay of the op (a marker or finalize write that failed) finds the retry
+   committed and never retries again, so a ``needs-human`` raised after the
+   retry is never cleared; it only finishes the marker. A replay that finds it
+   begun but unsettled (the engine stopped mid-retry) finishes only if the item
+   is open and unblocked; otherwise it keeps the proposal for the operator and
+   retries nothing.
 
-A failure before the retry commits leaves the op in place; its replay finds
-the earlier writes by their markers and retries.
+A failure before the retry begins leaves the op in place; its replay finds the
+earlier writes by their markers and continues.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import make_trace_event
+from ..domain.operator_decision_retry import DecisionReplayStep, decision_replay_step
 from ..ports.operator_issue_commands import OperatorCommandOutcome, OperatorCommandStatus
 from .actions import Action, ActionResult, AddCommentAction
 from .claim_gate import ClaimLostError
@@ -50,6 +54,7 @@ from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import DecisionFollowUp
     from ..ports import EventSink
+    from ..ports.operator_decision_retries import DecisionRetryLedger
     from ..ports.issue import Issue
     from .label_manager import LabelManager
 
@@ -90,18 +95,23 @@ class OperatorDecisionExecutor:
     #: The applier's mutation-authority check (expectations and claim) for a
     #: write about an issue, run before each follow-up is filed.
     require_authority: Callable[[Action, int], None]
-    #: The durable receipt that a proposal's retry committed (authority store),
+    #: The write-ahead record of each proposal's retry (the authority store),
     #: so a replay of the op never retries the item a second time.
-    record_decision_retry: Callable[[int], None]
-    decision_retried: Callable[[int], bool]
+    retries: "DecisionRetryLedger"
 
     def apply(self, action: ApplyOperatorDecisionAction) -> ActionResult:
-        proposal = action.proposal_issue_number
-        if self.decision_retried(proposal):
-            # A replay after the retry committed: never retry again, only
-            # finish what is left (#7593 review r2).
-            return self._finish(action, follow_ups=(), removed=(), replayed=True)
+        prior = self.retries.decision_retry_state(proposal_issue_number=action.proposal_issue_number)
         target = self.read_issue(action.issue_number)
+        step = decision_replay_step(prior, item_open_and_unblocked=self._open_and_unblocked(target))
+        handlers = {
+            DecisionReplayStep.CARRY_OUT: self._carry_out,
+            DecisionReplayStep.FINISH: self._finish_replay,
+            DecisionReplayStep.HAND_BACK: self._hand_back,
+        }
+        return handlers[step](action, target)
+
+    def _carry_out(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
+        proposal = action.proposal_issue_number
         refusal = self._refusal(action, target)
         if refusal is not None:
             return _stale(action, refusal)
@@ -125,12 +135,38 @@ class OperatorDecisionExecutor:
         )
         if posted is not None:
             return ActionResult.fail(action, posted, issue_number=action.issue_number)
+        self.retries.begin_decision_retry(proposal_issue_number=proposal)
         outcome = self.retry_issue(action.issue_number)
         unsettled = _UNSETTLED_RETRY.get(outcome.status)
         if unsettled is not None:
+            self.retries.abandon_decision_retry(proposal_issue_number=proposal)
             return unsettled(action, outcome)
-        self.record_decision_retry(proposal)
+        self.retries.commit_decision_retry(proposal_issue_number=proposal)
         return self._finish(action, follow_ups=follow_ups, removed=outcome.removed, replayed=False)
+
+    def _finish_replay(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
+        """The retry committed before (or was interrupted, and its item is
+        unblocked): never retry again, only finish what is left (#7593 r2/r3)."""
+        self.retries.commit_decision_retry(proposal_issue_number=action.proposal_issue_number)
+        return self._finish(action, follow_ups=(), removed=(), replayed=True)
+
+    def _hand_back(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
+        """The engine stopped mid-retry and the item waits again (#7593 review r3)."""
+        number, proposal = action.issue_number, action.proposal_issue_number
+        return ActionResult.fail(
+            action,
+            f"the engine stopped while retrying #{number} for proposal #{proposal}, and #{number}"
+            " is blocked or closed now: it is not retried a second time. Retry it from the"
+            " dashboard if it should resume, or close the proposal.",
+            issue_number=number,
+        )
+
+    def _open_and_unblocked(self, target: "Issue | None") -> bool:
+        return (
+            target is not None
+            and target.state == "open"
+            and not self.labels.get_blocking(list(target.labels))
+        )
 
     def _finish(
         self,
