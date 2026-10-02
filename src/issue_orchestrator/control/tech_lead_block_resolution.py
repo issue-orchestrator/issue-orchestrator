@@ -314,14 +314,28 @@ class TechLeadBlockResolutionExecutor:
             f"tech lead {action.decision_id} resolved: {action.resolution.title}",
         )
         if outcome not in (BlockOutcome.CLEARED, BlockOutcome.HELD_BY_ANOTHER_CAUSE):
-            # Nothing was discharged (the owner withdraws a cause only on a
-            # committed outcome): a replay decides afresh.
-            self.discharges.abandon_block_resolution(decision_id=action.decision_id)
+            # A failed outcome does not prove nothing happened: the label can
+            # come off and the read confirming it fail. Only a fresh read that
+            # shows the label AND every named cause still standing lets a
+            # replay decide afresh; otherwise it is handed back (INTERRUPTED).
+            if self._discharged_nothing(action):
+                self.discharges.abandon_block_resolution(decision_id=action.decision_id)
             return ActionResult.fail(
                 action, f"needs-human on #{action.issue_number} did not settle ({outcome.value})",
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
         self.discharges.commit_block_resolution(decision_id=action.decision_id)
         return self._progress(action, children=children, outcome=outcome)
+
+    def _discharged_nothing(self, action: ResolveBlockAction) -> bool:
+        """The label and every named cause still stand, read fresh."""
+        number = action.issue_number
+        issue = self.read_issue(number)
+        if issue is None or not any(
+            name.casefold() == self.labels.needs_human.casefold() for name in issue.labels
+        ):
+            return False
+        recorded = self.block.recorded_causes((number,)).get(number, frozenset())
+        return action.resolution.causes <= recorded
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
         """The discharge committed before: never discharge again, only move the item."""

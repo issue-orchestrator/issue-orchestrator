@@ -674,3 +674,49 @@ def test_children_are_filed_behind_the_gate_when_filing_needs_approval(tmp_path:
     [child] = world.github.created
     assert "proposed-tech-lead" in child["labels"]
     assert "needs-human" not in world.github.labels[ITEM]
+
+
+@dataclass
+class _ConfirmFails:
+    """GitHub removes the label, then the read confirming it fails once."""
+
+    github: GitHub
+    fail_next_read: bool = False
+
+    def read(self, number: int) -> list[str]:
+        if self.fail_next_read:
+            self.fail_next_read = False
+            raise OSError("read after removal timed out")
+        return self.github.read(number)
+
+    def add_label(self, number: int, label: str) -> None:
+        self.github.add_label(number, label)
+
+    def remove_label(self, number: int, label: str) -> None:
+        self.github.remove_label(number, label)
+        self.fail_next_read = True
+
+
+def test_a_failed_outcome_whose_removal_landed_is_never_decided_again(tmp_path: Path) -> None:
+    """r3 F1: the label came off but the confirming read failed (FAILED). The
+    discharge stays begun, so a replay after the sweep raised a NEW block is
+    handed back instead of clearing it."""
+    world = World(tmp_path, question=None)
+    flaky = _ConfirmFails(world.github)
+    world.block = NeedsHumanBlock(
+        "needs-human", "tech-lead-needs-human", flaky, flaky.read, frozenset, world.store,
+    )
+    world.blocked_by(ITEM, _SWEEP)
+    lift = _resolution(ResolutionKind.LIFT, _SWEEP)
+
+    first = world.executor().apply(_action(lift))
+
+    assert not first.success
+    assert "needs-human" not in world.github.labels[ITEM], "the removal landed"
+    world.blocked_by(ITEM, _SWEEP)  # the stuck sweep gives up on the item again
+
+    replay = world.executor().apply(_action(lift))
+
+    assert replay.details["refusal"] == BlockResolutionRefusal.INTERRUPTED.value
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.store.needs_human_causes(ITEM) == frozenset({"session_lifecycle"})
