@@ -27,7 +27,8 @@ the item blocked until everything its next session needs is on GitHub:
 * a split's children are filed create-once (by body marker), each first
   without its agent label, its dependency line verified by the engine's own
   parser, and only then labelled for pickup (the issue-dependency-stacking
-  contract);
+  contract). Filing is ``create_issue``'s call: when the tech lead may not file
+  unattended, each child is filed behind the ``proposed-tech-lead`` gate;
 * the decision is posted on the item, create-once, carrying one marker per
   cause it discharges;
 * the pr-pending gate goes on first when an open PR carries the item's
@@ -64,6 +65,7 @@ from ..domain.block_resolution import (
 from ..domain.dependencies import DependencyMode, parse_dependency_edges
 from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.human_block import BlockOutcome, NeedsHumanCause
+from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import EventSink, make_trace_event
@@ -407,13 +409,14 @@ class TechLeadBlockResolutionExecutor:
                 if child.edge is not None and predecessor is not None
                 else "\n"
             )
+            gate = (PROPOSED_TECH_LEAD_LABEL,) if action.children_gated else ()
             created = self.create_issue(
                 title=child.title,
                 body=(
                     f"{child.body}{edge}\nRefs #{parent.number} — split out by the tech lead's"
                     f" resolution {action.decision_id}.\n{marker}"
                 ),
-                labels=self._inherited_labels(parent),
+                labels=[*self._inherited_labels(parent), *gate],
                 milestone=parent.milestone_number,
             )
             if not created or not isinstance(created.get("number"), int):

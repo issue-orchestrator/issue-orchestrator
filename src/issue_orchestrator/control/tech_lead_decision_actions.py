@@ -543,6 +543,8 @@ class _DecisionActionPlanner:
                 finding_ids=proposed.finding_ids, anchor_issue_number=self._anchor_number,
                 observed_at=self.observed_at, source_session_name=self.source_session_name,
                 source_run_id=self.source_run_id,
+                # Filing is create_issue's call, as for any tech-lead issue.
+                children_gated=not self._executes("create_issue"),
                 reason=(f"tech_lead decision action {proposed.id}: resolve the needs-human"
                         f" block of issue #{proposed.target_number}"),
                 expected=self.expected,

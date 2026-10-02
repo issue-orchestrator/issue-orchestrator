@@ -218,11 +218,11 @@ def _resolution(kind: ResolutionKind = ResolutionKind.ANSWER, *causes: NeedsHuma
 
 
 def _action(resolution: BlockResolution, *, number: int = ITEM, action_id: str = "A1",
-            run: str = "run-1") -> ResolveBlockAction:
+            run: str = "run-1", children_gated: bool = False) -> ResolveBlockAction:
     return ResolveBlockAction(
         issue_number=number, resolution=resolution, rationale="decided from the spec",
         proposal_id=action_id, anchor_issue_number=1, observed_at=OBSERVED,
-        source_session_name="tech-lead-1", source_run_id=run,
+        source_session_name="tech-lead-1", source_run_id=run, children_gated=children_gated,
     )
 
 
@@ -580,3 +580,17 @@ def test_a_split_child_that_files_human_only_work_is_refused(tmp_path: Path) -> 
 
     assert result.details["refusal"] == BlockResolutionRefusal.HUMAN_ONLY_WORK.value
     assert world.github.created == [] and world.applier.applied == []
+
+
+def test_children_are_filed_behind_the_gate_when_filing_needs_approval(tmp_path: Path) -> None:
+    """Filing is create_issue's call: under its propose authority each child
+    waits behind proposed-tech-lead, while the decision itself took effect."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+
+    result = world.executor().apply(_action(_split(), children_gated=True))
+
+    assert result.success, result.error
+    [child] = world.github.created
+    assert "proposed-tech-lead" in child["labels"]
+    assert "needs-human" not in world.github.labels[ITEM]

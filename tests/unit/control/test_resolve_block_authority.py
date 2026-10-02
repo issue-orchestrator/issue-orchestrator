@@ -137,6 +137,14 @@ def test_under_execute_the_owner_command_carries_the_decision() -> None:
     assert planned.source_session_name == "tech-lead-99"
     assert planned.decision_id == "run-1/A1"
     assert planned.proposal_issue_number == 0
+    assert planned.children_gated is False  # create_issue executes by default
+
+
+def test_under_execute_children_follow_the_create_issue_authority() -> None:
+    config = _config("execute")
+    config.tech_lead.authority.create_issue = "propose"
+    [planned] = [a for a in _plan(config, _proposed()) if isinstance(a, ResolveBlockAction)]
+    assert planned.children_gated is True
 
 
 def test_under_the_default_it_files_a_proposal_that_approval_runs_exactly() -> None:
@@ -157,6 +165,7 @@ def test_under_the_default_it_files_a_proposal_that_approval_runs_exactly() -> N
     assert isinstance(approved, ResolveBlockAction)
     assert approved.resolution == op.resolution
     assert approved.proposal_issue_number == 501
+    assert approved.children_gated is False  # the operator approved them
     assert approved.decision_id == "run-1/A1"
 
 

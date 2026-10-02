@@ -281,6 +281,11 @@ class ResolveBlockAction(Action):
     #: its run id (with ``proposal_id``, the decision's durable identity).
     source_session_name: str = ""
     source_run_id: str = ""
+    #: A split's children are filed gated (``proposed-tech-lead``) when the
+    #: tech lead may not file issues unattended (``create_issue`` authority):
+    #: the decision is the tech lead's, each new issue is still approvable. An
+    #: approved resolution's children are the operator's own, never gated.
+    children_gated: bool = False
     requires_effective_disposition: bool = False
     action_type: ActionType = field(default=ActionType.RESOLVE_BLOCK, init=False)
 
