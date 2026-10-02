@@ -523,3 +523,28 @@ def test_a_retry_github_would_not_settle_is_a_retried_failure() -> None:
 
     assert not result.success and "mode" not in result.details
     assert host.created == [] and host.comments == []
+
+
+# -- the whole completion contract: scope + coverage, as validation applies it --
+
+
+def test_a_health_review_may_act_on_its_granted_items_and_nothing_else() -> None:
+    from issue_orchestrator.control.tech_lead_completion import validate_decision_for_authority
+
+    config = _config()
+    authority = _authority(TriageGrant(179, ""), TriageGrant(262, "needs-human"))
+    labels = LabelManager(config)
+
+    assert validate_decision_for_authority(
+        _decide(_split(), _hand_over("A2", 179)), authority, config=config, labels=labels,
+    ) is None
+    outside = ProposedTechLeadAction(
+        id="A3", action_type="post_comment", target_number=500, body="An unrelated issue.",
+    )
+    violation = validate_decision_for_authority(
+        _decide(_split(), _hand_over("A2", 179), outside), authority, config=config, labels=labels,
+    )
+    assert violation is not None and "#500" in violation
+    assert validate_decision_for_authority(
+        _decide(_split()), _authority(), config=config, labels=labels,
+    ) is not None  # no grant, no act-level authority over #262
