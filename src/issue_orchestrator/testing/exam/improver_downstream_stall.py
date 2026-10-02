@@ -99,7 +99,7 @@ WINDOW = timedelta(hours=24)
 ISSUE = 364
 PR = 379
 #: The anomaly the right answer keys: the review the engine keeps refusing.
-VETO_KEY = (AnomalyKind.REFUSED_WORK.value, f"PR #{PR}", "issue_blocked")
+VETO_KEY = (AnomalyKind.REFUSED_WORK.value, f"PR #{PR}", "review:issue_blocked")
 #: The health review that diagnosed #364's question, and nothing more.
 DIAGNOSIS_364 = "tech-lead-run:20261002-113951Z-ef91ccbe76c84015aa63851d3224fa9a:tech-lead-1"
 

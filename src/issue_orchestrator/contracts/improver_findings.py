@@ -48,8 +48,9 @@ BlockedItemDisposition = Literal["finding", "awaiting_operator"]
 NonEmpty = Annotated[str, StringConstraints(min_length=1, strip_whitespace=False)]
 #: Text with something in it: not empty, not only whitespace.
 Stated = Annotated[str, StringConstraints(pattern=r"\S")]
-#: The pipeline action of a PR that a block refuses.
-RefusedAction = Literal["review", "rework"]
+#: The pipeline action a block refuses: a PR's review or rework, or a
+#: queued tech-lead run (the audit's ``refused_work`` signature names it).
+RefusedAction = Literal["review", "rework", "tech_lead_run"]
 #: A finding's stable id: it keys the orchestrator's dedup marker.
 Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,79}$")]
 #: ``<staged input file>#<record id or JSON pointer>``.
@@ -161,9 +162,9 @@ class DownstreamStall(_Closed):
     anomaly_key: AnomalyKeyRef
     #: The finding that keys that anomaly and cites its snapshot.
     finding_id: Slug
-    #: Which of the PR's pipeline actions the block refuses; None only when
-    #: the refused work is not a PR's (the item's own).
-    refused_action: RefusedAction | None = None
+    #: The pipeline action the block refuses: the one the anomaly's
+    #: ``<action>:<reason>`` signature names.
+    refused_action: RefusedAction
     #: ``blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>``: an
     #: event of the refused PR's pipeline, its retained skip of that action
     #: when there is one. Required when the refused work is an open PR of the

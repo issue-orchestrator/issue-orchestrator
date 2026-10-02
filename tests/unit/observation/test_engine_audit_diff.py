@@ -178,8 +178,8 @@ def test_a_malformed_previous_report_is_refused(tmp_path: Path) -> None:
 
 #: PR #379's review refused because #364 is blocked (porchpin, 2026-10-02).
 REFUSED = Anomaly(kind=AnomalyKind.REFUSED_WORK, sources=(AuditSource.LOG, AuditSource.TIMELINE),
-                  subject="PR #379", signature="issue_blocked", detail="d", count=9)
-REFUSAL = RefusedWork(subject="PR #379", related=("#364",), reason="issue_blocked", loggers=("scanner",),
+                  subject="PR #379", signature="review:issue_blocked", detail="d", count=9)
+REFUSAL = RefusedWork(subject="PR #379", related=("#364",), action="review", reason="issue_blocked", loggers=("scanner",),
                       example="Skipping", count=9, since_state_change=9,
                       first_seen="2026-09-28T09:00:00+00:00", last_seen="2026-09-28T10:00:00+00:00")
 

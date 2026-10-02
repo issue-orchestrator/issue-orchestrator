@@ -130,7 +130,7 @@ def census_log(
     change" can be claimed and every such count is None.
     """
     tallies: dict[tuple[str, str, str, str], _SignatureTally] = {}
-    refusals: dict[tuple[str, str], _RefusalTally] = {}
+    refusals: dict[tuple[str, str, str], _RefusalTally] = {}
     fetches: dict[str, list[tuple[int, int, int, datetime]]] = {}
     cycles: list[_Cycle] = []
     issue_gets = 0
@@ -185,6 +185,7 @@ def census_log(
             RefusedWork(
                 subject=subject,
                 related=tuple(tally.related),
+                action=action,
                 reason=reason,
                 loggers=tuple(tally.loggers),
                 example=tally.example,
@@ -193,7 +194,7 @@ def census_log(
                 first_seen=_iso(tally.first_seen),
                 last_seen=_iso(tally.last_seen),
             )
-            for (subject, reason), tally in sorted(
+            for (subject, action, reason), tally in sorted(
                 refusals.items(), key=lambda kv: (-kv[1].count, kv[0])
             )
         ),
@@ -229,13 +230,13 @@ def _tally(
 
 
 def _tally_refusal(
-    refusals: dict[tuple[str, str], _RefusalTally],
+    refusals: dict[tuple[str, str, str], _RefusalTally],
     refusal: WorkRefusal,
     entry: EngineLogEntry,
     last_state_change: Mapping[str, datetime] | None,
 ) -> None:
     tally = refusals.setdefault(
-        (refusal.subject, refusal.reason),
+        (refusal.subject, refusal.action, refusal.reason),
         _RefusalTally(
             example=normalize_signature(entry.message),
             since_state_change=None if last_state_change is None else 0,

@@ -497,18 +497,18 @@ def test_a_message_names_every_subject_once_first_named_first() -> None:
 @pytest.mark.parametrize(
     ("message", "refusal"),
     [
-        (SCANNER_SKIP, WorkRefusal("PR #379", ("#364",), "issue_blocked")),
-        (LAUNCH_DROP, WorkRefusal("PR #379", ("#364",), "issue_blocked")),
+        (SCANNER_SKIP, WorkRefusal("PR #379", ("#364",), "review", "issue_blocked")),
+        (LAUNCH_DROP, WorkRefusal("PR #379", ("#364",), "review", "issue_blocked")),
         (
             "trace-tech-lead-decision issue=200 flavor=failure_investigation decision=skip"
             " reason=subject_no_longer_eligible (pending=1)",
-            WorkRefusal("#200", (), "subject_no_longer_eligible"),
+            WorkRefusal("#200", (), "tech_lead_run", "subject_no_longer_eligible"),
         ),
         # The rework lane refuses on the same blocked-PR vocabulary.
         ("[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=pr_blocked blocking=blocked",
-         WorkRefusal("PR #12", ("#4",), "pr_blocked")),
+         WorkRefusal("PR #12", ("#4",), "rework", "pr_blocked")),
         ("[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=issue_blocked blocking=needs-human",
-         WorkRefusal("PR #12", ("#4",), "issue_blocked")),
+         WorkRefusal("PR #12", ("#4",), "rework", "issue_blocked")),
     ],
 )
 def test_a_decision_not_to_do_planned_work_is_a_refusal(message: str, refusal: WorkRefusal) -> None:
@@ -579,7 +579,7 @@ def test_an_info_refusal_repeating_with_nothing_moving_is_counted() -> None:
 
     assert census.signatures == ()
     [refused] = census.refusals
-    assert (refused.subject, refused.related, refused.reason) == ("PR #379", ("#364",), "issue_blocked")
+    assert (refused.subject, refused.related, refused.signature) == ("PR #379", ("#364",), "review:issue_blocked")
     assert refused.loggers == (
         "issue_orchestrator.control.pr_scanner", "issue_orchestrator.control.session_review_support",
     )
@@ -608,3 +608,22 @@ def test_without_the_timeline_no_refusal_count_since_a_change_is_claimed() -> No
     census = census_log(entries, window_start=T0 - timedelta(hours=1), window_end=END, last_state_change=None)
 
     assert census.refusals[0].since_state_change is None
+
+
+def test_one_prs_refused_review_and_rework_are_counted_apart() -> None:
+    """Review r6: a PR whose review AND rework a block refuses is two refused
+    actions, each counted on its own (three plus two is not five)."""
+    review = "[SCANNER] Skipping stale review PR: pr=12 issue=4 reason=pr_blocked"
+    rework = "[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=pr_blocked blocking=blocked"
+    entries = _entries(
+        *(_line(review, at=T0 + timedelta(minutes=m), level=logging.INFO) for m in range(3)),
+        *(_line(rework, at=T0 + timedelta(minutes=m, seconds=30), level=logging.INFO) for m in range(2)),
+    )
+
+    census = census_log(entries, window_start=T0 - timedelta(hours=1), window_end=END, last_state_change={})
+
+    assert sorted((r.signature, r.count) for r in census.refusals) == [("review:pr_blocked", 3), ("rework:pr_blocked", 2)]
+
+
+def test_a_refusal_that_names_no_pipeline_action_is_not_counted() -> None:
+    assert refusal_of_text("[launch] Dropping it: pr=5 reason=issue_blocked") is None

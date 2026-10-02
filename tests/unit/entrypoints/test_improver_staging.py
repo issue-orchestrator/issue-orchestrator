@@ -550,9 +550,9 @@ def test_a_blocked_items_pr_whose_review_is_dropped_every_scan_is_its_stalled_wo
         "pr.view_changed", "review.queued", "review.skipped",
     ]
     assert [(w["kind"], w["subject"], w["signature"]) for w in item["stalled_work"]] == [
-        ("refused_work", "PR #379", "issue_blocked"),
+        ("refused_work", "PR #379", "review:issue_blocked"),
     ]
-    assert ("refused_work", "PR #379", "issue_blocked") in {a.key for a in staged.audit.anomalies}
+    assert ("refused_work", "PR #379", "review:issue_blocked") in {a.key for a in staged.audit.anomalies}
     # The audit's PR listing served the blocked items: one GitHub walk.
     assert audited.calls.count("prs") == 1
 

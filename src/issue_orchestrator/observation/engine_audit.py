@@ -646,7 +646,7 @@ def _anomalies(
             kind=AnomalyKind.REFUSED_WORK,
             sources=(AuditSource.LOG, AuditSource.TIMELINE),
             subject=r.subject,
-            signature=r.reason,
+            signature=r.signature,
             detail=f"{r.since_state_change} refusal(s) since it last changed state"
             f" ({r.count} in the window, by {', '.join(r.loggers)})"
             + (f"; names {', '.join(r.related)}" if r.related else "")

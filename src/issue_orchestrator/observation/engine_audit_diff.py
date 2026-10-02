@@ -102,7 +102,7 @@ def _named_by(anomaly: Anomaly, report: EngineAuditReport) -> tuple[str, ...]:
         return ()
     (record,) = [
         r for r in report.no_progress.refused_work
-        if (r.subject, r.reason) == (anomaly.subject, anomaly.signature)
+        if (r.subject, r.signature) == (anomaly.subject, anomaly.signature)
     ]
     return record.related
 

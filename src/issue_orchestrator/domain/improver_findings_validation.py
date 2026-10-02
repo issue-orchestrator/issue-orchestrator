@@ -420,21 +420,22 @@ class _Checker:
             yield from self._refused_pr_action(item, entry)
 
     def _refused_pr_action(self, item: BlockedItem, entry: DownstreamStall) -> Iterator[tuple[Rule, str]]:
-        """What the downstream entry claims of the refused PR, checked against
-        its retained pipeline: the refused action is named for a PR's work
-        (and only for it), and the cited event is THAT PR's, its retained skip
-        of that action when there is one."""
+        """What the downstream entry claims of the refused work, checked
+        against the audit and the PR's retained pipeline: the refused action
+        is the one the anomaly names, and the cited event is THAT PR's, its
+        retained skip of that action when there is one."""
         n, rule = item.number, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
         subject, action, cited = entry.anomaly_key.subject, entry.refused_action, entry.pipeline_event
-        if (action is None) != (_PR_SUBJECT.match(subject) is None):
-            yield rule, f"#{n}: name the refused_action of a PR's refused work ({subject}), and only of one"
+        named = entry.anomaly_key.signature.partition(":")[0]
+        if action != named:
+            yield rule, f"#{n}: {subject}'s refused work is its {named}, not its {action}"
         pr = next((p for p in item.open_prs if f"PR #{p.number}" == subject and p.pipeline_events), None)
         if pr is None:
             if cited is not None:
                 yield rule, f"#{n}: {subject} has no retained pipeline event on the item, so cite none"
             return
         prefix = f"{BLOCKED_ITEMS_FILE}#/items/{self._item_index[n]}/open_prs/{item.open_prs.index(pr)}/pipeline_events/"
-        skips = [i for i, e in enumerate(pr.pipeline_events) if e.event in _PIPELINE_SKIPS]
+        skips = [i for i, e in enumerate(pr.pipeline_events) if _PIPELINE_SKIPS.get(e.event) == action]
         index = cited[len(prefix):] if cited is not None and cited.startswith(prefix) else ""
         if not index.isdigit() or int(index) >= len(pr.pipeline_events) or (skips and int(index) not in skips):
             what = "its retained skip" if skips else "an event"
@@ -756,7 +757,6 @@ _PIPELINE_SKIPS: Mapping[str, str] = {
     EventName.REVIEW_SKIPPED.value: "review",
     EventName.REWORK_SKIPPED.value: "rework",
 }
-_PR_SUBJECT = re.compile(r"^PR #\d+$")
 
 #: The audit's records counted from its log read: the read's coverage is theirs.
 _LOG_RECORDS = ("/no_progress/log_signatures/", "/no_progress/refused_work/")
@@ -821,7 +821,7 @@ class _AnomalyRecords:
                 for i, s in enumerate(report.no_progress.log_signatures)
             ),
             *(
-                (f"/no_progress/refused_work/{i}", (AnomalyKind.REFUSED_WORK.value, r.subject, r.reason),
+                (f"/no_progress/refused_work/{i}", (AnomalyKind.REFUSED_WORK.value, r.subject, r.signature),
                  r.first_seen, r.last_seen)
                 for i, r in enumerate(report.no_progress.refused_work)
             ),

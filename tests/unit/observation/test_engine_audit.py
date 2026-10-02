@@ -552,9 +552,9 @@ def test_a_review_dropped_on_every_scan_is_refused_work(state, tmp_path, monkeyp
     report = _run(state, tmp_path, monkeypatch, FakeHost())
 
     (refused,) = report.no_progress.refused_work
-    assert (refused.subject, refused.related, refused.reason) == ("PR #379", ("#364",), "issue_blocked")
+    assert (refused.subject, refused.related, refused.signature) == ("PR #379", ("#364",), "review:issue_blocked")
     (anomaly,) = [a for a in report.anomalies if a.kind is AnomalyKind.REFUSED_WORK]
-    assert (anomaly.subject, anomaly.signature, anomaly.count) == ("PR #379", "issue_blocked", 6)
+    assert (anomaly.subject, anomaly.signature, anomaly.count) == ("PR #379", "review:issue_blocked", 6)
     assert anomaly.sources == (AuditSource.LOG, AuditSource.TIMELINE)
     assert "names #364" in anomaly.detail
 

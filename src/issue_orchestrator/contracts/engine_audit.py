@@ -214,6 +214,9 @@ class RefusedWork(_Frozen):
     #: Every other subject the refusals name, e.g. the issue a refused PR
     #: review belongs to (a refusal because of THAT issue's block).
     related: tuple[str, ...]
+    #: The pipeline action refused: ``review`` or ``rework`` of a PR, or a
+    #: ``tech_lead_run``. One PR's review and rework are refused apart.
+    action: str
     reason: str
     #: The loggers that recorded it (the scanner, the launcher, startup ...).
     loggers: tuple[str, ...]
@@ -226,6 +229,11 @@ class RefusedWork(_Frozen):
     since_state_change: int | None
     first_seen: str
     last_seen: str
+
+    @property
+    def signature(self) -> str:
+        """Its anomaly's signature: the refused action and why."""
+        return f"{self.action}:{self.reason}"
 
 
 class FetchModeCost(_Frozen):
@@ -327,7 +335,7 @@ class AnomalyKind(StrEnum):
     NO_PROGRESS_LOG = "no_progress_log"
     NO_PROGRESS_TIMELINE = "no_progress_timeline"
     #: A subject's planned work refused again and again with nothing moving
-    #: (:class:`RefusedWork`); signed with the refusal's reason.
+    #: (:class:`RefusedWork`); signed ``<action>:<reason>``.
     REFUSED_WORK = "refused_work"
     #: Incremental refreshes cost more GitHub calls than full ones.
     FETCH_COST_INVERTED = "fetch_cost_inverted"

@@ -141,7 +141,7 @@ def _no_progress(np: NoProgressSection) -> list[str]:
         ),
         *(
             f"  refused: {'?' if r.since_state_change is None else r.since_state_change}x"
-            f" ({r.count} in window) {r.subject} [{r.reason}]"
+            f" ({r.count} in window) {r.subject} [{r.signature}]"
             + (f" names {', '.join(r.related)}" if r.related else "")
             for r in sorted(np.refused_work, key=lambda r: -(r.since_state_change or r.count))[:TOP]
         ),

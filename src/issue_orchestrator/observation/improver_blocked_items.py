@@ -229,7 +229,7 @@ class _Refusals:
 
     def __init__(self, audit: EngineAuditReport) -> None:
         records: dict[tuple[str, str], RefusedWork] = {
-            (r.subject, r.reason): r for r in audit.no_progress.refused_work
+            (r.subject, r.signature): r for r in audit.no_progress.refused_work
         }
         self._anomalies: list[tuple[Anomaly, frozenset[str]]] = [
             (a, frozenset(records[(a.subject, a.signature)].related))

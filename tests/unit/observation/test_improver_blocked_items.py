@@ -32,7 +32,7 @@ ISSUES = [
 
 
 def _refusal(subject: str, *related: str) -> RefusedWork:
-    return RefusedWork(subject=subject, related=related, reason="issue_blocked", loggers=("scanner",),
+    return RefusedWork(subject=subject, related=related, action="review", reason="issue_blocked", loggers=("scanner",),
                        example="Skipping", count=9, since_state_change=9,
                        first_seen=CUTOFF.isoformat(), last_seen=CUTOFF.isoformat())
 
@@ -49,7 +49,7 @@ def _audit(*refusals: RefusedWork) -> EngineAuditReport:
         fetch_cost=None,
         anomalies=tuple(
             Anomaly(kind=AnomalyKind.REFUSED_WORK, sources=(AuditSource.LOG, AuditSource.TIMELINE),
-                    subject=r.subject, signature=r.reason, detail="9 refusal(s)", count=9)
+                    subject=r.subject, signature=r.signature, detail="9 refusal(s)", count=9)
             for r in refusals
         ),
     )
@@ -306,8 +306,8 @@ def test_an_items_open_prs_carry_their_pipeline_and_the_work_the_engine_refuses(
     assert item.open_prs[0].last_event_at == t0 + timedelta(minutes=3)
     assert item.open_prs[1].pipeline_events == () and item.open_prs[1].last_event_at is None
     assert [(w.kind, w.subject, w.signature) for w in item.stalled_work] == [
-        ("refused_work", "PR #379", "issue_blocked"), ("refused_work", "#262", "issue_blocked"),
-        ("refused_work", "PR #900", "issue_blocked"),
+        ("refused_work", "PR #379", "review:issue_blocked"), ("refused_work", "#262", "review:issue_blocked"),
+        ("refused_work", "PR #900", "review:issue_blocked"),
     ]
     # #400's own PR #381 is its downstream work, never #262's.
     assert [w.subject for w in staged.items[1].stalled_work] == ["PR #381"]

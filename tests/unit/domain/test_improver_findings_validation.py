@@ -785,7 +785,7 @@ def test_a_remedy_before_the_latest_block_did_not_act_on_it(tmp_path: Path) -> N
 
 
 _REFUSED = {
-    "kind": "refused_work", "sources": ["log", "timeline"], "subject": "PR #379", "signature": "issue_blocked",
+    "kind": "refused_work", "sources": ["log", "timeline"], "subject": "PR #379", "signature": "review:issue_blocked",
     "detail": "9 refusal(s) since it last changed state", "count": 9,
 }
 
@@ -799,7 +799,7 @@ def _refused_review_of_the_items_pr(tmp_path: Path) -> tuple[StagedEvidence, int
 
     def audit(d: dict) -> None:
         d["no_progress"]["refused_work"].append({
-            "subject": "PR #379", "related": ["#353"], "reason": "issue_blocked",
+            "subject": "PR #379", "related": ["#353"], "action": "review", "reason": "issue_blocked",
             "loggers": ["issue_orchestrator.control.pr_scanner"],
             "example": "[SCANNER] Skipping stale review PR: pr=N issue=N reason=issue_blocked",
             "count": 9, "since_state_change": 9,
@@ -920,8 +920,9 @@ def test_a_finding_keyed_to_the_refused_work_examines_it(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("change", "rule"),
     [
-        # A PR's refused work names the action it refuses.
-        ({"refused_action": None}, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED),
+        # The refused action is the one the anomaly names (review).
+        ({"refused_action": "rework"}, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED),
+        ({"refused_action": None}, Rule.SCHEMA),
         # The impact is stated, not blank.
         ({"impact": " "}, Rule.SCHEMA),
     ],

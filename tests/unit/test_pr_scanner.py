@@ -755,7 +755,7 @@ class TestScanForReworksEscalation:
 
         [record] = [r for r in caplog.records if "rework PR" in r.getMessage()]
         assert record.levelno == logging.INFO
-        assert refusal_of_text(record.getMessage()) == WorkRefusal("PR #100", ("#42",), "issue_blocked")
+        assert refusal_of_text(record.getMessage()) == WorkRefusal("PR #100", ("#42",), "rework", "issue_blocked")
 
     def test_no_escalation_at_max_cycle(self, scanner, mock_repository, mock_config):
         """Does not escalate when exactly at max rework cycles."""

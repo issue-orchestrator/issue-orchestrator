@@ -174,6 +174,16 @@ _REFUSAL_VERB = re.compile(
 #: The whole token: a free-text reason ("reason=Orchestrator paused") keeps
 #: only its first word, which is never a refusal reason.
 _REASON = re.compile(r"\breason=([A-Za-z0-9_.:-]+)")
+#: The pipeline action a refusal names: a queued tech-lead run, a PR's
+#: rework, a PR's review. The decision names it BEFORE its ``reason=``
+#: (what follows is context, e.g. ``pr_labels=...,rework-cycle-5`` on a
+#: review's refusal), and the first one named is the one refused. Two
+#: actions of one subject are refused, and counted, apart.
+REFUSED_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("tech_lead_run", re.compile(r"\btech-lead-decision\b")),
+    ("rework", re.compile(r"\brework\b", re.IGNORECASE)),
+    ("review", re.compile(r"\breview\b", re.IGNORECASE)),
+)
 _REFERENCES: tuple[tuple[re.Pattern[str], str], ...] = (
     (_PR_REFERENCE, "PR #"),
     (_ISSUE_REFERENCE, "#"),
@@ -190,6 +200,8 @@ class WorkRefusal:
     subject: str
     #: Every other subject it names (the issue a refused PR review belongs to).
     related: tuple[str, ...]
+    #: The pipeline action refused (:data:`REFUSED_ACTIONS`).
+    action: str
     reason: str
 
 
@@ -231,9 +243,15 @@ def refusal_of_text(text: str, *, repo: str | None = None) -> WorkRefusal | None
     if reason.group(1) not in REFUSAL_REASONS:
         return None
     subjects = subjects_of_text(text, repo=repo)
-    if not subjects:
+    named = [
+        (match.start(), name)
+        for name, pattern in REFUSED_ACTIONS
+        if (match := pattern.search(text, 0, reason.start())) is not None
+    ]
+    action = min(named)[1] if named else None
+    if not subjects or action is None:
         return None
-    return WorkRefusal(subject=subjects[0], related=subjects[1:], reason=reason.group(1))
+    return WorkRefusal(subject=subjects[0], related=subjects[1:], action=action, reason=reason.group(1))
 
 
 @dataclass(frozen=True)

@@ -68,7 +68,7 @@ def _snapshot(index: int) -> dict:
 
 _ENGINE = {"id": ENGINE_ID, "repo": AUDITED_REPO}
 _NEEDS_HUMAN = {"kind": "attention_label", "subject": "#364", "signature": "needs-human"}
-_VETO = {"kind": "refused_work", "subject": "PR #379", "signature": "issue_blocked"}
+_VETO = {"kind": "refused_work", "subject": "PR #379", "signature": "review:issue_blocked"}
 _SINCE = {"at": "2026-10-02T05:24:57+00:00", "kind": "occurrence",
           "source": "blocked-items.json#/items/0/blocking_labels/0/since_at", "supports": "origin"}
 
@@ -144,12 +144,12 @@ def reference(evidence: StagedEvidence) -> dict:
 def test_the_inputs_show_the_veto_downstream_of_the_block(evidence: StagedEvidence) -> None:
     """Built by the real assembly: the INFO refusals are an anomaly, and the
     blocked item names its PR, the PR's pipeline and the refused work."""
-    assert ("refused_work", "PR #379", "issue_blocked") in {a.key for a in evidence.audit.anomalies}
+    assert ("refused_work", "PR #379", "review:issue_blocked") in {a.key for a in evidence.audit.anomalies}
     assert evidence.blocked_items is not None
     [item] = evidence.blocked_items.items
     assert [p.number for p in item.open_prs] == [379]
     assert [e.event for e in item.open_prs[0].pipeline_events][-1] == "review.skipped"
-    assert [(w.subject, w.signature) for w in item.stalled_work] == [("PR #379", "issue_blocked")]
+    assert [(w.subject, w.signature) for w in item.stalled_work] == [("PR #379", "review:issue_blocked")]
 
 
 def test_the_blind_runs_answer_is_refused_for_not_examining_the_vetoed_review(evidence: StagedEvidence) -> None:
@@ -157,7 +157,7 @@ def test_the_blind_runs_answer_is_refused_for_not_examining_the_vetoed_review(ev
         validate_findings(json.dumps(blind(evidence)), evidence)
 
     assert rejected.value.rules == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
-    assert "PR #379 [issue_blocked]" in str(rejected.value)
+    assert "PR #379 [review:issue_blocked]" in str(rejected.value)
 
 
 def test_the_blind_runs_answer_fails_the_grade(evidence: StagedEvidence) -> None:
