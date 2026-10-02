@@ -44,6 +44,15 @@ class InMemoryActionLivenessStore:
     def put(self, row: LivenessRow) -> None:
         self.rows[self._id(row.key)] = row
 
+    def claim_engine_reprobe(self, key: LivenessKey, engine: str) -> bool:
+        from dataclasses import replace
+
+        row = self.rows.get(self._id(key))
+        if row is None or not row.parked or row.parked_on_engine == engine:
+            return False
+        self.rows[self._id(key)] = replace(row, parked_on_engine=engine)
+        return True
+
     def _pop(self, matches) -> tuple[LivenessRow, ...]:
         gone = tuple(row for row in self.rows.values() if matches(row))
         for row in gone:
@@ -270,10 +279,12 @@ def liveness_owner(
     escalation: RecordingEscalation | None = None,
     clock: ManualClock | None = None,
     policy: LivenessPolicy = LivenessPolicy(),
+    engine_commit: str | None = None,
 ) -> ActionLivenessOwner:
     return ActionLivenessOwner(
         store=store if store is not None else InMemoryActionLivenessStore(),
         escalation=escalation if escalation is not None else RecordingEscalation(),
+        engine_commit=engine_commit,
         policy=policy,
         clock=clock if clock is not None else ManualClock(),
     )
@@ -337,7 +348,9 @@ def drain_liveness(owner: ActionLivenessOwner | None = None, *, records=None):
     )
 
 
-def applier_owner(applier, events, *, store=None, clock=None, policy=LivenessPolicy()):
+def applier_owner(
+    applier, events, *, store=None, clock=None, policy=LivenessPolicy(), engine_commit=None
+):
     """A liveness owner whose owed writes go through a real
     ``ActionLivenessEscalation`` over ``applier`` (#7350)."""
     from issue_orchestrator.control.action_liveness_escalation import ActionLivenessEscalation
@@ -347,6 +360,7 @@ def applier_owner(applier, events, *, store=None, clock=None, policy=LivenessPol
         escalation=ActionLivenessEscalation(
             events=events, applier=applier, needs_human_label="needs-human"
         ),
+        engine_commit=engine_commit,
         policy=policy,
         clock=clock if clock is not None else ManualClock(),
     )

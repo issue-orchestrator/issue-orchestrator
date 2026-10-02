@@ -156,17 +156,74 @@ def test_unbound_or_released_evidence_is_rejected(retained, field):
 
 
 
-def test_retained_record_cannot_request_the_configured_human_block(retained):
+def _real_block(tmp_path, live, label="needs-human"):
+    """The production shared-block owner over a live label set and a real cause store."""
+    from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
+    from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+
+    class _Labels:
+        def add_label(self, number, name):
+            live.setdefault(number, set()).add(name)
+
+        def remove_label(self, number, name):
+            live.setdefault(number, set()).discard(name)
+
+    claims = SqlitePendingWorkClaimStore.for_repo(tmp_path / "claims")
+    block = NeedsHumanBlock(
+        needs_human_label=label, tech_lead_marker="tech-lead-needs-human", labels=_Labels(),
+        read_labels=lambda number: sorted(live.get(number, set())),
+        quarantined_issue_numbers=claims.quarantined_issue_numbers, causes=claims,
+    )
+    return block, claims
+
+
+def test_a_retained_record_naming_the_human_block_in_pr_labels_still_publishes(retained, tmp_path):
+    """porchpin #364 (#7592): a review-exchange coder ran ``coding-done completed
+    --pr-labels needs-human``. Recovery refused that retained record on every
+    pass, so the validated work could never publish and the liveness owner
+    parked it behind a block of its own.
+
+    The reserved label never reaches the PR; the request it expresses goes on
+    the ISSUE through the block owner, with the agent's cause recorded.
+    """
+    from issue_orchestrator.domain.human_block import NeedsHumanCause
+
+    raw = json.loads(completion())
+    raw["pr_labels"] = ["needs-human", "size:small"]
+    rig = prepare(retained, raw=raw)
+    # The issue already carries the block, as #364 did once its recovery parked.
+    live = {42: {"needs-human"}}
+    block, claims = _real_block(tmp_path, live)
+    rig.processor.needs_human_block = block
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, PreparedRecoveryPublication), result
+    assert result.command.target_head_sha == rig.row.admission.evidence.identity.key.validated_head_sha
+    assert claims.needs_human_causes(42) == frozenset({NeedsHumanCause.AGENT_COMPLETION.value})
+    assert live[42] == {"needs-human"}
+    assert_no_effects(rig)
+
+
+def test_a_retained_human_request_that_cannot_be_recorded_does_not_publish(retained, tmp_path):
+    """The escalation is not optional: a block owner that refuses it leaves the
+    attempt pending (and so retried), never a publish that dropped the request."""
     from issue_orchestrator.control.needs_human_block import SharedNeedsHumanBlock
+    from issue_orchestrator.domain.human_block import BlockOutcome
+
     raw = json.loads(completion())
     raw["pr_labels"] = ["operator-human-block"]
     rig = prepare(retained, raw=raw)
     block = Mock(spec=SharedNeedsHumanBlock)
     block.owns.side_effect = lambda label: label == "operator-human-block"
+    block.acquire.return_value = BlockOutcome.FAILED
     rig.processor.needs_human_block = block
+
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
     assert isinstance(result, RecoveryAttemptPending)
-    assert "reserved shared block" in result.message
+    assert "needs-human block" in result.message
+    assert block.acquire.call_count == 1
     assert_no_effects(rig)
 
 

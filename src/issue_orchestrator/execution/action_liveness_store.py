@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS action_liveness (
     last_planned_at TEXT,
     escalation_retry_at TEXT,
     escalation_first_failed_at TEXT,
+    parked_on_engine TEXT,
     PRIMARY KEY (subject, action, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS action_liveness_escalation_issue
@@ -95,6 +96,8 @@ _ADDED_COLUMNS = (
      "ALTER TABLE action_liveness ADD COLUMN escalation_retry_at TEXT"),
     ("action_liveness", "escalation_first_failed_at",
      "ALTER TABLE action_liveness ADD COLUMN escalation_first_failed_at TEXT"),
+    ("action_liveness", "parked_on_engine",
+     "ALTER TABLE action_liveness ADD COLUMN parked_on_engine TEXT"),
     ("action_liveness_release", "retry_at",
      "ALTER TABLE action_liveness_release ADD COLUMN retry_at TEXT"),
     ("action_liveness_release", "first_failed_at",
@@ -109,7 +112,7 @@ _SELECT = (
     "SELECT subject, action, fingerprint, escalation_issue, attempts, first_failed_at,"
     " last_failed_at, last_outcome, last_reason, next_attempt_at, escalated,"
     " explained, escalation_attempts, escalation_attempted_at, last_planned_at,"
-    " escalation_retry_at, escalation_first_failed_at"
+    " escalation_retry_at, escalation_first_failed_at, parked_on_engine"
     " FROM action_liveness"
 )
 _ORDER = " ORDER BY last_failed_at, subject, action, fingerprint"
@@ -135,8 +138,13 @@ _UPSERT = (
     " escalation_issue, attempts, first_failed_at, last_failed_at, last_outcome,"
     " last_reason, next_attempt_at, escalated, explained, escalation_attempts,"
     " escalation_attempted_at, last_planned_at, escalation_retry_at,"
-    " escalation_first_failed_at)"
-    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " escalation_first_failed_at, parked_on_engine)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+_CLAIM_ENGINE_REPROBE = (
+    "UPDATE action_liveness SET parked_on_engine=?"
+    " WHERE subject=? AND action=? AND fingerprint=? AND next_attempt_at IS NULL"
+    " AND (parked_on_engine IS NULL OR parked_on_engine != ?)"
 )
 _TOUCH = (
     "UPDATE action_liveness SET last_planned_at=?"
@@ -268,6 +276,14 @@ class SQLiteActionLivenessStore:
             (key.identity.subject, key.identity.action, key.fingerprint),
             progress=(key.identity.subject, key.identity.action, done_at.isoformat()),
         )
+
+    def claim_engine_reprobe(self, key: LivenessKey, engine: str) -> bool:
+        with self._write() as conn:
+            claimed = conn.execute(
+                _CLAIM_ENGINE_REPROBE,
+                (engine, key.identity.subject, key.identity.action, key.fingerprint, engine),
+            ).rowcount
+        return claimed == 1
 
     def update_escalation(self, row: LivenessRow) -> bool:
         key = row.key
@@ -486,6 +502,7 @@ def _upsert(conn: sqlite3.Connection, row: LivenessRow) -> None:
             _iso(row.last_planned_at),
             _iso(row.escalation.retry_at),
             _iso(row.escalation.first_failed_at),
+            row.parked_on_engine,
         ),
     )
 
@@ -535,6 +552,7 @@ def _row(found: sqlite3.Row) -> LivenessRow:
             first_failed_at=_parse(found["escalation_first_failed_at"]),
         ),
         last_planned_at=_parse(found["last_planned_at"]),
+        parked_on_engine=found["parked_on_engine"],
     )
 
 

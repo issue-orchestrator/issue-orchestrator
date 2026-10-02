@@ -23,6 +23,13 @@ and every other replanning path consult it before they try again, and it is
 released only by progress: the facts change, the action succeeds under any
 fingerprint, or an operator retries the subject.
 
+One more kind of progress is the engine's own code (#7592). A park records the
+io commit it was decided under, and an engine running a DIFFERENT commit may
+try a park once more (:func:`engine_reprobe_due`): a fix that shipped is a
+changed fact the fingerprint cannot see, since the fingerprint is made of the
+subject's facts and a bug's fix changes none of them. Only once per commit,
+and never for a park that needs a person: that one waits for a person.
+
 Pure: no clock, no storage, no I/O. The control-layer owner supplies ``now``.
 """
 
@@ -217,6 +224,11 @@ class LivenessRow:
     #: nobody has asked about for :attr:`LivenessPolicy.stale_after` is no
     #: longer a question, and the owner retires it.
     last_planned_at: datetime | None = None
+    #: The io source commit this park was last decided under: when it parked,
+    #: or when a newer engine re-tried it once and it failed again. ``None``
+    #: when unknown - parked before this was recorded, or by an install with
+    #: no source identity. Only a parked row has one.
+    parked_on_engine: str | None = None
 
     @property
     def planned_at(self) -> datetime:
@@ -239,6 +251,10 @@ class LivenessRow:
             raise ValueError("only an escalated park can have been explained")
         if self.last_planned_at is not None:
             _require_aware(self.last_planned_at, "last_planned_at")
+        if self.parked_on_engine is not None and (
+            self.next_attempt_at is not None or not self.parked_on_engine.strip()
+        ):
+            raise ValueError("only a parked row records the engine, and never a blank one")
 
     @property
     def parked(self) -> bool:
@@ -267,6 +283,23 @@ class Admission(StrEnum):
     ADMIT = "admit"
     BACKING_OFF = "backing_off"
     PARKED = "parked"
+
+
+def engine_reprobe_due(row: LivenessRow | None, engine: str | None) -> bool:
+    """May an engine running ``engine`` try this park once more?
+
+    Only a park that a code change can answer: a spent budget or a permanent
+    failure, decided under another (or an unknown) commit. A park that needs a
+    person is not one, and an engine with no source identity cannot tell one
+    commit from the next, so it never re-tries.
+    """
+    return (
+        row is not None
+        and row.parked
+        and row.last_outcome is not OutcomeKind.NEEDS_HUMAN
+        and engine is not None
+        and row.parked_on_engine != engine
+    )
 
 
 def admission(row: LivenessRow | None, now: datetime) -> Admission:
@@ -460,5 +493,6 @@ __all__ = [
     "LivenessRow",
     "OutcomeKind",
     "admission",
+    "engine_reprobe_due",
     "fact_fingerprint",
 ]

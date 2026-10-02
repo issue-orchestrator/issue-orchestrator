@@ -108,49 +108,35 @@ def test_the_composed_label_sync_refuses_the_configured_block(
     assert (ISSUE, ORDINARY) in _added(github)
 
 
-def test_the_composed_completion_processor_rejects_it_in_pr_labels(
-    orchestrator, github, tmp_path
-) -> None:
-    """The agent-authored surface, through the composed processor.
+def test_the_composed_completion_door_routes_it_off_the_pr(orchestrator) -> None:
+    """The agent-authored surface, through the composed processor's own owner.
 
-    Proves BOTH halves of the completion wiring at once: the block owner it
-    consults at the door knows the configured label, and the record is refused
-    before anything external happens.
+    The door consults the block owner the processor was composed with, so this
+    proves that owner knows the CONFIGURED label: an agent naming it in
+    ``pr_labels`` asks for the issue's block (#7592) and never gets it on a PR,
+    while the default spelling, which this repo does not use, is an ordinary
+    label here.
     """
-    worktree = tmp_path / "wt"
-    worktree.mkdir(parents=True, exist_ok=True)
-    session_output = FileSystemSessionOutput()
-    run_assets = session_output.start_run(
-        worktree.resolve(),
-        f"issue-{ISSUE}",
-        issue_number=ISSUE,
-        agent_label="agent:test",
-        backend="subprocess",
-    )
-    (run_assets.run_dir / "completion.json").write_text(
-        json.dumps(
+    from issue_orchestrator.control.completion_pr_labels import route_reserved_pr_labels
+    from issue_orchestrator.domain.models import CompletionRecord, RequestedAction
+
+    def record(*pr_labels: str) -> CompletionRecord:
+        return CompletionRecord.from_dict(
             {
                 "session_id": "session-1",
                 "timestamp": "2026-08-08T00:00:00Z",
                 "outcome": "completed",
                 "summary": "done",
                 "requested_actions": ["create_pr"],
-                "pr_labels": [CONFIGURED_BLOCK, ORDINARY],
+                "pr_labels": list(pr_labels),
             }
         )
-    )
 
-    result = orchestrator.deps.completion_processor.process(
-        worktree.resolve(),
-        ISSUE,
-        "Test issue",
-        run_assets=run_assets,
-        completion_path=(
-            f".issue-orchestrator/sessions/{run_assets.run_dir.name}/completion.json"
-        ),
-        agent_label="agent:test",
-    )
-
-    assert not result.success
-    assert any(CONFIGURED_BLOCK in error for error in result.errors)
-    assert _added(github) == [], "rejected at the door, so nothing was labelled"
+    block = orchestrator.deps.completion_processor.needs_human_block
+    routed = route_reserved_pr_labels(record(CONFIGURED_BLOCK, ORDINARY), block)
+    assert routed.pr_labels == [ORDINARY]
+    assert routed.requested_actions == [
+        RequestedAction.CREATE_PR, RequestedAction.ADD_NEEDS_HUMAN_LABEL,
+    ]
+    unrouted = record("needs-human", ORDINARY)
+    assert route_reserved_pr_labels(unrouted, block) is unrouted

@@ -6865,3 +6865,53 @@ class TestReviewOutcomeNamesTheBranchItReviewed:
         assert approved is not None
         assert approved.data["branch_name"] == "123-still-the-same"
 
+
+
+class TestReservedPrLabelsOnTheReceiptPath:
+    """#7592 round 1: a receipt-backed publication reloads its record from the
+    prepared evidence. The door must route THAT record, the one the PR is
+    built from, or the reserved label reaches the PR and the issue never gets
+    the block the agent asked for."""
+
+    def test_a_receipt_publication_routes_the_reserved_label_to_the_issue(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus,
+    ) -> None:
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+        from tests.unit.control.test_retained_completion_preparation import _real_block
+        from tests.unit.test_completion_evidence_intake import command, completion, setup
+
+        _ledger, run, capability, intake, working_copy, _ = setup(tmp_path)
+        raw = json.loads(completion())
+        raw["requested_actions"] = ["push_branch", "create_pr"]
+        raw["pr_labels"] = ["needs-human", "size:small"]
+        receipt = intake.submit(capability, command(json.dumps(raw).encode(), "normal-process"))
+        intake.drain()
+        config = Config(repo="example/repo")
+        config.review_enabled = False
+        config.config_path = _write_test_config(tmp_path)
+        mock_git_adapter.get_head_sha.return_value = working_copy.get_head_sha(run.worktree_path)
+        mock_pr_adapter.create_pr.return_value = PRInfo(
+            number=77, title="t", url="https://github.com/example/repo/pull/77",
+            branch="b", body="", state="open", labels=[],
+        )
+        live: dict[int, set[str]] = {42: set()}
+        block, claims = _real_block(tmp_path, live)
+        processor = make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter, pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter, session_output=FileSystemSessionOutput(),
+            event_bus=event_bus, config=config, completion_intake=intake,
+            label_config={"needs_human": "needs-human"}, needs_human_block=block,
+        )
+
+        result = processor.process(
+            run.worktree_path, 42, "Feature", run_assets=run, intake_receipt=receipt,
+        )
+
+        assert result.success, result.errors
+        mock_pr_adapter.create_pr.assert_called_once()
+        applied = [(c.args[0], c.args[1]) for c in mock_label_adapter.add_label.call_args_list]
+        assert (77, "size:small") in applied
+        assert [pair for pair in applied if pair[1] == "needs-human"] == []
+        assert live[42] == {"needs-human"}
+        assert claims.needs_human_causes(42) == frozenset({NeedsHumanCause.AGENT_COMPLETION.value})

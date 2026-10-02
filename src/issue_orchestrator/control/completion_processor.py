@@ -108,7 +108,7 @@ from .completion_result_artifacts import (
 )
 from .completion_review_exchange import CompletionReviewExchange
 from .completion_ports import GitAdapter, LabelAdapter, PRAdapter
-from .completion_pr_labels import apply_pr_labels, reserved_pr_label_error
+from .completion_pr_labels import apply_pr_labels, route_reserved_pr_labels
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -847,6 +847,9 @@ class CompletionProcessor:
             except CompletionIntakeError as exc:
                 return ProcessingResult.for_intake_refusal(exc).with_processing_policy(processing_policy)
             record = record_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
+        # The shared human block never goes on a PR (#6999 F2, #7592): the door
+        # moves it to the issue, on the FINAL record (a receipt reloads above).
+        record = route_reserved_pr_labels(record, self.needs_human_block)
 
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
@@ -1116,18 +1119,6 @@ class CompletionProcessor:
                         failure_kind="validation_failed",
                     ),
                 )
-        # Rejected at the door, BEFORE any side effect (#6999 F2 round 5).
-        # ``pr_labels`` is whatever the agent wrote, and the shared human-block
-        # label is not among the things it may hand itself: applied, it would
-        # create a block with no cause recorded, which a later typed release
-        # then takes away from whoever did record one. The agent has the typed
-        # needs_human outcome for that, which goes through the block owner.
-        # The completion FAILS rather than dropping the entry quietly - a
-        # silently ignored request is one nothing downstream can see.
-        if reserved := reserved_pr_label_error(record, self.needs_human_block):
-            return None, None, ProcessingResult(
-                success=False, message=reserved, errors=[reserved]
-            )
 
         session_name = (
             run_assets.session_name
@@ -1910,6 +1901,21 @@ class CompletionProcessor:
 
         return self._ActionResult()
 
+    def acquire_agent_human_block(self, issue_number: int) -> BlockOutcome:
+        """Put the shared block on ``issue_number`` because an agent asked.
+
+        The one place an agent's request for a human becomes the block: the
+        live completion's ``ADD_NEEDS_HUMAN_LABEL`` and recovery of a retained
+        record that asked for one both land here, with the same cause.
+        """
+        return self.needs_human_block.acquire(
+            HumanBlockRequest(
+                target=issue_number,
+                cause=_AGENT_BLOCK_CAUSES[RequestedAction.ADD_NEEDS_HUMAN_LABEL],
+                reason="agent requested needs_human on completion",
+            )
+        )
+
     def _shared_block_request(
         self,
         action: RequestedAction,
@@ -1928,16 +1934,9 @@ class CompletionProcessor:
         ``None`` means "not mine" - a different action, or a composition with
         no owner wired - and the caller's ordinary table handles it.
         """
-        cause = _AGENT_BLOCK_CAUSES.get(action)
-        if cause is None:
+        if action not in _AGENT_BLOCK_CAUSES:
             return None
-        outcome = self.needs_human_block.acquire(
-            HumanBlockRequest(
-                target=issue_number,
-                cause=cause,
-                reason="agent requested needs_human on completion",
-            )
-        )
+        outcome = self.acquire_agent_human_block(issue_number)
         if outcome is BlockOutcome.UNGOVERNED:
             # No owner in this composition; the ordinary adapter path applies.
             return None
