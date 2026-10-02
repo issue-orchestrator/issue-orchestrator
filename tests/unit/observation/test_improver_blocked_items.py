@@ -81,3 +81,19 @@ def test_the_onset_is_the_last_put_on_that_was_never_taken_off() -> None:
     ]
     assert "question: Split it?" in item.block_events[2].detail
     assert item.timeline_coverage.from_ == t0
+
+
+def test_the_engines_blocked_lane_decides_and_the_tech_leads_own_artefacts_are_not_items() -> None:
+    issues = [
+        OpenIssueLabels(number=10, title="held", labels=("recovery-pending",)),
+        OpenIssueLabels(number=11, title="legacy", labels=("publish-failed",)),
+        OpenIssueLabels(number=12, title="marker", labels=("tech-lead-needs-human",)),
+        OpenIssueLabels(number=13, title="proposal", labels=("proposed-tech-lead",)),
+        OpenIssueLabels(number=14, title="case file", labels=("tech-lead-observation",)),
+    ]
+
+    staged = blocked_items_input(
+        issues, causes=(), ledger=(), case_files=None, timeline=(), cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert [i.number for i in staged.items] == [10, 11, 12]

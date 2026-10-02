@@ -88,8 +88,10 @@ def reference() -> dict:
             _snapshot(0), _snapshot(3), _snapshot(4),
             {"at": "2026-10-02T05:24:50+00:00", "kind": "occurrence",
              "source": "audit.json#/action_liveness/parked/0/last_failed_at", "supports": "origin"},
+            {"at": "2026-10-02T05:05:22+00:00", "kind": "occurrence",
+             "source": "blocked-items.json#/items/2/blocking_labels/1/since_at", "supports": "origin"},
         ],
-        "grading_window": {"from": "2026-10-02T05:24:50+00:00", "to": CUTOFF.isoformat()},
+        "grading_window": {"from": "2026-10-02T05:05:22+00:00", "to": CUTOFF.isoformat()},
         "classification": "new_defect",
         # Diagnosed in a case file, never fixed: a diagnosis is not a remedy.
         "stall_point": "noticed_not_acted",

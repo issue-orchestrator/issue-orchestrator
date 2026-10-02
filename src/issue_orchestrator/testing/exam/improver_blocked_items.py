@@ -85,6 +85,7 @@ from ...contracts.improver_inputs import (
     StagedInput,
     to_json,
 )
+from ...observation.improver_blocked_items import BLOCKING_RULE
 from .cases import EXAM_CASE_IDS
 
 CASE_ID = "IM1-ignored-blocked-items"
@@ -282,7 +283,7 @@ def blocked_items() -> BlockedItemsInput:
     )
     return BlockedItemsInput(
         read_at=CUTOFF,
-        blocking_rule="needs-human, tech-lead-needs-human, blocked, blocked-*, blocked:*",
+        blocking_rule=BLOCKING_RULE,
         causes_coverage=Coverage(from_=None, to=CUTOFF, complete=False, detail="the claim store's current rows"),
         decisions_coverage=_unproven(_at("2026-08-16T00:00:00+00:00"), "the whole charter ledger"),
         items=(
@@ -325,8 +326,11 @@ def blocked_items() -> BlockedItemsInput:
             BlockedItem(
                 number=364, title="[CUJ:R2,H1] Hold the batch's Delivery-owner provenance",
                 labels=("agent:backend", "needs-human", "pr-pending", "recovery-pending", "v1"),
-                blocking_labels=(_label("needs-human", "2026-10-02T05:24:57+00:00"),),
-                blocked_since=_at("2026-10-02T05:24:57+00:00"),
+                blocking_labels=(
+                    _label("needs-human", "2026-10-02T05:24:57+00:00"),
+                    _label("recovery-pending", "2026-10-02T05:05:22+00:00"),
+                ),
+                blocked_since=_at("2026-10-02T05:05:22+00:00"),
                 needs_human_causes=(
                     NeedsHumanCauseInput(
                         cause="action_liveness",
@@ -334,6 +338,7 @@ def blocked_items() -> BlockedItemsInput:
                     ),
                 ),
                 block_events=(
+                    _event("2026-10-02T05:05:22+00:00", "issue.labels_changed", "added ['recovery-pending'] removed []"),
                     _event("2026-10-02T05:24:57+00:00", "issue.labels_changed", "added ['needs-human'] removed []"),
                 ),
                 timeline_coverage=_timeline("2026-09-23T05:27:15+00:00"),

@@ -42,8 +42,10 @@ BLOCK_EVENTS_PER_ITEM = 20
 DETAIL_CHARS = 1500
 
 BLOCKING_RULE = (
-    "an open issue carrying needs-human, tech-lead-needs-human, blocked, blocked-* or"
-    " blocked:* (unprefixed, as the engine audit reads labels)"
+    "an open issue in the engine's blocked lane: a label its label owner classes as blocking"
+    " (blocked, blocked-*, blocked:*, needs-human, recovery-pending, publish-failed, a provider"
+    " outage, the legacy failed) or the tech-lead-needs-human marker; never a tech-lead"
+    " proposal or case file. Labels are read unprefixed, as the engine audit reads them"
 )
 
 #: Events that put a needs-human block on without a recorded label change.

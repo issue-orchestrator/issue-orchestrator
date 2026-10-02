@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from functools import cache
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
@@ -47,10 +48,11 @@ from ..contracts.engine_audit import (
     UnresolvedWork,
     ValidatedWorkSection,
 )
-from ..control.label_manager import TECH_LEAD_NEEDS_HUMAN_LABEL
+from ..control.label_manager import TECH_LEAD_NEEDS_HUMAN_LABEL, LabelManager
 from ..control.reconciliation import RECONCILE_PAUSE_LABEL
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
+from ..infra.config import Config
 from ..infra.engine_log_reader import EngineLogEntry, EngineLogExcerpt
 from ..ports.engine_audit import (
     ActionLivenessAuditReader,
@@ -75,13 +77,14 @@ from .no_progress import (
 #: An unresolved validated-work record older than this is stuck.
 STALE_UNRESOLVED_AFTER = timedelta(hours=24)
 
+#: The shared needs-human block, as an unprefixed engine writes it.
+NEEDS_HUMAN_LABEL = "needs-human"
+
 #: Open-issue labels that ask a human (or the tech lead) to act: the prototype
 #: audit's set, minus ``in-progress`` (normal work, counted but not flagged).
 #: Spelled as an unprefixed engine writes them (``label_prefix`` unset, the
 #: default ``needs-human``); every label is in ``label_counts`` regardless.
-#: The shared needs-human block, as an unprefixed engine writes it.
-NEEDS_HUMAN_LABEL = "needs-human"
-
+#: Every blocking label (:func:`is_blocking_label`) is flagged as well.
 ATTENTION_LABELS: tuple[str, ...] = (
     NEEDS_HUMAN_LABEL,
     TECH_LEAD_NEEDS_HUMAN_LABEL,
@@ -91,20 +94,29 @@ ATTENTION_LABELS: tuple[str, ...] = (
     PROPOSED_TECH_LEAD_LABEL,
 )
 
-#: Labels that block an item until someone acts, besides the ``blocked``
-#: family (``blocked``, ``blocked-*``, ``blocked:*``, as ``LabelManager``
-#: classes them). An open issue carrying one is a BLOCKED ITEM: the operator's
-#: objective is that each gets resolved, so the improver accounts for every
-#: one (#7490). Unprefixed, like :data:`ATTENTION_LABELS`.
-HUMAN_BLOCK_LABELS: tuple[str, ...] = (NEEDS_HUMAN_LABEL, TECH_LEAD_NEEDS_HUMAN_LABEL)
+
+@cache
+def _default_labels() -> LabelManager:
+    """The engine's label owner for an unprefixed engine (the default config),
+    the spelling every reading here assumes, like :data:`ATTENTION_LABELS`."""
+    return LabelManager(Config())
 
 
 def is_blocking_label(label: str) -> bool:
-    """Whether ``label`` makes its open issue a blocked item."""
-    return (
-        label in HUMAN_BLOCK_LABELS
-        or label == "blocked"
-        or label.startswith(("blocked-", "blocked:"))
+    """Whether ``label`` makes its open issue a BLOCKED ITEM.
+
+    The engine's blocked lane, by its label owner's own rule
+    (``LabelManager.is_blocking``: ``blocked``, ``blocked-*``, ``blocked:*``,
+    ``needs-human``, ``recovery-pending``, ``publish-failed``, a provider
+    outage, the legacy ``failed``), plus the tech lead's needs-human marker,
+    minus the tech lead's own artefacts (a gated proposal, a case file),
+    which block pickup but are not work anyone is stuck on. The operator's
+    objective is that each blocked item gets resolved, so the improver
+    accounts for every one (#7490).
+    """
+    labels = _default_labels()
+    return label == TECH_LEAD_NEEDS_HUMAN_LABEL or (
+        labels.is_blocking(label) and not labels.is_tech_lead_artifact_any((label,))
     )
 
 
@@ -648,7 +660,6 @@ def _fetch_cost_anomalies(cost: FetchCostSection) -> Iterator[Anomaly]:
 
 __all__ = [
     "ATTENTION_LABELS",
-    "HUMAN_BLOCK_LABELS",
     "NEEDS_HUMAN_LABEL",
     "EngineAuditInputs",
     "EngineLog",
