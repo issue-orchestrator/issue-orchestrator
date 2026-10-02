@@ -21,7 +21,7 @@ from typing import Protocol
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..contracts.improver_run import ImproverRunRecord, RunOutcome
+from ..contracts.improver_run import ImproverRunRecord
 from ..domain.engine_activity import EngineRef, UnidentifiedEngine
 from ..ports.engine_activity import EngineInventory
 from ..ports.improver import ImproverRunStore
@@ -132,9 +132,10 @@ class ImproverSweep:
     ) -> tuple[tuple[EngineRef, ...], tuple[EngineRef, ...], tuple[UnidentifiedEngine, ...]]:
         """The engines to audit, those an accepted run audited since they
         last ran, and those that cannot be identified. An engine never
-        accepted counts if it ran since ``floor``."""
+        accepted counts if it ran since ``floor``. A blind run audits nothing
+        (``ImproverRunRecord.is_engine_audit``)."""
         audited: dict[str, datetime] = {}
-        accepted = [run for run in self._runs.runs() if run.outcome is RunOutcome.ACCEPTED]
+        accepted = [run for run in self._runs.runs() if run.is_engine_audit]
         for run in accepted:  # newest first
             audited.setdefault(run.engine_id, run.started_at)
         # Back to the OLDEST accepted run: an engine that last wrote before

@@ -404,7 +404,10 @@ class ActionApplier:
                 label=action.label,
                 reason=action.reason,
             )
-            self._emit_issue_labels_changed(action.issue_number, [action.label], [], issue_key=action.issue_key)
+            self._emit_issue_labels_changed(
+                action.issue_number, [action.label], [], issue_key=action.issue_key,
+                presence_unknown=has_label is None,
+            )
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -1706,18 +1709,23 @@ class ActionApplier:
         added: list[str],
         removed: list[str],
         issue_key: str = "",
+        *,
+        presence_unknown: bool = False,
     ) -> None:
         if not added and not removed:
             return
-        self.events.publish(make_trace_event(
-            EventName.ISSUE_LABELS_CHANGED,
-            {
-                "issue_number": issue_number,
-                "issue_key": issue_key or str(issue_number),
-                "added": added,
-                "removed": removed,
-            },
-        ))
+        payload: dict[str, object] = {
+            "issue_number": issue_number,
+            "issue_key": issue_key or str(issue_number),
+            "added": added,
+            "removed": removed,
+        }
+        if presence_unknown:
+            # The add could not first read whether the label was on, so it
+            # may not be the moment it went on (the improver dates blocks by
+            # recorded adds, #7490).
+            payload["presence_unknown"] = True
+        self.events.publish(make_trace_event(EventName.ISSUE_LABELS_CHANGED, payload))
 
     def _log_label_mutation(
         self,

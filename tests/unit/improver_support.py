@@ -171,10 +171,12 @@ def _coverage() -> Coverage:
 
 
 def decisions() -> CharterDecisionsInput:
-    def decision(did: str, kind: str, target: int, *, effect: str, applied: str | None) -> StagedDecision:
+    def decision(
+        did: str, kind: str, target: int, *, effect: str, applied: str | None, binding: str = "advisory"
+    ) -> StagedDecision:
         return StagedDecision(
             decision_id=did, run_id="run-1", action_id=did, role="flow", action_kind=kind,
-            binding="advisory", outcome="executed", reason_code="advisory_executes", reason="",
+            binding=binding, outcome="executed", reason_code="advisory_executes", reason="",
             effect=effect, execution_reason=None, target_number=target, anchor_issue_number=target,
             proposal_issue_number=None, decided_at=datetime.fromisoformat("2026-09-28T13:10:00+00:00"),
             applied_at=None if applied is None else datetime.fromisoformat(applied),
@@ -184,7 +186,8 @@ def decisions() -> CharterDecisionsInput:
         coverage=_coverage(),
         decisions=(
             decision("D1", "flag_pattern", 410, effect="withheld", applied=None),
-            decision("D2", "release_withheld_review", 320, effect="applied", applied=D2_APPLIED),
+            decision("D2", "release_withheld_review", 320, effect="applied", applied=D2_APPLIED,
+                     binding="approvable"),
             escalation_353(),
         ),
     )

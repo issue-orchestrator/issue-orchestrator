@@ -249,8 +249,7 @@ class ImproverRun:
             (
                 r
                 for r in self._store.runs()
-                if r.outcome is RunOutcome.ACCEPTED and r.engine_id == engine_id
-                and not r.blind_excluded_issues
+                if r.is_engine_audit and r.engine_id == engine_id
             ),
             None,
         )

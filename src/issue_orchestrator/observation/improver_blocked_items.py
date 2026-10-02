@@ -170,11 +170,13 @@ def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, 
     which event it was last put on.
 
     A recorded label change is the engine's own diff (it adds only a label
-    that is absent), so an add is always a fresh onset, even with no removal
+    it read as absent), so an add is a fresh onset, even with no removal
     recorded before it: a person may have taken the label off on GitHub,
-    which the timeline never sees. A removal forgets the label. A
-    needs-human request with no label change of its own (``issue.needs_human``)
-    is an onset only while the label is not already known to be on."""
+    which the timeline never sees. An add whose presence read failed
+    (``presence_unknown``) may have found the label already on, so it moves
+    no known onset. A removal forgets the label. A needs-human request with
+    no label change of its own (``issue.needs_human``) is an onset only
+    while the label is not already known to be on."""
     on: dict[str, tuple[datetime, str]] = {}
     for event in events:
         name = _name(event)
@@ -183,8 +185,9 @@ def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, 
             data = event.record.data
             for label in _labels(data.get("removed")):
                 on.pop(label, None)
+            uncertain = data.get("presence_unknown") is True
             for label in _labels(data.get("added")):
-                if is_blocking_label(label):
+                if is_blocking_label(label) and not (uncertain and label in on):
                     on[label] = (at, name)
         elif name in _NEEDS_HUMAN_EVENTS:
             on.setdefault(NEEDS_HUMAN_LABEL, (at, name))

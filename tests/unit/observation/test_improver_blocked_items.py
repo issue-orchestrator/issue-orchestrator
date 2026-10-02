@@ -117,3 +117,20 @@ def test_the_engines_blocked_lane_decides_and_the_tech_leads_own_artefacts_are_n
     )
 
     assert [i.number for i in staged.items] == [10, 11, 12]
+
+
+def test_an_add_that_could_not_read_presence_moves_no_known_onset() -> None:
+    """r1 F4: the applier records an add even when its presence read failed;
+    the label may already have been on, so the earlier onset stands."""
+    t0 = CUTOFF - timedelta(days=2)
+    events = [
+        _event(262, "issue.labels_changed", t0, added=["needs-human"], removed=[]),
+        _event(262, "issue.labels_changed", t0 + timedelta(days=1), added=["needs-human"], removed=[],
+               presence_unknown=True),
+    ]
+
+    staged = blocked_items_input(
+        ISSUES, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert staged.items[0].blocked_since == t0

@@ -285,3 +285,30 @@ def test_the_probe_reports_an_engine_it_cannot_identify(tmp_path: Path) -> None:
     observation = SnapshotEngineActivityProbe(OnlyOld()).observe(now=NOW, since=NOW - timedelta(hours=24))
 
     assert observation.engines == () and observation.unidentified == (str(state),)
+
+
+def test_a_blind_run_does_not_count_as_an_audit_of_its_engine(
+    two_engines: tuple[EngineRef, EngineRef], tmp_path: Path
+) -> None:
+    """r1 F1 (#7490): a blind run saw a doctored open-issue list. Activity it
+    followed is still unaudited, so the next real sweep audits the engine."""
+    from dataclasses import replace
+    from datetime import timedelta as td
+
+    _, porchpin = two_engines
+    store = MemoryRunStore(tmp_path / "store")
+    scheduled_at, blind_at = NOW - td(hours=2), NOW
+    _sweep(store, EmptyFindingsAgent(), Inventory(porchpin), now=scheduled_at).sweep(_request())
+    blind = replace(_request(), excluded_open_issues=frozenset({7592}))
+    [blind_run] = _sweep(store, EmptyFindingsAgent(), Inventory(porchpin), now=blind_at).sweep(
+        blind, apply=False
+    ).runs
+    assert blind_run.outcome is RunOutcome.ACCEPTED and blind_run.blind_excluded_issues == (7592,)
+    # porchpin acted between the real run and the blind one, then stopped.
+    stopped = Inventory(porchpin, written={porchpin.engine_id: NOW - td(hours=1)})
+    agent = EmptyFindingsAgent()
+
+    result = _sweep(store, agent, stopped, now=NOW + td(days=2)).sweep(_request())
+
+    assert agent.engines == [(porchpin.engine_id, "porchpin/porchpin")]
+    assert result.already_audited == ()

@@ -59,14 +59,15 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
        lead noticed it and stopped. That is `noticed_not_acted`. **A
        diagnosis is not a fix**: "already diagnosed in case file X" is
        evidence for this grade, never a reason to drop the item.
-     - an applied remedy, and it is still blocked: `acted_not_effective`.
+     - an applied remedy (an approvable or destructive action, inside its
+     grading window), and it is still blocked: `acted_not_effective`.
    - Say **why it is blocked**: its cause, the agent's question, the parked
      action. Is it genuine human work, a decision the operator owes, or a
      defect (in io or in the tech lead's triage)?
    - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
-     an applied tech-lead decision of its own (an `escalate_to_human`,
-     `defer_to_tracker` or explaining `post_comment` about it, applied after
-     it became blocked) handed it to the operator: then `awaiting_operator`.
+     an applied tech-lead decision of its own (an `escalate_to_human` or
+     `defer_to_tracker` about it, applied after it became blocked) handed it
+     to the operator: then `awaiting_operator`. A comment is not a hand-over.
      Several items with one root cause share one finding.
 1. **Observe.** Read `audit-diff.json` first. For each anomaly, record three
    separate facts, each backed by a cited record, and never infer one from
@@ -108,8 +109,9 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
      file or a diagnosis that names it), but no remedy followed, or the
      action was withheld or refused (check `effect` and `reason`). A case
      file or diagnosis with no applied remedy is exactly this grade.
-   - `acted_not_effective`: its action was applied, but the live signal
-     persists. Compare against the decision's **`applied_at`**, never its
+   - `acted_not_effective`: its remedy (an approvable or destructive action,
+     not advice, a flag or a comment) was applied inside the grading window,
+     but the live signal persists. Compare against the decision's **`applied_at`**, never its
      `decided_at`. It must be at or before the audit cutoff, and a live
      observation (an occurrence or snapshot) dated **after** `applied_at` must
      support the persistence. If `applied_at` is missing, grade `unknown`. Without that later
@@ -272,7 +274,9 @@ in `engine-source/examples/improver/findings/`.
   action) about the anomaly's issue was applied by the cutoff: that is
   `acted_not_effective`.
 - `stall_point: acted_not_effective` requires a `stall_evidence` decision
-  with `applied_at` at or before `grading_window.to`, and an `observed` entry
+  about the anomaly with an approvable or destructive `binding` (a remedy)
+  and `applied_at` inside the grading window (not before a known
+  `grading_window.from`, at or before `grading_window.to`), and an `observed` entry
   supporting presence or recurrence dated after that `applied_at`.
 - `stall_point: not_in_charter` requires citing either the source (for a
   missing action type) or the `charter.json` settings that forbid the role or
@@ -310,8 +314,8 @@ in `engine-source/examples/improver/findings/`.
   not staged). A `finding` account names, in `finding_id`, a finding of this
   file with an anomaly key of that issue (`subject` `#<n>`) and
   `present_after_start: "true"`. An `awaiting_operator` account cites in
-  `evidence` an `escalate_to_human`, `defer_to_tracker` or `post_comment`
-  decision from that item's `decisions`, applied after its `blocked_since`
+  `evidence` an `escalate_to_human` or `defer_to_tracker` decision from
+  that item's `decisions`, applied after its `blocked_since`
   and by the cutoff; with `blocked_since` unknown, or no such decision, the
   item needs a finding. Only a `finding` account names `finding_id`; only an
   `awaiting_operator` account cites `evidence`.

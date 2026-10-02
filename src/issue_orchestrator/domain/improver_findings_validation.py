@@ -570,20 +570,25 @@ class _Checker:
         """A remedy about the anomaly's issue that was applied by the cutoff
         means the tech lead acted: the grade is acted_not_effective."""
         about = set(_notices_about(self._evidence, f, None, None))
-        onset = f.grading_window.from_
         for decision_id in sorted(about & set(self._decisions)):
             d = self._decisions[decision_id]
-            # A remedy applied before the anomaly's onset acted on an earlier
-            # occurrence, not this one.
-            if (
-                d.binding in _REMEDY_BINDINGS
-                and d.applied_at is not None
-                and d.applied_at <= self._cutoff
-                and (onset == "unknown" or d.applied_at >= onset)
-            ):
+            if self._applied_remedy(d, f):
                 yield Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY, (
                     f"{decision_id} was applied: the tech lead acted, so grade acted_not_effective"
                 )
+
+    def _applied_remedy(self, d: StagedDecision, f: Finding) -> bool:
+        """THE rule for "the tech lead acted on this anomaly": a remedy (an
+        approvable or destructive action, not advice or a floor) applied by
+        the cutoff, and not before the anomaly's onset, when that is known (a
+        remedy applied earlier acted on an earlier occurrence)."""
+        onset = f.grading_window.from_
+        return (
+            d.binding in _REMEDY_BINDINGS
+            and d.applied_at is not None
+            and d.applied_at <= self._cutoff
+            and (onset == "unknown" or d.applied_at >= onset)
+        )
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -614,11 +619,14 @@ class _Checker:
         applied = [
             d.applied_at
             for d in (self._decisions.get(i) for i in f.stall_evidence)
-            if d is not None and d.applied_at is not None and d.applied_at <= f.grading_window.to
+            if d is not None and d.applied_at is not None and self._applied_remedy(d, f)
             and (about is None or d.decision_id in about)
         ]
         if not applied:
-            yield Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION, "no cited decision was applied by the audit cutoff"
+            yield Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION, (
+                "no cited remedy (an approvable or destructive action) about it was applied"
+                " inside its grading window by the audit cutoff"
+            )
             return
         live = [o.at for o in f.observed if o.supports in ("present_after_start", "recurs_after_start")]
         if not any(t > at for at in applied for t in live):
@@ -786,8 +794,9 @@ def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: M
 
 
 #: Decisions that hand a blocked item to the operator rather than remedy it:
-#: an escalation, a deferral to a tracker, or a comment explaining it.
-HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human", "defer_to_tracker", "post_comment"})
+#: an escalation or a deferral to a tracker. A comment is not one: the staged
+#: decision does not say what it said, so it cannot show a hand-over.
+HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human", "defer_to_tracker"})
 
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 

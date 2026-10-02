@@ -645,3 +645,30 @@ def test_a_remedy_applied_before_the_onset_does_not_make_a_later_notice_acted_on
     assert validate_findings(json.dumps(example("exam_case")), evidence).findings[0].stall_point == (
         "noticed_not_acted"
     )
+
+
+def test_a_comment_is_not_a_hand_over(tmp_path: Path) -> None:
+    """r1 F2: a staged comment does not say what it said, so it cannot show a hand-over."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        lambda d: d["items"][0]["decisions"][0].update(action_kind="post_comment", binding="advisory"),
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Advice applied (a comment, a flag) is not a remedy (r1 F3).
+        {"binding": "advisory"},
+        # A remedy applied before the anomaly's onset acted on an earlier occurrence.
+        {"applied_at": "2026-09-28T09:00:00Z"},
+    ],
+)
+def test_acted_not_effective_needs_a_remedy_applied_inside_the_window(tmp_path: Path, change: dict) -> None:
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "charter-decisions.json", lambda d: d["decisions"][1].update(**change),
+    )
+
+    assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in _rules(example("capability_issue"), evidence)
