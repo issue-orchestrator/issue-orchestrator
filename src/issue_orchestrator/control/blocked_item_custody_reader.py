@@ -535,7 +535,7 @@ def build_blocked_item_triage(
     state: Callable[[], "OrchestratorState"],
 ) -> "StateBlockedItemTriage":
     """Bind the triage owner (#7593) to the same read-only owners custody reads."""
-    from .blocked_item_triage import StateBlockedItemTriage
+    from .blocked_item_triage import StateBlockedItemTriage, open_proposal_index
 
     return StateBlockedItemTriage(
         config=config,
@@ -543,5 +543,6 @@ def build_blocked_item_triage(
         labels=deps.label_manager,
         needs_human_causes=deps.needs_human_block.recorded_causes,
         charter_ledger=deps.tech_lead_authority.charter_ledger,
+        open_proposals=lambda: open_proposal_index(deps.tech_lead_authority),
         timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
     )

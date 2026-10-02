@@ -15,8 +15,11 @@ checks the decision against the grant cannot drift:
 
 "In force" is read from the charter record the triaging action left
 (:data:`~..domain.blocked_item_triage.TRIAGE_IN_FORCE_EFFECTS`), with the item's
-fingerprint at that triage. An item whose blocking state changed, or whose last
-triage did not take effect, is owed another.
+fingerprint at that triage. A triage awaiting approval is in force while a gated
+proposal of its kind for the item is OPEN, read from the durable op ledger (the
+proposal's own record), so a best-effort link of the issue number onto the
+charter record never decides it. An item whose blocking state changed, or whose
+last triage did not take effect, is owed another.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..infra.config import Config
     from ..ports.issue import Issue
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.tech_lead_charter_ledger import TechLeadCharterDecisionReader
     from ..ports.timeline_store import TimelineRecord
     from .label_manager import LabelManager
@@ -75,6 +79,7 @@ class StateBlockedItemTriage:
             [Sequence[int]], Mapping[int, "frozenset[NeedsHumanCause]"]
         ],
         charter_ledger: "TechLeadCharterDecisionReader",
+        open_proposals: Callable[[], "OpenProposals"],
         timeline_reader: Callable[[int, int], Sequence["TimelineRecord"]],
     ) -> None:
         self._config = config
@@ -82,6 +87,7 @@ class StateBlockedItemTriage:
         self._labels = labels
         self._needs_human_causes = needs_human_causes
         self._ledger = charter_ledger
+        self._open_proposals = open_proposals
         self._timeline = timeline_reader
 
     def agenda(self, *, anchor_issue_number: int) -> TriageAgenda:
@@ -93,7 +99,7 @@ class StateBlockedItemTriage:
         """
         owed, in_force = owed_triages(
             self._config, self._state(), self._labels, self._ledger,
-            exclude=frozenset({anchor_issue_number}),
+            open_proposals=self._open_proposals(), exclude=frozenset({anchor_issue_number}),
         )
         causes = self._needs_human_causes([item.issue.number for item in owed])
         items = [
@@ -151,6 +157,7 @@ def owed_triages(
     labels: "LabelManager",
     ledger: "TechLeadCharterDecisionReader",
     *,
+    open_proposals: "OpenProposals",
     exclude: frozenset[int] = frozenset(),
 ) -> tuple[list[OwedTriage], tuple[int, ...]]:
     """``(owed, in force)``: every blocked work item in scope, oldest first,
@@ -171,7 +178,7 @@ def owed_triages(
         fingerprint = block_fingerprint(
             blocking[0], tech_lead_marker=blocking[1], needs_human_label=labels.needs_human
         )
-        prior = prior_triage(ledger, issue.number)
+        prior = prior_triage(ledger, issue.number, open_proposals)
         if prior is not None and prior.fingerprint == fingerprint and prior.in_force:
             in_force.append(issue.number)
         else:
@@ -180,27 +187,53 @@ def owed_triages(
 
 
 def triage_owed(
-    config: "Config", state: "OrchestratorState", ledger: "TechLeadCharterDecisionReader"
+    config: "Config", state: "OrchestratorState", authority: "TechLeadAuthorityStore"
 ) -> bool:
     """Whether any blocked work item in scope is owed a triage (#7593)."""
     from .label_manager import LabelManager
 
-    owed, _ = owed_triages(config, state, LabelManager(config), ledger)
+    owed, _ = owed_triages(
+        config, state, LabelManager(config), authority.charter_ledger,
+        open_proposals=open_proposal_index(authority),
+    )
     return bool(owed)
 
 
-def prior_triage(ledger: "TechLeadCharterDecisionReader", issue_number: int) -> PriorTriage | None:
+#: ``(target issue, op type) -> proposal issue`` of every open gated proposal.
+OpenProposals = Mapping[tuple[int, str], int]
+
+
+def open_proposal_index(authority: "TechLeadAuthorityStore") -> OpenProposals:
+    """Every open gated proposal by what it would do to which item (#7593 r4)."""
+    return {(op.target_issue_number, op.op_type): number for number, op in authority.list_ops()}
+
+
+def prior_triage(
+    ledger: "TechLeadCharterDecisionReader", issue_number: int, open_proposals: OpenProposals
+) -> PriorTriage | None:
+    """The item's latest triage; one awaiting approval names its OPEN proposal.
+
+    The op ledger is the durable record of a filed proposal, so it, not the
+    charter record's best-effort link, says whether the operator has one to
+    answer: a proposal filed while its link failed still counts, one never
+    filed (or already finalized) does not (#7593 review r4).
+    """
     latest = ledger.latest_triage_for_issue(issue_number)
     if latest is None:
         return None
     assert latest.triage_class is not None and latest.triage_fingerprint is not None
+    awaiting = latest.effect == "awaiting_approval"
     return PriorTriage(
         triage_class=latest.triage_class,
         action_kind=latest.action_kind,
         effect=latest.effect,
         decided_at=latest.decided_at,
         fingerprint=latest.triage_fingerprint,
-        proposal_issue_number=latest.proposal_issue_number,
+        proposal_issue_number=(
+            open_proposals.get((issue_number, latest.action_kind))
+            if awaiting
+            else latest.proposal_issue_number
+        ),
     )
 
 

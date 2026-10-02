@@ -132,12 +132,24 @@ def _triage_record(
     )
 
 
+@dataclass
+class _Authority:
+    """The two reads ``triage_owed`` makes of the authority store."""
+
+    charter_ledger: _Ledger
+    ops: tuple = ()
+
+    def list_ops(self):
+        return self.ops
+
+
 def _owner(
     issues: list[Issue],
     *,
     causes: dict[int, frozenset[NeedsHumanCause]] | None = None,
     ledger: _Ledger | None = None,
     timeline: dict[int, list[TimelineRecord]] | None = None,
+    open_proposals: dict[tuple[int, str], int] | None = None,
 ) -> StateBlockedItemTriage:
     state = OrchestratorState()
     state.cached_scope_issues = issues
@@ -148,6 +160,7 @@ def _owner(
         labels=LabelManager(config),
         needs_human_causes=lambda numbers: {n: (causes or {}).get(n, frozenset()) for n in numbers},
         charter_ledger=ledger or _Ledger(),
+        open_proposals=lambda: open_proposals or {},
         timeline_reader=lambda number, limit: (timeline or {}).get(number, []),
     )
 
@@ -214,7 +227,10 @@ def test_an_unchanged_item_is_not_triaged_again_while_its_triage_is_in_force(
         else TriageClass.OPERATOR_DECISION
     )
     ledger = _Ledger({262: [_triage_record(262, triage_class, "needs-human", effect=effect)]})
-    owner = _owner([_issue(262, "agent:backend", "needs-human")], ledger=ledger)
+    owner = _owner(
+        [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
+        open_proposals={(262, "propose_decision"): 950} if effect == "awaiting_approval" else None,
+    )
 
     agenda = owner.agenda(anchor_issue_number=ANCHOR)
 
@@ -233,6 +249,38 @@ def test_a_proposal_that_never_got_filed_is_not_a_triage_in_force() -> None:
     [item] = owner.agenda(anchor_issue_number=ANCHOR).items
 
     assert item.reason.endswith("did not take effect: awaiting_approval")
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_a_filed_proposal_is_in_force_by_its_open_op_whatever_the_link(linked: bool) -> None:
+    """#7593 review r4: the proposal was filed and its op recorded, but linking
+    its number onto the charter record failed (or did not). The open op is
+    the durable fact: no second health review triages the item."""
+    ledger = _Ledger({262: [_triage_record(
+        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval", filed=linked,
+    )]})
+    owner = _owner(
+        [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
+        open_proposals={(262, "propose_decision"): 950},
+    )
+
+    agenda = owner.agenda(anchor_issue_number=ANCHOR)
+
+    assert agenda.in_force == (262,) and agenda.items == ()
+
+
+def test_a_linked_proposal_whose_op_is_gone_is_not_in_force() -> None:
+    """The record still says awaiting approval, but no proposal is open for
+    the item any more: nothing waits on the operator, so it is owed again."""
+    ledger = _Ledger({262: [_triage_record(
+        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval",
+    )]})
+    owner = _owner([_issue(262, "agent:backend", "needs-human")], ledger=ledger)
+
+    [item] = owner.agenda(anchor_issue_number=ANCHOR).items
+
+    assert item.issue_number == 262 and item.prior is not None
+    assert item.prior.proposal_issue_number is None
 
 
 def test_a_changed_block_is_triaged_again() -> None:
@@ -721,18 +769,18 @@ def test_an_owed_triage_keeps_a_review_due_on_an_unchanged_board() -> None:
         n: [_triage_record(n, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]
         for n in range(100, 100 + MAX_TRIAGE_ITEMS_PER_RUN)
     })
-    assert triage_owed(config, state, ledger) is True  # the three deferred ones
+    assert triage_owed(config, state, _Authority(ledger)) is True  # the three deferred ones
     assert health_review_decision(
-        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, ledger),
+        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, _Authority(ledger)),
     ).due is True
 
     everything = _Ledger({
         n: [_triage_record(n, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]
         for n in range(100, 111)
     })
-    assert triage_owed(config, state, everything) is False
+    assert triage_owed(config, state, _Authority(everything)) is False
     assert health_review_decision(
-        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, everything),
+        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, _Authority(everything)),
     ).due is False
 
 

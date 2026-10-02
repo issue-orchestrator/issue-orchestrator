@@ -467,7 +467,7 @@ class FactGatherer:
         # moved on by then (#6793).
         authority = self.tech_lead_authority
         health_decision = health_review_decision(self.config, state, now_ts, triage_owed=lambda: (
-            authority is not None and triage_owed(self.config, state, authority.charter_ledger)))
+            authority is not None and triage_owed(self.config, state, authority)))
         due = health_decision.due
 
         existing_tech_lead_issue: Optional[int] = None

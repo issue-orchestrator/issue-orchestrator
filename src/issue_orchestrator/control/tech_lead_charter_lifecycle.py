@@ -72,7 +72,8 @@ def link_filed_proposal(
 
     Until then a record "awaiting approval" only says the charter routed the
     action to the gate; with the issue named it says an operator can act on
-    it (#7593), which is what the triage watermark and the improver read.
+    it (#7593), which is what the improver reads. The triage watermark reads
+    the open op itself, so a failed link here never re-triages the item.
     """
     return authority.charter_ledger.link_proposal_outcome(
         run_id=op.source_run_id,
