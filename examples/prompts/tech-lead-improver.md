@@ -343,9 +343,11 @@ in `engine-source/examples/improver/findings/`.
   work is an open PR of the item with retained `pipeline_events`,
   `pipeline_event` cites one of that PR's events
   (`blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>`): its
-  retained skip (`review.skipped` / `rework.skipped`) when there is one,
-  which must be a skip of the `refused_action`; otherwise it is `null`.
-  `impact` says, in words, what the block holds up.
+  retained skip of the `refused_action` for the anomaly's reason (a
+  `review.skipped` / `rework.skipped` whose `reason` ends in it) when there
+  is one, and never a skip that shows something else. Otherwise (no such
+  PR, or no retained event) it is `null`. `impact` says, in words, what
+  the block holds up.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous
   scorecard for exactly the cases it holds a latest one for.

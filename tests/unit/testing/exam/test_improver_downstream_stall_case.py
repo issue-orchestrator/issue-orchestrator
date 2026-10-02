@@ -218,6 +218,30 @@ def test_the_vetoed_review_is_accounted_for_with_its_own_skip(evidence: StagedEv
     assert rejected.value.rules == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
 
 
+def test_a_skip_for_another_reason_does_not_show_the_veto(tmp_path: Path) -> None:
+    """Review r7: with a recovery wait's review.skipped retained beside the
+    veto's, only the veto's skip shows the refusal."""
+    data = build_case(
+        tmp_path, engine_commit=COMMIT,
+        charter=TechLeadCharterPolicy.from_config(Config()).effective_charter(), export_source=_source,
+    )
+    staged = json.loads((data / "blocked-items.json").read_text())
+    staged["items"][0]["open_prs"][0]["pipeline_events"].append({
+        "at": "2026-10-02T11:45:00Z", "event": "review.skipped", "reason": "held_by_recovery",
+        "detail": "reason: held_by_recovery",
+    })
+    (data / "blocked-items.json").write_text(json.dumps(staged))
+    evidence = load_staged_evidence(data)
+    doc = reference(evidence)
+    doc["blocked_items"][0]["downstream"][0]["pipeline_event"] = "blocked-items.json#/items/0/open_prs/0/pipeline_events/3"
+
+    with pytest.raises(ImproverFindingsRejected) as rejected:
+        validate_findings(json.dumps(doc), evidence)
+
+    assert rejected.value.rules == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+    assert grade(validate_findings(json.dumps(reference(evidence)), evidence)).passed
+
+
 def test_the_refused_review_recurs_after_the_start(evidence: StagedEvidence) -> None:
     """The scanner refused it again after the restart: "unknown" is refused."""
     doc = copy.deepcopy(reference(evidence))

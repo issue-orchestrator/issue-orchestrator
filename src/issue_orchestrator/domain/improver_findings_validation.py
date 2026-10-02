@@ -422,11 +422,13 @@ class _Checker:
     def _refused_pr_action(self, item: BlockedItem, entry: DownstreamStall) -> Iterator[tuple[Rule, str]]:
         """What the downstream entry claims of the refused work, checked
         against the audit and the PR's retained pipeline: the refused action
-        is the one the anomaly names, and the cited event is THAT PR's, its
-        retained skip of that action when there is one."""
+        is the one the anomaly names, and the cited event is THAT PR's: its
+        retained skip of that action for the anomaly's reason when there is
+        one, and never a skip that shows something else (another action, or
+        a wait such as ``held_by_recovery``)."""
         n, rule = item.number, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
         subject, action, cited = entry.anomaly_key.subject, entry.refused_action, entry.pipeline_event
-        named = entry.anomaly_key.signature.partition(":")[0]
+        named, _, refused_for = entry.anomaly_key.signature.partition(":")
         if action != named:
             yield rule, f"#{n}: {subject}'s refused work is its {named}, not its {action}"
         pr = next((p for p in item.open_prs if f"PR #{p.number}" == subject and p.pipeline_events), None)
@@ -435,15 +437,21 @@ class _Checker:
                 yield rule, f"#{n}: {subject} has no retained pipeline event on the item, so cite none"
             return
         prefix = f"{BLOCKED_ITEMS_FILE}#/items/{self._item_index[n]}/open_prs/{item.open_prs.index(pr)}/pipeline_events/"
-        skips = [i for i, e in enumerate(pr.pipeline_events) if _PIPELINE_SKIPS.get(e.event) == action]
+        events = pr.pipeline_events
+        matching = [
+            i for i, e in enumerate(events)
+            if _PIPELINE_SKIPS.get(e.event) == action and _skip_reason_is(e.reason, refused_for)
+        ]
         index = cited[len(prefix):] if cited is not None and cited.startswith(prefix) else ""
-        if not index.isdigit() or int(index) >= len(pr.pipeline_events) or (skips and int(index) not in skips):
-            what = "its retained skip" if skips else "an event"
-            yield rule, f"#{n}: cite {what} of PR #{pr.number}'s pipeline ({prefix}<k>)"
-            return
-        event = pr.pipeline_events[int(index)].event
-        if event in _PIPELINE_SKIPS and _PIPELINE_SKIPS[event] != action:
-            yield rule, f"#{n}: {event} refuses the PR's {_PIPELINE_SKIPS[event]}, not its {action}"
+        if not index.isdigit() or int(index) >= len(events):
+            yield rule, f"#{n}: cite an event of PR #{pr.number}'s pipeline ({prefix}<k>)"
+        elif matching and int(index) not in matching:
+            yield rule, f"#{n}: cite PR #{pr.number}'s retained {action} skip for {refused_for} ({prefix}<k>)"
+        elif not matching and events[int(index)].event in _PIPELINE_SKIPS:
+            yield rule, (
+                f"#{n}: {prefix}{index} is a skip that does not show this refusal"
+                f" ({events[int(index)].event}: {events[int(index)].reason})"
+            )
 
     def _handed_over(self, account: BlockedItemAccount, item: BlockedItem) -> Iterator[tuple[Rule, str]]:
         n = account.number
@@ -757,6 +765,12 @@ _PIPELINE_SKIPS: Mapping[str, str] = {
     EventName.REVIEW_SKIPPED.value: "review",
     EventName.REWORK_SKIPPED.value: "rework",
 }
+
+def _skip_reason_is(event_reason: str | None, refused_for: str) -> bool:
+    """Whether a skip event's reason is the refusal's (an event qualifies it,
+    e.g. ``stale_pending_review:issue_blocked`` for ``issue_blocked``)."""
+    return event_reason is not None and event_reason.rpartition(":")[2] == refused_for
+
 
 #: The audit's records counted from its log read: the read's coverage is theirs.
 _LOG_RECORDS = ("/no_progress/log_signatures/", "/no_progress/refused_work/")

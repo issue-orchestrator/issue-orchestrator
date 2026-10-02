@@ -230,6 +230,9 @@ class PipelineEventInput(_Closed):
 
     at: AwareDatetime
     event: str
+    #: The event's own ``reason`` (a skip's, e.g.
+    #: ``stale_pending_review:issue_blocked``); None when it records none.
+    reason: str | None
     detail: str
 
 

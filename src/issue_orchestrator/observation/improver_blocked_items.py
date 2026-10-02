@@ -209,10 +209,18 @@ def _pull_request(pr: PRInfo, events: Sequence[TimelineEvent] | str) -> ItemPull
         number=pr.number,
         draft=pr.draft,
         pipeline_events=tuple(
-            PipelineEventInput(at=instant(e.record.timestamp), event=_name(e), detail=_detail(e)) for e in staged
+            PipelineEventInput(
+                at=instant(e.record.timestamp), event=_name(e), reason=_reason(e), detail=_detail(e)
+            )
+            for e in staged
         ),
         last_event_at=instant(staged[-1].record.timestamp) if staged else None,
     )
+
+
+def _reason(event: TimelineEvent) -> str | None:
+    value = event.record.data.get("reason")
+    return value if isinstance(value, str) and value else None
 
 
 def _pr_number(event: TimelineEvent) -> int | None:

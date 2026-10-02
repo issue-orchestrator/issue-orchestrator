@@ -303,6 +303,7 @@ def test_an_items_open_prs_carry_their_pipeline_and_the_work_the_engine_refuses(
     assert [e.event for e in pipeline] == ["pr.view_changed", "review.queued", "review.skipped"]
     assert pipeline[0].detail == "added ['needs-code-review'] removed []"
     assert pipeline[2].detail == "reason: stale_pending_review:issue_blocked"
+    assert [e.reason for e in pipeline] == [None, None, "stale_pending_review:issue_blocked"]
     assert item.open_prs[0].last_event_at == t0 + timedelta(minutes=3)
     assert item.open_prs[1].pipeline_events == () and item.open_prs[1].last_event_at is None
     assert [(w.kind, w.subject, w.signature) for w in item.stalled_work] == [
