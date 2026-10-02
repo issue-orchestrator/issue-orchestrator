@@ -278,6 +278,41 @@ class TestLegacyDropIsRetiredOnReuse:
         visible = _visible_to_target_tooling(wt.worktree_path)
         assert not [line for line in visible if "issue_orchestrator" in line]
 
+    def test_bytecode_compiled_from_the_drop_leaves_the_tree_too(self, tmp_path):
+        """A target tool may have compiled the planted module."""
+        wt = make_git_worktree(tmp_path)
+        _plant_legacy_foreign_drop(wt)
+        (wt.worktree_path / ".gitignore").write_text("__pycache__/\n*.log\n")
+        pycache = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR / "__pycache__"
+        pycache.mkdir()
+        bytecode = pycache / "coding_done.cpython-312.pyc"
+        bytecode.write_bytes(b"pyc")
+        unrelated = wt.worktree_path / "build.log"
+        unrelated.write_text("target's\n")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        retirement = state.legacy_drop_retirement
+        assert not (wt.worktree_path / "src").exists()
+        relative = LEGACY_CLI_TOOLS_DROP_DIR / "__pycache__" / bytecode.name
+        assert relative in retirement.quarantined
+        assert (retirement.quarantine_dir / relative).read_bytes() == b"pyc"
+        assert unrelated.read_text() == "target's\n"
+        assert retirement.exclude_lines_removed is True
+
+    def test_io_repo_bytecode_of_tracked_modules_is_left_alone(self, tmp_path):
+        wt = make_git_worktree(tmp_path)
+        _commit_io_cli_tool(wt, "BRANCH_VERSION = True\n")
+        _write_legacy_exclude_line(wt)
+        pycache = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR / "__pycache__"
+        pycache.mkdir()
+        (pycache / "coding_done.cpython-312.pyc").write_bytes(b"pyc")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert (pycache / "coding_done.cpython-312.pyc").read_bytes() == b"pyc"
+        assert state.legacy_drop_retirement.quarantined == ()
+
     def test_target_ignored_file_io_never_listed_is_left_in_place(self, tmp_path):
         """A target ``.gitignore`` rule is not io's ownership proof."""
         wt = make_git_worktree(tmp_path)
@@ -402,6 +437,26 @@ class TestLegacyDropIsRetiredOnReuse:
 
         assert state.legacy_drop_retirement.exclude_lines_removed is False
         assert _untracked(other) == []
+
+
+    def test_bytecode_left_in_another_worktree_still_holds_the_lines(self, tmp_path):
+        wt = make_git_worktree(tmp_path)
+        other = tmp_path / "wt-other"
+        _git_out(wt.main_repo, "worktree", "add", str(other), "-b", "other")
+        _write_legacy_exclude_line(wt)
+        (other / ".gitignore").write_text("__pycache__/\n")
+        _git_out(other, "add", ".gitignore")
+        _git_out(
+            other, "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-m", "ignore bytecode",
+        )
+        pycache = other / LEGACY_CLI_TOOLS_DROP_DIR / "__pycache__"
+        pycache.mkdir(parents=True)
+        (pycache / "coding_done.cpython-312.pyc").write_bytes(b"pyc")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert state.legacy_drop_retirement.exclude_lines_removed is False
 
 
 class TestLegacyRetirementLeavesOthersAlone:

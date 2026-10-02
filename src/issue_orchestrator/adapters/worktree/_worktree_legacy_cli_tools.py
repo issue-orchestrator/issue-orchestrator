@@ -42,7 +42,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ._worktree_git import _git_run
 from ._worktree_git_exclude import (
@@ -147,11 +147,6 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
             lines_removed,
         )
     return result
-
-
-def _present(path: Path) -> bool:
-    """Whether anything sits at ``path``, a dangling symlink included."""
-    return path.is_symlink() or path.exists()
 
 
 def _real_drop_dir(checkout: Path) -> bool:
@@ -288,17 +283,35 @@ def _blob_of_file(worktree_path: Path, relative: str) -> str:
     return _git_run(worktree_path, ["hash-object", "--", relative], check=True).stdout.strip()
 
 
+def _is_planted(relative: str, legacy_lines: frozenset[str], tracked: set[str]) -> bool:
+    """Whether an untracked path is io's drop, by io's own exclude lines.
+
+    The planted module itself is named by an exact line. Bytecode Python
+    compiled from it (``__pycache__/<stem>.*.pyc``) is io's too, but only when
+    that module is not tracked: in io's own repo the same stems are the
+    project's source and their bytecode is the agent's.
+    """
+    if relative in legacy_lines:
+        return True
+    path = PurePosixPath(relative)
+    if path.parent.name != "__pycache__" or path.suffix != ".pyc":
+        return False
+    module = (path.parent.parent / f"{path.name.split('.', 1)[0]}.py").as_posix()
+    return module in legacy_lines and module not in tracked
+
+
 def _quarantine_planted_untracked(
     worktree_path: Path, legacy_lines: frozenset[str], quarantine: _Quarantine
 ) -> tuple[Path, ...]:
-    """Move out untracked files io's exact exclude lines name."""
+    """Move out the untracked files io's exact exclude lines prove are io's."""
     if not legacy_lines:
         return ()
+    tracked = set(_git_z(worktree_path, ["ls-files"]))
     untracked = _git_z(worktree_path, ["ls-files", "--others"])
     return tuple(
         quarantine.move(relative)
         for relative in untracked
-        if relative in legacy_lines
+        if _is_planted(relative, legacy_lines, tracked)
     )
 
 
@@ -335,21 +348,22 @@ def _any_worktree_holds_drop(worktree_path: Path, legacy_lines: frozenset[str]) 
 def _holds_drop(checkout: Path, legacy_lines: frozenset[str]) -> bool:
     """Whether ``checkout`` still holds files io's exclude lines must hide.
 
-    A checkout git cannot answer for counts as holding one: keeping the lines
-    one more round is harmless, removing them under a live drop is not.
+    The same ownership rule as retirement itself (``_is_planted``), so the
+    lines are never dropped while any checkout holds a file retirement would
+    have moved. A checkout git cannot answer for counts as holding one:
+    keeping the lines one more round is harmless, removing them under a live
+    drop is not.
     """
     if not _real_drop_dir(checkout):
         return False
-    listing = _git_run(
-        checkout,
-        ["ls-files", "-v", "-z", "--", LEGACY_CLI_TOOLS_DROP_DIR.as_posix()],
-        check=False,
-    )
-    if listing.returncode != 0:
+    prefix = LEGACY_CLI_TOOLS_DROP_DIR.as_posix()
+    listing = _git_run(checkout, ["ls-files", "-v", "-z", "--", prefix], check=False)
+    others = _git_run(checkout, ["ls-files", "--others", "-z", "--", prefix], check=False)
+    if listing.returncode != 0 or others.returncode != 0:
         logger.warning(
             "Keeping legacy cli_tools exclude lines: cannot inspect %s: %s",
             checkout,
-            listing.stderr.strip(),
+            (listing.stderr or others.stderr).strip(),
         )
         return True
     tagged = [entry for entry in listing.stdout.split("\0") if entry]
@@ -357,5 +371,7 @@ def _holds_drop(checkout: Path, legacy_lines: frozenset[str]) -> bool:
         return True
     tracked = {entry[2:] for entry in tagged}
     return any(
-        _present(checkout / line) and line not in tracked for line in legacy_lines
+        _is_planted(relative, legacy_lines, tracked)
+        for relative in others.stdout.split("\0")
+        if relative
     )
