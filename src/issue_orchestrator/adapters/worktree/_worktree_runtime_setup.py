@@ -21,8 +21,8 @@ from ._worktree_runtime import (
     _hide_runtime_artifacts_from_git_status,
     install_worktree_identity,
     install_claude_settings,
-    retire_legacy_cli_tools_drop,
 )
+from ._worktree_legacy_cli_tools import LegacyDropRetirement, retire_legacy_cli_tools_drop
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +46,17 @@ class WorktreeRuntimeState:
             hook that did not install fails ``apply`` instead of being reported.
         no_verify_dry_run_allowed: State the ``--no-verify`` dry-run flag file
             was left in.
-        retired_cli_tool_drop_paths: Worktree-relative paths of a pre-#7566
-            ``cli_tools`` drop that setup restored or removed. Setup itself
-            never puts io tooling in the worktree: the session environment
-            resolves completion commands from the orchestrator's own install.
+        legacy_drop_retirement: What setup did about a pre-#7566 ``cli_tools``
+            drop in a reused worktree. Setup itself never puts io tooling in
+            the worktree: the session environment resolves completion commands
+            from the orchestrator's own install.
     """
 
     worktree_path: Path
     worktree_id: str
     hooks_installed: bool
     no_verify_dry_run_allowed: bool
-    retired_cli_tool_drop_paths: tuple[Path, ...]
+    legacy_drop_retirement: LegacyDropRetirement
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ class WorktreeRuntimeSetup:
         _configure_no_verify_dry_run(
             worktree_path, self.allow_no_verify_dry_run_preflight
         )
-        retired_cli_tool_drop_paths = retire_legacy_cli_tools_drop(worktree_path)
+        legacy_drop_retirement = retire_legacy_cli_tools_drop(worktree_path)
         worktree_id = install_worktree_identity(worktree_path)
         _hide_runtime_artifacts_from_git_status(worktree_path)
 
@@ -139,5 +139,5 @@ class WorktreeRuntimeSetup:
             worktree_id=worktree_id,
             hooks_installed=hooks_installed,
             no_verify_dry_run_allowed=self.allow_no_verify_dry_run_preflight,
-            retired_cli_tool_drop_paths=retired_cli_tool_drop_paths,
+            legacy_drop_retirement=legacy_drop_retirement,
         )

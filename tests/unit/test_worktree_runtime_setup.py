@@ -25,7 +25,10 @@ from issue_orchestrator.adapters.worktree.api import (
 from issue_orchestrator.adapters.worktree._worktree_runtime import (
     ALLOW_NO_VERIFY_DRY_RUN_PATH,
     CLAUDE_SETTINGS_FOR_AGENTS,
+)
+from issue_orchestrator.adapters.worktree._worktree_legacy_cli_tools import (
     LEGACY_CLI_TOOLS_DROP_DIR,
+    LegacyDropRetirement,
 )
 from issue_orchestrator.ports.worktree_manager import WORKTREE_ID_MARKER
 from tests.unit.worktree_git_helpers import (
@@ -96,7 +99,7 @@ class TestApplyProducesRunnableWorktree:
         # io's tooling resolves from the session environment, never from
         # files placed in the target's tree (#7566).
         assert not (worktree_path / "src").exists()
-        assert state.retired_cli_tool_drop_paths == ()
+        assert state.legacy_drop_retirement == LegacyDropRetirement()
 
     def test_apply_hides_runtime_artifacts_from_git_status(
         self, repo_root, worktree_path
@@ -202,7 +205,7 @@ class TestIoToolingStaysOutOfTheTargetTree:
         assert not (wt.worktree_path / "src").exists()
         visible = _visible_to_target_tooling(wt.worktree_path)
         assert not [line for line in visible if "issue_orchestrator" in line]
-        assert state.retired_cli_tool_drop_paths == ()
+        assert state.legacy_drop_retirement == LegacyDropRetirement()
 
     def test_io_repo_worktree_keeps_its_committed_source(self, tmp_path):
         """In io's own repo, ``cli_tools`` is the project under review.
@@ -222,36 +225,70 @@ class TestIoToolingStaysOutOfTheTargetTree:
         assert _git_out(wt.worktree_path, "status", "--porcelain") == ""
 
 
-class TestLegacyDropIsRetiredOnReuse:
-    """A worktree provisioned before #7566 still carries the drop."""
+LEGACY_TOOL = LEGACY_CLI_TOOLS_DROP_DIR / "coding_done.py"
 
-    def test_foreign_drop_hidden_by_exclude_is_removed(self, tmp_path):
+
+def _plant_legacy_foreign_drop(wt, worktree: Path | None = None) -> Path:
+    """Reproduce what pre-#7566 setup left in a foreign worktree."""
+    worktree = worktree or wt.worktree_path
+    planted = worktree / LEGACY_TOOL
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text("ENGINE_COPY = True\n")
+    common_exclude = wt.main_repo / ".git" / "info" / "exclude"
+    common_exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = common_exclude.read_text() if common_exclude.exists() else ""
+    if LEGACY_TOOL.as_posix() not in existing:
+        common_exclude.write_text(f"{existing}{LEGACY_TOOL.as_posix()}\n")
+    return planted
+
+
+def _untracked(worktree: Path) -> list[str]:
+    return _git_out(
+        worktree, "ls-files", "--others", "--exclude-standard"
+    ).splitlines()
+
+
+class TestLegacyDropIsRetiredOnReuse:
+    """A worktree provisioned before #7566 still carries the drop.
+
+    Ownership is proved (an exact io exclude line, or io's skip-worktree bit),
+    and nothing is deleted: bytes leave the tree for a quarantine directory in
+    the common git dir, outside every worktree.
+    """
+
+    def test_foreign_drop_leaves_the_tree_into_quarantine(self, tmp_path):
         wt = make_git_worktree(tmp_path)
-        drop = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
-        (drop / "__pycache__").mkdir(parents=True)
-        (drop / "coding_done.py").write_text("old\n")
-        (drop / "__pycache__" / "coding_done.cpython-312.pyc").write_bytes(b"x")
-        common_exclude = wt.main_repo / ".git" / "info" / "exclude"
-        common_exclude.write_text(
-            f"{LEGACY_CLI_TOOLS_DROP_DIR.as_posix()}/coding_done.py\n"
-            "__pycache__/\n"
-        )
+        _plant_legacy_foreign_drop(wt)
         agent_file = wt.worktree_path / "notes.md"
         agent_file.write_text("mine\n")
 
         state = _setup(wt.main_repo).apply(wt.worktree_path)
 
+        retirement = state.legacy_drop_retirement
         assert not (wt.worktree_path / "src").exists()
         assert agent_file.read_text() == "mine\n"
-        assert set(state.retired_cli_tool_drop_paths) == {
-            LEGACY_CLI_TOOLS_DROP_DIR / "coding_done.py",
-            LEGACY_CLI_TOOLS_DROP_DIR / "__pycache__" / "coding_done.cpython-312.pyc",
-        }
+        assert retirement.quarantined == (LEGACY_TOOL,)
+        assert retirement.quarantine_dir is not None
+        assert retirement.quarantine_dir.is_relative_to(wt.main_repo / ".git")
+        assert (retirement.quarantine_dir / LEGACY_TOOL).read_text() == "ENGINE_COPY = True\n"
         visible = _visible_to_target_tooling(wt.worktree_path)
         assert not [line for line in visible if "issue_orchestrator" in line]
 
-    def test_unignored_file_under_drop_dir_is_left_alone(self, tmp_path):
-        """Only files git ignores are provably io's; anything else is not."""
+    def test_target_ignored_file_io_never_listed_is_left_in_place(self, tmp_path):
+        """A target ``.gitignore`` rule is not io's ownership proof."""
+        wt = make_git_worktree(tmp_path)
+        _plant_legacy_foreign_drop(wt)
+        (wt.worktree_path / ".gitignore").write_text("cli_tools/\n")
+        agent_made = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR / "agent_made.py"
+        agent_made.write_text("mine\n")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert agent_made.read_text() == "mine\n"
+        assert not (wt.worktree_path / LEGACY_TOOL).exists()
+        assert state.legacy_drop_retirement.quarantined == (LEGACY_TOOL,)
+
+    def test_unlisted_untracked_file_under_drop_dir_is_left_alone(self, tmp_path):
         wt = make_git_worktree(tmp_path)
         drop = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
         drop.mkdir(parents=True)
@@ -260,22 +297,74 @@ class TestLegacyDropIsRetiredOnReuse:
         state = _setup(wt.main_repo).apply(wt.worktree_path)
 
         assert (drop / "agent_made.py").read_text() == "mine\n"
-        assert state.retired_cli_tool_drop_paths == ()
+        assert state.legacy_drop_retirement == LegacyDropRetirement()
 
-    def test_io_repo_skip_worktree_snapshot_is_restored_to_head(self, tmp_path):
+    def test_io_repo_skip_worktree_snapshot_is_restored_and_its_bytes_kept(
+        self, tmp_path
+    ):
+        """``skip-worktree`` proves io hid the file, not who wrote its bytes.
+
+        Whatever was on disk (the engine's copy, or an agent edit git never
+        saw) is preserved in quarantine before the committed content returns.
+        """
         wt = make_git_worktree(tmp_path)
         tool = _commit_io_cli_tool(wt, "BRANCH_VERSION = True\n")
-        tool.write_text("ENGINE_SNAPSHOT = True\n")
+        tool.write_text("EDITED_AFTER_THE_DROP = True\n")
         _git_out(wt.worktree_path, "update-index", "--skip-worktree", "--", str(tool))
 
         state = _setup(wt.main_repo).apply(wt.worktree_path)
 
+        retirement = state.legacy_drop_retirement
         assert tool.read_text() == "BRANCH_VERSION = True\n"
         tag = _git_out(wt.worktree_path, "ls-files", "-v", "--", str(tool))
         assert tag.startswith("H "), tag
-        assert state.retired_cli_tool_drop_paths == (
-            LEGACY_CLI_TOOLS_DROP_DIR / "coding_done.py",
-        )
+        assert retirement.restored == (LEGACY_TOOL,)
+        assert retirement.quarantine_dir is not None
+        assert (
+            retirement.quarantine_dir / LEGACY_TOOL
+        ).read_text() == "EDITED_AFTER_THE_DROP = True\n"
+
+    def test_exclude_lines_go_once_no_worktree_holds_a_drop(self, tmp_path):
+        """Stale exclude lines would hide an agent's new file at that path."""
+        wt = make_git_worktree(tmp_path)
+        _plant_legacy_foreign_drop(wt)
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert state.legacy_drop_retirement.exclude_lines_removed is True
+        common_exclude = (wt.main_repo / ".git" / "info" / "exclude").read_text()
+        assert LEGACY_TOOL.as_posix() not in common_exclude
+        new_file = wt.worktree_path / LEGACY_TOOL
+        new_file.parent.mkdir(parents=True)
+        new_file.write_text("agent work\n")
+        assert LEGACY_TOOL.as_posix() in _untracked(wt.worktree_path)
+
+    def test_exclude_lines_stay_while_another_worktree_still_holds_a_drop(
+        self, tmp_path
+    ):
+        """Another worktree may be mid-session on the old setup.
+
+        Removing the shared lines would surface its drop as untracked and fail
+        that session's completion intake.
+        """
+        wt = make_git_worktree(tmp_path)
+        other = tmp_path / "wt-other"
+        _git_out(wt.main_repo, "worktree", "add", str(other), "-b", "other")
+        _plant_legacy_foreign_drop(wt)
+        _plant_legacy_foreign_drop(wt, other)
+
+        first = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert first.legacy_drop_retirement.exclude_lines_removed is False
+        assert _untracked(other) == []
+        assert (other / LEGACY_TOOL).exists()
+
+        second = _setup(wt.main_repo).apply(other)
+
+        assert second.legacy_drop_retirement.exclude_lines_removed is True
+        assert not (other / "src").exists()
+        common_exclude = (wt.main_repo / ".git" / "info" / "exclude").read_text()
+        assert LEGACY_TOOL.as_posix() not in common_exclude
 
 
 class TestEnforcedHooksAreAnInvariantNotARequest:

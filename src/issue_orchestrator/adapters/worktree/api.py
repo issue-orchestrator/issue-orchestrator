@@ -19,7 +19,6 @@ from ._worktree_runtime import (
     install_claude_settings,
     install_worktree_identity,
     read_reviewer_head_ownership,
-    retire_legacy_cli_tools_drop,
 )
 from ._worktree_runtime_setup import WorktreeRuntimeSetup, WorktreeRuntimeState
 
@@ -44,5 +43,4 @@ __all__ = [
     "install_claude_settings",
     "install_worktree_identity",
     "read_reviewer_head_ownership",
-    "retire_legacy_cli_tools_drop",
 ]

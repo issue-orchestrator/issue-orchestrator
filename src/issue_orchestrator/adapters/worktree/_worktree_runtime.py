@@ -82,8 +82,6 @@ __all__ = [
     "install_worktree_identity",
     "read_reviewer_head_ownership",
     "install_claude_settings",
-    "LEGACY_CLI_TOOLS_DROP_DIR",
-    "retire_legacy_cli_tools_drop",
 ]
 
 
@@ -107,101 +105,6 @@ def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
         raise WorktreeError(
             f"Failed to {action} no-verify dry-run flag at {flag_path}: {exc}"
         ) from exc
-
-
-# Where io used to plant a copy of its own ``cli_tools`` package in every
-# worktree (removed in #7566). Completion commands resolve from the session
-# environment instead — ``control/session_env.build_session_env_exports`` puts
-# the orchestrator's venv ``bin`` first on ``PATH`` and its ``src`` first on
-# ``PYTHONPATH`` — so nothing io runs ever lives inside the target's tree.
-LEGACY_CLI_TOOLS_DROP_DIR = Path("src/issue_orchestrator/entrypoints/cli_tools")
-
-
-def retire_legacy_cli_tools_drop(worktree_path: Path) -> tuple[Path, ...]:
-    """Undo the ``cli_tools`` drop older io versions left in a worktree.
-
-    Reused worktrees outlive the code that provisioned them, so a worktree set
-    up before #7566 still carries the drop. Two shapes exist:
-
-    - **Foreign target repo:** the copied files are untracked and hidden by
-      io's ``info/exclude`` entries. The target's own validators still walk the
-      tree and see them (porchpin's architecture audit failed on them). They
-      are removed.
-    - **io's own repo:** the files are tracked source. The drop overwrote them
-      with the engine's copy and set ``skip-worktree`` so git reported a clean
-      tree while disk differed from ``HEAD`` — the stale-snapshot trap agents
-      kept tripping. The bit is cleared and the committed content restored.
-
-    Only paths io can prove it owns are touched: tracked files carrying the
-    ``skip-worktree`` bit (agents are blocked from setting it), and untracked
-    files git *ignores* under the drop directory (io's exclude entries, plus
-    bytecode caches). An untracked file git does not ignore is agent work and
-    is left alone.
-
-    Returns:
-        Worktree-relative paths that were restored or removed.
-
-    Raises:
-        GitError: If git cannot report or restore the drop. A half-retired drop
-            would leave the target's validators failing on io's files.
-    """
-    if not (worktree_path / LEGACY_CLI_TOOLS_DROP_DIR).is_dir():
-        return ()
-    prefix = LEGACY_CLI_TOOLS_DROP_DIR.as_posix()
-    retired = [
-        *_restore_skip_worktree_drop(worktree_path, prefix),
-        *_remove_ignored_drop(worktree_path, prefix),
-    ]
-    _prune_empty_drop_dirs(worktree_path)
-    if retired:
-        logger.info(
-            "Retired legacy cli_tools drop: path=%s files=%d",
-            worktree_path,
-            len(retired),
-        )
-    return tuple(retired)
-
-
-def _git_z_paths(worktree_path: Path, argv: list[str], prefix: str) -> list[str]:
-    result = _git_run(worktree_path, [*argv, "-z", "--", prefix], check=True)
-    return [entry for entry in result.stdout.split("\0") if entry]
-
-
-def _restore_skip_worktree_drop(worktree_path: Path, prefix: str) -> list[Path]:
-    tagged = _git_z_paths(worktree_path, ["ls-files", "-v"], prefix)
-    skipped = [entry[2:] for entry in tagged if entry.startswith("S ")]
-    if not skipped:
-        return []
-    _git_run(worktree_path, ["update-index", "--no-skip-worktree", "--", *skipped], check=True)
-    _git_run(worktree_path, ["checkout", "--", *skipped], check=True)
-    return [Path(path) for path in skipped]
-
-
-def _remove_ignored_drop(worktree_path: Path, prefix: str) -> list[Path]:
-    ignored = _git_z_paths(
-        worktree_path,
-        ["ls-files", "--others", "--ignored", "--exclude-standard"],
-        prefix,
-    )
-    for relative in ignored:
-        (worktree_path / relative).unlink()
-    return [Path(path) for path in ignored]
-
-
-def _prune_empty_drop_dirs(worktree_path: Path) -> None:
-    """Remove directories the drop left empty, deepest first, up to the root."""
-    drop_dir = worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
-    for directory in sorted(
-        (path for path in drop_dir.rglob("*") if path.is_dir()),
-        key=lambda path: len(path.parts),
-        reverse=True,
-    ):
-        if not any(directory.iterdir()):
-            directory.rmdir()
-    current = drop_dir
-    while current != worktree_path and current.is_dir() and not any(current.iterdir()):
-        current.rmdir()
-        current = current.parent
 
 
 def _read_worktree_identity(marker_path: Path) -> str | None:
