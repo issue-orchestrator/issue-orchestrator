@@ -301,51 +301,45 @@ class TestListDirtyFiles:
 
             assert files is None
 
-    def test_list_dirty_files_all_mode_filters_untracked_planted(
+    def test_list_dirty_files_all_mode_reports_untracked_io_source(
         self, git_wc, worktree_path
     ):
-        """Untracked orchestrator-planted paths are filtered in all-mode.
+        """An untracked file under io's own ``cli_tools/`` is dirty.
 
-        ``sync_cli_tools`` copies cli_tools into every worktree. In a foreign
-        target repo they appear here as untracked and must not fire the
-        dirty-tree guard — otherwise coding-done fails in every worktree.
+        io plants nothing in a worktree (#7566), so in io's own repo such a
+        file is an agent's new module and must block publication until it
+        is committed.
         """
-        planted = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+        new_tool = "src/issue_orchestrator/entrypoints/cli_tools/new_tool.py"
         with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(
                     returncode=0,
-                    stdout=f"new-real-file.txt\0{planted}\0",
+                    stdout=f"new-real-file.txt\0{new_tool}\0",
                     stderr="",
                 ),
             ]
 
             files = git_wc.list_dirty_files(worktree_path, "all")
 
-            assert files == ["new-real-file.txt"]
+            assert files == ["new-real-file.txt", new_tool]
 
-    def test_list_dirty_files_tracked_mode_keeps_planted_modifications(
+    def test_list_dirty_files_tracked_mode_reports_io_source_modifications(
         self, git_wc, worktree_path
     ):
-        """Tracked modifications to planted paths survive the filter.
-
-        In the orchestrator's own repo these paths are tracked source —
-        a developer edit is legitimate and must still fire the guard. The
-        filter applies only to the untracked-enumeration branch, which is
-        never consulted in tracked-mode.
-        """
-        planted = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+        """In io's own repo, an edit to tracked cli_tools source is dirty."""
+        edited = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
         with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
-                MagicMock(returncode=0, stdout=f"{planted}\0", stderr=""),
+                MagicMock(returncode=0, stdout=f"{edited}\0", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
             ]
 
             files = git_wc.list_dirty_files(worktree_path, "tracked")
 
-            assert files == [planted]
+            assert files == [edited]
 
 
 class TestGetCommitsAheadOfMain:

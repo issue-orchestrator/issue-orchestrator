@@ -59,10 +59,7 @@ from ...domain.dirty_remediation import (
 )
 from ...infra.env import get_env
 from ...infra.logging_config import issue_log
-from ...infra.runtime_artifacts import (
-    is_orchestrator_untracked_planted,
-    is_runtime_managed_dirty_path,
-)
+from ...infra.runtime_artifacts import is_runtime_managed_dirty_path
 
 import logging
 
@@ -82,20 +79,14 @@ def _is_managed_session() -> bool:
 def check_dirty_files(worktree_root: Path | None = None) -> list[str]:
     """Return dirty porcelain lines the agent is responsible for.
 
-    Filters two categories:
-
-    - Runtime metadata under ``.issue-orchestrator/`` and ``.claude/`` —
-      always ignored, never source.
-    - Orchestrator-planted sync targets under
-      ``src/issue_orchestrator/entrypoints/cli_tools/`` — ignored **only
-      when untracked**. A tracked modification in the orchestrator's own
-      repo remains a legitimate developer edit and still counts as dirty.
+    Filters runtime metadata under ``.issue-orchestrator/`` and ``.claude/``
+    — never source. Everything else counts, tracked or untracked: io places
+    none of its own files in the worktree (#7566), so an untracked file is
+    always the agent's.
 
     Uses ``--untracked-files=all`` so git lists each untracked file
     individually rather than summarising a subtree to its topmost
-    untracked directory (``?? src/``). The summary form silently broke
-    the prior prefix filter — ``src/`` doesn't match
-    ``src/issue_orchestrator/entrypoints/cli_tools/``.
+    untracked directory (``?? src/``), which a path filter cannot match.
     """
     try:
         result = subprocess.run(
@@ -114,20 +105,12 @@ def check_dirty_files(worktree_root: Path | None = None) -> list[str]:
         if len(line) < 4 or not line.strip():
             continue
         # Porcelain reserves columns 0-1 for the two-char XY status code
-        # and col 2 for a space separator; line[3:] is the path. The only
-        # status class that affects filtering here is ``??`` (untracked) —
-        # planted-path filtering is gated on it explicitly below. Every
-        # other code (``M ``, `` M``, ``A ``, ``R ``, ``C ``, ``U ``, …)
-        # represents a real tracked change and is reported as dirty with
-        # no rename-target parsing applied. Rename lines carry their
-        # ``old -> new`` form verbatim into the output; callers display
-        # but do not re-parse them.
-        status_code = line[:2]
+        # and col 2 for a space separator; line[3:] is the path. No rename
+        # target parsing is applied: rename lines carry their ``old -> new``
+        # form verbatim into the output; callers display but do not re-parse
+        # them.
         path = line[3:]
-        is_untracked = status_code == "??"
         if is_runtime_managed_dirty_path(path, worktree_root):
-            continue
-        if is_untracked and is_orchestrator_untracked_planted(path):
             continue
         dirty.append(line.strip())
     return dirty

@@ -17,7 +17,6 @@ from ..adapters.worktree.custody import custody_guard
 from ..execution import git_push_operations as git_push_ops
 from ..execution.command_runner import LocalCommandRunner
 from ..execution.git_push_operations import GitAuthEnvProvider
-from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.command_runner import OutputNewlines
 from .git_exact_operations import GitExactOperations
 from .git_branch_identity import issue_number_from_branch
@@ -285,18 +284,12 @@ class GitWorkingCopy:
                 )
 
             if mode == "all":
-                untracked_paths = self._run_git_nul_paths(
-                    worktree,
-                    ["ls-files", "--others", "--exclude-standard", "-z"],
+                files.update(
+                    self._run_git_nul_paths(
+                        worktree,
+                        ["ls-files", "--others", "--exclude-standard", "-z"],
+                    )
                 )
-                # ``sync_cli_tools`` plants files into every worktree. In a
-                # foreign repo they appear here as untracked and must not
-                # count as dirty. The filter is scoped to this untracked
-                # branch so tracked-modified versions of the same paths in
-                # the orchestrator's own repo (picked up above via
-                # ``diff --name-only``) still fire the guard.
-                untracked_paths = filter_orchestrator_untracked_planted(untracked_paths)
-                files.update(untracked_paths)
 
             return sorted(files)
         except GitError:

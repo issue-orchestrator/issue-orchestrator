@@ -22,7 +22,6 @@ from issue_orchestrator.adapters.worktree.api import (
     install_hooks,
     find_worktree_for_branch,
     install_claude_settings,
-    sync_cli_tools,
     WorktreeError,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
@@ -675,7 +674,6 @@ class TestCreateWorktree:
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
 
-    @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools")
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -684,7 +682,6 @@ class TestCreateWorktree:
         mock_run,
         mock_install_hooks,
         mock_install_claude_settings,
-        mock_sync_cli_tools,
         tmp_path,
     ):
         """Worktree setup must not mutate the issue branch with a synthetic commit."""
@@ -694,11 +691,6 @@ class TestCreateWorktree:
         worktree_base = tmp_path / "worktrees"
         gitdir = repo_root / ".git" / "worktrees" / "repo-123"
         exclude_path = gitdir / "info" / "exclude"
-        mock_sync_cli_tools.return_value = [
-            Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"),
-            Path("src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py"),
-            Path("src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py"),
-        ]
 
         def run_side_effect(cmd, *args, **kwargs):
             argv = cmd[3:]
@@ -736,7 +728,6 @@ class TestCreateWorktree:
 
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
-        mock_sync_cli_tools.assert_called_once()
         commit_calls = [
             call_args[0][0][3:]
             for call_args in mock_run.call_args_list
@@ -750,24 +741,10 @@ class TestCreateWorktree:
         ]
         assert ["update-index", "--skip-worktree", "--", ".claude/settings.json"] in skip_worktree_calls
         assert ["update-index", "--skip-worktree", "--", ".issue-orchestrator/session-latest.json"] in skip_worktree_calls
-        assert [
-            "update-index",
-            "--skip-worktree",
-            "--",
-            "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
-        ] in skip_worktree_calls
-        assert [
-            "update-index",
-            "--skip-worktree",
-            "--",
-            "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py",
-        ] in skip_worktree_calls
-        assert [
-            "update-index",
-            "--skip-worktree",
-            "--",
-            "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
-        ] in skip_worktree_calls
+        # io's tooling is never planted, so no source path is hidden (#7566).
+        assert not any(
+            "src/issue_orchestrator" in call[-1] for call in skip_worktree_calls
+        )
         exclude_text = exclude_path.read_text()
         assert ".agent-done-marker" in exclude_text
         assert ".venv" in exclude_text
@@ -776,9 +753,8 @@ class TestCreateWorktree:
         assert ".issue-orchestrator/sessions" in exclude_text
         assert ".issue-orchestrator/validation" in exclude_text
         assert ".issue-orchestrator/worktree-id" in exclude_text
-        assert "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py" in exclude_text
+        assert "src/issue_orchestrator" not in exclude_text
 
-    @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools")
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -787,7 +763,6 @@ class TestCreateWorktree:
         mock_run,
         mock_install_hooks,
         mock_install_claude_settings,
-        mock_sync_cli_tools,
         tmp_path,
     ):
         """Linked worktrees should write ignore entries where git actually reads them."""
@@ -798,9 +773,6 @@ class TestCreateWorktree:
         worktree_base = tmp_path / "worktrees"
         gitdir = repo_root / ".git" / "worktrees" / "repo-123"
         common_exclude = repo_root / ".git" / "info" / "exclude"
-        mock_sync_cli_tools.return_value = [
-            Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"),
-        ]
 
         def run_side_effect(cmd, *args, **kwargs):
             argv = cmd[3:]
@@ -836,27 +808,7 @@ class TestCreateWorktree:
         create_worktree(repo_root, 123, "Test", worktree_base=worktree_base)
 
         assert ".issue-orchestrator/sessions" in common_exclude.read_text()
-        assert "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py" in common_exclude.read_text()
         assert ".issue-orchestrator/sessions" in (gitdir / "info" / "exclude").read_text()
-
-    def test_sync_cli_tools_copies_runtime_support_files(self, tmp_path):
-        worktree_path = tmp_path / "worktree"
-        worktree_path.mkdir()
-
-        synced_paths = sync_cli_tools(worktree_path)
-
-        assert Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py") in synced_paths
-        assert Path("src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py") in synced_paths
-        synced_models = (
-            worktree_path
-            / "src"
-            / "issue_orchestrator"
-            / "entrypoints"
-            / "cli_tools"
-            / "_runtime_models.py"
-        )
-        assert synced_models.exists()
-        assert "class ProposedFollowUpIssue" in synced_models.read_text()
 
     @patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -2095,8 +2047,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]
@@ -2164,8 +2114,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]
@@ -2229,8 +2177,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]
@@ -2293,7 +2239,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]
@@ -2395,7 +2340,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]
@@ -2485,7 +2429,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]
@@ -2560,7 +2503,6 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree_runtime_setup.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
                 argv = cmd[3:]

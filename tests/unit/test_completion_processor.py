@@ -4447,7 +4447,7 @@ class TestCompletionProcessorDirtyPolicy:
         assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
 
-    def test_push_allows_when_all_mode_and_only_planted_untracked(
+    def test_push_allows_when_all_mode_and_dirty_list_is_empty(
         self,
         mock_label_adapter,
         mock_pr_adapter,
@@ -4456,9 +4456,8 @@ class TestCompletionProcessorDirtyPolicy:
         worktree_with_completion,
     ):
         # Reproduces the mode=all parity gap with the agent's coding-done
-        # check. has_uncommitted_changes fires on planted-untracked paths,
-        # but list_dirty_files filters them out (filter_orchestrator_untracked_planted),
-        # leaving an empty list. The previous gate required dirty_files to be
+        # check. has_uncommitted_changes can fire on paths list_dirty_files
+        # does not report, leaving an empty list. The previous gate required dirty_files to be
         # non-empty before short-circuiting to pass, so this case fell through
         # to a confusing "Working tree is dirty" with no files listed.
         config = Config(repo="test/repo")
@@ -4543,7 +4542,7 @@ class TestCompletionProcessorDirtyPolicy:
     ):
         """list_dirty_files returning ``None`` signals an enumeration
         failure: we don't know whether the dirty entries are the safe
-        planted/runtime kind or real blocking changes. The boolean
+        runtime kind or real blocking changes. The boolean
         ``has_*`` helpers fail closed by returning True on error;
         ``list_dirty_files`` must do the same, and the policy must NOT
         collapse ``None`` to ``[] -> pass`` (#6159 review feedback).
