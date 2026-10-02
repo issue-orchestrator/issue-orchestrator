@@ -100,8 +100,8 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
     if common_dir is None:
         return LegacyDropRetirement()
     common_exclude = common_dir / "info" / "exclude"
-    drop_dir = worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
-    if not _legacy_exclude_lines(common_exclude) and not drop_dir.is_dir():
+    has_drop_dir = _real_drop_dir(worktree_path)
+    if not _legacy_exclude_lines(common_exclude) and not has_drop_dir:
         return LegacyDropRetirement()
 
     # One lock for the whole retirement: the ownership proof (the shared
@@ -110,11 +110,17 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
     with exclude_lock(common_dir):
         legacy_lines = _legacy_exclude_lines(common_exclude)
         quarantine = _Quarantine(worktree_path, common_dir / LEGACY_DROP_QUARANTINE_DIR)
-        restored, restored_quarantine = _restore_skip_worktree_files(
-            worktree_path, quarantine
-        )
-        planted = _quarantine_planted_untracked(worktree_path, legacy_lines, quarantine)
-        _prune_empty_drop_dirs(worktree_path)
+        restored: tuple[Path, ...] = ()
+        restored_quarantine: tuple[Path, ...] = ()
+        planted: tuple[Path, ...] = ()
+        if has_drop_dir:
+            restored, restored_quarantine = _restore_skip_worktree_files(
+                worktree_path, quarantine
+            )
+            planted = _quarantine_planted_untracked(
+                worktree_path, legacy_lines, quarantine
+            )
+            _prune_empty_drop_dirs(worktree_path)
 
         lines_removed = bool(legacy_lines) and not _any_worktree_holds_drop(
             worktree_path, legacy_lines
@@ -141,6 +147,21 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
             lines_removed,
         )
     return result
+
+
+def _real_drop_dir(checkout: Path) -> bool:
+    """Whether the drop directory exists with no symlink on the way to it.
+
+    io's drop only ever created real directories. A symlink anywhere on the
+    path is the target's own layout; following it could move or prune files
+    outside the worktree, so such a checkout holds no drop.
+    """
+    current = checkout
+    for part in LEGACY_CLI_TOOLS_DROP_DIR.parts:
+        current = current / part
+        if current.is_symlink() or not current.is_dir():
+            return False
+    return True
 
 
 def _git_dirs(worktree_path: Path) -> tuple[Path, Path | None]:
@@ -277,10 +298,11 @@ def _quarantine_planted_untracked(
 
 
 def _prune_empty_drop_dirs(worktree_path: Path) -> None:
-    """Remove directories the drop left empty, deepest first, up to the root."""
+    """Remove directories the drop left empty, deepest first, up to the root.
+
+    Only called for a real drop directory (see ``_real_drop_dir``).
+    """
     drop_dir = worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
-    if not drop_dir.is_dir():
-        return
     for directory in sorted(
         (path for path in drop_dir.rglob("*") if path.is_dir() and not path.is_symlink()),
         key=lambda path: len(path.parts),
@@ -311,7 +333,7 @@ def _holds_drop(checkout: Path, legacy_lines: frozenset[str]) -> bool:
     A checkout git cannot answer for counts as holding one: keeping the lines
     one more round is harmless, removing them under a live drop is not.
     """
-    if not (checkout / LEGACY_CLI_TOOLS_DROP_DIR).is_dir():
+    if not _real_drop_dir(checkout):
         return False
     listing = _git_run(
         checkout,

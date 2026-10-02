@@ -405,6 +405,35 @@ class TestLegacyRetirementLeavesOthersAlone:
         assert tag.startswith("S "), tag
         assert state.legacy_drop_retirement.restored == ()
 
+    @pytest.mark.parametrize("with_legacy_line", [False, True])
+    def test_symlinked_drop_path_is_the_target_s_and_left_intact(
+        self, tmp_path, with_legacy_line
+    ):
+        """io only ever created real directories; a symlink is the target's."""
+        wt = make_git_worktree(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
+        link.parent.mkdir(parents=True)
+        link.symlink_to(outside, target_is_directory=True)
+        _git_out(wt.worktree_path, "add", str(link))
+        _git_out(
+            wt.worktree_path,
+            "-c", "user.email=t@example.com", "-c", "user.name=T",
+            "commit", "-m", "symlink",
+        )
+        if with_legacy_line:
+            (outside / "coding_done.py").write_text("THE TARGET'S\n")
+            _write_legacy_exclude_line(wt)
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert link.is_symlink()
+        assert outside.is_dir()
+        assert state.legacy_drop_retirement.quarantined == ()
+        if with_legacy_line:
+            assert (outside / "coding_done.py").read_text() == "THE TARGET'S\n"
+
     def test_same_basename_worktrees_never_share_a_quarantine(self, tmp_path):
         """Two retirements in one second, same worktree name, distinct bytes."""
         wt = make_git_worktree(tmp_path)
