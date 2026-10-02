@@ -167,8 +167,14 @@ def _item(
 
 def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, str]]:
     """For every blocking label the retained events leave ON: when and by
-    which event it was last put on. A removal forgets it; a re-add while it
-    is on keeps the earlier time (it never came off)."""
+    which event it was last put on.
+
+    A recorded label change is the engine's own diff (it adds only a label
+    that is absent), so an add is always a fresh onset, even with no removal
+    recorded before it: a person may have taken the label off on GitHub,
+    which the timeline never sees. A removal forgets the label. A
+    needs-human request with no label change of its own (``issue.needs_human``)
+    is an onset only while the label is not already known to be on."""
     on: dict[str, tuple[datetime, str]] = {}
     for event in events:
         name = _name(event)
@@ -179,7 +185,7 @@ def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, 
                 on.pop(label, None)
             for label in _labels(data.get("added")):
                 if is_blocking_label(label):
-                    on.setdefault(label, (at, name))
+                    on[label] = (at, name)
         elif name in _NEEDS_HUMAN_EVENTS:
             on.setdefault(NEEDS_HUMAN_LABEL, (at, name))
     return on

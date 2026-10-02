@@ -63,8 +63,8 @@ def test_the_onset_is_the_last_put_on_that_was_never_taken_off() -> None:
         _event(262, "issue.labels_changed", t0, added=["needs-human"], removed=[]),
         _event(262, "issue.labels_changed", t0 + timedelta(hours=1), added=[], removed=["needs-human"]),
         _event(262, "issue.needs_human", t0 + timedelta(hours=5), question="Split it?"),
-        # Re-recorded while on: it never came off, so the onset stays.
-        _event(262, "issue.labels_changed", t0 + timedelta(hours=6), added=["needs-human"], removed=[]),
+        # The request's own label change, just after it: still the same onset.
+        _event(262, "issue.labels_changed", t0 + timedelta(hours=5, seconds=3), added=[], removed=[]),
         _event(262, "issue.labels_changed", t0 + timedelta(hours=7), added=["in-progress"], removed=[]),
     ]
 
@@ -77,10 +77,30 @@ def test_the_onset_is_the_last_put_on_that_was_never_taken_off() -> None:
     assert item.blocking_labels[0].since_event == "issue.needs_human"
     # Label changes that touch no blocking label are not block events.
     assert [e.event for e in item.block_events] == [
-        "issue.labels_changed", "issue.labels_changed", "issue.needs_human", "issue.labels_changed",
+        "issue.labels_changed", "issue.labels_changed", "issue.needs_human",
     ]
     assert "question: Split it?" in item.block_events[2].detail
     assert item.timeline_coverage.from_ == t0
+
+
+def test_a_recorded_add_is_a_fresh_onset_even_with_no_recorded_removal() -> None:
+    """porchpin #364: needs-human added 09-23, taken off by hand on GitHub (no
+    timeline record), added again by the engine 10-02. The engine adds only
+    an absent label, so the block began on 10-02, not 09-23."""
+    t0 = CUTOFF - timedelta(days=9)
+    readded = CUTOFF - timedelta(hours=4)
+    events = [
+        _event(262, "issue.labels_changed", t0, added=["needs-human"], removed=[]),
+        _event(262, "issue.labels_changed", readded, added=["needs-human"], removed=[]),
+        # A later request while it is on does not move it.
+        _event(262, "issue.needs_human", readded + timedelta(minutes=1), question="q"),
+    ]
+
+    staged = blocked_items_input(
+        ISSUES, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert staged.items[0].blocked_since == readded
 
 
 def test_the_engines_blocked_lane_decides_and_the_tech_leads_own_artefacts_are_not_items() -> None:
