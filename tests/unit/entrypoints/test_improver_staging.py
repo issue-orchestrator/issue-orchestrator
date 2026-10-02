@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass, field
@@ -36,9 +37,11 @@ from issue_orchestrator.entrypoints.improver_staging import (
 )
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.engine_start_record import write_engine_start
+from issue_orchestrator.infra.logging_config import ROTATING_LOG_DATEFMT, ROTATING_LOG_FORMAT
 from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
 from issue_orchestrator.infra.tech_lead_run_record_store import SqliteTechLeadRunRecordStore
 from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
 from issue_orchestrator.testing.exam.cases import EXAM_CASE_IDS
 
@@ -56,6 +59,7 @@ class FakeHost:
     )
     error: Exception | None = None
     calls: list[str] = field(default_factory=list)
+    prs: list[PRInfo] = field(default_factory=list)
 
     def list_open_issue_labels_complete(self) -> list[OpenIssueLabels]:
         self.calls.append("issues")
@@ -63,9 +67,9 @@ class FakeHost:
             raise self.error
         return self.issues
 
-    def list_open_prs_complete(self) -> list:
+    def list_open_prs_complete(self) -> list[PRInfo]:
         self.calls.append("prs")
-        return []
+        return self.prs
 
 
 @dataclass
@@ -508,6 +512,49 @@ def test_every_blocked_item_is_staged_with_its_cause_onset_and_tech_lead_record(
     assert _fingerprint(state) == before
     evidence = load_staged_evidence(staged.data_dir)
     assert evidence.blocked_items is not None and len(evidence.blocked_items.items) == 3
+
+
+def test_a_blocked_items_pr_whose_review_is_dropped_every_scan_is_its_stalled_work(
+    state: Path, tmp_path: Path
+) -> None:
+    """porchpin #364 / PR #379 (2026-10-02): published work queued for review
+    and dropped on every scan while the issue is blocked, logged at INFO. The
+    item names its PR, the PR's pipeline, and the refused work."""
+    audited = _blocked_engine(state)
+    audited.prs = [PRInfo(number=379, title="Provenance", url="u", branch="364-provenance", body="Closes #364",
+                          state="open", labels=["needs-code-review"], draft=False)]
+    queued = NOW - timedelta(minutes=40)
+    _timeline(state, 364, "pr.view_changed", queued, {"pr_number": 379, "added": ["needs-code-review"], "removed": []})
+    _timeline(state, 364, "review.queued", queued + timedelta(seconds=1), {"pr_number": 379})
+    _timeline(state, 364, "review.skipped", queued + timedelta(seconds=30),
+              {"pr_number": 379, "reason": "stale_pending_review:issue_blocked"})
+    formatter = logging.Formatter(ROTATING_LOG_FORMAT, datefmt=ROTATING_LOG_DATEFMT)
+
+    def line(at: datetime) -> str:
+        record = logging.LogRecord(
+            "issue_orchestrator.control.pr_scanner", logging.INFO, __file__, 1,
+            "[SCANNER] Skipping stale review PR: pr=379 issue=364 reason=issue_blocked", None, None,
+        )
+        record.created, record.msecs = at.timestamp(), 0
+        return formatter.format(record)
+
+    log = state / "logs" / "orchestrator.log"
+    log.parent.mkdir()
+    log.write_text("".join(line(queued + timedelta(minutes=2 + 3 * m)) + "\n" for m in range(8)), encoding="utf-8")
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    item = {i["number"]: i for i in json.loads((staged.data_dir / "blocked-items.json").read_text())["items"]}[364]
+    assert [(p["number"], p["draft"]) for p in item["open_prs"]] == [(379, False)]
+    assert [e["event"] for e in item["open_prs"][0]["pipeline_events"]] == [
+        "pr.view_changed", "review.queued", "review.skipped",
+    ]
+    assert [(w["kind"], w["subject"], w["signature"]) for w in item["stalled_work"]] == [
+        ("refused_work", "PR #379", "issue_blocked"),
+    ]
+    assert ("refused_work", "PR #379", "issue_blocked") in {a.key for a in staged.audit.anomalies}
+    # The audit's PR listing served the blocked items: one GitHub walk.
+    assert audited.calls.count("prs") == 1
 
 
 def test_blocked_items_are_missing_when_the_audited_issues_were_not_read(state: Path, tmp_path: Path) -> None:

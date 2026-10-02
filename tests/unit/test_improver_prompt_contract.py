@@ -40,3 +40,14 @@ def test_the_prompt_makes_every_blocked_item_accounted_for_and_a_diagnosis_a_fin
     assert "**regardless of origin**" in text
     assert "**A diagnosis is not a fix**" in text
     assert '"blocked_items": [' in text
+
+
+def test_the_prompt_asks_what_the_block_holds_up() -> None:
+    """IM2: the blind run graded #364's block and never saw its PR's review
+    dropped on every scan. The prompt points at the item's PRs and stalled
+    work, and makes keying it a field rule."""
+    text = " ".join(PROMPT.read_text(encoding="utf-8").split())
+    assert "**Look downstream of the block.**" in text
+    assert "**`open_prs`**" in text and "**`stalled_work`**" in text
+    assert "**Work downstream of a block is examined.**" in text
+    assert "anomaly kind `refused_work`" in text

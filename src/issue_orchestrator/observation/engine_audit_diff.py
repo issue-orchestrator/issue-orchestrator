@@ -72,7 +72,9 @@ def diff_reports(previous: EngineAuditReport, current: EngineAuditReport) -> Aud
 #: Anomalies found by counting repeats inside the audit window. They can
 #: vanish because the repeats aged out of the window, not because anything
 #: was fixed.
-_WINDOWED = frozenset({AnomalyKind.NO_PROGRESS_LOG, AnomalyKind.NO_PROGRESS_TIMELINE})
+_WINDOWED = frozenset(
+    {AnomalyKind.NO_PROGRESS_LOG, AnomalyKind.NO_PROGRESS_TIMELINE, AnomalyKind.REFUSED_WORK}
+)
 
 
 def _absence_proves(anomaly: Anomaly, previous: EngineAuditReport, current: EngineAuditReport) -> bool:

@@ -67,6 +67,7 @@ def _report(
             window_end=at,
             log=None,
             log_signatures=(),
+            refused_work=(),
             timeline_repeats=(),
             state_changes=state_changes,
         ),
@@ -171,3 +172,16 @@ def test_a_malformed_previous_report_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="anomalies"):
         load_report(path)
+
+
+REFUSED = _anomaly(AnomalyKind.REFUSED_WORK, "#410", AuditSource.LOG, AuditSource.TIMELINE, count=9)
+
+
+def test_refused_work_that_only_aged_out_is_unobserved_and_a_state_change_resolves_it() -> None:
+    """A refusal is counted in the window too: gone without its subject moving
+    proves nothing."""
+    aged_out = diff_reports(_report(REFUSED), _report(at=LATER))
+    moved = diff_reports(_report(REFUSED), _report(at=LATER, state_changes=CHANGED_410))
+
+    assert (aged_out.resolved, aged_out.unobserved) == ((), (REFUSED,))
+    assert (moved.resolved, moved.unobserved) == ((REFUSED,), ())

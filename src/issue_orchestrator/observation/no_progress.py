@@ -55,11 +55,16 @@ FAILURE_EVENTS: frozenset[str] = frozenset(
     }
 )
 
-#: Skip reasons that mean WAITING, not failing: capacity and an operator
-#: pause (``control/workflows/review_workflow.py``,
-#: ``retrospective_review_workflow.py``). A skip for any other reason (e.g.
-#: ``stale_pending_review:issue_blocked``) is a refusal and counts.
-_WAITING_SKIP_REASONS: frozenset[str] = frozenset(
+#: Reasons a skip means WAITING, not refusing: capacity, an operator pause
+#: (``control/workflows/review_workflow.py``,
+#: ``retrospective_review_workflow.py``), and the planner's own queue waits
+#: (``control/planner.py``, ``plan_launches.py``: a dependency still open, the
+#: issue's OWN blocking label, work already under way or launching). A skip
+#: for any other reason (e.g. ``stale_pending_review:issue_blocked``: a PR's
+#: review dropped because of its issue's block) is a refusal and counts, and
+#: so is a reason this set does not know: an unknown reason is shown, never
+#: assumed benign.
+WAITING_REASONS: frozenset[str] = frozenset(
     {
         "no_capacity",
         "orchestrator_paused",
@@ -68,6 +73,19 @@ _WAITING_SKIP_REASONS: frozenset[str] = frozenset(
         # A queued review waiting for the recovery owner to release its issue
         # (#7455); the owner routes and releases it, so it is a wait.
         REVIEW_HELD_BY_RECOVERY,
+        # The planner's queue decisions: each waits on a change that is
+        # someone else's to make (a predecessor, the subject's own block, a
+        # running session, a launch already planned).
+        "blocked_by_dependency",
+        "dependency_blocked",
+        "blocked_label",
+        "active_session",
+        "pending_review",
+        "pr_pending",
+        "launching_this_tick",
+        "available",
+        "failed_this_cycle",
+        "global_run_awaiting_drain",
     }
 )
 _SKIP_EVENTS = frozenset({"review.skipped", "rework.skipped"})
@@ -139,21 +157,79 @@ def subject_of_text(text: str, *, repo: str | None = None) -> str:
     for any other repository. The first reference wins: a message is about
     the thing it names first ("Failed to settle ... for issue #4; see #9").
     """
+    subjects = subjects_of_text(text, repo=repo)
+    return subjects[0] if subjects else ENGINE_SUBJECT
+
+
+# How the engine logs a decision NOT to do a subject's planned work: a skip,
+# drop, refusal or rejection verb, and the decision's ``reason=`` token
+# ("[SCANNER] Skipping stale review PR: pr=379 issue=364 reason=issue_blocked",
+# "[launch] Dropping stale pending review: ... reason=issue_blocked",
+# "trace-tech-lead-decision issue=200 ... decision=skip reason=...").
+_REFUSAL_VERB = re.compile(
+    r"\b(?:Skipping|Skipped|Dropping|Dropped|Refusing|[Rr]efused|Rejecting|decision=skip)\b"
+)
+_REASON = re.compile(r"\breason=([A-Za-z0-9_.:-]+)")
+_REFERENCES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_PR_REFERENCE, "PR #"),
+    (_ISSUE_REFERENCE, "#"),
+    (_BARE_REFERENCE, "#"),
+)
+
+
+@dataclass(frozen=True)
+class WorkRefusal:
+    """One logged decision not to do a subject's planned work, for a reason
+    that is not a wait (:data:`WAITING_REASONS`)."""
+
+    #: The subject whose work was refused: the first one the message names.
+    subject: str
+    #: Every other subject it names (the issue a refused PR review belongs to).
+    related: tuple[str, ...]
+    reason: str
+
+
+def subjects_of_text(text: str, *, repo: str | None = None) -> tuple[str, ...]:
+    """Every subject ``text`` names, first-named first, in the subject spelling
+    of :func:`subject_of_text` (whose answer is the first of these, or
+    :data:`ENGINE_SUBJECT` when there is none)."""
     found = [
-        (match.start(), f"{prefix}{match.group(1)}")
-        for pattern, prefix in (
-            (_PR_REFERENCE, "PR #"),
-            (_ISSUE_REFERENCE, "#"),
-            (_BARE_REFERENCE, "#"),
-        )
-        for match in [pattern.search(text)]
-        if match is not None
+        (match.start(), match.end(), f"{prefix}{match.group(1)}")
+        for pattern, prefix in _REFERENCES
+        for match in pattern.finditer(text)
     ]
-    if (qualified := _QUALIFIED_REFERENCE.search(text)) is not None:
+    for qualified in _QUALIFIED_REFERENCE.finditer(text):
         owner_repo, number = qualified.group(1), qualified.group(2)
         own = repo is not None and owner_repo.casefold() == repo.casefold()
-        found.append((qualified.start(), f"#{number}" if own else f"{owner_repo}#{number}"))
-    return min(found)[1] if found else ENGINE_SUBJECT
+        found.append((qualified.start(), qualified.end(), f"#{number}" if own else f"{owner_repo}#{number}"))
+    subjects: list[str] = []
+    end = -1
+    # Longest first at one position; a reference inside an earlier one ("#12"
+    # of "PR #12") is part of it, not a second subject.
+    for start, stop, subject in sorted(found, key=lambda f: (f[0], -f[1])):
+        if start >= end:
+            subjects.append(subject)
+            end = stop
+    return tuple(dict.fromkeys(subjects))
+
+
+def refusal_of_text(text: str, *, repo: str | None = None) -> WorkRefusal | None:
+    """The work refusal ``text`` logs, or None.
+
+    A refusal is a skip/drop/refuse/reject decision that gives a ``reason=``
+    which is not a wait, about a subject the message names. Its level does
+    not matter: the engine logs most of these at INFO, because one of them is
+    routine; it is their REPEATING for a subject that nothing moves that is
+    the livelock (a PR's review queued and dropped on every scan).
+    """
+    if _REFUSAL_VERB.search(text) is None or (reason := _REASON.search(text)) is None:
+        return None
+    if reason.group(1) in WAITING_REASONS:
+        return None
+    subjects = subjects_of_text(text, repo=repo)
+    if not subjects:
+        return None
+    return WorkRefusal(subject=subjects[0], related=subjects[1:], reason=reason.group(1))
 
 
 @dataclass(frozen=True)
@@ -280,7 +356,7 @@ def _runs(
             for key in [key for key in running if key[1] == subject and key[2].startswith(step)]:
                 del running[key]
         elif name in FAILURE_EVENTS:
-            if name in _SKIP_EVENTS and _payload(event).get("reason") in _WAITING_SKIP_REASONS:
+            if name in _SKIP_EVENTS and _payload(event).get("reason") in WAITING_REASONS:
                 continue
             key = (name, subject, _detail(event))
             running[key] += 1

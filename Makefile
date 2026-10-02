@@ -44,7 +44,7 @@ help:
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
 	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
-	@echo "  test-improver-exam  Run the live improver exam (IM1: blocked items the tech lead ignored) on a real model"
+	@echo "  test-improver-exam  Run the live improver exam (IM1: blocked items ignored; IM2: a review the block vetoes) on a real model"
 	@echo "  tech-lead-improver  Run the tech-lead improver once over every running engine (#7490, #7567)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
@@ -746,9 +746,10 @@ EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-te
 test-tech-lead-exam: sync-deps
 	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
-# Live improver exam (#7490 step 4): the real improver model on a planted
-# improver-data fixture (case IM1, blocked items the tech lead ignored),
-# graded on its accepted findings. Its validator-level half runs in the gate.
+# Live improver exam (#7490 step 4): the real improver model on each planted
+# improver-data fixture (case IM1, blocked items the tech lead ignored; IM2,
+# the review a block vetoes), graded on its accepted findings. Their
+# validator-level halves run in the gate.
 IMPROVER_EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-improver-exam
 test-improver-exam: sync-deps
 	E2E_IMPROVER_EXAM=1 E2E_IMPROVER_EXAM_OUT=$(IMPROVER_EXAM_OUT) E2E_IMPROVER_EXAM_MODEL=$(IMPROVER_MODEL) $(PYTEST) tests/unit/testing/exam/test_improver_exam_live.py -m improver_exam -v -s --tb=short $(PYTEST_TIMINGS)

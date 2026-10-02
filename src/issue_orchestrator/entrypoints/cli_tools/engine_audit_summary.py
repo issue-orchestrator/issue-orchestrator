@@ -139,6 +139,12 @@ def _no_progress(np: NoProgressSection) -> list[str]:
             f" ({s.count} in window) {s.subject} {s.level} {s.signature}"
             for s in sorted(np.log_signatures, key=lambda s: -(s.since_state_change or s.count))[:TOP]
         ),
+        *(
+            f"  refused: {'?' if r.since_state_change is None else r.since_state_change}x"
+            f" ({r.count} in window) {r.subject} [{r.reason}]"
+            + (f" names {', '.join(r.related)}" if r.related else "")
+            for r in sorted(np.refused_work, key=lambda r: -(r.since_state_change or r.count))[:TOP]
+        ),
         *(f"  timeline: {r.count}x {r.subject} {r.event} [{r.detail}]" for r in np.timeline_repeats),
     ]
 

@@ -22,7 +22,7 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 
 | File | What it is |
 |------|------------|
-| `audit.json` | `io audit` of the engine now: validated work, liveness parks/escalations, charter decisions by role × action kind × effect, claims, label counts, draft/ready PRs, GitHub fetch cost, no-progress repeats |
+| `audit.json` | `io audit` of the engine now: validated work, liveness parks/escalations, charter decisions by role × action kind × effect, claims, label counts, draft/ready PRs, GitHub fetch cost, no-progress repeats, and **refused work** (`no_progress.refused_work`, anomaly kind `refused_work`): a subject whose planned work the engine decided again and again not to do (a PR's review found and dropped on every scan), counted at **every** log level, since the engine logs each such decision at INFO |
 | `audit-previous.json` | The previous run's audit. Diff against it |
 | `audit-diff.json` | New / resolved / persisting / unobserved anomalies between the two |
 | `engine-start.json` | When the engine last started and the commit it runs. Separate **since this start** from **history** |
@@ -31,7 +31,7 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `charter.json` | The engine's **effective** charter at the latest start: each role's `enabled`/depth/authority and the per-action authority settings, after config overrides |
 | `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies. `coverage` is the case-file ledger's; `diagnoses_coverage` is never complete (the run history is best-effort), so a diagnosis shows a look but a missing one proves nothing |
 | `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
-| `blocked-items.json` | **Every blocked item** of the audited engine: each open issue in its blocked lane (`needs-human`, `tech-lead-needs-human`, `blocked`, `blocked-*`, `blocked:*`, `recovery-pending`, `publish-failed`, a provider outage; `blocking_rule` says exactly). Per item: its labels, each blocking label's `since_at` (when the retained timeline last shows it put on; `null` if not retained) and `blocked_since`, its `needs_human_causes` (the engine's recorded reason and cause, byte for byte), its recent `block_events` (an agent's question, a block reason, label changes), every tech-lead charter `decision` about it from the **whole** ledger, and the IDs of the case files and diagnoses in `case-files.json` that name it. Each source has a coverage block |
+| `blocked-items.json` | **Every blocked item** of the audited engine: each open issue in its blocked lane (`needs-human`, `tech-lead-needs-human`, `blocked`, `blocked-*`, `blocked:*`, `recovery-pending`, `publish-failed`, a provider outage; `blocking_rule` says exactly). Per item: its labels, each blocking label's `since_at` (when the retained timeline last shows it put on; `null` if not retained) and `blocked_since`, its `needs_human_causes` (the engine's recorded reason and cause, byte for byte), its recent `block_events` (an agent's question, a block reason, label changes), every tech-lead charter `decision` about it from the **whole** ledger, the IDs of the case files and diagnoses in `case-files.json` that name it, its **`open_prs`** (each open PR of the item, with its recent `pipeline_events`: review/rework queued, skipped, started, PR label changes) and its **`stalled_work`** (every `refused_work` anomaly about the item or one of its PRs). Each source has a coverage block |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
 | `engine-source/` | The io source tree at the engine's commit (read-only) |
 | `inputs.json` | Which engine was staged (`engine_id`, `audited_repo`), what was staged, what is missing and why, and every exam case ID that already exists |
@@ -64,6 +64,14 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
    - Say **why it is blocked**: its cause, the agent's question, the parked
      action. Is it genuine human work, a decision the operator owes, or a
      defect (in io or in the tech lead's triage)?
+   - **Look downstream of the block.** Is anything the block holds up also
+     stalled? Read its `open_prs`: finished, published work whose review or
+     rework is queued and then skipped (a `review.skipped` as its latest
+     pipeline event), or that has not moved since. Every `stalled_work`
+     entry is the engine refusing the item's own work again and again: key
+     it in a finding (with the item's blocks, or in a finding of its own),
+     whatever the item's disposition. A hand-over of the block, or a grade
+     of the question behind it, does not examine the work the block vetoes.
    - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
      an applied tech-lead `escalate_to_human` about it, applied after its
      latest block began, handed the whole item to the operator: then
@@ -229,7 +237,7 @@ in `engine-source/examples/improver/findings/`.
   one of the finding's own anomalies in `audit.json`
   (`audit.json#/anomalies/<i>`) and is dated its `generated_at`. An **occurrence** cites a
   dated field of one of the finding's own anomaly records, in `audit.json` or
-  `audit-previous.json` (a log signature's `first_seen` or `last_seen`, a
+  `audit-previous.json` (a log signature's or a `refused_work` record's `first_seen` or `last_seen`, a
   parked action's `last_failed_at`, an unresolved record's `created_at`), or
   in `blocked-items.json` the `since_at` of the blocking label an
   `attention_label` anomaly names (`blocked-items.json#/items/<i>/blocking_labels/<j>/since_at`), and
@@ -298,8 +306,9 @@ in `engine-source/examples/improver/findings/`.
   also refused when a staged decision about the anomaly's issue, a case file
   or a diagnosis naming it (`#<n>`, or as its subject) falls inside the
   grading window. The only
-  onset these inputs can prove is a log signature's `first_seen` inside a log
-  read that began before it (the audit's `no_progress.log`).
+  onset these inputs can prove is a log signature's or `refused_work`
+  record's `first_seen` inside a log read that began before it (the audit's
+  `no_progress.log`).
 - `output: needs_investigation` requires `missing_evidence` and forbids
   `root_cause`, `reproduction` and `proposal`. Every other output requires
   `root_cause`, `reproduction` and `proposal`.
@@ -321,6 +330,10 @@ in `engine-source/examples/improver/findings/`.
   blocking labels and by the cutoff; with any `since_at` unknown, or no
   such decision, the item needs a finding. Only a `finding` account names `finding_id`; only an
   `awaiting_operator` account cites `evidence`.
+- **Work downstream of a block is examined.** Every `stalled_work` entry
+  of every blocked item (`kind`, `subject`, `signature`) is one of the
+  `anomaly_keys` of some finding of this file, whatever the item's
+  disposition.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous
   scorecard for exactly the cases it holds a latest one for.

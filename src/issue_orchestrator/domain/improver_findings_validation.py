@@ -19,7 +19,7 @@ Citations are checked, not trusted:
 * a *snapshot* can only show presence, and only the current audit's snapshot
   (taken at its ``generated_at``) counts;
 * an *occurrence* must be a dated record of one of the finding's own
-  anomalies (a log signature's ``first_seen``/``last_seen``, a parked
+  anomalies (a log signature's or work refusal's ``first_seen``/``last_seen``, a parked
   action's ``last_failed_at``, an unresolved record's ``created_at``) in the
   current or previous audit, and its ``at`` must be that record's time;
 * ``stall_evidence`` names a decision, case file or tech-lead run that was
@@ -118,6 +118,11 @@ class Rule(StrEnum):
     #: ``awaiting_operator`` cites a hand-over decision about the item,
     #: applied by the cutoff, after its latest current block began.
     BLOCKED_ITEM_HANDED_OVER = "blocked_item_handed_over"
+    #: Work downstream of a block that the engine keeps refusing (an item's
+    #: ``stalled_work``: its PR's review dropped on every scan) is a key of a
+    #: finding, whatever the item's disposition: a hand-over or a grade of
+    #: the block does not examine what the block holds up.
+    BLOCKED_ITEM_STALLED_WORK_EXAMINED = "blocked_item_stalled_work_examined"
 
 
 @dataclass(frozen=True)
@@ -321,6 +326,15 @@ class _Checker:
                 "accounted for more than once: " + ", ".join(f"#{n}" for n in twice),
             )
         findings = {f.id: f for f in self._findings.findings}
+        keyed = {k.key for f in self._findings.findings for k in f.anomaly_keys}
+        for number, item in sorted(items.items()):
+            unexamined = [w for w in item.stalled_work if (w.kind, w.subject, w.signature) not in keyed]
+            if unexamined:
+                yield Violation(
+                    Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, None,
+                    f"#{number}: the engine keeps refusing work downstream of its block, and no finding"
+                    " keys it: " + "; ".join(f"{w.kind} {w.subject} [{w.signature}]" for w in unexamined),
+                )
         for account in accounts:
             item = items.get(account.number)
             if item is not None:
@@ -667,6 +681,10 @@ class _Checker:
             yield Rule.REPRODUCTION_FAILS_ON_ENGINE_COMMIT, "the reproduction must fail on the engine's commit"
 
 
+#: The audit's records counted from its log read: the read's coverage is theirs.
+_LOG_RECORDS = ("/no_progress/log_signatures/", "/no_progress/refused_work/")
+
+
 class _AnomalyRecords:
     """The dated records of one finding's anomalies in the current and previous audit."""
 
@@ -705,11 +723,7 @@ class _AnomalyRecords:
                     )
 
     def _collect(self, name: str, report: EngineAuditReport, keys: set[tuple[str, str, str]]) -> None:
-        for index, s in enumerate(report.no_progress.log_signatures):
-            if (AnomalyKind.NO_PROGRESS_LOG.value, s.subject, f"{s.level} {s.logger}: {s.signature}") in keys:
-                base = f"/no_progress/log_signatures/{index}"
-                self._add(name, base, "first_seen", s.first_seen, onset=True)
-                self._add(name, base, "last_seen", s.last_seen, onset=False)
+        self._collect_log_counts(name, report, keys)
         if report.action_liveness is not None:
             for index, p in enumerate(report.action_liveness.parked):
                 if (AnomalyKind.PARKED_ACTION.value, p.subject, f"{p.action}:{p.fingerprint}") in keys:
@@ -718,6 +732,27 @@ class _AnomalyRecords:
             for index, w in enumerate(report.validated_work.unresolved):
                 if (AnomalyKind.STALE_UNRESOLVED_WORK.value, f"#{w.issue_number}", w.record_id) in keys:
                     self._add(name, f"/validated_work/unresolved/{index}", "created_at", w.created_at, onset=True)
+
+    def _collect_log_counts(self, name: str, report: EngineAuditReport, keys: set[tuple[str, str, str]]) -> None:
+        """A repeat counted from the log (a log signature, a work refusal):
+        its ``first_seen`` is an onset, its ``last_seen`` an occurrence."""
+        counted = (
+            *(
+                (f"/no_progress/log_signatures/{i}",
+                 (AnomalyKind.NO_PROGRESS_LOG.value, s.subject, f"{s.level} {s.logger}: {s.signature}"),
+                 s.first_seen, s.last_seen)
+                for i, s in enumerate(report.no_progress.log_signatures)
+            ),
+            *(
+                (f"/no_progress/refused_work/{i}", (AnomalyKind.REFUSED_WORK.value, r.subject, r.reason),
+                 r.first_seen, r.last_seen)
+                for i, r in enumerate(report.no_progress.refused_work)
+            ),
+        )
+        for base, key, first, last in counted:
+            if key in keys:
+                self._add(name, base, "first_seen", first, onset=True)
+                self._add(name, base, "last_seen", last, onset=False)
 
     def _add(self, name: str, record: str, field: str, stamp: str | datetime, *, onset: bool) -> None:
         self._records.setdefault((name, record), {})[field] = (
@@ -755,14 +790,14 @@ class _AnomalyRecords:
 
     def proves_onset(self, finding: Finding, onset: datetime) -> bool:
         """Whether ``onset`` is a proven first occurrence: a cited log
-        signature's ``first_seen`` whose log read began BEFORE it, so the
+        signature's or work refusal's ``first_seen`` whose log read began BEFORE it, so the
         read shows no earlier occurrence. No other source here says where its
         coverage begins, so no other onset is proven."""
         for o in finding.observed:
             if o.kind != "occurrence" or o.at != onset or not self.is_onset(o):
                 continue
             report = self._evidence.audit if o.file == AUDIT_FILE else self._evidence.previous_audit
-            if report is None or not o.ref.startswith("/no_progress/log_signatures/"):
+            if report is None or not o.ref.startswith(_LOG_RECORDS):
                 continue
             log = report.no_progress.log
             if log is None:

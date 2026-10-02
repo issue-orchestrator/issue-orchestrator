@@ -8,6 +8,13 @@ One pass over the log entries in the audit window feeds two tallies:
   subject last changed state on its timeline. A shape that keeps repeating
   for a subject whose state never moves is the engine getting nowhere; the
   engine's own board-wide failures (no subject) never have a state change.
+* **work refusals**: every decision not to do a subject's planned work
+  (:func:`~.no_progress.refusal_of_text`), at ANY level, by subject and
+  reason, counted in the window and since the subject or a subject it names
+  last changed state. The engine logs one refusal at INFO because one is
+  routine (a PR's review dropped while its issue is blocked); a refusal
+  repeating on every scan with nothing moving is the livelock, and an
+  ERROR/WARNING-only census never sees it (porchpin PR #379, 2026-10-02).
 * **GitHub fetch cost**: the ``[FETCH-COST]`` line each queue refresh logs,
   by mode, and the single-issue GETs each loop iteration made (httpx request
   lines between two ``[LOOP] Iteration`` lines), so an iteration that reads
@@ -30,9 +37,10 @@ from ..contracts.engine_audit import (
     FetchModeCost,
     IssueReadCycle,
     LogSignature,
+    RefusedWork,
 )
 from ..infra.engine_log_reader import EngineLogEntry
-from .no_progress import normalize_signature, subject_of_text
+from .no_progress import WorkRefusal, normalize_signature, refusal_of_text, subject_of_text
 
 #: Levels whose repeats the census counts.
 CENSUS_LEVELS = frozenset({"WARNING", "ERROR", "CRITICAL"})
@@ -58,6 +66,17 @@ class _SignatureTally:
 
 
 @dataclass
+class _RefusalTally:
+    related: dict[str, None] = field(default_factory=dict)
+    loggers: dict[str, None] = field(default_factory=dict)
+    example: str = ""
+    count: int = 0
+    since_state_change: int | None = 0
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+
+
+@dataclass
 class _Cycle:
     started_at: datetime
     gets: list[int] = field(default_factory=list)
@@ -66,6 +85,7 @@ class _Cycle:
 @dataclass(frozen=True)
 class LogCensus:
     signatures: tuple[LogSignature, ...]
+    refusals: tuple[RefusedWork, ...]
     fetch_cost: FetchCostSection
     #: The first entry read at all, before the window or in it.
     first_read_at: datetime | None
@@ -110,6 +130,7 @@ def census_log(
     change" can be claimed and every such count is None.
     """
     tallies: dict[tuple[str, str, str, str], _SignatureTally] = {}
+    refusals: dict[tuple[str, str], _RefusalTally] = {}
     fetches: dict[str, list[tuple[int, int, int, datetime]]] = {}
     cycles: list[_Cycle] = []
     issue_gets = 0
@@ -130,6 +151,8 @@ def census_log(
         last = entry.at
         if entry.level in CENSUS_LEVELS:
             _tally(tallies, entry, last_state_change, repo)
+        if (refusal := refusal_of_text(entry.message, repo=repo)) is not None:
+            _tally_refusal(refusals, refusal, entry, last_state_change)
         if (cost := _FETCH_COST.search(entry.message)) is not None:
             fetches.setdefault(cost["mode"], []).append(
                 (int(cost["calls"]), int(cost["errors"]), int(cost["duration"]), entry.at)
@@ -158,6 +181,22 @@ def census_log(
                 tallies.items(), key=lambda kv: (-kv[1].count, kv[0])
             )
         ),
+        refusals=tuple(
+            RefusedWork(
+                subject=subject,
+                related=tuple(tally.related),
+                reason=reason,
+                loggers=tuple(tally.loggers),
+                example=tally.example,
+                count=tally.count,
+                since_state_change=tally.since_state_change,
+                first_seen=_iso(tally.first_seen),
+                last_seen=_iso(tally.last_seen),
+            )
+            for (subject, reason), tally in sorted(
+                refusals.items(), key=lambda kv: (-kv[1].count, kv[0])
+            )
+        ),
         fetch_cost=_fetch_cost(fetches, cycles, issue_gets),
         first_read_at=first_read,
         uncertain_entries=uncertain,
@@ -184,6 +223,36 @@ def _tally(
     if last_state_change is not None and tally.since_state_change is not None:
         changed = last_state_change.get(subject)
         if changed is None or entry.at > changed:
+            tally.since_state_change += 1
+    tally.first_seen = tally.first_seen or entry.at
+    tally.last_seen = entry.at
+
+
+def _tally_refusal(
+    refusals: dict[tuple[str, str], _RefusalTally],
+    refusal: WorkRefusal,
+    entry: EngineLogEntry,
+    last_state_change: Mapping[str, datetime] | None,
+) -> None:
+    tally = refusals.setdefault(
+        (refusal.subject, refusal.reason),
+        _RefusalTally(
+            example=normalize_signature(entry.message),
+            since_state_change=None if last_state_change is None else 0,
+        ),
+    )
+    tally.related.update(dict.fromkeys(refusal.related))
+    tally.loggers[entry.logger] = None
+    tally.count += 1
+    if last_state_change is not None and tally.since_state_change is not None:
+        # A change of the refused subject OR of one the refusal names (the
+        # issue whose block refused its PR's review) can end the refusals.
+        changes = [
+            changed
+            for subject in (refusal.subject, *refusal.related)
+            if (changed := last_state_change.get(subject)) is not None
+        ]
+        if not changes or entry.at > max(changes):
             tally.since_state_change += 1
     tally.first_seen = tally.first_seen or entry.at
     tally.last_seen = entry.at

@@ -62,12 +62,14 @@ def issues_with_open_prs(prs: Iterable[PRInfo], *, repo_slug: str) -> frozenset[
     issue's PR, and treating it as one would keep an issue gated behind
     someone else's work.
     """
-    issues: set[int] = set()
-    for pr in prs:
-        from_branch = extract_issue_number_from_branch(pr.branch) if pr.branch else None
-        issues.update(number for number in (from_branch,) if number is not None)
-        issues.update(linked_issue_numbers(pr.body or "", repo_slug=repo_slug))
-    return frozenset(issues)
+    return frozenset(number for pr in prs for number in issues_of_pr(pr, repo_slug=repo_slug))
+
+
+def issues_of_pr(pr: PRInfo, *, repo_slug: str) -> frozenset[int]:
+    """The issues one orchestrator PR belongs to (see :func:`issues_with_open_prs`)."""
+    from_branch = extract_issue_number_from_branch(pr.branch) if pr.branch else None
+    linked = linked_issue_numbers(pr.body or "", repo_slug=repo_slug)
+    return linked | ({from_branch} if from_branch is not None else frozenset())
 
 
 def pr_fields_reference_issue(

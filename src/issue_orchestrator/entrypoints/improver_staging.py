@@ -372,6 +372,10 @@ def _stage_blocked_items(
     )
     staged = blocked_items_input(
         issues,
+        # The audit's own read of the open PRs (``audit.github`` is set, so it
+        # read them with the issues): no second GitHub walk.
+        prs=audited.prs(),
+        audit=audit,
         lane=lane,
         causes=causes,
         ledger=tech_lead.ledger,
@@ -451,13 +455,15 @@ def _exam_entry(series: ExamSeries, exam_dir: Path | None, unreadable: tuple[str
 
 
 class _OnceListing:
-    """One read of the audited repository's open issues, shared by the audit
-    and ``open-issues.json`` when both name the same repository: one GitHub
-    walk, and both files describe the same moment."""
+    """One read of the audited repository's open issues and PRs, shared by
+    the audit, ``blocked-items.json`` and (when both name the same
+    repository) ``open-issues.json``: one GitHub walk each, and every file
+    describes the same moment."""
 
     def __init__(self, host: OpenWorkHost | Unavailable) -> None:
         self._host = host
         self._issues: Sequence[OpenIssueLabels] | None = None
+        self._prs: Sequence[PRInfo] | None = None
         self._error: BaseException | None = None
 
     def as_host(self) -> OpenWorkHost | Unavailable:
@@ -484,9 +490,12 @@ class _OnceListing:
         return self._issues
 
     def prs(self) -> Sequence[PRInfo]:
+        """The open PRs, read once: the audit's read, which blocked-items.json reuses."""
         if isinstance(self._host, Unavailable):
             raise RuntimeError("an unavailable host has no pull requests")
-        return self._host.list_open_prs_complete()
+        if self._prs is None:
+            self._prs = self._host.list_open_prs_complete()
+        return self._prs
 
 
 class _SharedHost:
