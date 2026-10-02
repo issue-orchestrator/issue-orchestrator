@@ -192,10 +192,10 @@ class TechLeadProposalCreation:
         self.authority.discard_pending_proposal(pending.key)
         # The record that filed it learns the issue it now waits on (#7593):
         # "awaiting approval" is a claim only a filed proposal can make.
-        link_or_log(
-            lambda: link_filed_proposal(self.authority, pending.op, number),
-            f"proposal #{number}'s filing",
-        )
+        def link() -> None:
+            link_filed_proposal(self.authority, pending.op, number)
+
+        link_or_log(link, f"proposal #{number}'s filing")
 
     def recover(
         self,
