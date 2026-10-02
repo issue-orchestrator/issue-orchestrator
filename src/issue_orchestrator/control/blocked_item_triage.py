@@ -134,8 +134,8 @@ def latest_agent_question(
     """The last question an agent put to a human about the item (best-effort).
 
     The agenda tolerates an unreadable timeline; a resolution's human-only
-    screen reads the same records through :func:`agent_question_in` and fails
-    instead (#7658).
+    screen reads EVERY question of the whole timeline through
+    :func:`agent_questions_in` and fails instead (#7658).
     """
     try:
         records = timeline(issue_number, _TIMELINE_RECORDS_PER_ITEM)
@@ -148,17 +148,20 @@ def latest_agent_question(
     return agent_question_in(records)
 
 
-#: How many timeline records are read to find an item's latest agent question.
-AGENT_QUESTION_RECORDS = _TIMELINE_RECORDS_PER_ITEM
+def agent_questions_in(records: Sequence["TimelineRecord"]) -> tuple[str, ...]:
+    """Every agent question among *records*, oldest first."""
+    found = (
+        record.data.get("question")
+        for record in records
+        if record.event == EventName.ISSUE_NEEDS_HUMAN.value
+    )
+    return tuple(question.strip() for question in found if isinstance(question, str) and question.strip())
 
 
 def agent_question_in(records: Sequence["TimelineRecord"]) -> str | None:
     """The latest agent question among *records* (oldest first), else None."""
-    for record in reversed(tuple(records)):
-        question = record.data.get("question") if record.event == EventName.ISSUE_NEEDS_HUMAN.value else None
-        if isinstance(question, str) and question.strip():
-            return question.strip()
-    return None
+    questions = agent_questions_in(records)
+    return questions[-1] if questions else None
 
 
 @dataclass(frozen=True)

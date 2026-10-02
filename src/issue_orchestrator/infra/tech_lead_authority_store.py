@@ -329,6 +329,30 @@ class SqliteTechLeadAuthorityStore:
                 (proposal_issue_number, state.value, datetime.now(timezone.utc).isoformat()),
             )
 
+    def begin_block_resolution(self, *, decision_id: str) -> None:
+        self._set_block_resolution(decision_id, DecisionRetryState.BEGUN)
+
+    def commit_block_resolution(self, *, decision_id: str) -> None:
+        self._set_block_resolution(decision_id, DecisionRetryState.COMMITTED)
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None:
+        with self._transaction() as tx:
+            tx.execute("DELETE FROM tech_lead_block_resolutions WHERE decision_id = ?", (decision_id,))
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
+        row = self._get_connection().execute(
+            "SELECT state FROM tech_lead_block_resolutions WHERE decision_id = ?", (decision_id,),
+        ).fetchone()
+        return None if row is None else DecisionRetryState(str(row[0]))
+
+    def _set_block_resolution(self, decision_id: str, state: DecisionRetryState) -> None:
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT OR REPLACE INTO tech_lead_block_resolutions"
+                " (decision_id, state, recorded_at) VALUES (?, ?, ?)",
+                (decision_id, state.value, datetime.now(timezone.utc).isoformat()),
+            )
+
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""
         with self._transaction() as tx:

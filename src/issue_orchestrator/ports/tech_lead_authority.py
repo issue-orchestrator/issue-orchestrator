@@ -179,6 +179,17 @@ class TechLeadAuthorityStore(Protocol):
 
     def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None: ...
 
+    # -- A resolution's discharge, write-ahead (#7658) ---------------------
+    # See ports/block_resolution_discharges.py; keyed by the decision.
+
+    def begin_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def commit_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None: ...
+
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
         ...
@@ -551,6 +562,7 @@ class InMemoryTechLeadAuthorityStore:
         self._rows: dict[tuple[str, str], "TechLeadLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTechLeadOp"] = {}
         self._decision_retries: dict[int, DecisionRetryState] = {}
+        self._block_resolutions: dict[str, DecisionRetryState] = {}
         self._pending_proposals: dict[str, PendingTechLeadProposal] = {}
         self._rework_receipts: dict[str, ReworkReceipt] = {}
         self._patterns: dict[str, int] = {}
@@ -655,6 +667,18 @@ class InMemoryTechLeadAuthorityStore:
 
     def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None:
         return self._decision_retries.get(proposal_issue_number)
+
+    def begin_block_resolution(self, *, decision_id: str) -> None:
+        self._block_resolutions[decision_id] = DecisionRetryState.BEGUN
+
+    def commit_block_resolution(self, *, decision_id: str) -> None:
+        self._block_resolutions[decision_id] = DecisionRetryState.COMMITTED
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None:
+        self._block_resolutions.pop(decision_id, None)
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
+        return self._block_resolutions.get(decision_id)
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))

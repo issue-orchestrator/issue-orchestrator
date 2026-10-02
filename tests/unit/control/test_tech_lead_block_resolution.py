@@ -55,6 +55,7 @@ from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.event_sink import TraceEvent
+from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 
 ITEM = 262
 OBSERVED = "2026-10-02T06:00:00+00:00"
@@ -155,6 +156,7 @@ class World:
             frozenset, self.store,
         )
         self.applier = Applier(self.github)
+        self.discharges = InMemoryTechLeadAuthorityStore()
 
     def blocked_by(self, number: int, *causes: NeedsHumanCause, labels: tuple[str, ...] = (AGENT,)) -> None:
         self.github.labels.setdefault(number, set()).update(labels)
@@ -174,7 +176,7 @@ class World:
             block=self.block,
             read_issue=self.github.issue,
             read_comment_bodies=lambda number: list(self.github.comments.get(number, [])),
-            agent_question=lambda number: self.question,
+            agent_questions=lambda number: (self.question,) if self.question else (),
             runtime_activity=lambda number: self.activity,
             claims_on_issue=lambda number: (),
             sessions_not_before=lambda number, instant: tuple(
@@ -187,6 +189,7 @@ class World:
             apply_action=self.applier.apply,
             require_authority=lambda action, number: None,
             requeue=requeue,
+            discharges=self.discharges,
         )
 
 
@@ -389,11 +392,13 @@ def test_a_block_put_back_after_a_resolve_is_never_resolved_again(tmp_path: Path
     assert "needs-human" in world.github.labels[ITEM]
 
 
-def test_a_replay_of_the_same_decision_finishes_without_its_discharged_causes(tmp_path: Path) -> None:
+def test_a_replay_after_the_discharge_committed_only_finishes(tmp_path: Path) -> None:
+    """The requeue failed after the discharge committed; the replay finishes it."""
     world = World(tmp_path)
     world.blocked_by(ITEM, _AGENT)
-    world.github.comments[ITEM] = [cause_marker(_AGENT, "run-1/A1")]  # posted, then the engine stopped
+    world.github.comments[ITEM] = [cause_marker(_AGENT, "run-1/A1")]
     assert world.block.resolve(ITEM, frozenset({_AGENT}), "earlier attempt") is BlockOutcome.CLEARED
+    world.discharges.commit_block_resolution(decision_id="run-1/A1")
 
     replay = world.executor().apply(_action(_resolution()))
 
@@ -406,6 +411,7 @@ def test_a_replay_never_clears_a_label_the_operator_put_back(tmp_path: Path) -> 
     world.blocked_by(ITEM, _AGENT)
     world.github.comments[ITEM] = [cause_marker(_AGENT, "run-1/A1")]
     world.block.resolve(ITEM, frozenset({_AGENT}), "earlier attempt")
+    world.discharges.commit_block_resolution(decision_id="run-1/A1")
     world.github.add_label(ITEM, "needs-human")  # the operator, after the resolve
 
     replay = world.executor().apply(_action(_resolution()))
@@ -413,6 +419,66 @@ def test_a_replay_never_clears_a_label_the_operator_put_back(tmp_path: Path) -> 
     assert "needs-human" in world.github.labels[ITEM]
     assert replay.details.get("block") == BlockOutcome.HELD_BY_ANOTHER_CAUSE.value
     assert world.requeued == []
+
+
+def test_a_replay_never_discharges_a_block_raised_after_the_first_discharge(tmp_path: Path) -> None:
+    """r2 F2: A1 lifted session_lifecycle, then failed finishing; the stuck
+    sweep gives up on the item again (a NEW session_lifecycle, no session
+    ran). The replay of A1 must leave the new block alone."""
+    world = World(tmp_path, question=None)
+    world.blocked_by(ITEM, _SWEEP)
+    lift = _resolution(ResolutionKind.LIFT, _SWEEP)
+    assert world.executor().apply(_action(lift)).success
+    world.blocked_by(ITEM, _SWEEP)  # the sweep's exhaustion escalation
+
+    replay = world.executor().apply(_action(lift))
+
+    assert replay.success, replay.error
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.store.needs_human_causes(ITEM) == frozenset({"session_lifecycle"})
+
+
+def test_an_interrupted_discharge_is_handed_back_untouched(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    world.discharges.begin_block_resolution(decision_id="run-1/A1")
+
+    result = world.executor().apply(_action(_resolution()))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.INTERRUPTED.value
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.applier.applied == []
+
+
+def test_a_failed_discharge_is_abandoned_so_a_replay_decides_afresh(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    executor = world.executor()
+    object.__setattr__(executor, "block", _RacedBlock(world.block, lambda t, c, r: BlockOutcome.FAILED))
+
+    assert not executor.apply(_action(_resolution())).success
+    assert world.discharges.block_resolution_state(decision_id="run-1/A1") is None
+
+    again = world.executor().apply(_action(_resolution()))
+
+    assert again.success, again.error
+    assert "needs-human" not in world.github.labels[ITEM]
+
+
+def test_any_question_the_agent_ever_asked_is_screened(tmp_path: Path) -> None:
+    """r2 F3: a credential request is not screened out by a later, benign
+    question or by the events after it."""
+    world = World(tmp_path, question=None)
+    world.blocked_by(ITEM, _AGENT)
+    executor = world.executor()
+    object.__setattr__(executor, "agent_questions", lambda number: (
+        "Please add the CLOUDFLARE_API_TOKEN secret; I cannot create it.",
+        "Is the share page done?",
+    ))
+
+    result = executor.apply(_action(_resolution()))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.HUMAN_ONLY_WORK.value
 
 
 # -- nothing runs, nothing newer ---------------------------------------------
@@ -505,9 +571,23 @@ def test_a_replay_of_an_applied_decision_never_clears_a_question_asked_after_it(
 
     replay = world.executor().apply(_action(_resolution()))
 
-    assert replay.details["refusal"] == BlockResolutionRefusal.NEWER_SESSION.value
+    # The discharge committed once; a replay only finishes and never discharges.
+    assert replay.details["block"] == BlockOutcome.HELD_BY_ANOTHER_CAUSE.value
     assert "needs-human" in world.github.labels[ITEM]
     assert world.store.needs_human_causes(ITEM) == frozenset({"agent_completion"})
+
+
+def test_a_new_decision_after_a_session_ran_since_its_observation_is_refused(tmp_path: Path) -> None:
+    """A proposal approved after the item ran again is stale: the block it
+    decided may not be the block the item carries now."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    _newer_session(world, "completed")
+
+    result = world.executor().apply(_action(_resolution()))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.NEWER_SESSION.value
+    assert "needs-human" in world.github.labels[ITEM]
 
 
 def test_a_closing_split_is_refused_while_another_cause_holds_the_item(tmp_path: Path) -> None:

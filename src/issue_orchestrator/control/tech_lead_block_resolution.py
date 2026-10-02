@@ -39,8 +39,11 @@ the item blocked until everything its next session needs is on GitHub:
 * a split that closes its parent closes it; otherwise the item is requeued if
   nothing else blocks it.
 
-A replay of the same decision (a write that failed) finds its own markers and
-finishes; it never needs the causes it already discharged to be recorded.
+The discharge is bracketed write-ahead (``ports/block_resolution_discharges``):
+a replay of a decision whose discharge committed only finishes (requeue or
+close) and never discharges again, so it cannot clear a block raised after
+it; one interrupted mid-discharge hands the item back to the operator; one
+that never began decides afresh, finding its earlier writes by their markers.
 """
 
 from __future__ import annotations
@@ -65,6 +68,7 @@ from ..domain.block_resolution import (
 from ..domain.dependencies import DependencyMode, parse_dependency_edges
 from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.human_block import BlockOutcome, NeedsHumanCause
+from ..domain.operator_decision_retry import DecisionRetryState
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -87,6 +91,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from .issue_work_claims import IssueWorkClaim
     from .label_manager import LabelManager
+    from ..ports.block_resolution_discharges import BlockResolutionDischarges
     from .needs_human_block import SharedNeedsHumanBlock
     from .published_review_custody import PublishedReviewHolds
     from .review_exchange_lifecycle import IssueRuntimeActivity
@@ -112,6 +117,8 @@ class BlockResolutionRefusal(StrEnum):
     TECH_LEAD_HAND_OVER = "tech_lead_hand_over"
     #: A split that closes the item while a cause it does not name holds it.
     CLOSE_WHILE_HELD = "close_while_held"
+    #: The engine stopped mid-discharge: what stands now may be newer.
+    INTERRUPTED = "interrupted"
     #: A cause the decision names is not on record now.
     CAUSE_NOT_RECORDED = "cause_not_recorded"
     #: An earlier resolution discharged a cause the decision names, and the
@@ -138,8 +145,6 @@ class RefusedResolution:
 @dataclass(frozen=True, slots=True)
 class ResolvableBlock:
     issue: "Issue"
-    #: Whether this decision already posted its comment (a replay).
-    replay: bool
 
 
 @dataclass(frozen=True)
@@ -154,8 +159,9 @@ class TechLeadBlockResolutionExecutor:
     #: The item's comment bodies that carry a resolution marker, from a
     #: complete, uncached scan that raises rather than answer partially.
     read_comment_bodies: Callable[[int], Sequence[str]]
-    #: The last question an agent put to a human about the item, if recorded.
-    agent_question: Callable[[int], str | None]
+    #: Every question an agent put to a human about the item, from its whole
+    #: timeline (the human-only screen reads them all; a read failure raises).
+    agent_questions: Callable[[int], Sequence[str]]
     runtime_activity: Callable[[int], "IssueRuntimeActivity"]
     claims_on_issue: Callable[[int], Sequence["IssueWorkClaim"]]
     sessions_not_before: Callable[[int, datetime], Sequence["SessionHistoryEntry"]]
@@ -171,6 +177,8 @@ class TechLeadBlockResolutionExecutor:
     #: Put the item back in the planner's view (local retry gates and the
     #: cached copy, from fresh labels); the blocking labels it still carries.
     requeue: Callable[[int], tuple[str, ...]]
+    #: The write-ahead record of each decision's discharge.
+    discharges: "BlockResolutionDischarges"
 
     # -- preconditions --------------------------------------------------------
 
@@ -187,9 +195,8 @@ class TechLeadBlockResolutionExecutor:
             return RefusedResolution(BlockResolutionRefusal.ISSUE_CLOSED,
                                      f"issue #{action.issue_number} is {issue.state}")
         priors = prior_resolutions(self.read_comment_bodies(action.issue_number))
-        replay = any(action.decision_id in ids for ids in priors.values())
-        refusal = self._block_refusal(action, issue, priors, replay=replay)
-        return refusal or ResolvableBlock(issue, replay)
+        refusal = self._block_refusal(action, issue, priors)
+        return refusal or ResolvableBlock(issue)
 
     def stale_reason(self, action: ResolveBlockAction) -> str | None:
         """Read-only applicability, for handing off to an existing proposal."""
@@ -223,8 +230,6 @@ class TechLeadBlockResolutionExecutor:
         action: ResolveBlockAction,
         issue: "Issue",
         priors: dict[NeedsHumanCause, frozenset[str]],
-        *,
-        replay: bool,
     ) -> RefusedResolution | None:
         number = issue.number
         folded = {label.casefold() for label in issue.labels}
@@ -243,14 +248,12 @@ class TechLeadBlockResolutionExecutor:
                                      f"#{number}'s {', '.join(earlier)} was resolved by the tech lead"
                                      " before and the block came back: it is the operator's now")
         screened = human_only_work((
-            issue.title, issue.body, self.agent_question(number), *action.resolution.texts,
+            issue.title, issue.body, *self.agent_questions(number), *action.resolution.texts,
         ))
         if screened is not None:
             return RefusedResolution(BlockResolutionRefusal.HUMAN_ONLY_WORK,
                                      f"#{number} names human-only work, {screened.describe()}:"
                                      " it is handed over, never resolved")
-        if replay:
-            return None  # this decision already discharged what it could; finish it
         blocked = self.labels.needs_human.casefold() in folded
         if not blocked:
             return RefusedResolution(BlockResolutionRefusal.NOT_BLOCKED,
@@ -273,6 +276,17 @@ class TechLeadBlockResolutionExecutor:
     # -- apply ----------------------------------------------------------------
 
     def apply(self, action: ResolveBlockAction) -> ActionResult:
+        """Decide afresh, finish a committed discharge, or hand back an interrupted one."""
+        prior = self.discharges.block_resolution_state(decision_id=action.decision_id)
+        if prior is DecisionRetryState.COMMITTED:
+            return self._finish(action)
+        if prior is DecisionRetryState.BEGUN:
+            return self._refuse(action, RefusedResolution(
+                BlockResolutionRefusal.INTERRUPTED,
+                f"the engine stopped while {action.decision_id} discharged #{action.issue_number}'s"
+                " causes; whatever stands on it now may have been raised since, so it is the"
+                " operator's",
+            ))
         verdict = self.verify(action)
         if isinstance(verdict, RefusedResolution):
             return self._refuse(action, verdict)
@@ -294,14 +308,34 @@ class TechLeadBlockResolutionExecutor:
                 return ActionResult.fail_limited(
                     action, f"{what} #{action.issue_number}: {failed.error}", failed.host_rate_limit,
                     issue_number=action.issue_number, proposal_id=action.proposal_id)
+        self.discharges.begin_block_resolution(decision_id=action.decision_id)
         outcome = self.block.resolve(
             action.issue_number, action.resolution.causes,
             f"tech lead {action.decision_id} resolved: {action.resolution.title}",
         )
         if outcome not in (BlockOutcome.CLEARED, BlockOutcome.HELD_BY_ANOTHER_CAUSE):
+            # Nothing was discharged (the owner withdraws a cause only on a
+            # committed outcome): a replay decides afresh.
+            self.discharges.abandon_block_resolution(decision_id=action.decision_id)
             return ActionResult.fail(
                 action, f"needs-human on #{action.issue_number} did not settle ({outcome.value})",
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
+        self.discharges.commit_block_resolution(decision_id=action.decision_id)
+        return self._progress(action, children=children, outcome=outcome)
+
+    def _finish(self, action: ResolveBlockAction) -> ActionResult:
+        """The discharge committed before: never discharge again, only move the item."""
+        issue = self.read_issue(action.issue_number)
+        if issue is None or issue.state != "open":
+            return self._applied(action, children=(), outcome=BlockOutcome.CLEARED, still_blocked=())
+        held = any(label.casefold() == self.labels.needs_human.casefold() for label in issue.labels)
+        outcome = BlockOutcome.HELD_BY_ANOTHER_CAUSE if held else BlockOutcome.CLEARED
+        return self._progress(action, children=(), outcome=outcome)
+
+    def _progress(
+        self, action: ResolveBlockAction, *, children: tuple[int, ...], outcome: BlockOutcome
+    ) -> ActionResult:
+        """Close a fully split item, or requeue it, once its block is gone."""
         if action.resolution.parent is ParentDisposition.CLOSE and outcome is BlockOutcome.CLEARED:
             closed = self.apply_action(CloseIssueAction(
                 issue_number=action.issue_number,

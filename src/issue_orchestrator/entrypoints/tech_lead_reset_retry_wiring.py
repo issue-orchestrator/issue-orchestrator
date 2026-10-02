@@ -29,7 +29,7 @@ from ..infra.repo_scope import require_repo
 from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
 from ..control.tech_lead_operator_decision import OperatorDecisionExecutor
 from ..control.tech_lead_block_resolution import TechLeadBlockResolutionExecutor
-from ..control.blocked_item_triage import AGENT_QUESTION_RECORDS, agent_question_in
+from ..control.blocked_item_triage import agent_questions_in
 from ..domain.block_resolution import RESOLUTION_MARKER_PREFIX
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
@@ -154,18 +154,23 @@ def build_tech_lead_block_resolution_executor(
         read_comment_bodies=lambda number: host.issue_comment_bodies_containing(
             number, RESOLUTION_MARKER_PREFIX
         ),
-        agent_question=lambda number: agent_question_in(
-            deps.timeline_store.read(number, limit=AGENT_QUESTION_RECORDS)
-        ),
+        # The WHOLE timeline: a person's task asked once is never screened out
+        # by later events (the triage agenda's bounded read is for display).
+        agent_questions=lambda number: agent_questions_in(deps.timeline_store.read(number)),
         runtime_activity=deps.runtime_lifecycle.probe,
         claims_on_issue=lambda number: claims_on_issue(deps.pending_work_claims, number),
-        sessions_not_before=history.sessions_not_before,
+        # The tech lead's own run on a focus issue proposed the decision; it
+        # never raises the block the decision is about.
+        sessions_not_before=lambda number, instant: history.sessions_not_before(
+            number, instant, excluding_agent=orchestrator.config.tech_lead_review_agent
+        ),
         published_review=deps.runtime_lifecycle.published_review,
         find_issue_by_marker=host.find_issue_by_marker,
         create_issue=host.create_issue,
         apply_action=deps.action_applier.apply,
         require_authority=deps.action_applier.require_mutation_authority,
         requeue=orchestrator.operator_issue_commands.requeue_resolved,
+        discharges=deps.tech_lead_authority,
     )
 
 
