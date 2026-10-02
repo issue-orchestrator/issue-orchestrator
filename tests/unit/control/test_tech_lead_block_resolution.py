@@ -257,9 +257,10 @@ def test_262_split_files_the_child_wired_then_labelled_and_clears_both_work_caus
     assert child["milestone"] == 3
     # The agent label goes on only after the edge was written (and verified).
     assert AGENT in world.github.labels[child["number"]]
-    [comment] = world.github.comments[ITEM]
-    assert f"#{child['number']}" in comment
-    assert set(prior_resolutions([comment])) == {_AGENT, _SWEEP}
+    decision, discharge = world.github.comments[ITEM]
+    assert "Live D1 seller pickup index" in decision
+    assert prior_resolutions([decision]) == {}, "no cause marker before the discharge"
+    assert set(prior_resolutions([discharge])) == {_AGENT, _SWEEP}
     assert "needs-human" not in world.github.labels[ITEM]
     assert world.store.needs_human_causes(ITEM) == frozenset()
     assert world.requeued == [ITEM]
@@ -393,13 +394,19 @@ def test_a_block_put_back_after_a_resolve_is_never_resolved_again(tmp_path: Path
     assert "needs-human" in world.github.labels[ITEM]
 
 
+def _committed(world: World, *causes: NeedsHumanCause, decision: str = "run-1/A1") -> None:
+    world.discharges.begin_block_resolution(
+        decision_id=decision, issue_number=ITEM, causes=frozenset(cause.value for cause in causes))
+    world.discharges.commit_block_resolution(decision_id=decision)
+
+
 def test_a_replay_after_the_discharge_committed_only_finishes(tmp_path: Path) -> None:
     """The requeue failed after the discharge committed; the replay finishes it."""
     world = World(tmp_path)
     world.blocked_by(ITEM, _AGENT)
     world.github.comments[ITEM] = [cause_marker(_AGENT, "run-1/A1")]
     assert world.block.resolve(ITEM, frozenset({_AGENT}), "earlier attempt").outcome is BlockOutcome.CLEARED
-    world.discharges.commit_block_resolution(decision_id="run-1/A1")
+    _committed(world, _AGENT)
 
     replay = world.executor().apply(_action(_resolution()))
 
@@ -412,7 +419,7 @@ def test_a_replay_never_clears_a_label_the_operator_put_back(tmp_path: Path) -> 
     world.blocked_by(ITEM, _AGENT)
     world.github.comments[ITEM] = [cause_marker(_AGENT, "run-1/A1")]
     world.block.resolve(ITEM, frozenset({_AGENT}), "earlier attempt")
-    world.discharges.commit_block_resolution(decision_id="run-1/A1")
+    _committed(world, _AGENT)
     world.github.add_label(ITEM, "needs-human")  # the operator, after the resolve
 
     replay = world.executor().apply(_action(_resolution()))
@@ -442,7 +449,8 @@ def test_a_replay_never_discharges_a_block_raised_after_the_first_discharge(tmp_
 def test_an_interrupted_discharge_is_handed_back_untouched(tmp_path: Path) -> None:
     world = World(tmp_path)
     world.blocked_by(ITEM, _AGENT)
-    world.discharges.begin_block_resolution(decision_id="run-1/A1")
+    world.discharges.begin_block_resolution(
+        decision_id="run-1/A1", issue_number=ITEM, causes=frozenset({"agent_completion"}))
 
     result = world.executor().apply(_action(_resolution()))
 
@@ -820,3 +828,73 @@ def test_a_failed_review_gate_posts_no_cause_marker(tmp_path: Path) -> None:
     assert not result.success
     assert world.github.comments.get(364, []) == []
     assert world.store.needs_human_causes(364) == frozenset({"agent_completion"})
+
+
+def test_no_cause_marker_stands_for_a_discharge_that_never_happened(tmp_path: Path) -> None:
+    """r7 F1: the discharge failed before any write; a DIFFERENT decision for
+    the same cause is still decided, since nothing recorded a discharge."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    executor = world.executor()
+    object.__setattr__(executor, "block", _RacedBlock(
+        world.block, lambda t, c, r: ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)))
+    assert not executor.apply(_action(_resolution())).success
+    assert prior_resolutions(world.github.comments[ITEM]) == {}
+
+    other = world.executor().apply(_action(_resolution(title="Another answer"), action_id="A2", run="run-2"))
+
+    assert other.success, other.error
+    assert "needs-human" not in world.github.labels[ITEM]
+
+
+def test_the_local_record_refuses_a_second_resolve_when_the_marker_was_never_posted(tmp_path: Path) -> None:
+    """r7 F1: a crash between the discharge and its marker comment still
+    leaves the reversibility rule standing, from the authority store."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    _committed(world, _AGENT, decision="run-0/A9")  # discharged, marker never posted
+
+    result = world.executor().apply(_action(_resolution()))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.RESOLVED_BEFORE.value
+    assert "needs-human" in world.github.labels[ITEM]
+
+
+def test_children_are_not_runnable_until_the_discharge_commits(tmp_path: Path) -> None:
+    """r7 F2: a split whose decision comment failed leaves its child filed
+    but not labelled for pickup; the replay makes it runnable exactly once."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+    world.applier.fail = AddCommentAction
+
+    assert not world.executor().apply(_action(_split())).success
+    [child] = world.github.created
+    assert AGENT not in world.github.labels[child["number"]]
+    assert "needs-human" in world.github.labels[ITEM]
+
+    world.applier.fail = None
+    assert world.executor().apply(_action(_split())).success
+
+    assert AGENT in world.github.labels[child["number"]]
+    assert len(world.github.created) == 1
+    assert "needs-human" not in world.github.labels[ITEM]
+
+
+def test_a_failed_activation_is_finished_by_the_replay(tmp_path: Path) -> None:
+    """After the discharge committed, a failed child label is retried by the
+    replay, which never discharges again."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+    world.applier.fail = AddLabelAction
+
+    assert not world.executor().apply(_action(_split())).success
+    assert "needs-human" not in world.github.labels[ITEM]
+    world.applier.fail = None
+
+    replay = world.executor().apply(_action(_split()))
+
+    assert replay.success, replay.error
+    [child] = world.github.created
+    assert AGENT in world.github.labels[child["number"]]
+    assert set(prior_resolutions(world.github.comments[ITEM])) == {_AGENT, _SWEEP}
+    assert world.requeued == [ITEM]

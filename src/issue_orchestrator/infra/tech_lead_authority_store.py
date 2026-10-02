@@ -329,11 +329,25 @@ class SqliteTechLeadAuthorityStore:
                 (proposal_issue_number, state.value, datetime.now(timezone.utc).isoformat()),
             )
 
-    def begin_block_resolution(self, *, decision_id: str) -> None:
-        self._set_block_resolution(decision_id, DecisionRetryState.BEGUN)
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None:
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT OR REPLACE INTO tech_lead_block_resolutions"
+                " (decision_id, issue_number, causes, state, recorded_at) VALUES (?, ?, ?, ?, ?)",
+                (decision_id, issue_number, json.dumps(sorted(causes)), DecisionRetryState.BEGUN.value,
+                 datetime.now(timezone.utc).isoformat()),
+            )
 
     def commit_block_resolution(self, *, decision_id: str) -> None:
-        self._set_block_resolution(decision_id, DecisionRetryState.COMMITTED)
+        with self._transaction() as tx:
+            updated = tx.execute(
+                "UPDATE tech_lead_block_resolutions SET state = ?, recorded_at = ? WHERE decision_id = ?",
+                (DecisionRetryState.COMMITTED.value, datetime.now(timezone.utc).isoformat(), decision_id),
+            ).rowcount
+        if updated != 1:
+            raise ValueError(f"no begun discharge for {decision_id} to commit")
 
     def abandon_block_resolution(self, *, decision_id: str) -> None:
         with self._transaction() as tx:
@@ -345,13 +359,16 @@ class SqliteTechLeadAuthorityStore:
         ).fetchone()
         return None if row is None else DecisionRetryState(str(row[0]))
 
-    def _set_block_resolution(self, decision_id: str, state: DecisionRetryState) -> None:
-        with self._transaction() as tx:
-            tx.execute(
-                "INSERT OR REPLACE INTO tech_lead_block_resolutions"
-                " (decision_id, state, recorded_at) VALUES (?, ?, ?)",
-                (decision_id, state.value, datetime.now(timezone.utc).isoformat()),
-            )
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]:
+        rows = self._get_connection().execute(
+            "SELECT decision_id, causes FROM tech_lead_block_resolutions WHERE issue_number = ?",
+            (issue_number,),
+        ).fetchall()
+        found: dict[str, set[str]] = {}
+        for row in rows:
+            for cause in json.loads(row["causes"]):
+                found.setdefault(str(cause), set()).add(str(row["decision_id"]))
+        return {cause: frozenset(ids) for cause, ids in found.items()}
 
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""

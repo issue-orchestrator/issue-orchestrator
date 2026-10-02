@@ -415,6 +415,11 @@ def decision_marker(decision_id: str) -> str:
     return f"<!-- io:resolve-block:comment:decision={decision_id} -->"
 
 
+def discharge_marker(decision_id: str) -> str:
+    """Create-once marker of the comment recording a COMMITTED discharge."""
+    return f"<!-- io:resolve-block:discharged:decision={decision_id} -->"
+
+
 def child_marker(decision_id: str, index: int) -> str:
     """Create-once marker of a split's child issue."""
     return f"<!-- io:resolve-block:child={index}:decision={decision_id} -->"

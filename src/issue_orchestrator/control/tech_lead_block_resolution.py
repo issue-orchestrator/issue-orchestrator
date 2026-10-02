@@ -7,43 +7,42 @@ the owners that already answer each question, that it may stand:
 
 1. **the item is open**, read fresh;
 2. **nothing runs or claims it** - no live or unverifiable runtime owner, no
-   claim but the proposing run's own, and no session ran on it since the tech
-   lead observed it. Every new generation of a resolvable cause (an agent's
-   question, the engine giving up) is a session's, so this is also what keeps a
-   replay of an applied decision off a block raised after it;
+   claim but the proposing run's own, and no work session ran on it since the
+   tech lead observed it (a decision about an older block is stale);
 3. **the block is a work block the tech lead may decide** - not the tech
    lead's own hand-over (its marker), and every cause the decision names is on
    record in the shared block's owner now;
-4. **it was never resolved before** - a durable marker on the item records
-   every cause a resolution discharged; one from an EARLIER decision means the
-   block was put back after it, so that cause is the operator's from then on;
+4. **it was never resolved before** - a durable marker on the item (and the
+   authority store's record, across a crash before the marker) names every
+   cause a resolution discharged; one from an EARLIER decision means the block
+   was put back after it, so that cause is the operator's from then on;
 5. **no human-only work** is named in the item, the agent's question or the
    decision itself (:func:`~..domain.block_resolution.human_only_work`).
 
 A failed check REFUSES the decision with a typed
-:class:`BlockResolutionRefusal` and no write. Otherwise, in an order that keeps
-the item blocked until everything its next session needs is on GitHub:
+:class:`BlockResolutionRefusal` and no write. Otherwise, in an order that
+keeps the item blocked until everything its next session needs is on GitHub:
 
-* a split's children are filed create-once (by body marker), each first
-  without its agent label, its dependency line verified by the engine's own
-  parser, and only then labelled for pickup (the issue-dependency-stacking
-  contract). Filing is ``create_issue``'s call: when the tech lead may not file
-  unattended, each child is filed behind the ``proposed-tech-lead`` gate;
-* the decision is posted on the item, create-once, carrying one marker per
-  cause it discharges;
-* the pr-pending gate goes on first when an open PR carries the item's
-  published validated work, so no coder relaunches over that PR;
+* a split's children are filed create-once (by body marker), WITHOUT their
+  agent label, and each must show the dependency parser exactly its decided
+  edge (the issue-dependency-stacking contract). Filing is ``create_issue``'s
+  call: when the tech lead may not file unattended, each child is filed
+  behind the ``proposed-tech-lead`` gate;
+* the pr-pending gate goes on when an open PR carries the item's published
+  validated work, so no coder relaunches over that PR;
+* the decision is posted on the item, create-once;
 * the named causes are discharged through
-  :meth:`~.needs_human_block.SharedNeedsHumanBlock.resolve`: other causes keep
-  the label;
-* a split that closes its parent closes it; otherwise the item is requeued if
-  nothing else blocks it.
+  :meth:`~.needs_human_block.SharedNeedsHumanBlock.resolve`, bracketed
+  write-ahead (``ports/block_resolution_discharges``): other causes keep the
+  label;
+* only once the discharge COMMITTED: the children get their agent label, the
+  discharge is recorded on the item (one durable marker per cause), and the
+  item is closed (a full split) or requeued if nothing else blocks it.
 
-The discharge is bracketed write-ahead (``ports/block_resolution_discharges``):
-a replay of a decision whose discharge committed only finishes (requeue or
-close) and never discharges again, so it cannot clear a block raised after
-it; one interrupted mid-discharge hands the item back to the operator; one
-that never began decides afresh, finding its earlier writes by their markers.
+A replay of a decision whose discharge committed only finishes those last
+steps and never discharges again, so it cannot clear a block raised after it;
+one interrupted mid-discharge is handed back to the operator; one that never
+began decides afresh, finding its earlier writes by their markers.
 """
 
 from __future__ import annotations
@@ -62,6 +61,7 @@ from ..domain.block_resolution import (
     child_marker,
     cause_marker,
     decision_marker,
+    discharge_marker,
     human_only_work,
     prior_resolutions,
 )
@@ -195,6 +195,9 @@ class TechLeadBlockResolutionExecutor:
             return RefusedResolution(BlockResolutionRefusal.ISSUE_CLOSED,
                                      f"issue #{action.issue_number} is {issue.state}")
         priors = prior_resolutions(self.read_comment_bodies(action.issue_number))
+        for value, decisions in self.discharges.resolved_causes(issue_number=action.issue_number).items():
+            cause = NeedsHumanCause(value)
+            priors[cause] = priors.get(cause, frozenset()) | decisions
         refusal = self._block_refusal(action, issue, priors)
         return refusal or ResolvableBlock(issue)
 
@@ -292,25 +295,26 @@ class TechLeadBlockResolutionExecutor:
             return self._refuse(action, verdict)
         issue = verdict.issue
         try:
-            children = self._file_children(action, issue)
+            self._file_children(action, issue)
         except (ReconciliationRequired, ClaimLostError):
             raise
         except Exception as error:  # the item stays blocked; a replay resumes by marker
             return ActionResult.fail_limited(
                 action, f"split child not filed: {error}", host_rate_limit_of(error),
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
-        # The gate first: the decision's comment carries the cause markers, and
-        # a marker must not stand for a discharge a failed gate prevented.
         for what, step in (
             (f"{self.labels.pr_pending} not put on", lambda: self._gate_published_review(action, issue)),
-            ("decision not posted", lambda: self._post_decision(action, children)),
+            ("decision not posted", lambda: self._post_decision(action)),
         ):
             failed = step()
             if failed is not None:
                 return ActionResult.fail_limited(
                     action, f"{what} #{action.issue_number}: {failed.error}", failed.host_rate_limit,
                     issue_number=action.issue_number, proposal_id=action.proposal_id)
-        self.discharges.begin_block_resolution(decision_id=action.decision_id)
+        self.discharges.begin_block_resolution(
+            decision_id=action.decision_id, issue_number=action.issue_number,
+            causes=frozenset(cause.value for cause in action.resolution.causes),
+        )
         discharged = self.block.resolve(
             action.issue_number, action.resolution.causes,
             f"tech lead {action.decision_id} resolved: {action.resolution.title}",
@@ -327,21 +331,37 @@ class TechLeadBlockResolutionExecutor:
                 action, f"needs-human on #{action.issue_number} did not settle ({outcome.value})",
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
         self.discharges.commit_block_resolution(decision_id=action.decision_id)
-        return self._progress(action, children=children, outcome=outcome)
+        return self._settle(action, issue, outcome)
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
-        """The discharge committed before: never discharge again, only move the item."""
+        """The discharge committed before: never discharge again, only settle."""
         issue = self.read_issue(action.issue_number)
-        if issue is None or issue.state != "open":
-            return self._applied(action, children=(), outcome=BlockOutcome.CLEARED, still_blocked=())
+        if issue is None:
+            raise RuntimeError(f"issue #{action.issue_number} could not be read to finish its resolution")
         held = any(label.casefold() == self.labels.needs_human.casefold() for label in issue.labels)
         outcome = BlockOutcome.HELD_BY_ANOTHER_CAUSE if held else BlockOutcome.CLEARED
-        return self._progress(action, children=(), outcome=outcome)
+        return self._settle(action, issue, outcome)
 
-    def _progress(
-        self, action: ResolveBlockAction, *, children: tuple[int, ...], outcome: BlockOutcome
-    ) -> ActionResult:
-        """Close a fully split item, or requeue it, once its block is gone."""
+    def _settle(self, action: ResolveBlockAction, parent: "Issue", outcome: BlockOutcome) -> ActionResult:
+        """What follows a COMMITTED discharge, each step create-once so a
+        replay finishes it: the split's children become runnable, the
+        discharge markers go on the item, then the item is closed (a full
+        split) or requeued."""
+        try:
+            children = self._activate_children(action, parent)
+        except (ReconciliationRequired, ClaimLostError):
+            raise
+        except Exception as error:
+            return ActionResult.fail_limited(
+                action, f"split child not made runnable: {error}", host_rate_limit_of(error),
+                issue_number=action.issue_number, proposal_id=action.proposal_id)
+        marked = self._post_discharge(action)
+        if marked is not None:
+            return ActionResult.fail_limited(
+                action, f"discharge not recorded on #{action.issue_number}: {marked.error}",
+                marked.host_rate_limit, issue_number=action.issue_number, proposal_id=action.proposal_id)
+        if parent.state != "open":
+            return self._applied(action, children=children, outcome=outcome, still_blocked=())
         if action.resolution.parent is ParentDisposition.CLOSE and outcome is BlockOutcome.CLEARED:
             closed = self.apply_action(CloseIssueAction(
                 issue_number=action.issue_number,
@@ -421,6 +441,7 @@ class TechLeadBlockResolutionExecutor:
     # -- writes ---------------------------------------------------------------
 
     def _file_children(self, action: ResolveBlockAction, issue: "Issue") -> tuple[int, ...]:
+        """File each child create-once and verify its edge; none is runnable yet."""
         filed: list[int] = []
         for index, child in enumerate(action.resolution.children, start=1):
             filed.append(self._file_child(action, issue, index, child, tuple(filed)))
@@ -434,7 +455,6 @@ class TechLeadBlockResolutionExecutor:
         child: ResolutionChild,
         earlier: tuple[int, ...],
     ) -> int:
-        """File one child create-once, wire its edge, THEN label it for pickup."""
         marker = child_marker(action.decision_id, index)
         number = self.find_issue_by_marker(title=child.title, marker=marker, authoritative=True)
         predecessor = (
@@ -463,17 +483,33 @@ class TechLeadBlockResolutionExecutor:
                 raise RuntimeError(f"child {index} of #{parent.number}'s split was not created")
             number = int(created["number"])
         self._verify_edge(number, child, predecessor)
-        for label in (parent.agent_type,) if parent.agent_type else ():
-            marked = self.apply_action(AddLabelAction(
-                issue_number=number, label=label,
-                reason=f"tech lead {action.decision_id}: child {index} wired, ready for pickup",
-                expected=build_expected_for_mutation(),
-            ))
-            if not marked.success:
-                raise RuntimeError(
-                    f"child #{number} not labelled {label}: {marked.error}"
-                ) from rate_limit_cause(marked.host_rate_limit)
         return number
+
+    def _activate_children(self, action: ResolveBlockAction, parent: "Issue") -> tuple[int, ...]:
+        """After the discharge committed: label each filed child for pickup.
+
+        Children are found by their markers (a replay never refiles one); a
+        child missing now is a failure the replay retries, never skipped.
+        """
+        children: list[int] = []
+        for index, child in enumerate(action.resolution.children, start=1):
+            number = self.find_issue_by_marker(
+                title=child.title, marker=child_marker(action.decision_id, index), authoritative=True,
+            )
+            if number is None:
+                raise RuntimeError(f"child {index} of #{parent.number}'s split is not on GitHub")
+            for label in (parent.agent_type,) if parent.agent_type else ():
+                marked = self.apply_action(AddLabelAction(
+                    issue_number=number, label=label,
+                    reason=f"tech lead {action.decision_id}: child {index} ready for pickup",
+                    expected=build_expected_for_mutation(),
+                ))
+                if not marked.success:
+                    raise RuntimeError(
+                        f"child #{number} not labelled {label}: {marked.error}"
+                    ) from rate_limit_cause(marked.host_rate_limit)
+            children.append(number)
+        return tuple(children)
 
     def _verify_edge(self, number: int, child: ResolutionChild, predecessor: int | None) -> None:
         """The engine's own parser must see EXACTLY the decided graph (its one
@@ -508,18 +544,30 @@ class TechLeadBlockResolutionExecutor:
             if not self.labels.is_workflow_reserved(label) and label != parent.agent_type
         ]
 
-    def _post_decision(
-        self, action: ResolveBlockAction, children: tuple[int, ...]
+    def _post_decision(self, action: ResolveBlockAction) -> ActionResult | None:
+        """The decision on the item, create-once, BEFORE the discharge: the
+        item is never unblocked without it. It carries no cause marker."""
+        return self._comment_once(
+            action, decision_marker(action.decision_id), _decision_comment(action),
+            f"tech lead {action.decision_id}: the resolution of #{action.issue_number}'s block",
+        )
+
+    def _post_discharge(self, action: ResolveBlockAction) -> ActionResult | None:
+        """The durable record of what was discharged, once it COMMITTED."""
+        return self._comment_once(
+            action, discharge_marker(action.decision_id), _discharge_comment(action),
+            f"tech lead {action.decision_id}: record the discharge on #{action.issue_number}",
+        )
+
+    def _comment_once(
+        self, action: ResolveBlockAction, marker: str, comment: str, reason: str
     ) -> ActionResult | None:
-        """The decision on the item, create-once; the failed write, else None."""
+        """Post *comment* unless *marker* is already on the item; the failed write, else None."""
         number = action.issue_number
-        if any(decision_marker(action.decision_id) in body for body in self.read_comment_bodies(number)):
+        if any(marker in body for body in self.read_comment_bodies(number)):
             return None
         posted = self.apply_action(AddCommentAction(
-            number=number,
-            comment=_decision_comment(action, children),
-            reason=f"tech lead {action.decision_id}: the resolution of #{number}'s block",
-            expected=build_expected_for_mutation(),
+            number=number, comment=comment, reason=reason, expected=build_expected_for_mutation(),
         ))
         return None if posted.success else posted
 
@@ -538,24 +586,31 @@ class TechLeadBlockResolutionExecutor:
         return None if written.success else written
 
 
-def _decision_comment(action: ResolveBlockAction, children: tuple[int, ...]) -> str:
+def _decision_comment(action: ResolveBlockAction) -> str:
     resolution = action.resolution
     number = action.issue_number
     evidence = "\n".join(f"- {item}" for item in resolution.evidence)
-    filed = (
-        "\n\n### Split\n\n" + "\n".join(f"- #{child}" for child in children)
-        + (f"\n\n#{number} closes: its children carry all of it."
-           if resolution.parent is ParentDisposition.CLOSE
-           else f"\n\n#{number} keeps the slice it has and is requeued to finish it.")
-        if children else ""
-    )
-    causes = ", ".join(sorted(cause.value for cause in resolution.causes))
-    markers = "\n".join(cause_marker(cause, action.decision_id) for cause in sorted(
-        resolution.causes, key=lambda cause: cause.value))
+    split = ""
+    if resolution.children:
+        children = "\n".join(f"- {child.title}" for child in resolution.children)
+        rest = (f"#{number} closes: its children carry all of it."
+                if resolution.parent is ParentDisposition.CLOSE
+                else f"#{number} keeps the slice it has and is requeued to finish it.")
+        split = f"\n\n### Split\n\nFiled as their own issues:\n{children}\n\n{rest}"
     return (
         f"## Tech lead resolved this block ({resolution.kind.value}): {resolution.title}\n\n"
-        f"{resolution.body}\n\n### Evidence\n\n{evidence}{filed}\n\n"
-        f"Discharged: {causes}. The next session on #{number} works to this decision."
-        f" If it is wrong, put `needs-human` back: the tech lead never clears these"
-        f" causes on #{number} again.\n\n{decision_marker(action.decision_id)}\n{markers}"
+        f"{resolution.body}\n\n### Evidence\n\n{evidence}{split}\n\n"
+        f"The next session on #{number} works to this decision. If it is wrong, put"
+        f" `needs-human` back: the tech lead never clears the same cause on #{number} again."
+        f"\n\n{decision_marker(action.decision_id)}"
+    )
+
+
+def _discharge_comment(action: ResolveBlockAction) -> str:
+    causes = sorted(action.resolution.causes, key=lambda cause: cause.value)
+    markers = "\n".join(cause_marker(cause, action.decision_id) for cause in causes)
+    return (
+        f"Discharged by the tech lead's resolution {action.decision_id}:"
+        f" {', '.join(cause.value for cause in causes)}.\n\n"
+        f"{discharge_marker(action.decision_id)}\n{markers}"
     )
