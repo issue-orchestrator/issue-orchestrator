@@ -406,11 +406,8 @@ class NeedsHumanBlock:
         """Withdraw the named causes, all of which must stand; the label goes
         only if nothing else holds it. Otherwise nothing is touched."""
         present = self._label_present_now(target)
-        if present is None:
+        if not present:  # unreadable, or someone already cleared it: not ours
             return ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)
-        if not present:
-            self._forget(target)
-            return ResolutionOutcome(BlockOutcome.CLEARED, mutation_attempted=True)
         standing = [cause for cause in causes if self._recorded_cause_holds(cause, target)]
         if len(standing) != len(causes):  # all of the decision, or none of it
             return ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)

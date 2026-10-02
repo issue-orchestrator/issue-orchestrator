@@ -940,3 +940,34 @@ def test_a_cause_gone_before_the_discharge_discharges_nothing(tmp_path: Path) ->
     assert prior_resolutions(world.github.comments.get(ITEM, [])) == {}
     later = world.executor().apply(_action(_resolution(), action_id="A2", run="run-2"))
     assert later.details.get("refusal") != BlockResolutionRefusal.RESOLVED_BEFORE.value
+
+
+def test_a_label_cleared_before_the_discharge_records_no_discharge(tmp_path: Path) -> None:
+    """r9 F1: the operator cleared needs-human between verify and the
+    discharge. Nothing was discharged, so nothing is recorded, no child is
+    activated, the item is not requeued, and a later decision is not refused."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    executor = world.executor()
+    resolve = world.block.resolve
+
+    def operator_clears_first(target, causes, reason):  # type: ignore[no-untyped-def]
+        world.github.remove_label(ITEM, "needs-human")
+        return resolve(target, causes, reason)
+
+    object.__setattr__(executor, "block", _RacedBlock(world.block, operator_clears_first))
+    split = _split()
+    split = BlockResolution(kind=split.kind, causes=frozenset({_AGENT}), title=split.title, body=split.body,
+                            evidence=split.evidence, children=split.children, parent=split.parent)
+
+    result = executor.apply(_action(split))
+
+    assert not result.success
+    assert world.discharges.block_resolution_state(decision_id="run-1/A1") is None
+    assert prior_resolutions(world.github.comments.get(ITEM, [])) == {}
+    [child] = world.github.created
+    assert AGENT not in world.github.labels[child["number"]]
+    assert world.requeued == []
+    world.blocked_by(ITEM, _AGENT)
+    later = world.executor().apply(_action(_resolution(), action_id="A2", run="run-2"))
+    assert later.success, later.error
