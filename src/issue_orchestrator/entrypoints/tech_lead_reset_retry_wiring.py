@@ -159,7 +159,7 @@ def build_tech_lead_block_resolution_executor(
         ),
         runtime_activity=deps.runtime_lifecycle.probe,
         claims_on_issue=lambda number: claims_on_issue(deps.pending_work_claims, number),
-        failures_not_before=history.failures_not_before,
+        sessions_not_before=history.sessions_not_before,
         published_review=deps.runtime_lifecycle.published_review,
         find_issue_by_marker=host.find_issue_by_marker,
         create_issue=host.create_issue,

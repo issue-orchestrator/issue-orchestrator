@@ -55,7 +55,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
-from ..domain.block_resolution import RESOLVABLE_CAUSES
+from ..domain.block_resolution import is_resolvable_work_block
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.human_block import (
     BlockOutcome as BlockOutcome,
@@ -391,7 +391,7 @@ class NeedsHumanBlock:
     def resolve(
         self, target: int, causes: frozenset[NeedsHumanCause], reason: str
     ) -> BlockOutcome:
-        outside = sorted(cause.value for cause in causes if cause not in RESOLVABLE_CAUSES)
+        outside = sorted(cause.value for cause in causes if not is_resolvable_work_block(cause))
         if not causes or outside:  # the typed rule, held by the owner itself
             raise ValueError(f"only work-block causes are resolvable, not {outside or 'none'}")
         return self._mutate(

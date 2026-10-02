@@ -7,8 +7,8 @@ children with their dependency edges; or lift a block shown to be stale or
 false. This module is the typed vocabulary of that decision and the rules no
 agent text can bypass:
 
-* **Only work blocks.** :data:`RESOLVABLE_CAUSES` is the closed set of
-  ``needs-human`` causes a decision may discharge: an agent's own question
+* **Only work blocks.** :func:`is_resolvable_work_block` is the one decision
+  of which ``needs-human`` causes a decision may discharge: an agent's own question
   (``agent_completion``) and the engine giving up on the item
   (``session_lifecycle``: a session that ended without a completion, a stuck
   sweep that spent its budget). A merge escalation is a merge gate the operator
@@ -40,9 +40,23 @@ from .human_block import NeedsHumanCause
 #: The tech-lead action type this module types (one charter row, one ceiling).
 RESOLVE_BLOCK_ACTION = "resolve_block"
 
-#: The needs-human causes a ``resolve_block`` may discharge: WORK blocks only.
+def is_resolvable_work_block(cause: NeedsHumanCause) -> bool:
+    """THE one decision of whether a needs-human cause is a WORK block a
+    resolution may decide (#7658).
+
+    An agent's own question and the engine giving up ask nothing only a
+    person can answer. A merge escalation is a merge gate the operator owns by
+    design, and every other cause has its own owner, so none is resolvable.
+    Every check (the decision's validation, the shared block's owner) asks
+    this function, so the vocabulary that types a block as work or as a merge
+    gate (#7678) replaces this body, not its callers.
+    """
+    return cause in (NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE)
+
+
+#: The causes :func:`is_resolvable_work_block` admits, for display and prompts.
 RESOLVABLE_CAUSES: frozenset[NeedsHumanCause] = frozenset(
-    {NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}
+    cause for cause in NeedsHumanCause if is_resolvable_work_block(cause)
 )
 
 #: Bounds on agent-authored resolution content (untrusted input).
@@ -170,7 +184,9 @@ class BlockResolution:
         if not isinstance(causes, frozenset) or not causes:
             raise ValueError("a resolution names at least one cause it discharges")
         outside = sorted(
-            str(getattr(cause, "value", cause)) for cause in causes if cause not in RESOLVABLE_CAUSES
+            str(getattr(cause, "value", cause))
+            for cause in causes
+            if not isinstance(cause, NeedsHumanCause) or not is_resolvable_work_block(cause)
         )
         if outside:
             raise ValueError(
@@ -218,9 +234,13 @@ class BlockResolution:
                 )
 
     @property
-    def text(self) -> str:
-        """The decision's own words, for the human-only screen."""
-        return f"{self.title}\n{self.body}"
+    def texts(self) -> tuple[str, ...]:
+        """Every word the decision carries, for the human-only screen: a split
+        child that files a person's task is as human-only as the decision."""
+        return (
+            self.title, self.body, *self.evidence,
+            *(text for child in self.children for text in (child.title, child.body)),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

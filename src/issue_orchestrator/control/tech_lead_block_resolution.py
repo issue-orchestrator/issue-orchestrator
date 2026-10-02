@@ -7,8 +7,10 @@ the owners that already answer each question, that it may stand:
 
 1. **the item is open**, read fresh;
 2. **nothing runs or claims it** - no live or unverifiable runtime owner, no
-   claim but the proposing run's own, no failure recorded after the tech lead
-   observed it (a newer failure is a newer block than the one decided);
+   claim but the proposing run's own, and no session ran on it since the tech
+   lead observed it. Every new generation of a resolvable cause (an agent's
+   question, the engine giving up) is a session's, so this is also what keeps a
+   replay of an applied decision off a block raised after it;
 3. **the block is a work block the tech lead may decide** - not the tech
    lead's own hand-over (its marker), and every cause the decision names is on
    record in the shared block's owner now;
@@ -100,11 +102,14 @@ class BlockResolutionRefusal(StrEnum):
     ISSUE_CLOSED = "issue_closed"
     LIVE_SESSION = "live_session"
     WORK_CLAIMED = "work_claimed"
-    NEWER_FAILURE = "newer_failure"
+    #: A session ran on the item since the tech lead observed it.
+    NEWER_SESSION = "newer_session"
     #: The item carries no needs-human: nothing is left to decide.
     NOT_BLOCKED = "not_blocked"
     #: The tech lead's own hand-over holds it: that is the operator's, always.
     TECH_LEAD_HAND_OVER = "tech_lead_hand_over"
+    #: A split that closes the item while a cause it does not name holds it.
+    CLOSE_WHILE_HELD = "close_while_held"
     #: A cause the decision names is not on record now.
     CAUSE_NOT_RECORDED = "cause_not_recorded"
     #: An earlier resolution discharged a cause the decision names, and the
@@ -151,7 +156,7 @@ class TechLeadBlockResolutionExecutor:
     agent_question: Callable[[int], str | None]
     runtime_activity: Callable[[int], "IssueRuntimeActivity"]
     claims_on_issue: Callable[[int], Sequence["IssueWorkClaim"]]
-    failures_not_before: Callable[[int, datetime], Sequence["SessionHistoryEntry"]]
+    sessions_not_before: Callable[[int, datetime], Sequence["SessionHistoryEntry"]]
     published_review: "PublishedReviewHolds"
     find_issue_by_marker: Callable[..., int | None]
     create_issue: Callable[..., "dict[str, Any] | None"]
@@ -203,11 +208,11 @@ class TechLeadBlockResolutionExecutor:
         if claimed:
             return RefusedResolution(BlockResolutionRefusal.WORK_CLAIMED,
                                      f"issue #{number} has claimed work: {claimed}")
-        newer = self.failures_not_before(number, datetime.fromisoformat(action.observed_at))
+        newer = self.sessions_not_before(number, datetime.fromisoformat(action.observed_at))
         if newer:
             seen = ", ".join(str(entry.status) for entry in newer)
-            return RefusedResolution(BlockResolutionRefusal.NEWER_FAILURE,
-                                     f"issue #{number} failed since the tech lead observed it"
+            return RefusedResolution(BlockResolutionRefusal.NEWER_SESSION,
+                                     f"issue #{number} ran since the tech lead observed it"
                                      f" at {action.observed_at}: {seen}")
         return None
 
@@ -236,7 +241,7 @@ class TechLeadBlockResolutionExecutor:
                                      f"#{number}'s {', '.join(earlier)} was resolved by the tech lead"
                                      " before and the block came back: it is the operator's now")
         screened = human_only_work((
-            issue.title, issue.body, self.agent_question(number), action.resolution.text,
+            issue.title, issue.body, self.agent_question(number), *action.resolution.texts,
         ))
         if screened is not None:
             return RefusedResolution(BlockResolutionRefusal.HUMAN_ONLY_WORK,
@@ -255,6 +260,12 @@ class TechLeadBlockResolutionExecutor:
             return RefusedResolution(BlockResolutionRefusal.CAUSE_NOT_RECORDED,
                                      f"#{number}'s needs-human is not held by {', '.join(missing)}"
                                      f" (on record: {', '.join(on_record)})")
+        others = sorted(cause.value for cause in recorded - causes)
+        closes = action.resolution.parent is ParentDisposition.CLOSE
+        if closes and others:
+            return RefusedResolution(BlockResolutionRefusal.CLOSE_WHILE_HELD,
+                                     f"the split closes #{number}, but {', '.join(others)} still"
+                                     " holds it: closing would bury that cause")
         return None
 
     # -- apply ----------------------------------------------------------------
@@ -289,7 +300,7 @@ class TechLeadBlockResolutionExecutor:
             return ActionResult.fail(
                 action, f"needs-human on #{action.issue_number} did not settle ({outcome.value})",
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
-        if action.resolution.parent is ParentDisposition.CLOSE:
+        if action.resolution.parent is ParentDisposition.CLOSE and outcome is BlockOutcome.CLEARED:
             closed = self.apply_action(CloseIssueAction(
                 issue_number=action.issue_number,
                 reason=f"tech lead {action.decision_id}: split into its children",

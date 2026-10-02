@@ -177,7 +177,7 @@ class World:
             agent_question=lambda number: self.question,
             runtime_activity=lambda number: self.activity,
             claims_on_issue=lambda number: (),
-            failures_not_before=lambda number, instant: tuple(
+            sessions_not_before=lambda number, instant: tuple(
                 entry for entry in self.history
                 if entry.completed_at is not None and entry.completed_at >= instant
             ),
@@ -428,7 +428,7 @@ def test_a_live_session_refuses(tmp_path: Path) -> None:
     assert result.details["refusal"] == BlockResolutionRefusal.LIVE_SESSION.value
 
 
-def test_a_failure_newer_than_the_observation_refuses(tmp_path: Path) -> None:
+def test_a_session_newer_than_the_observation_refuses(tmp_path: Path) -> None:
     world = World(tmp_path)
     world.blocked_by(ITEM, _AGENT)
     world.history = [SessionHistoryEntry(
@@ -438,7 +438,7 @@ def test_a_failure_newer_than_the_observation_refuses(tmp_path: Path) -> None:
 
     result = world.executor().apply(_action(_resolution()))
 
-    assert result.details["refusal"] == BlockResolutionRefusal.NEWER_FAILURE.value
+    assert result.details["refusal"] == BlockResolutionRefusal.NEWER_SESSION.value
 
 
 def test_a_closing_split_closes_the_parent(tmp_path: Path) -> None:
@@ -484,3 +484,99 @@ def test_a_child_whose_edge_the_parser_cannot_see_is_never_made_runnable(tmp_pat
     [child] = world.github.created
     assert AGENT not in world.github.labels[child["number"]], "left without its agent label"
     assert "needs-human" in world.github.labels[ITEM]
+
+
+def _newer_session(world: World, status: str = "completed") -> None:
+    world.history.append(SessionHistoryEntry(
+        issue_number=ITEM, title="t", agent_type=AGENT, status=status, runtime_minutes=1,  # type: ignore[arg-type]
+        completed_at=datetime(2026, 10, 2, 7, tzinfo=timezone.utc),
+    ))
+
+
+def test_a_replay_of_an_applied_decision_never_clears_a_question_asked_after_it(tmp_path: Path) -> None:
+    """r1 F2: A1 applied; the requeued agent publishes and asks again beside its
+    new PR (a COMPLETED session, the pr-label route). A replay of A1 finds its
+    own markers, but a session ran since it observed the item: refused."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    assert world.executor().apply(_action(_resolution())).success
+    _newer_session(world, "completed")
+    world.blocked_by(ITEM, _AGENT)
+
+    replay = world.executor().apply(_action(_resolution()))
+
+    assert replay.details["refusal"] == BlockResolutionRefusal.NEWER_SESSION.value
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.store.needs_human_causes(ITEM) == frozenset({"agent_completion"})
+
+
+def test_a_closing_split_is_refused_while_another_cause_holds_the_item(tmp_path: Path) -> None:
+    """r1 F3: closing would bury the cause the split does not name."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, NeedsHumanCause.ACTION_LIVENESS)
+    resolution = _resolution(
+        ResolutionKind.SPLIT, _AGENT,
+        children=(ResolutionChild(title="All of it", body="Everything."),),
+        parent=ParentDisposition.CLOSE,
+    )
+
+    result = world.executor().apply(_action(resolution))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.CLOSE_WHILE_HELD.value
+    assert world.github.states.get(ITEM, "open") == "open"
+    assert world.applier.applied == [] and world.github.created == []
+
+
+def test_a_closing_split_never_closes_an_item_another_cause_took_meanwhile(tmp_path: Path) -> None:
+    """r1 F3: a holder that arrives after the check keeps the item open."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    executor = world.executor()
+    resolve = world.block.resolve
+
+    def raced(target, causes, reason):  # type: ignore[no-untyped-def]
+        world.blocked_by(ITEM, NeedsHumanCause.ACTION_LIVENESS)
+        return resolve(target, causes, reason)
+
+    object.__setattr__(executor, "block", _RacedBlock(world.block, raced))
+    resolution = _resolution(
+        ResolutionKind.SPLIT, _AGENT,
+        children=(ResolutionChild(title="All of it", body="Everything."),),
+        parent=ParentDisposition.CLOSE,
+    )
+
+    result = executor.apply(_action(resolution))
+
+    assert result.success, result.error
+    assert result.details["block"] == BlockOutcome.HELD_BY_ANOTHER_CAUSE.value
+    assert not any(isinstance(a, CloseIssueAction) for a in world.applier.applied)
+    assert world.github.states.get(ITEM, "open") == "open"
+
+
+@dataclass
+class _RacedBlock:
+    inner: Any
+    racing_resolve: Any
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    def resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> BlockOutcome:
+        return self.racing_resolve(target, causes, reason)
+
+
+def test_a_split_child_that_files_human_only_work_is_refused(tmp_path: Path) -> None:
+    """r1 F4: the screen reads every word the decision files, children too."""
+    world = World(tmp_path, question=None)
+    world.blocked_by(ITEM, _AGENT)
+    resolution = _resolution(
+        ResolutionKind.SPLIT, _AGENT,
+        children=(ResolutionChild(title="Deploy foundation",
+                                  body="Create a Cloudflare account for the cloud-test Worker."),),
+        parent=ParentDisposition.NARROW,
+    )
+
+    result = world.executor().apply(_action(resolution))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.HUMAN_ONLY_WORK.value
+    assert world.github.created == [] and world.applier.applied == []

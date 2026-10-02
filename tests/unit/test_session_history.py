@@ -177,3 +177,6 @@ def test_failures_not_before_an_instant_are_the_ones_it_cannot_place_earlier() -
     owner = SessionHistoryOwner([older, newer, naive_newer, undated, completed, elsewhere])
 
     assert owner.failures_not_before(7, observed) == (newer, naive_newer, undated)
+    # #7658: a resolution is stale once ANY session ran since, whatever its
+    # outcome (an agent asks again beside a PR from a COMPLETED session).
+    assert owner.sessions_not_before(7, observed) == (newer, naive_newer, undated, completed)
