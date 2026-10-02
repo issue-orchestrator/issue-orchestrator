@@ -23,19 +23,24 @@ from .configured_repository_registry import (
     registered_repositories,
 )
 
-#: The engine's own log, relative to its state directory: written on every loop.
-ENGINE_LOG = Path("logs") / "orchestrator.log"
+#: The engine's logs, relative to its state directory: the engine's own
+#: logger writes ``orchestrator.log``; the supervisor captures a named
+#: instance's output in ``orchestrator-<instance>.log``.
+ENGINE_LOGS = "logs/orchestrator*.log"
 
 RepoSlug = Callable[[Path, str, str], str]
 LastWritten = Callable[[Path], datetime | None]
 
 
 def engine_log_written_at(state: Path) -> datetime | None:
-    """When the engine last wrote its log, or None if it has none."""
-    try:
-        return datetime.fromtimestamp((state / ENGINE_LOG).stat().st_mtime, tz=UTC)
-    except FileNotFoundError:
-        return None
+    """When the engine last wrote any of its logs, or None if it has none."""
+    written = []
+    for log in state.glob(ENGINE_LOGS):
+        try:
+            written.append(log.stat().st_mtime)
+        except FileNotFoundError:  # rotated away between the glob and the stat
+            continue
+    return datetime.fromtimestamp(max(written), tz=UTC) if written else None
 
 
 def engine_at(state: Path, repo: str) -> EngineRef:
@@ -96,4 +101,4 @@ class RegisteredEngineInventory:
         return registered.selected_config, registered.selected_mode
 
 
-__all__ = ["ENGINE_LOG", "RegisteredEngineInventory", "engine_at", "engine_log_written_at"]
+__all__ = ["ENGINE_LOGS", "RegisteredEngineInventory", "engine_at", "engine_log_written_at"]

@@ -11,6 +11,7 @@ import pytest
 from issue_orchestrator.adapters.registered_engine_inventory import (
     RegisteredEngineInventory,
     engine_at,
+    engine_log_written_at,
 )
 from issue_orchestrator.infra.repo_identity import configured_repository_key
 from issue_orchestrator.ports.repository_engine_supervisor import MultiInstanceStatus, SupervisorStatus
@@ -93,3 +94,19 @@ def test_an_engine_is_named_by_its_state_directory(tmp_path: Path) -> None:
     assert engine.engine_id == configured_repository_key(root)
     with pytest.raises(ValueError, match="not an engine state directory"):
         engine_at(tmp_path / "state", "porchpin/porchpin")
+
+
+def test_a_stopped_named_instance_counts_as_recent_by_its_own_log(tmp_path: Path) -> None:
+    """r1 F2: the supervisor captures instance output in orchestrator-<id>.log."""
+    import os
+
+    state = _root(tmp_path, "porchpin") / ".issue-orchestrator" / "state"
+    assert engine_log_written_at(state) is None
+    (state / "logs").mkdir()
+    old, instance = state / "logs" / "orchestrator.log", state / "logs" / "orchestrator-orchestrator-2.log"
+    old.write_text("x")
+    instance.write_text("y")
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(instance, (2_000_000, 2_000_000))
+
+    assert engine_log_written_at(state) == datetime.fromtimestamp(2_000_000, tz=UTC)
