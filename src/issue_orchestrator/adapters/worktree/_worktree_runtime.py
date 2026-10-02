@@ -217,7 +217,11 @@ def _worktree_git_dir(worktree_path: Path) -> Path | None:
     content = git_file.read_text().strip()
     if not content.startswith("gitdir:"):
         return None
-    return Path(content.split(":", 1)[1].strip())
+    git_dir = Path(content.split(":", 1)[1].strip())
+    if not git_dir.is_absolute():
+        # ``worktree.useRelativePaths`` links are relative to the worktree.
+        git_dir = (worktree_path / git_dir).resolve()
+    return git_dir
 
 
 def _worktree_git_common_dir(worktree_path: Path) -> Path | None:

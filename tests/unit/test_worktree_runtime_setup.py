@@ -339,6 +339,22 @@ class TestLegacyDropIsRetiredOnReuse:
         new_file.write_text("agent work\n")
         assert LEGACY_TOOL.as_posix() in _untracked(wt.worktree_path)
 
+    def test_relative_gitdir_link_still_finds_the_common_exclude(self, tmp_path):
+        """``git worktree add --relative-paths`` writes a relative ``.git`` link."""
+        wt = make_git_worktree(tmp_path)
+        relative = tmp_path / "wt-relative"
+        _git_out(
+            wt.main_repo, "worktree", "add", "--relative-paths", str(relative), "-b", "rel"
+        )
+        assert not (relative / ".git").read_text().split(":", 1)[1].strip().startswith("/")
+        _plant_legacy_foreign_drop(wt, relative)
+
+        state = _setup(wt.main_repo).apply(relative)
+
+        assert state.legacy_drop_retirement.quarantined == (LEGACY_TOOL,)
+        assert state.legacy_drop_retirement.exclude_lines_removed is True
+        assert not (relative / "src").exists()
+
     def test_exclude_lines_stay_while_another_worktree_still_holds_a_drop(
         self, tmp_path
     ):
