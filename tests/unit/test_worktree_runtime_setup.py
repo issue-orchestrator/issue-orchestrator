@@ -11,6 +11,7 @@ These pin two things the lifecycle module used to own inline:
 """
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from issue_orchestrator.adapters.worktree.api import (
 from issue_orchestrator.adapters.worktree._worktree_runtime import (
     ALLOW_NO_VERIFY_DRY_RUN_PATH,
     CLAUDE_SETTINGS_FOR_AGENTS,
+    LEGACY_CLI_TOOLS_DROP_DIR,
 )
 from issue_orchestrator.ports.worktree_manager import WORKTREE_ID_MARKER
 from tests.unit.worktree_git_helpers import (
@@ -91,21 +93,22 @@ class TestApplyProducesRunnableWorktree:
         # venv symlinked at the repo's, which is how the editable pointer
         # used to be rewritten by whichever checkout synced last.
         assert not (worktree_path / ".venv").exists()
-        assert state.synced_cli_tool_paths
-        for relative in state.synced_cli_tool_paths:
-            assert (worktree_path / relative).exists()
+        # io's tooling resolves from the session environment, never from
+        # files placed in the target's tree (#7566).
+        assert not (worktree_path / "src").exists()
+        assert state.retired_cli_tool_drop_paths == ()
 
     def test_apply_hides_runtime_artifacts_from_git_status(
         self, repo_root, worktree_path
     ):
-        state = _setup(repo_root).apply(worktree_path)
+        _setup(repo_root).apply(worktree_path)
 
         exclude_text = (
             repo_root / ".git" / "worktrees" / "repo-123" / "info" / "exclude"
         ).read_text()
         assert ".claude/settings.json" in exclude_text
         assert str(WORKTREE_ID_MARKER) in exclude_text
-        assert str(state.synced_cli_tool_paths[0]) in exclude_text
+        assert "src/issue_orchestrator" not in exclude_text
 
     def test_apply_reports_what_it_did(self, repo_root, worktree_path):
         state = _setup(
@@ -149,6 +152,130 @@ class TestApplyProducesRunnableWorktree:
         assert not (
             repo_root / ".git" / "worktrees" / "repo-123" / "hooks" / "pre-push"
         ).exists()
+
+
+def _git_out(worktree: Path, *argv: str) -> str:
+    return subprocess.run(
+        ["git", *argv], cwd=worktree, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def _visible_to_target_tooling(worktree: Path) -> list[str]:
+    """Every non-clean path git knows of, ignored files included.
+
+    ``--ignored`` is the point: an ``info/exclude`` entry hides a file from
+    ``git status`` but not from a validator that walks the tree.
+    """
+    return _git_out(
+        worktree, "status", "--porcelain", "--ignored", "--untracked-files=all"
+    ).splitlines()
+
+
+def _commit_io_cli_tool(wt, content: str) -> Path:
+    """Make ``wt`` look like io's own repo: cli_tools is tracked source."""
+    tool = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR / "coding_done.py"
+    tool.parent.mkdir(parents=True)
+    tool.write_text(content)
+    _git_out(wt.worktree_path, "add", str(tool))
+    _git_out(
+        wt.worktree_path,
+        "-c", "user.email=t@example.com", "-c", "user.name=T",
+        "commit", "-m", "io source",
+    )
+    return tool
+
+
+class TestIoToolingStaysOutOfTheTargetTree:
+    """io's completion tooling must never land in a target's worktree (#7566).
+
+    porchpin's architecture audit failed on a ``src/issue_orchestrator/`` tree
+    io planted (hidden from ``git status`` by ``info/exclude``, but not from a
+    validator walking the tree). Completion commands resolve from the session
+    environment instead; see ``test_session_env``.
+    """
+
+    def test_foreign_worktree_holds_no_io_tooling(self, tmp_path):
+        wt = make_git_worktree(tmp_path)
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert not (wt.worktree_path / "src").exists()
+        visible = _visible_to_target_tooling(wt.worktree_path)
+        assert not [line for line in visible if "issue_orchestrator" in line]
+        assert state.retired_cli_tool_drop_paths == ()
+
+    def test_io_repo_worktree_keeps_its_committed_source(self, tmp_path):
+        """In io's own repo, ``cli_tools`` is the project under review.
+
+        The old drop overwrote it with the engine's copy and set
+        ``skip-worktree``, so tests ran against code that was not the branch's
+        while git reported a clean tree.
+        """
+        wt = make_git_worktree(tmp_path)
+        tool = _commit_io_cli_tool(wt, "BRANCH_VERSION = True\n")
+
+        _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert tool.read_text() == "BRANCH_VERSION = True\n"
+        tag = _git_out(wt.worktree_path, "ls-files", "-v", "--", str(tool))
+        assert tag.startswith("H "), tag
+        assert _git_out(wt.worktree_path, "status", "--porcelain") == ""
+
+
+class TestLegacyDropIsRetiredOnReuse:
+    """A worktree provisioned before #7566 still carries the drop."""
+
+    def test_foreign_drop_hidden_by_exclude_is_removed(self, tmp_path):
+        wt = make_git_worktree(tmp_path)
+        drop = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
+        (drop / "__pycache__").mkdir(parents=True)
+        (drop / "coding_done.py").write_text("old\n")
+        (drop / "__pycache__" / "coding_done.cpython-312.pyc").write_bytes(b"x")
+        common_exclude = wt.main_repo / ".git" / "info" / "exclude"
+        common_exclude.write_text(
+            f"{LEGACY_CLI_TOOLS_DROP_DIR.as_posix()}/coding_done.py\n"
+            "__pycache__/\n"
+        )
+        agent_file = wt.worktree_path / "notes.md"
+        agent_file.write_text("mine\n")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert not (wt.worktree_path / "src").exists()
+        assert agent_file.read_text() == "mine\n"
+        assert set(state.retired_cli_tool_drop_paths) == {
+            LEGACY_CLI_TOOLS_DROP_DIR / "coding_done.py",
+            LEGACY_CLI_TOOLS_DROP_DIR / "__pycache__" / "coding_done.cpython-312.pyc",
+        }
+        visible = _visible_to_target_tooling(wt.worktree_path)
+        assert not [line for line in visible if "issue_orchestrator" in line]
+
+    def test_unignored_file_under_drop_dir_is_left_alone(self, tmp_path):
+        """Only files git ignores are provably io's; anything else is not."""
+        wt = make_git_worktree(tmp_path)
+        drop = wt.worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
+        drop.mkdir(parents=True)
+        (drop / "agent_made.py").write_text("mine\n")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert (drop / "agent_made.py").read_text() == "mine\n"
+        assert state.retired_cli_tool_drop_paths == ()
+
+    def test_io_repo_skip_worktree_snapshot_is_restored_to_head(self, tmp_path):
+        wt = make_git_worktree(tmp_path)
+        tool = _commit_io_cli_tool(wt, "BRANCH_VERSION = True\n")
+        tool.write_text("ENGINE_SNAPSHOT = True\n")
+        _git_out(wt.worktree_path, "update-index", "--skip-worktree", "--", str(tool))
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert tool.read_text() == "BRANCH_VERSION = True\n"
+        tag = _git_out(wt.worktree_path, "ls-files", "-v", "--", str(tool))
+        assert tag.startswith("H "), tag
+        assert state.retired_cli_tool_drop_paths == (
+            LEGACY_CLI_TOOLS_DROP_DIR / "coding_done.py",
+        )
 
 
 class TestEnforcedHooksAreAnInvariantNotARequest:

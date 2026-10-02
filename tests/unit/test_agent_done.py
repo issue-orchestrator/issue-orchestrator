@@ -727,15 +727,9 @@ class TestWriteMarkerFile:
 class TestCheckDirtyFiles:
     """Test check_dirty_files excludes orchestrator runtime artifacts.
 
-    Two filter categories apply:
-
-    - Runtime metadata (``.issue-orchestrator/`` sessions/backups,
-      ``.claude/``): always filtered regardless of tracked/untracked.
-    - Orchestrator-planted source
-      (``src/issue_orchestrator/entrypoints/cli_tools/``): filtered **only**
-      when git reports the path as untracked (status ``??``). A tracked
-      modification in the orchestrator's own repo is a legitimate
-      developer edit and must still fire the guard.
+    Runtime metadata (``.issue-orchestrator/`` sessions/backups,
+    ``.claude/``) is always filtered regardless of tracked/untracked. Nothing
+    else is: io places none of its own source in a worktree (#7566).
     """
 
     def test_excludes_runtime_metadata(self):
@@ -757,34 +751,33 @@ class TestCheckDirtyFiles:
             result = check_dirty_files()
         assert len(result) == 2
 
-    def test_excludes_untracked_planted_cli_tools(self):
-        """Untracked sync_cli_tools plantings must not block coding-done."""
+    def test_untracked_io_cli_tools_paths_count_as_dirty(self):
+        """io plants nothing in a worktree (#7566), so an untracked file under
+        io's own ``cli_tools/`` is an agent's new module. Excusing it would
+        let coding-done pass while the file never reaches the PR.
+        """
         porcelain = (
-            "?? src/issue_orchestrator/entrypoints/cli_tools/coding_done.py\n"
-            "?? src/issue_orchestrator/entrypoints/cli_tools/reviewer_done.py\n"
+            "?? src/issue_orchestrator/entrypoints/cli_tools/new_tool.py\n"
             " M src/app.py\n"
         )
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=porcelain)
             result = check_dirty_files()
-        assert result == ["M src/app.py"]
+        assert result == [
+            "?? src/issue_orchestrator/entrypoints/cli_tools/new_tool.py",
+            "M src/app.py",
+        ]
 
-    def test_excludes_untracked_summary_src_dir(self):
-        """``?? src/`` is the porcelain summary form git emits when an
-        entire untracked subtree is collapsed to its topmost dir. In a
-        foreign repo this is exactly how the planted ``cli_tools/`` tree
-        shows up — the prior substring-based filter silently missed it.
-        """
+    def test_untracked_summary_src_dir_counts_as_dirty(self):
         porcelain = "?? src/\n"
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=porcelain)
             result = check_dirty_files()
-        assert result == []
+        assert result == ["?? src/"]
 
-    def test_keeps_tracked_modified_planted_cli_tools(self):
-        """Tracked modifications to the same cli_tools files are legitimate
-        developer edits in the orchestrator's own repo and must still fire
-        the dirty-tree guard.
+    def test_keeps_tracked_modified_cli_tools(self):
+        """Tracked modifications to cli_tools files are legitimate developer
+        edits in the orchestrator's own repo and must fire the dirty-tree guard.
         """
         porcelain = (
             " M src/issue_orchestrator/entrypoints/cli_tools/coding_done.py\n"
@@ -799,9 +792,9 @@ class TestCheckDirtyFiles:
         ]
 
     def test_uses_untracked_files_all_flag(self):
-        """Porcelain must request per-file untracked listing so the planted
-        subtree doesn't get collapsed to ``?? src/`` and evade per-file
-        filters elsewhere.
+        """Porcelain must request per-file untracked listing so an untracked
+        subtree is not collapsed to its topmost directory, which the
+        per-path runtime filter cannot classify.
         """
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="")

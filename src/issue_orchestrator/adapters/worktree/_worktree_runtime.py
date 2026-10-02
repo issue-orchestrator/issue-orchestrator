@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import shutil
 import stat
 import uuid
 from pathlib import Path
@@ -83,7 +82,8 @@ __all__ = [
     "install_worktree_identity",
     "read_reviewer_head_ownership",
     "install_claude_settings",
-    "sync_cli_tools",
+    "LEGACY_CLI_TOOLS_DROP_DIR",
+    "retire_legacy_cli_tools_drop",
 ]
 
 
@@ -109,46 +109,99 @@ def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
         ) from exc
 
 
-def sync_cli_tools(worktree_path: Path) -> list[Path]:
+# Where io used to plant a copy of its own ``cli_tools`` package in every
+# worktree (removed in #7566). Completion commands resolve from the session
+# environment instead — ``control/session_env.build_session_env_exports`` puts
+# the orchestrator's venv ``bin`` first on ``PATH`` and its ``src`` first on
+# ``PYTHONPATH`` — so nothing io runs ever lives inside the target's tree.
+LEGACY_CLI_TOOLS_DROP_DIR = Path("src/issue_orchestrator/entrypoints/cli_tools")
+
+
+def retire_legacy_cli_tools_drop(worktree_path: Path) -> tuple[Path, ...]:
+    """Undo the ``cli_tools`` drop older io versions left in a worktree.
+
+    Reused worktrees outlive the code that provisioned them, so a worktree set
+    up before #7566 still carries the drop. Two shapes exist:
+
+    - **Foreign target repo:** the copied files are untracked and hidden by
+      io's ``info/exclude`` entries. The target's own validators still walk the
+      tree and see them (porchpin's architecture audit failed on them). They
+      are removed.
+    - **io's own repo:** the files are tracked source. The drop overwrote them
+      with the engine's copy and set ``skip-worktree`` so git reported a clean
+      tree while disk differed from ``HEAD`` — the stale-snapshot trap agents
+      kept tripping. The bit is cleared and the committed content restored.
+
+    Only paths io can prove it owns are touched: tracked files carrying the
+    ``skip-worktree`` bit (agents are blocked from setting it), and untracked
+    files git *ignores* under the drop directory (io's exclude entries, plus
+    bytecode caches). An untracked file git does not ignore is agent work and
+    is left alone.
+
+    Returns:
+        Worktree-relative paths that were restored or removed.
+
+    Raises:
+        GitError: If git cannot report or restore the drop. A half-retired drop
+            would leave the target's validators failing on io's files.
     """
-    Sync CLI tools from the orchestrator package to worktree.
-
-    This ensures the worktree has the latest orchestrator tools (especially
-    coding-done/reviewer-done) regardless of when the worktree was created or what branch
-    it's on.
-
-    Uses package-relative paths so this works even when the target repo is
-    a foreign (non-orchestrator) repository.
-
-    Args:
-        worktree_path: Path to the worktree
-    """
-    package_root = Path(__file__).resolve().parents[2]
-    src_cli_tools = package_root / "entrypoints" / "cli_tools"
-    dst_cli_tools = (
-        worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
-    )
-
-    if not src_cli_tools.exists():
-        logger.debug(
-            "No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools
+    if not (worktree_path / LEGACY_CLI_TOOLS_DROP_DIR).is_dir():
+        return ()
+    prefix = LEGACY_CLI_TOOLS_DROP_DIR.as_posix()
+    retired = [
+        *_restore_skip_worktree_drop(worktree_path, prefix),
+        *_remove_ignored_drop(worktree_path, prefix),
+    ]
+    _prune_empty_drop_dirs(worktree_path)
+    if retired:
+        logger.info(
+            "Retired legacy cli_tools drop: path=%s files=%d",
+            worktree_path,
+            len(retired),
         )
+    return tuple(retired)
+
+
+def _git_z_paths(worktree_path: Path, argv: list[str], prefix: str) -> list[str]:
+    result = _git_run(worktree_path, [*argv, "-z", "--", prefix], check=True)
+    return [entry for entry in result.stdout.split("\0") if entry]
+
+
+def _restore_skip_worktree_drop(worktree_path: Path, prefix: str) -> list[Path]:
+    tagged = _git_z_paths(worktree_path, ["ls-files", "-v"], prefix)
+    skipped = [entry[2:] for entry in tagged if entry.startswith("S ")]
+    if not skipped:
         return []
+    _git_run(worktree_path, ["update-index", "--no-skip-worktree", "--", *skipped], check=True)
+    _git_run(worktree_path, ["checkout", "--", *skipped], check=True)
+    return [Path(path) for path in skipped]
 
-    dst_cli_tools.mkdir(parents=True, exist_ok=True)
 
-    synced_paths: list[Path] = []
-    for src_file in src_cli_tools.glob("*.py"):
-        dst_file = dst_cli_tools / src_file.name
-        try:
-            shutil.copy2(src_file, dst_file)
-            synced_paths.append(dst_file.relative_to(worktree_path))
-            logger.debug("Synced cli tool: %s -> %s", src_file.name, dst_file)
-        except OSError as e:
-            logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
+def _remove_ignored_drop(worktree_path: Path, prefix: str) -> list[Path]:
+    ignored = _git_z_paths(
+        worktree_path,
+        ["ls-files", "--others", "--ignored", "--exclude-standard"],
+        prefix,
+    )
+    for relative in ignored:
+        (worktree_path / relative).unlink()
+    return [Path(path) for path in ignored]
 
-    logger.info("Synced cli_tools from orchestrator package to worktree")
-    return synced_paths
+
+def _prune_empty_drop_dirs(worktree_path: Path) -> None:
+    """Remove directories the drop left empty, deepest first, up to the root."""
+    drop_dir = worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
+    for directory in sorted(
+        (path for path in drop_dir.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        if not any(directory.iterdir()):
+            directory.rmdir()
+    current = drop_dir
+    while current != worktree_path and current.is_dir() and not any(current.iterdir()):
+        current.rmdir()
+        current = current.parent
 
 
 def _read_worktree_identity(marker_path: Path) -> str | None:
@@ -312,14 +365,11 @@ def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> N
         _append_exclude_entries(exclude_path, paths)
 
 
-def _worktree_git_exclude_paths(
-    worktree_path: Path, synced_cli_tool_paths: list[Path]
-) -> list[Path]:
-    """Return untracked paths that should be hidden from plain git status.
+def _worktree_git_exclude_paths(worktree_path: Path) -> list[Path]:
+    """Return untracked runtime metadata paths to hide from plain git status.
 
-    This covers both runtime-only metadata and the synced CLI helper files we
-    plant into foreign worktrees so first-run agents don't misread a clean
-    session as a dirty repo before they make any user-facing change.
+    First-run agents must not misread a clean session as a dirty repo before
+    they make any user-facing change.
     """
     # Path normalisation intentionally widens trailing-slash patterns from
     # directory-only to file-or-directory when writing Git excludes. The
@@ -328,19 +378,11 @@ def _worktree_git_exclude_paths(
     repo_local_runtime_paths = [
         Path(pattern) for pattern in load_runtime_ignore_patterns(worktree_path)
     ]
-    return [
-        *WORKTREE_LOCAL_EXCLUDE_PATHS,
-        *repo_local_runtime_paths,
-        *synced_cli_tool_paths,
-    ]
+    return [*WORKTREE_LOCAL_EXCLUDE_PATHS, *repo_local_runtime_paths]
 
 
-def _hide_runtime_artifacts_from_git_status(
-    worktree_path: Path,
-    synced_cli_tool_paths: list[Path],
-) -> None:
-    tracked_paths = [*WORKTREE_TRACKED_RUNTIME_PATHS, *synced_cli_tool_paths]
-    for path in tracked_paths:
+def _hide_runtime_artifacts_from_git_status(worktree_path: Path) -> None:
+    for path in WORKTREE_TRACKED_RUNTIME_PATHS:
         normalized = str(path).replace("\\", "/")
         tracked = _git_run(
             worktree_path,
@@ -355,8 +397,7 @@ def _hide_runtime_artifacts_from_git_status(
             check=False,
         )
     _write_worktree_exclude_entries(
-        worktree_path,
-        _worktree_git_exclude_paths(worktree_path, synced_cli_tool_paths),
+        worktree_path, _worktree_git_exclude_paths(worktree_path)
     )
 
 

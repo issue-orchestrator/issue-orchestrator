@@ -21,7 +21,7 @@ from ._worktree_runtime import (
     _hide_runtime_artifacts_from_git_status,
     install_worktree_identity,
     install_claude_settings,
-    sync_cli_tools,
+    retire_legacy_cli_tools_drop,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,15 +46,17 @@ class WorktreeRuntimeState:
             hook that did not install fails ``apply`` instead of being reported.
         no_verify_dry_run_allowed: State the ``--no-verify`` dry-run flag file
             was left in.
-        synced_cli_tool_paths: Worktree-relative paths of the CLI tools copied
-            in, in the form the git exclude entries use.
+        retired_cli_tool_drop_paths: Worktree-relative paths of a pre-#7566
+            ``cli_tools`` drop that setup restored or removed. Setup itself
+            never puts io tooling in the worktree: the session environment
+            resolves completion commands from the orchestrator's own install.
     """
 
     worktree_path: Path
     worktree_id: str
     hooks_installed: bool
     no_verify_dry_run_allowed: bool
-    synced_cli_tool_paths: tuple[Path, ...]
+    retired_cli_tool_drop_paths: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -105,11 +107,7 @@ class WorktreeRuntimeSetup:
             ) from exc
 
     def _apply(self, worktree_path: Path) -> WorktreeRuntimeState:
-        """Run the setup sequence.
-
-        Artifact hiding runs last because it needs the CLI tool paths the sync
-        step planted.
-        """
+        """Run the setup sequence."""
         hooks_installed = False
         if self.enforce_hooks:
             hooks_installed = install_hooks(worktree_path, self.pre_push_hook)
@@ -126,9 +124,9 @@ class WorktreeRuntimeSetup:
         _configure_no_verify_dry_run(
             worktree_path, self.allow_no_verify_dry_run_preflight
         )
-        synced_cli_tool_paths = list(sync_cli_tools(worktree_path))
+        retired_cli_tool_drop_paths = retire_legacy_cli_tools_drop(worktree_path)
         worktree_id = install_worktree_identity(worktree_path)
-        _hide_runtime_artifacts_from_git_status(worktree_path, synced_cli_tool_paths)
+        _hide_runtime_artifacts_from_git_status(worktree_path)
 
         logger.debug(
             "Worktree runtime setup applied: path=%s id=%s hooks=%s",
@@ -141,5 +139,5 @@ class WorktreeRuntimeSetup:
             worktree_id=worktree_id,
             hooks_installed=hooks_installed,
             no_verify_dry_run_allowed=self.allow_no_verify_dry_run_preflight,
-            synced_cli_tool_paths=tuple(synced_cli_tool_paths),
+            retired_cli_tool_drop_paths=retired_cli_tool_drop_paths,
         )
