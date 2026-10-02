@@ -134,7 +134,7 @@ def reference(evidence: StagedEvidence) -> dict:
     }
     doc["blocked_items"][0]["finding_id"] = doc["findings"][0]["id"]
     doc["blocked_items"][0]["downstream"] = [{
-        "anomaly_key": _VETO, "finding_id": doc["findings"][0]["id"],
+        "anomaly_key": _VETO, "finding_id": doc["findings"][0]["id"], "refused_action": "review",
         "pipeline_event": "blocked-items.json#/items/0/open_prs/0/pipeline_events/2",
         "impact": "the validated work published on PR #379 can never be reviewed while #364 is blocked",
     }]
@@ -197,18 +197,20 @@ def test_the_veto_keyed_onto_the_blind_finding_without_its_evidence_is_refused(e
 
 
 @pytest.mark.parametrize(
-    "pipeline_event",
+    "change",
     [
-        None,  # PR #379 has retained pipeline events: one must be cited
-        "blocked-items.json#/items/0/open_prs/0/pipeline_events/9",  # no such event
-        "blocked-items.json#/items/0/block_events/1",  # not the PR's pipeline
+        {"pipeline_event": None},  # PR #379 has retained pipeline events: one must be cited
+        {"pipeline_event": "blocked-items.json#/items/0/open_prs/0/pipeline_events/9"},  # no such event
+        {"pipeline_event": "blocked-items.json#/items/0/block_events/1"},  # not the PR's pipeline
+        # r5 F1: its label change is not the refusal; the retained skip is.
+        {"pipeline_event": "blocked-items.json#/items/0/open_prs/0/pipeline_events/0"},
+        # r5 F1: the retained skip refuses the review, not a rework.
+        {"refused_action": "rework"},
     ],
 )
-def test_the_vetoed_review_is_accounted_for_with_its_own_pipeline_event(
-    evidence: StagedEvidence, pipeline_event: str | None
-) -> None:
+def test_the_vetoed_review_is_accounted_for_with_its_own_skip(evidence: StagedEvidence, change: dict) -> None:
     doc = reference(evidence)
-    doc["blocked_items"][0]["downstream"][0]["pipeline_event"] = pipeline_event
+    doc["blocked_items"][0]["downstream"][0].update(change)
 
     with pytest.raises(ImproverFindingsRejected) as rejected:
         validate_findings(json.dumps(doc), evidence)

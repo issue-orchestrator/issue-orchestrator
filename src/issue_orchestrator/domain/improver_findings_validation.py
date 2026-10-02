@@ -42,7 +42,7 @@ from pydantic import ValidationError
 
 from ..contracts.engine_audit import AnomalyKind, AuditDiff, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
-from ..contracts.improver_findings import BlockedItemAccount, Finding, ImproverFindings, Observed
+from ..contracts.improver_findings import BlockedItemAccount, DownstreamStall, Finding, ImproverFindings, Observed
 from ..contracts.improver_inputs import (
     AUDIT_FILE,
     AUDIT_PREVIOUS_FILE,
@@ -57,6 +57,7 @@ from ..contracts.improver_inputs import (
     OpenIssuesInput,
     StagedDecision,
 )
+from ..events.catalog import EventName
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -416,28 +417,32 @@ class _Checker:
                     f"#{n}: {entry.finding_id} must be a finding that keys {key} and cites its"
                     " snapshot (audit.json#/anomalies/<i>): a key with no evidence of its own examines nothing"
                 )
-            yield from self._pipeline_event(item, key, entry.pipeline_event)
+            yield from self._refused_pr_action(item, entry)
 
-    def _pipeline_event(
-        self, item: BlockedItem, key: tuple[str, str, str], cited: str | None
-    ) -> Iterator[tuple[Rule, str]]:
-        """The refused PR's pipeline event: required, and that PR's, when the
-        refused work is an open PR of the item with retained events."""
-        n = item.number
-        pr = next((p for p in item.open_prs if f"PR #{p.number}" == key[1] and p.pipeline_events), None)
+    def _refused_pr_action(self, item: BlockedItem, entry: DownstreamStall) -> Iterator[tuple[Rule, str]]:
+        """What the downstream entry claims of the refused PR, checked against
+        its retained pipeline: the refused action is named for a PR's work
+        (and only for it), and the cited event is THAT PR's, its retained skip
+        of that action when there is one."""
+        n, rule = item.number, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
+        subject, action, cited = entry.anomaly_key.subject, entry.refused_action, entry.pipeline_event
+        if (action is None) != (_PR_SUBJECT.match(subject) is None):
+            yield rule, f"#{n}: name the refused_action of a PR's refused work ({subject}), and only of one"
+        pr = next((p for p in item.open_prs if f"PR #{p.number}" == subject and p.pipeline_events), None)
         if pr is None:
             if cited is not None:
-                yield Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, (
-                    f"#{n}: {key[1]} has no retained pipeline event on the item, so cite none"
-                )
+                yield rule, f"#{n}: {subject} has no retained pipeline event on the item, so cite none"
             return
         prefix = f"{BLOCKED_ITEMS_FILE}#/items/{self._item_index[n]}/open_prs/{item.open_prs.index(pr)}/pipeline_events/"
-        if cited is None or not cited.startswith(prefix) or not cited[len(prefix):].isdigit() or (
-            int(cited[len(prefix):]) >= len(pr.pipeline_events)
-        ):
-            yield Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, (
-                f"#{n}: cite the pipeline event of PR #{pr.number} that shows the refusal ({prefix}<k>)"
-            )
+        skips = [i for i, e in enumerate(pr.pipeline_events) if e.event in _PIPELINE_SKIPS]
+        index = cited[len(prefix):] if cited is not None and cited.startswith(prefix) else ""
+        if not index.isdigit() or int(index) >= len(pr.pipeline_events) or (skips and int(index) not in skips):
+            what = "its retained skip" if skips else "an event"
+            yield rule, f"#{n}: cite {what} of PR #{pr.number}'s pipeline ({prefix}<k>)"
+            return
+        event = pr.pipeline_events[int(index)].event
+        if event in _PIPELINE_SKIPS and _PIPELINE_SKIPS[event] != action:
+            yield rule, f"#{n}: {event} refuses the PR's {_PIPELINE_SKIPS[event]}, not its {action}"
 
     def _handed_over(self, account: BlockedItemAccount, item: BlockedItem) -> Iterator[tuple[Rule, str]]:
         n = account.number
@@ -745,6 +750,13 @@ class _Checker:
         if repro.fails_on != self._findings.engine_commit:
             yield Rule.REPRODUCTION_FAILS_ON_ENGINE_COMMIT, "the reproduction must fail on the engine's commit"
 
+
+#: A PR's retained skip event, and the pipeline action it refuses.
+_PIPELINE_SKIPS: Mapping[str, str] = {
+    EventName.REVIEW_SKIPPED.value: "review",
+    EventName.REWORK_SKIPPED.value: "rework",
+}
+_PR_SUBJECT = re.compile(r"^PR #\d+$")
 
 #: The audit's records counted from its log read: the read's coverage is theirs.
 _LOG_RECORDS = ("/no_progress/log_signatures/", "/no_progress/refused_work/")

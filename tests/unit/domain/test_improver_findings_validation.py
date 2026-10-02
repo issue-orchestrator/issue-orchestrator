@@ -849,6 +849,7 @@ def test_a_key_without_its_own_evidence_does_not_examine_the_refused_work(tmp_pa
 _DOWNSTREAM = {
     "anomaly_key": {key: _REFUSED[key] for key in ("kind", "subject", "signature")},
     "finding_id": "needs-human-353",
+    "refused_action": "review",
     "impact": "PR #379's published work can never be reviewed while #353 is blocked",
 }
 
@@ -914,3 +915,21 @@ def test_a_finding_keyed_to_the_refused_work_examines_it(tmp_path: Path) -> None
     })
 
     assert validate_findings(json.dumps(doc), evidence).findings[0].anomaly_keys[-1].subject == "PR #379"
+
+
+@pytest.mark.parametrize(
+    ("change", "rule"),
+    [
+        # A PR's refused work names the action it refuses.
+        ({"refused_action": None}, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED),
+        # The impact is stated, not blank.
+        ({"impact": " "}, Rule.SCHEMA),
+    ],
+)
+def test_a_downstream_claim_is_typed_and_stated(tmp_path: Path, change: dict, rule: Rule) -> None:
+    """Review r5: a downstream entry claims WHAT is refused, in so many words."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+    doc = _examined(example("needs_investigation"), index)
+    doc["blocked_items"][0]["downstream"] = [{**_DOWNSTREAM, **change}]
+
+    assert rule in _rules(doc, evidence)

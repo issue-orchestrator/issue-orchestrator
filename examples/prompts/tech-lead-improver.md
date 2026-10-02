@@ -220,7 +220,7 @@ decision, never applied.
   ],
   "blocked_items": [
     {"number": 262, "disposition": "finding | awaiting_operator", "finding_id": "<finding only: the finding about it>", "evidence": ["<awaiting_operator only: the decision ids that handed it over>"], "why": "<why it is blocked, and what the tech lead did about it>",
-     "downstream": [{"anomaly_key": {"kind": "refused_work", "subject": "<stalled_work subject>", "signature": "<stalled_work signature>"}, "finding_id": "<the finding that grades it>", "pipeline_event": "blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k> | null", "impact": "<what the block holds up, and why it cannot proceed>"}]}
+     "downstream": [{"anomaly_key": {"kind": "refused_work", "subject": "<stalled_work subject>", "signature": "<stalled_work signature>"}, "finding_id": "<the finding that grades it>", "refused_action": "review | rework | null", "pipeline_event": "blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k> | null", "impact": "<what the block holds up, and why it cannot proceed>"}]}
   ],
   "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
 }
@@ -338,10 +338,15 @@ in `engine-source/examples/improver/findings/`.
   nothing else; `[]` when it has none), whatever its disposition. Each
   names, in `finding_id`, a finding of this file that keys that anomaly AND
   cites its snapshot (`audit.json#/anomalies/<i>`): a key with no evidence
-  of its own examines nothing. When the refused work is an open PR of the
-  item with retained `pipeline_events`, `pipeline_event` cites one of that
-  PR's events (`blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>`);
-  otherwise it is `null`. `impact` says what the block holds up.
+  of its own examines nothing. `refused_action` names the PR pipeline
+  action the block refuses (`review` or `rework`) when the refused work is
+  a PR's (`subject` `PR #<n>`), and is `null` otherwise. When the refused
+  work is an open PR of the item with retained `pipeline_events`,
+  `pipeline_event` cites one of that PR's events
+  (`blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>`): its
+  retained skip (`review.skipped` / `rework.skipped`) when there is one,
+  which must be a skip of the `refused_action`; otherwise it is `null`.
+  `impact` says, in words, what the block holds up.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous
   scorecard for exactly the cases it holds a latest one for.
