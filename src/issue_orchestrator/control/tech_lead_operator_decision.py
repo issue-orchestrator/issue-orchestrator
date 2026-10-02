@@ -4,24 +4,29 @@ A ``propose_decision`` is a tech lead turning an open question about a blocked
 item (an agent asking whether to split its issue, a maintainer call about
 scope) into one concrete proposal the operator can approve or decline. It is
 always a gated proposal: removing ``proposed-tech-lead`` is the operator's
-answer. This owner is what that answer does, and nothing runs before it:
+answer. This owner is what that answer does, in an order that keeps the item
+gated until everything the resumed session needs exists:
 
-1. **Retry the item**, through the operator's own retry command. That is the
-   one owner of which labels a retry clears and of the local state it settles;
-   approving a decision means "go ahead", which is what an operator retry is.
-   If a cause the retry may not override still holds the item (a claim
-   quarantine, a tech-lead hand-over), nothing else happens: the proposal
-   closes as stale and says what still holds it.
-2. **File the drafted follow-up issues**, create-once by a body marker, so a
-   crash between two writes never files one twice. They inherit the item's own
-   non-workflow labels (its agent, priority, area) and milestone, so a split
-   remainder lands where the item was.
-3. **Post the decision on the item**, create-once by a comment marker, naming
-   the follow-ups, through the applier's own comment write. The coding agent
-   that resumes the item reads it there.
+1. **Refuse what cannot be carried out, writing nothing.** An item that closed,
+   is no longer blocked (nothing waits on the decision any more), or whose
+   ``needs-human`` a cause the operator's retry may not override still holds
+   (a claim quarantine, a tech-lead hand-over) makes the proposal close stale.
+2. **File the drafted follow-up issues**, create-once by a body marker, each
+   behind the applier's mutation-authority check on the item. They inherit the
+   item's own non-workflow labels (agent, priority, area) and milestone.
+3. **Post the decision on the item**, naming the follow-ups, create-once by a
+   comment marker, through the applier's own comment write.
+4. **Retry the item last**, through the operator's own retry command, the
+   one owner of which labels a retry clears. The item stays blocked until the
+   decision and its follow-ups are on GitHub, so no session resumes it
+   without them.
+5. **Mark the proposal applied** with a marker comment through the applier.
+   A replay (the finalize after it failed) finds the marker and does not
+   retry again, so a ``needs-human`` raised after the retry is never cleared.
 
-A failed write after the retry leaves the op in place; the next attempt finds
-the retry already settled and the earlier writes by their markers.
+A failure before step 5 leaves the op in place; the replay finds the earlier
+writes by their markers and retries again. The one window left is a retry that
+committed while step 5's comment failed: its replay retries once more.
 """
 
 from __future__ import annotations
@@ -36,7 +41,8 @@ from ..infra.logging_config import issue_log
 from ..ports import make_trace_event
 from ..ports.operator_issue_commands import OperatorCommandOutcome, OperatorCommandStatus
 from .actions import Action, ActionResult, AddCommentAction
-from .reconciliation import build_expected_for_mutation
+from .claim_gate import ClaimLostError
+from .reconciliation import ReconciliationRequired, build_expected_for_mutation
 from .tech_lead_op_actions import ApplyOperatorDecisionAction
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
@@ -59,6 +65,10 @@ def decision_marker(proposal_issue_number: int) -> str:
     return f"<!-- io:operator-decision:{proposal_issue_number}:decision -->"
 
 
+def applied_marker(proposal_issue_number: int) -> str:
+    return f"<!-- io:operator-decision:{proposal_issue_number}:applied -->"
+
+
 @dataclass(frozen=True)
 class OperatorDecisionExecutor:
     """Applies :class:`ApplyOperatorDecisionAction` (see the module docstring)."""
@@ -67,47 +77,59 @@ class OperatorDecisionExecutor:
     labels: "LabelManager"
     read_issue: Callable[[int], "Issue | None"]
     retry_issue: Callable[[int], OperatorCommandOutcome]
+    #: Causes a force-clear may not settle that still hold an issue's
+    #: ``needs-human`` (the shared block's owner answers).
+    unsettleable_holders: Callable[[int], tuple[str, ...]]
     find_issue_by_marker: Callable[..., int | None]
     create_issue: Callable[..., "dict[str, Any] | None"]
     comment_marker_present: Callable[[int, str], bool]
-    #: The applier's own dispatch: the decision comment is a normal
-    #: claim-verified, reconciliation-guarded comment write.
+    #: The applier's own dispatch: comments are normal claim-verified,
+    #: reconciliation-guarded writes.
     apply_action: Callable[[Action], ActionResult]
+    #: The applier's mutation-authority check (expectations and claim) for a
+    #: write about an issue, run before each follow-up is filed.
+    require_authority: Callable[[Action, int], None]
 
     def apply(self, action: ApplyOperatorDecisionAction) -> ActionResult:
+        proposal = action.proposal_issue_number
+        if self.comment_marker_present(proposal, applied_marker(proposal)):
+            return ActionResult.ok(action, issue_number=action.issue_number, replayed=True)
         target = self.read_issue(action.issue_number)
-        if target is None or target.state != "open":
-            return self._stale(action, f"issue #{action.issue_number} is no longer open")
-        outcome = self.retry_issue(action.issue_number)
-        if outcome.status is OperatorCommandStatus.STILL_BLOCKED:
-            held = ", ".join(outcome.held_by) or "another lifecycle"
-            return self._stale(
-                action, f"{outcome.blocked} is still required by {held}; the item was not retried"
+        refusal = self._refusal(action, target)
+        if refusal is not None:
+            return _stale(action, refusal)
+        assert target is not None  # a missing issue is a refusal
+        try:
+            follow_ups = tuple(
+                self._file_follow_up(action, target, index, follow_up)
+                for index, follow_up in enumerate(action.decision.follow_ups, start=1)
             )
-        if outcome.status is not OperatorCommandStatus.COMMITTED:
+        except (ReconciliationRequired, ClaimLostError):
+            raise
+        except Exception as error:  # the item stays blocked; a replay resumes by marker
             return ActionResult.fail(
-                action,
-                f"retry of issue #{action.issue_number} did not settle:"
-                f" GitHub kept {', '.join(outcome.failed)}",
-                issue_number=action.issue_number,
+                action, f"follow-up issue not filed: {error}", issue_number=action.issue_number
             )
-        follow_ups = tuple(
-            self._file_follow_up(action, target, index, follow_up)
-            for index, follow_up in enumerate(action.decision.follow_ups, start=1)
+        posted = self._comment_once(
+            action.issue_number,
+            decision_marker(proposal),
+            _decision_comment(action, follow_ups, decision_marker(proposal)),
+            reason=f"operator approved decision {action.proposal_id} (proposal #{proposal})",
         )
-        marker = decision_marker(action.proposal_issue_number)
-        if not self.comment_marker_present(action.issue_number, marker):
-            posted = self.apply_action(AddCommentAction(
-                number=action.issue_number,
-                comment=_decision_comment(action, follow_ups, marker),
-                reason=f"operator approved decision {action.proposal_id} (proposal #{action.proposal_issue_number})",
-                expected=build_expected_for_mutation(),
-            ))
-            if not posted.success:
-                return ActionResult.fail(
-                    action, f"decision comment on #{action.issue_number} not posted: {posted.error}",
-                    issue_number=action.issue_number,
-                )
+        if posted is not None:
+            return ActionResult.fail(action, posted, issue_number=action.issue_number)
+        outcome = self.retry_issue(action.issue_number)
+        unsettled = _UNSETTLED_RETRY.get(outcome.status)
+        if unsettled is not None:
+            return unsettled(action, outcome)
+        marked = self._comment_once(
+            proposal, applied_marker(proposal),
+            f"Applied: #{action.issue_number} was retried with the decision posted on it."
+            f"\n\n{applied_marker(proposal)}",
+            reason=f"operator decision {action.proposal_id} applied",
+        )
+        if marked is not None:
+            return ActionResult.fail(action, marked, issue_number=action.issue_number)
         self.events.publish(make_trace_event(EventName.TECH_LEAD_ACTION_EXECUTED, {
             "issue_number": action.anchor_issue_number,
             "action_id": action.proposal_id,
@@ -124,6 +146,31 @@ class OperatorDecisionExecutor:
             follow_up_issues=[str(number) for number in follow_ups],
         )
 
+    def _refusal(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> str | None:
+        """Why the approved decision cannot be carried out now, or None."""
+        if target is None or target.state != "open":
+            return f"issue #{action.issue_number} is no longer open"
+        if not self.labels.get_blocking(list(target.labels)):
+            return f"#{action.issue_number} is no longer blocked: nothing waits on this decision"
+        needs_human = self.labels.needs_human.casefold()
+        if any(label.casefold() == needs_human for label in target.labels):
+            held = self.unsettleable_holders(action.issue_number)
+            if held:
+                return (
+                    f"#{action.issue_number}'s {self.labels.needs_human} is held by"
+                    f" {', '.join(held)}, which the operator's retry may not override"
+                )
+        return None
+
+    def _comment_once(self, number: int, marker: str, body: str, *, reason: str) -> str | None:
+        """Post *body* on *number* unless *marker* is already there; the failure, else None."""
+        if self.comment_marker_present(number, marker):
+            return None
+        posted = self.apply_action(AddCommentAction(
+            number=number, comment=body, reason=reason, expected=build_expected_for_mutation(),
+        ))
+        return None if posted.success else f"comment on #{number} not posted: {posted.error}"
+
     def _file_follow_up(
         self,
         action: ApplyOperatorDecisionAction,
@@ -137,6 +184,7 @@ class OperatorDecisionExecutor:
         )
         if existing is not None:
             return existing
+        self.require_authority(action, action.issue_number)
         created = self.create_issue(
             title=follow_up.title,
             body=(
@@ -155,14 +203,44 @@ class OperatorDecisionExecutor:
         """The item's own labels (agent, priority, area), never workflow state."""
         return [label for label in labels if not self.labels.is_workflow_reserved(label)]
 
-    def _stale(self, action: ApplyOperatorDecisionAction, why: str) -> ActionResult:
-        logger.warning(issue_log(action.issue_number, "Approved decision %s not applied: %s"),
-                       action.proposal_id, why)
-        return ActionResult.skip(
-            action, f"stale precondition: {why}",
-            mode=STALE_DOWNGRADE_MODE, skip_reason=why,
-            issue_number=action.issue_number, proposal_id=action.proposal_id,
-        )
+def _stale(action: ApplyOperatorDecisionAction, why: str) -> ActionResult:
+    logger.warning(issue_log(action.issue_number, "Approved decision %s not applied: %s"),
+                   action.proposal_id, why)
+    return ActionResult.skip(
+        action, f"stale precondition: {why}",
+        mode=STALE_DOWNGRADE_MODE, skip_reason=why,
+        issue_number=action.issue_number, proposal_id=action.proposal_id,
+    )
+
+
+def _still_blocked(action: ApplyOperatorDecisionAction, outcome: OperatorCommandOutcome) -> ActionResult:
+    """A cause the retry may not override appeared: close the proposal stale."""
+    held = ", ".join(outcome.held_by) or "another lifecycle"
+    return _stale(
+        action,
+        f"{outcome.blocked} is still required by {held}; the decision is posted on"
+        f" #{action.issue_number} but the item was not retried",
+    )
+
+
+def _incomplete(action: ApplyOperatorDecisionAction, outcome: OperatorCommandOutcome) -> ActionResult:
+    """GitHub kept a label: a failure the op's replay retries."""
+    return ActionResult.fail(
+        action,
+        f"retry of issue #{action.issue_number} did not settle:"
+        f" GitHub kept {', '.join(outcome.failed)}",
+        issue_number=action.issue_number,
+    )
+
+
+#: What an unsettled operator retry means for the approved decision.
+_UNSETTLED_RETRY: dict[
+    OperatorCommandStatus,
+    Callable[[ApplyOperatorDecisionAction, OperatorCommandOutcome], ActionResult],
+] = {
+    OperatorCommandStatus.STILL_BLOCKED: _still_blocked,
+    OperatorCommandStatus.INCOMPLETE: _incomplete,
+}
 
 
 def _decision_comment(
@@ -176,6 +254,6 @@ def _decision_comment(
     return (
         f"## Decision approved: {action.decision.title}\n\n"
         f"The operator approved this decision on proposal #{action.proposal_issue_number}."
-        f" The issue has been retried, so the next session works to it.\n\n"
+        f" The issue is retried after this comment, so the next session works to it.\n\n"
         f"{action.decision.body}{filed}\n\n{marker}"
     )

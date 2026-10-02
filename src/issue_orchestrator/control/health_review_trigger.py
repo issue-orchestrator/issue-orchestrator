@@ -113,7 +113,11 @@ class HealthReviewDecision:
 
 
 def health_review_decision(
-    config: "Config", state: "OrchestratorState", now: float
+    config: "Config",
+    state: "OrchestratorState",
+    now: float,
+    *,
+    triage_owed: Callable[[], bool] = lambda: False,
 ) -> HealthReviewDecision:
     """Decide whether the periodic review fires, and on which board.
 
@@ -146,7 +150,10 @@ def health_review_decision(
     if not fingerprint:
         return HealthReviewDecision(due=False, fingerprint=fingerprint)
     return HealthReviewDecision(
-        due=fingerprint != state.last_reviewed_board_fingerprint,
+        # A blocked item still owed a triage keeps a review due on an unchanged
+        # board (#7593): one deferred by the per-run cap, or whose triage did
+        # not take effect, would otherwise wait for an unrelated change.
+        due=fingerprint != state.last_reviewed_board_fingerprint or triage_owed(),
         fingerprint=fingerprint,
     )
 

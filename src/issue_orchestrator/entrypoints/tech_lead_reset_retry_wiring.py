@@ -118,10 +118,14 @@ def build_tech_lead_operator_decision_executor(
         labels=deps.label_manager,
         read_issue=host.get_issue,
         retry_issue=orchestrator.operator_issue_commands.retry,
+        unsettleable_holders=lambda number: tuple(
+            cause.value for cause in deps.needs_human_block.unsettleable_holders(number)
+        ),
         find_issue_by_marker=host.find_issue_by_marker,
         create_issue=host.create_issue,
         comment_marker_present=host.issue_comment_marker_present,
         apply_action=deps.action_applier.apply,
+        require_authority=deps.action_applier.require_mutation_authority,
     )
 
 

@@ -95,8 +95,8 @@ def _issue(number: int, *labels: str, title: str | None = None) -> Issue:
 class _Ledger:
     decisions: dict[int, list[TechLeadCharterDecision]] = field(default_factory=dict)
 
-    def list_about_issue(self, issue_number: int, *, limit: int = 100):
-        return tuple(self.decisions.get(issue_number, ()))[:limit]
+    def latest_triage_for_issue(self, issue_number: int):
+        return next(iter(self.decisions.get(issue_number, ())), None)
 
 
 def _triage_record(
@@ -253,7 +253,7 @@ def test_the_agenda_is_capped_per_run_oldest_first() -> None:
 
 def test_an_unreadable_ledger_fails_the_agenda_rather_than_guessing() -> None:
     class _Broken:
-        def list_about_issue(self, issue_number: int, *, limit: int = 100):
+        def latest_triage_for_issue(self, issue_number: int):
             raise RuntimeError("authority store locked")
 
     owner = _owner([_issue(262, "agent:backend", "needs-human")], ledger=_Broken())  # type: ignore[arg-type]
@@ -419,6 +419,8 @@ class _Host:
     markers: dict[str, int] = field(default_factory=dict)
     comments: list[tuple[int, str]] = field(default_factory=list)
     created: list[dict[str, Any]] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
+    create_error: Exception | None = None
 
     def get_issue(self, number: int) -> Issue | None:
         return self.issues.get(number)
@@ -428,10 +430,12 @@ class _Host:
         return self.markers.get(marker)
 
     def create_issue(self, *, title: str, body: str, labels=None, milestone=None) -> dict[str, Any]:
+        if self.create_error is not None:
+            raise self.create_error
         number = 1000 + len(self.created)
+        self.calls.append("create_issue")
         self.created.append({"title": title, "body": body, "labels": labels, "milestone": milestone})
-        marker = body[body.index("<!--"):]
-        self.markers[marker] = number
+        self.markers[body[body.index("<!--"):]] = number
         return {"number": number}
 
     def comment_marker_present(self, number: int, marker: str) -> bool:
@@ -441,6 +445,7 @@ class _Host:
         from issue_orchestrator.control.actions import ActionResult, AddCommentAction
 
         assert isinstance(action, AddCommentAction)
+        self.calls.append(f"comment:{action.number}")
         self.comments.append((action.number, action.comment))
         return ActionResult.ok(action)
 
@@ -451,13 +456,19 @@ def _outcome(status: OperatorCommandStatus, **fields: Any) -> OperatorCommandOut
     )
 
 
-def _executor(host: _Host, retry) -> OperatorDecisionExecutor:
+def _executor(host: _Host, retry, *, held: tuple[str, ...] = (), authority=None) -> OperatorDecisionExecutor:
     config = _config()
+
+    def tracked_retry(number: int) -> OperatorCommandOutcome:
+        host.calls.append(f"retry:{number}")
+        return retry(number)
+
     return OperatorDecisionExecutor(
         events=MagicMock(), labels=LabelManager(config), read_issue=host.get_issue,
-        retry_issue=retry, find_issue_by_marker=host.find_issue_by_marker,
+        retry_issue=tracked_retry, unsettleable_holders=lambda number: held,
+        find_issue_by_marker=host.find_issue_by_marker,
         create_issue=host.create_issue, comment_marker_present=host.comment_marker_present,
-        apply_action=host.apply,
+        apply_action=host.apply, require_authority=authority or (lambda action, number: None),
     )
 
 
@@ -472,49 +483,80 @@ def _approved() -> ApplyOperatorDecisionAction:
     )
 
 
-def test_approval_retries_files_the_split_and_posts_the_decision_once() -> None:
+def _blocked_target() -> Issue:
     target = _issue(262, "agent:backend", "priority:high", "needs-human", "pr-pending")
     target.milestone_number = 4
-    host = _Host({262: target})
-    retries: list[int] = []
+    return target
 
-    def retry(number: int) -> OperatorCommandOutcome:
-        retries.append(number)
-        return _outcome(OperatorCommandStatus.COMMITTED, removed=("needs-human",))
 
-    executor = _executor(host, retry)
+def test_approval_publishes_first_retries_last_and_never_retries_twice() -> None:
+    """#7593 review F4: the item stays blocked until its decision and follow-ups
+    exist, and a replay after the retry never retries again."""
+    host = _Host({262: _blocked_target()})
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED, removed=("needs-human",)))
+
     first = executor.apply(_approved())
-    again = executor.apply(_approved())  # a retried apply after a crash
+    again = executor.apply(_approved())  # the finalize failed and the op replays
 
-    assert first.success and again.success
-    assert retries == [262, 262]
-    [follow_up] = host.created  # create-once by its body marker
+    assert first.success and again.success and again.details.get("replayed") is True
+    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+    [follow_up] = host.created
     assert follow_up["title"] == "Live D1 seller pickup index"
     assert follow_up["labels"] == ["agent:backend", "priority:high"]  # never workflow state
     assert follow_up["milestone"] == 4
     assert follow_up_marker(950, 1) in follow_up["body"] and "Refs #262" in follow_up["body"]
-    [(number, comment)] = host.comments  # create-once by its comment marker
-    assert number == 262
-    assert decision_marker(950) in comment and "#1000" in comment
+    decision = next(body for number, body in host.comments if number == 262)
+    assert decision_marker(950) in decision and "#1000" in decision
     assert first.details["follow_up_issues"] == ["1000"]
 
 
-def test_a_cause_the_retry_may_not_override_closes_the_decision_stale_with_no_writes() -> None:
-    host = _Host({262: _issue(262, "agent:backend", "needs-human")})
-    executor = _executor(host, lambda n: _outcome(
-        OperatorCommandStatus.STILL_BLOCKED, blocked="needs-human", held_by=("claim_quarantine",),
-    ))
+def test_a_failed_follow_up_leaves_the_item_blocked_and_the_replay_resumes() -> None:
+    host = _Host({262: _blocked_target()}, create_error=RuntimeError("502"))
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED))
+
+    assert not executor.apply(_approved()).success
+    assert host.calls == []  # nothing posted, nothing retried
+
+    host.create_error = None
+    assert executor.apply(_approved()).success
+    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+
+
+def test_a_lost_claim_files_no_follow_up() -> None:
+    """#7593 review F5: each follow-up is behind the applier's mutation gate."""
+    from issue_orchestrator.control.claim_gate import ClaimLostError
+
+    def refuse(action, number):
+        raise ClaimLostError(number, "another engine holds it")
+
+    host = _Host({262: _blocked_target()})
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED), authority=refuse)
+
+    with pytest.raises(ClaimLostError):
+        executor.apply(_approved())
+    assert host.created == [] and host.calls == []
+
+
+@pytest.mark.parametrize(
+    ("labels", "held", "why"),
+    [
+        (("agent:backend", "needs-human"), ("claim_quarantine",), "claim_quarantine"),
+        (("agent:backend",), (), "no longer blocked"),
+    ],
+)
+def test_an_approval_that_cannot_be_carried_out_closes_stale_with_no_writes(labels, held, why) -> None:
+    host = _Host({262: _issue(262, *labels)})
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED), held=held)
 
     result = executor.apply(_approved())
 
-    assert not result.success
-    assert result.details["mode"] == "stale_downgrade"
-    assert "claim_quarantine" in result.details["skip_reason"]
-    assert host.created == [] and host.comments == []
+    assert not result.success and result.details["mode"] == "stale_downgrade"
+    assert why in result.details["skip_reason"]
+    assert host.calls == []
 
 
 def test_a_retry_github_would_not_settle_is_a_retried_failure() -> None:
-    host = _Host({262: _issue(262, "agent:backend", "needs-human")})
+    host = _Host({262: _blocked_target()})
     executor = _executor(host, lambda n: _outcome(
         OperatorCommandStatus.INCOMPLETE, failed=("blocked-failed",),
     ))
@@ -522,7 +564,7 @@ def test_a_retry_github_would_not_settle_is_a_retried_failure() -> None:
     result = executor.apply(_approved())
 
     assert not result.success and "mode" not in result.details
-    assert host.created == [] and host.comments == []
+    assert "comment:950" not in host.calls  # not marked applied
 
 
 # -- the whole completion contract: scope + coverage, as validation applies it --
@@ -548,3 +590,72 @@ def test_a_health_review_may_act_on_its_granted_items_and_nothing_else() -> None
     assert validate_decision_for_authority(
         _decide(_split()), _authority(), config=config, labels=labels,
     ) is not None  # no grant, no act-level authority over #262
+
+
+
+def test_an_owed_triage_keeps_a_review_due_on_an_unchanged_board() -> None:
+    """#7593 review F1: items deferred by the per-run cap (or whose triage did
+    not take effect) leave the board fingerprint unchanged; the review must
+    still come back for them."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+    from issue_orchestrator.control.health_review_trigger import health_review_decision
+
+    config = _config()
+    config.tech_lead.health_review.interval_minutes = 60
+    state = OrchestratorState()
+    state.cached_scope_issues = [_issue(n, "agent:backend", "blocked-failed") for n in range(100, 111)]
+    reviewed = health_review_decision(config, state, 1000.0).fingerprint
+    state.last_health_review_at = 1000.0
+    state.last_reviewed_board_fingerprint = reviewed
+
+    ledger = _Ledger({
+        n: [_triage_record(n, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]
+        for n in range(100, 100 + MAX_TRIAGE_ITEMS_PER_RUN)
+    })
+    assert triage_owed(config, state, ledger) is True  # the three deferred ones
+    assert health_review_decision(
+        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, ledger),
+    ).due is True
+
+    everything = _Ledger({
+        n: [_triage_record(n, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]
+        for n in range(100, 111)
+    })
+    assert triage_owed(config, state, everything) is False
+    assert health_review_decision(
+        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, everything),
+    ).due is False
+
+
+def test_a_different_decision_for_the_same_item_is_its_own_proposal() -> None:
+    """#7593 review F2: approval runs the STORED decision, so a re-proposal of a
+    different one must not be recorded as waiting on the old proposal."""
+    from issue_orchestrator.control.required_issue_comment import ReuseTechLeadProposalAction
+    from issue_orchestrator.control.tech_lead_proposals import build_op_ledger
+
+    first, _ = _plan(_decide(_split()), fingerprints={262: "needs-human"})
+    [filed] = [a for a in first if isinstance(a, CreateTechLeadProposalIssueAction)]
+    ledger = build_op_ledger(((950, filed.op),))
+
+    def replan(decision: TechLeadDecision):
+        config = _config()
+        return plan_tech_lead_decision_actions(
+            decision, config, LabelManager(config),
+            anchor_issue=_issue(ANCHOR, "agent:tech-lead"), expected=build_expected_for_mutation(),
+            op_ledger=ledger, pattern_ledger={}, source_run_id="run-2", source_session_name="tl-2",
+            observed_at="2026-10-02T13:00:00+00:00", observed_session_generation=lambda _n: None,
+            dedup_corpus=OpenIssueCorpus.ready(()), dedup_grant=DuplicateTargetGrant.of(frozenset()),
+        )
+
+    same = replan(_decide(_split()))
+    assert any(isinstance(a, ReuseTechLeadProposalAction) and a.number == 950 for a in same)
+
+    different = ProposedTechLeadAction(
+        id="A1", action_type="propose_decision", target_number=262,
+        title="Do not split #262: finish the live index first", body="Recommend: keep it whole.",
+        triage_class=TriageClass.OPERATOR_DECISION,
+    )
+    planned = replan(_decide(different))
+    assert not any(isinstance(a, ReuseTechLeadProposalAction) for a in planned)
+    [new] = [a for a in planned if isinstance(a, CreateTechLeadProposalIssueAction)]
+    assert new.op.decision is not None and new.op.decision.title.startswith("Do not split")

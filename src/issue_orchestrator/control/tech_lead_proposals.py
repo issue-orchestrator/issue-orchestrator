@@ -49,6 +49,8 @@ the whole gated lifecycle:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -181,15 +183,16 @@ def build_stored_tech_lead_op(
         target_session_type=(target_session.task_kind.value if target_session else ""),
         finding_ids=tuple(proposed.finding_ids),
         observed_at=observed_at,
-        decision=(
-            OperatorDecision(
-                title=proposed.title or "",
-                body=proposed.body or "",
-                follow_ups=proposed.follow_up_issues,
-            )
-            if proposed.action_type == "propose_decision"
-            else None
-        ),
+        decision=operator_decision_of(proposed),
+    )
+
+
+def operator_decision_of(proposed: "ProposedTechLeadAction") -> OperatorDecision | None:
+    """The decision a ``propose_decision`` puts to the operator, else None."""
+    if proposed.action_type != "propose_decision":
+        return None
+    return OperatorDecision(
+        title=proposed.title or "", body=proposed.body or "", follow_ups=proposed.follow_up_issues,
     )
 
 
@@ -359,18 +362,47 @@ def build_tech_lead_proposal_issue_action(
     )
 
 
+def proposal_ledger_key(
+    op_type: str,
+    target_issue_number: int,
+    *,
+    rework_request: ReworkRequest | None = None,
+    decision: OperatorDecision | None = None,
+) -> tuple[str, int | str]:
+    """The identity one open proposal owns: the op and what it would do.
+
+    A scoped rework is keyed by its request; an operator decision by its
+    target AND the exact decision (#7593 review F2), because approval executes
+    the stored payload: a re-proposal of a DIFFERENT decision for the same item
+    must not be recorded as awaiting approval on a proposal that would run the
+    old one. Every other op is keyed by its target issue.
+    """
+    if rework_request is not None:
+        return (op_type, rework_request.key)
+    if decision is not None:
+        digest = hashlib.sha256(
+            json.dumps(decision.to_dict(), sort_keys=True).encode()
+        ).hexdigest()[:16]
+        return (op_type, f"{target_issue_number}:{digest}")
+    return (op_type, target_issue_number)
+
+
 def build_op_ledger(
     ops: Iterable[tuple[int, StoredTechLeadOp]],
     receipts: Iterable[ReworkReceipt] = (),
 ) -> dict[tuple[str, int | str], int]:
-    """Project store rows to a (op_type, target) -> proposal-issue map.
+    """Project store rows to a :func:`proposal_ledger_key` -> proposal-issue map.
 
     The store row lifetime IS the "open proposal" window: rows are created
     with the proposal issue and discarded at terminal handling, so this
-    ledger enforces one open proposal per (op, target) without a GitHub read.
+    ledger enforces one open proposal per identity without a GitHub read.
     """
     return {("request_rework", receipt.request.key): receipt.proposal_issue_number for receipt in receipts if receipt.proposal_issue_number} | {
-        (op.op_type, op.rework_request.key if op.rework_request else op.target_issue_number): issue_number for issue_number, op in ops
+        proposal_ledger_key(
+            op.op_type, op.target_issue_number,
+            rework_request=op.rework_request, decision=op.decision,
+        ): issue_number
+        for issue_number, op in ops
     }
 
 

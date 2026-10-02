@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..domain.blocked_item_triage import (
@@ -44,7 +45,6 @@ if TYPE_CHECKING:
     from ..domain.human_block import NeedsHumanCause
     from ..domain.models import OrchestratorState
     from ..domain.tech_lead_artifacts import TechLeadDecision
-    from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..infra.config import Config
     from ..ports.issue import Issue
@@ -54,8 +54,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: How many of an item's decisions are read to find its latest triage.
-_DECISIONS_PER_ITEM = 50
 #: How many timeline records are read to find an item's latest agent question.
 _TIMELINE_RECORDS_PER_ITEM = 50
 
@@ -93,70 +91,31 @@ class StateBlockedItemTriage:
         required launch input, and guessing it would either churn items whose
         triage is in force or silently skip ones that are owed one.
         """
-        blocked = [
-            issue
-            for issue in self._scope_issues()
-            if issue.number != anchor_issue_number and self._blocking(issue) is not None
+        owed, in_force = owed_triages(
+            self._config, self._state(), self._labels, self._ledger,
+            exclude=frozenset({anchor_issue_number}),
+        )
+        causes = self._needs_human_causes([item.issue.number for item in owed])
+        items = [
+            TriageAgendaItem(
+                issue_number=item.issue.number,
+                title=item.issue.title,
+                labels=tuple(item.issue.labels),
+                blocking_labels=item.blocking_labels,
+                needs_human_causes=tuple(
+                    sorted(cause.value for cause in causes.get(item.issue.number, frozenset()))
+                ),
+                fingerprint=item.fingerprint,
+                agent_question=self._agent_question(item.issue.number),
+                reason=_owed_reason(item.prior, item.fingerprint),
+                prior=item.prior,
+            )
+            for item in owed[:MAX_TRIAGE_ITEMS_PER_RUN]
         ]
-        causes = self._needs_human_causes([issue.number for issue in blocked])
-        owed: list[TriageAgendaItem] = []
-        in_force: list[int] = []
-        for issue in sorted(blocked, key=lambda item: item.number):
-            item = self._item(issue, causes.get(issue.number, frozenset()))
-            if item is None:
-                in_force.append(issue.number)
-            else:
-                owed.append(item)
         return TriageAgenda(
-            items=tuple(owed[:MAX_TRIAGE_ITEMS_PER_RUN]),
-            in_force=tuple(in_force),
-            deferred=tuple(item.issue_number for item in owed[MAX_TRIAGE_ITEMS_PER_RUN:]),
-        )
-
-    # -- per item ---------------------------------------------------------------
-
-    def _scope_issues(self) -> Sequence["Issue"]:
-        return scope_issues(self._state())
-
-    def _blocking(self, issue: "Issue") -> tuple[tuple[str, ...], bool] | None:
-        return blocked_work_item(issue, self._labels, self._config.tech_lead_review_agent)
-
-    def _item(
-        self, issue: "Issue", causes: "frozenset[NeedsHumanCause]"
-    ) -> TriageAgendaItem | None:
-        blocking = self._blocking(issue)
-        assert blocking is not None
-        labels, marker = blocking
-        fingerprint = block_fingerprint(
-            labels, tech_lead_marker=marker, needs_human_label=self._labels.needs_human
-        )
-        prior = self._prior(issue.number)
-        if prior is not None and prior.fingerprint == fingerprint and prior.in_force:
-            return None
-        return TriageAgendaItem(
-            issue_number=issue.number,
-            title=issue.title,
-            labels=tuple(issue.labels),
-            blocking_labels=labels,
-            needs_human_causes=tuple(sorted(cause.value for cause in causes)),
-            fingerprint=fingerprint,
-            agent_question=self._agent_question(issue.number),
-            reason=_owed_reason(prior, fingerprint),
-            prior=prior,
-        )
-
-    def _prior(self, issue_number: int) -> PriorTriage | None:
-        latest = _latest_triage(self._ledger.list_about_issue(issue_number, limit=_DECISIONS_PER_ITEM), issue_number)
-        if latest is None:
-            return None
-        assert latest.triage_class is not None and latest.triage_fingerprint is not None
-        return PriorTriage(
-            triage_class=latest.triage_class,
-            action_kind=latest.action_kind,
-            effect=latest.effect,
-            decided_at=latest.decided_at,
-            fingerprint=latest.triage_fingerprint,
-            proposal_issue_number=latest.proposal_issue_number,
+            items=tuple(items),
+            in_force=in_force,
+            deferred=tuple(item.issue.number for item in owed[MAX_TRIAGE_ITEMS_PER_RUN:]),
         )
 
     def _agent_question(self, issue_number: int) -> str | None:
@@ -174,6 +133,75 @@ class StateBlockedItemTriage:
             if isinstance(question, str) and question.strip():
                 return question.strip()
         return None
+
+
+@dataclass(frozen=True)
+class OwedTriage:
+    """A blocked item whose block has no triage in force."""
+
+    issue: "Issue"
+    blocking_labels: tuple[str, ...]
+    fingerprint: str
+    prior: PriorTriage | None
+
+
+def owed_triages(
+    config: "Config",
+    state: "OrchestratorState",
+    labels: "LabelManager",
+    ledger: "TechLeadCharterDecisionReader",
+    *,
+    exclude: frozenset[int] = frozenset(),
+) -> tuple[list[OwedTriage], tuple[int, ...]]:
+    """``(owed, in force)``: every blocked work item in scope, oldest first,
+    split by whether its block has a triage in force (#7593).
+
+    THE one rule both the agenda (who is granted) and the health-review
+    trigger (is a review owed) read, so an item deferred by the per-run cap or
+    whose triage did not take effect keeps a review due.
+    """
+    owed: list[OwedTriage] = []
+    in_force: list[int] = []
+    for issue in sorted(scope_issues(state), key=lambda item: item.number):
+        if issue.number in exclude:
+            continue
+        blocking = blocked_work_item(issue, labels, config.tech_lead_review_agent)
+        if blocking is None:
+            continue
+        fingerprint = block_fingerprint(
+            blocking[0], tech_lead_marker=blocking[1], needs_human_label=labels.needs_human
+        )
+        prior = prior_triage(ledger, issue.number)
+        if prior is not None and prior.fingerprint == fingerprint and prior.in_force:
+            in_force.append(issue.number)
+        else:
+            owed.append(OwedTriage(issue, blocking[0], fingerprint, prior))
+    return owed, tuple(in_force)
+
+
+def triage_owed(
+    config: "Config", state: "OrchestratorState", ledger: "TechLeadCharterDecisionReader"
+) -> bool:
+    """Whether any blocked work item in scope is owed a triage (#7593)."""
+    from .label_manager import LabelManager
+
+    owed, _ = owed_triages(config, state, LabelManager(config), ledger)
+    return bool(owed)
+
+
+def prior_triage(ledger: "TechLeadCharterDecisionReader", issue_number: int) -> PriorTriage | None:
+    latest = ledger.latest_triage_for_issue(issue_number)
+    if latest is None:
+        return None
+    assert latest.triage_class is not None and latest.triage_fingerprint is not None
+    return PriorTriage(
+        triage_class=latest.triage_class,
+        action_kind=latest.action_kind,
+        effect=latest.effect,
+        decided_at=latest.decided_at,
+        fingerprint=latest.triage_fingerprint,
+        proposal_issue_number=latest.proposal_issue_number,
+    )
 
 
 def scope_issues(state: "OrchestratorState") -> Sequence["Issue"]:
@@ -222,20 +250,6 @@ def label_blocked_work_items(
                 blocking[0], tech_lead_marker=blocking[1], needs_human_label=labels.needs_human,
             )))
     return tuple(sorted(found))
-
-
-def _latest_triage(
-    decisions: Sequence["TechLeadCharterDecision"], issue_number: int
-) -> "TechLeadCharterDecision | None":
-    """The newest decision that triaged *issue_number* (the ledger reads newest first)."""
-    return next(
-        (
-            decision
-            for decision in decisions
-            if decision.triage_class is not None and decision.target_number == issue_number
-        ),
-        None,
-    )
 
 
 def _owed_reason(prior: PriorTriage | None, fingerprint: str) -> str:

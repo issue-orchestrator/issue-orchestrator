@@ -327,7 +327,7 @@ class ActionApplier:
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
-                require_mutation_authority=self._require_mutation_authority,
+                require_mutation_authority=self.require_mutation_authority,
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,
                 pattern_registry=self.pattern_registry,
@@ -691,7 +691,7 @@ class ActionApplier:
 
         def before_write() -> None:
             if isinstance(action, FoldCaseFileIssueAction):
-                self._require_mutation_authority(action, action.issue_number)
+                self.require_mutation_authority(action, action.issue_number)
             else:
                 self._verify_claim_before_write(action, action.issue_number)
 
@@ -754,7 +754,7 @@ class ActionApplier:
         """
         self._gate.require_expected(action, issue_number)
 
-    def _require_mutation_authority(self, action: Action, issue_number: int) -> None:
+    def require_mutation_authority(self, action: Action, issue_number: int) -> None:
         """Recheck board expectations and claim ownership immediately before a write."""
         self._require_expected(action, issue_number)
         self._verify_claim_before_write(action, issue_number)
@@ -1502,8 +1502,8 @@ class ActionApplier:
             pattern_registry=self.pattern_registry,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
-            before_case_file_write=lambda: self._require_mutation_authority(action, reconciliation_subject_for(action)),
-            proposal_guard=self._require_mutation_authority,
+            before_case_file_write=lambda: self.require_mutation_authority(action, reconciliation_subject_for(action)),
+            proposal_guard=self.require_mutation_authority,
             expedite_lane=self.expedite_lane,
         )
 
@@ -1537,7 +1537,7 @@ class ActionApplier:
     def require_scoped_rework_authority(self, parent: RequestReworkAction) -> None:
         """Capability shared by typed mutations and owner-governed effects."""
         for number in (parent.issue_number, parent.request.target.pr_number):
-            self._require_mutation_authority(parent, number)
+            self.require_mutation_authority(parent, number)
 
     def _apply_request_rework(self, action: Action) -> ActionResult:
         assert isinstance(action, RequestReworkAction)

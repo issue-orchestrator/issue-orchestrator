@@ -125,6 +125,8 @@ from .tech_lead_observation_routing import accrual_for, case_file_sighting
 from .tech_lead_proposals import (
     build_duplicate_proposal_comment,
     build_tech_lead_proposal_issue_action,
+    operator_decision_of as _operator_decision,
+    proposal_ledger_key,
 )
 
 if TYPE_CHECKING:
@@ -414,10 +416,12 @@ class _DecisionActionPlanner:
         )
         if proposed.action_type == "recover_validated_work" and validated_work_authority is None:
             raise ValueError("recover_validated_work has no immutable launch authority")
-        key = (proposed.action_type, request.key if request else proposed.target_number)
+        key = proposal_ledger_key(
+            proposed.action_type, proposed.target_number, rework_request=request,
+            decision=_operator_decision(proposed),
+        )
         existing = self.op_ledger.get(key)
         if existing is not None:
-            self.charter_log.note_reused_proposal(proposed.id, existing)
             from .required_issue_comment import ReuseTechLeadProposalAction
             from .tech_lead_proposals import build_stored_tech_lead_op
             self.actions.append(

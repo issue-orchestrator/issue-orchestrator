@@ -272,3 +272,38 @@ def test_release_proposal_reuse_asks_the_release_owner_whether_it_still_applies(
     release.stale_reason.assert_called_with(6410, observed, "session")
     assert result.success is (stale is None)
     assert host.comments == ([(7000, action.comment)] if stale is None else [])
+
+
+def _awaiting(authority, *, action_id: str = "A9", run_id: str = "rerun"):
+    """A re-proposal's record, as planning leaves it: awaiting approval, no issue yet."""
+    from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
+    from issue_orchestrator.domain.tech_lead_charter_decisions import (
+        CharterDecisionSource,
+        TechLeadCharterDecision,
+        decision_key,
+    )
+
+    authority.charter_ledger.record_decisions([TechLeadCharterDecision.from_verdict(
+        TechLeadCharterPolicy.from_config(Config()).decide("reset_retry"),
+        decision_id=decision_key(run_id, action_id), source=CharterDecisionSource.DECISION,
+        run_id=run_id, action_id=action_id, anchor_issue_number=900, target_number=6410,
+        target_is_pr=False, decided_at="2026-10-02T12:00:00+00:00", tracks_proposal=True,
+    )])
+
+
+@pytest.mark.parametrize("applicable", [True, False])
+def test_only_a_reuse_that_landed_names_its_proposal_on_the_record(applicable):
+    """#7593 review F3: a re-proposal's record learns the proposal it joined
+    only once the reuse verified and published; a failed one filed nothing,
+    so its triage must not read as filed and waiting on the operator."""
+    host, authority, _reset, _kill, applier, action = harness()
+    action = replace(action, required_op=replace(action.required_op, source_run_id="rerun", source_action_id="A9"))
+    _awaiting(authority)
+    if not applicable:
+        host.states[7000] = "closed"
+
+    results, _error = apply_completion_actions_gated(applier, [action], issue_number=6410)
+
+    [record] = [r for r in authority.charter_ledger.list_recent() if r.run_id == "rerun"]
+    assert results[-1].success is applicable
+    assert record.proposal_issue_number == (7000 if applicable else None)

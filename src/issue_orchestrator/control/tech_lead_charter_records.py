@@ -54,13 +54,11 @@ class CharterDecisionLog:
     _verdicts: dict[str, tuple[ProposedTechLeadAction, CharterVerdict]] = field(
         default_factory=dict
     )
-    _reused_proposals: dict[str, int] = field(default_factory=dict)
     _coalesced: dict[str, str] = field(default_factory=dict)
 
     def discard(self) -> None:
         """Forget every verdict: the whole decision was rejected, nothing applies."""
         self._verdicts.clear()
-        self._reused_proposals.clear()
         self._coalesced.clear()
 
     def note(self, proposed: ProposedTechLeadAction, verdict: CharterVerdict) -> None:
@@ -68,10 +66,6 @@ class CharterDecisionLog:
 
     def verdict_for(self, action_id: str) -> CharterVerdict:
         return self._verdicts[action_id][1]
-
-    def note_reused_proposal(self, action_id: str, proposal_issue_number: int) -> None:
-        """A re-proposal commented onto an existing gated proposal issue."""
-        self._reused_proposals[action_id] = proposal_issue_number
 
     def acted_on_targets(self, kind: str) -> frozenset[int]:
         """Targets of *kind* proposals the charter did NOT keep as advice.
@@ -128,7 +122,6 @@ class CharterDecisionLog:
                 # Only act-level proposals are backed by the stored-op ledger
                 # whose approval and decline link back to this record.
                 tracks_proposal=proposed.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS,
-                proposal_issue_number=self._reused_proposals.get(proposed.id),
                 proposal_origin_action_id=self._coalesced.get(proposed.id),
                 **self._triage(proposed),
             )
