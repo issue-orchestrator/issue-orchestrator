@@ -227,6 +227,17 @@ CHARTER_ACTION_CLASSES: Mapping[str, CharterActionClass] = {
         CharterRole.FLOW, _F, CharterBinding.APPROVABLE,
         "release a review withheld only by the issue's own block",
     ),
+    # Decides a needs-human WORK block in the operator's stead (#7658): it
+    # posts the decision, files a split's children at create_issue's depth and
+    # discharges only the causes it resolved. Nothing is destroyed and the
+    # operator can put the block back (the cause is then never resolved
+    # again), so it is approvable, not destructive. It is a FIX, not a
+    # workaround: it removes the cause of the block rather than routing
+    # around it, the same depth as the release and the filing it composes.
+    "resolve_block": CharterActionClass(
+        CharterRole.FLOW, _F, CharterBinding.APPROVABLE,
+        "resolve a needs-human block by deciding it",
+    ),
     "propose_decision": CharterActionClass(
         CharterRole.FLOW, _W, CharterBinding.OPERATOR_DECISION,
         "propose a decision for the operator to approve",

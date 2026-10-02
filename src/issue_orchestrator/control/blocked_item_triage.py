@@ -125,20 +125,40 @@ class StateBlockedItemTriage:
         )
 
     def _agent_question(self, issue_number: int) -> str | None:
-        """The last question an agent put to a human about the item (best-effort)."""
-        try:
-            records = self._timeline(issue_number, _TIMELINE_RECORDS_PER_ITEM)
-        except Exception:
-            logger.warning(
-                "[TRIAGE] timeline of #%d unreadable; its agenda item carries no question",
-                issue_number, exc_info=True,
-            )
-            return None
-        for record in reversed(tuple(records)):
-            question = record.data.get("question") if record.event == EventName.ISSUE_NEEDS_HUMAN.value else None
-            if isinstance(question, str) and question.strip():
-                return question.strip()
+        return latest_agent_question(self._timeline, issue_number)
+
+
+def latest_agent_question(
+    timeline: Callable[[int, int], Sequence["TimelineRecord"]], issue_number: int
+) -> str | None:
+    """The last question an agent put to a human about the item (best-effort).
+
+    The agenda tolerates an unreadable timeline; a resolution's human-only
+    screen reads the same records through :func:`agent_question_in` and fails
+    instead (#7658).
+    """
+    try:
+        records = timeline(issue_number, _TIMELINE_RECORDS_PER_ITEM)
+    except Exception:
+        logger.warning(
+            "[TRIAGE] timeline of #%d unreadable; no agent question is read for it",
+            issue_number, exc_info=True,
+        )
         return None
+    return agent_question_in(records)
+
+
+#: How many timeline records are read to find an item's latest agent question.
+AGENT_QUESTION_RECORDS = _TIMELINE_RECORDS_PER_ITEM
+
+
+def agent_question_in(records: Sequence["TimelineRecord"]) -> str | None:
+    """The latest agent question among *records* (oldest first), else None."""
+    for record in reversed(tuple(records)):
+        question = record.data.get("question") if record.event == EventName.ISSUE_NEEDS_HUMAN.value else None
+        if isinstance(question, str) and question.strip():
+            return question.strip()
+    return None
 
 
 @dataclass(frozen=True)

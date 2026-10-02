@@ -465,6 +465,7 @@ tech_lead:
   #   request_rework: "propose"     # Gated scoped rework; preserves the PR branch
   #   recover_validated_work: "propose" # Recover one exact retained validated head
   #   release_withheld_review: "execute" # Lift only blocked-failed so a green PR's review runs (#7399)
+  #   resolve_block: "propose"      # Decide a needs-human work block (answer, split, lift stale); execute = no approval (#7658)
   # Charter (#7330): per-role dials for what the tech lead may do UNATTENDED.
   # The orchestrator classifies every action by its type into a role and a
   # required depth (the agent cannot choose them), then decides:

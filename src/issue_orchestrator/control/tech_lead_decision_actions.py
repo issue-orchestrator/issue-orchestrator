@@ -95,6 +95,7 @@ from .actions import (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ResolveBlockAction,
     RequestReworkAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
@@ -419,6 +420,7 @@ class _DecisionActionPlanner:
         key = proposal_ledger_key(
             proposed.action_type, proposed.target_number, rework_request=request,
             decision=_operator_decision(proposed),
+            resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
         )
         existing = self.op_ledger.get(key)
         if existing is not None:
@@ -532,6 +534,19 @@ class _DecisionActionPlanner:
                     expected=self.expected,
                 )
             )
+            return
+        if proposed.action_type == "resolve_block":
+            assert proposed.resolution is not None  # enforced by validate()
+            self.actions.append(ResolveBlockAction(
+                issue_number=proposed.target_number, resolution=proposed.resolution,
+                rationale=proposed.body or "", proposal_id=proposed.id,
+                finding_ids=proposed.finding_ids, anchor_issue_number=self._anchor_number,
+                observed_at=self.observed_at, source_session_name=self.source_session_name,
+                source_run_id=self.source_run_id,
+                reason=(f"tech_lead decision action {proposed.id}: resolve the needs-human"
+                        f" block of issue #{proposed.target_number}"),
+                expected=self.expected,
+            ))
             return
         if proposed.action_type == "release_withheld_review":
             self.actions.append(ReleaseWithheldReviewAction(

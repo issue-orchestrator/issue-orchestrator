@@ -102,6 +102,15 @@ class OperatorIssueCommands(Protocol):
         """Unblock the issue and take it off the board without retrying."""
         ...
 
+    def requeue_resolved(self, issue_number: int) -> tuple[str, ...]:
+        """Put an issue whose block another owner settled back in the planner's view.
+
+        For a block lifted on the operator's behalf (a tech lead's resolution,
+        #7658): no label is touched here. Returns the blocking labels the
+        issue still carries (empty: it is runnable again).
+        """
+        ...
+
 
 class OperatorIssueCommandFactory(Protocol):
     """Builds the commands from facade-owned runtime state.
