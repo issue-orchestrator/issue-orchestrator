@@ -63,7 +63,7 @@ class EngineSnapshot:
     """An engine's stores, each opened on its own snapshot.
 
     ``audit`` is what :func:`~..observation.engine_audit.audit_engine` reads;
-    ``tech_lead`` and ``timeline`` are the same opened copies, for a reader
+    ``tech_lead``, ``timeline`` and ``claims`` are the same opened copies, for a reader
     that needs more of them than the audit does, so every reading of one
     source comes from ONE copy of it.
     """
@@ -71,6 +71,7 @@ class EngineSnapshot:
     audit: EngineAuditInputs
     tech_lead: SqliteTechLeadAuthorityStore | Unavailable
     timeline: SqliteTimelineAuditReader | Unavailable
+    claims: SqlitePendingWorkClaimStore | Unavailable
 
 
 def snapshot_engine(
@@ -90,6 +91,10 @@ def snapshot_engine(
         state_dir, scratch, TIMELINE_DB,
         lambda p: SqliteTimelineAuditReader(p, timeout=SQLITE_TIMEOUT),
     )
+    claims = snapshot_store(
+        state_dir, scratch, PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore,
+        CLAIM_AUDIT_TABLES,
+    )
     audit = EngineAuditInputs(
         repo=repo,
         state_dir=state_dir,
@@ -104,15 +109,12 @@ def snapshot_engine(
         tech_lead=tech_lead
         if isinstance(tech_lead, Unavailable)
         else TechLeadReaders(charter=tech_lead.charter_ledger, promotions=tech_lead),
-        claims=snapshot_store(
-            state_dir, scratch, PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore,
-            CLAIM_AUDIT_TABLES,
-        ),
+        claims=claims,
         timeline=timeline,
         log=_log(state_dir / ENGINE_LOG, tail_bytes=log_tail_bytes),
         github=github,
     )
-    return EngineSnapshot(audit=audit, tech_lead=tech_lead, timeline=timeline)
+    return EngineSnapshot(audit=audit, tech_lead=tech_lead, timeline=timeline, claims=claims)
 
 
 def snapshot_tech_lead_runs(

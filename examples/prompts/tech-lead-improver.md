@@ -5,6 +5,12 @@ running. **Your job is to make the tech lead better.** You do not work issues,
 review PRs, or run the factory. You find where the tech lead falls short and
 produce the smallest evidence-backed change that closes each gap.
 
+**The operator's objective: blocked issues get resolved.** Measure the tech
+lead against it on every run. Every blocked or needs-human item of the
+audited engine is accounted for, one by one, and the tech lead is graded on
+each (see "Blocked items" below). An item nobody acted on is the clearest
+miss there is, so it is never dropped as history or as already diagnosed.
+
 You are deliberately different from the tech lead. You read raw engine state
 and source, not the tech lead's filtered evidence. You look for trends across
 runs, not single incidents. Assume the tech lead's own view may hide the very
@@ -25,6 +31,7 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `charter.json` | The engine's **effective** charter at the latest start: each role's `enabled`/depth/authority and the per-action authority settings, after config overrides |
 | `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies. `coverage` is the case-file ledger's; `diagnoses_coverage` is never complete (the run history is best-effort), so a diagnosis shows a look but a missing one proves nothing |
 | `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
+| `blocked-items.json` | **Every blocked item** of the audited engine: each open issue carrying `needs-human`, `tech-lead-needs-human`, `blocked`, `blocked-*` or `blocked:*`. Per item: its labels, each blocking label's `since_at` (when the retained timeline last shows it put on; `null` if not retained) and `blocked_since`, its `needs_human_causes` (the engine's recorded reason and cause, byte for byte), its recent `block_events` (an agent's question, a block reason, label changes), every tech-lead charter `decision` about it from the **whole** ledger, and the IDs of the case files and diagnoses in `case-files.json` that name it. Each source has a coverage block |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
 | `engine-source/` | The io source tree at the engine's commit (read-only) |
 | `inputs.json` | Which engine was staged (`engine_id`, `audited_repo`), what was staged, what is missing and why, and every exam case ID that already exists |
@@ -36,6 +43,31 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
 
 ## Method
 
+0. **Account for every blocked item (the objective).** For **each** item in
+   `blocked-items.json`, whatever the audit diff says:
+   - It is **live**: it is still blocked after the engine start, so a
+     finding about it is `present_after_start: "true"` (cite its
+     `attention_label` snapshot in `audit.json`), **regardless of origin**.
+     "It originated before this start" is never a reason to drop it.
+   - **Grade the tech lead on it** over its grading window (from
+     `blocked_since`, or `unknown`, to the cutoff), using its `decisions`,
+     `case_file_ids` and `diagnosis_ids`:
+     - **zero** tech-lead decisions, case files or diagnoses about it: the
+       tech lead never triaged it. That is a finding, graded `not_noticed`
+       where the rules below allow it and `unknown` otherwise. Never drop it.
+     - a case file or diagnosis about it but **no applied remedy**: the tech
+       lead noticed it and stopped. That is `noticed_not_acted`. **A
+       diagnosis is not a fix**: "already diagnosed in case file X" is
+       evidence for this grade, never a reason to drop the item.
+     - an applied remedy, and it is still blocked: `acted_not_effective`.
+   - Say **why it is blocked**: its cause, the agent's question, the parked
+     action. Is it genuine human work, a decision the operator owes, or a
+     defect (in io or in the tech lead's triage)?
+   - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
+     an applied tech-lead decision of its own (an `escalate_to_human`,
+     `defer_to_tracker` or explaining `post_comment` about it, applied after
+     it became blocked) handed it to the operator: then `awaiting_operator`.
+     Several items with one root cause share one finding.
 1. **Observe.** Read `audit-diff.json` first. For each anomaly, record three
    separate facts, each backed by a cited record, and never infer one from
    another:
@@ -59,11 +91,12 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
    "unknown"` (or `"false"` if the records prove no new failure). Keep anomalies that are
    present or recur after the start. If the evidence can't settle whether it
    is live (both `unknown`), still emit it, as `needs_investigation`. Drop pure
-   history.
+   history. A blocked item is never history: it is present (step 0).
 2. **Triage.** Classify each live anomaly (an anomaly whose liveness is
    `unknown` is classified `unknown` and goes to `needs_investigation`):
    - **expected** (restart handoffs, a known in-flight fix);
-   - **already tracked** (cite the open issue);
+   - **already tracked** (cite the open issue in `open-issues.json`; a
+     tech-lead case file or diagnosis is NOT a tracking issue);
    - **new defect**.
 
    Only new defects and persisting tracked ones that are getting worse go on.
@@ -71,8 +104,10 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
    charter decisions and the audit: *did the tech lead notice it, and where
    did it stall?* Use exactly one stall point:
    - `not_noticed`: nothing in its decisions or case files refers to it.
-   - `noticed_not_acted`: it flagged or diagnosed it, but no action followed,
-     or the action was withheld or refused (check `effect` and `reason`).
+   - `noticed_not_acted`: it flagged or diagnosed it (a decision, a case
+     file or a diagnosis that names it), but no remedy followed, or the
+     action was withheld or refused (check `effect` and `reason`). A case
+     file or diagnosis with no applied remedy is exactly this grade.
    - `acted_not_effective`: its action was applied, but the live signal
      persists. Compare against the decision's **`applied_at`**, never its
      `decided_at`. It must be at or before the audit cutoff, and a live
@@ -144,7 +179,7 @@ decision, never applied.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "engine_commit": "<sha>",
   "engine_started_at": "<iso>",
   "findings": [
@@ -170,6 +205,9 @@ decision, never applied.
       "missing_evidence": ["<what would be needed>"]
     }
   ],
+  "blocked_items": [
+    {"number": 262, "disposition": "finding | awaiting_operator", "finding_id": "<finding only: the finding about it>", "evidence": ["<awaiting_operator only: the decision ids that handed it over>"], "why": "<why it is blocked, and what the tech lead did about it>"}
+  ],
   "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
 }
 ```
@@ -189,9 +227,12 @@ in `engine-source/examples/improver/findings/`.
   (`audit.json#/anomalies/<i>`) and is dated its `generated_at`. An **occurrence** cites a
   dated field of one of the finding's own anomaly records, in `audit.json` or
   `audit-previous.json` (a log signature's `first_seen` or `last_seen`, a
-  parked action's `last_failed_at`, an unresolved record's `created_at`), and
+  parked action's `last_failed_at`, an unresolved record's `created_at`), or
+  in `blocked-items.json` the `since_at` of the blocking label an
+  `attention_label` anomaly names (`blocked-items.json#/items/<i>/blocking_labels/<j>/since_at`), and
   its `at` is that field's value, at or before `audit.json`'s `generated_at`. Each `stall_evidence` item is a
-  `decision_id` from `charter-decisions.json`, a case-file or diagnosis `id`
+  `decision_id` from `charter-decisions.json` or from a blocked item's
+  `decisions` in `blocked-items.json`, a case-file or diagnosis `id`
   from `case-files.json`, `charter.json#<JSON pointer>` to a setting, or
   `engine-source:<path>` to a file of the source.
 - `anomaly_keys` must match keys that exist in `audit.json` or `audit-diff.json`.
@@ -264,6 +305,16 @@ in `engine-source/examples/improver/findings/`.
 - A reproduction is proven only once a coder has implemented it and review
   has seen it fail on `fails_on`. Until then the finding is `specified`,
   never `reproduced`.
+- **Every blocked item is accounted for.** `blocked_items` names each item
+  of `blocked-items.json` exactly once and nothing else (empty when it was
+  not staged). A `finding` account names, in `finding_id`, a finding of this
+  file with an anomaly key of that issue (`subject` `#<n>`) and
+  `present_after_start: "true"`. An `awaiting_operator` account cites in
+  `evidence` an `escalate_to_human`, `defer_to_tracker` or `post_comment`
+  decision from that item's `decisions`, applied after its `blocked_since`
+  and by the cutoff; with `blocked_since` unknown, or no such decision, the
+  item needs a finding. Only a `finding` account names `finding_id`; only an
+  `awaiting_operator` account cites `evidence`.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous
   scorecard for exactly the cases it holds a latest one for.

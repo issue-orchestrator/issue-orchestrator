@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "engine_commit": "0123456789abcdef0123456789abcdef01234567",
   "engine_started_at": "2026-09-28T12:00:00+00:00",
   "findings": [
@@ -17,7 +17,7 @@
         }
       ],
       "present_after_start": "true",
-      "recurs_after_start": "unknown",
+      "recurs_after_start": "true",
       "origin": "unknown",
       "observed": [
         {
@@ -25,10 +25,16 @@
           "kind": "snapshot",
           "source": "audit.json#/anomalies/2",
           "supports": "present_after_start"
+        },
+        {
+          "at": "2026-09-28T13:30:00+00:00",
+          "kind": "occurrence",
+          "source": "blocked-items.json#/items/0/blocking_labels/0/since_at",
+          "supports": "recurs_after_start"
         }
       ],
       "grading_window": {
-        "from": "unknown",
+        "from": "2026-09-28T13:30:00+00:00",
         "to": "2026-09-28T18:00:00+00:00"
       },
       "classification": "unknown",
@@ -36,8 +42,16 @@
       "stall_evidence": [],
       "output": "needs_investigation",
       "missing_evidence": [
-        "when needs-human was added to #353 and by whom (GitHub label events are not staged)"
+        "why #353 was blocked: no needs_human cause is recorded for it and no block event names a reason, so it cannot be told whether the tech lead's escalation (D3) asked the operator the right question"
       ]
+    }
+  ],
+  "blocked_items": [
+    {
+      "number": 353,
+      "disposition": "finding",
+      "finding_id": "needs-human-353",
+      "why": "Blocked after the start with no recorded cause; the evidence to grade the tech lead's escalation is missing."
     }
   ],
   "trend": {

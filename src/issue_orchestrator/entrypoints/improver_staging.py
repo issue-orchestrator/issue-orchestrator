@@ -30,12 +30,13 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from ..contracts.engine_audit import AuditDiff, EngineAuditReport
+from ..contracts.engine_audit import AuditDiff, AuditSource, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
 from ..contracts.improver_inputs import (
     AUDIT_DIFF_FILE,
     AUDIT_FILE,
     AUDIT_PREVIOUS_FILE,
+    BLOCKED_ITEMS_FILE,
     CASE_FILES_FILE,
     CHARTER_DECISIONS_FILE,
     CHARTER_FILE,
@@ -47,6 +48,7 @@ from ..contracts.improver_inputs import (
     INTERVENTIONS_FILE,
     OPEN_ISSUES_FILE,
     PREVIOUS_SCORECARD_SUFFIX,
+    BlockedItemsInput,
     CaseFilesInput,
     CharterDecisionsInput,
     EngineStartInput,
@@ -64,7 +66,9 @@ from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
 from ..infra.engine_start_record import EngineStartRecordUnavailable, read_engine_start
 from ..infra.tech_lead_run_record_store import SqliteTechLeadRunRecordStore
 from ..infra.pause_journal import PAUSE_JOURNAL_FILENAME, JsonlPauseJournal
-from ..observation.engine_audit import Unavailable, audit_engine
+from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
+from ..observation.engine_audit import Unavailable, audit_engine, blocking_labels
+from ..observation.improver_blocked_items import blocked_items_input
 from ..observation.engine_audit_diff import IncomparableAuditError, diff_reports, load_report
 from ..observation.improver_inputs import (
     ExamSeries,
@@ -113,6 +117,9 @@ class ImproverStagingRequest:
     exam_dir: Path | None
     window: timedelta
     log_tail_bytes: int
+    #: Open issues of the outputs repository left out of ``open-issues.json``
+    #: for a blind run (the improver must find what they track unaided).
+    excluded_open_issues: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -179,7 +186,9 @@ class ImproverInputStager:
             entries += [_staged(AUDIT_FILE, "partial" if audit.partial else "all sources read")]
             entries += previous_entries
             window_start = now - request.window
-            entries += _stage_tech_lead(snapshot, runs_store, request, data, window_start, now)
+            tech_lead = _stage_tech_lead(snapshot, runs_store, request, data, window_start, now)
+            entries += tech_lead.entries
+            entries.append(_stage_blocked_items(audit, audited, snapshot, tech_lead, data, now))
         entries.append(self._stage_open_issues(request, audited, data, now))
         series, unreadable_cards = _stage_exam(request.exam_dir, data)
         entries.append(_exam_entry(series, request.exam_dir, unreadable_cards))
@@ -218,6 +227,8 @@ class ImproverInputStager:
             raise ImproverInputsUnavailable(
                 f"open issues of {request.outputs_repo}: {error}"
             ) from error
+        hidden = request.excluded_open_issues
+        kept = [i for i in issues if i.number not in hidden]
         _write(
             data / OPEN_ISSUES_FILE,
             OpenIssuesInput(
@@ -225,11 +236,12 @@ class ImproverInputStager:
                 read_at=now,
                 issues=tuple(
                     OpenIssue(number=i.number, title=i.title, labels=i.labels)
-                    for i in sorted(issues, key=lambda i: i.number)
+                    for i in sorted(kept, key=lambda i: i.number)
                 ),
             ),
         )
-        return _staged(OPEN_ISSUES_FILE, f"{len(issues)} open in {request.outputs_repo}")
+        # The improver is not told which: naming them would point it at them.
+        return _staged(OPEN_ISSUES_FILE, f"{len(kept)} open in {request.outputs_repo}")
 
 
 def _with_previous(
@@ -251,6 +263,17 @@ def _with_previous(
     ]
 
 
+@dataclass(frozen=True)
+class _TechLeadStaged:
+    """What staging the tech lead's records wrote, and what it read: the
+    ledger (or why it could not be read) and the staged case files, which
+    ``blocked-items.json`` reads again rather than re-reading the store."""
+
+    entries: list[StagedInput]
+    ledger: tuple[TechLeadCharterDecision, ...] | str
+    case_files: CaseFilesInput | None
+
+
 def _stage_tech_lead(
     snapshot: EngineSnapshot,
     runs_store: SqliteTechLeadRunRecordStore | Unavailable,
@@ -258,19 +281,17 @@ def _stage_tech_lead(
     data: Path,
     window_start: datetime,
     cutoff: datetime,
-) -> list[StagedInput]:
+) -> _TechLeadStaged:
     store = snapshot.tech_lead
     if isinstance(store, Unavailable):
         why = f"tech-lead authority store {store.status.value}: {store.detail}"
-        return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
-                _missing(INTERVENTIONS_FILE, why)]
+        return _TechLeadStaged(_tech_lead_missing(why), why, None)
     try:
         ledger = store.charter_ledger.list_all()
         case_files = store.list_case_file_records()
     except (sqlite3.Error, ReadOnlySqliteAccessError) as error:
         why = f"tech-lead authority store unreadable: {error}"
-        return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
-                _missing(INTERVENTIONS_FILE, why)]
+        return _TechLeadStaged(_tech_lead_missing(why), why, None)
     # A live engine's ledgers cannot yet prove that every record dated by the
     # cutoff had committed when they were copied (#7525).
     decisions = charter_decisions_input(
@@ -306,7 +327,68 @@ def _stage_tech_lead(
     )
     _write(data / INTERVENTIONS_FILE, interventions)
     entries.append(_staged(INTERVENTIONS_FILE, "a floor: not every intervention is recorded"))
-    return entries
+    return _TechLeadStaged(entries, ledger, staged)
+
+
+def _tech_lead_missing(why: str) -> list[StagedInput]:
+    return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
+            _missing(INTERVENTIONS_FILE, why)]
+
+
+def _stage_blocked_items(
+    audit: EngineAuditReport,
+    audited: "_OnceListing",
+    snapshot: EngineSnapshot,
+    tech_lead: _TechLeadStaged,
+    data: Path,
+    cutoff: datetime,
+) -> StagedInput:
+    """``blocked-items.json`` from the SAME open-issue listing the audit read
+    (no second GitHub walk), so every blocked item it names is an attention
+    anomaly of the audit, and the other stores' snapshot copies."""
+    if audit.github is None:
+        reading = next(r for r in audit.sources if r.source is AuditSource.GITHUB)
+        return _missing(
+            BLOCKED_ITEMS_FILE,
+            f"the audited repository's open issues were not read ({reading.status.value}: {reading.detail})",
+        )
+    issues = audited.issues()
+    claims = snapshot.claims
+    causes = (
+        f"claim store {claims.status.value}: {claims.detail}"
+        if isinstance(claims, Unavailable)
+        else _read_or_why(claims.list_needs_human_causes, "claim store")
+    )
+    timeline = snapshot.timeline
+    blocked = [i.number for i in issues if blocking_labels(i.labels)]
+    events = (
+        f"{timeline.status.value}: {timeline.detail}"
+        if isinstance(timeline, Unavailable)
+        else _read_or_why(lambda: tuple(timeline.issue_events(blocked, cutoff)), "timeline")
+    )
+    staged = blocked_items_input(
+        issues,
+        causes=causes,
+        ledger=tech_lead.ledger,
+        case_files=tech_lead.case_files,
+        timeline=events,
+        cutoff=cutoff,
+        # As for charter-decisions.json: not provable on a live engine (#7525).
+        coverage_proven=False,
+    )
+    _write(data / BLOCKED_ITEMS_FILE, staged)
+    return _staged(BLOCKED_ITEMS_FILE, f"{len(staged.items)} blocked item(s)")
+
+
+R = TypeVar("R")
+
+
+def _read_or_why(read: Callable[[], R], what: str) -> R | str:
+    """``read()``, or why the snapshot copy could not be read."""
+    try:
+        return read()
+    except (sqlite3.Error, ReadOnlySqliteAccessError) as error:
+        return f"{what} unreadable: {error}"
 
 
 def _stage_exam(exam_dir: Path | None, data: Path) -> tuple[ExamSeries, tuple[str, ...]]:
@@ -445,6 +527,7 @@ def load_staged_evidence(data_dir: Path) -> StagedEvidence:
         case_files=read(CASE_FILES_FILE, CaseFilesInput),
         interventions=read(INTERVENTIONS_FILE, InterventionsInput),
         open_issues=open_issues,
+        blocked_items=read(BLOCKED_ITEMS_FILE, BlockedItemsInput),
         existing_exam_case_ids=frozenset(manifest.existing_exam_case_ids),
         exam_comparable=manifest.exam_scores_comparable,
         engine_source_files=frozenset(

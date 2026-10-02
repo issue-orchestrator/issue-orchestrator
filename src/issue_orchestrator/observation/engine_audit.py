@@ -56,6 +56,7 @@ from ..ports.engine_audit import (
     ActionLivenessAuditReader,
     CharterAuditReader,
     ClaimAuditReader,
+    OpenIssueLabels,
     OpenWorkHost,
     PromotionAuditReader,
     TimelineAuditReader,
@@ -78,14 +79,39 @@ STALE_UNRESOLVED_AFTER = timedelta(hours=24)
 #: audit's set, minus ``in-progress`` (normal work, counted but not flagged).
 #: Spelled as an unprefixed engine writes them (``label_prefix`` unset, the
 #: default ``needs-human``); every label is in ``label_counts`` regardless.
+#: The shared needs-human block, as an unprefixed engine writes it.
+NEEDS_HUMAN_LABEL = "needs-human"
+
 ATTENTION_LABELS: tuple[str, ...] = (
-    "needs-human",
+    NEEDS_HUMAN_LABEL,
     TECH_LEAD_NEEDS_HUMAN_LABEL,
     "blocked-failed",
     "recovery-pending",
     RECONCILE_PAUSE_LABEL,
     PROPOSED_TECH_LEAD_LABEL,
 )
+
+#: Labels that block an item until someone acts, besides the ``blocked``
+#: family (``blocked``, ``blocked-*``, ``blocked:*``, as ``LabelManager``
+#: classes them). An open issue carrying one is a BLOCKED ITEM: the operator's
+#: objective is that each gets resolved, so the improver accounts for every
+#: one (#7490). Unprefixed, like :data:`ATTENTION_LABELS`.
+HUMAN_BLOCK_LABELS: tuple[str, ...] = (NEEDS_HUMAN_LABEL, TECH_LEAD_NEEDS_HUMAN_LABEL)
+
+
+def is_blocking_label(label: str) -> bool:
+    """Whether ``label`` makes its open issue a blocked item."""
+    return (
+        label in HUMAN_BLOCK_LABELS
+        or label == "blocked"
+        or label.startswith(("blocked-", "blocked:"))
+    )
+
+
+def blocking_labels(labels: Iterable[str]) -> tuple[str, ...]:
+    """The labels of ``labels`` that block, sorted and de-duplicated."""
+    return tuple(sorted({label for label in labels if is_blocking_label(label)}))
+
 
 #: How many charter decisions the report lists by name.
 RECENT_DECISIONS = 10
@@ -402,13 +428,20 @@ def _github(
         ),
         attention=tuple(
             LabelledIssue(label=label, issue_number=issue.number)
-            for label in ATTENTION_LABELS
+            for label in _attention_labels(issues)
             for issue in sorted(issues, key=lambda i: i.number)
             if label in issue.labels
         ),
         open_prs_ready=ready,
         draft_prs=tuple(sorted(drafts)),
     )
+
+
+def _attention_labels(issues: Iterable[OpenIssueLabels]) -> tuple[str, ...]:
+    """:data:`ATTENTION_LABELS`, then every other blocking label an open issue
+    carries: every blocked item shows as an attention anomaly of its own."""
+    blocking = {label for issue in issues for label in blocking_labels(issue.labels)}
+    return ATTENTION_LABELS + tuple(sorted(blocking - set(ATTENTION_LABELS)))
 
 
 def _as_engine_event(event: TimelineEvent) -> dict[str, Any]:
@@ -615,10 +648,14 @@ def _fetch_cost_anomalies(cost: FetchCostSection) -> Iterator[Anomaly]:
 
 __all__ = [
     "ATTENTION_LABELS",
+    "HUMAN_BLOCK_LABELS",
+    "NEEDS_HUMAN_LABEL",
     "EngineAuditInputs",
     "EngineLog",
     "STALE_UNRESOLVED_AFTER",
     "TechLeadReaders",
     "Unavailable",
     "audit_engine",
+    "blocking_labels",
+    "is_blocking_label",
 ]

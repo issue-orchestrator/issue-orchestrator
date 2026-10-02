@@ -74,7 +74,7 @@ def test_each_output_files_one_issue_labelled_for_what_it_asks(tmp_path: Path) -
     assert "add-only" in exam["body"]
     assert '"case_id": "E-refused-validation-retry-loop"' in exam["body"]
     investigation = next(c for c in host.created if "Investigate" in c["title"])
-    assert "GitHub label events are not staged" in investigation["body"]
+    assert "no needs_human cause is recorded" in investigation["body"]
     assert host.comments == []
 
 

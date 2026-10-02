@@ -48,6 +48,7 @@ from ..ports.pending_work_claim_store import (
     ClaimLookup,
     ClaimState,
     ConflictingPendingWorkClaimError,
+    NeedsHumanCauseRow,
     QuarantineCause,
     QuarantineLabelState,
     QuarantineRecord,
@@ -675,6 +676,21 @@ class SqlitePendingWorkClaimStore:
                 "SELECT quarantine_key, run_key, session_name, issue_number, "
                 "error, label_state, announced, releasing, cause, work_kind "
                 "FROM pending_work_claim_quarantine"
+            )
+        )
+
+    def list_needs_human_causes(self) -> tuple[NeedsHumanCauseRow, ...]:
+        """Every recorded cause of the shared needs-human block, as stored
+        (the improver's blocked-items input, #7490): read only."""
+        return tuple(
+            NeedsHumanCauseRow(
+                issue_number=int(row["issue_number"]),
+                cause=str(row["cause"]),
+                reason=str(row["reason"]),
+            )
+            for row in self._get_connection().execute(
+                "SELECT issue_number, cause, reason FROM needs_human_cause "
+                "ORDER BY issue_number, cause"
             )
         )
 

@@ -40,6 +40,8 @@ class ImproverSweepRequest:
     log_tail_bytes: int
     #: How far back an engine never accepted before must have run.
     recent: timedelta
+    #: A blind sweep's hidden open issues (``ImproverRunRequest.excluded_open_issues``).
+    excluded_open_issues: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ class ImproverSweep:
                     exam_dir=request.exam_dir,
                     window=request.window,
                     log_tail_bytes=request.log_tail_bytes,
+                    excluded_open_issues=request.excluded_open_issues,
                 ),
                 apply=apply,
             )

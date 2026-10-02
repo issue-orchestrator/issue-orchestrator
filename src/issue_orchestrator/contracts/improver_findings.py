@@ -22,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 #: Bump when a field is added, removed or changes meaning. The prompt's
 #: ``schema_version`` must match.
-IMPROVER_FINDINGS_SCHEMA_VERSION = 2
+IMPROVER_FINDINGS_SCHEMA_VERSION = 3
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
 FINDINGS_FILE = "improver-findings.json"
@@ -41,6 +41,9 @@ Output = Literal[
 ]
 ReproductionKind = Literal["exam_case", "unit_test", "integration_test"]
 TrendValue = Literal["up", "flat", "down", "unobserved"]
+#: How a blocked item is accounted for: by a finding about it, or as handed
+#: to the operator by an applied tech-lead decision of its own.
+BlockedItemDisposition = Literal["finding", "awaiting_operator"]
 
 NonEmpty = Annotated[str, StringConstraints(min_length=1, strip_whitespace=False)]
 #: A finding's stable id: it keys the orchestrator's dedup marker.
@@ -145,11 +148,29 @@ class Trend(_Closed):
     notes: str
 
 
+class BlockedItemAccount(_Closed):
+    """One staged blocked item (``blocked-items.json``), accounted for.
+
+    The operator's objective is that blocked items get resolved, so every
+    run accounts for each one: a ``finding`` (``finding_id``) grades the
+    tech lead on it; ``awaiting_operator`` cites (``evidence``) the applied
+    tech-lead decision that handed it to the operator.
+    """
+
+    number: Annotated[int, Field(gt=0)]
+    disposition: BlockedItemDisposition
+    finding_id: Slug | None = None
+    evidence: tuple[NonEmpty, ...] = ()
+    why: NonEmpty
+
+
 class ImproverFindings(_Closed):
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     engine_commit: NonEmpty
     engine_started_at: Timestamp
     findings: tuple[Finding, ...]
+    #: Every staged blocked item, each exactly once.
+    blocked_items: tuple[BlockedItemAccount, ...]
     trend: Trend
 
 
@@ -157,6 +178,7 @@ __all__ = [
     "FINDINGS_FILE",
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
+    "BlockedItemAccount",
     "EngineTag",
     "Finding",
     "GradingWindow",

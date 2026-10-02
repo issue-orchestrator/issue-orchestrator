@@ -8,7 +8,10 @@ over a 24-hour window, and the previous one a day earlier. Four anomalies:
   the tech lead flagged it (decision ``D1``, case file ``CF1``);
 * ``#320`` — a parked action last failing before the start, still parked; the
   tech lead's remedy ``D2`` was applied at :data:`D2_APPLIED`;
-* ``#353`` — an open issue carrying ``needs-human`` (a snapshot, nothing dated);
+* ``#353`` — an open issue carrying ``needs-human``, the one BLOCKED ITEM
+  (``blocked-items.json``): the label was put on at :data:`BLOCKED_353`, after
+  the start, with no cause recorded, and the tech lead escalated it to the
+  operator (decision ``D3``, applied at :data:`D3_APPLIED`);
 * ``#500`` — a log signature first seen AFTER the start, inside a log read
   that began before it (a proven onset), which nothing the tech lead recorded
   refers to.
@@ -41,6 +44,10 @@ from issue_orchestrator.contracts.engine_audit import (
     SourceStatus,
 )
 from issue_orchestrator.contracts.improver_inputs import (
+    BlockedItem,
+    BlockedItemsInput,
+    BlockEventInput,
+    BlockingLabelInput,
     CaseFileObservationInput,
     CaseFilesInput,
     CharterDecisionsInput,
@@ -71,6 +78,8 @@ CUTOFF = datetime.fromisoformat("2026-09-28T18:00:00+00:00")
 PREVIOUS = CUTOFF - timedelta(days=1)
 A1_FIRST_SEEN = "2026-09-27T09:00:00+00:00"
 D2_APPLIED = "2026-09-28T14:00:00+00:00"
+BLOCKED_353 = "2026-09-28T13:30:00+00:00"
+D3_APPLIED = "2026-09-28T13:45:00+00:00"
 SOURCE_FILE = "src/issue_orchestrator/domain/tech_lead_charter.py"
 OPEN_TRACKER = 7491
 
@@ -176,6 +185,48 @@ def decisions() -> CharterDecisionsInput:
         decisions=(
             decision("D1", "flag_pattern", 410, effect="withheld", applied=None),
             decision("D2", "release_withheld_review", 320, effect="applied", applied=D2_APPLIED),
+            escalation_353(),
+        ),
+    )
+
+
+def escalation_353() -> StagedDecision:
+    """``D3``: the tech lead escalated blocked item #353 to the operator."""
+    return StagedDecision(
+        decision_id="D3", run_id="run-1", action_id="D3", role="flow", action_kind="escalate_to_human",
+        binding="floor", outcome="executed", reason_code="floor_executes", reason="needs a product call",
+        effect="applied", execution_reason=None, target_number=353, anchor_issue_number=353,
+        proposal_issue_number=None, decided_at=datetime.fromisoformat("2026-09-28T13:40:00+00:00"),
+        applied_at=datetime.fromisoformat(D3_APPLIED),
+    )
+
+
+def blocked_items() -> BlockedItemsInput:
+    """``blocked-items.json``: #353, blocked since :data:`BLOCKED_353`, escalated by ``D3``."""
+    since = datetime.fromisoformat(BLOCKED_353)
+    return BlockedItemsInput(
+        read_at=CUTOFF,
+        blocking_rule="needs-human, tech-lead-needs-human, blocked, blocked-*, blocked:*",
+        causes_coverage=Coverage(from_=None, to=CUTOFF, complete=False, detail="current rows"),
+        decisions_coverage=_coverage(),
+        items=(
+            BlockedItem(
+                number=353, title="Hold the batch", labels=("needs-human",),
+                blocking_labels=(
+                    BlockingLabelInput(label="needs-human", since_at=since, since_event="issue.labels_changed"),
+                ),
+                blocked_since=since,
+                needs_human_causes=(),
+                block_events=(
+                    BlockEventInput(at=since, event="issue.labels_changed", detail="added ['needs-human'] removed []"),
+                ),
+                timeline_coverage=Coverage(
+                    from_=since - timedelta(hours=1), to=CUTOFF, complete=False, detail="retained events",
+                ),
+                decisions=(escalation_353(),),
+                case_file_ids=(),
+                diagnosis_ids=(),
+            ),
         ),
     )
 
@@ -230,6 +281,7 @@ def build_improver_data(root: Path, *, exam_comparable: bool = False) -> Path:
     write("charter.json", (TechLeadCharterPolicy.from_config(Config()).effective_charter()))
     write("charter-decisions.json", (decisions()))
     write("case-files.json", (case_files()))
+    write("blocked-items.json", blocked_items())
     write("open-issues.json", (OpenIssuesInput(
         repo="issue-orchestrator/issue-orchestrator", read_at=CUTOFF,
         issues=(OpenIssue(number=OPEN_TRACKER, title="Fetch cost", labels=("bug",)),),
