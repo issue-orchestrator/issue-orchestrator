@@ -898,3 +898,45 @@ def test_a_failed_activation_is_finished_by_the_replay(tmp_path: Path) -> None:
     assert AGENT in world.github.labels[child["number"]]
     assert set(prior_resolutions(world.github.comments[ITEM])) == {_AGENT, _SWEEP}
     assert world.requeued == [ITEM]
+
+
+def test_a_child_changed_after_the_discharge_is_never_activated(tmp_path: Path) -> None:
+    """r8 F1: activation re-checks the graph as it stands then."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+    world.applier.fail = AddLabelAction
+    assert not world.executor().apply(_action(_split())).success  # discharge committed, label failed
+    [child] = world.github.created
+    world.github.states[child["number"]] = "closed"
+    world.applier.fail = None
+
+    replay = world.executor().apply(_action(_split()))
+
+    assert not replay.success
+    assert AGENT not in world.github.labels[child["number"]]
+
+
+def test_a_cause_gone_before_the_discharge_discharges_nothing(tmp_path: Path) -> None:
+    """r8 F2: all of the decision or none of it. One named cause stopped
+    standing after verify while another cause keeps the label: nothing is
+    withdrawn, nothing recorded, and a later decision is not refused."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP, NeedsHumanCause.ACTION_LIVENESS)
+    executor = world.executor()
+    resolve = world.block.resolve
+
+    def sweep_gone_first(target, causes, reason):  # type: ignore[no-untyped-def]
+        world.store.withdraw_needs_human_cause(ITEM, _SWEEP.value)
+        return resolve(target, causes, reason)
+
+    object.__setattr__(executor, "block", _RacedBlock(world.block, sweep_gone_first))
+    split = _split()
+
+    result = executor.apply(_action(split))
+
+    assert not result.success
+    assert world.store.needs_human_causes(ITEM) == frozenset({"agent_completion", "action_liveness"})
+    assert world.discharges.block_resolution_state(decision_id="run-1/A1") is None
+    assert prior_resolutions(world.github.comments.get(ITEM, [])) == {}
+    later = world.executor().apply(_action(_resolution(), action_id="A2", run="run-2"))
+    assert later.details.get("refusal") != BlockResolutionRefusal.RESOLVED_BEFORE.value

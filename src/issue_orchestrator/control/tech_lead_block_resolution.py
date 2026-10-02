@@ -457,11 +457,7 @@ class TechLeadBlockResolutionExecutor:
     ) -> int:
         marker = child_marker(action.decision_id, index)
         number = self.find_issue_by_marker(title=child.title, marker=marker, authoritative=True)
-        predecessor = (
-            None if child.after is None
-            else parent.number if child.after == PARENT
-            else earlier[int(child.after) - 1]
-        )
+        predecessor = _predecessor(child, parent, earlier)
         if number is None:
             self.require_authority(action, action.issue_number)
             edge = (
@@ -498,6 +494,9 @@ class TechLeadBlockResolutionExecutor:
             )
             if number is None:
                 raise RuntimeError(f"child {index} of #{parent.number}'s split is not on GitHub")
+            # The graph again, as it stands NOW: a child closed or rewired since
+            # it was filed is never made runnable (nor its parent closed).
+            self._verify_edge(number, child, _predecessor(child, parent, tuple(children)))
             for label in (parent.agent_type,) if parent.agent_type else ():
                 marked = self.apply_action(AddLabelAction(
                     issue_number=number, label=label,
@@ -584,6 +583,13 @@ class TechLeadBlockResolutionExecutor:
             expected=build_expected_for_mutation(),
         ))
         return None if written.success else written
+
+
+def _predecessor(child: ResolutionChild, parent: "Issue", earlier: tuple[int, ...]) -> int | None:
+    """The issue a child waits on: the parent, an earlier child, or none."""
+    if child.after is None:
+        return None
+    return parent.number if child.after == PARENT else earlier[int(child.after) - 1]
 
 
 def _decision_comment(action: ResolveBlockAction) -> str:

@@ -403,8 +403,8 @@ class NeedsHumanBlock:
     def _resolve(
         self, target: int, causes: frozenset[NeedsHumanCause], reason: str
     ) -> ResolutionOutcome:
-        """Withdraw the named causes that stand; the label goes only if they
-        were all. A label none of them stands on is left exactly where it is."""
+        """Withdraw the named causes, all of which must stand; the label goes
+        only if nothing else holds it. Otherwise nothing is touched."""
         present = self._label_present_now(target)
         if present is None:
             return ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)
@@ -412,8 +412,8 @@ class NeedsHumanBlock:
             self._forget(target)
             return ResolutionOutcome(BlockOutcome.CLEARED, mutation_attempted=True)
         standing = [cause for cause in causes if self._recorded_cause_holds(cause, target)]
-        if not standing:
-            return ResolutionOutcome(BlockOutcome.HELD_BY_ANOTHER_CAUSE, mutation_attempted=False)
+        if len(standing) != len(causes):  # all of the decision, or none of it
+            return ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)
         if any(self._holds(cause, target) for cause in NeedsHumanCause if cause not in causes):
             for cause in standing:
                 self._withdraw(HumanBlockRequest(target=target, cause=cause, reason=reason))
