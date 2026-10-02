@@ -116,7 +116,7 @@ class Rule(StrEnum):
     #: The finding an item is accounted to is about the item, and live.
     BLOCKED_ITEM_FINDING_ABOUT_IT = "blocked_item_finding_about_it"
     #: ``awaiting_operator`` cites a hand-over decision about the item,
-    #: applied by the cutoff, after the item became blocked.
+    #: applied by the cutoff, after its latest current block began.
     BLOCKED_ITEM_HANDED_OVER = "blocked_item_handed_over"
 
 
@@ -364,13 +364,16 @@ class _Checker:
             yield Rule.BLOCKED_ITEM_HANDED_OVER, (
                 f"#{n}: {', '.join(unknown)} is not a staged decision about #{n} (blocked-items.json)"
             )
-        if item.blocked_since is None:
+        onsets = [b.since_at for b in item.blocking_labels]
+        if any(t is None for t in onsets):
             yield Rule.BLOCKED_ITEM_HANDED_OVER, (
-                f"#{n}: when it became blocked is unknown, so no decision can be shown to have"
-                " handed THIS block over: account for it with a finding"
+                f"#{n}: when one of its blocks began is unknown, so no decision can be shown to"
+                " have handed EVERY current block over: account for it with a finding"
             )
             return
-        since = item.blocked_since
+        # The latest block: a hand-over before it handed over an earlier block,
+        # not the one put on since.
+        since = max(t for t in onsets if t is not None)
         if not any(
             d.action_kind in HAND_OVER_ACTION_KINDS
             and d.applied_at is not None
@@ -379,7 +382,7 @@ class _Checker:
         ):
             yield Rule.BLOCKED_ITEM_HANDED_OVER, (
                 f"#{n}: cite a {'/'.join(sorted(HAND_OVER_ACTION_KINDS))} decision about it, applied"
-                f" after it became blocked ({since.isoformat()}) and by the cutoff; a diagnosis"
+                f" after its latest block began ({since.isoformat()}) and by the cutoff; a diagnosis"
                 " without that is a finding (noticed_not_acted)"
             )
 

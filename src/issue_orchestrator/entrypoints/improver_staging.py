@@ -67,7 +67,7 @@ from ..infra.engine_start_record import EngineStartRecordUnavailable, read_engin
 from ..infra.tech_lead_run_record_store import SqliteTechLeadRunRecordStore
 from ..infra.pause_journal import PAUSE_JOURNAL_FILENAME, JsonlPauseJournal
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
-from ..observation.engine_audit import Unavailable, audit_engine, blocking_labels
+from ..observation.engine_audit import Unavailable, audit_engine
 from ..observation.improver_blocked_items import blocked_items_input
 from ..observation.engine_audit_diff import IncomparableAuditError, diff_reports, load_report
 from ..observation.improver_inputs import (
@@ -363,7 +363,8 @@ def _stage_blocked_items(
         else _read_or_why(claims.list_needs_human_causes, "claim store")
     )
     timeline = snapshot.timeline
-    blocked = [i.number for i in issues if blocking_labels(i.labels)]
+    lane = snapshot.audit.blocked_lane
+    blocked = [i.number for i in issues if lane.blocking(i.labels)]
     events = (
         f"{timeline.status.value}: {timeline.detail}"
         if isinstance(timeline, Unavailable)
@@ -371,6 +372,7 @@ def _stage_blocked_items(
     )
     staged = blocked_items_input(
         issues,
+        lane=lane,
         causes=causes,
         ledger=tech_lead.ledger,
         case_files=tech_lead.case_files,

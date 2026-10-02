@@ -558,3 +558,43 @@ def test_blocked_items_unread_after_the_issue_listing_make_the_run_unavailable(s
 
     with pytest.raises(ImproverInputsUnavailable, match="blocked-items.json"):
         _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+
+def test_a_prefixed_engines_blocked_items_are_read_by_its_recorded_label_policy(tmp_path: Path) -> None:
+    """#7490 r3 F1: an engine with label_prefix "bot" blocks with
+    bot:needs-human; read with the default names it would have none."""
+    from issue_orchestrator.contracts.engine_start import LabelPolicy
+    from issue_orchestrator.infra.engine_start_record import read_engine_start
+
+    state = make_engine_state(tmp_path / "engine")
+    record = read_engine_start(state)
+    write_engine_start(state, record.model_copy(update={
+        "labels": LabelPolicy(prefix="bot", needs_human="needs-human", blocked="blocked"),
+    }))
+    audited = FakeHost(issues=[
+        OpenIssueLabels(number=364, title="parked", labels=("bot:needs-human",)),
+        OpenIssueLabels(number=365, title="unprefixed", labels=("needs-human-ish",)),
+    ])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [364]
+    assert "prefix bot" in blocked["blocking_rule"]
+    attention = {(a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"}
+    assert ("#364", "bot:needs-human") in attention
+
+
+def test_an_engine_that_recorded_no_label_policy_is_read_on_the_defaults_and_says_so(
+    state: Path, tmp_path: Path
+) -> None:
+    from issue_orchestrator.infra.engine_start_record import read_engine_start
+
+    write_engine_start(state, read_engine_start(state).model_copy(update={"labels": None}))
+    audited = FakeHost(issues=[OpenIssueLabels(number=364, title="parked", labels=("needs-human",))])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [364]
+    assert "recorded no label policy" in blocked["blocking_rule"]

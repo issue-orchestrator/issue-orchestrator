@@ -16,7 +16,6 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from functools import cache
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
@@ -48,6 +47,7 @@ from ..contracts.engine_audit import (
     UnresolvedWork,
     ValidatedWorkSection,
 )
+from ..contracts.engine_start import LabelPolicy
 from ..control.label_manager import TECH_LEAD_NEEDS_HUMAN_LABEL, LabelManager
 from ..control.reconciliation import RECONCILE_PAUSE_LABEL
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
@@ -77,16 +77,13 @@ from .no_progress import (
 #: An unresolved validated-work record older than this is stuck.
 STALE_UNRESOLVED_AFTER = timedelta(hours=24)
 
-#: The shared needs-human block, as an unprefixed engine writes it.
-NEEDS_HUMAN_LABEL = "needs-human"
-
 #: Open-issue labels that ask a human (or the tech lead) to act: the prototype
 #: audit's set, minus ``in-progress`` (normal work, counted but not flagged).
 #: Spelled as an unprefixed engine writes them (``label_prefix`` unset, the
 #: default ``needs-human``); every label is in ``label_counts`` regardless.
-#: Every blocking label (:func:`is_blocking_label`) is flagged as well.
+#: Every blocking label (:class:`BlockedLane`) is flagged as well.
 ATTENTION_LABELS: tuple[str, ...] = (
-    NEEDS_HUMAN_LABEL,
+    "needs-human",
     TECH_LEAD_NEEDS_HUMAN_LABEL,
     "blocked-failed",
     "recovery-pending",
@@ -95,34 +92,53 @@ ATTENTION_LABELS: tuple[str, ...] = (
 )
 
 
-@cache
-def _default_labels() -> LabelManager:
-    """The engine's label owner for an unprefixed engine (the default config),
-    the spelling every reading here assumes, like :data:`ATTENTION_LABELS`."""
-    return LabelManager(Config())
+@dataclass(frozen=True)
+class BlockedLane:
+    """Which open issues are BLOCKED ITEMS, by the audited engine's own label
+    policy: the operator's objective is that each gets resolved, so the
+    improver accounts for every one (#7490).
 
-
-def is_blocking_label(label: str) -> bool:
-    """Whether ``label`` makes its open issue a BLOCKED ITEM.
-
-    The engine's blocked lane, by its label owner's own rule
+    The engine's blocked lane, by its label owner's rule
     (``LabelManager.is_blocking``: ``blocked``, ``blocked-*``, ``blocked:*``,
-    ``needs-human``, ``recovery-pending``, ``publish-failed``, a provider
-    outage, the legacy ``failed``), plus the tech lead's needs-human marker,
-    minus the tech lead's own artefacts (a gated proposal, a case file),
-    which block pickup but are not work anyone is stuck on. The operator's
-    objective is that each blocked item gets resolved, so the improver
-    accounts for every one (#7490).
+    needs-human, ``recovery-pending``, ``publish-failed``, a provider outage,
+    the legacy ``failed``), plus the tech lead's needs-human marker, minus
+    the tech lead's own artefacts (a gated proposal, a case file), which
+    block pickup but are not work anyone is stuck on.
     """
-    labels = _default_labels()
-    return label == TECH_LEAD_NEEDS_HUMAN_LABEL or (
-        labels.is_blocking(label) and not labels.is_tech_lead_artifact_any((label,))
-    )
 
+    labels: LabelManager
+    #: How the policy is known, in plain words.
+    source: str
 
-def blocking_labels(labels: Iterable[str]) -> tuple[str, ...]:
-    """The labels of ``labels`` that block, sorted and de-duplicated."""
-    return tuple(sorted({label for label in labels if is_blocking_label(label)}))
+    @classmethod
+    def of(cls, policy: LabelPolicy | None) -> "BlockedLane":
+        if policy is None:
+            return cls(
+                LabelManager(Config()),
+                "the engine recorded no label policy (it started before io recorded one):"
+                " the default, unprefixed label names are assumed",
+            )
+        return cls(
+            LabelManager(Config(
+                label_prefix=policy.prefix, label_needs_human=policy.needs_human, label_blocked=policy.blocked,
+            )),
+            f"the engine's recorded label policy (prefix {policy.prefix or 'none'},"
+            f" needs-human {policy.needs_human!r}, blocked {policy.blocked!r})",
+        )
+
+    @property
+    def needs_human(self) -> str:
+        return self.labels.needs_human
+
+    def is_blocking(self, label: str) -> bool:
+        labels = self.labels
+        return label == labels.tech_lead_needs_human or (
+            labels.is_blocking(label) and not labels.is_tech_lead_artifact_any((label,))
+        )
+
+    def blocking(self, labels: Iterable[str]) -> tuple[str, ...]:
+        """The labels of ``labels`` that block, sorted and de-duplicated."""
+        return tuple(sorted({label for label in labels if self.is_blocking(label)}))
 
 
 #: How many charter decisions the report lists by name.
@@ -162,6 +178,8 @@ class EngineLog:
 class EngineAuditInputs:
     repo: str
     state_dir: Path
+    #: Which labels block, by the engine's label policy.
+    blocked_lane: BlockedLane
     validated_work: ValidatedWorkCensusReader | Unavailable
     action_liveness: ActionLivenessAuditReader | Unavailable
     tech_lead: TechLeadReaders | Unavailable
@@ -217,7 +235,7 @@ def audit_engine(
             else r
             for r in readings
         ]
-    github = _github(inputs.github, readings)
+    github = _github(inputs.github, readings, inputs.blocked_lane)
     repeats = tuple(
         TimelineRepeat(event=r.event, subject=r.subject, detail=r.detail, count=r.count)
         for r in find_current_repeats(events)
@@ -402,7 +420,7 @@ def _claims(reader: ClaimAuditReader) -> ClaimsSection:
 
 
 def _github(
-    host: OpenWorkHost | Unavailable, readings: list[SourceReading]
+    host: OpenWorkHost | Unavailable, readings: list[SourceReading], lane: BlockedLane
 ) -> GitHubSection | None:
     if isinstance(host, Unavailable):
         readings.append(_unavailable(AuditSource.GITHUB, host))
@@ -440,7 +458,7 @@ def _github(
         ),
         attention=tuple(
             LabelledIssue(label=label, issue_number=issue.number)
-            for label in _attention_labels(issues)
+            for label in _attention_labels(issues, lane)
             for issue in sorted(issues, key=lambda i: i.number)
             if label in issue.labels
         ),
@@ -449,10 +467,10 @@ def _github(
     )
 
 
-def _attention_labels(issues: Iterable[OpenIssueLabels]) -> tuple[str, ...]:
+def _attention_labels(issues: Iterable[OpenIssueLabels], lane: BlockedLane) -> tuple[str, ...]:
     """:data:`ATTENTION_LABELS`, then every other blocking label an open issue
     carries: every blocked item shows as an attention anomaly of its own."""
-    blocking = {label for issue in issues for label in blocking_labels(issue.labels)}
+    blocking = {label for issue in issues for label in lane.blocking(issue.labels)}
     return ATTENTION_LABELS + tuple(sorted(blocking - set(ATTENTION_LABELS)))
 
 
@@ -660,13 +678,11 @@ def _fetch_cost_anomalies(cost: FetchCostSection) -> Iterator[Anomaly]:
 
 __all__ = [
     "ATTENTION_LABELS",
-    "NEEDS_HUMAN_LABEL",
+    "BlockedLane",
     "EngineAuditInputs",
     "EngineLog",
     "STALE_UNRESOLVED_AFTER",
     "TechLeadReaders",
     "Unavailable",
     "audit_engine",
-    "blocking_labels",
-    "is_blocking_label",
 ]

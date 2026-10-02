@@ -56,6 +56,15 @@ class EffectiveCharter(_Closed):
     promotion_lane: Literal["off", "gated", "auto"]
 
 
+class LabelPolicy(_Closed):
+    """The label names the engine resolved: what an outside reader needs to
+    recognise its labels (a prefix, renamed needs-human or blocked labels)."""
+
+    prefix: str | None
+    needs_human: str
+    blocked: str
+
+
 class EngineStartRecord(_Closed):
     schema_version: Literal[2] = ENGINE_START_SCHEMA_VERSION
     started_at: AwareDatetime
@@ -72,12 +81,16 @@ class EngineStartRecord(_Closed):
     repo_root: str
     repo_head: str | None
     charter: EffectiveCharter
+    #: The engine's label names; None in a record written before they were
+    #: recorded (its reader then says it assumed the defaults).
+    labels: LabelPolicy | None = None
 
 
 __all__ = [
     "ENGINE_START_SCHEMA_VERSION",
     "ActionAuthority",
     "EffectiveCharter",
+    "LabelPolicy",
     "EngineStartRecord",
     "RoleDials",
 ]

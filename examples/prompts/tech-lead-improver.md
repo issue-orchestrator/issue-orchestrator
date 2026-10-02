@@ -66,8 +66,8 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
      defect (in io or in the tech lead's triage)?
    - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
      an applied tech-lead decision of its own (an `escalate_to_human` or
-     `defer_to_tracker` about it, applied after it became blocked) handed it
-     to the operator: then `awaiting_operator`. A comment is not a hand-over.
+     `defer_to_tracker` about it, applied after its latest block began) handed
+     it to the operator: then `awaiting_operator`. A comment is not a hand-over.
      Several items with one root cause share one finding.
 1. **Observe.** Read `audit-diff.json` first. For each anomaly, record three
    separate facts, each backed by a cited record, and never infer one from
@@ -316,9 +316,9 @@ in `engine-source/examples/improver/findings/`.
   with `subject` `#<n>` and a blocking label as `signature`) and
   `present_after_start: "true"`. An `awaiting_operator` account cites in
   `evidence` an `escalate_to_human` or `defer_to_tracker` decision from
-  that item's `decisions`, applied after its `blocked_since`
-  and by the cutoff; with `blocked_since` unknown, or no such decision, the
-  item needs a finding. Only a `finding` account names `finding_id`; only an
+  that item's `decisions`, applied after the latest `since_at` of its
+  blocking labels and by the cutoff; with any `since_at` unknown, or no
+  such decision, the item needs a finding. Only a `finding` account names `finding_id`; only an
   `awaiting_operator` account cites `evidence`.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous

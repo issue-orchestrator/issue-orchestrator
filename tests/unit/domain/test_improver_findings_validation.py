@@ -687,3 +687,30 @@ def test_a_finding_about_another_anomaly_of_the_issue_does_not_account_for_its_b
     _finding(doc)["anomaly_keys"] = [{"kind": "owed_pause", "subject": "#353", "signature": "reconcile_pause"}]
 
     assert Rule.BLOCKED_ITEM_FINDING_ABOUT_IT in _rules(doc, evidence)
+
+
+def _second_block(at: str) -> Callable[[dict], None]:
+    """#353 also carries recovery-pending, put on at ``at``."""
+    def mutate(d: dict) -> None:
+        d["items"][0]["labels"].append("recovery-pending")
+        d["items"][0]["blocking_labels"].append(
+            {"label": "recovery-pending", "since_at": at, "since_event": "issue.labels_changed"}
+        )
+
+    return mutate
+
+
+def test_a_hand_over_before_a_later_block_does_not_account_for_it(tmp_path: Path) -> None:
+    """r3 F2: D3 escalated #353's needs-human (13:45); recovery-pending went on
+    later (14:30). The newer block was never handed over."""
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", _second_block("2026-09-28T14:30:00Z"))
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_a_hand_over_after_every_current_block_accounts_for_it(tmp_path: Path) -> None:
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", _second_block("2026-09-28T13:35:00Z"))
+
+    assert validate_findings(json.dumps(example("exam_case")), evidence).blocked_items[0].disposition == (
+        "awaiting_operator"
+    )

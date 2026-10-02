@@ -2,7 +2,7 @@
 
 The operator's objective is that blocked issues get resolved, so the improver
 must measure the tech lead against it: for EVERY open issue that is blocked
-(:func:`~.engine_audit.is_blocking_label`), what blocks it, since when, what
+(:class:`~.engine_audit.BlockedLane`), what blocks it, since when, what
 cause the engine recorded, and what the tech lead decided or wrote about it.
 
 Pure assembly, like :mod:`.improver_inputs`: every argument is a record
@@ -34,7 +34,7 @@ from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from ..events.catalog import EventName
 from ..ports.engine_audit import OpenIssueLabels, TimelineEvent
 from ..ports.pending_work_claim_store import NeedsHumanCauseRow
-from .engine_audit import NEEDS_HUMAN_LABEL, blocking_labels, is_blocking_label
+from .engine_audit import BlockedLane
 from .improver_inputs import applied_at, as_of, instant, ledger_coverage, staged_decision
 
 #: How many of an item's most recent block events are staged.
@@ -46,7 +46,7 @@ BLOCKING_RULE = (
     "an open issue in the engine's blocked lane: a label its label owner classes as blocking"
     " (blocked, blocked-*, blocked:*, needs-human, recovery-pending, publish-failed, a provider"
     " outage, the legacy failed) or the tech-lead-needs-human marker; never a tech-lead"
-    " proposal or case file. Labels are read unprefixed, as the engine audit reads them"
+    " proposal or case file"
 )
 
 #: Events that put a needs-human block on without a recorded label change.
@@ -67,6 +67,7 @@ _LABELS_CHANGED = EventName.ISSUE_LABELS_CHANGED.value
 def blocked_items_input(
     issues: Sequence[OpenIssueLabels],
     *,
+    lane: BlockedLane,
     causes: Sequence[NeedsHumanCauseRow] | str,
     ledger: Sequence[TechLeadCharterDecision] | str,
     case_files: CaseFilesInput | None,
@@ -82,7 +83,7 @@ def blocked_items_input(
     the source could not be read. ``case_files`` is the staged
     ``case-files.json`` (None when it was not staged): items cite into it.
     """
-    blocked = [issue for issue in sorted(issues, key=lambda i: i.number) if blocking_labels(issue.labels)]
+    blocked = [issue for issue in sorted(issues, key=lambda i: i.number) if lane.blocking(issue.labels)]
     numbers = {issue.number for issue in blocked}
     by_issue: dict[int, list[TimelineEvent]] = {n: [] for n in numbers}
     if not isinstance(timeline, str):
@@ -92,7 +93,7 @@ def blocked_items_input(
     decisions = _decisions_about(ledger, numbers, cutoff)
     return BlockedItemsInput(
         read_at=cutoff,
-        blocking_rule=BLOCKING_RULE,
+        blocking_rule=f"{BLOCKING_RULE}; labels read by {lane.source}",
         causes_coverage=Coverage(
             from_=None,
             to=cutoff,
@@ -106,6 +107,7 @@ def blocked_items_input(
         items=tuple(
             _item(
                 issue,
+                lane=lane,
                 causes=None if isinstance(causes, str) else causes,
                 decisions=decisions.get(issue.number, ()),
                 case_files=case_files,
@@ -120,14 +122,15 @@ def blocked_items_input(
 def _item(
     issue: OpenIssueLabels,
     *,
+    lane: BlockedLane,
     causes: Sequence[NeedsHumanCauseRow] | None,
     decisions: tuple[StagedDecision, ...],
     case_files: CaseFilesInput | None,
     events: Sequence[TimelineEvent] | str,
     cutoff: datetime,
 ) -> BlockedItem:
-    labels = blocking_labels(issue.labels)
-    since = {} if isinstance(events, str) else _label_onsets(events)
+    labels = lane.blocking(issue.labels)
+    since = {} if isinstance(events, str) else _label_onsets(events, lane)
     blocking = tuple(
         BlockingLabelInput(
             label=label,
@@ -150,7 +153,7 @@ def _item(
             for row in sorted(causes, key=lambda r: r.cause)
             if row.issue_number == issue.number
         ),
-        block_events=() if isinstance(events, str) else _block_events(events),
+        block_events=() if isinstance(events, str) else _block_events(events, lane),
         timeline_coverage=_timeline_coverage(events, cutoff),
         decisions=decisions,
         case_file_ids=()
@@ -166,7 +169,7 @@ def _item(
     )
 
 
-def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, str]]:
+def _label_onsets(events: Sequence[TimelineEvent], lane: BlockedLane) -> dict[str, tuple[datetime, str]]:
     """For every blocking label the retained events leave ON: when and by
     which event it was last put on.
 
@@ -189,14 +192,14 @@ def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, 
                 on.pop(label, None)
             uncertain = data.get(PRESENCE_UNKNOWN) is True
             for label in _labels(data.get("added")):
-                if is_blocking_label(label) and not uncertain:
+                if lane.is_blocking(label) and not uncertain:
                     on[label] = (at, name)
         elif name in _NEEDS_HUMAN_EVENTS:
-            on.setdefault(NEEDS_HUMAN_LABEL, (at, name))
+            on.setdefault(lane.needs_human, (at, name))
     return on
 
 
-def _block_events(events: Sequence[TimelineEvent]) -> tuple[BlockEventInput, ...]:
+def _block_events(events: Sequence[TimelineEvent], lane: BlockedLane) -> tuple[BlockEventInput, ...]:
     about = [
         BlockEventInput(at=instant(e.record.timestamp), event=_name(e), detail=_detail(e))
         for e in events
@@ -204,7 +207,7 @@ def _block_events(events: Sequence[TimelineEvent]) -> tuple[BlockEventInput, ...
         or (
             _name(e) == _LABELS_CHANGED
             and any(
-                is_blocking_label(label)
+                lane.is_blocking(label)
                 for label in (*_labels(e.record.data.get("added")), *_labels(e.record.data.get("removed")))
             )
         )
