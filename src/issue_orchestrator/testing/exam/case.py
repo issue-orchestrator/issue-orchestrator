@@ -472,3 +472,32 @@ def item_triaged(role: str, classes: Iterable[str]) -> Goal:
         return GoalCheck(triage.triage_class in wanted and triage.in_force, described)
 
     return Goal(f"{role}.triaged_{names}", role, f"the {role} item is triaged {names}", check)
+
+
+def item_resolved(role: str, effects: Iterable[str]) -> Goal:
+    """The tech lead decided the item's block itself with ``resolve_block`` (#7658).
+
+    Graded on the engine's own triage record of the item: its latest triage
+    is a ``resolve_block`` whose effect is one of ``effects`` and in force
+    (``applied`` when the operator let it execute; ``awaiting_approval`` with
+    its proposal FILED when it must be approved).
+    """
+    wanted = frozenset(effects)
+    names = "/".join(sorted(wanted))
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        triage = item.triage
+        if triage is None:
+            return GoalCheck(False, f"no tech-lead triage was recorded for #{item.issue_number}")
+        described = (
+            f"#{item.issue_number} triaged {triage.triage_class} by {triage.action_kind}"
+            f" ({triage.effect}"
+            + (f", proposal #{triage.proposal_issue_number}" if triage.proposal_issue_number else "")
+            + ")"
+        )
+        return GoalCheck(
+            triage.action_kind == "resolve_block" and triage.effect in wanted and triage.in_force,
+            described,
+        )
+
+    return Goal(f"{role}.resolved_{names}", role, f"the tech lead resolved the {role} block ({names})", check)

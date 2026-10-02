@@ -59,6 +59,8 @@ class CaseEngine:
     """Hold work mid-flight until this file exists (``exam_config``)."""
     asking_coders: bool = False
     """Add the coders that end by asking the operator (``exam_config``)."""
+    resolution_coders: bool = False
+    """Add the coders that plant Cases E/F's needs-human blocks (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -85,6 +87,7 @@ class CaseEngine:
             tech_lead_model=tech_lead_model,
             release_file=self.release_file,
             asking_coders=self.asking_coders,
+            resolution_coders=self.resolution_coders,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -184,4 +187,23 @@ def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> Ca
                 "stuck_sweep": {"enabled": False},
             },
         },
+    )
+
+
+def case_resolution_engine(*, resolve_block: str) -> CaseEngine:
+    """Cases E (``resolve_block: execute``) and F (``propose``, the default) (#7658).
+
+    The Case D engine (health reviews grant blocked items to triage; the stuck
+    sweep is off, so the only tech-lead run on each item is the triage) with
+    the coders that plant porchpin's four needs-human blocks. Only the
+    ``resolve_block`` dial differs between the two cases: that dial alone is
+    what an operator changes to hand the tech lead these decisions.
+    """
+    base = case_d_engine({**EXAM_TECH_LEAD_AUTHORITY, "resolve_block": resolve_block})
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        resolution_coders=True,
+        worktree_reuse=True,
+        overlay=base.overlay,
     )

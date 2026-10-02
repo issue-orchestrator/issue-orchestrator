@@ -20,8 +20,14 @@ from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.e2e.exam.agents import (
     ASKING_BESIDE_PR_CODER_LABEL,
     ASKING_CODER_LABEL,
+    ASKING_PROVISIONING_CODER_LABEL,
+    BESIDE_PR_QUESTION,
     CODER_LABEL,
+    GIVES_UP_CODER_LABEL,
+    PROVISIONING_QUESTION,
+    SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
     SPLIT_QUESTION,
+    SPLIT_UNTIL_RESOLVED_CODER_LABEL,
     HELD_CODER_LABEL,
     REVIEWER_LABEL,
     TECH_LEAD_LABEL,
@@ -60,12 +66,18 @@ def exam_config(
     tech_lead_model: str | None = None,
     release_file: Path | None = None,
     asking_coders: bool = False,
+    resolution_coders: bool = False,
 ) -> Config:
     """The e2e session config, pointed at the checkout, with exam agents.
 
     With ``asking_coders`` (Case D), two more coders end by asking the
     operator a question: ``ASKING_CODER_LABEL`` with no commit, and
     ``ASKING_BESIDE_PR_CODER_LABEL`` beside a PR of its published work.
+
+    With ``resolution_coders`` (Cases E/F), four coders plant porchpin's
+    needs-human blocks (#7658): a split question asked until the tech lead
+    resolves it, a coder that gives up until then, a question beside a PR that
+    the issue's spec answers, and an account-provisioning question.
 
     With ``release_file``, work is held mid-flight until the file exists:
     every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
@@ -126,6 +138,26 @@ def exam_config(
         for label, command in (
             (ASKING_CODER_LABEL, shim_command("coder", asks=SPLIT_QUESTION)),
             (ASKING_BESIDE_PR_CODER_LABEL, shim_command("coder", pr_labels=(needs_human,))),
+        ):
+            config.agents[label] = AgentConfig(
+                prompt_path=prompt,
+                timeout_minutes=3,
+                model="sonnet",
+                command=command,
+                meta_agent="claude-code",
+                ai_system="claude-code",
+                provider_args={"permission_mode": "bypassPermissions"},
+                reviewer=REVIEWER_LABEL,
+            )
+    if resolution_coders:
+        needs_human = LabelManager(config).needs_human
+        for label, command in (
+            (SPLIT_UNTIL_RESOLVED_CODER_LABEL,
+             shim_command("coder", asks=SPLIT_QUESTION, until_resolved=True)),
+            (GIVES_UP_CODER_LABEL, shim_command("coder", gives_up=True)),
+            (SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
+             shim_command("coder", asks=BESIDE_PR_QUESTION, pr_labels=(needs_human,))),
+            (ASKING_PROVISIONING_CODER_LABEL, shim_command("coder", asks=PROVISIONING_QUESTION)),
         ):
             config.agents[label] = AgentConfig(
                 prompt_path=prompt,
