@@ -23,6 +23,7 @@ from ...ports.worktree_manager import (
 )
 from ._worktree_errors import WorktreeError
 from ._worktree_git import _git_run
+from ._worktree_git_exclude import append_worktree_exclude_entries
 
 logger = logging.getLogger(__name__)
 
@@ -210,68 +211,6 @@ def read_reviewer_head_ownership(worktree_path: Path) -> ReviewerHeadOwnership:
     return ReviewerHeadOwnership(marker_present=True, expected_head=expected_head)
 
 
-def _worktree_git_dir(worktree_path: Path) -> Path | None:
-    git_file = worktree_path / ".git"
-    if not git_file.exists():
-        return None
-    content = git_file.read_text().strip()
-    if not content.startswith("gitdir:"):
-        return None
-    git_dir = Path(content.split(":", 1)[1].strip())
-    if not git_dir.is_absolute():
-        # ``worktree.useRelativePaths`` links are relative to the worktree.
-        git_dir = (worktree_path / git_dir).resolve()
-    return git_dir
-
-
-def _worktree_git_common_dir(worktree_path: Path) -> Path | None:
-    git_dir = _worktree_git_dir(worktree_path)
-    if git_dir is None:
-        return
-    commondir_file = git_dir / "commondir"
-    if not commondir_file.exists():
-        return git_dir
-    common_dir = Path(commondir_file.read_text().strip())
-    if not common_dir.is_absolute():
-        common_dir = (git_dir / common_dir).resolve()
-    return common_dir
-
-
-def _append_exclude_entries(exclude_path: Path, paths: list[Path]) -> None:
-    exclude_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_lines: list[str] = []
-    existing_text = ""
-    if exclude_path.exists():
-        existing_text = exclude_path.read_text()
-        existing_lines = existing_text.splitlines()
-    existing = {line.strip() for line in existing_lines if line.strip()}
-    missing = [
-        str(path).replace("\\", "/")
-        for path in paths
-        if str(path).replace("\\", "/") not in existing
-    ]
-    if not missing:
-        return
-    suffix = "\n" if existing_lines and not existing_text.endswith("\n") else ""
-    with exclude_path.open("a", encoding="utf-8") as handle:
-        if suffix:
-            handle.write(suffix)
-        for entry in missing:
-            handle.write(f"{entry}\n")
-
-
-def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> None:
-    git_dir = _worktree_git_dir(worktree_path)
-    if git_dir is None:
-        return
-    common_dir = _worktree_git_common_dir(worktree_path)
-    exclude_paths = [git_dir / "info" / "exclude"]
-    if common_dir is not None and common_dir != git_dir:
-        exclude_paths.append(common_dir / "info" / "exclude")
-    for exclude_path in exclude_paths:
-        _append_exclude_entries(exclude_path, paths)
-
-
 def _worktree_git_exclude_paths(worktree_path: Path) -> list[Path]:
     """Return untracked runtime metadata paths to hide from plain git status.
 
@@ -303,7 +242,7 @@ def _hide_runtime_artifacts_from_git_status(worktree_path: Path) -> None:
             ["update-index", "--skip-worktree", "--", normalized],
             check=False,
         )
-    _write_worktree_exclude_entries(
+    append_worktree_exclude_entries(
         worktree_path, _worktree_git_exclude_paths(worktree_path)
     )
 

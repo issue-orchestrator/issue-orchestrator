@@ -45,7 +45,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ._worktree_git import _git_run
-from ._worktree_runtime import _worktree_git_common_dir, _worktree_git_dir
+from ._worktree_git_exclude import (
+    common_dir_of,
+    exclude_lock,
+    remove_exclude_lines,
+    worktree_git_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,28 +100,34 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
     if common_dir is None:
         return LegacyDropRetirement()
     common_exclude = common_dir / "info" / "exclude"
-    legacy_lines = _legacy_exclude_lines(common_exclude)
     drop_dir = worktree_path / LEGACY_CLI_TOOLS_DROP_DIR
-    if not legacy_lines and not drop_dir.is_dir():
+    if not _legacy_exclude_lines(common_exclude) and not drop_dir.is_dir():
         return LegacyDropRetirement()
 
-    quarantine_dir = (
-        common_dir
-        / LEGACY_DROP_QUARANTINE_DIR
-        / f"{worktree_path.name}-{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}"
-    )
-    restored, restored_quarantine = _restore_skip_worktree_files(
-        worktree_path, quarantine_dir
-    )
-    planted = _quarantine_planted_untracked(worktree_path, legacy_lines, quarantine_dir)
-    _prune_empty_drop_dirs(worktree_path)
+    # One lock for the whole retirement: the ownership proof (the shared
+    # exclude lines), the moves it authorises, and the decision to drop the
+    # lines must not interleave with another worktree's setup.
+    with exclude_lock(common_dir):
+        legacy_lines = _legacy_exclude_lines(common_exclude)
+        quarantine_dir = (
+            common_dir
+            / LEGACY_DROP_QUARANTINE_DIR
+            / f"{worktree_path.name}-{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}"
+        )
+        restored, restored_quarantine = _restore_skip_worktree_files(
+            worktree_path, quarantine_dir
+        )
+        planted = _quarantine_planted_untracked(
+            worktree_path, legacy_lines, quarantine_dir
+        )
+        _prune_empty_drop_dirs(worktree_path)
 
-    lines_removed = bool(legacy_lines) and not _any_worktree_holds_drop(
-        worktree_path, legacy_lines
-    )
-    if lines_removed:
-        for exclude in {common_exclude, git_dir / "info" / "exclude"}:
-            _remove_legacy_exclude_lines(exclude)
+        lines_removed = bool(legacy_lines) and not _any_worktree_holds_drop(
+            worktree_path, legacy_lines
+        )
+        if lines_removed:
+            for exclude in {common_exclude, git_dir / "info" / "exclude"}:
+                remove_exclude_lines(exclude, _is_legacy_line)
 
     quarantined = (*restored_quarantine, *planted)
     result = LegacyDropRetirement(
@@ -148,10 +159,10 @@ def _git_dirs(worktree_path: Path) -> tuple[Path, Path | None]:
     dot_git = worktree_path / ".git"
     if dot_git.is_dir():
         return dot_git, dot_git
-    git_dir = _worktree_git_dir(worktree_path)
+    git_dir = worktree_git_dir(worktree_path)
     if git_dir is None:
         return dot_git, None
-    return git_dir, _worktree_git_common_dir(worktree_path)
+    return git_dir, common_dir_of(git_dir)
 
 
 def _git_z(worktree_path: Path, argv: list[str]) -> list[str]:
@@ -167,22 +178,32 @@ def _legacy_exclude_lines(exclude: Path) -> frozenset[str]:
     return frozenset(
         line.strip()
         for line in exclude.read_text(encoding="utf-8").splitlines()
-        if line.strip().startswith(_DROP_PREFIX)
+        if _is_legacy_line(line.strip())
     )
 
 
-def _remove_legacy_exclude_lines(exclude: Path) -> None:
-    if not exclude.exists():
-        return
-    lines = exclude.read_text(encoding="utf-8").splitlines(keepends=True)
-    kept = [line for line in lines if not line.strip().startswith(_DROP_PREFIX)]
-    if len(kept) != len(lines):
-        exclude.write_text("".join(kept), encoding="utf-8")
+def _is_legacy_line(line: str) -> bool:
+    return line.startswith(_DROP_PREFIX)
 
 
 def _skip_worktree_paths(worktree_path: Path) -> list[str]:
+    """Tracked paths under the drop dir that io hid with ``skip-worktree``."""
     tagged = _git_z(worktree_path, ["ls-files", "-v"])
-    return [entry[2:] for entry in tagged if entry.startswith("S ")]
+    return _planted_skip_worktree(worktree_path, tagged)
+
+
+def _planted_skip_worktree(checkout: Path, tagged: list[str]) -> list[str]:
+    """``S``-tagged entries whose file is on disk.
+
+    Git sets the same bit on paths a sparse checkout omits, and removes those
+    files from disk. io's drop always wrote the file, so a bit on a missing
+    file is git's sparse bookkeeping and is left alone.
+    """
+    return [
+        entry[2:]
+        for entry in tagged
+        if entry.startswith("S ") and (checkout / entry[2:]).is_file()
+    ]
 
 
 def _quarantine(worktree_path: Path, relative: str, quarantine_dir: Path) -> Path:
@@ -206,8 +227,7 @@ def _restore_skip_worktree_files(
     differing = [
         relative
         for relative in skipped
-        if (worktree_path / relative).exists()
-        and _blob_of_index(worktree_path, relative)
+        if _blob_of_index(worktree_path, relative)
         != _blob_of_file(worktree_path, relative)
     ]
     quarantined = tuple(
@@ -291,7 +311,7 @@ def _holds_drop(checkout: Path, legacy_lines: frozenset[str]) -> bool:
         )
         return True
     tagged = [entry for entry in listing.stdout.split("\0") if entry]
-    if any(entry.startswith("S ") for entry in tagged):
+    if _planted_skip_worktree(checkout, tagged):
         return True
     tracked = {entry[2:] for entry in tagged}
     return any(

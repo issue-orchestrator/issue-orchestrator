@@ -234,12 +234,16 @@ def _plant_legacy_foreign_drop(wt, worktree: Path | None = None) -> Path:
     planted = worktree / LEGACY_TOOL
     planted.parent.mkdir(parents=True, exist_ok=True)
     planted.write_text("ENGINE_COPY = True\n")
+    _write_legacy_exclude_line(wt)
+    return planted
+
+
+def _write_legacy_exclude_line(wt) -> None:
     common_exclude = wt.main_repo / ".git" / "info" / "exclude"
     common_exclude.parent.mkdir(parents=True, exist_ok=True)
     existing = common_exclude.read_text() if common_exclude.exists() else ""
     if LEGACY_TOOL.as_posix() not in existing:
         common_exclude.write_text(f"{existing}{LEGACY_TOOL.as_posix()}\n")
-    return planted
 
 
 def _untracked(worktree: Path) -> list[str]:
@@ -381,6 +385,68 @@ class TestLegacyDropIsRetiredOnReuse:
         assert not (other / "src").exists()
         common_exclude = (wt.main_repo / ".git" / "info" / "exclude").read_text()
         assert LEGACY_TOOL.as_posix() not in common_exclude
+
+
+class TestLegacyRetirementLeavesOthersAlone:
+    """Retirement must not disturb git's own state or concurrent setups."""
+
+    def test_sparse_checkout_skip_worktree_bits_are_not_io_s(self, tmp_path):
+        """Git sets ``skip-worktree`` on paths a sparse checkout omits."""
+        wt = make_git_worktree(tmp_path)
+        tool = _commit_io_cli_tool(wt, "BRANCH_VERSION = True\n")
+        _git_out(wt.worktree_path, "sparse-checkout", "set", "--no-cone", "/seed")
+        assert not tool.exists()
+        _write_legacy_exclude_line(wt)
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert not tool.exists()
+        tag = _git_out(wt.worktree_path, "ls-files", "-v", "--", str(tool))
+        assert tag.startswith("S "), tag
+        assert state.legacy_drop_retirement.restored == ()
+
+    def test_concurrent_setup_append_survives_the_legacy_line_rewrite(
+        self, tmp_path, monkeypatch
+    ):
+        """Both writers share one ``info/exclude``; neither may lose the other's
+        entries. The other setup's append is fired between retirement's read
+        and its rewrite of the file."""
+        import threading
+
+        from issue_orchestrator.adapters.worktree import _worktree_git_exclude
+        from issue_orchestrator.adapters.worktree._worktree_git_exclude import (
+            append_worktree_exclude_entries,
+        )
+
+        wt = make_git_worktree(tmp_path)
+        other = tmp_path / "wt-other"
+        _git_out(wt.main_repo, "worktree", "add", str(other), "-b", "other")
+        _plant_legacy_foreign_drop(wt)
+        real_write = _worktree_git_exclude.atomic_write_bytes
+        appended: list[threading.Thread] = []
+
+        def write_after_a_concurrent_append(path, payload):
+            thread = threading.Thread(
+                target=append_worktree_exclude_entries,
+                args=(other, [Path("concurrent/runtime.lock")]),
+            )
+            thread.start()
+            appended.append(thread)
+            thread.join(timeout=0.5)  # blocks on the lock when it is held
+            real_write(path, payload)
+
+        monkeypatch.setattr(
+            _worktree_git_exclude, "atomic_write_bytes", write_after_a_concurrent_append
+        )
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+        for thread in appended:
+            thread.join(timeout=10)
+
+        assert state.legacy_drop_retirement.exclude_lines_removed is True
+        common_exclude = (wt.main_repo / ".git" / "info" / "exclude").read_text()
+        assert LEGACY_TOOL.as_posix() not in common_exclude
+        assert "concurrent/runtime.lock" in common_exclude.splitlines()
 
 
 class TestEnforcedHooksAreAnInvariantNotARequest:
