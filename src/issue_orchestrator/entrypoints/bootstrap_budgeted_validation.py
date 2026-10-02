@@ -14,6 +14,7 @@ from ..execution.budgeted_validation_storage import open_budgeted_validation_sto
 from ..execution.command_runner import LocalCommandRunner
 from ..execution.budgeted_validation_executor import BudgetedValidationCommandExecutor
 from ..execution.budgeted_validation_worker import BudgetedValidationWorkerProcess
+from ..execution.engine_inventory import control_center_engine_inventory
 from ..execution.lane_backends import resolve_contained_validation_runner
 from ..infra.config import Config
 from ..ports.budgeted_validation import (
@@ -27,6 +28,7 @@ from ..ports.budgeted_validation import (
 from ..ports.budgeted_validation_checkout import BudgetedValidationCheckouts
 from ..ports.command_runner import CommandRunner
 from ..ports.repository_host import RepositoryHost
+from .engine_activity_probe import SnapshotEngineActivityProbe
 
 
 def build_budgeted_validation_runtime(
@@ -50,8 +52,11 @@ def assemble_budgeted_validation_cycle(repository: BudgetedValidationRepository,
     runner = resolve_contained_validation_runner()
     executor = BudgetedValidationCommandExecutor(checkouts=checkouts, runner=runner,
                                                 directory=directory, environment=environment)
+    # Engine-activity suites (the improver) are due on what Control Center's
+    # registered engines did, read from byte copies of their state.
+    activity = SnapshotEngineActivityProbe(control_center_engine_inventory())
     return BudgetedValidationCycle(store=store, repository=repository, executor=executor,
-                                   clock=lambda: datetime.now(timezone.utc))
+                                   clock=lambda: datetime.now(timezone.utc), activity=activity)
 
 
 def build_budgeted_validation_cycle(

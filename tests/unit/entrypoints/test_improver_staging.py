@@ -27,6 +27,7 @@ from issue_orchestrator.domain.tech_lead_charter_decisions import (
 from issue_orchestrator.domain.tech_lead_run import TechLeadRunScopeKind
 from issue_orchestrator.domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
+from issue_orchestrator.adapters.registered_engine_inventory import engine_at
 from issue_orchestrator.entrypoints.improver_staging import (
     ImproverInputStager,
     ImproverInputsUnavailable,
@@ -97,7 +98,13 @@ def _decision(action_id: str, decided: datetime) -> TechLeadCharterDecision:
 
 @pytest.fixture
 def state(tmp_path: Path) -> Path:
-    state = tmp_path / "engine" / ".issue-orchestrator" / "state"
+    return make_engine_state(tmp_path / "engine")
+
+
+def make_engine_state(root: Path) -> Path:
+    """A small engine's state under ``root``: decisions, a case file, a
+    tech-lead run and its start record."""
+    state = root / ".issue-orchestrator" / "state"
     state.mkdir(parents=True)
     authority = SqliteTechLeadAuthorityStore(state / "tech_lead_authority.sqlite")
     authority.charter_ledger.record_decisions(
@@ -133,8 +140,7 @@ def state(tmp_path: Path) -> Path:
 
 def _request(state: Path, tmp_path: Path, **overrides: object) -> ImproverStagingRequest:
     values: dict[str, object] = {
-        "state_dir": state,
-        "audited_repo": "porchpin/porchpin",
+        "engine": engine_at(state, "porchpin/porchpin"),
         "outputs_repo": "issue-orchestrator/issue-orchestrator",
         "run_dir": tmp_path / "run",
         "previous_audit": None,
@@ -282,8 +288,11 @@ def test_what_was_staged_reads_back_as_the_validators_evidence(state: Path, tmp_
     assert evidence.engine_start.engine_commit == COMMIT
     assert evidence.engine_source_files == {"src/engine.py"}
     assert evidence.decisions is not None and evidence.charter is not None
+    assert (evidence.engine_id, evidence.audited_repo) == (
+        engine_at(state, "porchpin/porchpin").engine_id, "porchpin/porchpin"
+    )
     empty = {
-        "schema_version": 1, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
+        "schema_version": 2, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
         "findings": [],
         "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},
     }

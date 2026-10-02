@@ -1,10 +1,14 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "engine_commit": "0123456789abcdef0123456789abcdef01234567",
   "engine_started_at": "2026-09-28T12:00:00+00:00",
   "findings": [
     {
       "id": "needs-human-353",
+      "engine": {
+        "id": "repo-02325ef2feefc7529b158ab553af3781d95ca51db1a1afd57ce5b07e4fc8cbbe",
+        "repo": "porchpin/porchpin"
+      },
       "anomaly_keys": [
         {
           "kind": "attention_label",

@@ -100,6 +100,8 @@ class ImproverRunRecord(_Closed):
     outcome: RunOutcome
     #: Why the run ended as it did, in plain words.
     detail: str
+    #: The audited engine's Control Center key (two engines may work one repo).
+    engine_id: str = Field(min_length=1)
     audited_repo: str
     outputs_repo: str
     #: The run's working directory (``improver-data/``, the findings, the

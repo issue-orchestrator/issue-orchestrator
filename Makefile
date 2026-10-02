@@ -44,7 +44,7 @@ help:
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
 	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
-	@echo "  tech-lead-improver  Run the tech-lead improver once (#7490; IMPROVER_STATE_DIR/IMPROVER_AUDITED_REPO pick the engine)"
+	@echo "  tech-lead-improver  Run the tech-lead improver once over every running engine (#7490, #7567)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude-dev    Test dev agent: Claude execution -> PR created"
@@ -745,20 +745,19 @@ EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-te
 test-tech-lead-exam: sync-deps
 	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
-# The tech-lead improver (#7490): audit an engine, run the improver prompt
-# read-only on Codex, validate its findings strictly, record the run and file
-# what the accepted findings ask for. Defaults audit this repository's own
-# engine (the checkout that owns the common Git directory) and file into this
-# repository; point IMPROVER_STATE_DIR/IMPROVER_AUDITED_REPO at another engine.
+# The tech-lead improver (#7490, #7567): audit every engine Control Center
+# runs (or ran within IMPROVER_RECENT_HOURS), run the improver prompt read-only
+# on Codex once per engine, validate its findings strictly, record each run
+# and file what the accepted findings ask for, into this repository. Set
+# IMPROVER_STATE_DIR and IMPROVER_AUDITED_REPO to audit one engine instead.
 # Runs are recorded under <git common dir>/io-improver (improver status).
 IMPROVER_REPO ?= issue-orchestrator/issue-orchestrator
-IMPROVER_AUDITED_REPO ?= $(IMPROVER_REPO)
-IMPROVER_STATE_DIR ?= $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir)")/.issue-orchestrator/state
 IMPROVER_MODEL ?= gpt-5.6-sol
 IMPROVER_AGENT_TIMEOUT_MINUTES ?= 90
+IMPROVER_RECENT_HOURS ?= 24
 tech-lead-improver: sync-deps
 	$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.improver run \
-		--state-dir "$(IMPROVER_STATE_DIR)" --audited-repo $(IMPROVER_AUDITED_REPO) \
+		$(if $(IMPROVER_STATE_DIR),--state-dir "$(IMPROVER_STATE_DIR)" --audited-repo $(IMPROVER_AUDITED_REPO),--recent-hours $(IMPROVER_RECENT_HOURS)) \
 		--outputs-repo $(IMPROVER_REPO) --exam-dir "$(EXAM_OUT)" \
 		--model $(IMPROVER_MODEL) --agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 

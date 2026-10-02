@@ -17,6 +17,7 @@ from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.budgeted_validation_config import parse_budgeted_validation
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.repository_host import RepositoryHost
+from tests.unit.budgeted_validation_support import CODE_CHANGE_ONLY
 
 NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 
@@ -189,7 +190,7 @@ def test_cycle_restart_reports_original_failure_after_diagnosis_launch_error(tmp
     store = FileBudgetedValidationStore(tmp_path)
     repository, executor = IntegrationHistory(), InterruptedProbe()
     cycle = BudgetedValidationCycle(store=store, repository=repository,
-                                    executor=executor, clock=lambda: NOW)
+                                    executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     repository.current = 10
     with pytest.raises(OSError, match="diagnosis launch interrupted"):
@@ -204,7 +205,7 @@ def test_cycle_restart_reports_original_failure_after_diagnosis_launch_error(tmp
     retry = RecordedProbe()
     retry.overrides["10"] = BudgetedValidationOutcome.UNAVAILABLE
     BudgetedValidationCycle(store=restarted, repository=repository, executor=retry,
-                            clock=lambda: NOW + timedelta(hours=25)).run((suite,))
+                            clock=lambda: NOW + timedelta(hours=25), activity=CODE_CHANGE_ONLY).run((suite,))
     history = restarted.read(suite)
     assert retry.calls == ["10"]
     assert history.latest.probe.outcome is BudgetedValidationOutcome.INCONCLUSIVE

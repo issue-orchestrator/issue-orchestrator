@@ -11,6 +11,7 @@ from issue_orchestrator.domain.budgeted_validation import (
 )
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.budgeted_validation_config import parse_budgeted_validation
+from tests.unit.budgeted_validation_support import CODE_CHANGE_ONLY
 
 NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 
@@ -157,7 +158,7 @@ def test_cycle_uses_one_green_baseline_and_bisects_once_then_bounds_red_retries(
     from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     assert cycle.run((suite,))
     assert executor.calls == ["0"]
     repo.current = 9
@@ -181,7 +182,7 @@ def test_cycle_does_not_bisect_a_quota_failure_or_reset_success():
     from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     repo.current = 10
     executor.overrides["10"] = BudgetedValidationOutcome.UNAVAILABLE
@@ -215,7 +216,7 @@ def test_interrupted_contained_probe_resumes_without_duplicate_submission():
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RestartableProbe()
     cycle = BudgetedValidationCycle(
-        store=store, repository=repo, executor=executor, clock=lambda: NOW,
+        store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY,
     )
     cycle.run((suite,))
     assert store.history.latest.finished_at is None
@@ -257,7 +258,7 @@ def test_pending_run_owns_its_original_definition_across_config_changes(
         original, command=("new-test",), timeout_seconds=61, branch="release",
     )
     store, repo, executor = FileBudgetedValidationStore(tmp_path), IntegrationHistory(), Restartable()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((original,))
 
     configured = (changed,) if configured_after_restart else ()
@@ -306,7 +307,7 @@ def test_restart_continues_each_diagnostic_stage_without_replaying_completed_ste
 
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), InterruptingDiagnosis()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     repo.current = 10
     cycle.run((suite,))
@@ -327,7 +328,7 @@ def test_busy_repository_coalesces_without_even_fetching_or_spending():
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
     store.busy = True
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     assert not cycle.run((suite,))
     assert not executor.calls
 
@@ -336,7 +337,7 @@ def test_a_new_scheduled_run_clears_old_diagnosis_and_restores_coverage_only_on_
     from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     repo.current = 10
     cycle.run((suite,))
@@ -484,7 +485,7 @@ def test_forced_failure_on_the_green_commit_does_not_invent_a_bisect_range():
     from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     executor.overrides["0"] = BudgetedValidationOutcome.FAILED
     cycle.run((suite,), force=True)
@@ -498,7 +499,7 @@ def test_unavailable_attempt_retries_at_either_configured_bound(outcome):
     from issue_orchestrator.control.budgeted_validation import BudgetedValidationCycle
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = MemoryBudgetedStore(), IntegrationHistory(), RecordedProbe()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     repo.current = 10
     executor.overrides["10"] = outcome
@@ -742,7 +743,7 @@ def test_restart_continues_diagnosis_after_each_completed_step_boundary(crash_af
 
     suite = parse_budgeted_validation({"agents": {"command": ["test"]}})["agents"]
     store, repo, executor = CrashAfterCompletedStep(), IntegrationHistory(), RecordedProbe()
-    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW)
+    cycle = BudgetedValidationCycle(store=store, repository=repo, executor=executor, clock=lambda: NOW, activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     repo.current = 10
     store.armed = True

@@ -44,6 +44,7 @@ from ..contracts.improver_run import (
 )
 from ..control.improver_effects import planned_effects
 from ..execution.improver_effect_applier import ImproverEffects
+from ..domain.engine_activity import EngineRef
 from ..domain.improver_findings_validation import (
     ImproverFindingsRejected,
     StagedEvidence,
@@ -68,10 +69,9 @@ _FENCED = re.compile(r"\A```(?:json)?\n(?P<body>.*)\n```\Z", re.DOTALL)
 
 @dataclass(frozen=True)
 class ImproverRunRequest:
-    """What one run audits and where its outputs go."""
+    """What one run audits (one engine) and where its outputs go."""
 
-    state_dir: Path
-    audited_repo: str
+    engine: EngineRef
     outputs_repo: str
     exam_dir: Path | None
     window: timedelta
@@ -79,8 +79,7 @@ class ImproverRunRequest:
 
     def staging(self, run_dir: Path, previous_audit: Path | None) -> ImproverStagingRequest:
         return ImproverStagingRequest(
-            state_dir=self.state_dir,
-            audited_repo=self.audited_repo,
+            engine=self.engine,
             outputs_repo=self.outputs_repo,
             run_dir=run_dir,
             previous_audit=previous_audit,
@@ -133,13 +132,14 @@ class ImproverRun:
             finished_at=started,
             outcome=RunOutcome.UNAVAILABLE,
             detail="",
-            audited_repo=request.audited_repo,
+            engine_id=request.engine.engine_id,
+            audited_repo=request.engine.repo,
             outputs_repo=request.outputs_repo,
             run_dir=str(run_dir),
         )
         try:
             staged = self._stager.stage(
-                request.staging(run_dir, self._previous_audit(request.audited_repo))
+                request.staging(run_dir, self._previous_audit(request.engine.engine_id))
             )
         except ImproverInputsUnavailable as error:
             return self._finish(base, RunOutcome.UNAVAILABLE, f"inputs unavailable: {error}")
@@ -180,9 +180,9 @@ class ImproverRun:
             RunOutcome.ACCEPTED,
             f"{len(findings.findings)} finding(s) accepted",
             grades=_grades(findings),
-            stall_points=self._stall_point_moves(findings, request.audited_repo),
+            stall_points=self._stall_point_moves(findings, request.engine.engine_id),
             trend=findings.trend,
-            effects=planned_effects(findings, request.audited_repo),
+            effects=planned_effects(findings, request.engine),
         )
         if not apply:
             return accepted
@@ -221,22 +221,22 @@ class ImproverRun:
         self._store.record(record)
         return record
 
-    def _previous_audit(self, audited_repo: str) -> Path | None:
-        """The latest staged audit of the SAME engine's repository."""
+    def _previous_audit(self, engine_id: str) -> Path | None:
+        """The latest staged audit of the SAME engine."""
         for run in self._store.runs():
-            if run.audit_staged and run.audited_repo == audited_repo:
+            if run.audit_staged and run.engine_id == engine_id:
                 return Path(run.run_dir) / IMPROVER_DATA_DIRNAME / AUDIT_FILE
         return None
 
     def _stall_point_moves(
-        self, findings: ImproverFindings, audited_repo: str
+        self, findings: ImproverFindings, engine_id: str
     ) -> tuple[StallPointMove, ...]:
         current = Counter(f.stall_point for f in findings.findings)
         previous_run = next(
             (
                 r
                 for r in self._store.runs()
-                if r.outcome is RunOutcome.ACCEPTED and r.audited_repo == audited_repo
+                if r.outcome is RunOutcome.ACCEPTED and r.engine_id == engine_id
             ),
             None,
         )
@@ -256,7 +256,8 @@ def render_run(record: ImproverRunRecord) -> str:
     """One run for an operator: how it ended, its grades and their trend, its effects."""
     lines = [
         f"{record.run_id} {record.outcome.value}: {record.detail}",
-        f"  audited {record.audited_repo} (engine {record.engine_commit}); outputs to {record.outputs_repo}",
+        f"  audited {record.audited_repo} (engine {record.engine_id} at {record.engine_commit});"
+        f" outputs to {record.outputs_repo}",
         f"  run dir {record.run_dir}",
     ]
     lines += [f"  rejected: {reason}" for reason in record.rejections]

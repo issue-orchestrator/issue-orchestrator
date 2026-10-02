@@ -22,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 #: Bump when a field is added, removed or changes meaning. The prompt's
 #: ``schema_version`` must match.
-IMPROVER_FINDINGS_SCHEMA_VERSION = 1
+IMPROVER_FINDINGS_SCHEMA_VERSION = 2
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
 FINDINGS_FILE = "improver-findings.json"
@@ -52,6 +52,15 @@ Timestamp = AwareDatetime
 
 class _Closed(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, populate_by_name=True)
+
+
+class EngineTag(_Closed):
+    """The engine a finding is about: ``inputs.json``'s ``engine_id`` and
+    ``audited_repo``. One run audits one engine; a finding tagged with another
+    is rejected, so findings from different engines can never be mixed up."""
+
+    id: NonEmpty
+    repo: NonEmpty
 
 
 class AnomalyKeyRef(_Closed):
@@ -106,6 +115,7 @@ class Reproduction(_Closed):
 
 class Finding(_Closed):
     id: Slug
+    engine: EngineTag
     anomaly_keys: tuple[AnomalyKeyRef, ...] = Field(min_length=1)
     present_after_start: Liveness
     recurs_after_start: Liveness
@@ -136,7 +146,7 @@ class Trend(_Closed):
 
 
 class ImproverFindings(_Closed):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     engine_commit: NonEmpty
     engine_started_at: Timestamp
     findings: tuple[Finding, ...]
@@ -147,6 +157,7 @@ __all__ = [
     "FINDINGS_FILE",
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
+    "EngineTag",
     "Finding",
     "GradingWindow",
     "ImproverFindings",

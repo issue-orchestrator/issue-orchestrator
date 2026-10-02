@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """The tech-lead improver's orchestrator side (#7490).
 
+    improver run --outputs-repo issue-orchestrator/issue-orchestrator \
+        --model gpt-5.6-sol [--exam-dir D] [--engine-source-repo .] [--recent-hours 24]
     improver run --state-dir ~/dev/porchpin/.issue-orchestrator/state \
         --audited-repo porchpin/porchpin --outputs-repo issue-orchestrator/issue-orchestrator \
-        --model gpt-5.6-sol [--exam-dir D] [--engine-source-repo .]
+        --model gpt-5.6-sol
     improver status
     improver apply --outputs-repo issue-orchestrator/issue-orchestrator
     improver stage ... --run-dir RUN [--previous-audit A]
@@ -13,7 +15,10 @@
 
 ``run`` is the whole daily run (:mod:`..improver_run`): stage the inputs, run
 the improver read-only on Codex, validate its findings strictly, record the
-run and apply the accepted findings' GitHub effects. ``status`` prints the
+run and apply the accepted findings' GitHub effects. Without ``--state-dir``
+it sweeps every engine Control Center runs or ran within ``--recent-hours``
+(:mod:`..improver_sweep`), one improver run per engine; with it, it audits
+that one engine. ``status`` prints the
 recorded runs; ``apply`` retries effects a rate limit left pending.
 ``stage`` and ``validate`` run one step alone, for an operator.
 
@@ -32,7 +37,10 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ...domain.engine_activity import EngineRef
+from ...execution.engine_inventory import control_center_engine_inventory, engine_at
 from ...execution.engine_source_archive import GitEngineSourceArchive
+from ...ports.engine_activity import EngineInventory
 from ...contracts.engine_audit import SourceStatus
 from ...contracts.improver_findings import FINDINGS_FILE
 from ...contracts.improver_inputs import IMPROVER_DATA_DIRNAME
@@ -49,7 +57,8 @@ from ...execution.codex_improver_agent import CodexImproverAgent
 from ...execution.improver_run_store import FileImproverRunStore
 from ...ports.improver import ImproverStoreBusy
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
-from ..improver_run import ImproverRun, ImproverRunRequest, render_run
+from ..improver_run import ImproverRun, render_run
+from ..improver_sweep import ImproverSweep, ImproverSweepRequest
 from ..improver_staging import (
     ImproverInputStager,
     ImproverInputsUnavailable,
@@ -67,9 +76,12 @@ EXIT_UNAVAILABLE = 75
 DEFAULT_PROMPT = Path("examples/prompts/tech-lead-improver.md")
 
 
-def _engine_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--state-dir", required=True, type=Path, help="The audited engine's state dir")
-    parser.add_argument("--audited-repo", required=True, help="owner/repo the audited engine works")
+def _engine_arguments(parser: argparse.ArgumentParser, *, one_engine: bool) -> None:
+    parser.add_argument(
+        "--state-dir", required=one_engine, type=Path,
+        help="The audited engine's state dir" + ("" if one_engine else " (default: every engine Control Center runs)"),
+    )
+    parser.add_argument("--audited-repo", required=one_engine, help="owner/repo the audited engine works")
     parser.add_argument("--outputs-repo", required=True, help="owner/repo the improver's outputs are filed in")
     parser.add_argument("--exam-dir", type=Path, help="Where the tech-lead exam writes scorecards")
     parser.add_argument(
@@ -85,13 +97,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="improver", description="The tech-lead improver's orchestrator side (#7490)")
     sub = parser.add_subparsers(dest="command", required=True)
     stage = sub.add_parser("stage", help="Stage the improver's inputs")
-    _engine_arguments(stage)
+    _engine_arguments(stage, one_engine=True)
     stage.add_argument("--run-dir", required=True, type=Path)
     stage.add_argument("--previous-audit", type=Path, help="The previous run's audit.json")
     validate = sub.add_parser("validate", help="Validate improver-findings.json")
     validate.add_argument("--run-dir", required=True, type=Path)
     run = sub.add_parser("run", help="Stage, run the improver on Codex, validate, record and apply")
-    _engine_arguments(run)
+    _engine_arguments(run, one_engine=False)
+    run.add_argument(
+        "--recent-hours", type=float, default=24.0,
+        help="Sweep: an engine stopped longer ago than this is not audited",
+    )
     run.add_argument("--model", required=True, help="The Codex model the improver runs on")
     run.add_argument("--agent-timeout-minutes", type=int, default=90)
     run.add_argument("--prompt", type=Path, default=DEFAULT_PROMPT)
@@ -118,7 +134,7 @@ def main(argv: list[str]) -> int:
     return validate(args.run_dir)
 
 
-def _stager(args: argparse.Namespace) -> ImproverInputStager:
+def _stager(args: argparse.Namespace, audited_repo: str) -> ImproverInputStager:
     if args.window_hours <= 0 or args.log_tail_mb <= 0:
         raise SystemExit("improver: --window-hours and --log-tail-mb must be positive")
     outputs = create_repository_host(args.outputs_repo)
@@ -126,8 +142,8 @@ def _stager(args: argparse.Namespace) -> ImproverInputStager:
         Unavailable(SourceStatus.SKIPPED, "--no-github")
         if args.no_github
         else outputs
-        if args.audited_repo == args.outputs_repo
-        else create_repository_host(args.audited_repo)
+        if audited_repo == args.outputs_repo
+        else create_repository_host(audited_repo)
     )
     return ImproverInputStager(
         audited_host=audited,
@@ -143,10 +159,9 @@ def _now() -> datetime:
 
 def stage(args: argparse.Namespace) -> int:
     try:
-        staged = _stager(args).stage(
+        staged = _stager(args, args.audited_repo).stage(
             ImproverStagingRequest(
-                state_dir=args.state_dir.expanduser().resolve(),
-                audited_repo=args.audited_repo,
+                engine=engine_at(args.state_dir.expanduser().resolve(), args.audited_repo),
                 outputs_repo=args.outputs_repo,
                 run_dir=args.run_dir.expanduser().resolve(),
                 previous_audit=args.previous_audit,
@@ -174,37 +189,60 @@ def _effects(outputs_repo: str, store: FileImproverRunStore) -> ImproverEffects:
 
 
 def run(args: argparse.Namespace) -> int:
+    if (args.state_dir is None) != (args.audited_repo is None):
+        raise SystemExit("improver run: --state-dir and --audited-repo go together")
     store = _store()
-    improver = ImproverRun(
-        store=store,
-        stager=_stager(args),
-        agent=CodexImproverAgent(
-            runner=ProcessGroupCommandRunner(),
-            model=args.model,
-            timeout_seconds=args.agent_timeout_minutes * 60,
-        ),
-        effects=_effects(args.outputs_repo, store),
-        prompt=args.prompt.read_text(encoding="utf-8"),
-        clock=_now,
+    prompt = args.prompt.read_text(encoding="utf-8")
+
+    def improver_for(engine: EngineRef) -> ImproverRun:
+        return ImproverRun(
+            store=store,
+            stager=_stager(args, engine.repo),
+            agent=CodexImproverAgent(
+                runner=ProcessGroupCommandRunner(),
+                model=args.model,
+                timeout_seconds=args.agent_timeout_minutes * 60,
+            ),
+            effects=_effects(args.outputs_repo, store),
+            prompt=prompt,
+            clock=_now,
+        )
+
+    request = ImproverSweepRequest(
+        outputs_repo=args.outputs_repo,
+        exam_dir=args.exam_dir,
+        window=timedelta(hours=args.window_hours),
+        log_tail_bytes=args.log_tail_mb * 1024 * 1024,
+        recent=timedelta(hours=args.recent_hours),
+    )
+    inventory: EngineInventory = (
+        control_center_engine_inventory()
+        if args.state_dir is None
+        else _OneEngine(engine_at(args.state_dir.expanduser().resolve(), args.audited_repo))
     )
     try:
-        record = improver.run(
-            ImproverRunRequest(
-                state_dir=args.state_dir.expanduser().resolve(),
-                audited_repo=args.audited_repo,
-                outputs_repo=args.outputs_repo,
-                exam_dir=args.exam_dir,
-                window=timedelta(hours=args.window_hours),
-                log_tail_bytes=args.log_tail_mb * 1024 * 1024,
-            ),
-            apply=not args.no_apply,
+        result = ImproverSweep(inventory=inventory, run_for=improver_for, clock=_now).sweep(
+            request, apply=not args.no_apply
         )
     except ImproverStoreBusy as busy:
         print(f"improver run: {busy}", file=sys.stderr)
         return EXIT_UNAVAILABLE
-    print(render_run(record))
-    # --no-apply leaves effects owed on purpose; only its outcome counts.
-    return record.outcome.exit_code if args.no_apply else record.exit_code
+    if not result.engines:
+        print(f"improver run: no engine ran within {args.recent_hours}h; nothing to audit", file=sys.stderr)
+    for record in result.runs:
+        print(render_run(record))
+    # --no-apply leaves effects owed on purpose; only outcomes count.
+    return result.exit_code
+
+
+class _OneEngine:
+    """The inventory of an explicitly named engine."""
+
+    def __init__(self, engine: EngineRef) -> None:
+        self._engine = engine
+
+    def engines(self, *, now: datetime, recent: timedelta) -> tuple[EngineRef, ...]:
+        return (self._engine,)
 
 
 def apply(outputs_repo: str) -> int:

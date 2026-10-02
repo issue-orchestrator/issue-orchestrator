@@ -68,6 +68,7 @@ class Rule(StrEnum):
 
     SCHEMA = "schema"
     ENGINE_IDENTITY = "engine_identity"
+    ENGINE_TAG_MATCHES_INPUTS = "engine_tag_matches_inputs"
     UNIQUE_FINDING_IDS = "unique_finding_ids"
     ANOMALY_KEY_EXISTS = "anomaly_key_exists"
     TRACKED_ISSUE_OPEN = "tracked_issue_open"
@@ -142,6 +143,10 @@ class StagedEvidence:
     """
 
     documents: Mapping[str, Any]
+    #: The engine the inputs were staged from (``inputs.json``): every
+    #: finding's engine tag must name it.
+    engine_id: str
+    audited_repo: str
     audit: EngineAuditReport
     previous_audit: EngineAuditReport | None
     diff: AuditDiff | None
@@ -256,6 +261,12 @@ class _Checker:
     # -- one finding ---------------------------------------------------------
 
     def _finding_rules(self, f: Finding, records: "_AnomalyRecords") -> Iterator[tuple[Rule, str]]:
+        evidence = self._evidence
+        if (f.engine.id, f.engine.repo) != (evidence.engine_id, evidence.audited_repo):
+            yield Rule.ENGINE_TAG_MATCHES_INPUTS, (
+                f"tagged engine {f.engine.id} ({f.engine.repo}); its inputs were staged from"
+                f" engine {evidence.engine_id} ({evidence.audited_repo})"
+            )
         yield from self._keys_and_classification(f)
         yield from self._liveness(f, records)
         if f.stall_point != "not_in_charter" and (f.missing_action_kind or f.remedy_action_kind):

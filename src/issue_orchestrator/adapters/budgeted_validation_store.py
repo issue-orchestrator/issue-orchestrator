@@ -17,6 +17,9 @@ from ..domain.budgeted_validation import (
     PendingBudgetedValidation, PENDING_DIAGNOSIS, StoredBudgetedValidation,
     ValidationCadence,
 )
+from ..domain.engine_activity import (
+    ENGINE_ACTIVITY_KIND, EngineActivity, EngineActivityCadence, EngineActivityObservation,
+)
 from ..ports.budgeted_validation import BudgetedValidationJournal
 
 _LEGACY_HISTORY_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}-[0-9a-f]{64}\.json")
@@ -30,12 +33,35 @@ def suite_identity(suite: BudgetedValidationSuite) -> str:
     return hashlib.sha256(json.dumps(definition).encode()).hexdigest()
 
 
+def decode_cadence(data: dict) -> ValidationCadence | EngineActivityCadence:
+    """A stored cadence; one written before cadences had kinds is code-change."""
+    fields = {key: value for key, value in data.items() if key != "kind"}
+    if data.get("kind") == ENGINE_ACTIVITY_KIND:
+        return EngineActivityCadence(**fields)
+    return ValidationCadence(**fields)
+
+
+def _decode_activity(data: dict | None) -> EngineActivityObservation | None:
+    if data is None:
+        return None
+    return EngineActivityObservation(
+        observed_at=datetime.fromisoformat(data["observed_at"]),
+        engines=tuple(
+            EngineActivity(
+                engine_id=engine["engine_id"], repo=engine["repo"],
+                decisions=engine["decisions"], completions=engine["completions"],
+                anomalies=tuple(engine["anomalies"]),
+            )
+            for engine in data["engines"]
+        ),
+    )
+
+
 def _decode_suite(data: dict) -> BudgetedValidationSuite:
-    cadence = data["cadence"]
     return BudgetedValidationSuite(
         name=data["name"], command=tuple(data["command"]),
         setup_command=tuple(data["setup_command"]),
-        cadence=ValidationCadence(**cadence),
+        cadence=decode_cadence(data["cadence"]),
         timeout_seconds=data["timeout_seconds"],
         setup_timeout_seconds=data["setup_timeout_seconds"],
         branch=data["branch"], enabled=data["enabled"],
@@ -54,6 +80,7 @@ def _decode_run(data: dict | None, legacy_suite: BudgetedValidationSuite | None 
                                      probe["evidence"], probe["failure_signature"]),
         purpose=data["purpose"],
         suite=_decode_suite(data["suite"]) if "suite" in data else _require_legacy_suite(legacy_suite),
+        activity=_decode_activity(data.get("activity")),
     )
 
 
@@ -164,6 +191,7 @@ class FileBudgetedValidationStore:
             runs=tuple(run for run in runs if run is not None),
             first_bad_commit=data["first_bad_commit"], diagnosis=data["diagnosis"],
             regression=_decode_regression(data, legacy_suite),
+            last_activity_probe=_decode_activity(data.get("last_activity_probe")),
         )
         if legacy_suite is None and any(
             suite_identity(run.suite) != identity for run in history.runs

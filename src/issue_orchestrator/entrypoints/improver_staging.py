@@ -58,6 +58,7 @@ from ..contracts.improver_inputs import (
     StagedInput,
     to_json,
 )
+from ..domain.engine_activity import EngineRef
 from ..domain.improver_findings_validation import StagedEvidence, parse_documents
 from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
 from ..infra.engine_start_record import EngineStartRecordUnavailable, read_engine_start
@@ -101,9 +102,9 @@ class OpenIssueListing(Protocol):
 
 @dataclass(frozen=True)
 class ImproverStagingRequest:
-    #: The audited engine's state directory (read only, through snapshots).
-    state_dir: Path
-    audited_repo: str
+    #: The audited engine: its key, its repository and its state directory
+    #: (read only, through snapshots).
+    engine: EngineRef
     #: Where the improver's outputs are filed (io's own repository).
     outputs_repo: str
     #: ``$ISSUE_ORCHESTRATOR_RUN_DIR``; ``improver-data/`` must not exist yet.
@@ -148,7 +149,7 @@ class ImproverInputStager:
         data.mkdir(parents=True, exist_ok=False)
         entries: list[StagedInput] = []
         try:
-            record = read_engine_start(request.state_dir)
+            record = read_engine_start(request.engine.state_dir)
             start = engine_start_input(record)
         except (EngineStartRecordUnavailable, ValueError) as error:
             raise ImproverInputsUnavailable(str(error)) from error
@@ -158,13 +159,13 @@ class ImproverInputStager:
         audited = _OnceListing(self._audited_host)
         with tempfile.TemporaryDirectory(prefix="io-improver-") as scratch:
             snapshot = snapshot_engine(
-                request.state_dir,
+                request.engine.state_dir,
                 Path(scratch),
-                repo=request.audited_repo,
+                repo=request.engine.repo,
                 log_tail_bytes=request.log_tail_bytes,
                 github=audited.as_host(),
             )
-            runs_store = snapshot_tech_lead_runs(request.state_dir, Path(scratch))
+            runs_store = snapshot_tech_lead_runs(request.engine.state_dir, Path(scratch))
             audit = audit_engine(snapshot.audit, now=now, window=request.window)
             audit, previous_entries = _with_previous(audit, request.previous_audit, data)
             _write(data / AUDIT_FILE, audit)
@@ -182,7 +183,8 @@ class ImproverInputStager:
         entries.append(_staged(ENGINE_SOURCE_DIRNAME, f"io at {start.engine_commit}"))
         manifest = InputsManifest(
             staged_at=now,
-            audited_repo=request.audited_repo,
+            engine_id=request.engine.engine_id,
+            audited_repo=request.engine.repo,
             outputs_repo=request.outputs_repo,
             inputs=tuple(entries),
             existing_exam_case_ids=tuple(sorted({*EXAM_CASE_IDS, *series.latest, *series.previous})),
@@ -201,7 +203,7 @@ class ImproverInputStager:
         # The audit's own listing when it read the same repository; the
         # outputs host otherwise (another repository, or the audit skipped
         # GitHub: open issues are needed either way).
-        shared = audited.as_listing() if request.outputs_repo == request.audited_repo else None
+        shared = audited.as_listing() if request.outputs_repo == request.engine.repo else None
         listing: OpenIssueListing = shared or self._outputs_host
         try:
             issues = listing.list_open_issue_labels_complete()
@@ -291,7 +293,7 @@ def _stage_tech_lead(
         f"{timeline.status.value}: {timeline.detail}"
         if isinstance(timeline, Unavailable)
         else timeline.events_between(window_start, cutoff),
-        JsonlPauseJournal(request.state_dir / PAUSE_JOURNAL_FILENAME).recent(limit=_PAUSE_ROWS),
+        JsonlPauseJournal(request.engine.state_dir / PAUSE_JOURNAL_FILENAME).recent(limit=_PAUSE_ROWS),
         window_start=window_start,
         cutoff=cutoff,
     )
@@ -425,6 +427,8 @@ def load_staged_evidence(data_dir: Path) -> StagedEvidence:
     source = data_dir / ENGINE_SOURCE_DIRNAME
     return StagedEvidence(
         documents=documents,
+        engine_id=manifest.engine_id,
+        audited_repo=manifest.audited_repo,
         audit=audit,
         previous_audit=read(AUDIT_PREVIOUS_FILE, EngineAuditReport),
         diff=read(AUDIT_DIFF_FILE, AuditDiff),

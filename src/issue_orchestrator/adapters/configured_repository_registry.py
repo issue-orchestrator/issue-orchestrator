@@ -28,13 +28,16 @@ def _registered_repositories() -> Sequence[RegisteredRepository]:
 
 
 def _configured_repo_slug(repository: RegisteredRepository) -> str:
+    return configured_repo_slug(
+        Path(repository.path), repository.selected_config, repository.selected_mode
+    )
+
+
+def configured_repo_slug(root: Path, config_name: str, mode: str) -> str:
+    """The ``owner/repo`` one of a registered repository's configs works (read only)."""
     from ..infra.config import Config, get_config_path
 
-    path = get_config_path(
-        Path(repository.path),
-        repository.selected_config,
-        repository.selected_mode,
-    )
+    path = get_config_path(root, config_name, mode)
     try:
         repo_slug = Config.load(path).repo
     except FileNotFoundError as error:
@@ -75,7 +78,15 @@ class RegisteredConfiguredRepositoryRegistry:
         return None
 
 
+def registered_repositories() -> Sequence[RegisteredRepository]:
+    """Every repository the Control Center registry holds."""
+    return _registered_repositories()
+
+
 __all__ = [
     "RegisteredConfiguredRepositoryRegistry",
+    "RegisteredRepository",
+    "configured_repo_slug",
+    "registered_repositories",
     "configured_repository_key",
 ]

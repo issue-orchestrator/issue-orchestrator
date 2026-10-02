@@ -195,13 +195,14 @@ validation:
         max_merges_since_success: 10
         max_delay_hours: 24
     tech-lead-improver:
-      # The tech-lead improver (#7490): audits this repository's engine, runs
-      # the improver prompt read-only on Codex, validates its findings
-      # strictly and files what they ask for (exam cases, capability issues,
-      # proposals the operator decides). Off until the operator enables it.
-      # Daily: it grades trends, not single merges; only an unusual burst of
-      # 50 merges makes it due sooner. (A day with no merge is not due: the
-      # budgeted cadence never reruns unchanged code.)
+      # The tech-lead improver (#7490, #7567): audits every engine Control
+      # Center runs (or ran within the window), runs the improver prompt
+      # read-only on Codex per engine, validates its findings strictly and
+      # files what they ask for (exam cases, capability issues, proposals the
+      # operator decides). Off until the operator enables it.
+      # It grades engine BEHAVIOUR, so it is due on engine activity (new
+      # tech-lead decisions, completions or audit anomalies since the last
+      # successful run), at most once a day, and never on io merges.
       enabled: false
       command: [make, tech-lead-improver]
       setup_command: [make, venv-fast]
@@ -210,7 +211,7 @@ validation:
       # Staging and validation take minutes; the agent is bounded at 90.
       timeout_seconds: 7200
       cadence:
-        max_merges_since_success: 50
+        kind: engine_activity
         max_delay_hours: 24
   # TEMPORARILY on the direct backend — see #7163.
   #

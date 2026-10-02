@@ -27,7 +27,7 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
 | `engine-source/` | The io source tree at the engine's commit (read-only) |
-| `inputs.json` | What was staged, what is missing and why, and every exam case ID that already exists |
+| `inputs.json` | Which engine was staged (`engine_id`, `audited_repo`), what was staged, what is missing and why, and every exam case ID that already exists |
 
 If an input is missing or marked partial, say so and don't draw conclusions
 that need it. A live engine's ledgers cannot yet prove their coverage complete
@@ -144,12 +144,13 @@ decision, never applied.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "engine_commit": "<sha>",
   "engine_started_at": "<iso>",
   "findings": [
     {
       "id": "<stable slug>",
+      "engine": {"id": "<inputs.json engine_id>", "repo": "<inputs.json audited_repo>"},
       "anomaly_keys": [{"kind": "<audit kind>", "subject": "<audit subject>", "signature": "<audit signature>"}],
       "present_after_start": "true | false | unknown",
       "recurs_after_start": "true | false | unknown",
@@ -179,6 +180,9 @@ in `engine-source/examples/improver/findings/`.
 **Field rules (the validator enforces these):**
 - `engine_commit` and `engine_started_at` are `engine-start.json`'s, and a
   reproduction's `fails_on` is that `engine_commit`.
+- Each finding's `engine` is `inputs.json`'s `engine_id` and `audited_repo`:
+  one run audits one engine, and a finding tagged with any other engine is
+  rejected.
 - **Citations resolve.** An `observed` entry's `source` is a staged file and
   a JSON pointer into it (`audit.json#/anomalies/3`). A **snapshot** cites
   one of the finding's own anomalies in `audit.json`
@@ -280,6 +284,10 @@ What each output means:
 
 - You change nothing directly. Every output goes through the orchestrator,
   and the operator merges code.
+- The engine you audit may work another repository than io (`audited_repo`).
+  Every output is filed in io: a defect in io's code, prompts or exam is io's
+  work, and a `charter_proposal` about that repository's own configuration
+  is labelled for **its** operator. Nothing is ever written to it.
 - **No gaming the exam.** Exam cases are additive only. The orchestrator
   keeps every existing case and grader unchanged, and rejects a proposed case
   that passes on the current commit. A fix counts only when the **live signal
