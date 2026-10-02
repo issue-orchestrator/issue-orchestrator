@@ -847,10 +847,8 @@ class CompletionProcessor:
             except CompletionIntakeError as exc:
                 return ProcessingResult.for_intake_refusal(exc).with_processing_policy(processing_policy)
             record = record_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
-        # ``pr_labels`` is whatever the agent wrote, and the shared human-block
-        # label never goes on a PR (#6999 F2, #7592): the door moves that
-        # request to the issue, through the block owner, before anything runs.
-        # Here, on the FINAL record: a receipt publication reloads it above.
+        # The shared human block never goes on a PR (#6999 F2, #7592): the door
+        # moves it to the issue, on the FINAL record (a receipt reloads above).
         record = route_reserved_pr_labels(record, self.needs_human_block)
 
         requested_actions = tuple(record.requested_actions)
