@@ -87,10 +87,24 @@ def _absence_proves(anomaly: Anomaly, previous: EngineAuditReport, current: Engi
     if anomaly.kind not in _WINDOWED:
         return True
     since = datetime.fromisoformat(previous.generated_at)
+    subjects = {anomaly.subject, *_named_by(anomaly, previous)}
     return any(
-        change.subject == anomaly.subject and datetime.fromisoformat(change.at) > since
+        change.subject in subjects and datetime.fromisoformat(change.at) > since
         for change in current.no_progress.state_changes
     )
+
+
+def _named_by(anomaly: Anomaly, report: EngineAuditReport) -> tuple[str, ...]:
+    """The other subjects a refused-work anomaly's refusals named: a change of
+    any of them can end it (the issue whose block refused its PR's review
+    unblocking), as it restarts the count in the census."""
+    if anomaly.kind is not AnomalyKind.REFUSED_WORK:
+        return ()
+    (record,) = [
+        r for r in report.no_progress.refused_work
+        if (r.subject, r.reason) == (anomaly.subject, anomaly.signature)
+    ]
+    return record.related
 
 
 __all__ = ["IncomparableAuditError", "diff_reports", "load_report"]
