@@ -28,6 +28,7 @@ from ..contracts.improver_inputs import (
     NeedsHumanCauseInput,
     StagedDecision,
 )
+from ..domain.label_change_event import PRESENCE_UNKNOWN
 from ..domain.improver_subjects import decision_issue, mentions_issue
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from ..events.catalog import EventName
@@ -185,7 +186,7 @@ def _label_onsets(events: Sequence[TimelineEvent]) -> dict[str, tuple[datetime, 
             data = event.record.data
             for label in _labels(data.get("removed")):
                 on.pop(label, None)
-            uncertain = data.get("presence_unknown") is True
+            uncertain = data.get(PRESENCE_UNKNOWN) is True
             for label in _labels(data.get("added")):
                 if is_blocking_label(label) and not (uncertain and label in on):
                     on[label] = (at, name)
