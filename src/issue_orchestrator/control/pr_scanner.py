@@ -25,6 +25,7 @@ from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .review_validity import ReviewValidity, evaluate_review_validity
+from .review_question_hold import NO_REVIEW_ADMITTED_BLOCKS, ReviewQuestionHolds
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from ..ports import EventSink,  make_trace_event
@@ -134,6 +135,16 @@ class PRScanner:
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._review_scope = ReviewScopeChecker(config, repository, log_prefix="SCANNER")
+        self._review_question_holds: ReviewQuestionHolds = NO_REVIEW_ADMITTED_BLOCKS
+
+    def attach_review_question_holds(self, holds: ReviewQuestionHolds) -> None:
+        """Attach the owner of which issue blocks a review may run over (#7593).
+
+        The composition root builds that owner from the shared needs-human
+        block, which is wired after this scanner; until attached every block
+        withholds review, as it did before the owner existed.
+        """
+        self._review_question_holds = holds
 
     def load_issue_branches(self) -> dict[int, str]:
         """Load the current issue->branch map for scan-time scoping."""
@@ -239,6 +250,7 @@ class PRScanner:
                 issue=issue,
                 pr=pr,
                 review_label_confirmed=True,
+                review_admitted_blocks=self._review_question_holds.review_admitted_blocks(issue),
             )
             if not validity.valid:
                 logger.info(
@@ -421,11 +433,21 @@ class PRScanner:
         issue = known_issues.get(issue_number)
         if issue is None:
             return None
-        for reason, labels in (
-            (BlockedPRSkipReason.PR_BLOCKED, pr.labels),
-            (BlockedPRSkipReason.ISSUE_BLOCKED, issue.labels),
+        # A review may run over an issue block its owner admits (#7593); a
+        # rework may not.
+        admitted = (
+            self._review_question_holds.review_admitted_blocks(issue)
+            if lane is BlockedPRLane.REVIEW
+            else frozenset()
+        )
+        for reason, labels, exempt in (
+            (BlockedPRSkipReason.PR_BLOCKED, pr.labels, frozenset()),
+            (BlockedPRSkipReason.ISSUE_BLOCKED, issue.labels, admitted),
         ):
-            blocking = self._lm.get_blocking(labels)
+            blocking = [
+                label for label in self._lm.get_blocking(labels)
+                if label.casefold() not in exempt
+            ]
             if blocking:
                 return BlockedOpenPRObservation(
                     lane=lane,

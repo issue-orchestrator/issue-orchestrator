@@ -395,6 +395,50 @@ class TestScanForReviewsFiltering:
         assert "Skipping stale review PR: pr=100 issue=42 reason=issue_blocked" in caplog.text
 
 
+    def test_an_agents_own_question_admits_its_prs_review(
+        self, scanner, mock_repository,
+    ):
+        """#7593 / porchpin#364: discovery must not skip the PR either."""
+        from issue_orchestrator.control.review_question_hold import AgentQuestionReviewHolds
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+
+        block = MagicMock()
+        block.recorded_causes.return_value = {42: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
+        scanner.attach_review_question_holds(AgentQuestionReviewHolds(block, scanner._lm))
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Asks the maintainer")
+            .with_labels("agent:developer", "needs-human").build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert [review.pr_number for review in scan.reviews] == [100]
+
+    def test_a_sweep_escalated_question_still_withholds_review(
+        self, scanner, mock_repository,
+    ):
+        from issue_orchestrator.control.review_question_hold import AgentQuestionReviewHolds
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+
+        block = MagicMock()
+        block.recorded_causes.return_value = {42: frozenset({
+            NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE,
+        })}
+        scanner.attach_review_question_holds(AgentQuestionReviewHolds(block, scanner._lm))
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Asks the maintainer")
+            .with_labels("agent:developer", "needs-human").build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert scan.reviews == []
+
+
 class TestScanForReviewsEvents:
     """Tests for event emission in review scanning."""
 

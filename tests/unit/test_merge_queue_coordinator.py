@@ -13,6 +13,7 @@ from issue_orchestrator.adapters.github.errors import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.merge_queue_coordinator import (
+    MergeQueueFollowup,
     MergeQueueCoordinator,
     decide_merge_queue_action,
 )
@@ -141,6 +142,23 @@ def test_clean_pr_produces_enqueue_fact() -> None:
     assert followup.rework is None and followup.escalation is None
     # Enqueue mutation is NOT performed here — that is the applier's job.
     repo.enqueue_to_merge_queue.assert_not_called()
+
+
+def test_an_approved_pr_waits_while_its_issue_awaits_a_human() -> None:
+    """#7593: a review may now run over the agent's own open question; its
+    approval must not then merge the work before the human has answered."""
+    coordinator, _ = _coordinator(MagicMock())
+    issue = _issue()
+    asking = Issue(
+        number=issue.number, title=issue.title,
+        labels=[*issue.labels, "needs-human"], state="open",
+    )
+
+    followup = coordinator.classify(
+        pr=_pr("clean"), issue=asking, issue_number=228, pr_number=318, entry=None
+    )
+
+    assert followup == MergeQueueFollowup()
 
 
 def test_pr_without_gate_label_is_not_enqueued() -> None:

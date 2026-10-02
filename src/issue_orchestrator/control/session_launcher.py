@@ -97,6 +97,7 @@ from .needs_human_block import (
     NO_OTHER_NEEDS_HUMAN_CAUSES,
     SharedNeedsHumanBlock,
 )
+from .review_question_hold import AgentQuestionReviewHolds
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager
 from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
@@ -263,6 +264,7 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._review_question_holds = AgentQuestionReviewHolds(needs_human_block, label_manager)
         self._tech_lead_needs_human = TechLeadNeedsHumanLifecycle(
             labels=label_manager,
             events=events,
@@ -1519,6 +1521,7 @@ class SessionLauncher:
                 repository_host=self.repository_host,
                 label_manager=self._lm,
                 recovery_holds=self._recovery_holds,
+                question_holds=self._review_question_holds,
             ),
             review,
             self.events,

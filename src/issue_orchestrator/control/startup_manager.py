@@ -58,6 +58,7 @@ from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
+from .review_question_hold import NO_REVIEW_ADMITTED_BLOCKS, ReviewQuestionHolds
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from .retrospective_review import discover_retrospective_review_issues
@@ -103,6 +104,7 @@ class StartupManager:
         issue_run_ledger: "IssueRunLedger | None" = None,
         *,
         pending_work_claims: "PendingWorkClaimStore",
+        review_question_holds: ReviewQuestionHolds = NO_REVIEW_ADMITTED_BLOCKS,
     ):
         """Initialize the startup manager.
 
@@ -149,6 +151,8 @@ class StartupManager:
         # Anchor recovery can fold individual investigations into a storm
         # review; ending them must retire their durable claims too (#7348).
         self._pending_work_claims = pending_work_claims
+        # The owner of which issue blocks a review may run over (#7593).
+        self._review_question_holds = review_question_holds
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -689,6 +693,7 @@ class StartupManager:
                 issue=issue,
                 pr=pr,
                 review_label_confirmed=True,
+                review_admitted_blocks=self._review_question_holds.review_admitted_blocks(issue),
             )
             if not validity.valid:
                 logger.info(

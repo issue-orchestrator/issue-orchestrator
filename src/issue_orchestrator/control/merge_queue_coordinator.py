@@ -186,6 +186,8 @@ class MergeQueueCoordinator:
             decision,
         )
         if decision == "ENQUEUE":
+            if self._awaits_a_human(issue):
+                return MergeQueueFollowup()
             return MergeQueueFollowup(
                 enqueue=DiscoveredMergeQueueEnqueue(
                     issue_number=issue_number,
@@ -210,6 +212,23 @@ class MergeQueueCoordinator:
             )
         # WAIT
         return MergeQueueFollowup()
+
+    def _awaits_a_human(self, issue: "Issue") -> bool:
+        """An issue still waiting on a human never has its PR enqueued (#7593).
+
+        A review may run over the coding agent's own open question (see
+        ``review_question_hold``) so the human decides with a reviewed PR in
+        hand; an approval must not then merge the work before they answer.
+        """
+        needs_human = self.label_manager.needs_human.casefold()
+        if all(label.casefold() != needs_human for label in issue.labels):
+            return False
+        logger.info(
+            "Merge queue waits: issue=#%s still carries %s",
+            issue.number,
+            self.label_manager.needs_human,
+        )
+        return True
 
     # ------------------------------------------------------------------ #
 

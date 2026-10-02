@@ -37,6 +37,7 @@ from ..control.orchestrator_support import (
     init_orchestrator_components,
 )
 from ..control.session_launch_types import LaunchStep
+from ..control.review_question_hold import AgentQuestionReviewHolds
 from ..control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
 from ..control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
 
@@ -477,6 +478,9 @@ class Orchestrator:
             label_store=self.deps.label_store,
             tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
             pending_work_claims=self.deps.pending_work_claims,
+            review_question_holds=AgentQuestionReviewHolds(
+                self.deps.needs_human_block, self.deps.label_manager
+            ),
         )
 
     @cached_property

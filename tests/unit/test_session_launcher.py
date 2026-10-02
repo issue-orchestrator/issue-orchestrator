@@ -617,6 +617,7 @@ def _build_launcher_bundle(
     issue_run_ledger: IssueRunLedger | None = None,
     refresh_issue_fn: Callable[[int], Any] | None = None,
     recovery_holds: Any = None,
+    needs_human_block: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -685,6 +686,8 @@ def _build_launcher_bundle(
         launcher_kwargs["provider_readiness_probe"] = provider_readiness_probe
     if recovery_holds is not None:
         launcher_kwargs["recovery_holds"] = recovery_holds
+    if needs_human_block is not None:
+        launcher_kwargs["needs_human_block"] = needs_human_block
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
