@@ -164,10 +164,12 @@ def subject_of_text(text: str, *, repo: str | None = None) -> str:
 # drop, refusal or rejection verb, and the decision's ``reason=`` token
 # ("[SCANNER] Skipping stale review PR: pr=379 issue=364 reason=issue_blocked",
 # "[launch] Dropping stale pending review: ... reason=issue_blocked",
-# "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=pr_blocked",
+# "[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=pr_blocked ...",
 # "trace-tech-lead-decision issue=200 ... decision=skip reason=...").
+# The opt-in timeline trace repeats a rework skip as "scanner.rework_skip":
+# a copy of the line above, not a second refusal, so it is not counted.
 _REFUSAL_VERB = re.compile(
-    r"\b(?:Skipping|Skipped|Dropping|Dropped|Refusing|[Rr]efused|Rejecting|decision=skip)\b|\w_skip\b"
+    r"\b(?:Skipping|Skipped|Dropping|Dropped|Refusing|[Rr]efused|Rejecting|decision=skip)\b"
 )
 #: The whole token: a free-text reason ("reason=Orchestrator paused") keeps
 #: only its first word, which is never a refusal reason.

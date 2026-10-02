@@ -83,6 +83,9 @@ class ReworkScan:
     blocked: list[BlockedOpenPRObservation]
 
 
+_BLOCKED_PR_REASONS = frozenset(reason.value for reason in BlockedPRSkipReason)
+
+
 @dataclass(frozen=True)
 class _ReworkScanDecision:
     decision: str  # "skip" | "queue" | "escalate"
@@ -533,11 +536,16 @@ class PRScanner:
         queued_issue_ids: set[int],
         active_issue_numbers: set[int],
     ) -> None:
-        if decision.reason == BlockedPRSkipReason.PR_BLOCKED and decision.blocking_labels:
-            logger.debug(
-                "[SCANNER] PR #%d already blocked (%s), skipping",
+        if decision.decision == "skip" and decision.reason in _BLOCKED_PR_REASONS:
+            # The rework lane's refusal, logged like the review lane's ("Skipping
+            # stale review PR"): one line per scan, so an audit sees a blocked
+            # PR's rework refused again and again (#7490).
+            logger.info(
+                "[SCANNER] Skipping blocked rework PR: pr=%d issue=%d reason=%s blocking=%s",
                 pr.number,
-                ", ".join(decision.blocking_labels),
+                decision.issue_number,
+                decision.reason,
+                ",".join(decision.blocking_labels) or "(none)",
             )
         if not is_timeline_trace_enabled():
             return

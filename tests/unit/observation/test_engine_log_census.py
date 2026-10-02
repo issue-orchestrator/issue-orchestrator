@@ -505,9 +505,9 @@ def test_a_message_names_every_subject_once_first_named_first() -> None:
             WorkRefusal("#200", (), "subject_no_longer_eligible"),
         ),
         # The rework lane refuses on the same blocked-PR vocabulary.
-        ("[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=pr_blocked blocking=blocked",
+        ("[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=pr_blocked blocking=blocked",
          WorkRefusal("PR #12", ("#4",), "pr_blocked")),
-        ("[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=issue_blocked blocking=needs-human",
+        ("[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=issue_blocked blocking=needs-human",
          WorkRefusal("PR #12", ("#4",), "issue_blocked")),
     ],
 )
@@ -530,8 +530,9 @@ def test_a_decision_not_to_do_planned_work_is_a_refusal(message: str, refusal: W
         "[issue-328] Skipped: reason=pending_retrospective_review",
         "[issue-328] Skipped: reason=session_history",
         "[issue #9] Skipped: reason=provider_unavailable provider=codex",
+        # The opt-in trace's copy of a rework skip is not a second refusal.
+        "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=issue_blocked blocking=needs-human",
         "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=already_queued",
-        "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=active_session",
         "trace-tech-lead-decision issue=410 flavor=health_review decision=skip reason=global_run_awaiting_drain (pending=1)",
         # A reason no owner classes as a refusal.
         "[launch] Dropping queued rework: pr=5 reason=brand_new_reason",
