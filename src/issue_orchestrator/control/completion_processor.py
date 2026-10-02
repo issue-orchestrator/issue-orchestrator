@@ -847,6 +847,11 @@ class CompletionProcessor:
             except CompletionIntakeError as exc:
                 return ProcessingResult.for_intake_refusal(exc).with_processing_policy(processing_policy)
             record = record_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
+        # ``pr_labels`` is whatever the agent wrote, and the shared human-block
+        # label never goes on a PR (#6999 F2, #7592): the door moves that
+        # request to the issue, through the block owner, before anything runs.
+        # Here, on the FINAL record: a receipt publication reloads it above.
+        record = route_reserved_pr_labels(record, self.needs_human_block)
 
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
@@ -1116,10 +1121,6 @@ class CompletionProcessor:
                         failure_kind="validation_failed",
                     ),
                 )
-        # ``pr_labels`` is whatever the agent wrote, and the shared human-block
-        # label never goes on a PR (#6999 F2, #7592): the door moves that
-        # request to the issue, through the block owner, before anything runs.
-        record = route_reserved_pr_labels(record, self.needs_human_block)
 
         session_name = (
             run_assets.session_name
