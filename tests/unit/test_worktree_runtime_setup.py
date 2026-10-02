@@ -387,6 +387,23 @@ class TestLegacyDropIsRetiredOnReuse:
         assert LEGACY_TOOL.as_posix() not in common_exclude
 
 
+    def test_a_dangling_symlink_in_another_worktree_still_holds_the_lines(
+        self, tmp_path
+    ):
+        wt = make_git_worktree(tmp_path)
+        other = tmp_path / "wt-other"
+        _git_out(wt.main_repo, "worktree", "add", str(other), "-b", "other")
+        _write_legacy_exclude_line(wt)
+        dangling = other / LEGACY_TOOL
+        dangling.parent.mkdir(parents=True)
+        dangling.symlink_to(tmp_path / "gone.py")
+
+        state = _setup(wt.main_repo).apply(wt.worktree_path)
+
+        assert state.legacy_drop_retirement.exclude_lines_removed is False
+        assert _untracked(other) == []
+
+
 class TestLegacyRetirementLeavesOthersAlone:
     """Retirement must not disturb git's own state or concurrent setups."""
 

@@ -149,6 +149,11 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
     return result
 
 
+def _present(path: Path) -> bool:
+    """Whether anything sits at ``path``, a dangling symlink included."""
+    return path.is_symlink() or path.exists()
+
+
 def _real_drop_dir(checkout: Path) -> bool:
     """Whether the drop directory exists with no symlink on the way to it.
 
@@ -352,5 +357,5 @@ def _holds_drop(checkout: Path, legacy_lines: frozenset[str]) -> bool:
         return True
     tracked = {entry[2:] for entry in tagged}
     return any(
-        (checkout / line).exists() and line not in tracked for line in legacy_lines
+        _present(checkout / line) and line not in tracked for line in legacy_lines
     )
