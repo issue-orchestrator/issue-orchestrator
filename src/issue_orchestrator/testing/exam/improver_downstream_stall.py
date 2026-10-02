@@ -26,7 +26,7 @@ REAL audit and blocked-items assembly run over the raw records (the engine's
 log lines, its timeline rows, its open issues and PRs), so the case fails
 whenever the inputs stop showing the veto, not only when the validator does.
 The right answer keys the refused review (``refused_work`` of ``PR #379``)
-in a finding, live and recurring after the start.
+in a finding that cites its snapshot, live and recurring after the start.
 
 :func:`build_case` writes the fixture; :func:`grade` grades a findings file
 the validator ACCEPTED. The deterministic half runs in the validation gate;

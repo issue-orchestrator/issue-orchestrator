@@ -332,8 +332,9 @@ in `engine-source/examples/improver/findings/`.
   `awaiting_operator` account cites `evidence`.
 - **Work downstream of a block is examined.** Every `stalled_work` entry
   of every blocked item (`kind`, `subject`, `signature`) is one of the
-  `anomaly_keys` of some finding of this file, whatever the item's
-  disposition.
+  `anomaly_keys` of some finding of this file that also cites that
+  anomaly's snapshot (`audit.json#/anomalies/<i>`), whatever the item's
+  disposition. A key with no evidence of its own examines nothing.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous
   scorecard for exactly the cases it holds a latest one for.

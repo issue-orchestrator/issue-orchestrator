@@ -829,6 +829,20 @@ def test_a_hand_over_of_the_block_does_not_examine_the_work_it_refuses(tmp_path:
     assert _rules(example("exam_case"), evidence) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
 
 
+def test_a_key_without_its_own_evidence_does_not_examine_the_refused_work(tmp_path: Path) -> None:
+    """Review r1 F3: the refusal's key slipped into a finding about something
+    else, with nothing of it cited, examines nothing."""
+    evidence, _ = _refused_review_of_the_items_pr(tmp_path)
+    doc = example("needs_investigation")
+    _finding(doc)["anomaly_keys"].append({key: _REFUSED[key] for key in ("kind", "subject", "signature")})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",
+        "source": "audit.json#/no_progress/refused_work/0/first_seen", "supports": "recurs_after_start",
+    })
+
+    assert _rules(doc, evidence) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
 def test_a_finding_keyed_to_the_refused_work_examines_it(tmp_path: Path) -> None:
     """Keyed, the refusal's dated records are its occurrences: its
     ``first_seen`` is citable, like a log signature's."""

@@ -490,7 +490,7 @@ class PRScanner:
                 issue_number=issue_number,
                 rework_cycle=rework_cycle,
                 blocking_labels=pr_blocking,
-                reason="blocking_label",
+                reason=BlockedPRSkipReason.PR_BLOCKED.value,
                 blocked=_rework_blocked(
                     pr, issue_number, scope.issue, BlockedPRSkipReason.PR_BLOCKED, pr_blocking
                 ),
@@ -505,7 +505,7 @@ class PRScanner:
                 issue_number=issue_number,
                 rework_cycle=rework_cycle,
                 blocking_labels=issue_blocking,
-                reason="issue_blocked",
+                reason=BlockedPRSkipReason.ISSUE_BLOCKED.value,
                 blocked=_rework_blocked(
                     pr, issue_number, issue, BlockedPRSkipReason.ISSUE_BLOCKED, issue_blocking
                 ),
@@ -533,7 +533,7 @@ class PRScanner:
         queued_issue_ids: set[int],
         active_issue_numbers: set[int],
     ) -> None:
-        if decision.reason == "blocking_label" and decision.blocking_labels:
+        if decision.reason == BlockedPRSkipReason.PR_BLOCKED and decision.blocking_labels:
             logger.debug(
                 "[SCANNER] PR #%d already blocked (%s), skipping",
                 pr.number,
@@ -552,7 +552,7 @@ class PRScanner:
         if decision.decision == "skip":
             extra = (
                 f" blocking={','.join(decision.blocking_labels)}"
-                if decision.reason == "blocking_label" and decision.blocking_labels
+                if decision.reason == BlockedPRSkipReason.PR_BLOCKED and decision.blocking_labels
                 else ""
             )
             logger.info(

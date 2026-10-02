@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from ..control.session_launch_types import REVIEW_HELD_BY_RECOVERY
+from ..domain.blocked_open_pr import BlockedPRSkipReason
+from ..domain.tech_lead_run import WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE
 
 LIVELOCK_THRESHOLD = 5
 
@@ -55,16 +57,11 @@ FAILURE_EVENTS: frozenset[str] = frozenset(
     }
 )
 
-#: Reasons a skip means WAITING, not refusing: capacity, an operator pause
-#: (``control/workflows/review_workflow.py``,
-#: ``retrospective_review_workflow.py``), and the planner's own queue waits
-#: (``control/planner.py``, ``plan_launches.py``: a dependency still open, the
-#: issue's OWN blocking label, work already under way or launching). A skip
-#: for any other reason (e.g. ``stale_pending_review:issue_blocked``: a PR's
-#: review dropped because of its issue's block) is a refusal and counts, and
-#: so is a reason this set does not know: an unknown reason is shown, never
-#: assumed benign.
-WAITING_REASONS: frozenset[str] = frozenset(
+#: Skip reasons that mean WAITING, not failing: capacity and an operator
+#: pause (``control/workflows/review_workflow.py``,
+#: ``retrospective_review_workflow.py``). A skip for any other reason (e.g.
+#: ``stale_pending_review:issue_blocked``) is a refusal and counts.
+_WAITING_SKIP_REASONS: frozenset[str] = frozenset(
     {
         "no_capacity",
         "orchestrator_paused",
@@ -73,19 +70,21 @@ WAITING_REASONS: frozenset[str] = frozenset(
         # A queued review waiting for the recovery owner to release its issue
         # (#7455); the owner routes and releases it, so it is a wait.
         REVIEW_HELD_BY_RECOVERY,
-        # The planner's queue decisions: each waits on a change that is
-        # someone else's to make (a predecessor, the subject's own block, a
-        # running session, a launch already planned).
-        "blocked_by_dependency",
-        "dependency_blocked",
-        "blocked_label",
-        "active_session",
-        "pending_review",
-        "pr_pending",
-        "launching_this_tick",
-        "available",
-        "failed_this_cycle",
-        "global_run_awaiting_drain",
+    }
+)
+
+#: The ``reason=`` of a logged decision that REFUSES planned work: it may not
+#: run (a blocking label on its PR or on its issue, in the review lane and the
+#: rework lane alike; a queued tech-lead run withdrawn because its subject no
+#: longer qualifies), as opposed to waiting its turn. Closed on purpose: the
+#: engine's skip reasons are free text across many emitters ("reason=Orchestrator
+#: paused", "reason=pending_rework" ...) and nearly all of them are waits, so a
+#: reason is a refusal only when its owner says so. A new refusal reason is
+#: added here, with its owner's constant.
+REFUSAL_REASONS: frozenset[str] = frozenset(
+    {
+        *(reason.value for reason in BlockedPRSkipReason),
+        WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE,
     }
 )
 _SKIP_EVENTS = frozenset({"review.skipped", "rework.skipped"})
@@ -165,10 +164,13 @@ def subject_of_text(text: str, *, repo: str | None = None) -> str:
 # drop, refusal or rejection verb, and the decision's ``reason=`` token
 # ("[SCANNER] Skipping stale review PR: pr=379 issue=364 reason=issue_blocked",
 # "[launch] Dropping stale pending review: ... reason=issue_blocked",
+# "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=pr_blocked",
 # "trace-tech-lead-decision issue=200 ... decision=skip reason=...").
 _REFUSAL_VERB = re.compile(
-    r"\b(?:Skipping|Skipped|Dropping|Dropped|Refusing|[Rr]efused|Rejecting|decision=skip)\b"
+    r"\b(?:Skipping|Skipped|Dropping|Dropped|Refusing|[Rr]efused|Rejecting|decision=skip)\b|\w_skip\b"
 )
+#: The whole token: a free-text reason ("reason=Orchestrator paused") keeps
+#: only its first word, which is never a refusal reason.
 _REASON = re.compile(r"\breason=([A-Za-z0-9_.:-]+)")
 _REFERENCES: tuple[tuple[re.Pattern[str], str], ...] = (
     (_PR_REFERENCE, "PR #"),
@@ -180,7 +182,7 @@ _REFERENCES: tuple[tuple[re.Pattern[str], str], ...] = (
 @dataclass(frozen=True)
 class WorkRefusal:
     """One logged decision not to do a subject's planned work, for a reason
-    that is not a wait (:data:`WAITING_REASONS`)."""
+    that refuses it (:data:`REFUSAL_REASONS`)."""
 
     #: The subject whose work was refused: the first one the message names.
     subject: str
@@ -216,15 +218,15 @@ def subjects_of_text(text: str, *, repo: str | None = None) -> tuple[str, ...]:
 def refusal_of_text(text: str, *, repo: str | None = None) -> WorkRefusal | None:
     """The work refusal ``text`` logs, or None.
 
-    A refusal is a skip/drop/refuse/reject decision that gives a ``reason=``
-    which is not a wait, about a subject the message names. Its level does
-    not matter: the engine logs most of these at INFO, because one of them is
-    routine; it is their REPEATING for a subject that nothing moves that is
-    the livelock (a PR's review queued and dropped on every scan).
+    A refusal is a skip/drop/refuse/reject decision whose ``reason=`` is a
+    refusal reason (:data:`REFUSAL_REASONS`), about a subject the message
+    names. Its level does not matter: the engine logs these at INFO, because
+    one of them is routine; it is their REPEATING for a subject that nothing
+    moves that is the livelock (a PR's review queued and dropped on every scan).
     """
     if _REFUSAL_VERB.search(text) is None or (reason := _REASON.search(text)) is None:
         return None
-    if reason.group(1) in WAITING_REASONS:
+    if reason.group(1) not in REFUSAL_REASONS:
         return None
     subjects = subjects_of_text(text, repo=repo)
     if not subjects:
@@ -356,7 +358,7 @@ def _runs(
             for key in [key for key in running if key[1] == subject and key[2].startswith(step)]:
                 del running[key]
         elif name in FAILURE_EVENTS:
-            if name in _SKIP_EVENTS and _payload(event).get("reason") in WAITING_REASONS:
+            if name in _SKIP_EVENTS and _payload(event).get("reason") in _WAITING_SKIP_REASONS:
                 continue
             key = (name, subject, _detail(event))
             running[key] += 1

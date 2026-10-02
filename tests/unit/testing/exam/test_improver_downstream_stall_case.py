@@ -171,6 +171,25 @@ def test_the_right_answer_is_accepted_and_passes(evidence: StagedEvidence) -> No
     assert result.passed, result.failures
 
 
+def test_the_veto_keyed_onto_the_blind_finding_without_its_evidence_is_refused(evidence: StagedEvidence) -> None:
+    """Review r1 F3: the blind finding with the refusal's key and a dated
+    occurrence of it, but still only diagnosing the agent's question, cites
+    no snapshot of the vetoed review: it examines nothing."""
+    doc = blind(evidence)
+    veto = evidence.audit.no_progress.refused_work[0]
+    doc["findings"][0]["anomaly_keys"].append(_VETO)
+    doc["findings"][0]["recurs_after_start"] = "true"
+    doc["findings"][0]["observed"].append(
+        {"at": veto.last_seen, "kind": "occurrence",
+         "source": "audit.json#/no_progress/refused_work/0/last_seen", "supports": "recurs_after_start"}
+    )
+
+    with pytest.raises(ImproverFindingsRejected) as rejected:
+        validate_findings(json.dumps(doc), evidence)
+
+    assert rejected.value.rules == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
 def test_the_refused_review_recurs_after_the_start(evidence: StagedEvidence) -> None:
     """The scanner refused it again after the restart: "unknown" is refused."""
     doc = copy.deepcopy(reference(evidence))

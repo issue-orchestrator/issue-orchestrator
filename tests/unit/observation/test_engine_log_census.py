@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.blocked_open_pr import BlockedPRSkipReason
+from issue_orchestrator.domain.tech_lead_run import WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE
 from issue_orchestrator.infra.engine_log_reader import parse_log_line, read_log
 from issue_orchestrator.infra.logging_config import (
     CONTEXT_LOG_FORMAT,
@@ -24,6 +26,7 @@ from issue_orchestrator.infra.logging_config import (
 from issue_orchestrator.observation.engine_log_census import census_log
 from issue_orchestrator.observation.no_progress import (
     ENGINE_SUBJECT,
+    REFUSAL_REASONS,
     WorkRefusal,
     normalize_signature,
     refusal_of_text,
@@ -501,8 +504,11 @@ def test_a_message_names_every_subject_once_first_named_first() -> None:
             " reason=subject_no_longer_eligible (pending=1)",
             WorkRefusal("#200", (), "subject_no_longer_eligible"),
         ),
-        # A reason nobody classed as a wait is a refusal: shown, never assumed benign.
-        ("[launch] Dropping queued rework: pr=5 reason=brand_new_reason", WorkRefusal("PR #5", (), "brand_new_reason")),
+        # The rework lane refuses on the same blocked-PR vocabulary.
+        ("[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=pr_blocked blocking=blocked",
+         WorkRefusal("PR #12", ("#4",), "pr_blocked")),
+        ("[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=issue_blocked blocking=needs-human",
+         WorkRefusal("PR #12", ("#4",), "issue_blocked")),
     ],
 )
 def test_a_decision_not_to_do_planned_work_is_a_refusal(message: str, refusal: WorkRefusal) -> None:
@@ -512,11 +518,23 @@ def test_a_decision_not_to_do_planned_work_is_a_refusal(message: str, refusal: W
 @pytest.mark.parametrize(
     "message",
     [
-        # Waits: a dependency, the issue's own block, capacity, a running session.
+        # Waits: a dependency, the issue's own block, capacity, a pause, work
+        # already under way for the issue (every planner queue reason).
         "[issue-262] Skipped: reason=blocked_by_dependency detail=Blocked - waiting on: #179",
         "trace-queue-decision issue=262 decision=skip reason=blocked_label detail=blocking labels: needs-human",
-        "[review] Skipping review of PR #4: reason=no_capacity",
+        "[issue-4] Skipped review: pr=#4 reason=No capacity",
+        "[issue-4] Skipped review: pr=#4 reason=Orchestrator paused",
+        "[issue-4] Skipped rework: cycle=2 reason=Orchestrator paused",
         "[issue-328] Skipped: reason=active_session",
+        "[issue-328] Skipped: reason=pending_rework",
+        "[issue-328] Skipped: reason=pending_retrospective_review",
+        "[issue-328] Skipped: reason=session_history",
+        "[issue #9] Skipped: reason=provider_unavailable provider=codex",
+        "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=already_queued",
+        "[TIMELINE] scanner.rework_skip pr=12 issue=4 reason=active_session",
+        "trace-tech-lead-decision issue=410 flavor=health_review decision=skip reason=global_run_awaiting_drain (pending=1)",
+        # A reason no owner classes as a refusal.
+        "[launch] Dropping queued rework: pr=5 reason=brand_new_reason",
         # No decision, or no reason given.
         "[SCANNER] Found orphaned PR #379 for code review reason=issue_blocked",
         "[issue-364] Launch refused: PR #379 carries published validated work",
@@ -526,6 +544,12 @@ def test_a_decision_not_to_do_planned_work_is_a_refusal(message: str, refusal: W
 )
 def test_a_wait_or_an_unreasoned_line_is_no_refusal(message: str) -> None:
     assert refusal_of_text(message) is None
+
+
+def test_the_refusal_reasons_are_their_owners_vocabulary() -> None:
+    """Both PR lanes' block refusals and the tech lead's withdrawal, by their
+    owners' constants: nothing else is a refusal."""
+    assert REFUSAL_REASONS == {r.value for r in BlockedPRSkipReason} | {WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE}
 
 
 def test_an_info_refusal_repeating_with_nothing_moving_is_counted() -> None:

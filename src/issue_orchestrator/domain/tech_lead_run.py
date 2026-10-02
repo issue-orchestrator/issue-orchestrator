@@ -374,6 +374,9 @@ BARRIER_GLOBAL_AWAITING_DRAIN = "global_run_awaiting_drain"
 # A targeted run whose subject already has a live session (a coder working the
 # issue): it waits for that session, it is not withdrawn (#7455).
 BARRIER_SUBJECT_SESSION_ACTIVE = "subject_session_active"
+# A queued run withdrawn at launch because its subject no longer qualifies
+# (revalidation): the run is dropped, not waiting its turn.
+WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE = "subject_no_longer_eligible"
 
 
 @dataclass(frozen=True, slots=True)

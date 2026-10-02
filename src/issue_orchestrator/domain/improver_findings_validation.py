@@ -120,8 +120,8 @@ class Rule(StrEnum):
     BLOCKED_ITEM_HANDED_OVER = "blocked_item_handed_over"
     #: Work downstream of a block that the engine keeps refusing (an item's
     #: ``stalled_work``: its PR's review dropped on every scan) is a key of a
-    #: finding, whatever the item's disposition: a hand-over or a grade of
-    #: the block does not examine what the block holds up.
+    #: finding that cites its snapshot, whatever the item's disposition: a
+    #: hand-over or a grade of the block does not examine what it holds up.
     BLOCKED_ITEM_STALLED_WORK_EXAMINED = "blocked_item_stalled_work_examined"
 
 
@@ -326,14 +326,14 @@ class _Checker:
                 "accounted for more than once: " + ", ".join(f"#{n}" for n in twice),
             )
         findings = {f.id: f for f in self._findings.findings}
-        keyed = {k.key for f in self._findings.findings for k in f.anomaly_keys}
         for number, item in sorted(items.items()):
-            unexamined = [w for w in item.stalled_work if (w.kind, w.subject, w.signature) not in keyed]
+            unexamined = [w for w in item.stalled_work if not self._examines((w.kind, w.subject, w.signature))]
             if unexamined:
                 yield Violation(
                     Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, None,
                     f"#{number}: the engine keeps refusing work downstream of its block, and no finding"
-                    " keys it: " + "; ".join(f"{w.kind} {w.subject} [{w.signature}]" for w in unexamined),
+                    " keys it and cites its snapshot (audit.json#/anomalies/<i>): "
+                    + "; ".join(f"{w.kind} {w.subject} [{w.signature}]" for w in unexamined),
                 )
         for account in accounts:
             item = items.get(account.number)
@@ -342,6 +342,19 @@ class _Checker:
                     Violation(rule, account.finding_id, message)
                     for rule, message in self._account_rules(account, item, findings)
                 )
+
+    def _examines(self, key: tuple[str, str, str]) -> bool:
+        """Whether a finding keys the anomaly ``key`` AND cites the current
+        audit's snapshot of it: a key alone, beside a diagnosis of something
+        else, examines nothing."""
+        snapshot = next(
+            (f"/anomalies/{i}" for i, a in enumerate(self._evidence.audit.anomalies) if a.key == key), None
+        )
+        return snapshot is not None and any(
+            key in {k.key for k in f.anomaly_keys}
+            and any(o.kind == "snapshot" and o.file == AUDIT_FILE and o.ref == snapshot for o in f.observed)
+            for f in self._findings.findings
+        )
 
     def _account_rules(
         self, account: BlockedItemAccount, item: BlockedItem, findings: Mapping[str, Finding]
