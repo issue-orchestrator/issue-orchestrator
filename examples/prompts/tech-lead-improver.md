@@ -68,10 +68,12 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
      stalled? Read its `open_prs`: finished, published work whose review or
      rework is queued and then skipped (a `review.skipped` as its latest
      pipeline event), or that has not moved since. Every `stalled_work`
-     entry is the engine refusing the item's own work again and again: key
-     it in a finding (with the item's blocks, or in a finding of its own),
-     whatever the item's disposition. A hand-over of the block, or a grade
-     of the question behind it, does not examine the work the block vetoes.
+     entry is the engine refusing the item's own work again and again:
+     grade it in a finding (with the item's blocks, or in a finding of its
+     own) and account for it in the item's `downstream`, whatever the
+     item's disposition: what the block holds up, and the refused PR's
+     pipeline event that shows it. A hand-over of the block, or a grade of
+     the question behind it, does not examine the work the block vetoes.
    - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
      an applied tech-lead `escalate_to_human` about it, applied after its
      latest block began, handed the whole item to the operator: then
@@ -190,7 +192,7 @@ decision, never applied.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "engine_commit": "<sha>",
   "engine_started_at": "<iso>",
   "findings": [
@@ -217,7 +219,8 @@ decision, never applied.
     }
   ],
   "blocked_items": [
-    {"number": 262, "disposition": "finding | awaiting_operator", "finding_id": "<finding only: the finding about it>", "evidence": ["<awaiting_operator only: the decision ids that handed it over>"], "why": "<why it is blocked, and what the tech lead did about it>"}
+    {"number": 262, "disposition": "finding | awaiting_operator", "finding_id": "<finding only: the finding about it>", "evidence": ["<awaiting_operator only: the decision ids that handed it over>"], "why": "<why it is blocked, and what the tech lead did about it>",
+     "downstream": [{"anomaly_key": {"kind": "refused_work", "subject": "<stalled_work subject>", "signature": "<stalled_work signature>"}, "finding_id": "<the finding that grades it>", "pipeline_event": "blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k> | null", "impact": "<what the block holds up, and why it cannot proceed>"}]}
   ],
   "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
 }
@@ -330,11 +333,15 @@ in `engine-source/examples/improver/findings/`.
   blocking labels and by the cutoff; with any `since_at` unknown, or no
   such decision, the item needs a finding. Only a `finding` account names `finding_id`; only an
   `awaiting_operator` account cites `evidence`.
-- **Work downstream of a block is examined.** Every `stalled_work` entry
-  of every blocked item (`kind`, `subject`, `signature`) is one of the
-  `anomaly_keys` of some finding of this file that also cites that
-  anomaly's snapshot (`audit.json#/anomalies/<i>`), whatever the item's
-  disposition. A key with no evidence of its own examines nothing.
+- **Work downstream of a block is examined.** An item's account names, in
+  `downstream`, each of its `stalled_work` entries exactly once (and
+  nothing else; `[]` when it has none), whatever its disposition. Each
+  names, in `finding_id`, a finding of this file that keys that anomaly AND
+  cites its snapshot (`audit.json#/anomalies/<i>`): a key with no evidence
+  of its own examines nothing. When the refused work is an open PR of the
+  item with retained `pipeline_events`, `pipeline_event` cites one of that
+  PR's events (`blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>`);
+  otherwise it is `null`. `impact` says what the block holds up.
 - `trend` values are `unobserved` whenever the series is absent or not
   comparable. Exam scores are comparable only when `exam/` holds a previous
   scorecard for exactly the cases it holds a latest one for.

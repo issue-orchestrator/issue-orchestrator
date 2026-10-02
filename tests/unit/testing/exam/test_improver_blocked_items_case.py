@@ -121,7 +121,7 @@ def reference() -> dict:
         **_remedy("examples/prompts/tech-lead.md"),
     }
     return {
-        "schema_version": 3, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
+        "schema_version": 4, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
         "findings": [published, untriaged],
         "blocked_items": [
             {"number": 262, "disposition": "finding", "finding_id": "blocked-items-never-triaged", "why": "w"},

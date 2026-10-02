@@ -119,9 +119,11 @@ class Rule(StrEnum):
     #: applied by the cutoff, after its latest current block began.
     BLOCKED_ITEM_HANDED_OVER = "blocked_item_handed_over"
     #: Work downstream of a block that the engine keeps refusing (an item's
-    #: ``stalled_work``: its PR's review dropped on every scan) is a key of a
-    #: finding that cites its snapshot, whatever the item's disposition: a
-    #: hand-over or a grade of the block does not examine what it holds up.
+    #: ``stalled_work``: its PR's review dropped on every scan) is accounted
+    #: for in the item's ``downstream``, whatever its disposition: by a
+    #: finding that keys it and cites its snapshot, and by the refused PR's
+    #: pipeline event. A hand-over or a grade of the block does not examine
+    #: what it holds up.
     BLOCKED_ITEM_STALLED_WORK_EXAMINED = "blocked_item_stalled_work_examined"
 
 
@@ -247,6 +249,11 @@ class _Checker:
         self._blocked: dict[int, BlockedItem] = (
             {} if evidence.blocked_items is None else {i.number: i for i in evidence.blocked_items.items}
         )
+        #: Each staged item's index in ``blocked-items.json``, for its pointers.
+        self._item_index: dict[int, int] = (
+            {} if evidence.blocked_items is None
+            else {i.number: index for index, i in enumerate(evidence.blocked_items.items)}
+        )
 
     def violations(self) -> Iterator[Violation]:
         yield from self._file_rules()
@@ -326,15 +333,6 @@ class _Checker:
                 "accounted for more than once: " + ", ".join(f"#{n}" for n in twice),
             )
         findings = {f.id: f for f in self._findings.findings}
-        for number, item in sorted(items.items()):
-            unexamined = [w for w in item.stalled_work if not self._examines((w.kind, w.subject, w.signature))]
-            if unexamined:
-                yield Violation(
-                    Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, None,
-                    f"#{number}: the engine keeps refusing work downstream of its block, and no finding"
-                    " keys it and cites its snapshot (audit.json#/anomalies/<i>): "
-                    + "; ".join(f"{w.kind} {w.subject} [{w.signature}]" for w in unexamined),
-                )
         for account in accounts:
             item = items.get(account.number)
             if item is not None:
@@ -343,17 +341,17 @@ class _Checker:
                     for rule, message in self._account_rules(account, item, findings)
                 )
 
-    def _examines(self, key: tuple[str, str, str]) -> bool:
-        """Whether a finding keys the anomaly ``key`` AND cites the current
+    def _examines(self, finding: Finding, key: tuple[str, str, str]) -> bool:
+        """Whether ``finding`` keys the anomaly ``key`` AND cites the current
         audit's snapshot of it: a key alone, beside a diagnosis of something
         else, examines nothing."""
         snapshot = next(
             (f"/anomalies/{i}" for i, a in enumerate(self._evidence.audit.anomalies) if a.key == key), None
         )
-        return snapshot is not None and any(
-            key in {k.key for k in f.anomaly_keys}
-            and any(o.kind == "snapshot" and o.file == AUDIT_FILE and o.ref == snapshot for o in f.observed)
-            for f in self._findings.findings
+        return (
+            snapshot is not None
+            and key in {k.key for k in finding.anomaly_keys}
+            and any(o.kind == "snapshot" and o.file == AUDIT_FILE and o.ref == snapshot for o in finding.observed)
         )
 
     def _account_rules(
@@ -386,6 +384,60 @@ class _Checker:
                 )
         if account.disposition == "awaiting_operator":
             yield from self._handed_over(account, item)
+        yield from self._downstream(account, item, findings)
+
+    def _downstream(
+        self, account: BlockedItemAccount, item: BlockedItem, findings: Mapping[str, Finding]
+    ) -> Iterator[tuple[Rule, str]]:
+        """Every stalled_work entry of the item accounted for in ``downstream``
+        exactly once, whatever the disposition: by a finding that keys it and
+        cites its snapshot, and by the refused PR's own pipeline event."""
+        n = account.number
+        rule = Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
+        stalled = [(w.kind, w.subject, w.signature) for w in item.stalled_work]
+        claimed = [d.anomaly_key.key for d in account.downstream]
+        missing = [k for k in stalled if k not in claimed]
+        if missing:
+            yield rule, (
+                f"#{n}: the engine keeps refusing work downstream of its block, and its account's"
+                " downstream does not account for: " + "; ".join(f"{k[0]} {k[1]} [{k[2]}]" for k in missing)
+            )
+        extra = sorted({k for k in claimed if k not in stalled})
+        if extra:
+            yield rule, f"#{n}: downstream names work that is not its stalled_work: {extra}"
+        twice = sorted({k for k in claimed if claimed.count(k) > 1})
+        if twice:
+            yield rule, f"#{n}: downstream accounts for the same stalled work twice: {twice}"
+        for entry in account.downstream:
+            key = entry.anomaly_key.key
+            finding = findings.get(entry.finding_id)
+            if finding is None or not self._examines(finding, key):
+                yield rule, (
+                    f"#{n}: {entry.finding_id} must be a finding that keys {key} and cites its"
+                    " snapshot (audit.json#/anomalies/<i>): a key with no evidence of its own examines nothing"
+                )
+            yield from self._pipeline_event(item, key, entry.pipeline_event)
+
+    def _pipeline_event(
+        self, item: BlockedItem, key: tuple[str, str, str], cited: str | None
+    ) -> Iterator[tuple[Rule, str]]:
+        """The refused PR's pipeline event: required, and that PR's, when the
+        refused work is an open PR of the item with retained events."""
+        n = item.number
+        pr = next((p for p in item.open_prs if f"PR #{p.number}" == key[1] and p.pipeline_events), None)
+        if pr is None:
+            if cited is not None:
+                yield Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, (
+                    f"#{n}: {key[1]} has no retained pipeline event on the item, so cite none"
+                )
+            return
+        prefix = f"{BLOCKED_ITEMS_FILE}#/items/{self._item_index[n]}/open_prs/{item.open_prs.index(pr)}/pipeline_events/"
+        if cited is None or not cited.startswith(prefix) or not cited[len(prefix):].isdigit() or (
+            int(cited[len(prefix):]) >= len(pr.pipeline_events)
+        ):
+            yield Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED, (
+                f"#{n}: cite the pipeline event of PR #{pr.number} that shows the refusal ({prefix}<k>)"
+            )
 
     def _handed_over(self, account: BlockedItemAccount, item: BlockedItem) -> Iterator[tuple[Rule, str]]:
         n = account.number

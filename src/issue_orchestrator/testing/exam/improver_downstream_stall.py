@@ -26,7 +26,9 @@ REAL audit and blocked-items assembly run over the raw records (the engine's
 log lines, its timeline rows, its open issues and PRs), so the case fails
 whenever the inputs stop showing the veto, not only when the validator does.
 The right answer keys the refused review (``refused_work`` of ``PR #379``)
-in a finding that cites its snapshot, live and recurring after the start.
+in a finding that cites its snapshot, live and recurring after the start,
+and accounts for it in #364's ``downstream`` with the impact and the PR's
+own pipeline event.
 
 :func:`build_case` writes the fixture; :func:`grade` grades a findings file
 the validator ACCEPTED. The deterministic half runs in the validation gate;
@@ -362,6 +364,11 @@ def grade(findings: ImproverFindings) -> ImproverExamGrade:
     """Grade an ACCEPTED findings file (the validator already enforced that a
     finding keys the refused review, and that every citation resolves)."""
     failures: list[str] = []
+    downstream = [
+        d for a in findings.blocked_items if a.number == ISSUE for d in a.downstream if d.anomaly_key.key == VETO_KEY
+    ]
+    if not any(d.pipeline_event is not None for d in downstream):
+        failures.append(f"#{ISSUE}'s account does not name PR #{PR}'s refused review with its pipeline event")
     about = [f for f in findings.findings if VETO_KEY in {k.key for k in f.anomaly_keys}]
     if not about:
         failures.append(f"PR #{PR}'s review, refused on every scan while #{ISSUE} is blocked, has no finding")

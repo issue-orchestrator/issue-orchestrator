@@ -839,8 +839,62 @@ def test_a_key_without_its_own_evidence_does_not_examine_the_refused_work(tmp_pa
         "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",
         "source": "audit.json#/no_progress/refused_work/0/first_seen", "supports": "recurs_after_start",
     })
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
 
-    assert _rules(doc, evidence) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+    rejected = _rules(doc, evidence)
+
+    assert rejected == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+_DOWNSTREAM = {
+    "anomaly_key": {key: _REFUSED[key] for key in ("kind", "subject", "signature")},
+    "finding_id": "needs-human-353",
+    "impact": "PR #379's published work can never be reviewed while #353 is blocked",
+}
+
+
+def _examined(doc: Doc, index: int) -> Doc:
+    """``doc`` with its finding keyed to the refusal, citing its records."""
+    _finding(doc)["anomaly_keys"].append({key: _REFUSED[key] for key in ("kind", "subject", "signature")})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",
+        "source": "audit.json#/no_progress/refused_work/0/first_seen", "supports": "recurs_after_start",
+    })
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T18:00:00+00:00", "kind": "snapshot", "source": f"audit.json#/anomalies/{index}",
+        "supports": "present_after_start",
+    })
+    return doc
+
+
+def test_a_keyed_refusal_the_items_account_leaves_out_is_not_accounted_for(tmp_path: Path) -> None:
+    """Review r4: graded in a finding, the refusal still needs its item's
+    downstream account, naming the impact."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+
+    assert _rules(_examined(example("needs_investigation"), index), evidence) == {
+        Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
+    }
+
+
+def test_downstream_names_only_the_items_stalled_work(tmp_path: Path) -> None:
+    doc = example("needs_investigation")
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
+
+    assert _rules(doc, load_staged_evidence(build_improver_data(tmp_path))) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+def test_a_hand_over_accounts_for_its_items_downstream_through_a_finding(tmp_path: Path) -> None:
+    """An awaiting_operator item: the refusal is still graded, by a finding."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+    doc = example("exam_case")
+    finding = _examined(example("needs_investigation"), index)["findings"][0]
+    doc["findings"].append(finding)
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
+
+    assert validate_findings(json.dumps(doc), evidence).blocked_items[0].downstream[0].finding_id == (
+        "needs-human-353"
+    )
 
 
 def test_a_finding_keyed_to_the_refused_work_examines_it(tmp_path: Path) -> None:
@@ -848,6 +902,7 @@ def test_a_finding_keyed_to_the_refused_work_examines_it(tmp_path: Path) -> None
     ``first_seen`` is citable, like a log signature's."""
     evidence, index = _refused_review_of_the_items_pr(tmp_path)
     doc = example("needs_investigation")
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
     _finding(doc)["anomaly_keys"].append({key: _REFUSED[key] for key in ("kind", "subject", "signature")})
     _finding(doc)["observed"].append({
         "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",

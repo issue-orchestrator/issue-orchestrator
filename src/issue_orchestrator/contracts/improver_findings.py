@@ -22,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 #: Bump when a field is added, removed or changes meaning. The prompt's
 #: ``schema_version`` must match.
-IMPROVER_FINDINGS_SCHEMA_VERSION = 3
+IMPROVER_FINDINGS_SCHEMA_VERSION = 4
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
 FINDINGS_FILE = "improver-findings.json"
@@ -148,6 +148,24 @@ class Trend(_Closed):
     notes: str
 
 
+class DownstreamStall(_Closed):
+    """One of a blocked item's ``stalled_work`` entries, accounted for: the
+    work its block holds up, what that costs, the finding that grades it,
+    and the PR pipeline event that shows the refusal."""
+
+    #: The ``stalled_work`` entry: a ``refused_work`` anomaly of ``audit.json``.
+    anomaly_key: AnomalyKeyRef
+    #: The finding that keys that anomaly and cites its snapshot.
+    finding_id: Slug
+    #: ``blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>``: an
+    #: event of the refused PR's pipeline. Required when the refused work is
+    #: an open PR of the item with retained pipeline events; None otherwise.
+    pipeline_event: SourceRef | None = None
+    #: What the block holds up and why it cannot proceed (e.g. the published
+    #: work on PR #379 can never be reviewed while #364 is blocked).
+    impact: NonEmpty
+
+
 class BlockedItemAccount(_Closed):
     """One staged blocked item (``blocked-items.json``), accounted for.
 
@@ -162,10 +180,14 @@ class BlockedItemAccount(_Closed):
     finding_id: Slug | None = None
     evidence: tuple[NonEmpty, ...] = ()
     why: NonEmpty
+    #: Every one of the item's ``stalled_work`` entries, each exactly once,
+    #: whatever the disposition: a hand-over or a grade of the block does not
+    #: account for the work the block holds up.
+    downstream: tuple[DownstreamStall, ...] = ()
 
 
 class ImproverFindings(_Closed):
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     engine_commit: NonEmpty
     engine_started_at: Timestamp
     findings: tuple[Finding, ...]
@@ -179,6 +201,7 @@ __all__ = [
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
     "BlockedItemAccount",
+    "DownstreamStall",
     "EngineTag",
     "Finding",
     "GradingWindow",

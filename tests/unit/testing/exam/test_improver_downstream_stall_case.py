@@ -91,7 +91,7 @@ def blind(evidence: StagedEvidence) -> dict:
         "missing_evidence": ["why the health review produced advice instead of a binding hand-over"],
     }
     return {
-        "schema_version": 3, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
+        "schema_version": 4, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
         "findings": [finding],
         "blocked_items": [{"number": 364, "disposition": "finding", "finding_id": finding["id"], "why": "w"}],
         "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},
@@ -133,6 +133,11 @@ def reference(evidence: StagedEvidence) -> dict:
         "proposal": "review published work whatever its issue's block; the block gates new coding only",
     }
     doc["blocked_items"][0]["finding_id"] = doc["findings"][0]["id"]
+    doc["blocked_items"][0]["downstream"] = [{
+        "anomaly_key": _VETO, "finding_id": doc["findings"][0]["id"],
+        "pipeline_event": "blocked-items.json#/items/0/open_prs/0/pipeline_events/2",
+        "impact": "the validated work published on PR #379 can never be reviewed while #364 is blocked",
+    }]
     return doc
 
 
@@ -161,6 +166,7 @@ def test_the_blind_runs_answer_fails_the_grade(evidence: StagedEvidence) -> None
 
     assert not result.passed
     assert result.failures == (
+        "#364's account does not name PR #379's refused review with its pipeline event",
         "PR #379's review, refused on every scan while #364 is blocked, has no finding",
     )
 
@@ -183,6 +189,26 @@ def test_the_veto_keyed_onto_the_blind_finding_without_its_evidence_is_refused(e
         {"at": veto.last_seen, "kind": "occurrence",
          "source": "audit.json#/no_progress/refused_work/0/last_seen", "supports": "recurs_after_start"}
     )
+
+    with pytest.raises(ImproverFindingsRejected) as rejected:
+        validate_findings(json.dumps(doc), evidence)
+
+    assert rejected.value.rules == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+@pytest.mark.parametrize(
+    "pipeline_event",
+    [
+        None,  # PR #379 has retained pipeline events: one must be cited
+        "blocked-items.json#/items/0/open_prs/0/pipeline_events/9",  # no such event
+        "blocked-items.json#/items/0/block_events/1",  # not the PR's pipeline
+    ],
+)
+def test_the_vetoed_review_is_accounted_for_with_its_own_pipeline_event(
+    evidence: StagedEvidence, pipeline_event: str | None
+) -> None:
+    doc = reference(evidence)
+    doc["blocked_items"][0]["downstream"][0]["pipeline_event"] = pipeline_event
 
     with pytest.raises(ImproverFindingsRejected) as rejected:
         validate_findings(json.dumps(doc), evidence)
