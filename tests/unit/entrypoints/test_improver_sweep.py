@@ -86,8 +86,10 @@ def two_engines(tmp_path: Path) -> tuple[EngineRef, EngineRef]:
 
 
 def _sweep(
-    store: MemoryRunStore, agent: EmptyFindingsAgent, inventory: Inventory, now: datetime = NOW
+    store: MemoryRunStore, agent: EmptyFindingsAgent, inventory: Inventory, now: datetime = NOW,
+    host: FakeIssueHost | None = None,
 ) -> ImproverSweep:
+    host = host or FakeIssueHost()
     def run_for(engine: EngineRef) -> ImproverRun:
         return ImproverRun(
             store=store,
@@ -95,12 +97,16 @@ def _sweep(
                 audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), clock=lambda: NOW,
             ),
             agent=agent,
-            effects=ImproverEffects(store=store, host=FakeIssueHost(), outputs_repo=OUTPUTS, clock=lambda: NOW),
+            effects=ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW),
             prompt="PROMPT",
             clock=lambda: now,
         )
 
-    return ImproverSweep(inventory=inventory, runs=store, run_for=run_for, clock=lambda: now)
+    return ImproverSweep(
+        inventory=inventory, runs=store,
+        effects=ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW),
+        run_for=run_for, clock=lambda: now,
+    )
 
 
 def _request() -> ImproverSweepRequest:
@@ -182,6 +188,43 @@ def test_activity_a_manual_run_already_audited_makes_the_scheduled_sweep_green(
     assert result.runs == () and agent.engines == []
     assert result.already_audited == (porchpin,)
     assert result.exit_code == EXIT_OK
+
+
+def test_a_sweep_with_nothing_to_audit_settles_owed_effects_before_it_is_green(
+    two_engines: tuple[EngineRef, EngineRef], tmp_path: Path
+) -> None:
+    """r5 F1: an accepted run's effect is still owed (GitHub failed); the engine
+    then stopped. A sweep with nothing to audit tries the effect: 75 while it
+    stays owed, 0 once applied, never another audit."""
+    from datetime import timedelta as td
+
+    from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE, ImproverFindings
+    from issue_orchestrator.contracts.improver_run import ImproverRunRecord
+    from issue_orchestrator.control.improver_effects import planned_effects
+    from tests.unit.improver_support import example
+
+    _, porchpin = two_engines
+    store, host = MemoryRunStore(tmp_path / "store"), FakeIssueHost()
+    host.fail_on_create = RuntimeError("github down")
+    doc = example("capability_issue")
+    run_dir = store.new_run_dir("manual")
+    (run_dir / FINDINGS_FILE).write_text(json.dumps(doc))
+    store.record(ImproverRunRecord(
+        run_id="manual", started_at=NOW, finished_at=NOW, outcome=RunOutcome.ACCEPTED, detail="",
+        engine_id=porchpin.engine_id, audited_repo=porchpin.repo, outputs_repo=OUTPUTS,
+        run_dir=str(run_dir), engine_commit=doc["engine_commit"],
+        effects=planned_effects(ImproverFindings.model_validate_json(json.dumps(doc)), porchpin),
+    ))
+    stopped = Inventory(porchpin, written={porchpin.engine_id: NOW - td(minutes=5)})
+    agent = EmptyFindingsAgent()
+
+    still_down = _sweep(store, agent, stopped, now=NOW + td(hours=2), host=host).sweep(_request())
+    host.fail_on_create = None
+    settled = _sweep(store, agent, stopped, now=NOW + td(hours=3), host=host).sweep(_request())
+
+    assert still_down.runs == () and still_down.owed_by and still_down.exit_code == EXIT_UNAVAILABLE
+    assert settled.runs == () and settled.owed_by == () and settled.exit_code == EXIT_OK
+    assert len(host.created) == 1 and agent.engines == []
 
 
 def test_an_engine_that_cannot_be_identified_keeps_the_sweep_from_green(

@@ -17,13 +17,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..contracts.improver_run import ImproverRunRecord, RunOutcome
 from ..domain.engine_activity import EngineRef, UnidentifiedEngine
 from ..ports.engine_activity import EngineInventory
-from ..ports.improver import ImproverRunReader
+from ..ports.improver import ImproverRunStore
 from .improver_run import ImproverRun, ImproverRunRequest
 
 EXIT_OK = 0
@@ -52,6 +53,9 @@ class ImproverSweepResult:
     #: Engines that ran lately but not since their last accepted run (an
     #: operator's manual run, say, already audited what they did).
     already_audited: tuple[EngineRef, ...] = ()
+    #: Accepted runs that still owe GitHub an effect after the sweep: an
+    #: accepted finding is not done until it is applied.
+    owed_by: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -61,11 +65,19 @@ class ImproverSweepResult:
         codes = {run.exit_code if self.apply else run.outcome.exit_code for run in self.runs}
         if EXIT_REJECTED in codes:
             return EXIT_REJECTED
-        if self.unidentified or codes - {EXIT_OK}:
+        if self.unidentified or codes - {EXIT_OK} or (self.apply and self.owed_by):
             return EXIT_UNAVAILABLE
         # Green when every engine in scope was audited, now or by an accepted
         # run since it last wrote; no engine in scope at all is not.
         return EXIT_OK if self.runs or self.already_audited else EXIT_UNAVAILABLE
+
+
+class OwedEffects(Protocol):
+    """The effect owner (:class:`~..execution.improver_effect_applier.ImproverEffects`)."""
+
+    def apply_pending(self) -> tuple[ImproverRunRecord, ...]: ...
+
+    def owing_runs(self) -> tuple[str, ...]: ...
 
 
 class ImproverSweep:
@@ -73,12 +85,14 @@ class ImproverSweep:
         self,
         *,
         inventory: EngineInventory,
-        runs: ImproverRunReader,
+        runs: ImproverRunStore,
+        effects: OwedEffects,
         run_for: Callable[[EngineRef], ImproverRun],
         clock: Callable[[], datetime],
     ) -> None:
         self._inventory = inventory
         self._runs = runs
+        self._effects = effects
         self._run_for = run_for
         self._clock = clock
 
@@ -98,8 +112,17 @@ class ImproverSweep:
             for engine in engines
         )
         return ImproverSweepResult(
-            engines=engines, runs=runs, apply=apply, unidentified=unidentified, already_audited=already,
+            engines=engines, runs=runs, apply=apply, unidentified=unidentified,
+            already_audited=already, owed_by=self._settle(apply=apply),
         )
+
+    def _settle(self, *, apply: bool) -> tuple[str, ...]:
+        """Apply what accepted runs still owe (each audit run applies first,
+        but a sweep with nothing to audit runs none), and what remains owed."""
+        with self._runs.exclusive():
+            if apply:
+                self._effects.apply_pending()
+            return self._effects.owing_runs()
 
     def _engines(
         self, floor: datetime

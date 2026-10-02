@@ -221,7 +221,10 @@ def run(args: argparse.Namespace) -> int:
         else _OneEngine(engine_at(args.state_dir.expanduser().resolve(), args.audited_repo))
     )
     try:
-        result = ImproverSweep(inventory=inventory, runs=store, run_for=improver_for, clock=_now).sweep(
+        result = ImproverSweep(
+            inventory=inventory, runs=store, effects=_effects(args.outputs_repo, store),
+            run_for=improver_for, clock=_now,
+        ).sweep(
             request, apply=not args.no_apply
         )
     except ImproverStoreBusy as busy:
@@ -233,6 +236,8 @@ def run(args: argparse.Namespace) -> int:
         print("improver run: no engine ran since it was last audited; nothing to audit", file=sys.stderr)
     for record in result.runs:
         print(render_run(record))
+    if result.owed_by and not args.no_apply:
+        print(f"improver run: effects still owed by {', '.join(result.owed_by)}", file=sys.stderr)
     # --no-apply leaves effects owed on purpose; only outcomes count.
     return result.exit_code
 
