@@ -569,7 +569,9 @@ def test_a_prefixed_engines_blocked_items_are_read_by_its_recorded_label_policy(
     state = make_engine_state(tmp_path / "engine")
     record = read_engine_start(state)
     write_engine_start(state, record.model_copy(update={
-        "labels": LabelPolicy(prefix="bot", needs_human="needs-human", blocked="blocked"),
+        "labels": LabelPolicy(
+            prefix="bot", needs_human="needs-human", blocked="blocked", provider_unavailable="provider-unavailable"
+        ),
     }))
     audited = FakeHost(issues=[
         OpenIssueLabels(number=364, title="parked", labels=("bot:needs-human",)),
@@ -598,3 +600,25 @@ def test_an_engine_that_recorded_no_label_policy_is_read_on_the_defaults_and_say
     blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
     assert [i["number"] for i in blocked["items"]] == [364]
     assert "recorded no label policy" in blocked["blocking_rule"]
+
+
+def test_a_renamed_provider_outage_label_is_a_blocked_item(tmp_path: Path) -> None:
+    """#7490 r4 F1: the circuit breaker's label is configurable and blocking."""
+    from issue_orchestrator.contracts.engine_start import LabelPolicy
+    from issue_orchestrator.infra.engine_start_record import read_engine_start
+
+    state = make_engine_state(tmp_path / "engine")
+    write_engine_start(state, read_engine_start(state).model_copy(update={
+        "labels": LabelPolicy(
+            prefix=None, needs_human="needs-human", blocked="blocked", provider_unavailable="waiting-for-provider"
+        ),
+    }))
+    audited = FakeHost(issues=[OpenIssueLabels(number=400, title="waits", labels=("waiting-for-provider",))])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [400]
+    assert ("#400", "waiting-for-provider") in {
+        (a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"
+    }

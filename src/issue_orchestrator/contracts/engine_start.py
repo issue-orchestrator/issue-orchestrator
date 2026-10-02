@@ -63,6 +63,8 @@ class LabelPolicy(_Closed):
     prefix: str | None
     needs_human: str
     blocked: str
+    #: The provider-outage label (``provider_resilience.circuit_breaker.label``).
+    provider_unavailable: str
 
 
 class EngineStartRecord(_Closed):

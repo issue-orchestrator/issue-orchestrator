@@ -118,12 +118,27 @@ class BlockedLane:
                 "the engine recorded no label policy (it started before io recorded one):"
                 " the default, unprefixed label names are assumed",
             )
+        config = Config(
+            label_prefix=policy.prefix, label_needs_human=policy.needs_human, label_blocked=policy.blocked,
+        )
+        config.provider_resilience.circuit_breaker.label = policy.provider_unavailable
         return cls(
-            LabelManager(Config(
-                label_prefix=policy.prefix, label_needs_human=policy.needs_human, label_blocked=policy.blocked,
-            )),
+            LabelManager(config),
             f"the engine's recorded label policy (prefix {policy.prefix or 'none'},"
-            f" needs-human {policy.needs_human!r}, blocked {policy.blocked!r})",
+            f" needs-human {policy.needs_human!r}, blocked {policy.blocked!r},"
+            f" provider outage {policy.provider_unavailable!r})",
+        )
+
+    @staticmethod
+    def policy_of(config: Config) -> LabelPolicy:
+        """What an engine records of its label policy at start: every
+        configured name its label owner's blocking rule reads, so :meth:`of`
+        rebuilds the same rule (the two directions live here, together)."""
+        return LabelPolicy(
+            prefix=config.label_prefix,
+            needs_human=config.label_needs_human,
+            blocked=config.label_blocked,
+            provider_unavailable=config.provider_resilience.circuit_breaker.label,
         )
 
     @property

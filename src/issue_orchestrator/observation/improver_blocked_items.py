@@ -134,8 +134,8 @@ def _item(
     blocking = tuple(
         BlockingLabelInput(
             label=label,
-            since_at=since[label][0] if label in since else None,
-            since_event=since[label][1] if label in since else None,
+            since_at=since[label.casefold()][0] if label.casefold() in since else None,
+            since_event=since[label.casefold()][1] if label.casefold() in since else None,
         )
         for label in labels
     )
@@ -170,32 +170,43 @@ def _item(
 
 
 def _label_onsets(events: Sequence[TimelineEvent], lane: BlockedLane) -> dict[str, tuple[datetime, str]]:
-    """For every blocking label the retained events leave ON: when and by
-    which event it was last put on.
+    """For every blocking label the retained events leave ON, keyed by its
+    casefolded name (GitHub folds label case): when and by which event it was
+    last put on.
 
     A recorded label change is the engine's own diff (it adds only a label
     it read as absent), so an add is a fresh onset, even with no removal
     recorded before it: a person may have taken the label off on GitHub,
     which the timeline never sees. An add whose presence read failed
     (``presence_unknown``) may have found the label already on, so it is no
-    onset at all: it moves no known onset, and with none known leaves the
-    onset unknown. A removal forgets the label. A needs-human request with
-    no label change of its own (``issue.needs_human``) is an onset only
-    while the label is not already known to be on."""
+    onset: it moves no known onset, and with none known the onset stays
+    unknown until a certain add or a removal. A removal forgets the label. A
+    needs-human request with no label change of its own (``issue.needs_human``)
+    is an onset only while the label is neither known to be on nor possibly
+    on since an uncertain add."""
     on: dict[str, tuple[datetime, str]] = {}
+    #: Labels an uncertain add may have found already on, with no onset known.
+    doubtful: set[str] = set()
     for event in events:
         name = _name(event)
         at = instant(event.record.timestamp)
         if name == _LABELS_CHANGED:
             data = event.record.data
             for label in _labels(data.get("removed")):
-                on.pop(label, None)
+                on.pop(label.casefold(), None)
+                doubtful.discard(label.casefold())
             uncertain = data.get(PRESENCE_UNKNOWN) is True
-            for label in _labels(data.get("added")):
-                if lane.is_blocking(label) and not uncertain:
-                    on[label] = (at, name)
+            for label in (b for b in _labels(data.get("added")) if lane.is_blocking(b)):
+                key = label.casefold()
+                if not uncertain:
+                    on[key] = (at, name)
+                    doubtful.discard(key)
+                elif key not in on:
+                    doubtful.add(key)
         elif name in _NEEDS_HUMAN_EVENTS:
-            on.setdefault(lane.needs_human, (at, name))
+            key = lane.needs_human.casefold()
+            if key not in on and key not in doubtful:
+                on[key] = (at, name)
     return on
 
 

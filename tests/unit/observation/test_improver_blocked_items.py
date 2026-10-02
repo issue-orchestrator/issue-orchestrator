@@ -150,3 +150,52 @@ def test_an_add_that_could_not_read_presence_is_no_onset() -> None:
     )
 
     assert staged.items[0].blocking_labels[0].since_at is None and staged.items[0].blocked_since is None
+
+
+def test_a_needs_human_request_after_an_uncertain_add_is_no_onset() -> None:
+    """r4 F2: the request follows an add that may have found the label on."""
+    t = CUTOFF - timedelta(hours=3)
+    events = [
+        _event(262, "issue.labels_changed", t, added=["needs-human"], removed=[], presence_unknown=True),
+        _event(262, "issue.needs_human", t + timedelta(seconds=2), question="q"),
+    ]
+
+    staged = blocked_items_input(
+        ISSUES, lane=LANE, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert staged.items[0].blocked_since is None
+
+
+def test_a_label_github_returns_in_another_case_keeps_its_onset() -> None:
+    """r4 F3: GitHub folds label case; the engine recorded needs-human."""
+    t = CUTOFF - timedelta(hours=3)
+    issues = [OpenIssueLabels(number=262, title="asks", labels=("Needs-Human",))]
+    events = [_event(262, "issue.labels_changed", t, added=["needs-human"], removed=[])]
+
+    staged = blocked_items_input(
+        issues, lane=LANE, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert staged.items[0].blocking_labels[0].label == "Needs-Human"
+    assert staged.items[0].blocked_since == t
+
+
+def test_the_recorded_policy_rebuilds_the_engines_own_blocking_rule() -> None:
+    """r4 F1: every configured name the label owner's blocking rule reads is
+    recorded, so the audit's lane and the engine agree on every label."""
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.infra.config import Config
+
+    config = Config(label_prefix="bot", label_needs_human="needs-person", label_blocked="stuck")
+    config.provider_resilience.circuit_breaker.label = "waiting-for-provider"
+    engine = LabelManager(config)
+
+    lane = BlockedLane.of(BlockedLane.policy_of(config))
+
+    candidates = [
+        "bot:needs-person", "bot:stuck", "waiting-for-provider", "bot:waiting-for-provider", "bot:blocked-failed",
+        "bot:recovery-pending", "needs-human", "stuck", "bot:in-progress", "bot:blocked:claim-lost",
+    ]
+    assert [lane.labels.is_blocking(c) for c in candidates] == [engine.is_blocking(c) for c in candidates]
+    assert any(engine.is_blocking(c) for c in ("waiting-for-provider", "bot:waiting-for-provider"))
