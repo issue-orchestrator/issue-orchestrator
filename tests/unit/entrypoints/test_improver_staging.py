@@ -101,7 +101,7 @@ def state(tmp_path: Path) -> Path:
     return make_engine_state(tmp_path / "engine")
 
 
-def make_engine_state(root: Path) -> Path:
+def make_engine_state(root: Path, repo: str = "porchpin/porchpin") -> Path:
     """A small engine's state under ``root``: decisions, a case file, a
     tech-lead run and its start record."""
     state = root / ".issue-orchestrator" / "state"
@@ -128,7 +128,7 @@ def make_engine_state(root: Path) -> Path:
     write_engine_start(
         state,
         EngineStartRecord(
-            started_at=STARTED, engine_commit=COMMIT, package_version="0.10.0",
+            started_at=STARTED, repo=repo, engine_commit=COMMIT, package_version="0.10.0",
             repo_root=str(state.parent.parent), repo_head=None,
             charter=TechLeadCharterPolicy.from_config(Config()).effective_charter(),
         ),
@@ -278,6 +278,17 @@ def test_the_latest_two_scorecards_of_each_case_are_staged(state: Path, tmp_path
     assert json.loads((staged.data_dir / "exam" / "A-one.json").read_text())["passed"] is True
     assert staged.manifest.exam_scores_comparable is False
     assert "Z-new" in staged.manifest.existing_exam_case_ids
+
+
+def test_state_an_engine_wrote_for_another_repository_is_never_staged_as_this_one(
+    state: Path, tmp_path: Path
+) -> None:
+    """r3 F1: the config was re-pointed since the engine started; its state
+    stays attributed to the repository it started for."""
+    with pytest.raises(ImproverInputsUnavailable, match="started for porchpin/porchpin"):
+        _stager(FakeHost(), FakeHost()).stage(
+            _request(state, tmp_path, engine=engine_at(state, "someone/else"))
+        )
 
 
 def test_what_was_staged_reads_back_as_the_validators_evidence(state: Path, tmp_path: Path) -> None:

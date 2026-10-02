@@ -153,6 +153,13 @@ class ImproverInputStager:
             start = engine_start_input(record)
         except (EngineStartRecordUnavailable, ValueError) as error:
             raise ImproverInputsUnavailable(str(error)) from error
+        if record.repo != request.engine.repo:
+            # The state was written by an engine working another repository
+            # (its config was re-pointed since): never attribute it to this one.
+            raise ImproverInputsUnavailable(
+                f"the engine at {request.engine.state_dir} started for {record.repo},"
+                f" not {request.engine.repo}"
+            )
         _write(data / ENGINE_START_FILE, start)
         _write(data / CHARTER_FILE, record.charter)
         entries += [_staged(ENGINE_START_FILE), _staged(CHARTER_FILE, "effective at the latest start")]

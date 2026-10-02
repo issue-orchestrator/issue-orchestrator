@@ -15,7 +15,7 @@ import pytest
 
 from issue_orchestrator.adapters.registered_engine_inventory import engine_at
 from issue_orchestrator.contracts.improver_run import RunOutcome
-from issue_orchestrator.domain.engine_activity import EngineRef, EngineSighting
+from issue_orchestrator.domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
 from issue_orchestrator.entrypoints.engine_activity_probe import SnapshotEngineActivityProbe
 from issue_orchestrator.entrypoints.improver_run import ImproverRun
 from issue_orchestrator.entrypoints.improver_staging import ImproverInputStager
@@ -49,7 +49,7 @@ class Inventory:
         self._written = written or {}
         self.asked: list[datetime] = []
 
-    def engines(self, *, since: datetime) -> tuple[EngineSighting, ...]:
+    def engines(self, *, since: datetime) -> EngineInventoryRead:
         self.asked.append(since)
         sightings = (
             EngineSighting(
@@ -59,7 +59,7 @@ class Inventory:
             )
             for engine in self._engines
         )
-        return tuple(s for s in sightings if s.active_since(since))
+        return EngineInventoryRead(sightings=tuple(s for s in sightings if s.active_since(since)))
 
 
 class EmptyFindingsAgent:
@@ -80,7 +80,7 @@ class EmptyFindingsAgent:
 
 @pytest.fixture
 def two_engines(tmp_path: Path) -> tuple[EngineRef, EngineRef]:
-    io = engine_at(make_engine_state(tmp_path / "issue-orchestrator"), OUTPUTS)
+    io = engine_at(make_engine_state(tmp_path / "issue-orchestrator", OUTPUTS), OUTPUTS)
     porchpin = engine_at(make_engine_state(tmp_path / "porchpin"), "porchpin/porchpin")
     return io, porchpin
 
@@ -157,6 +157,26 @@ def test_an_engine_that_acted_after_its_last_accepted_run_is_swept_however_long_
     assert [e.engine_id for e in result.engines] == [porchpin.engine_id]
     assert agent.engines == [(porchpin.engine_id, "porchpin/porchpin")]
     assert later.asked == [min(accepted_at.values())]
+
+
+def test_an_engine_that_cannot_be_identified_keeps_the_sweep_from_green(
+    two_engines: tuple[EngineRef, EngineRef], tmp_path: Path
+) -> None:
+    """r3 F1: an engine in scope with no start record of this version is named, not guessed."""
+    from issue_orchestrator.domain.engine_activity import UnidentifiedEngine
+
+    io, _ = two_engines
+    missing = UnidentifiedEngine(tmp_path / "old" / ".issue-orchestrator" / "state", "no engine-start.json")
+
+    class WithOld(Inventory):
+        def engines(self, *, since: datetime) -> EngineInventoryRead:
+            read = super().engines(since=since)
+            return EngineInventoryRead(sightings=read.sightings, unidentified=(missing,))
+
+    result = _sweep(MemoryRunStore(tmp_path / "store"), EmptyFindingsAgent(), WithOld(io)).sweep(_request())
+
+    assert [r.outcome for r in result.runs] == [RunOutcome.ACCEPTED]
+    assert result.unidentified == (missing,) and result.exit_code == EXIT_UNAVAILABLE
 
 
 def test_no_engine_to_audit_is_unavailable(tmp_path: Path) -> None:

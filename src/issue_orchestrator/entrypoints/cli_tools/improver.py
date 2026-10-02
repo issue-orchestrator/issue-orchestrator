@@ -37,7 +37,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ...domain.engine_activity import EngineRef, EngineSighting
+from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
 from ...execution.engine_inventory import control_center_engine_inventory, engine_at
 from ...execution.engine_source_archive import GitEngineSourceArchive
 from ...ports.engine_activity import EngineInventory
@@ -227,6 +227,8 @@ def run(args: argparse.Namespace) -> int:
     except ImproverStoreBusy as busy:
         print(f"improver run: {busy}", file=sys.stderr)
         return EXIT_UNAVAILABLE
+    for missing in result.unidentified:
+        print(f"improver run: engine at {missing.state_dir} not audited: {missing.reason}", file=sys.stderr)
     if not result.engines:
         print("improver run: no engine ran since it was last audited; nothing to audit", file=sys.stderr)
     for record in result.runs:
@@ -241,8 +243,9 @@ class _OneEngine:
     def __init__(self, engine: EngineRef) -> None:
         self._engine = engine
 
-    def engines(self, *, since: datetime) -> tuple[EngineSighting, ...]:
-        return (EngineSighting(self._engine, running=True, last_written=None),)
+    def engines(self, *, since: datetime) -> EngineInventoryRead:
+        # Named explicitly: audited whatever it did lately.
+        return EngineInventoryRead(sightings=(EngineSighting(self._engine, running=True, last_written=None),))
 
 
 def apply(outputs_repo: str) -> int:

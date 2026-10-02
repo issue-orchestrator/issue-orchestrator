@@ -9,6 +9,7 @@ check spends no API budget), and its watermark
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,8 @@ from ..observation.engine_activity import engine_activity
 from ..observation.engine_audit import Unavailable, audit_engine
 from ..ports.engine_activity import EngineInventory
 from .engine_snapshot import snapshot_engine
+
+logger = logging.getLogger(__name__)
 
 #: The audit window the anomalies are found over; the same each time, so two
 #: observations' anomaly sets compare.
@@ -33,7 +36,10 @@ class SnapshotEngineActivityProbe:
 
     def observe(self, *, now: datetime, since: datetime) -> EngineActivityObservation:
         engines = []
-        for sighting in self._inventory.engines(since=since):
+        read = self._inventory.engines(since=since)
+        for missing in read.unidentified:
+            logger.warning("Engine at %s is not observed: %s", missing.state_dir, missing.reason)
+        for sighting in read.sightings:
             engine = sighting.engine
             with tempfile.TemporaryDirectory(prefix="io-engine-activity-") as scratch:
                 snapshot = snapshot_engine(

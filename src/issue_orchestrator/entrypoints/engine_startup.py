@@ -168,6 +168,7 @@ def record_engine_start(config: "Config", *, repo_root: Path, now: datetime) -> 
     identity = resolve_runtime_identity()
     record = EngineStartRecord(
         started_at=now,
+        repo=config.repo,
         engine_commit=identity.source_commit_sha,
         package_version=identity.package_version,
         repo_root=str(repo_root),

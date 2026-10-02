@@ -5,13 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
-from ..domain.engine_activity import EngineActivityObservation, EngineSighting
+from ..domain.engine_activity import EngineActivityObservation, EngineInventoryRead
 
 
 class EngineInventory(Protocol):
-    def engines(self, *, since: datetime) -> tuple[EngineSighting, ...]:
+    def engines(self, *, since: datetime) -> EngineInventoryRead:
         """Every engine Control Center registers that is running, or wrote its
-        log at or after ``since``, once each."""
+        log at or after ``since``, once each, identified by its own start
+        record; an engine whose record cannot be read is named as such."""
         ...
 
 

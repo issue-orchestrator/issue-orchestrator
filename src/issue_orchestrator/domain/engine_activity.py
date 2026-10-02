@@ -63,6 +63,22 @@ class EngineSighting:
         return ran_since(running=self.running, last_written=self.last_written, since=since)
 
 
+@dataclass(frozen=True, slots=True)
+class UnidentifiedEngine:
+    """A registered engine in scope whose identity cannot be read (no start
+    record from this version: it must restart). It is neither observed nor
+    audited, and says why."""
+
+    state_dir: Path
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class EngineInventoryRead:
+    sightings: tuple[EngineSighting, ...]
+    unidentified: tuple[UnidentifiedEngine, ...] = ()
+
+
 def ran_since(*, running: bool, last_written: datetime | None, since: datetime) -> bool:
     """An engine runs now, or last wrote its log at or after ``since``."""
     _require_aware(last_written, since)
@@ -211,6 +227,8 @@ __all__ = [
     "EngineActivityCadence",
     "EngineActivityObservation",
     "EngineRef",
+    "EngineInventoryRead",
     "EngineSighting",
+    "UnidentifiedEngine",
     "ran_since",
 ]
