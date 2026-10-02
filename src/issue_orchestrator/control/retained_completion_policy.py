@@ -13,7 +13,7 @@ from ..domain.registered_completion import CompletionProcessingPolicy
 from ..domain.session_run import SessionRunAssets
 from ..domain.validated_work_capture import candidate_key
 from ..infra.config import Config
-from .completion_pr_labels import reserved_pr_label_error
+from .completion_pr_labels import route_reserved_pr_labels
 from .needs_human_block import SharedNeedsHumanBlock
 from .completion_ports import GitAdapter
 from .completion_preparation import PreparedActionPlan, PreparedCompletion, context_from_prepared_evidence
@@ -42,10 +42,10 @@ def prepare_retained_completion(
         raise CompletionIntakeError("retained publication requires configured validation policy")
     context = context_from_prepared_evidence(evidence, evidence.entry.receipt, evidence.run.run)
     policy = record_validator.resolve_processing_policy(context, issue_number, None, None)
-    record = context.record
-    reserved = reserved_pr_label_error(record, human_block)
-    if reserved is not None:
-        return ProcessingResult(False, reserved, errors=[reserved], processing_policy=policy)
+    # The same door as a live completion (#7592): a human-block request in
+    # ``pr_labels`` becomes the issue's request, never a refusal that no agent
+    # is left to correct.
+    record = route_reserved_pr_labels(context.record, human_block)
     rejection = reject_role(
         record=record, processing_policy=policy, issue_number=issue_number,
         run_assets=evidence.run.run,

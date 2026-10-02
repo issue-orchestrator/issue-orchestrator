@@ -1,18 +1,26 @@
-"""What an agent may ask to have labelled on its own PR (#6999 F2).
+"""What an agent may ask to have labelled on its own PR (#6999 F2, #7592).
 
 ``pr_labels`` is the one label set that arrives from OUTSIDE the orchestrator's
 own planning: an agent writes it into its completion record and the processor
 applies it. That makes it untrusted input, and the shared ``needs-human`` block
-is not among the things it may hand itself. Applied there it would create a
+is not among the things it may put on a PR. Applied there it would create a
 block with no cause recorded against it, which a later typed release then takes
 away from whoever DID record one - the exact loss the shared-block owner exists
-to prevent. The agent already has the typed ``needs_human`` completion outcome
-for this, and that one goes through the owner.
+to prevent.
 
-The rule is enforced twice, on purpose, and neither is redundant:
+Naming the block there is still a request for a human, and dropping it would be
+a request nothing downstream can see. So the rule is enforced twice, on
+purpose, and neither is redundant:
 
-* at the DOOR, by :func:`reserved_pr_label_error`, which rejects the whole
-  completion record before any side effect - no push, no PR, no labels;
+* at the DOOR, by :func:`route_reserved_pr_labels`. Every path that turns a
+  completion record into publication work - the live completion, a manual
+  retry, and recovery of retained validated work - passes the record through
+  it first. The reserved labels leave ``pr_labels`` and become the typed
+  ``ADD_NEEDS_HUMAN_LABEL`` request, which the shared-block owner applies to
+  the ISSUE with the agent's cause recorded. The work itself still publishes.
+  Refusing the record here instead (#6999 F2 round 5) stranded retained work
+  for good: recovery has no agent to correct the record, so the same refusal
+  came back on every pass (porchpin #364);
 * at the WRITE, by the governed label capability, which refuses the value.
 
 They consult different objects (the block owner, then the label capability), so
@@ -24,8 +32,10 @@ human block that is silently dropped is one nothing downstream can see.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
+from ..domain.models import RequestedAction
 from .completion_types import ERROR_PREFIX_GOVERNED_LABEL
 from .governed_label_set import GovernedLabelError
 
@@ -44,28 +54,35 @@ class _LabelWriter(Protocol):
     def add_label(self, issue_number: int, label: str) -> None: ...
 
 
-def reserved_pr_label_error(
+def route_reserved_pr_labels(
     record: "CompletionRecord", block: "SharedNeedsHumanBlock"
-) -> str | None:
-    """The door check: why this record's ``pr_labels`` is not acceptable.
+) -> "CompletionRecord":
+    """The door: this record with its human-block request moved off the PR.
 
-    Asks the OWNER whether it governs the label rather than comparing against a
-    hard-coded name, so a repo that configures a different shared block is
-    governed just the same.
+    Asks the OWNER whether it governs each label rather than comparing against
+    a hard-coded name, so a repo that configures a different shared block is
+    governed just the same. A record naming no governed label is returned as
+    is.
     """
     reserved = [label for label in (record.pr_labels or ()) if block.owns(label)]
     if not reserved:
-        return None
-    logger.error(
-        "[COMPLETION] Rejecting completion record: pr_labels names the reserved "
-        "shared block %s. Use the needs_human completion outcome, which records "
-        "the lifecycle that requires it.",
+        return record
+    kept = [label for label in (record.pr_labels or ()) if not block.owns(label)]
+    actions = list(record.requested_actions)
+    if RequestedAction.ADD_NEEDS_HUMAN_LABEL not in actions:
+        actions.append(RequestedAction.ADD_NEEDS_HUMAN_LABEL)
+    logger.warning(
+        "[COMPLETION] pr_labels names the reserved shared block %s: it is never "
+        "applied to a PR. Routing the request to the issue through the block "
+        "owner instead.",
         reserved,
     )
-    return (
-        f"pr_labels may not contain the reserved shared block label(s) "
-        f"{reserved}: use the needs_human completion outcome instead"
-    )
+    return replace(record, pr_labels=kept or None, requested_actions=actions)
+
+
+def requests_human_block(record: "CompletionRecord") -> bool:
+    """Whether the record asks for the shared block on its issue."""
+    return RequestedAction.ADD_NEEDS_HUMAN_LABEL in record.requested_actions
 
 
 def apply_pr_labels(
@@ -111,4 +128,4 @@ def apply_pr_labels(
     return refused is None
 
 
-__all__ = ["apply_pr_labels", "reserved_pr_label_error"]
+__all__ = ["apply_pr_labels", "requests_human_block", "route_reserved_pr_labels"]

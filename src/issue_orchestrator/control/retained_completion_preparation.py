@@ -10,12 +10,13 @@ from ..domain.validated_work import EvidenceRole, RemoteBaselineStatus, ReviewDi
 from ..domain.validated_work_store import EvidenceRow
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.working_copy import WorkingCopy
+from .completion_pr_labels import requests_human_block
 from .completion_processor import CompletionProcessor
 from .pull_request_preparation import PullRequestPreparationRefusal
 
 
 def _policy_pending(policy_refusal: ProcessingResult) -> RecoveryAttemptPending:
-    """Completion policy (reserved labels, role, tech-lead shaping, validation)
+    """Completion policy (role, tech-lead shaping, validation)
     reads no host, so its refusal has no rate limit to keep."""
     return RecoveryAttemptPending(policy_refusal.message)
 
@@ -56,6 +57,16 @@ class RetainedCompletionPreparation:
             # host's reset instead of spending recovery budget (#7426).
             return RecoveryAttemptPending(publication.message, rate_limit=publication.rate_limit)
         self._require_source(workspace)
+        if requests_human_block(prepared.record):
+            # Recovery runs none of the record's own label actions, so the one
+            # that asks for a person is honoured here, before the publish
+            # (#7592): through the block owner, on the issue, never the PR.
+            block = self._completion.acquire_agent_human_block(key.issue_number)
+            if not block.committed:
+                return RecoveryAttemptPending(
+                    f"The agent's needs-human block on issue #{key.issue_number} did not"
+                    f" commit ({block.value}); recovery waits for it"
+                )
         observation = admitted.observations
         if observation.remote_baseline_status is not RemoteBaselineStatus.OBSERVED:
             raise CompletionIntakeError(

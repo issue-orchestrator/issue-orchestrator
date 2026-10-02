@@ -19,7 +19,11 @@ A park is released by progress, never by elapsed time alone:
 * the action succeeds under any fingerprint - :meth:`record` with ``done``
   clears every row of the identity, because the action demonstrably works;
 * an operator retries or dismisses the escalation issue -
-  :meth:`release_issue`, wired into the operator command.
+  :meth:`release_issue`, wired into the operator command;
+* the engine runs new code - :meth:`admit` lets a park decided under another
+  io commit run once more (#7592). A fix for the failure is a changed fact no
+  fingerprint sees; if the failure reproduces, the park stands, escalation
+  and all, until the next commit.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from ..domain.action_liveness import (
     LivenessPolicy,
     LivenessRow,
     admission,
+    engine_reprobe_due,
 )
 from ..domain.host_rate_limit import HostRateLimit
 from ..domain.owed_write import NO_DEBT, EffectResult
@@ -125,11 +130,15 @@ class ActionLivenessOwner:
         *,
         store: ActionLivenessStore,
         escalation: LivenessEscalation,
+        engine_commit: str | None,
         policy: LivenessPolicy = LivenessPolicy(),
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
+        """``engine_commit`` is the io source commit this engine runs; ``None``
+        for an install with no source identity, which never re-tries a park."""
         self._store = store
         self._escalation = escalation
+        self._engine = engine_commit
         self._policy = policy
         self._clock = clock
         # Escalation and withdrawal are decided and written one at a time: the
@@ -148,7 +157,27 @@ class ActionLivenessOwner:
         now = self._clock()
         if row is not None:
             self._store.touch(key, now)
-        return LivenessDecision(admission(row, now), row)
+        decided = admission(row, now)
+        if (
+            decided is Admission.PARKED
+            and engine_reprobe_due(row, self._engine)
+            and self._engine is not None
+            and self._store.claim_engine_reprobe(key, self._engine)
+        ):
+            # The claim is the one re-try this commit gets, taken before the
+            # attempt: a second asker, or a restart on the same commit, holds.
+            assert row is not None
+            logger.info(
+                "[LIVENESS] Re-trying parked %s on %s once under engine %s"
+                " (parked under %s): %s",
+                key.identity.action,
+                key.identity.subject,
+                self._engine,
+                row.parked_on_engine or "an unrecorded engine",
+                row.last_reason,
+            )
+            return LivenessDecision(Admission.ADMIT, row)
+        return LivenessDecision(decided, row)
 
     def record(self, key: LivenessKey, outcome: ActionOutcome) -> LivenessRow | None:
         """Fold one attempt's outcome into the key's durable row.
@@ -169,6 +198,9 @@ class ActionLivenessOwner:
         if row is None:
             self._resolve(self._store.clear_key(key, done_at=self._clock()))
             return None
+        if row.parked:
+            # Every park names the code it was decided under (#7592).
+            row = replace(row, parked_on_engine=self._engine)
         newly_parked = row.parked and not (previous is not None and previous.parked)
         if not self._store.settle(previous, row, announce_parked=newly_parked):
             # An operator released this key while the attempt ran: the

@@ -1273,16 +1273,23 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         """``pr_labels`` is agent-supplied, so it is untrusted input.
 
         Nothing in record validation stopped an agent naming the configured
-        shared label there. Applied, it creates a block with no cause recorded
-        - which a later typed release then takes away from whoever did record
-        one. The agent already has the typed needs_human outcome for this, and
-        that one goes through the owner.
+        shared label there. Applied to the PR, it creates a block with no cause
+        recorded - which a later typed release then takes away from whoever did
+        record one. Refusing the whole record instead stranded its work: once
+        retained, no agent is left to correct it, so recovery met the same
+        refusal on every pass (porchpin #364, #7592).
+
+        The door now moves the request where it belongs: the PR is created and
+        keeps the ordinary label, the reserved one never reaches it, and the
+        ISSUE gets the block through the owner with the agent's cause.
 
         Driven with a REAL ``CREATE_PR`` completion that returns a PR, because
         the label-applying code is reachable only on that path: a record that
         requests nothing never gets there, and a test that stops short of it
         would pass with the whole branch deleted.
         """
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+
         live: dict[int, set[str]] = {903: set(), 77: set()}
         labels, _applier, _quarantine, block, claims = self._wiring(
             sample_config, tmp_path, live
@@ -1297,27 +1304,31 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             outcome="completed",
         )
 
-        # The whole completion is refused, at the door.
-        assert not run.result.success
-        assert any("reserved shared block" in error for error in run.result.errors)
-        # "Before any side effect" asserted as the ABSENCE of every external
-        # effect, not just of one label call: nothing was labelled - not even
-        # the ordinary label beside the reserved one - and the PR and git
-        # surfaces were never touched at all, so no branch was pushed and no
-        # PR created or reused.
-        assert run.labels.add_label.call_args_list == []
-        assert run.external_calls() == []
+        assert run.result.success, run.result.errors
+        assert "pr.create_pr" in run.external_calls()
+        applied = [
+            (call.args[0], call.args[1])
+            for call in run.labels.add_label.call_args_list
+        ]
+        assert (77, "size:small") in applied
+        # The reserved label reached neither the raw adapter nor the PR...
+        assert [pair for pair in applied if pair[1] == labels.needs_human] == []
+        assert labels.needs_human not in live[77]
         assert claims.needs_human_causes(77) == frozenset()
-        assert claims.needs_human_causes(903) == frozenset()
+        # ...and the request it expressed is the ISSUE's block, with a cause.
+        assert labels.needs_human in live[903]
+        assert claims.needs_human_causes(903) == frozenset(
+            {NeedsHumanCause.AGENT_COMPLETION.value}
+        )
 
     def test_an_ordinary_pr_label_still_lands_on_a_created_pr(
         self, sample_config, tmp_path
     ):
-        """The other half: the rejection is scoped to the reserved label.
+        """The other half: the routing is scoped to the reserved label.
 
-        Without it the same record creates its PR and applies its labels, so
-        the guard above is proven to be about the reserved value rather than
-        about ``pr_labels`` being present at all.
+        Without it the same record creates its PR and applies its labels and
+        asks the issue for nothing, so the routing above is proven to be about
+        the reserved value rather than about ``pr_labels`` being present at all.
         """
         live: dict[int, set[str]] = {903: set(), 77: set()}
         labels, _applier, _quarantine, block, _claims = self._wiring(
@@ -1338,10 +1349,11 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             (call.args[0], call.args[1])
             for call in run.labels.add_label.call_args_list
         ]
-        # ...and this is the run that PROVES the assertion above is meaningful:
-        # the same record really does reach PR creation when nothing reserved
-        # is in it, so a rejected one reaching none of it is a real difference.
         assert "pr.create_pr" in run.external_calls()
+        # ...and this is the run that PROVES the issue block above came from
+        # the reserved label: without one, the issue is asked for nothing.
+        assert live[903] == set()
+        assert _claims.needs_human_causes(903) == frozenset()
 
     def test_a_refusal_at_the_capability_fails_the_completion(
         self, sample_config, tmp_path
