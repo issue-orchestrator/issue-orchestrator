@@ -476,19 +476,13 @@ class DependencyEvaluator:
                 error="Issue declares a dependency on itself",
             )
 
-        if source_milestone is None:
-            return Dependency(
-                issue_number=issue_number, external_id=external_id, repository=repo,
-                mode=edge.mode, state=DependencyState.CROSS_MILESTONE,
-                error=source_missing_milestone_error(source_issue_number, edge, self.foundation_milestone),
-            )
-
         return self._check_dependency_state(
             issue_number,
             external_id,
             repo,
             source_milestone,
             edge,
+            source_issue_number=source_issue_number,
             same_stack_members=same_stack_members,
         )
 
@@ -497,9 +491,10 @@ class DependencyEvaluator:
         issue_number: int,
         external_id: str | None,
         repo: str | None,
-        source_milestone: str,
+        source_milestone: str | None,
         ref: ParsedDependencyRef,
         *,
+        source_issue_number: int,
         same_stack_members: frozenset[DependencyTarget] | None = None,
     ) -> Dependency:
         """State-check a resolved dependency using one repository snapshot read.
@@ -507,6 +502,11 @@ class DependencyEvaluator:
         The legacy ``evaluate()`` path and the live gate path both need the same
         state + milestone facts. Keeping the snapshot read here prevents those
         paths from drifting back into separate state/milestone fetches.
+
+        Closure is decided before milestone scope (#7333): a closed dependency
+        blocks nothing, so ADR-0009's scope rule only ever applies to an OPEN
+        dependency. Checking scope first classified a long-closed predecessor
+        in another milestone as CROSS_MILESTONE and parked its dependent.
         """
         try:
             snapshot = self.issue_checker.get_dependency_issue_snapshot(issue_number, repo)
@@ -518,7 +518,17 @@ class DependencyEvaluator:
                     error="Issue not found or inaccessible",
                 )
 
-            if same_stack_members is None:
+            if snapshot.state.lower() == "closed":
+                return Dependency(
+                    issue_number=issue_number, external_id=external_id, repository=repo,
+                    mode=ref.mode, state=DependencyState.SATISFIED, milestone=snapshot.milestone,
+                )
+
+            if source_milestone is None:
+                milestone_error: str | None = source_missing_milestone_error(
+                    source_issue_number, ref, self.foundation_milestone
+                )
+            elif same_stack_members is None:
                 milestone_error = self._check_milestone_scope(
                     snapshot.milestone, source_milestone
                 )
@@ -537,14 +547,9 @@ class DependencyEvaluator:
                     error=milestone_error, milestone=snapshot.milestone,
                 )
 
-            dep_state = (
-                DependencyState.SATISFIED
-                if snapshot.state.lower() == "closed"
-                else DependencyState.UNSATISFIED
-            )
             return Dependency(
                 issue_number=issue_number, external_id=external_id, repository=repo,
-                mode=ref.mode, state=dep_state, milestone=snapshot.milestone,
+                mode=ref.mode, state=DependencyState.UNSATISFIED, milestone=snapshot.milestone,
             )
 
         except Exception as e:
@@ -668,18 +673,6 @@ class DependencyEvaluator:
         """Check all dependencies and categorize them."""
         result = {"satisfied": [], "unsatisfied": [], "missing": [], "unknown": [], "cross_milestone": []}
 
-        if source_milestone is None:
-            # Source has no milestone - all deps are cross-milestone
-            for ref in dep_refs:
-                dep = Dependency(
-                    issue_number=ref.issue_number, external_id=ref.external_id, repository=ref.repository,
-                    state=DependencyState.CROSS_MILESTONE,
-                    error=source_missing_milestone_error(issue_number, ref, self.foundation_milestone),
-                )
-                result["cross_milestone"].append(dep)
-                logger.warning("Issue #%d has no milestone but declares dependency %s", issue_number, dep.display_ref)
-            return result
-
         state_to_key = {
             DependencyState.SATISFIED: "satisfied",
             DependencyState.UNSATISFIED: "unsatisfied",
@@ -688,7 +681,7 @@ class DependencyEvaluator:
         }
 
         for ref in dep_refs:
-            dep = self._check_dependency_ref(ref, source_milestone)
+            dep = self._check_dependency_ref(ref, source_milestone, issue_number)
             key = state_to_key.get(dep.state, "unknown")
             result[key].append(dep)
 
@@ -708,7 +701,8 @@ class DependencyEvaluator:
     def _check_dependency_ref(
         self,
         ref: ParsedDependencyRef,
-        source_milestone: str,
+        source_milestone: str | None,
+        source_issue_number: int,
     ) -> Dependency:
         """Check the state of a parsed dependency reference."""
         issue_number, external_id, repo = ref.issue_number, ref.external_id, ref.repository
@@ -730,6 +724,7 @@ class DependencyEvaluator:
             repo,
             source_milestone,
             ref,
+            source_issue_number=source_issue_number,
         )
 
     class _ExternalIdResult:

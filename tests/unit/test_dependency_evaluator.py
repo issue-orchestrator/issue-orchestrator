@@ -856,7 +856,9 @@ class TestCrossMilestoneValidation:
         checker = MockIssueChecker()
         # Issue states
         checker.issues[10] = "closed"
-        checker.issues[20] = "closed"
+        # #20 stays OPEN: ADR-0009 scope applies only to an open dependency;
+        # a closed one blocks nothing whatever its milestone (#7333).
+        checker.issues[20] = "open"
         checker.issues[30] = "closed"
         checker.issues[40] = "closed"
         checker.issues[50] = "open"
@@ -920,12 +922,58 @@ class TestCrossMilestoneValidation:
         assert dep.milestone == "M1"
         assert "cross-milestone" in report.summary().lower()
 
-    def test_no_source_milestone_with_dependencies_blocked(self, evaluator_with_foundation, checker_with_milestones):
-        """Issue without milestone that declares dependencies is blocked."""
-        # Issue with no milestone depends on a closed issue
+    def test_closed_cross_milestone_dependency_is_satisfied(
+        self, evaluator_with_foundation, checker_with_milestones
+    ):
+        """A closed dependency blocks nothing, whatever its milestone (#7333).
+
+        porchpin#326 (M3) declared ``Depends-on: #289`` (M1), closed for two
+        weeks; scope was checked before closure, so the gate parked #326 as
+        cross-milestone and the stuck sweep later escalated it to a human.
+        """
+        report = evaluator_with_foundation.evaluate(
+            issue_number=100,
+            issue_body="Depends-on: #30",  # M1 source -> closed M2 dependency
+            source_milestone="M1",
+        )
+
+        assert report.runnable
+        assert [d.issue_number for d in report.satisfied] == [30]
+        assert report.cross_milestone == ()
+
+    def test_closed_cross_milestone_dependency_passes_every_gate(
+        self, evaluator_with_foundation, checker_with_milestones
+    ):
+        """The gate path (work/review/publish/merge) agrees with evaluate()."""
+        report = evaluator_with_foundation.evaluate_all_gates(
+            issue_number=100,
+            issue_body="Depends-on: #30\nStack-after: #40",
+            source_milestone="M1",
+        )
+
+        assert report.work.blocks == ()
+        assert report.publish.blocks == ()
+        assert report.merge.blocks == ()
+
+    def test_closed_dependency_of_an_unmilestoned_issue_is_satisfied(
+        self, evaluator_with_foundation, checker_with_milestones
+    ):
+        """A source without a milestone is still not blocked by a closed dependency."""
         report = evaluator_with_foundation.evaluate(
             issue_number=100,
             issue_body="Depends-on: #10",
+            source_milestone=None,
+        )
+
+        assert report.runnable
+        assert [d.issue_number for d in report.satisfied] == [10]
+
+    def test_no_source_milestone_with_dependencies_blocked(self, evaluator_with_foundation, checker_with_milestones):
+        """Issue without milestone that declares dependencies is blocked."""
+        # Issue with no milestone depends on an open issue
+        report = evaluator_with_foundation.evaluate(
+            issue_number=100,
+            issue_body="Depends-on: #50",
             source_milestone=None,  # No milestone
         )
 
@@ -1014,7 +1062,7 @@ class TestCrossMilestoneValidation:
     def test_dependency_without_milestone_from_milestoned_issue(self, evaluator_with_foundation, checker_with_milestones):
         """Dependency that has no milestone is treated as cross-milestone violation."""
         # Add an issue without a milestone
-        checker_with_milestones.issues[99] = "closed"
+        checker_with_milestones.issues[99] = "open"
         checker_with_milestones.milestones[99] = None  # No milestone
 
         report = evaluator_with_foundation.evaluate(
@@ -1032,7 +1080,7 @@ class TestCrossMilestoneValidation:
     def test_cross_repo_milestone_validation(self, checker_with_milestones, events):
         """Cross-repo dependencies also validate milestones."""
         # Add cross-repo issue with milestone
-        checker_with_milestones.cross_repo_issues[(200, "other/repo")] = "closed"
+        checker_with_milestones.cross_repo_issues[(200, "other/repo")] = "open"
         checker_with_milestones.cross_repo_milestones[(200, "other/repo")] = "M1"
 
         evaluator = DependencyEvaluator(
