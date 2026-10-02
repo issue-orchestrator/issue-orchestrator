@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast
 
+from .dependencies import EDGE_DIRECTIVE_PATTERN
 from .human_block import NeedsHumanCause
 
 #: The tech-lead action type this module types (one charter row, one ceiling).
@@ -226,6 +227,11 @@ class BlockResolution:
         if not isinstance(cast(object, self.parent), ParentDisposition):
             raise ValueError("a split says whether the parent is narrowed or closed")
         for index, child in enumerate(self.children, start=1):
+            if EDGE_DIRECTIVE_PATTERN.search(child.body):
+                raise ValueError(
+                    f"split child {index}'s body carries a dependency line: declare its one"
+                    " edge with edge/after instead, so the filed graph is exactly the decided one"
+                )
             if isinstance(child.after, int) and child.after >= index:
                 raise ValueError(f"split child {index} may only come after an EARLIER child")
             if child.after == PARENT and self.parent is ParentDisposition.CLOSE:

@@ -54,6 +54,8 @@ def test_evidence_is_required() -> None:
         ([{"title": "a", "body": "b", "edge": "depends_on", "after": 1}], "narrow", "EARLIER"),
         ([{"title": "a", "body": "b", "edge": "depends_on", "after": "parent"}], "close", "closes"),
         ([{"title": "a", "body": "b", "edge": "depends_on"}], "narrow", "or neither"),
+        ([{"title": "a", "body": "Rest.\nDepends-on: #999999", "edge": "depends_on", "after": "parent"}],
+         "narrow", "dependency line"),
     ],
 )
 def test_a_split_is_a_well_formed_graph(children, parent, match) -> None:

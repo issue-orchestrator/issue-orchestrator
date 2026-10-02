@@ -28,7 +28,8 @@ TECH_LEAD_DECISION_TRIAGE_RULES = """- `propose_decision` puts ONE decision to t
   `answer` answers the agent's question from the issue's own spec, ADRs and
   CUJs. `split` files 1-3 `children` (`{"title", "body", "edge": "depends_on"
   | "stack_after", "after": "parent" | <earlier child's 1-based index>}`; omit
-  `edge` and `after` for an independent child) and sets `parent` to `narrow`
+  `edge` and `after` for an independent child; never write a `Depends-on:` or
+  `Stack-after:` line in a child's body) and sets `parent` to `narrow`
   (the item keeps its done slice and is requeued) or `close`. `lift` says the
   block is stale or false (the engine gave up on something that no longer
   holds); name what changed in `evidence`. Never resolve genuinely human work

@@ -309,33 +309,23 @@ class TechLeadBlockResolutionExecutor:
                     action, f"{what} #{action.issue_number}: {failed.error}", failed.host_rate_limit,
                     issue_number=action.issue_number, proposal_id=action.proposal_id)
         self.discharges.begin_block_resolution(decision_id=action.decision_id)
-        outcome = self.block.resolve(
+        discharged = self.block.resolve(
             action.issue_number, action.resolution.causes,
             f"tech lead {action.decision_id} resolved: {action.resolution.title}",
         )
+        outcome = discharged.outcome
         if outcome not in (BlockOutcome.CLEARED, BlockOutcome.HELD_BY_ANOTHER_CAUSE):
-            # A failed outcome does not prove nothing happened: the label can
-            # come off and the read confirming it fail. Only a fresh read that
-            # shows the label AND every named cause still standing lets a
-            # replay decide afresh; otherwise it is handed back (INTERRUPTED).
-            if self._discharged_nothing(action):
+            # A failed outcome after an attempted write may have taken the
+            # label off anyway (the confirming read failed), and only the owner
+            # knows whether it attempted one: then a replay is handed back
+            # (INTERRUPTED); a failure before any write is decided afresh.
+            if not discharged.mutation_attempted:
                 self.discharges.abandon_block_resolution(decision_id=action.decision_id)
             return ActionResult.fail(
                 action, f"needs-human on #{action.issue_number} did not settle ({outcome.value})",
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
         self.discharges.commit_block_resolution(decision_id=action.decision_id)
         return self._progress(action, children=children, outcome=outcome)
-
-    def _discharged_nothing(self, action: ResolveBlockAction) -> bool:
-        """The label and every named cause still stand, read fresh."""
-        number = action.issue_number
-        issue = self.read_issue(number)
-        if issue is None or not any(
-            name.casefold() == self.labels.needs_human.casefold() for name in issue.labels
-        ):
-            return False
-        recorded = self.block.recorded_causes((number,)).get(number, frozenset())
-        return action.resolution.causes <= recorded
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
         """The discharge committed before: never discharge again, only move the item."""
@@ -484,16 +474,20 @@ class TechLeadBlockResolutionExecutor:
         return number
 
     def _verify_edge(self, number: int, child: ResolutionChild, predecessor: int | None) -> None:
-        """The engine's own parser must see the edge before the child is runnable."""
-        if child.edge is None:
-            return
+        """The engine's own parser must see EXACTLY the decided graph (its one
+        edge, or none) on the filed child before the child is runnable."""
         fresh = self.read_issue(number)
-        mode = DependencyMode.NORMAL if child.edge.directive == "Depends-on" else DependencyMode.STACK
-        edges = parse_dependency_edges(fresh.body or "") if fresh is not None else []
-        if not any(edge.issue_number == predecessor and edge.mode is mode for edge in edges):
+        if fresh is None:
+            raise RuntimeError(f"child #{number} could not be read back; it is left without its agent label")
+        seen = [(edge.issue_number, edge.mode) for edge in parse_dependency_edges(fresh.body or "")]
+        wanted = [] if child.edge is None else [(
+            predecessor,
+            DependencyMode.NORMAL if child.edge.directive == "Depends-on" else DependencyMode.STACK,
+        )]
+        if seen != wanted:
             raise RuntimeError(
-                f"child #{number}'s {child.edge.directive}: #{predecessor} is not visible to the"
-                " dependency parser; it is left without its agent label"
+                f"child #{number}'s dependency edges are {seen}, not the decided {wanted};"
+                " it is left without its agent label"
             )
 
     def _inherited_labels(self, parent: "Issue") -> list[str]:

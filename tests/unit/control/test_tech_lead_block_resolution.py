@@ -27,6 +27,7 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.needs_human_block import (
+    ResolutionOutcome,
     BlockOutcome,
     HumanBlockRequest,
     NeedsHumanBlock,
@@ -397,7 +398,7 @@ def test_a_replay_after_the_discharge_committed_only_finishes(tmp_path: Path) ->
     world = World(tmp_path)
     world.blocked_by(ITEM, _AGENT)
     world.github.comments[ITEM] = [cause_marker(_AGENT, "run-1/A1")]
-    assert world.block.resolve(ITEM, frozenset({_AGENT}), "earlier attempt") is BlockOutcome.CLEARED
+    assert world.block.resolve(ITEM, frozenset({_AGENT}), "earlier attempt").outcome is BlockOutcome.CLEARED
     world.discharges.commit_block_resolution(decision_id="run-1/A1")
 
     replay = world.executor().apply(_action(_resolution()))
@@ -454,7 +455,8 @@ def test_a_failed_discharge_is_abandoned_so_a_replay_decides_afresh(tmp_path: Pa
     world = World(tmp_path)
     world.blocked_by(ITEM, _AGENT)
     executor = world.executor()
-    object.__setattr__(executor, "block", _RacedBlock(world.block, lambda t, c, r: BlockOutcome.FAILED))
+    object.__setattr__(executor, "block", _RacedBlock(
+        world.block, lambda t, c, r: ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)))
 
     assert not executor.apply(_action(_resolution())).success
     assert world.discharges.block_resolution_state(decision_id="run-1/A1") is None
@@ -546,7 +548,7 @@ def test_a_child_whose_edge_the_parser_cannot_see_is_never_made_runnable(tmp_pat
 
     result = world.executor().apply(_action(_split()))
 
-    assert not result.success and "not visible to the dependency parser" in (result.error or "")
+    assert not result.success and "not the decided" in (result.error or "")
     [child] = world.github.created
     assert AGENT not in world.github.labels[child["number"]], "left without its agent label"
     assert "needs-human" in world.github.labels[ITEM]
@@ -641,7 +643,7 @@ class _RacedBlock:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)
 
-    def resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> BlockOutcome:
+    def resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> ResolutionOutcome:
         return self.racing_resolve(target, causes, reason)
 
 
@@ -682,6 +684,8 @@ class _ConfirmFails:
 
     github: GitHub
     fail_next_read: bool = False
+    #: An operator puts the label back right after the removal landed.
+    operator_puts_it_back: bool = False
 
     def read(self, number: int) -> list[str]:
         if self.fail_next_read:
@@ -695,6 +699,8 @@ class _ConfirmFails:
     def remove_label(self, number: int, label: str) -> None:
         self.github.remove_label(number, label)
         self.fail_next_read = True
+        if self.operator_puts_it_back:
+            self.github.add_label(number, label)
 
 
 def test_a_failed_outcome_whose_removal_landed_is_never_decided_again(tmp_path: Path) -> None:
@@ -720,3 +726,45 @@ def test_a_failed_outcome_whose_removal_landed_is_never_decided_again(tmp_path: 
     assert replay.details["refusal"] == BlockResolutionRefusal.INTERRUPTED.value
     assert "needs-human" in world.github.labels[ITEM]
     assert world.store.needs_human_causes(ITEM) == frozenset({"session_lifecycle"})
+
+
+def test_a_failed_attempted_discharge_stays_begun_even_if_the_label_is_back(tmp_path: Path) -> None:
+    """r4 F1: the removal landed, its confirming read failed, and the operator
+    put the label back at once. Only the owner knows a write was attempted, so
+    the discharge stays begun and a replay is handed back."""
+    world = World(tmp_path, question=None)
+    flaky = _ConfirmFails(world.github, operator_puts_it_back=True)
+    world.block = NeedsHumanBlock(
+        "needs-human", "tech-lead-needs-human", flaky, flaky.read, frozenset, world.store,
+    )
+    world.blocked_by(ITEM, _SWEEP)
+    lift = _resolution(ResolutionKind.LIFT, _SWEEP)
+
+    assert not world.executor().apply(_action(lift)).success
+    assert world.discharges.block_resolution_state(decision_id="run-1/A1") is not None
+
+    replay = world.executor().apply(_action(lift))
+
+    assert replay.details["refusal"] == BlockResolutionRefusal.INTERRUPTED.value
+    assert "needs-human" in world.github.labels[ITEM]
+
+
+def test_a_child_whose_filed_body_carries_an_extra_edge_is_never_made_runnable(tmp_path: Path) -> None:
+    """r4 F2: the filed graph must be exactly the decided one."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+    original = world.github.create_issue
+
+    def with_extra_edge(**kwargs: Any) -> dict[str, Any]:
+        created = original(**kwargs)
+        world.github.bodies[created["number"]] += "\nDepends-on: #999999\n"
+        return created
+
+    world.github.create_issue = with_extra_edge  # type: ignore[method-assign]
+
+    result = world.executor().apply(_action(_split()))
+
+    assert not result.success
+    [child] = world.github.created
+    assert AGENT not in world.github.labels[child["number"]]
+    assert "needs-human" in world.github.labels[ITEM]

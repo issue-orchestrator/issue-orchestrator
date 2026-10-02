@@ -128,3 +128,14 @@ class BlockOutcome(Enum):
     @property
     def committed(self) -> bool:
         return self in {BlockOutcome.HELD, BlockOutcome.CLEARED}
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionOutcome:
+    """What a resolution's discharge did (#7658): its outcome, and whether
+    any write was attempted. Only the owner knows the second: a FAILED outcome
+    after an attempted removal may have taken the label off anyway, and the
+    write-ahead record of the discharge must then stay begun."""
+
+    outcome: BlockOutcome
+    mutation_attempted: bool
