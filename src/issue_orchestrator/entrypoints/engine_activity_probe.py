@@ -31,9 +31,10 @@ class SnapshotEngineActivityProbe:
     def __init__(self, inventory: EngineInventory) -> None:
         self._inventory = inventory
 
-    def observe(self, *, now: datetime, recent: timedelta) -> EngineActivityObservation:
+    def observe(self, *, now: datetime, since: datetime) -> EngineActivityObservation:
         engines = []
-        for engine in self._inventory.engines(now=now, recent=recent):
+        for sighting in self._inventory.engines(since=since):
+            engine = sighting.engine
             with tempfile.TemporaryDirectory(prefix="io-engine-activity-") as scratch:
                 snapshot = snapshot_engine(
                     engine.state_dir,

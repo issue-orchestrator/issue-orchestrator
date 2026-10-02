@@ -37,7 +37,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ...domain.engine_activity import EngineRef
+from ...domain.engine_activity import EngineRef, EngineSighting
 from ...execution.engine_inventory import control_center_engine_inventory, engine_at
 from ...execution.engine_source_archive import GitEngineSourceArchive
 from ...ports.engine_activity import EngineInventory
@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     _engine_arguments(run, one_engine=False)
     run.add_argument(
         "--recent-hours", type=float, default=24.0,
-        help="Sweep: an engine stopped longer ago than this is not audited",
+        help="Sweep: an engine never audited before that stopped longer ago than this is not audited",
     )
     run.add_argument("--model", required=True, help="The Codex model the improver runs on")
     run.add_argument("--agent-timeout-minutes", type=int, default=90)
@@ -221,14 +221,14 @@ def run(args: argparse.Namespace) -> int:
         else _OneEngine(engine_at(args.state_dir.expanduser().resolve(), args.audited_repo))
     )
     try:
-        result = ImproverSweep(inventory=inventory, run_for=improver_for, clock=_now).sweep(
+        result = ImproverSweep(inventory=inventory, runs=store, run_for=improver_for, clock=_now).sweep(
             request, apply=not args.no_apply
         )
     except ImproverStoreBusy as busy:
         print(f"improver run: {busy}", file=sys.stderr)
         return EXIT_UNAVAILABLE
     if not result.engines:
-        print(f"improver run: no engine ran within {args.recent_hours}h; nothing to audit", file=sys.stderr)
+        print("improver run: no engine ran since it was last audited; nothing to audit", file=sys.stderr)
     for record in result.runs:
         print(render_run(record))
     # --no-apply leaves effects owed on purpose; only outcomes count.
@@ -241,8 +241,8 @@ class _OneEngine:
     def __init__(self, engine: EngineRef) -> None:
         self._engine = engine
 
-    def engines(self, *, now: datetime, recent: timedelta) -> tuple[EngineRef, ...]:
-        return (self._engine,)
+    def engines(self, *, since: datetime) -> tuple[EngineSighting, ...]:
+        return (EngineSighting(self._engine, running=True, last_written=None),)
 
 
 def apply(outputs_repo: str) -> int:

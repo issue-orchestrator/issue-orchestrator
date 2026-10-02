@@ -46,10 +46,11 @@ class Engines:
         self.anomalies: tuple[str, ...] = ("parked_action|#320|publish:fp1",)
         self.engines_running = True
         self.looks: list[datetime] = []
+        self.since: list[datetime] = []
 
-    def observe(self, *, now: datetime, recent: timedelta) -> EngineActivityObservation:
-        assert recent == timedelta(hours=24)
+    def observe(self, *, now: datetime, since: datetime) -> EngineActivityObservation:
         self.looks.append(now)
+        self.since.append(since)
         engines = (
             (EngineActivity(PORCHPIN, "porchpin/porchpin", self.decisions, self.completions, self.anomalies),)
             if self.engines_running else ()
@@ -220,6 +221,23 @@ def test_the_per_engine_watermark_survives_the_store(tmp_path: Path) -> None:
     clock.now = NOW + timedelta(hours=30)
     _cycle(FileBudgetedValidationStore(tmp_path), repo, executor, engines, clock).run((suite,))
     assert executor.calls == ["0"]
+
+
+def test_an_engine_that_acted_after_the_last_success_then_stopped_is_still_observed(world) -> None:
+    """r2 F1: success at T0, a decision at T0+1m, then the engine stops; the
+    next look at T0+24h+2m must reach back to T0, not just 24 hours."""
+    store, repo, executor, engines, clock, cycle, suite = world
+    clock.now = NOW + timedelta(hours=24, minutes=2)
+
+    cycle.run((suite,))
+
+    assert engines.since[-1] == store.history.last_success.activity.observed_at == NOW
+
+
+def test_with_no_successful_run_engines_are_observed_over_the_window() -> None:
+    cadence = EngineActivityCadence(24)
+
+    assert cadence.observe_since(now=NOW, baseline=None) == NOW - timedelta(hours=24)
 
 
 def test_a_ledger_that_shrank_or_went_unread_is_not_activity() -> None:

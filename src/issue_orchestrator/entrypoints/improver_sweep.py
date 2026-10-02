@@ -5,8 +5,12 @@ improver run audits ONE engine: its findings cite that engine's staged inputs
 (its start, its charter, its audit) and are validated against them alone. So
 a sweep runs the improver once per in-scope engine, each with its own staged
 inputs, run record and engine tag, rather than once over a merged view that
-no finding could cite consistently. Every engine the inventory names is
-audited; one engine's failure does not stop the others.
+no finding could cite consistently.
+
+An engine is audited when it runs, or when it wrote its log since this
+store's last ACCEPTED run of it (within ``recent`` for an engine never
+accepted): an engine that did something after its last audit and then
+stopped is still audited, however long ago it stopped.
 """
 
 from __future__ import annotations
@@ -16,9 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..contracts.improver_run import ImproverRunRecord
+from ..contracts.improver_run import ImproverRunRecord, RunOutcome
 from ..domain.engine_activity import EngineRef
 from ..ports.engine_activity import EngineInventory
+from ..ports.improver import ImproverRunReader
 from .improver_run import ImproverRun, ImproverRunRequest
 
 EXIT_OK = 0
@@ -32,7 +37,7 @@ class ImproverSweepRequest:
     exam_dir: Path | None
     window: timedelta
     log_tail_bytes: int
-    #: An engine stopped longer ago than this is out of scope.
+    #: How far back an engine never accepted before must have run.
     recent: timedelta
 
 
@@ -60,15 +65,17 @@ class ImproverSweep:
         self,
         *,
         inventory: EngineInventory,
+        runs: ImproverRunReader,
         run_for: Callable[[EngineRef], ImproverRun],
         clock: Callable[[], datetime],
     ) -> None:
         self._inventory = inventory
+        self._runs = runs
         self._run_for = run_for
         self._clock = clock
 
     def sweep(self, request: ImproverSweepRequest, *, apply: bool = True) -> ImproverSweepResult:
-        engines = self._inventory.engines(now=self._clock(), recent=request.recent)
+        engines = self._engines(self._clock() - request.recent)
         runs = tuple(
             self._run_for(engine).run(
                 ImproverRunRequest(
@@ -83,6 +90,19 @@ class ImproverSweep:
             for engine in engines
         )
         return ImproverSweepResult(engines=engines, runs=runs, apply=apply)
+
+    def _engines(self, floor: datetime) -> tuple[EngineRef, ...]:
+        """Each engine that ran since its last accepted run (or ``floor``)."""
+        audited: dict[str, datetime] = {}
+        for run in self._runs.runs():  # newest first
+            if run.outcome is RunOutcome.ACCEPTED:
+                audited.setdefault(run.engine_id, run.started_at)
+        since = min((floor, *audited.values()))
+        return tuple(
+            sighting.engine
+            for sighting in self._inventory.engines(since=since)
+            if sighting.active_since(audited.get(sighting.engine.engine_id, floor))
+        )
 
 
 __all__ = ["ImproverSweep", "ImproverSweepRequest", "ImproverSweepResult"]

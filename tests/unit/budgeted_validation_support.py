@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from issue_orchestrator.domain.engine_activity import EngineActivityObservation
 
@@ -11,7 +11,7 @@ class NoEngineObservation:
     """The engine-activity port of a cycle that hosts only code-change suites:
     observing engines there is a bug."""
 
-    def observe(self, *, now: datetime, recent: timedelta) -> EngineActivityObservation:
+    def observe(self, *, now: datetime, since: datetime) -> EngineActivityObservation:
         raise AssertionError("a code-change suite never observes engine activity")
 
 

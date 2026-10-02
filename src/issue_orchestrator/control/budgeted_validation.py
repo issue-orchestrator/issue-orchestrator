@@ -103,7 +103,9 @@ class BudgetedValidationCycle:
             last_probe=history.last_activity_probe,
         ):
             return history, None
-        observation = self._activity.observe(now=now, recent=cadence.window)
+        observation = self._activity.observe(
+            now=now, since=cadence.observe_since(now=now, baseline=history.activity_baseline),
+        )
         history = replace(history, last_activity_probe=observation)
         journal.write(suite, history)
         if force or cadence.due(observation=observation, baseline=history.activity_baseline):

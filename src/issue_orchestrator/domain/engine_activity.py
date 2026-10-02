@@ -46,6 +46,30 @@ class EngineRef:
 
 
 @dataclass(frozen=True, slots=True)
+class EngineSighting:
+    """An engine as Control Center sees it: whether it runs, and when it last
+    wrote its log (every loop iteration logs, so nothing it records can
+    postdate its last log write)."""
+
+    engine: EngineRef
+    running: bool
+    last_written: datetime | None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.last_written)
+
+    def active_since(self, since: datetime) -> bool:
+        """Whether it may have done anything at or after ``since``."""
+        return ran_since(running=self.running, last_written=self.last_written, since=since)
+
+
+def ran_since(*, running: bool, last_written: datetime | None, since: datetime) -> bool:
+    """An engine runs now, or last wrote its log at or after ``since``."""
+    _require_aware(last_written, since)
+    return running or (last_written is not None and last_written >= since)
+
+
+@dataclass(frozen=True, slots=True)
 class EngineActivity:
     """One engine's activity watermark.
 
@@ -144,6 +168,14 @@ class EngineActivityCadence:
     def window(self) -> timedelta:
         return timedelta(hours=self.max_delay_hours)
 
+    def observe_since(self, *, now: datetime, baseline: EngineActivityObservation | None) -> datetime:
+        """How far back an engine must have run to be observed: since the last
+        successful run's watermark (an engine that did something after it and
+        then stopped must still count), and at least the window."""
+        _require_aware(now)
+        floor = now - self.window
+        return floor if baseline is None else min(floor, baseline.observed_at)
+
     def should_observe(
         self, *, now: datetime, last_attempt_at: datetime | None,
         last_probe: EngineActivityObservation | None,
@@ -179,4 +211,6 @@ __all__ = [
     "EngineActivityCadence",
     "EngineActivityObservation",
     "EngineRef",
+    "EngineSighting",
+    "ran_since",
 ]

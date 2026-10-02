@@ -59,7 +59,9 @@ def test_a_running_engine_is_in_scope_with_the_config_its_lock_names(tmp_path: P
         state="running", pid=1, config_name="live.yaml", configuration_mode="codex",
     )})
 
-    [engine] = _inventory([Registered(str(porchpin))], supervisor).engines(now=NOW, recent=DAY)
+    [sighting] = _inventory([Registered(str(porchpin))], supervisor).engines(since=NOW - DAY)
+    engine = sighting.engine
+    assert sighting.running
 
     assert engine.engine_id == configured_repository_key(porchpin)
     assert engine.repo == "owner/porchpin@live.yaml:codex"
@@ -74,15 +76,28 @@ def test_recently_running_engines_are_in_scope_and_stale_ones_are_not(tmp_path: 
 
     engines = _inventory(
         [Registered(str(io)), Registered(str(porchpin)), Registered(str(tixmeup))], supervisor, written,
-    ).engines(now=NOW, recent=DAY)
+    ).engines(since=NOW - DAY)
 
-    assert [e.repo for e in engines] == ["owner/porchpin@main.yaml:default"]
+    assert [s.engine.repo for s in engines] == ["owner/porchpin@main.yaml:default"]
+    assert not engines[0].running
+
+
+def test_an_engine_that_stopped_long_ago_is_in_scope_since_an_older_watermark(tmp_path: Path) -> None:
+    """r2 F1: in scope by what it wrote since ``since``, however long ago it stopped."""
+    porchpin = _root(tmp_path, "porchpin")
+    written = {"porchpin": NOW - timedelta(hours=30)}
+    inventory = _inventory([Registered(str(porchpin))], Supervisor({}), written)
+
+    assert inventory.engines(since=NOW - DAY) == ()
+    assert [s.engine.repo for s in inventory.engines(since=NOW - timedelta(hours=31))] == [
+        "owner/porchpin@main.yaml:default"
+    ]
 
 
 def test_a_registered_path_that_is_gone_is_skipped(tmp_path: Path) -> None:
     supervisor = Supervisor({})
 
-    assert _inventory([Registered(str(tmp_path / "deleted"))], supervisor).engines(now=NOW, recent=DAY) == ()
+    assert _inventory([Registered(str(tmp_path / "deleted"))], supervisor).engines(since=NOW - DAY) == ()
     assert supervisor.asked == []
 
 

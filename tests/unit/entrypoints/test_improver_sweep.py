@@ -15,7 +15,7 @@ import pytest
 
 from issue_orchestrator.adapters.registered_engine_inventory import engine_at
 from issue_orchestrator.contracts.improver_run import RunOutcome
-from issue_orchestrator.domain.engine_activity import EngineRef
+from issue_orchestrator.domain.engine_activity import EngineRef, EngineSighting
 from issue_orchestrator.entrypoints.engine_activity_probe import SnapshotEngineActivityProbe
 from issue_orchestrator.entrypoints.improver_run import ImproverRun
 from issue_orchestrator.entrypoints.improver_staging import ImproverInputStager
@@ -42,13 +42,24 @@ OUTPUTS = "issue-orchestrator/issue-orchestrator"
 
 
 class Inventory:
-    def __init__(self, *engines: EngineRef) -> None:
-        self._engines = engines
-        self.asked: list[timedelta] = []
+    """Engines with when each last wrote its log (None: running)."""
 
-    def engines(self, *, now: datetime, recent: timedelta) -> tuple[EngineRef, ...]:
-        self.asked.append(recent)
-        return self._engines
+    def __init__(self, *engines: EngineRef, written: dict[str, datetime] | None = None) -> None:
+        self._engines = engines
+        self._written = written or {}
+        self.asked: list[datetime] = []
+
+    def engines(self, *, since: datetime) -> tuple[EngineSighting, ...]:
+        self.asked.append(since)
+        sightings = (
+            EngineSighting(
+                engine,
+                running=engine.engine_id not in self._written,
+                last_written=self._written.get(engine.engine_id),
+            )
+            for engine in self._engines
+        )
+        return tuple(s for s in sightings if s.active_since(since))
 
 
 class EmptyFindingsAgent:
@@ -74,7 +85,9 @@ def two_engines(tmp_path: Path) -> tuple[EngineRef, EngineRef]:
     return io, porchpin
 
 
-def _sweep(store: MemoryRunStore, agent: EmptyFindingsAgent, inventory: Inventory) -> ImproverSweep:
+def _sweep(
+    store: MemoryRunStore, agent: EmptyFindingsAgent, inventory: Inventory, now: datetime = NOW
+) -> ImproverSweep:
     def run_for(engine: EngineRef) -> ImproverRun:
         return ImproverRun(
             store=store,
@@ -87,7 +100,7 @@ def _sweep(store: MemoryRunStore, agent: EmptyFindingsAgent, inventory: Inventor
             clock=lambda: NOW,
         )
 
-    return ImproverSweep(inventory=inventory, run_for=run_for, clock=lambda: NOW)
+    return ImproverSweep(inventory=inventory, runs=store, run_for=run_for, clock=lambda: now)
 
 
 def _request() -> ImproverSweepRequest:
@@ -121,6 +134,31 @@ def test_every_running_engine_is_staged_audited_and_run_separately(
     assert _fingerprint(porchpin.state_dir) == before
 
 
+def test_an_engine_that_acted_after_its_last_accepted_run_is_swept_however_long_ago_it_stopped(
+    two_engines: tuple[EngineRef, EngineRef], tmp_path: Path
+) -> None:
+    """r2 F1: porchpin was accepted, wrote its log a minute later, then stopped;
+    a sweep more than a day later still audits it. io, stopped before its own
+    last accepted run, is not audited again."""
+    from datetime import timedelta as td
+
+    io, porchpin = two_engines
+    store = MemoryRunStore(tmp_path / "store")
+    first = _sweep(store, EmptyFindingsAgent(), Inventory(io, porchpin)).sweep(_request())
+    accepted_at = {r.engine_id: r.started_at for r in first.runs}
+    later = Inventory(io, porchpin, written={
+        porchpin.engine_id: accepted_at[porchpin.engine_id] + td(minutes=1),
+        io.engine_id: accepted_at[io.engine_id] - td(minutes=1),
+    })
+    agent = EmptyFindingsAgent()
+
+    result = _sweep(store, agent, later, now=NOW + td(hours=24, minutes=2)).sweep(_request())
+
+    assert [e.engine_id for e in result.engines] == [porchpin.engine_id]
+    assert agent.engines == [(porchpin.engine_id, "porchpin/porchpin")]
+    assert later.asked == [min(accepted_at.values())]
+
+
 def test_no_engine_to_audit_is_unavailable(tmp_path: Path) -> None:
     result = _sweep(MemoryRunStore(tmp_path), EmptyFindingsAgent(), Inventory()).sweep(_request())
 
@@ -134,7 +172,7 @@ def test_the_activity_probe_reads_every_engine_from_copies(
     before = _fingerprint(porchpin.state_dir)
 
     observation = SnapshotEngineActivityProbe(Inventory(io, porchpin)).observe(
-        now=NOW, recent=timedelta(hours=24)
+        now=NOW, since=NOW - timedelta(hours=24)
     )
 
     assert [e.engine_id for e in observation.engines] == [io.engine_id, porchpin.engine_id]
