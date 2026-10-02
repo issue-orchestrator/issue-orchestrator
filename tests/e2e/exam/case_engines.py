@@ -57,6 +57,8 @@ class CaseEngine:
     tech_lead: bool = False
     release_file: Path | None = None
     """Hold work mid-flight until this file exists (``exam_config``)."""
+    asking_coders: bool = False
+    """Add the coders that end by asking the operator (``exam_config``)."""
 
     def config(
         self,
@@ -77,6 +79,7 @@ class CaseEngine:
             reviewer_exchange_fault=self.reviewer_exchange_fault,
             tech_lead_model=tech_lead_model,
             release_file=self.release_file,
+            asking_coders=self.asking_coders,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -143,4 +146,35 @@ def case_u_engine(release_file: Path) -> CaseEngine:
         reviewer_exchange_fault="none",
         overlay={"review": {"exchange": {"mode": "via-draft-pr"}}},
         release_file=release_file,
+    )
+
+
+def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> CaseEngine:
+    """A real tech lead reached through the periodic health review, the only
+    run granted blocked items to triage (#7593), with production authority.
+
+    The stuck sweep is off: it would re-investigate the questions as stuck
+    failures, and its exhaustion escalation is a different item than the one
+    porchpin's tech lead left untriaged. Reviews run as their own sessions
+    after publication (``via-draft-pr``), as porchpin#379's did.
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        tech_lead=True,
+        asking_coders=True,
+        overlay={
+            "review": {
+                "exchange": {"mode": "via-draft-pr"},
+                "tech_lead_follow_up_agent": CODER_LABEL,
+            },
+            "tech_lead": {
+                "max_concurrent": 1,
+                "explicit_labels": [E2E_DATA_LABEL],
+                "inherit_labels": [E2E_DATA_LABEL],
+                "authority": dict(authority),
+                "findings": {"promote": "off"},
+                "health_review": {"interval_minutes": 2},
+                "stuck_sweep": {"enabled": False},
+            },
+        },
     )

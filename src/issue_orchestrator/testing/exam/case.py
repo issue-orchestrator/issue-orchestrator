@@ -446,3 +446,29 @@ def published_work_survives(role: str) -> Goal:
         f"no {role} PR is closed unmerged or loses its branch",
         check,
     )
+
+
+def item_triaged(role: str, classes: Iterable[str]) -> Goal:
+    """The tech lead disposed of the blocked item with one of ``classes`` (#7593).
+
+    Graded on the engine's own record of the triage, and only when it is in
+    force: an operator decision counts once its proposal is FILED (the
+    operator has something to approve), any other class once it took effect.
+    A diagnosis, advice or a case file never records a triage at all.
+    """
+    wanted = frozenset(classes)
+    names = "/".join(sorted(wanted))
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        triage = item.triage
+        if triage is None:
+            return GoalCheck(False, f"no tech-lead triage was recorded for #{item.issue_number}")
+        described = (
+            f"#{item.issue_number} triaged {triage.triage_class} by {triage.action_kind}"
+            f" ({triage.effect}"
+            + (f", proposal #{triage.proposal_issue_number}" if triage.proposal_issue_number else "")
+            + ")"
+        )
+        return GoalCheck(triage.triage_class in wanted and triage.in_force, described)
+
+    return Goal(f"{role}.triaged_{names}", role, f"the {role} item is triaged {names}", check)

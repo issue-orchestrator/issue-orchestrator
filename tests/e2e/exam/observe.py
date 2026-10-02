@@ -31,6 +31,7 @@ from issue_orchestrator.domain.tech_lead_artifacts import (
     TECH_LEAD_DECISION_FILENAME,
     TECH_LEAD_REPORT_FILENAME,
 )
+from issue_orchestrator.domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from issue_orchestrator.domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -44,6 +45,7 @@ from issue_orchestrator.testing.exam import (
     RunEnd,
     TechLeadActionFact,
     TechLeadRunFact,
+    TriageFact,
     WorkItemFact,
 )
 from issue_orchestrator.observation.no_progress import find_repeating_failures
@@ -139,6 +141,44 @@ def _refusing_gate(config: Config, labels: LabelManager, issue: Any, open_pr: PR
     return f"review_validity:{validity.reason}{blocking}"
 
 
+def observe_triage(state_dir: Path, issue_number: int) -> TriageFact | None:
+    """The latest triage the engine recorded for the item (#7593), if any.
+
+    Read from the charter decision ledger in the engine's authority store, the
+    record the engine itself keeps. An engine that predates triage records
+    none (no column to read, no field in its records): no fact, not an error.
+    """
+    db = state_dir / "tech_lead_authority.sqlite"
+    if not db.exists():
+        return None
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+                " ORDER BY decided_at DESC, decision_id DESC",
+                (issue_number,),
+            ).fetchall()
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error):
+                return None
+            raise
+    finally:
+        conn.close()
+    for row in rows:
+        decision = TechLeadCharterDecision.from_dict(json.loads(row["record"]))
+        if decision.triage_class is None:
+            continue
+        return TriageFact(
+            triage_class=decision.triage_class.value,
+            action_kind=decision.action_kind,
+            effect=decision.effect,
+            proposal_issue_number=decision.proposal_issue_number,
+        )
+    return None
+
+
 def observe_item(
     *,
     repo: str,
@@ -148,6 +188,7 @@ def observe_item(
     parked_screen: str,
     extra_pr_numbers: Iterable[int] = (),
     read_checks: bool = True,
+    state_dir: Path | None = None,
 ) -> WorkItemFact:
     """The item's final facts; ``read_checks=False`` skips the GraphQL rollup
     read for the cheap progress probe the drive loop makes."""
@@ -189,6 +230,7 @@ def observe_item(
             for number in (event.payload.get("pr_number"),)
             if isinstance(number, int) and not isinstance(number, bool)
         ),
+        triage=observe_triage(state_dir, item.issue_number) if state_dir is not None else None,
     )
 
 

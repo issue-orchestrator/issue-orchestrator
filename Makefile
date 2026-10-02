@@ -43,7 +43,7 @@ help:
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
-	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
+	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|D|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
 	@echo "  test-improver-exam  Run the live improver exam (IM1: blocked items ignored; IM2: a review the block vetoes) on a real model"
 	@echo "  tech-lead-improver  Run the tech-lead improver once over every running engine (#7490, #7567)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"

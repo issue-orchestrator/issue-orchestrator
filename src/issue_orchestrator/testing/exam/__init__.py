@@ -36,6 +36,7 @@ from .observation import (
     TechLeadActionFact,
     TechLeadReceipt,
     TechLeadRunFact,
+    TriageFact,
     WorkItemFact,
 )
 from .scorecard import Scorecard, render_summary
@@ -61,6 +62,7 @@ __all__ = [
     "TechLeadReceipt",
     "TechLeadRunFact",
     "TermGroup",
+    "TriageFact",
     "UpgradeFacts",
     "UpgradeGrade",
     "UpgradeSpec",

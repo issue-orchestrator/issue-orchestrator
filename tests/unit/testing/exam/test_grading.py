@@ -6,18 +6,26 @@ import json
 
 import pytest
 
+from dataclasses import replace
+
 from issue_orchestrator.testing.exam import (
     PullRequestState,
     TechLeadReceipt,
     RunEnd,
     TechLeadActionDisposition,
+    TriageFact,
+    WorkItemFact,
     grade,
     render_summary,
 )
 from issue_orchestrator.testing.exam.cases import (
+    ASKS,
+    ASKS_BESIDE_PR,
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+    BLOCKED_ITEMS_TRIAGED,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     blocked_issue_green_pr_awaiting_review,
+    blocked_items_triaged,
     halted_exchange_with_validated_work,
 )
 from issue_orchestrator.testing.exam.scorecard import RemedyVerdict
@@ -789,3 +797,93 @@ class TestRoundFifteenFindings:
             ),
         )
         assert seen.passed, seen.failures
+
+
+
+class TestCaseDBlockedItemsTriaged:
+    """#7593: porchpin's blocked items, graded on what the engine RECORDED."""
+
+    CASE = blocked_items_triaged(needs_human_label="needs-human")
+
+    @staticmethod
+    def _items(
+        *,
+        asks_triage: TriageFact | None,
+        beside_triage: TriageFact | None,
+        beside_approved: tuple[int, ...] | None = None,
+        beside_pr_state: PullRequestState = PullRequestState.READY,
+    ) -> tuple[WorkItemFact, WorkItemFact]:
+        asks = replace(
+            item(issue_labels=("needs-human",)), role=ASKS, issue_number=910, triage=asks_triage,
+        )
+        beside = replace(
+            item(
+                issue_labels=("needs-human", "pr-pending"),
+                prs=(pr(number=912, state=beside_pr_state),),
+                approved=beside_approved,
+            ),
+            role=ASKS_BESIDE_PR, issue_number=911, triage=beside_triage,
+        )
+        return asks, beside
+
+    def _grade(self, asks: WorkItemFact, beside: WorkItemFact):
+        obs = observation(BLOCKED_ITEMS_TRIAGED, asks)
+        obs = replace(obs, items=(asks, beside), owned_numbers=frozenset({910, 911, 912, 950}))
+        return grade(self.CASE, obs)
+
+    def test_both_items_triaged_and_the_pr_reviewed_passes(self) -> None:
+        asks, beside = self._items(
+            asks_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950),
+            beside_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", 951),
+        )
+
+        assert self._grade(asks, beside).passed
+
+    def test_the_porchpin_shape_fails(self) -> None:
+        """What porchpin's engine did: advice only (no triage recorded), and
+        the PR beside the question never reviewed (#379)."""
+        asks, beside = self._items(asks_triage=None, beside_triage=None, beside_approved=())
+
+        card = self._grade(asks, beside)
+
+        assert not card.passed
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {
+            "asks.triaged_operator_decision",
+            "asks_beside_pr.pr_review_approved",
+            "asks_beside_pr.triaged_explained/human_hand_over/operator_decision",
+        } <= failed
+
+    def test_the_split_question_handed_over_as_is_is_not_an_approvable_proposal(self) -> None:
+        asks, beside = self._items(
+            asks_triage=TriageFact("human_hand_over", "escalate_to_human", "applied", None),
+            beside_triage=TriageFact("human_hand_over", "escalate_to_human", "applied", None),
+        )
+
+        card = self._grade(asks, beside)
+
+        assert {goal.name for goal in card.goals if not goal.passed} == {"asks.triaged_operator_decision"}
+
+    def test_a_decision_whose_proposal_never_got_filed_is_not_a_triage(self) -> None:
+        asks, beside = self._items(
+            asks_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", None),
+            beside_triage=TriageFact("explained", "post_comment", "applied", None),
+        )
+
+        assert not self._grade(asks, beside).passed
+
+    def test_merging_before_the_human_answers_fails(self) -> None:
+        asks, beside = self._items(
+            asks_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950),
+            beside_triage=TriageFact("explained", "post_comment", "applied", None),
+            beside_pr_state=PullRequestState.MERGED,
+        )
+
+        assert not self._grade(asks, beside).passed
+
+    def test_an_observation_saved_before_triage_existed_still_loads(self) -> None:
+        asks, _ = self._items(asks_triage=None, beside_triage=None)
+        data = asks.to_dict()
+        del data["triage"]
+
+        assert WorkItemFact.from_dict(data).triage is None
