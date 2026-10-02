@@ -977,3 +977,21 @@ class TestCasesEAndFResolution:
                             provisioning=self.HANDED_OVER, blocked=True)
 
         assert not self._grade(False, items).passed
+
+
+def test_case_d_accepts_a_filed_resolution_put_to_the_operator() -> None:
+    """#7658: under propose, a filed resolve_block proposal puts the split
+    decision to the operator as a propose_decision does; an applied one
+    (decided without the operator) does not answer case D's question."""
+    case = TestCaseDBlockedItemsTriaged.CASE
+    proposed = TriageFact("remedy", "resolve_block", "awaiting_approval", 952)
+    asks, beside = TestCaseDBlockedItemsTriaged._items(asks_triage=proposed, beside_triage=proposed)
+    obs = replace(observation(BLOCKED_ITEMS_TRIAGED, asks), items=(asks, beside),
+                  owned_numbers=frozenset({910, 911, 912, 950, 952}))
+    assert grade(case, obs).passed
+
+    applied = TriageFact("remedy", "resolve_block", "applied", None)
+    asks, beside = TestCaseDBlockedItemsTriaged._items(asks_triage=applied, beside_triage=proposed)
+    obs = replace(obs, items=(asks, beside))
+    failed = {goal.name for goal in grade(case, obs).goals if not goal.passed}
+    assert "asks.triaged_operator_decision" in failed

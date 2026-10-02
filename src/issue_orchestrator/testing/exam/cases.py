@@ -320,14 +320,19 @@ def blocked_items_triaged(*, needs_human_label: str) -> ExamCase:
             " one of them beside a PR of its published work"
         ),
         goals=(
-            item_triaged(ASKS, ("operator_decision",)),
+            # A filed resolve_block proposal (#7658) puts the same decision
+            # to the operator, so it answers the split question too.
+            item_triaged(ASKS, ("operator_decision",), or_resolution_proposed=True),
             issue_keeps_labels(ASKS, (needs_human_label,)),
             single_pull_request(ASKS_BESIDE_PR),
             pr_in_state(ASKS_BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
             pr_review_approved(ASKS_BESIDE_PR),
             published_work_survives(ASKS_BESIDE_PR),
             issue_keeps_labels(ASKS_BESIDE_PR, (needs_human_label,)),
-            item_triaged(ASKS_BESIDE_PR, ("operator_decision", "human_hand_over", "explained")),
+            item_triaged(
+                ASKS_BESIDE_PR, ("operator_decision", "human_hand_over", "explained"),
+                or_resolution_proposed=True,
+            ),
         ),
         known_blockers=(
             "#7593 the tech lead advised on blocked items and acted on none",
