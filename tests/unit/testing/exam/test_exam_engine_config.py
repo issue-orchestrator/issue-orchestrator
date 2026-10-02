@@ -212,3 +212,14 @@ def test_case_d_runs_the_asking_coders_and_a_periodic_health_review(
     assert loaded.tech_lead.stuck_sweep.enabled is False
     for action_type, mode in EXAM_TECH_LEAD_AUTHORITY.items():
         assert loaded.tech_lead.authority.mode_for(action_type) == mode
+
+
+def test_only_case_d_lets_the_engine_reuse_worktrees() -> None:
+    """#7593: under the e2e fresh-worktree default a health review's anchor
+    refuses its own launch (its branch is marked for preservation), so case D
+    alone runs with reuse on; the other cases keep the default."""
+    checkout = EngineCheckout(root=_TREE, commit="0" * 40)
+    for spec, reuse in ((case_a_engine(), False), (case_b_engine(), False), (case_d_engine(), True)):
+        engine = spec.engine(Config(), checkout)
+        expected = {"ORCHESTRATOR_DISABLE_WORKTREE_REUSE": "0"} if reuse else {}
+        assert dict(engine.process.env_overrides) == expected

@@ -59,6 +59,11 @@ class CaseEngine:
     """Hold work mid-flight until this file exists (``exam_config``)."""
     asking_coders: bool = False
     """Add the coders that end by asking the operator (``exam_config``)."""
+    worktree_reuse: bool = False
+    """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
+    a batch/health tech lead's anchor launch refuse itself: its branch is
+    marked for preservation, and the global fresh-worktree switch would
+    recreate it."""
 
     def config(
         self,
@@ -83,7 +88,8 @@ class CaseEngine:
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
-        return ExamEngine(config, checkout, overlay=self.overlay)
+        env = {"ORCHESTRATOR_DISABLE_WORKTREE_REUSE": "0"} if self.worktree_reuse else None
+        return ExamEngine(config, checkout, overlay=self.overlay, env=env)
 
 
 def case_a_engine() -> CaseEngine:
@@ -162,6 +168,7 @@ def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> Ca
         reviewer_exchange_fault="none",
         tech_lead=True,
         asking_coders=True,
+        worktree_reuse=True,  # the health review's anchor keeps its branch
         overlay={
             "review": {
                 "exchange": {"mode": "via-draft-pr"},

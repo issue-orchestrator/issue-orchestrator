@@ -163,6 +163,7 @@ class ExamEngine:
         checkout: EngineCheckout,
         *,
         overlay: Mapping[str, Any],
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.checkout = checkout
@@ -171,6 +172,7 @@ class ExamEngine:
             checkout.root,
             source_root=checkout.root,
             config_overlay=merge_config_overlay(EXAM_BASE_OVERLAY, overlay),
+            env_overrides=env,
         )
         self._runtime: OrchestratorRuntime | None = None
 

@@ -307,3 +307,37 @@ def test_only_a_reuse_that_landed_names_its_proposal_on_the_record(applicable):
     [record] = [r for r in authority.charter_ledger.list_recent() if r.run_id == "rerun"]
     assert results[-1].success is applicable
     assert record.proposal_issue_number == (7000 if applicable else None)
+
+
+def test_a_completion_records_its_decisions_before_linking_the_proposal_it_joined():
+    """#7593 review r5: the completion carries its charter records AFTER its
+    effects in the action list, as ``tech_lead_completion`` builds it; the
+    apply still records them first, so the proposal link finds its record."""
+    from issue_orchestrator.control.tech_lead_charter_policy import (
+        RecordTechLeadCharterDecisionsAction,
+        TechLeadCharterPolicy,
+    )
+    from issue_orchestrator.domain.tech_lead_charter_decisions import (
+        CharterDecisionSource,
+        TechLeadCharterDecision,
+        decision_key,
+    )
+
+    host, authority, _reset, _kill, applier, action = harness()
+    action = replace(action, required_op=replace(action.required_op, source_run_id="rerun", source_action_id="A9"))
+    record = TechLeadCharterDecision.from_verdict(
+        TechLeadCharterPolicy.from_config(Config()).decide("reset_retry"),
+        decision_id=decision_key("rerun", "A9"), source=CharterDecisionSource.DECISION,
+        run_id="rerun", action_id="A9", anchor_issue_number=900, target_number=6410,
+        target_is_pr=False, decided_at="2026-10-02T12:00:00+00:00", tracks_proposal=True,
+    )
+    assert authority.charter_ledger.list_recent() == ()  # nothing recorded beforehand
+
+    results, error = apply_completion_actions_gated(
+        applier, [action, RecordTechLeadCharterDecisionsAction(decisions=(record,), reason="audit")],
+        issue_number=6410,
+    )
+
+    assert error is None and all(result.success for result in results)
+    [persisted] = authority.charter_ledger.list_recent()
+    assert persisted.proposal_issue_number == 7000
