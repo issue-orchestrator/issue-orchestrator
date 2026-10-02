@@ -38,6 +38,7 @@ from .provider_launch_readiness import ProviderLaunchReadiness
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
 from .published_review_release import held_investigation_subjects
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds, recovery_held_reviews
+from .blocked_item_triage import triage_owed
 from .health_review_trigger import (
     classify_tech_lead_anchor_issues,
     discover_open_tech_lead_anchor_issues,
@@ -464,7 +465,9 @@ class FactGatherer:
         # The decision carries the board it was decided on, so anchor creation
         # can stamp that exact value instead of recomputing a board that has
         # moved on by then (#6793).
-        health_decision = health_review_decision(self.config, state, now_ts)
+        authority = self.tech_lead_authority
+        health_decision = health_review_decision(self.config, state, now_ts, triage_owed=lambda: (
+            authority is not None and triage_owed(self.config, state, authority)))
         due = health_decision.due
 
         existing_tech_lead_issue: Optional[int] = None

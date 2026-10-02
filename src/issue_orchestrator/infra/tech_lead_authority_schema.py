@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS tech_lead_proposal_ops (
     op TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+-- #7593: the write-ahead state of an approved operator decision's retry, keyed
+-- by its proposal issue (see ports/operator_decision_retries.py).
+CREATE TABLE IF NOT EXISTS tech_lead_decision_retries (
+    proposal_issue_number INTEGER PRIMARY KEY,
+    state TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,
     issue_number INTEGER NOT NULL,

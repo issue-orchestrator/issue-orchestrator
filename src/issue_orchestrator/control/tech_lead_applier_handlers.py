@@ -90,6 +90,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.REQUEST_REWORK,
             ActionType.RECOVER_VALIDATED_WORK,
             ActionType.RELEASE_WITHHELD_REVIEW,
+            ActionType.APPLY_OPERATOR_DECISION,
             ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
@@ -163,6 +164,7 @@ def tech_lead_action_handlers(
     promotion_target: "PromotionTargetHost | None",
     recover_validated_work: ActionHandler | None = None,
     release_withheld_review: ActionHandler | None = None,
+    apply_operator_decision: ActionHandler | None = None,
 ) -> dict[ActionType, ActionHandler]:
     """Map every tech-lead ActionType to the owner that applies it."""
     handlers: dict[ActionType, ActionHandler] = {
@@ -189,6 +191,14 @@ def tech_lead_action_handlers(
             if release_withheld_review is not None
             else lambda action: ActionResult.fail(
                 action, "withheld-review release executor is not wired"
+            )
+        ),
+        # An approved operator decision: retry, follow-ups, decision (#7593).
+        ActionType.APPLY_OPERATOR_DECISION: (
+            apply_operator_decision
+            if apply_operator_decision is not None
+            else lambda action: ActionResult.fail(
+                action, "operator-decision executor is not wired"
             )
         ),
         ActionType.RECOVER_TECH_LEAD_PROPOSAL: lambda action: apply_recover_tech_lead_proposal(

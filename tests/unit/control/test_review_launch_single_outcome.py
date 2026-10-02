@@ -45,6 +45,7 @@ from issue_orchestrator.domain.models import (
     OrchestratorState,
     PendingReview,
 )
+from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.infra.config import AgentConfig, Config
@@ -87,9 +88,27 @@ def launcher_bundle(tmp_path: Path, recovery_holds: _RecoveryHolds) -> LauncherT
     return _bundle(tmp_path, recovery_holds)
 
 
+class _RecordedCauses:
+    """The shared needs-human block's cause record, as review policy reads it."""
+
+    def __init__(self) -> None:
+        self.causes: dict[int, frozenset[NeedsHumanCause]] = {}
+
+    def recorded_causes(self, issue_numbers):
+        return {n: self.causes.get(n, frozenset()) for n in issue_numbers}
+
+    def held_by_another_cause(self, issue_number, *, excluding):
+        return bool(self.causes.get(issue_number, frozenset()) - {excluding})
+
+
+@pytest.fixture
+def recorded_causes() -> _RecordedCauses:
+    return _RecordedCauses()
+
+
 def _bundle(
     tmp_path: Path, recovery_holds: _RecoveryHolds, *, provider_readiness_probe=None,
-    provider_resilience=None,
+    provider_resilience=None, needs_human_block=None,
 ) -> LauncherTestBundle:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Test prompt")
@@ -112,6 +131,7 @@ def _bundle(
         recovery_holds=recovery_holds,
         provider_readiness_probe=provider_readiness_probe,
         provider_resilience=provider_resilience,
+        needs_human_block=needs_human_block,
     )
 
 
@@ -242,7 +262,9 @@ def test_one_queued_review_is_one_attempt_and_one_success(
     _assert_one_launch_one_success(engine)
 
 
-def _startup_manager(config: Config) -> StartupManager:
+def _startup_manager(
+    config: Config, *, issue_labels: tuple[str, ...] = (), needs_human_block=None,
+) -> StartupManager:
     """The real startup recovery over a host that shows one PR awaiting review."""
     host = MagicMock()
     host.get_prs_with_label.return_value = [
@@ -257,7 +279,8 @@ def _startup_manager(config: Config) -> StartupManager:
         )
     ]
     host.get_issue.return_value = Issue(
-        number=ISSUE, title="Feature", labels=["agent:web"], repo="test/repo", state="open"
+        number=ISSUE, title="Feature", labels=["agent:web", *issue_labels], repo="test/repo",
+        state="open",
     )
     host.create_issue_key.side_effect = lambda number: GitHubIssueKey(
         repo="test/repo", external_id=str(number)
@@ -282,7 +305,35 @@ def _startup_manager(config: Config) -> StartupManager:
         issue_fetch_resilience=IssueFetchResilience("test/repo"),
         startup_worktree_reconciler=reconciler,
         pending_work_claims=MagicMock(),
+        **({} if needs_human_block is None else {"needs_human_block": needs_human_block}),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("causes", "queued"),
+    [
+        ({NeedsHumanCause.AGENT_COMPLETION}, True),
+        ({NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}, False),
+    ],
+)
+async def test_startup_recovers_a_review_held_only_by_the_agents_question(
+    launcher_bundle: LauncherTestBundle,
+    recorded_causes: _RecordedCauses, causes: set[NeedsHumanCause], queued: bool,
+) -> None:
+    """#7593: a restart must not drop the review the launch path would admit."""
+    config = launcher_bundle.launcher.config
+    config.code_review_label = "needs-code-review"
+    recorded_causes.causes[ISSUE] = frozenset(causes)
+    state = OrchestratorState()
+
+    await _startup_manager(
+        config,
+        issue_labels=("needs-human",),
+        needs_human_block=recorded_causes,
+    ).run_startup(state)
+
+    assert [review.pr_number for review in state.pending_reviews] == ([PR] if queued else [])
 
 
 @pytest.mark.asyncio
@@ -388,6 +439,59 @@ def test_a_review_of_a_blocked_issue_is_withdrawn_not_failed(
     _assert_nothing_failed(engine)
     assert _skips(engine) == ["Stale pending review: issue_blocked"]
     assert state.pending_reviews == []  # withdrawn: the queue drops it
+
+
+# --- #7593: an agent's own question does not withhold its PR's review --------
+
+
+def test_an_agents_own_question_does_not_withhold_its_prs_review(
+    tmp_path: Path, recovery_holds: _RecoveryHolds, recorded_causes: _RecordedCauses
+) -> None:
+    """porchpin#364: PR #379 was dropped every loop (``QUEUED → SKIP (stale
+    pending review: issue_blocked)``) because the coding agent asked the
+    maintainer a question. A needs-human held ONLY by that question admits the
+    review: the human decides with a reviewed PR in hand."""
+    bundle = _bundle(tmp_path, recovery_holds, needs_human_block=recorded_causes)
+    _host_shows(bundle, "needs-human", "pr-pending")
+    recorded_causes.causes[ISSUE] = frozenset({NeedsHumanCause.AGENT_COMPLETION})
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_one_launch_one_success(engine)
+
+
+@pytest.mark.parametrize(
+    ("causes", "extra_labels"),
+    [
+        # The stuck sweep escalated it too: not only a question any more.
+        ({NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}, ()),
+        # A tech-lead hand-over: a review session would supersede it.
+        ({NeedsHumanCause.AGENT_COMPLETION}, ("tech-lead-needs-human",)),
+        # No recorded cause: the operator put it on by hand.
+        (set(), ()),
+        # Another block besides the question.
+        ({NeedsHumanCause.AGENT_COMPLETION}, ("blocked-failed",)),
+    ],
+)
+def test_any_other_human_block_still_withdraws_the_review(
+    tmp_path: Path, recovery_holds: _RecoveryHolds, recorded_causes: _RecordedCauses,
+    causes: set[NeedsHumanCause], extra_labels: tuple[str, ...],
+) -> None:
+    bundle = _bundle(tmp_path, recovery_holds, needs_human_block=recorded_causes)
+    _host_shows(bundle, "needs-human", *extra_labels)
+    recorded_causes.causes[ISSUE] = frozenset(causes)
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert _skips(engine) == ["Stale pending review: issue_blocked"]
+    assert state.pending_reviews == []
 
 
 def test_a_review_held_only_by_recovery_waits_then_launches_once(

@@ -3236,6 +3236,34 @@ class TestExpectedStateEnforcement:
 class TestEnqueueToMergeQueueAction:
     """The applier performs the protected enqueue and emits an event."""
 
+    @pytest.fixture(autouse=True)
+    def _labels(self, applier, mock_repository_host):
+        from issue_orchestrator.control.label_manager import LabelManager
+        from issue_orchestrator.infra.config import Config
+
+        applier.label_manager = LabelManager(Config())
+        mock_repository_host.get_issue_labels_fresh.return_value = ["agent:backend"]
+
+    def test_a_human_hold_put_on_since_classification_keeps_the_pr_out(
+        self, applier, mock_repository_host
+    ):
+        """#7593 review r2: classification read the issue a tick ago; the
+        enqueue write re-reads it, and a needs-human put on since then wins."""
+        mock_repository_host.get_issue_labels_fresh.return_value = ["agent:backend", "needs-human"]
+
+        result = applier.apply(EnqueueToMergeQueueAction(issue_number=228, pr_number=318))
+
+        assert result.result_type == ActionResultType.SKIPPED
+        mock_repository_host.enqueue_to_merge_queue.assert_not_called()
+
+    def test_an_unreadable_issue_enqueues_nothing(self, applier, mock_repository_host):
+        mock_repository_host.get_issue_labels_fresh.side_effect = RuntimeError("502")
+
+        result = applier.apply(EnqueueToMergeQueueAction(issue_number=228, pr_number=318))
+
+        assert result.result_type == ActionResultType.FAILURE
+        mock_repository_host.enqueue_to_merge_queue.assert_not_called()
+
     def test_enqueue_calls_repository_and_emits_event(
         self, applier, mock_repository_host, mock_events
     ):
@@ -3386,6 +3414,12 @@ class TestClaimGateAudit:
         ActionType.KILL_HUNG_SESSION,
         ActionType.RECOVER_VALIDATED_WORK,
         ActionType.RELEASE_WITHHELD_REVIEW,
+        # An APPROVED operator decision (#7593): its target write is the
+        # operator's own retry command (the dashboard's Retry, which is not
+        # claim-gated either), then create-once follow-up issues and one
+        # marker-deduped comment; the tech-lead dispatch gate checks the
+        # target's reconciliation state first.
+        ActionType.APPLY_OPERATOR_DECISION,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         # Writes only the local charter decision ledger (#7330); no GitHub call.

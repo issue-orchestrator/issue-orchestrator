@@ -16,6 +16,7 @@ from .case import (
     issue_is_open,
     issue_keeps_labels,
     issue_lacks_labels,
+    item_triaged,
     pr_checks_green,
     pr_has_label,
     pr_in_state,
@@ -33,6 +34,7 @@ HALTED_EXCHANGE_WITH_VALIDATED_WORK = "A-halted-exchange-validated-work"
 STALE_CLAIM_PAUSED_FOR_RECONCILE = "C-stale-claim-paused-for-reconcile"
 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-review"
 UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
+BLOCKED_ITEMS_TRIAGED = "D-blocked-items-triaged"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -41,11 +43,17 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
     UPGRADE_WITH_WORK_IN_FLIGHT,
+    BLOCKED_ITEMS_TRIAGED,
 )
 
 #: Case U's two in-flight items.
 CODING = "coding"
 REVIEW = "review"
+
+#: Case D's two blocked items: a coding agent's split question with no PR
+#: (porchpin#262), and a question asked beside work it published (#364/#379).
+ASKS = "asks"
+ASKS_BESIDE_PR = "asks_beside_pr"
 
 #: Candidate ticks Case U's quiet window covers after the restart.
 UPGRADE_EARLY_TICKS = 5
@@ -266,4 +274,47 @@ def upgrade_with_work_in_flight(
             "#7432 (the upgrade case; grades inherited state, not session survival)",
         ),
         upgrade=UpgradeSpec(early_ticks=UPGRADE_EARLY_TICKS, hold_labels=hold_labels),
+    )
+
+
+def blocked_items_triaged(*, needs_human_label: str) -> ExamCase:
+    """Case D — porchpin's blocked items on 2026-10-02 (#7593).
+
+    Two coding agents finish by asking the operator a question, which puts
+    ``needs_human_label`` on their issues (cause: the agent's own completion):
+
+    * ``asks`` (porchpin#262): "should I split this issue: land the done slice
+      under Refs and move the rest into its own issue?" No PR.
+    * ``asks_beside_pr`` (porchpin#364): the agent publishes its validated work
+      on a PR and asks the maintainer a question beside it.
+
+    Right answer: a health review triages both. The split question becomes an
+    approvable proposal for the operator (``operator_decision``), filed, never
+    a dangling question or advice on the review's anchor. The PR beside the
+    question is still reviewed (porchpin#379 was dropped from review every
+    loop for the question), stays open (an approval must not merge the work
+    before the human answers), and its item is triaged too. Nobody decides
+    for the operator: both questions stand.
+    """
+    return ExamCase(
+        case_id=BLOCKED_ITEMS_TRIAGED,
+        title="Blocked items a coding agent asked the operator about",
+        fault=(
+            f"two coding agents end by asking the operator a question ({needs_human_label});"
+            " one of them beside a PR of its published work"
+        ),
+        goals=(
+            item_triaged(ASKS, ("operator_decision",)),
+            issue_keeps_labels(ASKS, (needs_human_label,)),
+            single_pull_request(ASKS_BESIDE_PR),
+            pr_in_state(ASKS_BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
+            pr_review_approved(ASKS_BESIDE_PR),
+            published_work_survives(ASKS_BESIDE_PR),
+            issue_keeps_labels(ASKS_BESIDE_PR, (needs_human_label,)),
+            item_triaged(ASKS_BESIDE_PR, ("operator_decision", "human_hand_over", "explained")),
+        ),
+        known_blockers=(
+            "#7593 the tech lead advised on blocked items and acted on none",
+            "porchpin#379 an agent's question vetoed its published PR's review",
+        ),
     )

@@ -638,6 +638,74 @@ class TestPlanHelpers:
 class TestPlannerDependencyGating:
     """Regression coverage for planner/scheduler dependency wiring."""
 
+    @staticmethod
+    def _scoped_planner(states: dict[int, str], milestone: str) -> Planner:
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker(states, milestone=milestone),
+            events=Mock(),
+            foundation_milestone="M0",
+        )
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        return Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+    def test_closed_cross_milestone_dependency_sheds_its_stale_label(self):
+        """porchpin#326: a closed M1 dependency must not park an M3 issue (#7333).
+
+        The label was added while the gate (wrongly) judged the closed
+        dependency out of scope; being blocking, it stopped the scheduler from
+        ever evaluating the issue again. Its owner now re-evaluates the gate and
+        takes it off, and the issue is runnable on the following tick.
+        """
+        planner = self._scoped_planner({289: "closed"}, milestone="M1")
+        parked = make_issue(
+            326, body="Depends-on: #289", milestone="M3",
+            labels=["agent:backend", "blocked-cross-milestone"],
+        )
+
+        plan = planner.plan(make_snapshot(issues=[parked]))
+
+        removals = plan.actions_of_type(ActionType.REMOVE_LABEL)
+        assert [(a.issue_number, a.label) for a in removals] == [
+            (326, "blocked-cross-milestone")
+        ]
+        assert plan.actions_of_type(ActionType.ADD_LABEL) == []
+
+        released = make_issue(326, body="Depends-on: #289", milestone="M3",
+                              labels=["agent:backend"])
+        plan = planner.plan(make_snapshot(issues=[released]))
+        assert [a.number for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)] == [326]
+        assert plan.actions_of_type(ActionType.ADD_LABEL) == []
+
+    def test_open_cross_milestone_dependency_is_labelled_once_and_kept(self):
+        planner = self._scoped_planner({289: "open"}, milestone="M1")
+        fresh = make_issue(326, body="Depends-on: #289", milestone="M3",
+                           labels=["agent:backend"])
+
+        plan = planner.plan(make_snapshot(issues=[fresh]))
+        assert [(a.issue_number, a.label) for a in plan.actions_of_type(ActionType.ADD_LABEL)] == [
+            (326, "blocked-cross-milestone")
+        ]
+
+        labelled = make_issue(326, body="Depends-on: #289", milestone="M3",
+                              labels=["agent:backend", "blocked-cross-milestone"])
+        plan = planner.plan(make_snapshot(issues=[labelled]))
+        assert plan.actions_of_type(ActionType.ADD_LABEL) == []
+        assert plan.actions_of_type(ActionType.REMOVE_LABEL) == []
+
+    def test_unreadable_dependency_keeps_the_label(self):
+        """An undecided gate (lookup failed) must not flap the label off."""
+        planner = self._scoped_planner({}, milestone="M1")
+        planner.dependency_evaluator.issue_checker = Mock(
+            get_dependency_issue_snapshot=Mock(side_effect=RuntimeError("502"))
+        )
+        labelled = make_issue(326, body="Depends-on: #289", milestone="M3",
+                              labels=["agent:backend", "blocked-cross-milestone"])
+
+        plan = planner.plan(make_snapshot(issues=[labelled]))
+
+        assert plan.actions_of_type(ActionType.REMOVE_LABEL) == []
+
     def test_planner_dependency_evaluator_blocks_unsatisfied_dependency(self):
         config = make_config(max_concurrent_sessions=1)
         evaluator = DependencyEvaluator(

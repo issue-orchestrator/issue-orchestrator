@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
+from .tech_lead_artifacts import TriageClass
 from .tech_lead_charter import (
     CharterAuthority,
     CharterBinding,
@@ -120,8 +121,15 @@ class TechLeadCharterDecision:
     #: error, or park reason); None when it applied.
     execution_reason: str | None = None
     execution_at: str | None = None
+    #: The blocked-item triage this action was (#7593): its class, and the
+    #: item's blocking state as the run observed it. The pair is the re-triage
+    #: watermark: an unchanged item whose triage is in force is not triaged again.
+    triage_class: TriageClass | None = None
+    triage_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.triage_class is None) != (self.triage_fingerprint is None):
+            raise ValueError("a triage record carries both its class and its fingerprint")
         # What became of a decision is told by the path its verdict took: an
         # approval lifecycle only for a gated verdict, an applier result only
         # for an executed one, so neither can vouch for the other (#7362).
@@ -150,6 +158,8 @@ class TechLeadCharterDecision:
         tracks_proposal: bool,
         proposal_issue_number: int | None = None,
         proposal_origin_action_id: str | None = None,
+        triage_class: TriageClass | None = None,
+        triage_fingerprint: str | None = None,
     ) -> "TechLeadCharterDecision":
         """Freeze *verdict* into a record.
 
@@ -187,6 +197,8 @@ class TechLeadCharterDecision:
             lifecycle_updated_at=decided_at if lifecycle is not None else None,
             proposal_issue_number=proposal_issue_number,
             proposal_origin_action_id=proposal_origin_action_id,
+            triage_class=triage_class,
+            triage_fingerprint=triage_fingerprint,
         )
 
     def is_about_issue(self, issue_number: int) -> bool:
@@ -294,6 +306,8 @@ class TechLeadCharterDecision:
             "execution": self.execution.value if self.execution else None,
             "execution_reason": self.execution_reason,
             "execution_at": self.execution_at,
+            "triage_class": self.triage_class.value if self.triage_class else None,
+            "triage_fingerprint": self.triage_fingerprint,
         }
 
     @classmethod
@@ -331,6 +345,8 @@ class TechLeadCharterDecision:
             execution=CharterExecutionResult(execution) if execution else None,
             execution_reason=data.get("execution_reason"),
             execution_at=data.get("execution_at"),
+            triage_class=TriageClass(triage) if (triage := data.get("triage_class")) else None,
+            triage_fingerprint=data.get("triage_fingerprint"),
         )
 
 

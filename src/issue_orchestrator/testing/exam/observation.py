@@ -120,6 +120,47 @@ class StallFacts:
 
 
 @dataclass(frozen=True)
+class TriageFact:
+    """The latest blocked-item triage the engine recorded for an item (#7593).
+
+    Read from the engine's own charter decision ledger: the class the tech
+    lead gave the item, the action that carried it, and what became of it.
+    An engine that predates triage records none, so the item has no fact.
+    """
+
+    triage_class: str
+    action_kind: str
+    effect: str
+    proposal_issue_number: int | None
+
+    @property
+    def in_force(self) -> bool:
+        """It disposed of the item: took effect, the operator answered it, or
+        its proposal is filed and waiting on the operator."""
+        if self.effect == "awaiting_approval":
+            return self.proposal_issue_number is not None
+        return self.effect in {"applied", "approved_applied", "declined"}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "triage_class": self.triage_class,
+            "action_kind": self.action_kind,
+            "effect": self.effect,
+            "proposal_issue_number": self.proposal_issue_number,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TriageFact":
+        proposal = data["proposal_issue_number"]
+        return cls(
+            triage_class=str(data["triage_class"]),
+            action_kind=str(data["action_kind"]),
+            effect=str(data["effect"]),
+            proposal_issue_number=None if proposal is None else int(proposal),
+        )
+
+
+@dataclass(frozen=True)
 class WorkItemFact:
     """An exam work item: its issue, its pull requests, and where it stood."""
 
@@ -136,6 +177,8 @@ class WorkItemFact:
     """PRs a review SESSION approved (``review.approved`` events, emitted by
     ``CompletionHandler._publish_review_outcome`` when a review completes) —
     unlike a ``code-reviewed`` label, which anyone can add."""
+    triage: TriageFact | None = None
+    """The latest tech-lead triage of the item, when the engine recorded one."""
 
     @property
     def open_pull_request(self) -> PullRequestFact | None:
@@ -157,6 +200,7 @@ class WorkItemFact:
             "stall": self.stall.to_dict(),
             "events": list(self.events),
             "approved_prs": sorted(self.approved_prs),
+            "triage": None if self.triage is None else self.triage.to_dict(),
         }
 
     @classmethod
@@ -170,6 +214,8 @@ class WorkItemFact:
             stall=StallFacts.from_dict(data["stall"]),
             events=tuple(data["events"]),
             approved_prs=frozenset(int(n) for n in data["approved_prs"]),
+            # Saved before triage existed (#7593): no fact, never an error.
+            triage=None if data.get("triage") is None else TriageFact.from_dict(data["triage"]),
         )
 
 

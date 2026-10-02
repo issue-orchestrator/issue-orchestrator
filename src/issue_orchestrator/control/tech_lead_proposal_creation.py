@@ -17,6 +17,7 @@ from ..domain.tech_lead_proposal_creation import (
 )
 from ..ports import RepositoryHost
 from ..ports.tech_lead_authority import TechLeadAuthorityStore
+from .tech_lead_charter_lifecycle import link_filed_proposal, link_or_log
 from .actions import Action, ActionType, ActionResult, CreateTechLeadProposalIssueAction
 from ..domain.tech_lead_session import TechLeadCreationOrigin
 from .reconciliation import ExpectedState, build_expected_for_mutation
@@ -189,6 +190,12 @@ class TechLeadProposalCreation:
         """Both creation and recovery commit only the original stored intent."""
         self.authority.record_op(issue_number=number, op=pending.op)
         self.authority.discard_pending_proposal(pending.key)
+        # The record that filed it learns the issue it now waits on (#7593):
+        # "awaiting approval" is a claim only a filed proposal can make.
+        def link() -> None:
+            link_filed_proposal(self.authority, pending.op, number)
+
+        link_or_log(link, f"proposal #{number}'s filing")
 
     def recover(
         self,

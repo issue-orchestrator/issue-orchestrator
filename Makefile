@@ -43,7 +43,7 @@ help:
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-heavy      Run expensive journey-level onboarding/orchestration tests"
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
-	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
+	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|D|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
 	@echo "  test-improver-exam  Run the live improver exam (IM1: blocked items ignored; IM2: a review the block vetoes) on a real model"
 	@echo "  tech-lead-improver  Run the tech-lead improver once over every running engine (#7490, #7567)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
@@ -744,7 +744,7 @@ EXAM_ENGINE_REF ?= HEAD
 # when the target does.
 EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-tech-lead-exam
 test-tech-lead-exam: sync-deps
-	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
+	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "case-$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
 # Live improver exam (#7490 step 4): the real improver model on each planted
 # improver-data fixture (case IM1, blocked items the tech lead ignored; IM2,

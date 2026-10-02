@@ -469,15 +469,15 @@ class _Checker:
             )
             return
         if not any(
-            d.action_kind in HAND_OVER_ACTION_KINDS
-            and d.applied_at is not None
-            and since <= d.applied_at <= self._cutoff
+            hands_over(d, since=since, cutoff=self._cutoff)
             for d in (about[e] for e in account.evidence if e in about)
         ):
             yield Rule.BLOCKED_ITEM_HANDED_OVER, (
                 f"#{n}: cite a {'/'.join(sorted(HAND_OVER_ACTION_KINDS))} decision about it, applied"
-                f" after its latest block began ({since.isoformat()}) and by the cutoff; a diagnosis"
-                " without that is a finding (noticed_not_acted)"
+                f" after its latest block began ({since.isoformat()}) and by the cutoff, or a"
+                f" {'/'.join(sorted(OPERATOR_DECISION_ACTION_KINDS))} decided then whose proposal is"
+                " filed and awaiting the operator; a diagnosis without that is a finding"
+                " (noticed_not_acted)"
             )
 
     # -- one finding ---------------------------------------------------------
@@ -936,6 +936,25 @@ def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: M
 #: it said. Either is a notice, never a hand-over.
 HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human"})
 
+#: A decision put to the operator hands the item over as well (#7593): a
+#: ``propose_decision`` whose proposal issue is FILED and awaiting approval is
+#: the item waiting on the operator's yes or no, by design.
+OPERATOR_DECISION_ACTION_KINDS = frozenset({"propose_decision"})
+
+
+def hands_over(d: StagedDecision, *, since: datetime, cutoff: datetime) -> bool:
+    """Whether staged decision *d* handed a whole blocked item to the operator
+    after its latest block began (``since``) and by the cutoff."""
+    if d.action_kind in HAND_OVER_ACTION_KINDS:
+        return d.applied_at is not None and since <= d.applied_at <= cutoff
+    if d.action_kind in OPERATOR_DECISION_ACTION_KINDS:
+        return (
+            d.effect == "awaiting_approval"
+            and d.proposal_issue_number is not None
+            and since <= d.decided_at <= cutoff
+        )
+    return False
+
 def _latest_block_onset(item: BlockedItem) -> datetime | None:
     """When the latest of an item's current blocks began; None when any
     block's onset is unknown (THE current-block onset, for hand-overs and
@@ -1035,6 +1054,8 @@ __all__ = [
     "CHARTER_CITATION",
     "ENGINE_SOURCE_CITATION",
     "HAND_OVER_ACTION_KINDS",
+    "OPERATOR_DECISION_ACTION_KINDS",
+    "hands_over",
     "ImproverFindingsRejected",
     "Rule",
     "StagedEvidence",

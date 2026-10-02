@@ -167,6 +167,11 @@ class CharterBinding(str, Enum):
     APPROVABLE = "approvable"
     #: Like APPROVABLE, but never runs unattended whatever the dials say.
     DESTRUCTIVE = "destructive"
+    #: The operator's own call (#7593): always filed for approval, never
+    #: executed by the tech lead, and - like a floor - never restricted by role
+    #: or depth, because putting a decision in front of the operator is a
+    #: hand-over, not an act.
+    OPERATOR_DECISION = "operator_decision"
 
 
 @dataclass(frozen=True)
@@ -221,6 +226,10 @@ CHARTER_ACTION_CLASSES: Mapping[str, CharterActionClass] = {
     "release_withheld_review": CharterActionClass(
         CharterRole.FLOW, _F, CharterBinding.APPROVABLE,
         "release a review withheld only by the issue's own block",
+    ),
+    "propose_decision": CharterActionClass(
+        CharterRole.FLOW, _W, CharterBinding.OPERATOR_DECISION,
+        "propose a decision for the operator to approve",
     ),
     "reset_retry": CharterActionClass(
         CharterRole.FLOW, _W, CharterBinding.DESTRUCTIVE,
@@ -295,6 +304,7 @@ class CharterReason(str, Enum):
     ROLE_DISABLED = "role_disabled"
     BEYOND_DEPTH = "beyond_depth"
     DESTRUCTIVE_REQUIRES_APPROVAL = "destructive_requires_approval"
+    OPERATOR_DECISION_ALWAYS_PROPOSED = "operator_decision_always_proposed"
     ROLE_AUTHORITY_PROPOSE = "role_authority_propose"
     ACTION_AUTHORITY_PROPOSE = "action_authority_propose"
     WITHIN_CHARTER_EXECUTE = "within_charter_execute"
@@ -337,6 +347,23 @@ class CharterVerdict:
         return self.outcome is CharterOutcome.ADVICE_ONLY
 
 
+#: Bindings no dial restricts, and the one verdict each always gets: a floor
+#: always executes; an operator decision is always the operator's (#7593).
+_UNRESTRICTED_BINDINGS: Mapping[CharterBinding, tuple[CharterOutcome, CharterReason, str]] = {
+    CharterBinding.FLOOR: (
+        CharterOutcome.EXECUTED,
+        CharterReason.FLOOR_ALWAYS_EXECUTES,
+        "Always executes: to {what} is a safety floor no charter setting removes.",
+    ),
+    CharterBinding.OPERATOR_DECISION: (
+        CharterOutcome.PROPOSED,
+        CharterReason.OPERATOR_DECISION_ALWAYS_PROPOSED,
+        "Waiting on you: to {what} is yours to approve or decline; no charter"
+        " setting lets the tech lead decide it.",
+    ),
+}
+
+
 def decide_charter(
     kind: str,
     charter: TechLeadCharter,
@@ -370,12 +397,10 @@ def decide_charter(
         )
 
     ceiling_executes = action_ceiling is CharterAuthority.EXECUTE
-    if action_class.binding is CharterBinding.FLOOR:
-        return verdict(
-            CharterOutcome.EXECUTED,
-            CharterReason.FLOOR_ALWAYS_EXECUTES,
-            f"Always executes: to {what} is a safety floor no charter setting removes.",
-        )
+    fixed = _UNRESTRICTED_BINDINGS.get(action_class.binding)
+    if fixed is not None:
+        outcome, code, template = fixed
+        return verdict(outcome, code, template.format(what=what))
     if action_class.binding is CharterBinding.ADVISORY:
         if ceiling_executes:
             return verdict(

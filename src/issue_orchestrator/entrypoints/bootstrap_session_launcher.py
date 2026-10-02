@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
+    from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
     from ..ports.session_launcher_factory import (
@@ -71,6 +72,7 @@ def build_session_launcher_factory(
     def _factory(
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
+        blocked_item_triage: "BlockedItemTriageAgenda",
         session_exists_fn: Callable[[str], bool],
         create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
@@ -98,6 +100,7 @@ def build_session_launcher_factory(
                 session_manager.runner.send_to_session_by_name(name, text)
             ),
             board_snapshot_provider=board_snapshot_provider,
+            blocked_item_triage=blocked_item_triage,
             validated_work_recovery_authority=validated_work_recovery_authority,
             agent_callback_endpoint=agent_callback_endpoint,
             issue_run_allocator=issue_run_allocator,

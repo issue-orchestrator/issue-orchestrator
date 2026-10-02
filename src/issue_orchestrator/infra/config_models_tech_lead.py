@@ -48,6 +48,10 @@ TECH_LEAD_AUTHORITY_MODES = ("execute", "propose")
 # cannot park work against an arbitrary agent-chosen tracker.
 TECH_LEAD_AUTHORITY_FLOOR_ACTIONS = ("escalate_to_human", "defer_to_tracker")
 
+# Always filed for the operator to approve (#7593): the decision is the
+# operator's, so no setting can let the tech lead execute it.
+TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS = ("propose_decision",)
+
 # Action types whose authority mode is configurable — the complement of the
 # floor set above.
 TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
@@ -128,6 +132,8 @@ class TechLeadAuthorityConfig:
         """
         if action_type in TECH_LEAD_AUTHORITY_FLOOR_ACTIONS:
             return "execute"
+        if action_type in TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS:
+            return "propose"
         if action_type not in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS:
             raise ValueError(f"unknown tech_lead action type: {action_type!r}")
         return getattr(self, action_type)

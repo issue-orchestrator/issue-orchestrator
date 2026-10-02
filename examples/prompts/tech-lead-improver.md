@@ -76,8 +76,10 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
      the question behind it, does not examine the work the block vetoes.
    - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
      an applied tech-lead `escalate_to_human` about it, applied after its
-     latest block began, handed the whole item to the operator: then
-     `awaiting_operator`. A comment or a deferral to a tracker is not a
+     latest block began, handed the whole item to the operator, or a
+     `propose_decision` about it, decided after its latest block began, is
+     filed (it names its `proposal_issue_number`) and `awaiting_approval`:
+     then `awaiting_operator`. A comment or a deferral to a tracker is not a
      hand-over (it does not say which block it covered).
      Several items with one root cause share one finding.
 1. **Observe.** Read `audit-diff.json` first. For each anomaly, record three
@@ -330,7 +332,9 @@ in `engine-source/examples/improver/findings/`.
   `present_after_start: "true"`. An `awaiting_operator` account cites in
   `evidence` an `escalate_to_human` decision from
   that item's `decisions`, applied after the latest `since_at` of its
-  blocking labels and by the cutoff; with any `since_at` unknown, or no
+  blocking labels and by the cutoff, or a `propose_decision` from them
+  decided in that window whose proposal is filed (`proposal_issue_number`
+  set) and still `awaiting_approval`; with any `since_at` unknown, or no
   such decision, the item needs a finding. Only a `finding` account names `finding_id`; only an
   `awaiting_operator` account cites `evidence`.
 - **Work downstream of a block is examined.** An item's account names, in

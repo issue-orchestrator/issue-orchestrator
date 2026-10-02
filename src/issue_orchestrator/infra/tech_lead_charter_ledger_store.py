@@ -204,6 +204,17 @@ class SqliteTechLeadCharterLedger:
             )
         )
 
+    def latest_triage_for_issue(self, issue_number: int) -> TechLeadCharterDecision | None:
+        found = _decode(
+            self._connection().execute(
+                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+                " AND json_extract(record, '$.triage_class') IS NOT NULL"
+                " ORDER BY decided_at DESC, decision_id DESC LIMIT 1",
+                (issue_number,),
+            )
+        )
+        return found[0] if found else None
+
     def list_remedies_on_issue(
         self, issue_number: int, *, limit: int = 100
     ) -> tuple[TechLeadCharterDecision, ...]:

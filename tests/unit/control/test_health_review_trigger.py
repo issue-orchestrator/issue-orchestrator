@@ -493,6 +493,36 @@ class TestHealthReviewDueGate:
         state = _board(blocked=[500])  # never reviewed -> fingerprint ""
         assert health_review_due(config, state, now=999_999.0) is True
 
+    def test_a_board_of_only_parked_items_is_reviewed_and_re_reviewed_on_change(self) -> None:
+        """#7593: a blocked item owes a triage even when nothing runs.
+
+        Porchpin's four parked items alone made an "idle" board (no session,
+        no queue, no dependency problem), so a health review never came.
+        """
+        from issue_orchestrator.domain.models import Issue
+
+        config = _config(interval_minutes=60)
+        state = OrchestratorState()
+        state.cached_scope_issues = [
+            Issue(number=262, title="t", labels=["agent:backend", "needs-human"],
+                  repo="porchpin/porchpin", state="open"),
+            Issue(number=400, title="t", labels=["agent:backend"],
+                  repo="porchpin/porchpin", state="open"),
+        ]
+        assert health_review_due(config, state, now=999_999.0) is True
+
+        state.last_health_review_at = 1000.0
+        state.last_reviewed_board_fingerprint = health_review_decision(
+            config, state, 1000.0
+        ).fingerprint
+        assert health_review_due(config, state, now=1000.0 + 3600) is False
+
+        state.cached_scope_issues[0] = Issue(
+            number=262, title="t", labels=["agent:backend", "needs-human", "blocked-failed"],
+            repo="porchpin/porchpin", state="open",
+        )
+        assert health_review_due(config, state, now=1000.0 + 3600) is True
+
     def test_not_due_within_interval_even_when_changed(self) -> None:
         config = _config(interval_minutes=60)
         state = _board(queue=[7])

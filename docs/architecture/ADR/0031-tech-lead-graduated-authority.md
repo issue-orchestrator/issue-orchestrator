@@ -7,7 +7,8 @@ typed decision artifact, board-snapshot observation surface, periodic + storm
 health-review triggers, and per-action graduated authority are live, with the
 ``reset_retry`` executor wired (#6764) and act-level ``execute`` startup-guarded;
 amended 2026-08-19: direct ``kill_hung_session`` authority wired with exact
-session-generation revalidation; amended 2026-09-26: §2a per-role charter, #7330)
+session-generation revalidation; amended 2026-09-26: §2a per-role charter, #7330;
+amended 2026-10-02: §2b blocked-item triage and operator decisions, #7593)
 **Milestone:** P1
 **Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778, #6780
 
@@ -281,6 +282,35 @@ authority: propose|execute}`.
 
 This subsumes #6877's class × magnitude matrix for tech-lead actions: the
 decision class is the action kind, and magnitude is its required depth.
+
+### 2b. Blocked-item triage and operator decisions (#7593 amendment)
+
+A diagnosis is not a disposition. On porchpin the tech lead diagnosed every
+blocked item and acted on none, because a health review could only address its
+own anchor and nothing asked it to dispose of each item. Now:
+
+- **Every blocked item is owed one triage.** At launch, a health review is
+  granted (in its launch authority) every open blocked work item in scope whose
+  block has no triage in force, oldest first, capped per run. One owner,
+  `control/blocked_item_triage.py`, builds that agenda and checks the decision
+  against it: each granted item gets exactly ONE action carrying a
+  `triage_class` (`operator_decision`, `human_hand_over`, `explained`,
+  `remedy`), each class only on its own action types, or the decision is
+  rejected. The engine appends the duty to the session's prompt itself, since
+  every repository runs its own tech-lead prompt.
+- **The record is the watermark.** The charter record of a triaging action
+  carries its class and the item's block fingerprint at launch. An unchanged
+  item whose triage took effect, was answered, or whose proposal is filed and
+  awaiting the operator is not triaged again.
+- **`propose_decision`** turns an open question (an agent asking whether to
+  split, a scope call) into one decision with optional drafted follow-up
+  issues. Its charter binding, `operator_decision`, is always proposed: never
+  executed by the tech lead, never restricted by role or depth. Approval
+  retries the item through the operator's own retry, files the follow-ups
+  create-once, and posts the decision on the item for the session that resumes
+  it; a cause the retry may not override closes it stale with no writes.
+- The health-review trigger counts label-blocked items as board content, so a
+  board of only parked items is still reviewed.
 
 ### 3. Observation surface: the board-snapshot manifest
 

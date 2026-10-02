@@ -96,8 +96,11 @@ class OrchestratorProcess:
         *,
         source_root: Path | None = None,
         config_overlay: Mapping[str, Any] | None = None,
+        env_overrides: Mapping[str, str] | None = None,
     ):
         self.config = config
+        # Engine environment set over the e2e defaults below (exam cases).
+        self.env_overrides: Mapping[str, str] = dict(env_overrides or {})
         self.project_root = project_root
         self.source_root = source_root or project_root
         # YAML merged over the generated config, for settings the generator
@@ -393,6 +396,7 @@ class OrchestratorProcess:
             env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = os.environ["E2E_CLAUDE_PROMPT_MODE"]
         env["ORCHESTRATOR_WORKTREE_PER_SESSION"] = os.environ.get("E2E_WORKTREE_PER_SESSION", "1")
         env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
+        env.update(self.env_overrides)
         # Ensure worktrees are created from main (which has all our test fixes)
         env["ORCHESTRATOR_WORKTREE_BASE_BRANCH"] = "main"
         # Skip pre-push hooks in e2e tests - test scripts create trivial changes that don't need validation

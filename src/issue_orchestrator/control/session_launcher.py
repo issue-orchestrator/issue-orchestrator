@@ -64,6 +64,7 @@ from .tech_lead_session_policy import (
     carry_launch_authority_forward,
     resumable_retry_identity,
     failure_investigation_scratch_identity,
+    TechLeadLaunchInputs,
     prepare_tech_lead_session_data,
     tech_lead_prep_failure,
 )
@@ -97,6 +98,8 @@ from .needs_human_block import (
     NO_OTHER_NEEDS_HUMAN_CAUSES,
     SharedNeedsHumanBlock,
 )
+from .review_question_hold import AgentQuestionReviewHolds
+from ..ports.blocked_item_triage import NO_BLOCKED_ITEM_TRIAGE, BlockedItemTriageAgenda
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager
 from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
@@ -211,8 +214,11 @@ class SessionLauncher:
         # The validated-work recovery owner's holds (#7455): a review waits only
         # for a hold that owner confirms, never for a lingering label alone.
         recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
+        # The blocked items a health review must triage (#7593).
+        blocked_item_triage: BlockedItemTriageAgenda = NO_BLOCKED_ITEM_TRIAGE,
     ):
         self.config = config
+        self._blocked_item_triage = blocked_item_triage
         self._recovery_holds = recovery_holds
         self.events = events
         self.repository_host = repository_host
@@ -263,6 +269,7 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._review_question_holds = AgentQuestionReviewHolds(needs_human_block, label_manager)
         self._tech_lead_needs_human = TechLeadNeedsHumanLifecycle(
             labels=label_manager,
             events=events,
@@ -595,7 +602,7 @@ class SessionLauncher:
         issue: "IssueProtocol",
         ctx: WorktreeContext,
         tech_lead_scope: "TechLeadLaunchScope | None",
-    ) -> tuple[Path, ...]:
+    ) -> TechLeadLaunchInputs:
         """Delegate per-flavor tech_lead launch preparation to the ADR-0031 owner.
 
         Returns the evidence map's sandbox read-roots (empty for non-focus
@@ -611,6 +618,7 @@ class SessionLauncher:
                 self._validated_work_recovery_authority
             ),
             board_snapshot_provider=self._board_snapshot_provider,
+            blocked_item_triage=self._blocked_item_triage,
             issue=issue,
             ctx=ctx,
             tech_lead_scope=tech_lead_scope,
@@ -897,9 +905,9 @@ class SessionLauncher:
             # the prompt calls board-snapshot.json authoritative — so prep
             # failure fails the launch loudly (setup-command seam). The returned
             # evidence read-roots grant a sandboxed tech lead its god-view (#6824 R5).
-            evidence_read_roots: tuple[Path, ...] = ()
+            tech_lead_inputs = TechLeadLaunchInputs()
             try:
-                evidence_read_roots = self._prepare_tech_lead_session_data(
+                tech_lead_inputs = self._prepare_tech_lead_session_data(
                     kind, issue, ctx, tech_lead_scope
                 )
             except Exception as e:
@@ -998,6 +1006,8 @@ class SessionLauncher:
                 task_kind=kind.value,
             )
             rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
+            if tech_lead_inputs.prompt_addendum:
+                rendered_prompt = f"{rendered_prompt}\n\n{tech_lead_inputs.prompt_addendum}"
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
                 rendered_prompt,
@@ -1005,7 +1015,7 @@ class SessionLauncher:
                 issue_title=issue.title,
                 worktree=worktree_path,
                 task_kind=kind.value,
-                evidence_read_roots=evidence_read_roots,
+                evidence_read_roots=tech_lead_inputs.read_roots,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
@@ -1519,6 +1529,7 @@ class SessionLauncher:
                 repository_host=self.repository_host,
                 label_manager=self._lm,
                 recovery_holds=self._recovery_holds,
+                question_holds=self._review_question_holds,
             ),
             review,
             self.events,

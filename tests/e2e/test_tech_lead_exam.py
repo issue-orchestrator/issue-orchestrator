@@ -33,6 +33,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import render_summary
 from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+    BLOCKED_ITEMS_TRIAGED,
     EXAM_CASE_IDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
@@ -50,10 +51,12 @@ from tests.e2e.exam.scenarios import (
     case_a,
     case_b,
     case_c,
+    case_d,
     case_u,
     run_case_a,
     run_case_b,
     run_case_c,
+    run_case_d,
     run_case_u,
 )
 from tests.e2e.flows import E2EFlow
@@ -106,7 +109,13 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
 @pytest.mark.asyncio
 @pytest.mark.timeout(100 * 60)
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=5000, system_gh_activity_limit=5000)
-@pytest.mark.parametrize("case_id", EXAM_CASE_IDS)
+@pytest.mark.parametrize(
+    "case_id",
+    # ``case-<id>`` ids, so ``make test-tech-lead-exam EXAM_CASE=D`` selects
+    # with ``-k case-D-``: a bare ``-k D-`` (pytest -k folds case) also
+    # matched "paused-for" and "blocked-issue" in the other cases' ids.
+    [pytest.param(case_id, id=f"case-{case_id}") for case_id in EXAM_CASE_IDS],
+)
 async def test_tech_lead_exam(
     case_id: str,
     repo_name: str,
@@ -120,6 +129,7 @@ async def test_tech_lead_exam(
         BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW: case_b,
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
         UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
+        BLOCKED_ITEMS_TRIAGED: case_d,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -140,11 +150,10 @@ async def test_tech_lead_exam(
             return await run_case_u(
                 run, flows, base_ref=os.environ.get("E2E_EXAM_BASE_REF", "origin/main")
             )
-        return await run_case_b(
-            run,
-            flows,
-            tech_lead_model=os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus"),
-        )
+        model = os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus")
+        if case_id == BLOCKED_ITEMS_TRIAGED:
+            return await run_case_d(run, flows, tech_lead_model=model)
+        return await run_case_b(run, flows, tech_lead_model=model)
 
     # The scorecard is written before cleanup, so a GitHub hiccup in cleanup
     # cannot cost the result of an hour-long run (run_recorded).

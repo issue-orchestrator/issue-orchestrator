@@ -100,7 +100,7 @@ from ..control.session_routing import (
     get_session_machine as _sl_get_session_machine,
 )
 from ..control.cleanup_manager import CleanupManager, build_cleanup_manager
-from ..control.blocked_item_custody_reader import build_blocked_item_custody_reader
+from ..control.blocked_item_custody_reader import build_blocked_item_custody_reader, build_blocked_item_triage
 from ..ports.blocked_item_custody import BlockedItemCustodyReader
 from ..control.worker_budget import worker_slot_free
 from ..control.review_exchange_lifecycle import IssueRuntimeTermination, IssueTerminationOutcome, ReviewExchangeCancellation
@@ -316,6 +316,7 @@ class Orchestrator:
     def _session_launcher(self) -> SessionLauncher:
         return self.deps.session_launcher_factory(
             board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
+            blocked_item_triage=build_blocked_item_triage(self.config, self.deps, lambda: self.state),
             session_exists_fn=lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             create_session_fn=self._create_session,
             get_issue_machine=self._get_issue_machine,
@@ -476,7 +477,7 @@ class Orchestrator:
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
             tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
-            pending_work_claims=self.deps.pending_work_claims,
+            pending_work_claims=self.deps.pending_work_claims, needs_human_block=self.deps.needs_human_block,
         )
 
     @cached_property

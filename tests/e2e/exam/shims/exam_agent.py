@@ -13,6 +13,13 @@ misbehaves and how:
   ``exit-silently`` exits without answering, which the engine records as a
   reviewer no-completion (the porchpin 09-23 shape, minus the dialog).
 
+``--asks QUESTION`` makes an initial coding session end by asking the
+operator QUESTION (``coding-done needs_human``) without committing (Case D,
+porchpin#262). ``--pr-label LABEL`` adds LABEL to the labels a completing
+coder asks its PR to carry; ``needs-human`` there is routed onto the issue
+while the work still publishes (#7592), which is porchpin#364's question
+asked beside its PR.
+
 ``--hold-until PATH`` makes a session wait, before doing anything, until
 PATH exists. The upgrade case (Case U) uses it to keep work mid-flight across
 an engine stop: the harness creates PATH only after the candidate engine has
@@ -45,7 +52,11 @@ def run(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
-def initial_coding_session() -> None:
+def ask_the_operator(question: str) -> None:
+    run(["coding-done", "needs_human", "--question", question])
+
+
+def initial_coding_session(extra_pr_labels: list[str]) -> None:
     marker = Path("exam-output.txt")
     marker.write_text(f"tech-lead exam work item, written {time.ctime()}\n", encoding="utf-8")
     run(["git", "add", str(marker)])
@@ -73,6 +84,7 @@ def initial_coding_session() -> None:
         "None",
     ]
     labels = [label for label in os.environ.get("E2E_PR_LABELS", "").split(",") if label]
+    labels += extra_pr_labels
     if labels:
         argv += ["--pr-labels", *labels]
     run(argv)
@@ -111,6 +123,8 @@ def main() -> int:
     parser.add_argument("--role", choices=("coder", "reviewer"), required=True)
     parser.add_argument("--exchange-fault", choices=EXCHANGE_FAULTS, default="none")
     parser.add_argument("--hold-until", type=Path, default=None)
+    parser.add_argument("--asks", default=None)
+    parser.add_argument("--pr-label", action="append", default=[])
     args = parser.parse_args()
     in_exchange = bool(os.environ.get(RESPONSE_FILE_ENV))
     log(f"role={args.role} in_exchange={in_exchange} fault={args.exchange_fault}")
@@ -120,8 +134,10 @@ def main() -> int:
     if args.role == "coder":
         if in_exchange:
             idle_on_prompts()
+        elif args.asks:
+            ask_the_operator(args.asks)
         else:
-            initial_coding_session()
+            initial_coding_session(args.pr_label)
         return 0
 
     if not in_exchange:

@@ -114,6 +114,7 @@ from ..control.action_applier import ActionApplier
 from ..control.governed_label_set import GovernedLabelSet
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
+from ..control.review_question_hold import AgentQuestionReviewHolds
 from ..adapters.github import GitHubAuth, GitHubIssueResolver, GitHubCache, build_github_auth
 from ..adapters.github.ref_claim_adapter import (
     GitHubRefClaimAdapter,
@@ -633,6 +634,10 @@ def build_orchestrator(
         action_applier=cast("ActionApplier", action_applier),
         label_writer=repository_host,
         label_manager=label_manager, events=events)
+    if pr_scanner is not None:
+        pr_scanner.attach_review_question_holds(
+            AgentQuestionReviewHolds(pending_work.needs_human_block, label_manager)
+        )
 
     runtime_state = OrchestratorState()
     issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output, working_copy)
@@ -1071,6 +1076,9 @@ def build_orchestrator_for_testing(
         repo_root=config.repo_root, repository_host=github,
         action_applier=action_applier, label_writer=github,
         label_manager=label_manager, events=events)
+    pr_scanner.attach_review_question_holds(
+        AgentQuestionReviewHolds(pending_work.needs_human_block, label_manager)
+    )
 
     if action_applier is not None:
         action_applier.completion_intake = completion_intake

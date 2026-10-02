@@ -88,10 +88,19 @@ directory. No agent session survives an engine stop (every agent is a PTY child 
 engine), so the case grades what an upgrade really inherits: run-ledger rows, pending-work
 claims, labels and every sqlite store's schema.
 
+Case D (#7593) plants porchpin's blocked items of 2026-10-02 through the engine's own
+completions: one scripted coder ends by asking the operator whether to split its issue
+(porchpin#262), another publishes its work and asks the maintainer a question beside the
+PR (porchpin#364 / PR #379). A real tech lead's periodic health review must triage both
+(the split question becomes a filed `propose_decision` the operator can approve), and
+the PR beside the question must still be reviewed without being merged. It is graded on
+the triage the engine recorded in its charter ledger, so an engine that only advises
+fails it.
+
 `EXAM_ENGINE_REF` runs the engine from a fresh standalone clone of that commit, while the
 harness, its fault shims and the grader stay the current tree's, so the same exam can
 prove it fails before a fix and passes after it. Each run writes a JSON scorecard and a
-text summary to `$E2E_EXAM_OUT` (default `/tmp/e2e-orchestrator-logs/exam`). Case B uses
+text summary to `$E2E_EXAM_OUT` (default `/tmp/e2e-orchestrator-logs/exam`). Cases B and D use
 a real tech-lead model (`E2E_EXAM_TECH_LEAD_MODEL`, default `opus`). The exam never runs
 inside `make validate-pr`; its grader, case answers and fault shim have unit tests under
 `tests/unit/testing/exam/` that do.

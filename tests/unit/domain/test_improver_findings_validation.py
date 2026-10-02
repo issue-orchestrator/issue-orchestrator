@@ -739,6 +739,36 @@ def test_a_deferral_to_a_tracker_is_not_a_hand_over_of_the_whole_item(tmp_path: 
     assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
 
 
+def _decision_put_to_the_operator(*, filed: bool) -> Callable[[dict], None]:
+    """#353's D3 is a propose_decision instead: the operator's call (#7593)."""
+    def mutate(d: dict) -> None:
+        d["items"][0]["decisions"][0].update(
+            action_kind="propose_decision", binding="operator_decision", outcome="proposed",
+            reason_code="operator_decision_always_proposed", effect="awaiting_approval",
+            applied_at=None, proposal_issue_number=950 if filed else None,
+        )
+
+    return mutate
+
+
+def test_a_filed_decision_awaiting_the_operator_hands_the_item_over(tmp_path: Path) -> None:
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json", _decision_put_to_the_operator(filed=True)
+    )
+
+    assert validate_findings(json.dumps(example("exam_case")), evidence).blocked_items[0].disposition == (
+        "awaiting_operator"
+    )
+
+
+def test_a_decision_whose_proposal_never_got_filed_hands_nothing_over(tmp_path: Path) -> None:
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json", _decision_put_to_the_operator(filed=False)
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
 def _two_blocks_with_a_remedy_between(tmp_path: Path) -> StagedEvidence:
     """#353: needs-human since 13:30, recovery-pending since 14:30 (both in the
     audit), and a remedy R1 about #353 applied at 14:00, between them."""

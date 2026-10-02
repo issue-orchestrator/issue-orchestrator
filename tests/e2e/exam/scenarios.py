@@ -22,21 +22,35 @@ from issue_orchestrator.testing.exam.case import REVIEW_STARTED_EVENT
 from issue_orchestrator.testing.exam.observation import TechLeadActionDisposition
 from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
+    ASKS,
+    ASKS_BESIDE_PR,
     CODING,
     REVIEW,
     SUBJECT,
     UPGRADE_EARLY_TICKS,
     blocked_issue_green_pr_awaiting_review,
+    blocked_items_triaged,
     halted_exchange_with_validated_work,
     stale_claim_paused_for_reconcile,
     upgrade_with_work_in_flight,
 )
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
-from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL
+from tests.e2e.exam.agents import (
+    ASKING_BESIDE_PR_CODER_LABEL,
+    ASKING_CODER_LABEL,
+    CODER_LABEL,
+    HELD_CODER_LABEL,
+)
 from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
-from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine, case_u_engine
+from tests.e2e.exam.case_engines import (
+    case_a_engine,
+    case_b_engine,
+    case_c_engine,
+    case_d_engine,
+    case_u_engine,
+)
 from tests.e2e.exam.engine import EngineCheckout, ExamEngine
 from tests.e2e.exam.upgrade_window import capture_restart_window, quiesce, upgrade_facts
 from tests.e2e.exam.observe import (
@@ -64,6 +78,8 @@ CASE_B_EXTERNAL_ID = "M0-761"
 CASE_C_EXTERNAL_ID = "M0-762"
 CASE_U_CODING_EXTERNAL_ID = "M0-763"
 CASE_U_REVIEW_EXTERNAL_ID = "M0-764"
+CASE_D_ASKS_EXTERNAL_ID = "M0-765"
+CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-766"
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,7 @@ def goals_met_probe(
                 watcher=engine.runtime.watcher,
                 parked_screen="",
                 read_checks=False,
+                state_dir=engine.checkout.state_dir,
             )
             if not all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role):
                 return False
@@ -160,6 +177,7 @@ async def _finish(
                     issue_number=item.issue_number,
                 ),
                 extra_pr_numbers=extra_prs.get(item.role, ()),
+                state_dir=engine.checkout.state_dir,
             )
             for item in items
         ),
@@ -431,6 +449,79 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
 
 
 # ---------------------------------------------------------------------------
+# Case D
+# ---------------------------------------------------------------------------
+
+
+async def run_case_d(
+    run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str
+) -> ExamResult:
+    """Two coding agents end by asking the operator; a health review must
+    triage both, and the PR beside the second question must be reviewed.
+
+    The engine plants the fault itself (each coder's own completion puts the
+    question on its issue, with the cause the engine records for an agent's
+    question), so the case grades exactly what porchpin's engine did with it.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_d_engine()
+        config = spec.config(
+            run.base_config,
+            checkout=checkout,
+            run_label=run.run_label,
+            tech_lead_model=tech_lead_model,
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([_labels(config).needs_human])
+            started = time.monotonic()
+            _, asks_number = flow.create_issue(
+                f"[{CASE_D_ASKS_EXTERNAL_ID}] [EXAM-D] An agent asks whether to split its issue",
+                [ASKING_CODER_LABEL, E2E_DATA_LABEL],
+                body=(
+                    "Tech-lead exam case D: the coding agent ends by asking the operator"
+                    " whether to split this issue (porchpin#262's question)."
+                ),
+            )
+            _, beside_number = flow.create_issue(
+                f"[{CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID}] [EXAM-D] An agent asks beside its PR",
+                [ASKING_BESIDE_PR_CODER_LABEL, E2E_DATA_LABEL],
+                body=(
+                    "Tech-lead exam case D: the coding agent publishes its work and asks"
+                    " the maintainer a question beside the PR (porchpin#364 / PR #379)."
+                ),
+            )
+            asks = TrackedItem(ASKS, asks_number, external_id=CASE_D_ASKS_EXTERNAL_ID)
+            beside = TrackedItem(
+                ASKS_BESIDE_PR, beside_number, external_id=CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID
+            )
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, asks, beside),
+                quiet_s=900,
+                timeout_s=80 * 60,
+            )
+            return await _finish(
+                run,
+                engine,
+                items=[asks, beside],
+                extra_prs={},
+                started=started,
+                ended_by=ended_by,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
 # Case U
 # ---------------------------------------------------------------------------
 
@@ -613,3 +704,7 @@ def case_b(config: Config) -> ExamCase:
     return blocked_issue_green_pr_awaiting_review(
         blocked_failed_label=_labels(config).blocked_failed
     )
+
+
+def case_d(config: Config) -> ExamCase:
+    return blocked_items_triaged(needs_human_label=_labels(config).needs_human)

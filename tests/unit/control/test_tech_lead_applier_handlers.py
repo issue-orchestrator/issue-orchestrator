@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_session import OperatorDecision
 from issue_orchestrator.control.actions import (
     Action,
     ActionResult,
@@ -30,6 +31,7 @@ from issue_orchestrator.control.actions import (
     RecordTechLeadDispositionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
     EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
@@ -170,6 +172,17 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 anchor_issue_number=ANCHOR,
                 observed_at="2026-09-27T14:12:09+00:00",
                 source_session_name="tech-lead-12",
+                expected=expected,
+            ),
+            TARGET,
+        ),
+        ActionType.APPLY_OPERATOR_DECISION: (
+            ApplyOperatorDecisionAction(
+                issue_number=TARGET,
+                decision=OperatorDecision(title="Split it", body="Land the slice."),
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                proposal_issue_number=800,
                 expected=expected,
             ),
             TARGET,
@@ -347,6 +360,7 @@ class _Registry:
             request_rework=inert,
             recover_validated_work=inert,
             release_withheld_review=inert,
+            apply_operator_decision=inert,
             events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
             apply_action=inert,
             verify_claim=lambda action, number: None,

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 from .actions import AddCommentAction, ActionResult
 from ..domain.tech_lead_comment import TechLeadCommentIntent
+from .tech_lead_charter_lifecycle import link_filed_proposal, link_or_log
 from .tech_lead_decision_receipt import record_decision_applied
 
 if TYPE_CHECKING:
@@ -61,6 +62,7 @@ def _same_remedy_generation(
         stored.target_terminal_id,
         stored.target_session_type,
         stored.validated_work_authority,
+        stored.decision,
     ) == (
         required.op_type,
         required.target_issue_number,
@@ -68,6 +70,7 @@ def _same_remedy_generation(
         required.target_terminal_id,
         required.target_session_type,
         required.validated_work_authority,
+        required.decision,
     )
 
 
@@ -80,6 +83,10 @@ def _proposal_reuse_stale_reason(
     recovery: TechLeadValidatedWorkRecoveryExecutor | None,
     release: TechLeadReviewReleaseExecutor | None = None,
 ) -> str | None:
+    if stored.op_type == "propose_decision":
+        # Waiting on the operator is all it does until approved; the target's
+        # being open (checked by the caller) is its whole applicability.
+        return None
     if stored.op_type == "release_withheld_review" and release is not None:
         return release.stale_reason(
             stored.target_issue_number, stored.observed_at, stored.source_session_name)
@@ -112,6 +119,10 @@ def _proposal_reuse_stale_reason(
             )
         )
     raise ValueError("proposal reuse has no live applicability owner")
+
+
+def _link_reused(authority: TechLeadAuthorityStore, action: "ReuseTechLeadProposalAction") -> None:
+    link_filed_proposal(authority, action.required_op, action.number)
 
 
 def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
@@ -221,9 +232,18 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
                 release=release,
             )
     if isinstance(action, RequiredIssueCommentAction):
-        return apply_required_issue_comment(
+        result = apply_required_issue_comment(
             action, host=host, guard=guard, post_comment=post_comment, events=events
         )
+        if result.success and isinstance(action, ReuseTechLeadProposalAction):
+            # Only a reuse that verified and published names the proposal on
+            # the re-proposing record (#7593): a failed one filed nothing.
+            assert authority is not None  # validate_proposal_reuse required it
+            link_or_log(
+                lambda: _link_reused(authority, action),
+                f"re-proposal onto #{action.number}",
+            )
+        return result
     # Ordinary comments preserve their reconciliation exception contract.
     guard()
     try:

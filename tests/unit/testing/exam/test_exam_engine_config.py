@@ -32,6 +32,7 @@ from tests.e2e.exam.case_engines import (
     case_a_engine,
     case_b_engine,
     case_c_engine,
+    case_d_engine,
     case_u_engine,
 )
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
@@ -92,8 +93,14 @@ def _load_case_config(
 
 @pytest.mark.parametrize(
     "spec",
-    [case_a_engine(), case_b_engine(), case_c_engine(), case_u_engine(Path("/tmp/exam-u-release"))],
-    ids=["A", "B", "C", "U"],
+    [
+        case_a_engine(),
+        case_b_engine(),
+        case_c_engine(),
+        case_u_engine(Path("/tmp/exam-u-release")),
+        case_d_engine(),
+    ],
+    ids=["A", "B", "C", "U", "D"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -182,3 +189,37 @@ def test_case_u_holds_work_until_released(tmp_path: Path, written: list[Path]) -
     assert "--hold-until" not in loaded.agents[CODER_LABEL].command
     assert held_coder.timeout_minutes == reviewer.timeout_minutes == HELD_SESSION_TIMEOUT_MINUTES
     assert loaded.session_timeout_minutes == HELD_SESSION_TIMEOUT_MINUTES
+
+
+def test_case_d_runs_the_asking_coders_and_a_periodic_health_review(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """#7593: the coders plant the questions themselves; the health review is
+    the run granted blocked items, and the sweep stays out of the way."""
+    from tests.e2e.exam.agents import (
+        ASKING_BESIDE_PR_CODER_LABEL,
+        ASKING_CODER_LABEL,
+        SPLIT_QUESTION,
+    )
+
+    loaded = _load_case_config(case_d_engine(), tmp_path, written)
+
+    asks = loaded.agents[ASKING_CODER_LABEL].command
+    beside = loaded.agents[ASKING_BESIDE_PR_CODER_LABEL].command
+    assert asks is not None and "--asks" in asks and SPLIT_QUESTION.split()[0] in asks
+    assert beside is not None and "--pr-label needs-human" in beside
+    assert loaded.tech_lead.health_review.interval_minutes > 0
+    assert loaded.tech_lead.stuck_sweep.enabled is False
+    for action_type, mode in EXAM_TECH_LEAD_AUTHORITY.items():
+        assert loaded.tech_lead.authority.mode_for(action_type) == mode
+
+
+def test_only_case_d_lets_the_engine_reuse_worktrees() -> None:
+    """#7593: under the e2e fresh-worktree default a health review's anchor
+    refuses its own launch (its branch is marked for preservation), so case D
+    alone runs with reuse on; the other cases keep the default."""
+    checkout = EngineCheckout(root=_TREE, commit="0" * 40)
+    for spec, reuse in ((case_a_engine(), False), (case_b_engine(), False), (case_d_engine(), True)):
+        engine = spec.engine(Config(), checkout)
+        expected = {"ORCHESTRATOR_DISABLE_WORKTREE_REUSE": "0"} if reuse else {}
+        assert dict(engine.process.env_overrides) == expected

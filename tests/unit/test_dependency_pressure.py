@@ -195,7 +195,7 @@ def test_cross_milestone_invalid_chain_cannot_outweigh_a_releasable_chain(sample
     class MilestoneChecker(MockIssueChecker):
         def get_dependency_issue_snapshot(self, issue_number, repo=None):
             if issue_number == 90:
-                return DependencyIssueSnapshot(state="closed", milestone="M2")
+                return DependencyIssueSnapshot(state="open", milestone="M2")
             return super().get_dependency_issue_snapshot(issue_number, repo)
 
     issues = [issue(20), issue(21, "Depends-on: #20\nDepends-on: #90"),

@@ -25,6 +25,20 @@ flowchart TD
 
 **Cycle limits prevent infinite loops.** The orchestrator tracks rework iterations (`rework-cycle-N` labels on GitHub). After `max_rework_cycles` (default: 5), it stops the loop and escalates to a human. For in-process exchange modes, `max_rounds` and `max_no_progress` provide additional stopping conditions — if the reviewer reports no progress for consecutive rounds, the loop stops early.
 
+### A Blocked Issue Withholds Its PR's Review, With One Exception
+
+Review discovery, startup recovery and the review launch all drop a pending
+review whose issue carries a blocking label (`issue_blocked`). One block is
+admitted (#7593, `control/review_question_hold.py`): a `needs-human` held ONLY
+by the coding agent's own question (`coding-done needs_human`, or a reserved
+`needs-human` pr_label routed to the issue). The work is already published on
+its PR, and a reviewed PR is a better basis for the human's answer, so the
+review runs; rework stays withheld, the coder is not relaunched, and the merge
+queue never enqueues a PR whose issue carries `needs-human`, so an approval
+cannot land the work before the human answers. A tech-lead escalation, a sweep
+or liveness cause beside the question, an operator's uncaused `needs-human`, or
+any other blocking label still withholds the review.
+
 ### Internal Review Within a Coder Turn
 
 When `review.internal.enabled` is true, the orchestrator appends the configured

@@ -212,6 +212,9 @@ class IssueAvailabilityDecision:
     reason: AvailabilityReason
     detail: str | None = None
     outside_scope_predecessors: tuple[int, ...] = ()
+    #: The work gate's own typed verdict that a milestone-scope violation
+    #: blocks the issue (#7333); the derived label is reconciled from this.
+    violates_milestone_scope: bool = False
 
     @property
     def is_blocked(self) -> bool:
@@ -383,6 +386,7 @@ class Scheduler:
                     reason=AvailabilityReason.DEPENDENCY_BLOCKED,
                     detail=detail,
                     outside_scope_predecessors=outside_scope,
+                    violates_milestone_scope=report.work_violates_milestone_scope,
                 )
             return IssueAvailabilityDecision(
                 issue=issue, available=True, reason=AvailabilityReason.AVAILABLE

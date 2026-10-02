@@ -36,6 +36,7 @@ from .action_results import ActionResult, ActionResultType
 
 if TYPE_CHECKING:
     from ..domain.action_liveness import LivenessRow
+    from ..domain.tech_lead_session import StoredTechLeadOp
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.tech_lead_charter_ledger import TechLeadCharterLedger
     from .action_base import Action
@@ -60,6 +61,25 @@ def _link(
         action_id=op.source_action_id,
         proposal_issue_number=proposal_issue_number,
         lifecycle=lifecycle,
+        at=_now(),
+    )
+
+
+def link_filed_proposal(
+    authority: "TechLeadAuthorityStore", op: "StoredTechLeadOp", proposal_issue_number: int
+) -> int:
+    """The gated proposal issue exists now: name it on the record that filed it.
+
+    Until then a record "awaiting approval" only says the charter routed the
+    action to the gate; with the issue named it says an operator can act on
+    it (#7593), which is what the improver reads. The triage watermark reads
+    the open op itself, so a failed link here never re-triages the item.
+    """
+    return authority.charter_ledger.link_proposal_outcome(
+        run_id=op.source_run_id,
+        action_id=op.source_action_id,
+        proposal_issue_number=proposal_issue_number,
+        lifecycle=CharterProposalLifecycle.AWAITING_APPROVAL,
         at=_now(),
     )
 

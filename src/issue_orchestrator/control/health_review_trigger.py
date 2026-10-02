@@ -50,6 +50,7 @@ from ..domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from .actions import CreateTechLeadIssueAction, SupportsApplyAction
+from .blocked_item_triage import label_blocked_work_items
 from .board_review_fingerprint import board_review_fingerprint
 from .reconciliation import without_paused_subjects
 from .tech_lead_issue_policy import (
@@ -112,7 +113,11 @@ class HealthReviewDecision:
 
 
 def health_review_decision(
-    config: "Config", state: "OrchestratorState", now: float
+    config: "Config",
+    state: "OrchestratorState",
+    now: float,
+    *,
+    triage_owed: Callable[[], bool] = lambda: False,
 ) -> HealthReviewDecision:
     """Decide whether the periodic review fires, and on which board.
 
@@ -134,7 +139,9 @@ def health_review_decision(
     ``interval_minutes=0``, where it is the only trigger) and must record the
     board it walked.
     """
-    fingerprint = board_review_fingerprint(state, now)
+    fingerprint = board_review_fingerprint(
+        state, now, label_blocked=label_blocked_work_items(config, state)
+    )
     interval_minutes = health_review_interval_minutes(config)
     if interval_minutes <= 0:
         return HealthReviewDecision(due=False, fingerprint=fingerprint)
@@ -143,7 +150,10 @@ def health_review_decision(
     if not fingerprint:
         return HealthReviewDecision(due=False, fingerprint=fingerprint)
     return HealthReviewDecision(
-        due=fingerprint != state.last_reviewed_board_fingerprint,
+        # A blocked item still owed a triage keeps a review due on an unchanged
+        # board (#7593): one deferred by the per-run cap, or whose triage did
+        # not take effect, would otherwise wait for an unrelated change.
+        due=fingerprint != state.last_reviewed_board_fingerprint or triage_owed(),
         fingerprint=fingerprint,
     )
 

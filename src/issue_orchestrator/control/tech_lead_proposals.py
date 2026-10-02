@@ -49,6 +49,8 @@ the whole gated lifecycle:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,6 +62,7 @@ from ..domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
     ApprovedTechLeadOp,
     GatedTechLeadProposal,
+    OperatorDecision,
     StoredTechLeadOp,
     TechLeadCreationOrigin,
     TechLeadSessionGeneration,
@@ -68,6 +71,7 @@ from ..domain.tech_lead_session import (
 from .actions import (
     Action,
     ActionResult,
+    ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
@@ -104,6 +108,8 @@ logger = logging.getLogger(__name__)
 # counts (≤2 anchors + a handful of proposals) are orders of magnitude below.
 TECH_LEAD_PROPOSAL_SCAN_LIMIT = 2000
 
+_MAX_DECISION_TITLE_CHARS = 200
+
 # Human-facing verbs per op type, used in proposal issue titles/bodies.
 # Titles must never contain "Batch Review"/"Tech Lead Review" (the historical
 # batch-anchor title heuristic), and classification additionally excludes
@@ -114,6 +120,7 @@ _OP_TITLES: dict[str, str] = {
     "kill_hung_session": "kill hung session for issue #{target}",
     "recover_validated_work": "recover retained validated work for issue #{target}",
     "release_withheld_review": "release the withheld review of issue #{target}'s PR",
+    "propose_decision": "decide for issue #{target}",
 }
 
 
@@ -176,7 +183,47 @@ def build_stored_tech_lead_op(
         target_session_type=(target_session.task_kind.value if target_session else ""),
         finding_ids=tuple(proposed.finding_ids),
         observed_at=observed_at,
+        decision=operator_decision_of(proposed),
     )
+
+
+def operator_decision_of(proposed: "ProposedTechLeadAction") -> OperatorDecision | None:
+    """The decision a ``propose_decision`` puts to the operator, else None."""
+    if proposed.action_type != "propose_decision":
+        return None
+    return OperatorDecision(
+        title=proposed.title or "", body=proposed.body or "", follow_ups=proposed.follow_up_issues,
+    )
+
+
+def _decision_section(op: StoredTechLeadOp) -> str:
+    """What approving a ``propose_decision`` does, in the operator's words (#7593)."""
+    assert op.decision is not None
+    follow_ups = "".join(
+        f"\n#### Follow-up {index}: {item.title}\n\n{item.body}\n"
+        for index, item in enumerate(op.decision.follow_ups, start=1)
+    )
+    filed = (
+        f"\n### Issues approval files\n{follow_ups}"
+        if op.decision.follow_ups
+        else "\nApproval files no new issue.\n"
+    )
+    return f"""## Decision for #{op.target_issue_number}: {op.decision.title}
+
+{op.decision.body}
+{filed}
+### What approving does
+
+1. Files the issues above, if any, with #{op.target_issue_number}'s own labels
+   and milestone.
+2. Posts this decision on #{op.target_issue_number}, so the session that resumes
+   it works to it.
+3. Retries #{op.target_issue_number} last, through the operator's own retry (its
+   blocking labels come off). If the item closed or is no longer blocked, or a
+   cause the retry may not override (such as a claim quarantine) holds it, the
+   item is not retried and this proposal closes saying so.
+
+"""
 
 
 def _proposal_issue_body(
@@ -231,7 +278,8 @@ def _proposal_issue_body(
             f"| Approved remote baseline | `{remote_head}`;"
             f" PR `{authority.pr_number if authority.pr_number is not None else 'none'}` |\n"
         )
-    return f"""## Gated tech_lead proposal (ADR-0031 §2)
+    decision = _decision_section(op) if op.decision is not None else ""
+    return f"""{decision}## Gated tech_lead proposal (ADR-0031 §2)
 
 A tech_lead session proposed an act-level operation. It is **inert** until a
 human approves it.
@@ -293,6 +341,9 @@ def build_tech_lead_proposal_issue_action(
         now_iso=now_iso,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
+    if op.decision is not None:
+        # GitHub caps a title at 256 characters; the full decision is in the body.
+        title_detail = f"{title_detail}: {op.decision.title}"[:_MAX_DECISION_TITLE_CHARS]
     return CreateTechLeadProposalIssueAction(
         title=f"Tech Lead proposal: {title_detail}",
         body=_proposal_issue_body(
@@ -312,18 +363,47 @@ def build_tech_lead_proposal_issue_action(
     )
 
 
+def proposal_ledger_key(
+    op_type: str,
+    target_issue_number: int,
+    *,
+    rework_request: ReworkRequest | None = None,
+    decision: OperatorDecision | None = None,
+) -> tuple[str, int | str]:
+    """The identity one open proposal owns: the op and what it would do.
+
+    A scoped rework is keyed by its request; an operator decision by its
+    target AND the exact decision (#7593 review F2), because approval executes
+    the stored payload: a re-proposal of a DIFFERENT decision for the same item
+    must not be recorded as awaiting approval on a proposal that would run the
+    old one. Every other op is keyed by its target issue.
+    """
+    if rework_request is not None:
+        return (op_type, rework_request.key)
+    if decision is not None:
+        digest = hashlib.sha256(
+            json.dumps(decision.to_dict(), sort_keys=True).encode()
+        ).hexdigest()[:16]
+        return (op_type, f"{target_issue_number}:{digest}")
+    return (op_type, target_issue_number)
+
+
 def build_op_ledger(
     ops: Iterable[tuple[int, StoredTechLeadOp]],
     receipts: Iterable[ReworkReceipt] = (),
 ) -> dict[tuple[str, int | str], int]:
-    """Project store rows to a (op_type, target) -> proposal-issue map.
+    """Project store rows to a :func:`proposal_ledger_key` -> proposal-issue map.
 
     The store row lifetime IS the "open proposal" window: rows are created
     with the proposal issue and discarded at terminal handling, so this
-    ledger enforces one open proposal per (op, target) without a GitHub read.
+    ledger enforces one open proposal per identity without a GitHub read.
     """
     return {("request_rework", receipt.request.key): receipt.proposal_issue_number for receipt in receipts if receipt.proposal_issue_number} | {
-        (op.op_type, op.rework_request.key if op.rework_request else op.target_issue_number): issue_number for issue_number, op in ops
+        proposal_ledger_key(
+            op.op_type, op.target_issue_number,
+            rework_request=op.rework_request, decision=op.decision,
+        ): issue_number
+        for issue_number, op in ops
     }
 
 
@@ -602,6 +682,20 @@ def plan_approved_tech_lead_op_executions(
                     proposal_issue_number=item.proposal_issue_number,
                     observed_at=op.observed_at,
                     source_session_name=op.source_session_name,
+                    reason=reason,
+                    expected=build_expected_for_mutation(),
+                )
+            )
+        elif op.op_type == "propose_decision":
+            assert op.decision is not None
+            actions.append(
+                ApplyOperatorDecisionAction(
+                    issue_number=op.target_issue_number,
+                    decision=op.decision,
+                    proposal_id=op.source_action_id,
+                    finding_ids=op.finding_ids,
+                    anchor_issue_number=item.proposal_issue_number,
+                    proposal_issue_number=item.proposal_issue_number,
                     reason=reason,
                     expected=build_expected_for_mutation(),
                 )

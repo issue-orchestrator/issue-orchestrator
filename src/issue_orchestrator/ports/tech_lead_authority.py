@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from ..domain.scoped_rework import ReworkReceipt
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
+from .operator_decision_retries import DecisionRetryState
 from .tech_lead_charter_ledger import (
     InMemoryTechLeadCharterLedger,
     TechLeadCharterLedger,
@@ -166,6 +167,17 @@ class TechLeadAuthorityStore(Protocol):
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row. No-op if absent (once-only owner)."""
         ...
+
+    # -- An approved decision's retry, write-ahead (#7593) -----------------
+    # See ports/operator_decision_retries.py; cleared by ``discard_op``.
+
+    def begin_decision_retry(self, *, proposal_issue_number: int) -> None: ...
+
+    def commit_decision_retry(self, *, proposal_issue_number: int) -> None: ...
+
+    def abandon_decision_retry(self, *, proposal_issue_number: int) -> None: ...
+
+    def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None: ...
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
@@ -538,6 +550,7 @@ class InMemoryTechLeadAuthorityStore:
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], "TechLeadLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTechLeadOp"] = {}
+        self._decision_retries: dict[int, DecisionRetryState] = {}
         self._pending_proposals: dict[str, PendingTechLeadProposal] = {}
         self._rework_receipts: dict[str, ReworkReceipt] = {}
         self._patterns: dict[str, int] = {}
@@ -629,6 +642,19 @@ class InMemoryTechLeadAuthorityStore:
 
     def discard_op(self, *, issue_number: int) -> None:
         self._ops.pop(issue_number, None)
+        self._decision_retries.pop(issue_number, None)
+
+    def begin_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries[proposal_issue_number] = DecisionRetryState.BEGUN
+
+    def commit_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries[proposal_issue_number] = DecisionRetryState.COMMITTED
+
+    def abandon_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries.pop(proposal_issue_number, None)
+
+    def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None:
+        return self._decision_retries.get(proposal_issue_number)
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))

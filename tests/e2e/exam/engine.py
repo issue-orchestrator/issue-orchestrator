@@ -12,12 +12,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
+from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.e2e.exam.agents import (
+    ASKING_BESIDE_PR_CODER_LABEL,
+    ASKING_CODER_LABEL,
     CODER_LABEL,
+    SPLIT_QUESTION,
     HELD_CODER_LABEL,
     REVIEWER_LABEL,
     TECH_LEAD_LABEL,
@@ -55,8 +59,13 @@ def exam_config(
     reviewer_exchange_fault: str,
     tech_lead_model: str | None = None,
     release_file: Path | None = None,
+    asking_coders: bool = False,
 ) -> Config:
     """The e2e session config, pointed at the checkout, with exam agents.
+
+    With ``asking_coders`` (Case D), two more coders end by asking the
+    operator a question: ``ASKING_CODER_LABEL`` with no commit, and
+    ``ASKING_BESIDE_PR_CODER_LABEL`` beside a PR of its published work.
 
     With ``release_file``, work is held mid-flight until the file exists:
     every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
@@ -112,6 +121,22 @@ def exam_config(
             provider_args={"permission_mode": "bypassPermissions"},
             reviewer=REVIEWER_LABEL,
         )
+    if asking_coders:
+        needs_human = LabelManager(config).needs_human
+        for label, command in (
+            (ASKING_CODER_LABEL, shim_command("coder", asks=SPLIT_QUESTION)),
+            (ASKING_BESIDE_PR_CODER_LABEL, shim_command("coder", pr_labels=(needs_human,))),
+        ):
+            config.agents[label] = AgentConfig(
+                prompt_path=prompt,
+                timeout_minutes=3,
+                model="sonnet",
+                command=command,
+                meta_agent="claude-code",
+                ai_system="claude-code",
+                provider_args={"permission_mode": "bypassPermissions"},
+                reviewer=REVIEWER_LABEL,
+            )
     if tech_lead_model:
         config.agents[TECH_LEAD_LABEL] = AgentConfig(
             prompt_path=checkout.root / TECH_LEAD_PROMPT,
@@ -138,6 +163,7 @@ class ExamEngine:
         checkout: EngineCheckout,
         *,
         overlay: Mapping[str, Any],
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.checkout = checkout
@@ -146,6 +172,7 @@ class ExamEngine:
             checkout.root,
             source_root=checkout.root,
             config_overlay=merge_config_overlay(EXAM_BASE_OVERLAY, overlay),
+            env_overrides=env,
         )
         self._runtime: OrchestratorRuntime | None = None
 

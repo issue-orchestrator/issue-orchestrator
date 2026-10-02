@@ -174,10 +174,11 @@ validation:
         max_merges_since_success: 10
         max_delay_hours: 24
     tech-lead-exam:
-      # The live tech-lead exam (#7304): plants known faults (A/B/C) and an
+      # The live tech-lead exam (#7304): plants known faults (A/B/C/D) and an
       # upgrade with work in flight (U), runs the real engine and tech lead
       # against GitHub, and grades the outcome. It costs real model calls and
-      # GitHub budget (~45 min for all four cases), so it runs on this cadence
+      # GitHub budget (~45 min for A/B/C/U, up to 80 more for D's two health
+      # reviews, #7593), so it runs on this cadence
       # rather than in the PR gate; a failure narrows to the regressing merge.
       enabled: true
       # Case U upgrades from ten merges back: the span one cadence covers.
@@ -185,7 +186,7 @@ validation:
       setup_command: [make, venv-fast]
       issue_agent_label: agent:backend
       branch: main
-      timeout_seconds: 5400
+      timeout_seconds: 10800
       cadence:
         max_merges_since_success: 10
         max_delay_hours: 24

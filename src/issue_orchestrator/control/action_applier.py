@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
     from .tech_lead_validated_work_recovery import TechLeadValidatedWorkRecoveryExecutor
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
+    from .tech_lead_operator_decision import OperatorDecisionExecutor
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
 from .label_mutation_stats import LabelMutationStatField, LabelMutationStats
@@ -108,6 +109,7 @@ from .actions import (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
     RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
@@ -146,6 +148,7 @@ _TechLeadOpAction = TypeVar(
     RequestReworkAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
 )
 @dataclass
 class ActionApplier:
@@ -217,6 +220,7 @@ class ActionApplier:
     request_rework: Optional["RequestReworkExecutor"] = None
     recover_validated_work: Optional["TechLeadValidatedWorkRecoveryExecutor"] = None
     release_withheld_review: Optional["TechLeadReviewReleaseExecutor"] = None
+    apply_operator_decision: Optional["OperatorDecisionExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     pattern_registry: Optional["PatternCaseFileRegistry"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
@@ -319,10 +323,11 @@ class ActionApplier:
                 recover_validated_work=self._tech_lead_op(RecoverValidatedWorkAction, lambda: self.recover_validated_work),
                 release_withheld_review=self._tech_lead_op(
                     ReleaseWithheldReviewAction, lambda: self.release_withheld_review),
+                apply_operator_decision=self._tech_lead_op(ApplyOperatorDecisionAction, lambda: self.apply_operator_decision),
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
-                require_mutation_authority=self._require_mutation_authority,
+                require_mutation_authority=self.require_mutation_authority,
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,
                 pattern_registry=self.pattern_registry,
@@ -637,42 +642,12 @@ class ActionApplier:
         assert self.repository_host is not None, (
             "repository_host required for enqueue_to_merge_queue"
         )
-
+        assert self.label_manager is not None, "label_manager required for the enqueue's human hold"
         # Enqueue is a GitHub write on a (possibly still-claimed) issue.
         self._verify_claim_before_write(action, action.issue_number)
-
-        try:
-            self.repository_host.enqueue_to_merge_queue(action.pr_number)
-        except Exception as e:
-            logger.error(
-                issue_log(action.issue_number, "Failed to enqueue PR #%d to merge queue: %s"),
-                action.pr_number,
-                e,
-                exc_info=True,
-            )
-            return ActionResult.fail(
-                action,
-                f"PR #{action.pr_number} merge-queue enqueue failed: {e}",
-                pr_number=action.pr_number,
-            )
-
-        logger.info(
-            issue_log(action.issue_number, "Enqueued PR #%d to merge queue"),
-            action.pr_number,
-        )
-        self.events.publish(make_trace_event(
-            EventName.MERGE_QUEUE_ENQUEUED,
-            {
-                "issue_number": action.issue_number,
-                "issue_key": action.issue_key or str(action.issue_number),
-                "pr_number": action.pr_number,
-                "pr_url": action.pr_url,
-            },
-        ))
-        return ActionResult.ok(
-            action,
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
+        from .merge_queue_coordinator import apply_enqueue_to_merge_queue
+        return apply_enqueue_to_merge_queue(
+            action, host=self.repository_host, labels=self.label_manager, events=self.events
         )
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
@@ -686,7 +661,7 @@ class ActionApplier:
 
         def before_write() -> None:
             if isinstance(action, FoldCaseFileIssueAction):
-                self._require_mutation_authority(action, action.issue_number)
+                self.require_mutation_authority(action, action.issue_number)
             else:
                 self._verify_claim_before_write(action, action.issue_number)
 
@@ -749,7 +724,7 @@ class ActionApplier:
         """
         self._gate.require_expected(action, issue_number)
 
-    def _require_mutation_authority(self, action: Action, issue_number: int) -> None:
+    def require_mutation_authority(self, action: Action, issue_number: int) -> None:
         """Recheck board expectations and claim ownership immediately before a write."""
         self._require_expected(action, issue_number)
         self._verify_claim_before_write(action, issue_number)
@@ -1497,8 +1472,8 @@ class ActionApplier:
             pattern_registry=self.pattern_registry,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
-            before_case_file_write=lambda: self._require_mutation_authority(action, reconciliation_subject_for(action)),
-            proposal_guard=self._require_mutation_authority,
+            before_case_file_write=lambda: self.require_mutation_authority(action, reconciliation_subject_for(action)),
+            proposal_guard=self.require_mutation_authority,
             expedite_lane=self.expedite_lane,
         )
 
@@ -1532,7 +1507,7 @@ class ActionApplier:
     def require_scoped_rework_authority(self, parent: RequestReworkAction) -> None:
         """Capability shared by typed mutations and owner-governed effects."""
         for number in (parent.issue_number, parent.request.target.pr_number):
-            self._require_mutation_authority(parent, number)
+            self.require_mutation_authority(parent, number)
 
     def _apply_request_rework(self, action: Action) -> ActionResult:
         assert isinstance(action, RequestReworkAction)

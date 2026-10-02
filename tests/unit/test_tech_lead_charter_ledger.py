@@ -835,3 +835,45 @@ def test_decisions_filed_as_a_proposal_are_read_by_its_number(store) -> None:
     _ledger(store).record_decisions([filed, *noise])
 
     assert _ledger(store).list_filed_as_proposal(900, limit=1) == (filed,)
+
+
+
+def test_the_latest_triage_survives_any_amount_of_later_history(store) -> None:
+    """#7593 review F6: 50 newer non-triage decisions must not hide an item's
+    triage, or an unchanged item whose triage is in force is triaged again."""
+    from dataclasses import replace
+
+    from issue_orchestrator.domain.tech_lead_artifacts import TriageClass
+
+    ledger = _ledger(store)
+    triage = replace(
+        _decision("A1", "escalate_to_human", at="2026-09-26T09:00:00+00:00"),
+        triage_class=TriageClass.HUMAN_HAND_OVER, triage_fingerprint="needs-human",
+    )
+    later = [
+        _decision(f"A{n}", "post_comment", run_id=f"run-{n}", at=f"2026-09-26T10:{n:02d}:00+00:00")
+        for n in range(2, 55)
+    ]
+    ledger.record_decisions([triage, *later])
+
+    found = ledger.latest_triage_for_issue(13)
+
+    assert found is not None and found.decision_id == triage.decision_id
+    assert ledger.latest_triage_for_issue(14) is None
+
+
+def test_a_decision_retry_is_bracketed_until_its_op_is_discarded(store) -> None:
+    """#7593 review r2/r3: the write-ahead record an approved decision's replay reads."""
+    from issue_orchestrator.ports.operator_decision_retries import DecisionRetryState
+
+    assert store.decision_retry_state(proposal_issue_number=950) is None
+    store.begin_decision_retry(proposal_issue_number=950)
+    assert store.decision_retry_state(proposal_issue_number=950) is DecisionRetryState.BEGUN
+    store.commit_decision_retry(proposal_issue_number=950)
+    assert store.decision_retry_state(proposal_issue_number=950) is DecisionRetryState.COMMITTED
+    assert store.decision_retry_state(proposal_issue_number=951) is None
+    store.begin_decision_retry(proposal_issue_number=951)
+    store.abandon_decision_retry(proposal_issue_number=951)
+    assert store.decision_retry_state(proposal_issue_number=951) is None
+    store.discard_op(issue_number=950)
+    assert store.decision_retry_state(proposal_issue_number=950) is None

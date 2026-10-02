@@ -54,8 +54,14 @@ def evaluate_review_validity(
     issue: LabelledIssue | None,
     pr: "PRInfo | None" = None,
     review_label_confirmed: bool = False,
+    review_admitted_blocks: frozenset[str] = frozenset(),
 ) -> ReviewValidity:
-    """Return whether a review is still valid for queue/launch processing."""
+    """Return whether a review is still valid for queue/launch processing.
+
+    ``review_admitted_blocks`` are casefolded issue blocks the review may run
+    over, as decided by :mod:`.review_question_hold` (an agent's own open
+    question, #7593). They still hold everything else.
+    """
     issue_labels = tuple(issue.labels) if issue is not None else ()
     pr_labels = tuple(pr.labels) if pr is not None else ()
 
@@ -112,7 +118,11 @@ def evaluate_review_validity(
             pr_labels=pr_labels,
         )
 
-    issue_blocking = tuple(label_manager.get_blocking(issue.labels))
+    issue_blocking = tuple(
+        label
+        for label in label_manager.get_blocking(issue.labels)
+        if label.casefold() not in review_admitted_blocks
+    )
     if issue_blocking:
         return ReviewValidity(
             valid=False,
@@ -169,6 +179,7 @@ def evaluate_review_withholding(
     issue: LabelledIssue,
     pr: "PRInfo",
     block_label: str,
+    review_admitted_blocks: frozenset[str] = frozenset(),
 ) -> ReviewWithholding:
     """Whether ``block_label`` on ``issue`` is all that keeps ``pr`` from review.
 
@@ -179,10 +190,12 @@ def evaluate_review_withholding(
     released = _IssueLabels(tuple(name for name in issue.labels if name.casefold() != folded))
     return ReviewWithholding(
         current=evaluate_review_validity(
-            config=config, label_manager=label_manager, issue=issue, pr=pr
+            config=config, label_manager=label_manager, issue=issue, pr=pr,
+            review_admitted_blocks=review_admitted_blocks,
         ),
         without_block=evaluate_review_validity(
-            config=config, label_manager=label_manager, issue=released, pr=pr
+            config=config, label_manager=label_manager, issue=released, pr=pr,
+            review_admitted_blocks=review_admitted_blocks,
         ),
         block_label=block_label,
     )

@@ -1748,6 +1748,7 @@ def test_every_decision_action_type_has_a_declared_authority() -> None:
     from issue_orchestrator.infra.config_models_tech_lead import (
         TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS,
         TECH_LEAD_AUTHORITY_FLOOR_ACTIONS,
+        TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS,
     )
     from issue_orchestrator.domain.tech_lead_artifacts import (
         VALID_TECH_LEAD_ACTION_TYPES,
@@ -1755,8 +1756,17 @@ def test_every_decision_action_type_has_a_declared_authority() -> None:
 
     floor = set(TECH_LEAD_AUTHORITY_FLOOR_ACTIONS)
     configurable = set(TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS)
-    assert floor | configurable == set(VALID_TECH_LEAD_ACTION_TYPES)
+    operator = set(TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS)
+    assert floor | configurable | operator == set(VALID_TECH_LEAD_ACTION_TYPES)
     assert floor & configurable == set()
+    assert operator & (floor | configurable) == set()
+
+
+def test_an_operator_decision_is_always_proposed() -> None:
+    """#7593: no dial lets the tech lead decide what is the operator's call."""
+    from issue_orchestrator.infra.config_models_tech_lead import TechLeadAuthorityConfig
+
+    assert TechLeadAuthorityConfig().mode_for("propose_decision") == "propose"
 
 
 class TestCreateIssueExpediteProducer:
