@@ -199,13 +199,31 @@ def triage_owed(
     return bool(owed)
 
 
-#: ``(target issue, op type) -> proposal issue`` of every open gated proposal.
-OpenProposals = Mapping[tuple[int, str], int]
+@dataclass(frozen=True)
+class OpenProposals:
+    """Every open gated proposal, by the decision that filed it (#7593 r4/r6)."""
+
+    #: ``(source run, source action) -> proposal issue``: the decision that
+    #: filed each open proposal (its op's own identity).
+    by_source: Mapping[tuple[str, str], int]
+    #: Every open proposal issue, for a record linked to one it joined.
+    numbers: frozenset[int]
+
+    def for_record(self, run_id: str, action_id: str, linked: int | None) -> int | None:
+        """The open proposal a triage record's decision is waiting on, else None."""
+        filed = self.by_source.get((run_id, action_id))
+        if filed is not None:
+            return filed
+        return linked if linked in self.numbers else None
 
 
 def open_proposal_index(authority: "TechLeadAuthorityStore") -> OpenProposals:
-    """Every open gated proposal by what it would do to which item (#7593 r4)."""
-    return {(op.target_issue_number, op.op_type): number for number, op in authority.list_ops()}
+    """Every open gated proposal in the durable op ledger (#7593 review r4)."""
+    ops = authority.list_ops()
+    return OpenProposals(
+        by_source={(op.source_run_id, op.source_action_id): number for number, op in ops},
+        numbers=frozenset(number for number, _op in ops),
+    )
 
 
 def prior_triage(
@@ -215,8 +233,10 @@ def prior_triage(
 
     The op ledger is the durable record of a filed proposal, so it, not the
     charter record's best-effort link, says whether the operator has one to
-    answer: a proposal filed while its link failed still counts, one never
-    filed (or already finalized) does not (#7593 review r4).
+    answer: the proposal THIS decision filed (by the op's source run and
+    action), or the one it joined by reuse (its link) while that is open. An
+    older proposal for the same item never stands in for a newer decision
+    whose filing failed (#7593 review r4/r6).
     """
     latest = ledger.latest_triage_for_issue(issue_number)
     if latest is None:
@@ -230,7 +250,7 @@ def prior_triage(
         decided_at=latest.decided_at,
         fingerprint=latest.triage_fingerprint,
         proposal_issue_number=(
-            open_proposals.get((issue_number, latest.action_kind))
+            open_proposals.for_record(latest.run_id, latest.action_id, latest.proposal_issue_number)
             if awaiting
             else latest.proposal_issue_number
         ),

@@ -13,6 +13,7 @@ from issue_orchestrator.control.actions import (
     CreateTechLeadProposalIssueAction,
 )
 from issue_orchestrator.control.blocked_item_triage import (
+    OpenProposals,
     StateBlockedItemTriage,
     triage_coverage_violation,
 )
@@ -132,6 +133,13 @@ def _triage_record(
     )
 
 
+_NO_OPEN_PROPOSALS = OpenProposals(by_source={}, numbers=frozenset())
+
+
+def _filed_by(source: tuple[str, str], proposal: int) -> OpenProposals:
+    return OpenProposals(by_source={source: proposal}, numbers=frozenset({proposal}))
+
+
 @dataclass
 class _Authority:
     """The two reads ``triage_owed`` makes of the authority store."""
@@ -149,7 +157,7 @@ def _owner(
     causes: dict[int, frozenset[NeedsHumanCause]] | None = None,
     ledger: _Ledger | None = None,
     timeline: dict[int, list[TimelineRecord]] | None = None,
-    open_proposals: dict[tuple[int, str], int] | None = None,
+    open_proposals: OpenProposals | None = None,
 ) -> StateBlockedItemTriage:
     state = OrchestratorState()
     state.cached_scope_issues = issues
@@ -160,7 +168,7 @@ def _owner(
         labels=LabelManager(config),
         needs_human_causes=lambda numbers: {n: (causes or {}).get(n, frozenset()) for n in numbers},
         charter_ledger=ledger or _Ledger(),
-        open_proposals=lambda: open_proposals or {},
+        open_proposals=lambda: open_proposals or _NO_OPEN_PROPOSALS,
         timeline_reader=lambda number, limit: (timeline or {}).get(number, []),
     )
 
@@ -229,7 +237,7 @@ def test_an_unchanged_item_is_not_triaged_again_while_its_triage_is_in_force(
     ledger = _Ledger({262: [_triage_record(262, triage_class, "needs-human", effect=effect)]})
     owner = _owner(
         [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
-        open_proposals={(262, "propose_decision"): 950} if effect == "awaiting_approval" else None,
+        open_proposals=_filed_by(("run", "A1"), 950) if effect == "awaiting_approval" else None,
     )
 
     agenda = owner.agenda(anchor_issue_number=ANCHOR)
@@ -254,19 +262,52 @@ def test_a_proposal_that_never_got_filed_is_not_a_triage_in_force() -> None:
 @pytest.mark.parametrize("linked", [True, False])
 def test_a_filed_proposal_is_in_force_by_its_open_op_whatever_the_link(linked: bool) -> None:
     """#7593 review r4: the proposal was filed and its op recorded, but linking
-    its number onto the charter record failed (or did not). The open op is
-    the durable fact: no second health review triages the item."""
+    its number onto the charter record failed (or did not). The open op this
+    decision filed is the durable fact: no second health review triages it."""
     ledger = _Ledger({262: [_triage_record(
         262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval", filed=linked,
     )]})
     owner = _owner(
         [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
-        open_proposals={(262, "propose_decision"): 950},
+        open_proposals=_filed_by(("run", "A1"), 950),
     )
 
     agenda = owner.agenda(anchor_issue_number=ANCHOR)
 
     assert agenda.in_force == (262,) and agenda.items == ()
+
+
+def test_a_reused_proposal_is_in_force_by_its_link_while_it_is_open() -> None:
+    """A re-proposal that joined an open proposal by reuse names it on its
+    record; it is in force while that proposal is open."""
+    ledger = _Ledger({262: [_triage_record(
+        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval",
+    )]})
+    owner = _owner(
+        [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
+        open_proposals=_filed_by(("older-run", "A4"), 950),
+    )
+
+    assert owner.agenda(anchor_issue_number=ANCHOR).in_force == (262,)
+
+
+def test_an_older_proposal_never_stands_in_for_a_newer_decision_that_was_not_filed() -> None:
+    """#7593 review r6: an older proposal for #262 is still open; the block
+    changed, the tech lead proposed a different decision, and filing it
+    failed. The newer decision has no proposal: #262 is owed a triage."""
+    ledger = _Ledger({262: [_triage_record(
+        262, TriageClass.OPERATOR_DECISION, "blocked-failed,needs-human",
+        effect="awaiting_approval", filed=False,
+    )]})
+    owner = _owner(
+        [_issue(262, "agent:backend", "needs-human", "blocked-failed")], ledger=ledger,
+        open_proposals=_filed_by(("older-run", "A4"), 940),
+    )
+
+    [item] = owner.agenda(anchor_issue_number=ANCHOR).items
+
+    assert item.issue_number == 262
+    assert item.prior is not None and item.prior.proposal_issue_number is None
 
 
 def test_a_linked_proposal_whose_op_is_gone_is_not_in_force() -> None:
