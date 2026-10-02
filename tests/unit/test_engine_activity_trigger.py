@@ -45,6 +45,7 @@ class Engines:
         self.completions = 2
         self.anomalies: tuple[str, ...] = ("parked_action|#320|publish:fp1",)
         self.engines_running = True
+        self.unidentified: tuple[str, ...] = ()
         self.looks: list[datetime] = []
         self.since: list[datetime] = []
 
@@ -55,7 +56,7 @@ class Engines:
             (EngineActivity(PORCHPIN, "porchpin/porchpin", self.decisions, self.completions, self.anomalies),)
             if self.engines_running else ()
         )
-        return EngineActivityObservation(observed_at=now, engines=engines)
+        return EngineActivityObservation(observed_at=now, engines=engines, unidentified=self.unidentified)
 
 
 class Clock:
@@ -238,6 +239,22 @@ def test_with_no_successful_run_engines_are_observed_over_the_window() -> None:
     cadence = EngineActivityCadence(24)
 
     assert cadence.observe_since(now=NOW, baseline=None) == NOW - timedelta(hours=24)
+
+
+def test_an_engine_that_cannot_be_identified_makes_the_suite_due(world, tmp_path: Path) -> None:
+    """r4 F2: a running engine without a start record of this version has
+    unknown activity; a run reports it (unavailable) instead of silence."""
+    store, repo, executor, engines, clock, cycle, suite = world
+    engines.unidentified = ("/repos/old/.issue-orchestrator/state",)
+    clock.now = NOW + timedelta(hours=24)
+
+    cycle.run((suite,))
+
+    assert executor.calls == ["0", "0"]
+    # and the observation keeps it through the store
+    files = FileBudgetedValidationStore(tmp_path)
+    _cycle(files, repo, RecordedProbe(), engines, clock).run((suite,))
+    assert files.read(suite).last_activity_probe.unidentified == engines.unidentified
 
 
 def test_a_ledger_that_shrank_or_went_unread_is_not_activity() -> None:

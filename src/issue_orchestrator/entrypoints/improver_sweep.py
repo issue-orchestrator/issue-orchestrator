@@ -49,6 +49,9 @@ class ImproverSweepResult:
     #: Engines in scope that could not be audited (no start record to say
     #: which repository they work): the sweep is not green while any exists.
     unidentified: tuple[UnidentifiedEngine, ...] = ()
+    #: Engines that ran lately but not since their last accepted run (an
+    #: operator's manual run, say, already audited what they did).
+    already_audited: tuple[EngineRef, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -58,8 +61,11 @@ class ImproverSweepResult:
         codes = {run.exit_code if self.apply else run.outcome.exit_code for run in self.runs}
         if EXIT_REJECTED in codes:
             return EXIT_REJECTED
-        green = bool(self.runs) and not self.unidentified and codes == {EXIT_OK}
-        return EXIT_OK if green else EXIT_UNAVAILABLE
+        if self.unidentified or codes - {EXIT_OK}:
+            return EXIT_UNAVAILABLE
+        # Green when every engine in scope was audited, now or by an accepted
+        # run since it last wrote; no engine in scope at all is not.
+        return EXIT_OK if self.runs or self.already_audited else EXIT_UNAVAILABLE
 
 
 class ImproverSweep:
@@ -77,7 +83,7 @@ class ImproverSweep:
         self._clock = clock
 
     def sweep(self, request: ImproverSweepRequest, *, apply: bool = True) -> ImproverSweepResult:
-        engines, unidentified = self._engines(self._clock() - request.recent)
+        engines, already, unidentified = self._engines(self._clock() - request.recent)
         runs = tuple(
             self._run_for(engine).run(
                 ImproverRunRequest(
@@ -91,23 +97,31 @@ class ImproverSweep:
             )
             for engine in engines
         )
-        return ImproverSweepResult(engines=engines, runs=runs, apply=apply, unidentified=unidentified)
+        return ImproverSweepResult(
+            engines=engines, runs=runs, apply=apply, unidentified=unidentified, already_audited=already,
+        )
 
     def _engines(
         self, floor: datetime
-    ) -> tuple[tuple[EngineRef, ...], tuple[UnidentifiedEngine, ...]]:
-        """Each engine that ran since its last accepted run (or ``floor``)."""
+    ) -> tuple[tuple[EngineRef, ...], tuple[EngineRef, ...], tuple[UnidentifiedEngine, ...]]:
+        """The engines to audit, those an accepted run audited since they
+        last ran, and those that cannot be identified. An engine never
+        accepted counts if it ran since ``floor``."""
         audited: dict[str, datetime] = {}
-        for run in self._runs.runs():  # newest first
-            if run.outcome is RunOutcome.ACCEPTED:
-                audited.setdefault(run.engine_id, run.started_at)
-        read = self._inventory.engines(since=min((floor, *audited.values())))
-        engines = tuple(
-            sighting.engine
-            for sighting in read.sightings
-            if sighting.active_since(audited.get(sighting.engine.engine_id, floor))
+        accepted = [run for run in self._runs.runs() if run.outcome is RunOutcome.ACCEPTED]
+        for run in accepted:  # newest first
+            audited.setdefault(run.engine_id, run.started_at)
+        # Back to the OLDEST accepted run: an engine that last wrote before
+        # its latest accepted run (a manual run audited it) is still seen, so
+        # the sweep can say it is already audited rather than not in scope.
+        read = self._inventory.engines(since=min((floor, *(r.started_at for r in accepted))))
+        due = tuple(
+            s for s in read.sightings if s.active_since(audited.get(s.engine.engine_id, floor))
         )
-        return engines, read.unidentified
+        already = tuple(
+            s.engine for s in read.sightings if s not in due and s.engine.engine_id in audited
+        )
+        return tuple(s.engine for s in due), already, read.unidentified
 
 
 __all__ = ["ImproverSweep", "ImproverSweepRequest", "ImproverSweepResult"]

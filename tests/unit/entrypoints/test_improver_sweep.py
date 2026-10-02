@@ -97,7 +97,7 @@ def _sweep(
             agent=agent,
             effects=ImproverEffects(store=store, host=FakeIssueHost(), outputs_repo=OUTPUTS, clock=lambda: NOW),
             prompt="PROMPT",
-            clock=lambda: NOW,
+            clock=lambda: now,
         )
 
     return ImproverSweep(inventory=inventory, runs=store, run_for=run_for, clock=lambda: now)
@@ -159,6 +159,31 @@ def test_an_engine_that_acted_after_its_last_accepted_run_is_swept_however_long_
     assert later.asked == [min(accepted_at.values())]
 
 
+def test_activity_a_manual_run_already_audited_makes_the_scheduled_sweep_green(
+    two_engines: tuple[EngineRef, EngineRef], tmp_path: Path
+) -> None:
+    """r4 F1: porchpin acted, an operator's manual run accepted an audit of it,
+    then it stopped. The scheduled sweep audits nothing new and is green, so
+    the budgeted watermark is consumed instead of failing every window."""
+    from datetime import timedelta as td
+
+    _, porchpin = two_engines
+    store = MemoryRunStore(tmp_path / "store")
+    scheduled_at, manual_at = NOW - td(hours=2), NOW
+    _sweep(store, EmptyFindingsAgent(), Inventory(porchpin), now=scheduled_at).sweep(_request())
+    _sweep(store, EmptyFindingsAgent(), Inventory(porchpin), now=manual_at).sweep(_request())
+    # porchpin acted between the two, then stopped.
+    stopped = Inventory(porchpin, written={porchpin.engine_id: NOW - td(hours=1)})
+    agent = EmptyFindingsAgent()
+
+    # Two days on: its last write is outside the 24-hour floor too.
+    result = _sweep(store, agent, stopped, now=NOW + td(days=2)).sweep(_request())
+
+    assert result.runs == () and agent.engines == []
+    assert result.already_audited == (porchpin,)
+    assert result.exit_code == EXIT_OK
+
+
 def test_an_engine_that_cannot_be_identified_keeps_the_sweep_from_green(
     two_engines: tuple[EngineRef, EngineRef], tmp_path: Path
 ) -> None:
@@ -200,4 +225,20 @@ def test_the_activity_probe_reads_every_engine_from_copies(
     assert target is not None and target.repo == "porchpin/porchpin"
     assert target.decisions == 2  # both recorded charter decisions, not just the window's
     assert target.completions is None  # no validated work store: unobserved, never zero
+    assert observation.unidentified == ()
     assert _fingerprint(porchpin.state_dir) == before
+
+
+def test_the_probe_reports_an_engine_it_cannot_identify(tmp_path: Path) -> None:
+    """r4 F2: the trigger sees an unidentified engine rather than nothing."""
+    from issue_orchestrator.domain.engine_activity import UnidentifiedEngine
+
+    state = tmp_path / "old" / ".issue-orchestrator" / "state"
+
+    class OnlyOld:
+        def engines(self, *, since: datetime) -> EngineInventoryRead:
+            return EngineInventoryRead(sightings=(), unidentified=(UnidentifiedEngine(state, "no record"),))
+
+    observation = SnapshotEngineActivityProbe(OnlyOld()).observe(now=NOW, since=NOW - timedelta(hours=24))
+
+    assert observation.engines == () and observation.unidentified == (str(state),)

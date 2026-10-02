@@ -137,10 +137,15 @@ class EngineActivityObservation:
 
     observed_at: datetime
     engines: tuple[EngineActivity, ...]
+    #: In-scope engines whose identity could not be read (their state
+    #: directories): their activity is unknown, never "none".
+    unidentified: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None:
             raise ValueError("an activity observation must be timezone-aware")
+        if tuple(sorted(set(self.unidentified))) != self.unidentified:
+            raise ValueError("unidentified engines must be sorted and distinct")
         ids = [engine.engine_id for engine in self.engines]
         if len(ids) != len(set(ids)):
             raise ValueError("an observation holds each engine once")
@@ -212,8 +217,10 @@ class EngineActivityCadence:
         self, *, observation: EngineActivityObservation,
         baseline: EngineActivityObservation | None,
     ) -> bool:
-        """Some engine did something since the last successful run's watermark."""
-        return bool(observation.active_since(baseline))
+        """Some engine did something since the last successful run's
+        watermark, or an engine in scope cannot be read at all: a run then
+        reports it (unavailable) rather than the improver staying silent."""
+        return bool(observation.active_since(baseline)) or bool(observation.unidentified)
 
 
 def _require_aware(*instants: datetime | None) -> None:

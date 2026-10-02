@@ -54,6 +54,7 @@ def _decode_activity(data: dict | None) -> EngineActivityObservation | None:
             )
             for engine in data["engines"]
         ),
+        unidentified=tuple(data["unidentified"]),
     )
 
 

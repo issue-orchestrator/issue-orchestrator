@@ -51,7 +51,11 @@ class SnapshotEngineActivityProbe:
                 )
                 report = audit_engine(snapshot.audit, now=now, window=ACTIVITY_AUDIT_WINDOW)
             engines.append(engine_activity(engine, report))
-        return EngineActivityObservation(observed_at=now, engines=tuple(engines))
+        return EngineActivityObservation(
+            observed_at=now,
+            engines=tuple(engines),
+            unidentified=tuple(sorted({str(m.state_dir) for m in read.unidentified})),
+        )
 
 
 __all__ = ["ACTIVITY_AUDIT_WINDOW", "ACTIVITY_LOG_TAIL_BYTES", "SnapshotEngineActivityProbe"]
