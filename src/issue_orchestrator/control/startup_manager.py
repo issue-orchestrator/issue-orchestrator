@@ -58,7 +58,8 @@ from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
-from .review_question_hold import NO_REVIEW_ADMITTED_BLOCKS, ReviewQuestionHolds
+from .needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES, SharedNeedsHumanBlock
+from .review_question_hold import AgentQuestionReviewHolds
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from .retrospective_review import discover_retrospective_review_issues
@@ -104,7 +105,7 @@ class StartupManager:
         issue_run_ledger: "IssueRunLedger | None" = None,
         *,
         pending_work_claims: "PendingWorkClaimStore",
-        review_question_holds: ReviewQuestionHolds = NO_REVIEW_ADMITTED_BLOCKS,
+        needs_human_block: "SharedNeedsHumanBlock" = NO_OTHER_NEEDS_HUMAN_CAUSES,
     ):
         """Initialize the startup manager.
 
@@ -152,7 +153,7 @@ class StartupManager:
         # review; ending them must retire their durable claims too (#7348).
         self._pending_work_claims = pending_work_claims
         # The owner of which issue blocks a review may run over (#7593).
-        self._review_question_holds = review_question_holds
+        self._review_question_holds = AgentQuestionReviewHolds(needs_human_block, self._lm)
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,

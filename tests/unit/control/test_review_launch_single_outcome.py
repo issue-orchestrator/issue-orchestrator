@@ -263,7 +263,7 @@ def test_one_queued_review_is_one_attempt_and_one_success(
 
 
 def _startup_manager(
-    config: Config, *, issue_labels: tuple[str, ...] = (), review_question_holds=None,
+    config: Config, *, issue_labels: tuple[str, ...] = (), needs_human_block=None,
 ) -> StartupManager:
     """The real startup recovery over a host that shows one PR awaiting review."""
     host = MagicMock()
@@ -305,7 +305,7 @@ def _startup_manager(
         issue_fetch_resilience=IssueFetchResilience("test/repo"),
         startup_worktree_reconciler=reconciler,
         pending_work_claims=MagicMock(),
-        **({} if review_question_holds is None else {"review_question_holds": review_question_holds}),
+        **({} if needs_human_block is None else {"needs_human_block": needs_human_block}),
     )
 
 
@@ -322,9 +322,6 @@ async def test_startup_recovers_a_review_held_only_by_the_agents_question(
     recorded_causes: _RecordedCauses, causes: set[NeedsHumanCause], queued: bool,
 ) -> None:
     """#7593: a restart must not drop the review the launch path would admit."""
-    from issue_orchestrator.control.label_manager import LabelManager
-    from issue_orchestrator.control.review_question_hold import AgentQuestionReviewHolds
-
     config = launcher_bundle.launcher.config
     config.code_review_label = "needs-code-review"
     recorded_causes.causes[ISSUE] = frozenset(causes)
@@ -333,7 +330,7 @@ async def test_startup_recovers_a_review_held_only_by_the_agents_question(
     await _startup_manager(
         config,
         issue_labels=("needs-human",),
-        review_question_holds=AgentQuestionReviewHolds(recorded_causes, LabelManager(config)),
+        needs_human_block=recorded_causes,
     ).run_startup(state)
 
     assert [review.pr_number for review in state.pending_reviews] == ([PR] if queued else [])
