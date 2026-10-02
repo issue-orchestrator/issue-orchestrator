@@ -147,7 +147,8 @@ class BlockedLane:
 
     def is_blocking(self, label: str) -> bool:
         labels = self.labels
-        return label == labels.tech_lead_needs_human or (
+        # GitHub folds label case; the label owner's own rule does too.
+        return label.casefold() == labels.tech_lead_needs_human.casefold() or (
             labels.is_blocking(label) and not labels.is_tech_lead_artifact_any((label,))
         )
 

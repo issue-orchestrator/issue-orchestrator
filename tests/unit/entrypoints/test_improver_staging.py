@@ -622,3 +622,16 @@ def test_a_renamed_provider_outage_label_is_a_blocked_item(tmp_path: Path) -> No
     assert ("#400", "waiting-for-provider") in {
         (a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"
     }
+
+
+def test_a_case_variant_tech_lead_marker_is_a_blocked_item(state: Path, tmp_path: Path) -> None:
+    """#7490 r5 F1: GitHub label names are case-insensitive."""
+    audited = FakeHost(issues=[OpenIssueLabels(number=179, title="human work", labels=("Tech-Lead-Needs-Human",))])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [179]
+    assert ("#179", "Tech-Lead-Needs-Human") in {
+        (a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"
+    }
