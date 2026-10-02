@@ -132,9 +132,10 @@ def test_the_engines_blocked_lane_decides_and_the_tech_leads_own_artefacts_are_n
     assert [i.number for i in staged.items] == [10, 11, 12]
 
 
-def test_an_add_that_could_not_read_presence_moves_no_known_onset() -> None:
-    """r1 F4: the applier records an add even when its presence read failed;
-    the label may already have been on, so the earlier onset stands."""
+def test_an_add_that_could_not_read_presence_makes_the_onset_unknown() -> None:
+    """r1 F4, revised by r7 F1: the applier records an add even when its
+    presence read failed. The label may already have been on (the earlier
+    onset) or been taken off by hand and put back (a new one): unknown."""
     t0 = CUTOFF - timedelta(days=2)
     events = [
         _event(262, "issue.labels_changed", t0, added=["needs-human"], removed=[]),
@@ -146,7 +147,7 @@ def test_an_add_that_could_not_read_presence_moves_no_known_onset() -> None:
         ISSUES, lane=LANE, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
     )
 
-    assert staged.items[0].blocked_since == t0
+    assert staged.items[0].blocked_since is None
 
 
 def test_an_add_that_could_not_read_presence_is_no_onset() -> None:

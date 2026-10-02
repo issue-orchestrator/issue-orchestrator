@@ -714,3 +714,15 @@ def test_a_hand_over_after_every_current_block_accounts_for_it(tmp_path: Path) -
     assert validate_findings(json.dumps(example("exam_case")), evidence).blocked_items[0].disposition == (
         "awaiting_operator"
     )
+
+
+def test_an_item_whose_block_may_have_been_put_back_cannot_be_handed_over(tmp_path: Path) -> None:
+    """r7 F1: with the current block's onset unknown (an uncertain re-add),
+    an earlier escalation cannot be shown to cover it."""
+    def unknown_since(d: dict) -> None:
+        d["items"][0]["blocked_since"] = None
+        d["items"][0]["blocking_labels"][0].update(since_at=None, since_event=None)
+
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", unknown_since)
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)

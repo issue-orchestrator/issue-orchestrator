@@ -176,9 +176,9 @@ def _label_onsets(events: Sequence[TimelineEvent], lane: BlockedLane) -> dict[st
     it read as absent), so an add is a fresh onset, even with no removal
     recorded before it: a person may have taken the label off on GitHub,
     which the timeline never sees. An add whose presence read failed
-    (``presence_unknown``) may have found the label already on, so it is no
-    onset: it moves no known onset, and with none known the onset stays
-    unknown until a certain add or a removal. A removal forgets the label. A
+    (``presence_unknown``) may have found the label already on, or put it
+    back after a removal the timeline never saw: the onset is unknown from it
+    until a certain add. A removal forgets the label. A
     needs-human request (``issue.needs_human``) is never an onset: it is
     emitted also for a label already on (the tech lead's escalation
     reconciler re-asserts an existing block), so it is a block event only."""
@@ -187,10 +187,15 @@ def _label_onsets(events: Sequence[TimelineEvent], lane: BlockedLane) -> dict[st
         data = event.record.data
         for label in _labels(data.get("removed")):
             on.pop(label.casefold(), None)
-        if data.get(PRESENCE_UNKNOWN) is True:
-            continue
+        uncertain = data.get(PRESENCE_UNKNOWN) is True
         for label in (b for b in _labels(data.get("added")) if lane.is_blocking(b)):
-            on[label.casefold()] = (instant(event.record.timestamp), _LABELS_CHANGED)
+            if uncertain:
+                # It may have found the label on (the known onset stands) or
+                # put it back after an unrecorded removal (a new onset): which
+                # is unknown, so the onset is too.
+                on.pop(label.casefold(), None)
+            else:
+                on[label.casefold()] = (instant(event.record.timestamp), _LABELS_CHANGED)
     return on
 
 
