@@ -768,3 +768,55 @@ def test_a_child_whose_filed_body_carries_an_extra_edge_is_never_made_runnable(t
     [child] = world.github.created
     assert AGENT not in world.github.labels[child["number"]]
     assert "needs-human" in world.github.labels[ITEM]
+
+
+def _replay_with_child(world: World, mutate_child: Any) -> ActionResult:
+    """File the split's child, fail before the discharge, mutate the child, replay."""
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+    world.applier.fail = AddCommentAction
+    assert not world.executor().apply(_action(_split())).success
+    [child] = world.github.created
+    world.github.labels[child["number"]].discard(AGENT)
+    mutate_child(child["number"])
+    world.applier.fail = None
+    return world.executor().apply(_action(_split()))
+
+
+def test_a_replayed_child_moved_to_another_repository_is_never_made_runnable(tmp_path: Path) -> None:
+    """r5 F1: the same number in another repository is a different edge."""
+    world = World(tmp_path)
+
+    def cross_repo(number: int) -> None:
+        world.github.bodies[number] = world.github.bodies[number].replace(
+            "Depends-on: #262", "Depends-on: other/repo#262")
+
+    result = _replay_with_child(world, cross_repo)
+
+    assert not result.success
+    assert AGENT not in world.github.labels[world.github.created[0]["number"]]
+    assert "needs-human" in world.github.labels[ITEM]
+
+
+def test_a_replayed_child_that_was_closed_stops_the_resolution(tmp_path: Path) -> None:
+    """r5 F2: a closed child queues none of the split's work."""
+    world = World(tmp_path)
+
+    result = _replay_with_child(world, lambda number: world.github.states.__setitem__(number, "closed"))
+
+    assert not result.success
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.store.needs_human_causes(ITEM) == frozenset({"agent_completion", "session_lifecycle"})
+
+
+def test_a_failed_review_gate_posts_no_cause_marker(tmp_path: Path) -> None:
+    """r5 F3: markers never stand for a discharge the failed gate prevented."""
+    world = World(tmp_path)
+    world.blocked_by(364, _AGENT)
+    world.holds = (PublishedReviewHold(364, 379, "364-branch", "r1", "a" * 40),)
+    world.applier.fail = AddLabelAction
+
+    result = world.executor().apply(_action(_resolution(), number=364))
+
+    assert not result.success
+    assert world.github.comments.get(364, []) == []
+    assert world.store.needs_human_causes(364) == frozenset({"agent_completion"})

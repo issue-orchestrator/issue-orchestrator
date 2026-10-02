@@ -299,9 +299,11 @@ class TechLeadBlockResolutionExecutor:
             return ActionResult.fail_limited(
                 action, f"split child not filed: {error}", host_rate_limit_of(error),
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
+        # The gate first: the decision's comment carries the cause markers, and
+        # a marker must not stand for a discharge a failed gate prevented.
         for what, step in (
-            ("decision not posted", lambda: self._post_decision(action, children)),
             (f"{self.labels.pr_pending} not put on", lambda: self._gate_published_review(action, issue)),
+            ("decision not posted", lambda: self._post_decision(action, children)),
         ):
             failed = step()
             if failed is not None:
@@ -477,12 +479,21 @@ class TechLeadBlockResolutionExecutor:
         """The engine's own parser must see EXACTLY the decided graph (its one
         edge, or none) on the filed child before the child is runnable."""
         fresh = self.read_issue(number)
-        if fresh is None:
-            raise RuntimeError(f"child #{number} could not be read back; it is left without its agent label")
-        seen = [(edge.issue_number, edge.mode) for edge in parse_dependency_edges(fresh.body or "")]
+        if fresh is None or fresh.state != "open":
+            raise RuntimeError(
+                f"child #{number} is not open ({'unreadable' if fresh is None else fresh.state});"
+                " the split's work would not be queued, so nothing is discharged"
+            )
+        # The complete identity: the same number in another repository, an
+        # external id or a malformed line is a different graph.
+        seen = [
+            (edge.repository, edge.issue_number, edge.external_id, edge.mode, edge.problem)
+            for edge in parse_dependency_edges(fresh.body or "")
+        ]
         wanted = [] if child.edge is None else [(
-            predecessor,
+            None, predecessor, None,
             DependencyMode.NORMAL if child.edge.directive == "Depends-on" else DependencyMode.STACK,
+            None,
         )]
         if seen != wanted:
             raise RuntimeError(
