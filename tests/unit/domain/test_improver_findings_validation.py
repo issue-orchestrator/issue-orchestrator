@@ -736,3 +736,48 @@ def test_a_deferral_to_a_tracker_is_not_a_hand_over_of_the_whole_item(tmp_path: 
     )
 
     assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def _two_blocks_with_a_remedy_between(tmp_path: Path) -> StagedEvidence:
+    """#353: needs-human since 13:30, recovery-pending since 14:30 (both in the
+    audit), and a remedy R1 about #353 applied at 14:00, between them."""
+    data = build_improver_data(tmp_path)
+    _with_notice(data, "audit.json", lambda d: d["anomalies"].append({
+        "kind": "attention_label", "sources": ["github"], "subject": "#353",
+        "signature": "recovery-pending", "detail": "open issue carries recovery-pending", "count": None,
+    }))
+
+    def blocked(d: dict) -> None:
+        _second_block("2026-09-28T14:30:00Z")(d)
+        d["items"][0]["decisions"].append({
+            **d["items"][0]["decisions"][0], "decision_id": "R1", "action_kind": "reset_retry",
+            "binding": "destructive", "decided_at": "2026-09-28T13:55:00Z", "applied_at": "2026-09-28T14:00:00Z",
+        })
+
+    return _with_notice(data, "blocked-items.json", blocked)
+
+
+def test_a_finding_must_key_every_current_block_of_the_item(tmp_path: Path) -> None:
+    """r9 F1: keyed to needs-human only, it leaves recovery-pending unexamined."""
+    evidence = _two_blocks_with_a_remedy_between(tmp_path)
+
+    assert Rule.BLOCKED_ITEM_FINDING_ABOUT_IT in _rules(example("needs_investigation"), evidence)
+
+
+def test_a_remedy_before_the_latest_block_did_not_act_on_it(tmp_path: Path) -> None:
+    """r9 F2: R1 (14:00) predates the recovery-pending block (14:30): a notice
+    without a later remedy is noticed_not_acted, and R1 cannot make it acted on."""
+    evidence = _two_blocks_with_a_remedy_between(tmp_path)
+    doc = example("needs_investigation")
+    _finding(doc)["anomaly_keys"].append({"kind": "attention_label", "subject": "#353", "signature": "recovery-pending"})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T18:00:00+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/4",
+        "supports": "present_after_start",
+    })
+    _finding(doc)["stall_point"] = "noticed_not_acted"
+    _finding(doc)["stall_evidence"] = ["D3"]
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "noticed_not_acted"
+    _finding(doc)["stall_point"] = "acted_not_effective"
+    _finding(doc)["stall_evidence"] = ["R1"]
+    assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in _rules(doc, evidence)

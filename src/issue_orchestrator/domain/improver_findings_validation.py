@@ -239,6 +239,9 @@ class _Checker:
             else {*(c.id for c in cases.case_files), *(d.id for d in cases.diagnoses)}
         ) | set(self._decisions)
         self._open_issues = {i.number for i in evidence.open_issues.issues}
+        self._blocked: dict[int, BlockedItem] = (
+            {} if evidence.blocked_items is None else {i.number: i for i in evidence.blocked_items.items}
+        )
 
     def violations(self) -> Iterator[Violation]:
         yield from self._file_rules()
@@ -339,14 +342,15 @@ class _Checker:
             if finding is None:
                 yield Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, f"#{n}: no finding {account.finding_id} in the file"
                 return
-            blocks = {b.label for b in item.blocking_labels}
-            if not any(
-                k.kind == AnomalyKind.ATTENTION_LABEL.value and k.subject == f"#{n}" and k.signature in blocks
-                for k in finding.anomaly_keys
-            ):
+            keyed = {
+                k.signature for k in finding.anomaly_keys
+                if k.kind == AnomalyKind.ATTENTION_LABEL.value and k.subject == f"#{n}"
+            }
+            unexamined = sorted({b.label for b in item.blocking_labels} - keyed)
+            if unexamined:
                 yield Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, (
-                    f"#{n}: finding {finding.id} names none of its blocks (an attention_label of #{n}"
-                    f" signed {', '.join(sorted(blocks))})"
+                    f"#{n}: finding {finding.id} leaves blocks unexamined: every current block is"
+                    f" one of its keys (attention_label of #{n} signed {', '.join(unexamined)})"
                 )
             if finding.present_after_start != "true":
                 yield Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, (
@@ -364,16 +368,13 @@ class _Checker:
             yield Rule.BLOCKED_ITEM_HANDED_OVER, (
                 f"#{n}: {', '.join(unknown)} is not a staged decision about #{n} (blocked-items.json)"
             )
-        onsets = [b.since_at for b in item.blocking_labels]
-        if any(t is None for t in onsets):
+        since = _latest_block_onset(item)
+        if since is None:
             yield Rule.BLOCKED_ITEM_HANDED_OVER, (
                 f"#{n}: when one of its blocks began is unknown, so no decision can be shown to"
                 " have handed EVERY current block over: account for it with a finding"
             )
             return
-        # The latest block: a hand-over before it handed over an earlier block,
-        # not the one put on since.
-        since = max(t for t in onsets if t is not None)
         if not any(
             d.action_kind in HAND_OVER_ACTION_KINDS
             and d.applied_at is not None
@@ -590,13 +591,14 @@ class _Checker:
         approvable or destructive action, not advice or a floor) applied by
         the cutoff, and not before the anomaly's onset, when that is known (a
         remedy applied earlier acted on an earlier occurrence)."""
+        if d.binding not in _REMEDY_BINDINGS or d.applied_at is None or d.applied_at > self._cutoff:
+            return False
         onset = f.grading_window.from_
-        return (
-            d.binding in _REMEDY_BINDINGS
-            and d.applied_at is not None
-            and d.applied_at <= self._cutoff
-            and (onset == "unknown" or d.applied_at >= onset)
-        )
+        # A blocked item the finding covers: a remedy before its latest
+        # current block began acted on an earlier block, not this one.
+        item = self._blocked.get(decision_issue(d.target_number, d.anchor_issue_number))
+        latest = None if item is None or item.number not in _issue_numbers(f) else _latest_block_onset(item)
+        return (onset == "unknown" or d.applied_at >= onset) and (latest is None or d.applied_at >= latest)
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -807,6 +809,14 @@ def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: M
 #: decision does not say which block it covered; a comment does not say what
 #: it said. Either is a notice, never a hand-over.
 HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human"})
+
+def _latest_block_onset(item: BlockedItem) -> datetime | None:
+    """When the latest of an item's current blocks began; None when any
+    block's onset is unknown (THE current-block onset, for hand-overs and
+    remedies alike)."""
+    onsets = [b.since_at for b in item.blocking_labels]
+    return None if any(t is None for t in onsets) else max(t for t in onsets if t is not None)
+
 
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 

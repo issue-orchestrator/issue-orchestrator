@@ -313,8 +313,8 @@ in `engine-source/examples/improver/findings/`.
 - **Every blocked item is accounted for.** `blocked_items` names each item
   of `blocked-items.json` exactly once and nothing else (empty only when
   the operator ran the audit without GitHub, so it was not staged). A `finding` account names, in `finding_id`, a finding of this
-  file keyed to one of the item's blocks (an `attention_label` anomaly
-  with `subject` `#<n>` and a blocking label as `signature`) and
+  file keyed to EVERY one of the item's blocks (an `attention_label`
+  anomaly with `subject` `#<n>` per blocking label as `signature`) and
   `present_after_start: "true"`. An `awaiting_operator` account cites in
   `evidence` an `escalate_to_human` decision from
   that item's `decisions`, applied after the latest `since_at` of its
