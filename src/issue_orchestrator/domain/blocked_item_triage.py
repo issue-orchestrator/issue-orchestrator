@@ -39,12 +39,11 @@ from .tech_lead_artifacts import TriageClass
 
 
 #: The charter-record effects that mean a triage is in force: it took effect,
-#: is waiting on the operator, or the operator already answered it. A triage
-#: that failed, was refused, withheld or parked, or has not linked a result,
-#: did not dispose of the item, so the item is triaged again.
-TRIAGE_IN_FORCE_EFFECTS = frozenset(
-    {"applied", "awaiting_approval", "approved_applied", "declined"}
-)
+#: or the operator already answered it. A triage that failed, was refused,
+#: withheld or parked, or has not linked a result, did not dispose of the item,
+#: so the item is triaged again. ``awaiting_approval`` is in force only once its
+#: proposal issue is filed (:attr:`PriorTriage.in_force`).
+TRIAGE_IN_FORCE_EFFECTS = frozenset({"applied", "approved_applied", "declined"})
 
 #: At most this many items are granted to one health review, oldest first: a
 #: decision carries at most 20 actions, and a backlog drains over a few runs.
@@ -99,6 +98,17 @@ class PriorTriage:
     effect: str
     decided_at: str
     fingerprint: str
+    #: The gated proposal it filed, once the issue exists.
+    proposal_issue_number: int | None = None
+
+    @property
+    def in_force(self) -> bool:
+        """The triage still disposes of the item: it took effect, the operator
+        answered it, or its proposal is FILED and waiting on them. A record
+        awaiting approval whose proposal issue never got filed did not."""
+        if self.effect == "awaiting_approval":
+            return self.proposal_issue_number is not None
+        return self.effect in TRIAGE_IN_FORCE_EFFECTS
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +117,7 @@ class PriorTriage:
             "effect": self.effect,
             "decided_at": self.decided_at,
             "fingerprint": self.fingerprint,
+            "proposal_issue_number": self.proposal_issue_number,
         }
 
 

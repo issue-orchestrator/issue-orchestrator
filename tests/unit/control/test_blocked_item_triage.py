@@ -100,7 +100,7 @@ class _Ledger:
 
 
 def _triage_record(
-    issue: int, triage_class: TriageClass, fingerprint: str, *, effect: str
+    issue: int, triage_class: TriageClass, fingerprint: str, *, effect: str, filed: bool = True,
 ) -> TechLeadCharterDecision:
     executed = effect in {"applied", "failed", "withheld", "refused", "parked"}
     return TechLeadCharterDecision(
@@ -120,6 +120,7 @@ def _triage_record(
         reason="r", decided_at="2026-10-02T12:00:00+00:00",
         execution=CharterExecutionResult(effect) if executed else None,
         lifecycle=None if executed else CharterProposalLifecycle(effect),
+        proposal_issue_number=None if executed or not filed else 950,
         triage_class=triage_class, triage_fingerprint=fingerprint,
     )
 
@@ -212,6 +213,19 @@ def test_an_unchanged_item_is_not_triaged_again_while_its_triage_is_in_force(
 
     assert (agenda.in_force == (262,)) is in_force
     assert ([item.issue_number for item in agenda.items] == [262]) is (not in_force)
+
+
+def test_a_proposal_that_never_got_filed_is_not_a_triage_in_force() -> None:
+    """Awaiting approval only counts once the proposal issue exists: a creation
+    that failed left the record routed to the gate with nothing to approve."""
+    ledger = _Ledger({262: [_triage_record(
+        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval", filed=False,
+    )]})
+    owner = _owner([_issue(262, "agent:backend", "needs-human")], ledger=ledger)
+
+    [item] = owner.agenda(anchor_issue_number=ANCHOR).items
+
+    assert item.reason.endswith("did not take effect: awaiting_approval")
 
 
 def test_a_changed_block_is_triaged_again() -> None:

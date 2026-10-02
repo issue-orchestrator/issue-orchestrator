@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING
 
 from ..domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
-    TRIAGE_IN_FORCE_EFFECTS,
     PriorTriage,
     TriageAgenda,
     TriageAgendaItem,
@@ -132,9 +131,7 @@ class StateBlockedItemTriage:
             labels, tech_lead_marker=marker, needs_human_label=self._labels.needs_human
         )
         prior = self._prior(issue.number)
-        if prior is not None and prior.fingerprint == fingerprint and (
-            prior.effect in TRIAGE_IN_FORCE_EFFECTS
-        ):
+        if prior is not None and prior.fingerprint == fingerprint and prior.in_force:
             return None
         return TriageAgendaItem(
             issue_number=issue.number,
@@ -159,6 +156,7 @@ class StateBlockedItemTriage:
             effect=latest.effect,
             decided_at=latest.decided_at,
             fingerprint=latest.triage_fingerprint,
+            proposal_issue_number=latest.proposal_issue_number,
         )
 
     def _agent_question(self, issue_number: int) -> str | None:
