@@ -642,42 +642,12 @@ class ActionApplier:
         assert self.repository_host is not None, (
             "repository_host required for enqueue_to_merge_queue"
         )
-
+        assert self.label_manager is not None, "label_manager required for the enqueue's human hold"
         # Enqueue is a GitHub write on a (possibly still-claimed) issue.
         self._verify_claim_before_write(action, action.issue_number)
-
-        try:
-            self.repository_host.enqueue_to_merge_queue(action.pr_number)
-        except Exception as e:
-            logger.error(
-                issue_log(action.issue_number, "Failed to enqueue PR #%d to merge queue: %s"),
-                action.pr_number,
-                e,
-                exc_info=True,
-            )
-            return ActionResult.fail(
-                action,
-                f"PR #{action.pr_number} merge-queue enqueue failed: {e}",
-                pr_number=action.pr_number,
-            )
-
-        logger.info(
-            issue_log(action.issue_number, "Enqueued PR #%d to merge queue"),
-            action.pr_number,
-        )
-        self.events.publish(make_trace_event(
-            EventName.MERGE_QUEUE_ENQUEUED,
-            {
-                "issue_number": action.issue_number,
-                "issue_key": action.issue_key or str(action.issue_number),
-                "pr_number": action.pr_number,
-                "pr_url": action.pr_url,
-            },
-        ))
-        return ActionResult.ok(
-            action,
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
+        from .merge_queue_coordinator import apply_enqueue_to_merge_queue
+        return apply_enqueue_to_merge_queue(
+            action, host=self.repository_host, labels=self.label_manager, events=self.events
         )
 
     def _apply_close_issue(self, action: Action) -> ActionResult:

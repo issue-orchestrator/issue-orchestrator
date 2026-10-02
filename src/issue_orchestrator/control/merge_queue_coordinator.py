@@ -27,6 +27,7 @@ from ..domain.models import (
     DiscoveredRework,
 )
 from ..events import EventName
+from ..infra.logging_config import issue_log
 from ..ports import make_trace_event
 from ..ports.pull_request_tracker import MergeQueueRead
 from ..ports.repository_host import (
@@ -43,6 +44,10 @@ from .awaiting_merge_post_publish_policy import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from .action_results import ActionResult
+    from .actions import EnqueueToMergeQueueAction
     from ..events import EventContext
     from ..infra.config_models import MergeQueueConfig
     from ..ports import EventSink
@@ -214,21 +219,10 @@ class MergeQueueCoordinator:
         return MergeQueueFollowup()
 
     def _awaits_a_human(self, issue: "Issue") -> bool:
-        """An issue still waiting on a human never has its PR enqueued (#7593).
-
-        A review may run over the coding agent's own open question (see
-        ``review_question_hold``) so the human decides with a reviewed PR in
-        hand; an approval must not then merge the work before they answer.
-        """
-        needs_human = self.label_manager.needs_human.casefold()
-        if all(label.casefold() != needs_human for label in issue.labels):
-            return False
-        logger.info(
-            "Merge queue waits: issue=#%s still carries %s",
-            issue.number,
-            self.label_manager.needs_human,
-        )
-        return True
+        held = awaits_a_human(issue.labels, self.label_manager)
+        if held:
+            logger.info("Merge queue waits: issue=#%s awaits a human", issue.number)
+        return held
 
     # ------------------------------------------------------------------ #
 
@@ -360,3 +354,66 @@ class MergeQueueCoordinator:
             "the merge group (conflicts, failing required checks), and push so "
             "the PR can re-enter the queue.",
         ])
+
+
+def awaits_a_human(labels: "Sequence[str]", label_manager: "LabelManager") -> bool:
+    """An issue still waiting on a human never has its PR enqueued (#7593).
+
+    A review may run over the coding agent's own open question (see
+    ``review_question_hold``) so the human decides with a reviewed PR in hand;
+    an approval must not then merge the work before they answer. The ONE rule
+    for both classification and the enqueue write.
+    """
+    needs_human = label_manager.needs_human.casefold()
+    return any(label.casefold() == needs_human for label in labels)
+
+
+def apply_enqueue_to_merge_queue(
+    action: "EnqueueToMergeQueueAction",
+    *,
+    host: "RepositoryHost",
+    labels: "LabelManager",
+    events: "EventSink",
+) -> "ActionResult":
+    """The enqueue write, re-checking the human hold on a fresh label read.
+
+    Classification observed the issue a tick earlier; a ``needs-human`` put
+    on since then must still keep the PR out of the queue (#7593 review r2).
+    An unreadable issue enqueues nothing.
+    """
+    from .actions import ActionResult
+
+    try:
+        current = host.get_issue_labels_fresh(action.issue_number)
+    except Exception as error:
+        return ActionResult.fail(
+            action, f"issue #{action.issue_number}'s labels unreadable before enqueue: {error}",
+            pr_number=action.pr_number,
+        )
+    held = awaits_a_human(current, labels)
+    if held:
+        return ActionResult.skip(
+            action, f"issue #{action.issue_number} now awaits a human; PR #{action.pr_number} not enqueued",
+            pr_number=action.pr_number,
+        )
+    try:
+        host.enqueue_to_merge_queue(action.pr_number)
+    except Exception as e:
+        logger.error(
+            issue_log(action.issue_number, "Failed to enqueue PR #%d to merge queue: %s"),
+            action.pr_number, e, exc_info=True,
+        )
+        return ActionResult.fail(
+            action, f"PR #{action.pr_number} merge-queue enqueue failed: {e}", pr_number=action.pr_number,
+        )
+    logger.info(issue_log(action.issue_number, "Enqueued PR #%d to merge queue"), action.pr_number)
+    events.publish(make_trace_event(
+        EventName.MERGE_QUEUE_ENQUEUED,
+        {
+            "issue_number": action.issue_number,
+            "issue_key": action.issue_key or str(action.issue_number),
+            "pr_number": action.pr_number,
+            "pr_url": action.pr_url,
+        },
+    ))
+    return ActionResult.ok(action, issue_number=action.issue_number, pr_number=action.pr_number)

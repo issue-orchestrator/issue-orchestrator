@@ -109,7 +109,13 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
 @pytest.mark.asyncio
 @pytest.mark.timeout(100 * 60)
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=5000, system_gh_activity_limit=5000)
-@pytest.mark.parametrize("case_id", EXAM_CASE_IDS)
+@pytest.mark.parametrize(
+    "case_id",
+    # ``case-<id>`` ids, so ``make test-tech-lead-exam EXAM_CASE=D`` selects
+    # with ``-k case-D-``: a bare ``-k D-`` (pytest -k folds case) also
+    # matched "paused-for" and "blocked-issue" in the other cases' ids.
+    [pytest.param(case_id, id=f"case-{case_id}") for case_id in EXAM_CASE_IDS],
+)
 async def test_tech_lead_exam(
     case_id: str,
     repo_name: str,

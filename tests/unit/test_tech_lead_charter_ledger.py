@@ -860,3 +860,14 @@ def test_the_latest_triage_survives_any_amount_of_later_history(store) -> None:
 
     assert found is not None and found.decision_id == triage.decision_id
     assert ledger.latest_triage_for_issue(14) is None
+
+
+def test_a_decision_retry_receipt_lives_until_its_op_is_discarded(store) -> None:
+    """#7593 review r2: the durable receipt an approved decision's replay reads."""
+    store.record_decision_retry(proposal_issue_number=950)
+    store.record_decision_retry(proposal_issue_number=950)  # idempotent
+
+    assert store.decision_retried(proposal_issue_number=950) is True
+    assert store.decision_retried(proposal_issue_number=951) is False
+    store.discard_op(issue_number=950)
+    assert store.decision_retried(proposal_issue_number=950) is False

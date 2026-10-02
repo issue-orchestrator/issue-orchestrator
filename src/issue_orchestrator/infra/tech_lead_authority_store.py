@@ -300,6 +300,20 @@ class SqliteTechLeadAuthorityStore:
             return None
         return StoredTechLeadOp.from_dict(json.loads(row["op"]))
 
+    def record_decision_retry(self, *, proposal_issue_number: int) -> None:
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT OR IGNORE INTO tech_lead_decision_retries"
+                " (proposal_issue_number, retried_at) VALUES (?, ?)",
+                (proposal_issue_number, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def decision_retried(self, *, proposal_issue_number: int) -> bool:
+        return self._get_connection().execute(
+            "SELECT 1 FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+            (proposal_issue_number,),
+        ).fetchone() is not None
+
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""
         with self._transaction() as tx:
@@ -307,6 +321,10 @@ class SqliteTechLeadAuthorityStore:
                 "DELETE FROM tech_lead_proposal_ops WHERE issue_number = ?",
                 (issue_number,),
             ).rowcount
+            tx.execute(
+                "DELETE FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+                (issue_number,),
+            )
         if deleted:
             logger.info("[tech_lead] Discarded proposal op: issue=#%d", issue_number)
 

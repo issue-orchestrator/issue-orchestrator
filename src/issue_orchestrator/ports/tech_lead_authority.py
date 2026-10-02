@@ -167,6 +167,14 @@ class TechLeadAuthorityStore(Protocol):
         """Remove a proposal issue's op row. No-op if absent (once-only owner)."""
         ...
 
+    def record_decision_retry(self, *, proposal_issue_number: int) -> None:
+        """An approved operator decision's retry committed (#7593); idempotent."""
+        ...
+
+    def decision_retried(self, *, proposal_issue_number: int) -> bool:
+        """Whether that retry committed, so a replay of the op never repeats it."""
+        ...
+
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
         ...
@@ -538,6 +546,7 @@ class InMemoryTechLeadAuthorityStore:
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], "TechLeadLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTechLeadOp"] = {}
+        self._decision_retries: set[int] = set()
         self._pending_proposals: dict[str, PendingTechLeadProposal] = {}
         self._rework_receipts: dict[str, ReworkReceipt] = {}
         self._patterns: dict[str, int] = {}
@@ -629,6 +638,13 @@ class InMemoryTechLeadAuthorityStore:
 
     def discard_op(self, *, issue_number: int) -> None:
         self._ops.pop(issue_number, None)
+        self._decision_retries.discard(issue_number)
+
+    def record_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries.add(proposal_issue_number)
+
+    def decision_retried(self, *, proposal_issue_number: int) -> bool:
+        return proposal_issue_number in self._decision_retries
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))

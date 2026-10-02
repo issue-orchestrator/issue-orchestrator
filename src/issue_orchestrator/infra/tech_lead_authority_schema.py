@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS tech_lead_proposal_ops (
     op TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+-- #7593: an approved operator decision whose retry committed, keyed by its
+-- proposal issue, so the op's replay never retries the item a second time.
+CREATE TABLE IF NOT EXISTS tech_lead_decision_retries (
+    proposal_issue_number INTEGER PRIMARY KEY,
+    retried_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,
     issue_number INTEGER NOT NULL,

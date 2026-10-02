@@ -421,6 +421,8 @@ class _Host:
     created: list[dict[str, Any]] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
     create_error: Exception | None = None
+    comment_failures: set[int] = field(default_factory=set)
+    retried: set[int] = field(default_factory=set)
 
     def get_issue(self, number: int) -> Issue | None:
         return self.issues.get(number)
@@ -445,6 +447,8 @@ class _Host:
         from issue_orchestrator.control.actions import ActionResult, AddCommentAction
 
         assert isinstance(action, AddCommentAction)
+        if action.number in self.comment_failures:
+            return ActionResult.fail(action, "502")
         self.calls.append(f"comment:{action.number}")
         self.comments.append((action.number, action.comment))
         return ActionResult.ok(action)
@@ -469,6 +473,7 @@ def _executor(host: _Host, retry, *, held: tuple[str, ...] = (), authority=None)
         find_issue_by_marker=host.find_issue_by_marker,
         create_issue=host.create_issue, comment_marker_present=host.comment_marker_present,
         apply_action=host.apply, require_authority=authority or (lambda action, number: None),
+        record_decision_retry=host.retried.add, decision_retried=host.retried.__contains__,
     )
 
 
@@ -508,6 +513,23 @@ def test_approval_publishes_first_retries_last_and_never_retries_twice() -> None
     decision = next(body for number, body in host.comments if number == 262)
     assert decision_marker(950) in decision and "#1000" in decision
     assert first.details["follow_up_issues"] == ["1000"]
+
+
+def test_a_replay_after_the_retry_committed_never_retries_again() -> None:
+    """#7593 review r2: the retry committed (the item is unblocked) and the
+    applied marker failed; a new needs-human was raised before the replay.
+    The replay must finish the marker, not retry (which would clear the new
+    block), and must not read the unblocked item as a stale approval."""
+    host = _Host({262: _blocked_target()}, comment_failures={950})
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED, removed=("needs-human",)))
+
+    assert not executor.apply(_approved()).success
+    host.issues[262] = _issue(262, "agent:backend", "needs-human")  # raised since
+    host.comment_failures.clear()
+    replay = executor.apply(_approved())
+
+    assert replay.success and replay.details["replayed"] is True
+    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
 
 
 def test_a_failed_follow_up_leaves_the_item_blocked_and_the_replay_resumes() -> None:

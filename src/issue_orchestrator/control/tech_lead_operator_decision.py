@@ -20,13 +20,14 @@ gated until everything the resumed session needs exists:
    one owner of which labels a retry clears. The item stays blocked until the
    decision and its follow-ups are on GitHub, so no session resumes it
    without them.
-5. **Mark the proposal applied** with a marker comment through the applier.
-   A replay (the finalize after it failed) finds the marker and does not
-   retry again, so a ``needs-human`` raised after the retry is never cleared.
+5. **Record that the retry committed**, durably in the authority store, then
+   mark the proposal applied with a comment. A replay of the op (a marker or
+   finalize write that failed) finds the receipt and never retries again, so a
+   ``needs-human`` raised after the retry is never cleared; it only finishes
+   the marker.
 
-A failure before step 5 leaves the op in place; the replay finds the earlier
-writes by their markers and retries again. The one window left is a retry that
-committed while step 5's comment failed: its replay retries once more.
+A failure before the retry commits leaves the op in place; its replay finds
+the earlier writes by their markers and retries.
 """
 
 from __future__ import annotations
@@ -89,11 +90,17 @@ class OperatorDecisionExecutor:
     #: The applier's mutation-authority check (expectations and claim) for a
     #: write about an issue, run before each follow-up is filed.
     require_authority: Callable[[Action, int], None]
+    #: The durable receipt that a proposal's retry committed (authority store),
+    #: so a replay of the op never retries the item a second time.
+    record_decision_retry: Callable[[int], None]
+    decision_retried: Callable[[int], bool]
 
     def apply(self, action: ApplyOperatorDecisionAction) -> ActionResult:
         proposal = action.proposal_issue_number
-        if self.comment_marker_present(proposal, applied_marker(proposal)):
-            return ActionResult.ok(action, issue_number=action.issue_number, replayed=True)
+        if self.decision_retried(proposal):
+            # A replay after the retry committed: never retry again, only
+            # finish what is left (#7593 review r2).
+            return self._finish(action, follow_ups=(), removed=(), replayed=True)
         target = self.read_issue(action.issue_number)
         refusal = self._refusal(action, target)
         if refusal is not None:
@@ -122,6 +129,19 @@ class OperatorDecisionExecutor:
         unsettled = _UNSETTLED_RETRY.get(outcome.status)
         if unsettled is not None:
             return unsettled(action, outcome)
+        self.record_decision_retry(proposal)
+        return self._finish(action, follow_ups=follow_ups, removed=outcome.removed, replayed=False)
+
+    def _finish(
+        self,
+        action: ApplyOperatorDecisionAction,
+        *,
+        follow_ups: tuple[int, ...],
+        removed: tuple[str, ...],
+        replayed: bool,
+    ) -> ActionResult:
+        """Mark the proposal applied once the retry committed, and report it."""
+        proposal = action.proposal_issue_number
         marked = self._comment_once(
             proposal, applied_marker(proposal),
             f"Applied: #{action.issue_number} was retried with the decision posted on it."
@@ -136,13 +156,13 @@ class OperatorDecisionExecutor:
             "proposal_type": OP_TYPE,
             "target_number": action.issue_number,
             "finding_ids": list(action.finding_ids),
-            "boundary": {"retried": list(outcome.removed), "follow_ups": list(follow_ups)},
+            "boundary": {"retried": list(removed), "follow_ups": list(follow_ups), "replayed": replayed},
         }))
         logger.info(issue_log(action.issue_number,
             "Operator approved decision %s (proposal #%d): retried, follow-ups %s"),
             action.proposal_id, action.proposal_issue_number, list(follow_ups))
         return ActionResult.ok(
-            action, issue_number=action.issue_number,
+            action, issue_number=action.issue_number, replayed=replayed,
             follow_up_issues=[str(number) for number in follow_ups],
         )
 
