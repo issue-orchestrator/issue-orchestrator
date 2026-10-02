@@ -38,8 +38,8 @@ exactly the paths they always hid.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,17 +109,11 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
     # lines must not interleave with another worktree's setup.
     with exclude_lock(common_dir):
         legacy_lines = _legacy_exclude_lines(common_exclude)
-        quarantine_dir = (
-            common_dir
-            / LEGACY_DROP_QUARANTINE_DIR
-            / f"{worktree_path.name}-{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}"
-        )
+        quarantine = _Quarantine(worktree_path, common_dir / LEGACY_DROP_QUARANTINE_DIR)
         restored, restored_quarantine = _restore_skip_worktree_files(
-            worktree_path, quarantine_dir
+            worktree_path, quarantine
         )
-        planted = _quarantine_planted_untracked(
-            worktree_path, legacy_lines, quarantine_dir
-        )
+        planted = _quarantine_planted_untracked(worktree_path, legacy_lines, quarantine)
         _prune_empty_drop_dirs(worktree_path)
 
         lines_removed = bool(legacy_lines) and not _any_worktree_holds_drop(
@@ -133,7 +127,7 @@ def retire_legacy_cli_tools_drop(worktree_path: Path) -> LegacyDropRetirement:
     result = LegacyDropRetirement(
         restored=restored,
         quarantined=quarantined,
-        quarantine_dir=quarantine_dir if quarantined else None,
+        quarantine_dir=quarantine.directory,
         exclude_lines_removed=lines_removed,
     )
     if restored or quarantined or lines_removed:
@@ -206,15 +200,38 @@ def _planted_skip_worktree(checkout: Path, tagged: list[str]) -> list[str]:
     ]
 
 
-def _quarantine(worktree_path: Path, relative: str, quarantine_dir: Path) -> Path:
-    destination = quarantine_dir / relative
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(worktree_path / relative, destination)
-    return Path(relative)
+class _Quarantine:
+    """One retirement's private directory for bytes moved out of the tree.
+
+    Created on first use with ``mkdtemp``, so two retirements never share a
+    directory — not two worktrees with the same basename, not two runs in the
+    same second — and a destination is never overwritten.
+    """
+
+    def __init__(self, worktree_path: Path, root: Path) -> None:
+        self._worktree_path = worktree_path
+        self._root = root
+        self.directory: Path | None = None
+
+    def move(self, relative: str) -> Path:
+        if self.directory is None:
+            self._root.mkdir(parents=True, exist_ok=True)
+            self.directory = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{self._worktree_path.name}-{time.strftime('%Y%m%dT%H%M%S')}-",
+                    dir=self._root,
+                )
+            )
+        destination = self.directory / relative
+        if destination.exists():
+            raise FileExistsError(f"quarantine destination already exists: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(self._worktree_path / relative, destination)
+        return Path(relative)
 
 
 def _restore_skip_worktree_files(
-    worktree_path: Path, quarantine_dir: Path
+    worktree_path: Path, quarantine: _Quarantine
 ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     """Clear io's ``skip-worktree`` bits; restore the committed bytes.
 
@@ -230,9 +247,7 @@ def _restore_skip_worktree_files(
         if _blob_of_index(worktree_path, relative)
         != _blob_of_file(worktree_path, relative)
     ]
-    quarantined = tuple(
-        _quarantine(worktree_path, relative, quarantine_dir) for relative in differing
-    )
+    quarantined = tuple(quarantine.move(relative) for relative in differing)
     _git_run(worktree_path, ["update-index", "--no-skip-worktree", "--", *skipped], check=True)
     _git_run(worktree_path, ["checkout", "--", *skipped], check=True)
     return tuple(Path(relative) for relative in skipped), quarantined
@@ -248,14 +263,14 @@ def _blob_of_file(worktree_path: Path, relative: str) -> str:
 
 
 def _quarantine_planted_untracked(
-    worktree_path: Path, legacy_lines: frozenset[str], quarantine_dir: Path
+    worktree_path: Path, legacy_lines: frozenset[str], quarantine: _Quarantine
 ) -> tuple[Path, ...]:
     """Move out untracked files io's exact exclude lines name."""
     if not legacy_lines:
         return ()
     untracked = _git_z(worktree_path, ["ls-files", "--others"])
     return tuple(
-        _quarantine(worktree_path, relative, quarantine_dir)
+        quarantine.move(relative)
         for relative in untracked
         if relative in legacy_lines
     )

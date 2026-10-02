@@ -405,6 +405,23 @@ class TestLegacyRetirementLeavesOthersAlone:
         assert tag.startswith("S "), tag
         assert state.legacy_drop_retirement.restored == ()
 
+    def test_same_basename_worktrees_never_share_a_quarantine(self, tmp_path):
+        """Two retirements in one second, same worktree name, distinct bytes."""
+        wt = make_git_worktree(tmp_path)
+        twin = tmp_path / "elsewhere" / wt.worktree_path.name
+        twin.parent.mkdir()
+        _git_out(wt.main_repo, "worktree", "add", str(twin), "-b", "twin")
+        _plant_legacy_foreign_drop(wt).write_text("FIRST = True\n")
+        _plant_legacy_foreign_drop(wt, twin).write_text("SECOND = True\n")
+
+        first = _setup(wt.main_repo).apply(wt.worktree_path).legacy_drop_retirement
+        second = _setup(wt.main_repo).apply(twin).legacy_drop_retirement
+
+        assert first.quarantine_dir is not None and second.quarantine_dir is not None
+        assert first.quarantine_dir != second.quarantine_dir
+        assert (first.quarantine_dir / LEGACY_TOOL).read_text() == "FIRST = True\n"
+        assert (second.quarantine_dir / LEGACY_TOOL).read_text() == "SECOND = True\n"
+
     def test_concurrent_setup_append_survives_the_legacy_line_rewrite(
         self, tmp_path, monkeypatch
     ):
