@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from ..control.session_launch_types import REVIEW_HELD_BY_RECOVERY
+from ..domain.blocked_open_pr import BlockedPRSkipReason
+from ..domain.tech_lead_run import WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE
 
 LIVELOCK_THRESHOLD = 5
 
@@ -68,6 +70,21 @@ _WAITING_SKIP_REASONS: frozenset[str] = frozenset(
         # A queued review waiting for the recovery owner to release its issue
         # (#7455); the owner routes and releases it, so it is a wait.
         REVIEW_HELD_BY_RECOVERY,
+    }
+)
+
+#: The ``reason=`` of a logged decision that REFUSES planned work: it may not
+#: run (a blocking label on its PR or on its issue, in the review lane and the
+#: rework lane alike; a queued tech-lead run withdrawn because its subject no
+#: longer qualifies), as opposed to waiting its turn. Closed on purpose: the
+#: engine's skip reasons are free text across many emitters ("reason=Orchestrator
+#: paused", "reason=pending_rework" ...) and nearly all of them are waits, so a
+#: reason is a refusal only when its owner says so. A new refusal reason is
+#: added here, with its owner's constant.
+REFUSAL_REASONS: frozenset[str] = frozenset(
+    {
+        *(reason.value for reason in BlockedPRSkipReason),
+        WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE,
     }
 )
 _SKIP_EVENTS = frozenset({"review.skipped", "rework.skipped"})
@@ -139,21 +156,102 @@ def subject_of_text(text: str, *, repo: str | None = None) -> str:
     for any other repository. The first reference wins: a message is about
     the thing it names first ("Failed to settle ... for issue #4; see #9").
     """
+    subjects = subjects_of_text(text, repo=repo)
+    return subjects[0] if subjects else ENGINE_SUBJECT
+
+
+# How the engine logs a decision NOT to do a subject's planned work: a skip,
+# drop, refusal or rejection verb, and the decision's ``reason=`` token
+# ("[SCANNER] Skipping stale review PR: pr=379 issue=364 reason=issue_blocked",
+# "[launch] Dropping stale pending review: ... reason=issue_blocked",
+# "[SCANNER] Skipping blocked rework PR: pr=12 issue=4 reason=pr_blocked ...",
+# "trace-tech-lead-decision issue=200 ... decision=skip reason=...").
+# The opt-in timeline trace repeats a rework skip as "scanner.rework_skip":
+# a copy of the line above, not a second refusal, so it is not counted.
+_REFUSAL_VERB = re.compile(
+    r"\b(?:Skipping|Skipped|Dropping|Dropped|Refusing|[Rr]efused|Rejecting|decision=skip)\b"
+)
+#: The whole token: a free-text reason ("reason=Orchestrator paused") keeps
+#: only its first word, which is never a refusal reason.
+_REASON = re.compile(r"\breason=([A-Za-z0-9_.:-]+)")
+#: The pipeline action a refusal names: a queued tech-lead run, a PR's
+#: rework, a PR's review. The decision names it BEFORE its ``reason=``
+#: (what follows is context, e.g. ``pr_labels=...,rework-cycle-5`` on a
+#: review's refusal), and the first one named is the one refused. Two
+#: actions of one subject are refused, and counted, apart.
+REFUSED_ACTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("tech_lead_run", re.compile(r"\btech-lead-decision\b")),
+    ("rework", re.compile(r"\brework\b", re.IGNORECASE)),
+    ("review", re.compile(r"\breview\b", re.IGNORECASE)),
+)
+_REFERENCES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_PR_REFERENCE, "PR #"),
+    (_ISSUE_REFERENCE, "#"),
+    (_BARE_REFERENCE, "#"),
+)
+
+
+@dataclass(frozen=True)
+class WorkRefusal:
+    """One logged decision not to do a subject's planned work, for a reason
+    that refuses it (:data:`REFUSAL_REASONS`)."""
+
+    #: The subject whose work was refused: the first one the message names.
+    subject: str
+    #: Every other subject it names (the issue a refused PR review belongs to).
+    related: tuple[str, ...]
+    #: The pipeline action refused (:data:`REFUSED_ACTIONS`).
+    action: str
+    reason: str
+
+
+def subjects_of_text(text: str, *, repo: str | None = None) -> tuple[str, ...]:
+    """Every subject ``text`` names, first-named first, in the subject spelling
+    of :func:`subject_of_text` (whose answer is the first of these, or
+    :data:`ENGINE_SUBJECT` when there is none)."""
     found = [
-        (match.start(), f"{prefix}{match.group(1)}")
-        for pattern, prefix in (
-            (_PR_REFERENCE, "PR #"),
-            (_ISSUE_REFERENCE, "#"),
-            (_BARE_REFERENCE, "#"),
-        )
-        for match in [pattern.search(text)]
-        if match is not None
+        (match.start(), match.end(), f"{prefix}{match.group(1)}")
+        for pattern, prefix in _REFERENCES
+        for match in pattern.finditer(text)
     ]
-    if (qualified := _QUALIFIED_REFERENCE.search(text)) is not None:
+    for qualified in _QUALIFIED_REFERENCE.finditer(text):
         owner_repo, number = qualified.group(1), qualified.group(2)
         own = repo is not None and owner_repo.casefold() == repo.casefold()
-        found.append((qualified.start(), f"#{number}" if own else f"{owner_repo}#{number}"))
-    return min(found)[1] if found else ENGINE_SUBJECT
+        found.append((qualified.start(), qualified.end(), f"#{number}" if own else f"{owner_repo}#{number}"))
+    subjects: list[str] = []
+    end = -1
+    # Longest first at one position; a reference inside an earlier one ("#12"
+    # of "PR #12") is part of it, not a second subject.
+    for start, stop, subject in sorted(found, key=lambda f: (f[0], -f[1])):
+        if start >= end:
+            subjects.append(subject)
+            end = stop
+    return tuple(dict.fromkeys(subjects))
+
+
+def refusal_of_text(text: str, *, repo: str | None = None) -> WorkRefusal | None:
+    """The work refusal ``text`` logs, or None.
+
+    A refusal is a skip/drop/refuse/reject decision whose ``reason=`` is a
+    refusal reason (:data:`REFUSAL_REASONS`), about a subject the message
+    names. Its level does not matter: the engine logs these at INFO, because
+    one of them is routine; it is their REPEATING for a subject that nothing
+    moves that is the livelock (a PR's review queued and dropped on every scan).
+    """
+    if _REFUSAL_VERB.search(text) is None or (reason := _REASON.search(text)) is None:
+        return None
+    if reason.group(1) not in REFUSAL_REASONS:
+        return None
+    subjects = subjects_of_text(text, repo=repo)
+    named = [
+        (match.start(), name)
+        for name, pattern in REFUSED_ACTIONS
+        if (match := pattern.search(text, 0, reason.start())) is not None
+    ]
+    action = min(named)[1] if named else None
+    if not subjects or action is None:
+        return None
+    return WorkRefusal(subject=subjects[0], related=subjects[1:], action=action, reason=reason.group(1))
 
 
 @dataclass(frozen=True)

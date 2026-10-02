@@ -527,6 +527,51 @@ def test_a_pr_state_change_ends_the_repeats_logged_against_that_pr(
     assert all(subject != "PR #42" for subject, _ in _kinds(report).get(AnomalyKind.NO_PROGRESS_LOG, ()))
 
 
+def _append_info(state: Path, message: str, at: datetime) -> None:
+    log = state / cli.ENGINE_LOG
+    stamp = at.astimezone().strftime(ROTATING_LOG_DATEFMT)
+    log.write_text(
+        log.read_text(encoding="utf-8") + f"{stamp} [INFO] issue_orchestrator.control.pr_scanner: {message}\n",
+        encoding="utf-8",
+    )
+
+
+_SKIP_379 = "[SCANNER] Skipping stale review PR: pr=379 issue=364 reason=issue_blocked pr_labels=needs-code-review"
+
+
+def test_a_review_dropped_on_every_scan_is_refused_work(state, tmp_path, monkeypatch) -> None:
+    """porchpin PR #379 (2026-10-02): queued for review, then dropped on every
+    scan because #364 is blocked, logged at INFO only. A refusal repeating
+    after the PR's last state change is an anomaly of its own."""
+    SqliteTimelineStore(state / cli.TIMELINE_DB).append(
+        364, _event("pr.view_changed", NOW - timedelta(minutes=40), {"issue_number": 364, "pr_number": 379})
+    )
+    for m in range(6):
+        _append_info(state, _SKIP_379, NOW - timedelta(minutes=30 - 3 * m))
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    (refused,) = report.no_progress.refused_work
+    assert (refused.subject, refused.related, refused.signature) == ("PR #379", ("#364",), "review:issue_blocked")
+    (anomaly,) = [a for a in report.anomalies if a.kind is AnomalyKind.REFUSED_WORK]
+    assert (anomaly.subject, anomaly.signature, anomaly.count) == ("PR #379", "review:issue_blocked", 6)
+    assert anomaly.sources == (AuditSource.LOG, AuditSource.TIMELINE)
+    assert "names #364" in anomaly.detail
+
+
+def test_refusals_from_before_the_subjects_last_change_are_no_anomaly(state, tmp_path, monkeypatch) -> None:
+    for m in range(6):
+        _append_info(state, _SKIP_379, NOW - timedelta(minutes=30 - 3 * m))
+    SqliteTimelineStore(state / cli.TIMELINE_DB).append(
+        364, _event("issue.labels_changed", NOW - timedelta(minutes=5), {"issue_number": 364})
+    )
+
+    report = _run(state, tmp_path, monkeypatch, FakeHost())
+
+    assert report.no_progress.refused_work[0].since_state_change == 0
+    assert AnomalyKind.REFUSED_WORK not in _kinds(report)
+
+
 def test_a_qualified_reference_to_the_audited_repo_is_that_issue(state, tmp_path, monkeypatch) -> None:
     log = state / cli.ENGINE_LOG
     stamp = (NOW - timedelta(minutes=30)).astimezone().strftime(ROTATING_LOG_DATEFMT)
@@ -978,7 +1023,7 @@ def test_the_report_json_is_the_contract(state, tmp_path, monkeypatch) -> None:
     report = _run(state, tmp_path, monkeypatch, FakeHost())
     payload = json.loads(report.model_dump_json())
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 3
     payload["surprise"] = True
     with pytest.raises(ValueError):
         EngineAuditReport.model_validate(payload)

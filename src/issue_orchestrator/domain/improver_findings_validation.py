@@ -19,7 +19,7 @@ Citations are checked, not trusted:
 * a *snapshot* can only show presence, and only the current audit's snapshot
   (taken at its ``generated_at``) counts;
 * an *occurrence* must be a dated record of one of the finding's own
-  anomalies (a log signature's ``first_seen``/``last_seen``, a parked
+  anomalies (a log signature's or work refusal's ``first_seen``/``last_seen``, a parked
   action's ``last_failed_at``, an unresolved record's ``created_at``) in the
   current or previous audit, and its ``at`` must be that record's time;
 * ``stall_evidence`` names a decision, case file or tech-lead run that was
@@ -42,7 +42,7 @@ from pydantic import ValidationError
 
 from ..contracts.engine_audit import AnomalyKind, AuditDiff, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
-from ..contracts.improver_findings import BlockedItemAccount, Finding, ImproverFindings, Observed
+from ..contracts.improver_findings import BlockedItemAccount, DownstreamStall, Finding, ImproverFindings, Observed
 from ..contracts.improver_inputs import (
     AUDIT_FILE,
     AUDIT_PREVIOUS_FILE,
@@ -57,6 +57,7 @@ from ..contracts.improver_inputs import (
     OpenIssuesInput,
     StagedDecision,
 )
+from ..events.catalog import EventName
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -118,6 +119,13 @@ class Rule(StrEnum):
     #: ``awaiting_operator`` cites a hand-over decision about the item,
     #: applied by the cutoff, after its latest current block began.
     BLOCKED_ITEM_HANDED_OVER = "blocked_item_handed_over"
+    #: Work downstream of a block that the engine keeps refusing (an item's
+    #: ``stalled_work``: its PR's review dropped on every scan) is accounted
+    #: for in the item's ``downstream``, whatever its disposition: by a
+    #: finding that keys it and cites its snapshot, and by the refused PR's
+    #: pipeline event. A hand-over or a grade of the block does not examine
+    #: what it holds up.
+    BLOCKED_ITEM_STALLED_WORK_EXAMINED = "blocked_item_stalled_work_examined"
 
 
 @dataclass(frozen=True)
@@ -242,6 +250,11 @@ class _Checker:
         self._blocked: dict[int, BlockedItem] = (
             {} if evidence.blocked_items is None else {i.number: i for i in evidence.blocked_items.items}
         )
+        #: Each staged item's index in ``blocked-items.json``, for its pointers.
+        self._item_index: dict[int, int] = (
+            {} if evidence.blocked_items is None
+            else {i.number: index for index, i in enumerate(evidence.blocked_items.items)}
+        )
 
     def violations(self) -> Iterator[Violation]:
         yield from self._file_rules()
@@ -329,6 +342,19 @@ class _Checker:
                     for rule, message in self._account_rules(account, item, findings)
                 )
 
+    def _examines(self, finding: Finding, key: tuple[str, str, str]) -> bool:
+        """Whether ``finding`` keys the anomaly ``key`` AND cites the current
+        audit's snapshot of it: a key alone, beside a diagnosis of something
+        else, examines nothing."""
+        snapshot = next(
+            (f"/anomalies/{i}" for i, a in enumerate(self._evidence.audit.anomalies) if a.key == key), None
+        )
+        return (
+            snapshot is not None
+            and key in {k.key for k in finding.anomaly_keys}
+            and any(o.kind == "snapshot" and o.file == AUDIT_FILE and o.ref == snapshot for o in finding.observed)
+        )
+
     def _account_rules(
         self, account: BlockedItemAccount, item: BlockedItem, findings: Mapping[str, Finding]
     ) -> Iterator[tuple[Rule, str]]:
@@ -359,6 +385,73 @@ class _Checker:
                 )
         if account.disposition == "awaiting_operator":
             yield from self._handed_over(account, item)
+        yield from self._downstream(account, item, findings)
+
+    def _downstream(
+        self, account: BlockedItemAccount, item: BlockedItem, findings: Mapping[str, Finding]
+    ) -> Iterator[tuple[Rule, str]]:
+        """Every stalled_work entry of the item accounted for in ``downstream``
+        exactly once, whatever the disposition: by a finding that keys it and
+        cites its snapshot, and by the refused PR's own pipeline event."""
+        n = account.number
+        rule = Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
+        stalled = [(w.kind, w.subject, w.signature) for w in item.stalled_work]
+        claimed = [d.anomaly_key.key for d in account.downstream]
+        missing = [k for k in stalled if k not in claimed]
+        if missing:
+            yield rule, (
+                f"#{n}: the engine keeps refusing work downstream of its block, and its account's"
+                " downstream does not account for: " + "; ".join(f"{k[0]} {k[1]} [{k[2]}]" for k in missing)
+            )
+        extra = sorted({k for k in claimed if k not in stalled})
+        if extra:
+            yield rule, f"#{n}: downstream names work that is not its stalled_work: {extra}"
+        twice = sorted({k for k in claimed if claimed.count(k) > 1})
+        if twice:
+            yield rule, f"#{n}: downstream accounts for the same stalled work twice: {twice}"
+        for entry in account.downstream:
+            key = entry.anomaly_key.key
+            finding = findings.get(entry.finding_id)
+            if finding is None or not self._examines(finding, key):
+                yield rule, (
+                    f"#{n}: {entry.finding_id} must be a finding that keys {key} and cites its"
+                    " snapshot (audit.json#/anomalies/<i>): a key with no evidence of its own examines nothing"
+                )
+            yield from self._refused_pr_action(item, entry)
+
+    def _refused_pr_action(self, item: BlockedItem, entry: DownstreamStall) -> Iterator[tuple[Rule, str]]:
+        """What the downstream entry claims of the refused work, checked
+        against the audit and the PR's retained pipeline: the refused action
+        is the one the anomaly names, and the cited event is THAT PR's: its
+        retained skip of that action for the anomaly's reason when there is
+        one, and never a skip that shows something else (another action, or
+        a wait such as ``held_by_recovery``)."""
+        n, rule = item.number, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
+        subject, action, cited = entry.anomaly_key.subject, entry.refused_action, entry.pipeline_event
+        named, _, refused_for = entry.anomaly_key.signature.partition(":")
+        if action != named:
+            yield rule, f"#{n}: {subject}'s refused work is its {named}, not its {action}"
+        pr = next((p for p in item.open_prs if f"PR #{p.number}" == subject and p.pipeline_events), None)
+        if pr is None:
+            if cited is not None:
+                yield rule, f"#{n}: {subject} has no retained pipeline event on the item, so cite none"
+            return
+        prefix = f"{BLOCKED_ITEMS_FILE}#/items/{self._item_index[n]}/open_prs/{item.open_prs.index(pr)}/pipeline_events/"
+        events = pr.pipeline_events
+        matching = [
+            i for i, e in enumerate(events)
+            if _PIPELINE_SKIPS.get(e.event) == action and _skip_reason_is(e.reason, refused_for)
+        ]
+        index = cited[len(prefix):] if cited is not None and cited.startswith(prefix) else ""
+        if not index.isdigit() or int(index) >= len(events):
+            yield rule, f"#{n}: cite an event of PR #{pr.number}'s pipeline ({prefix}<k>)"
+        elif matching and int(index) not in matching:
+            yield rule, f"#{n}: cite PR #{pr.number}'s retained {action} skip for {refused_for} ({prefix}<k>)"
+        elif not matching and events[int(index)].event in _PIPELINE_SKIPS:
+            yield rule, (
+                f"#{n}: {prefix}{index} is a skip that does not show this refusal"
+                f" ({events[int(index)].event}: {events[int(index)].reason})"
+            )
 
     def _handed_over(self, account: BlockedItemAccount, item: BlockedItem) -> Iterator[tuple[Rule, str]]:
         n = account.number
@@ -667,6 +760,22 @@ class _Checker:
             yield Rule.REPRODUCTION_FAILS_ON_ENGINE_COMMIT, "the reproduction must fail on the engine's commit"
 
 
+#: A PR's retained skip event, and the pipeline action it refuses.
+_PIPELINE_SKIPS: Mapping[str, str] = {
+    EventName.REVIEW_SKIPPED.value: "review",
+    EventName.REWORK_SKIPPED.value: "rework",
+}
+
+def _skip_reason_is(event_reason: str | None, refused_for: str) -> bool:
+    """Whether a skip event's reason is the refusal's (an event qualifies it,
+    e.g. ``stale_pending_review:issue_blocked`` for ``issue_blocked``)."""
+    return event_reason is not None and event_reason.rpartition(":")[2] == refused_for
+
+
+#: The audit's records counted from its log read: the read's coverage is theirs.
+_LOG_RECORDS = ("/no_progress/log_signatures/", "/no_progress/refused_work/")
+
+
 class _AnomalyRecords:
     """The dated records of one finding's anomalies in the current and previous audit."""
 
@@ -705,11 +814,7 @@ class _AnomalyRecords:
                     )
 
     def _collect(self, name: str, report: EngineAuditReport, keys: set[tuple[str, str, str]]) -> None:
-        for index, s in enumerate(report.no_progress.log_signatures):
-            if (AnomalyKind.NO_PROGRESS_LOG.value, s.subject, f"{s.level} {s.logger}: {s.signature}") in keys:
-                base = f"/no_progress/log_signatures/{index}"
-                self._add(name, base, "first_seen", s.first_seen, onset=True)
-                self._add(name, base, "last_seen", s.last_seen, onset=False)
+        self._collect_log_counts(name, report, keys)
         if report.action_liveness is not None:
             for index, p in enumerate(report.action_liveness.parked):
                 if (AnomalyKind.PARKED_ACTION.value, p.subject, f"{p.action}:{p.fingerprint}") in keys:
@@ -718,6 +823,27 @@ class _AnomalyRecords:
             for index, w in enumerate(report.validated_work.unresolved):
                 if (AnomalyKind.STALE_UNRESOLVED_WORK.value, f"#{w.issue_number}", w.record_id) in keys:
                     self._add(name, f"/validated_work/unresolved/{index}", "created_at", w.created_at, onset=True)
+
+    def _collect_log_counts(self, name: str, report: EngineAuditReport, keys: set[tuple[str, str, str]]) -> None:
+        """A repeat counted from the log (a log signature, a work refusal):
+        its ``first_seen`` is an onset, its ``last_seen`` an occurrence."""
+        counted = (
+            *(
+                (f"/no_progress/log_signatures/{i}",
+                 (AnomalyKind.NO_PROGRESS_LOG.value, s.subject, f"{s.level} {s.logger}: {s.signature}"),
+                 s.first_seen, s.last_seen)
+                for i, s in enumerate(report.no_progress.log_signatures)
+            ),
+            *(
+                (f"/no_progress/refused_work/{i}", (AnomalyKind.REFUSED_WORK.value, r.subject, r.signature),
+                 r.first_seen, r.last_seen)
+                for i, r in enumerate(report.no_progress.refused_work)
+            ),
+        )
+        for base, key, first, last in counted:
+            if key in keys:
+                self._add(name, base, "first_seen", first, onset=True)
+                self._add(name, base, "last_seen", last, onset=False)
 
     def _add(self, name: str, record: str, field: str, stamp: str | datetime, *, onset: bool) -> None:
         self._records.setdefault((name, record), {})[field] = (
@@ -755,14 +881,14 @@ class _AnomalyRecords:
 
     def proves_onset(self, finding: Finding, onset: datetime) -> bool:
         """Whether ``onset`` is a proven first occurrence: a cited log
-        signature's ``first_seen`` whose log read began BEFORE it, so the
+        signature's or work refusal's ``first_seen`` whose log read began BEFORE it, so the
         read shows no earlier occurrence. No other source here says where its
         coverage begins, so no other onset is proven."""
         for o in finding.observed:
             if o.kind != "occurrence" or o.at != onset or not self.is_onset(o):
                 continue
             report = self._evidence.audit if o.file == AUDIT_FILE else self._evidence.previous_audit
-            if report is None or not o.ref.startswith("/no_progress/log_signatures/"):
+            if report is None or not o.ref.startswith(_LOG_RECORDS):
                 continue
             log = report.no_progress.log
             if log is None:

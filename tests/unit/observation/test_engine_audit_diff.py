@@ -13,6 +13,7 @@ from issue_orchestrator.contracts.engine_audit import (
     AuditSource,
     EngineAuditReport,
     NoProgressSection,
+    RefusedWork,
     SourceReading,
     SourceStatus,
     StateChange,
@@ -46,6 +47,7 @@ def _report(
     log: SourceStatus = SourceStatus.READ,
     timeline: SourceStatus = SourceStatus.READ,
     state_changes: tuple[StateChange, ...] = (),
+    refused_work: tuple[RefusedWork, ...] = (),
 ) -> EngineAuditReport:
     status = {AuditSource.GITHUB: github, AuditSource.LOG: log, AuditSource.TIMELINE: timeline}
     return EngineAuditReport(
@@ -67,6 +69,7 @@ def _report(
             window_end=at,
             log=None,
             log_signatures=(),
+            refused_work=refused_work,
             timeline_repeats=(),
             state_changes=state_changes,
         ),
@@ -171,3 +174,30 @@ def test_a_malformed_previous_report_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="anomalies"):
         load_report(path)
+
+
+#: PR #379's review refused because #364 is blocked (porchpin, 2026-10-02).
+REFUSED = Anomaly(kind=AnomalyKind.REFUSED_WORK, sources=(AuditSource.LOG, AuditSource.TIMELINE),
+                  subject="PR #379", signature="review:issue_blocked", detail="d", count=9)
+REFUSAL = RefusedWork(subject="PR #379", related=("#364",), action="review", reason="issue_blocked", loggers=("scanner",),
+                      example="Skipping", count=9, since_state_change=9,
+                      first_seen="2026-09-28T09:00:00+00:00", last_seen="2026-09-28T10:00:00+00:00")
+
+
+@pytest.mark.parametrize(
+    ("state_changes", "resolved"),
+    [
+        ((), False),  # aged out of the window: nothing moved
+        ((StateChange(subject="PR #379", at="2026-09-28T12:00:00+00:00"),), True),
+        # r2 F1: the issue whose block refused the review changed (unblocked).
+        ((StateChange(subject="#364", at="2026-09-28T12:00:00+00:00"),), True),
+        ((StateChange(subject="#364", at="2026-09-28T09:00:00+00:00"),), False),  # before the previous audit
+        ((StateChange(subject="#365", at="2026-09-28T12:00:00+00:00"),), False),  # another subject
+    ],
+)
+def test_refused_work_gone_is_resolved_only_by_a_change_of_a_subject_its_refusals_named(
+    state_changes: tuple[StateChange, ...], resolved: bool
+) -> None:
+    diff = diff_reports(_report(REFUSED, refused_work=(REFUSAL,)), _report(at=LATER, state_changes=state_changes))
+
+    assert (diff.resolved, diff.unobserved) == (((REFUSED,), ()) if resolved else ((), (REFUSED,)))

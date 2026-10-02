@@ -5,6 +5,13 @@ must measure the tech lead against it: for EVERY open issue that is blocked
 (:class:`~.engine_audit.BlockedLane`), what blocks it, since when, what
 cause the engine recorded, and what the tech lead decided or wrote about it.
 
+The block is not the only thing stuck: work DOWNSTREAM of it can be too.
+Each item names its open pull requests with their retained pipeline events,
+and every ``refused_work`` anomaly of the audit about the item or one of its
+PRs (porchpin #364, 2026-10-02: its PR #379 carried published validated work
+whose review the engine queued and dropped on every scan while the issue was
+blocked, and the improver graded only the block).
+
 Pure assembly, like :mod:`.improver_inputs`: every argument is a record
 already read through a read port from a snapshot, or the reason that source
 could not be read. Absence of evidence stays visible: a source that could not
@@ -18,6 +25,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 
+from ..contracts.engine_audit import Anomaly, AnomalyKind, EngineAuditReport, RefusedWork
 from ..contracts.improver_inputs import (
     BlockedItem,
     BlockedItemsInput,
@@ -25,19 +33,25 @@ from ..contracts.improver_inputs import (
     BlockingLabelInput,
     CaseFilesInput,
     Coverage,
+    ItemPullRequestInput,
     NeedsHumanCauseInput,
+    PipelineEventInput,
     StagedDecision,
+    StalledWorkRef,
 )
+from ..control.review_scope import issues_of_pr
 from ..domain.label_change_event import PRESENCE_UNKNOWN
 from ..domain.improver_subjects import decision_issue, mentions_issue
 from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from ..events.catalog import EventName
 from ..ports.engine_audit import OpenIssueLabels, TimelineEvent
 from ..ports.pending_work_claim_store import NeedsHumanCauseRow
+from ..ports.pull_request_tracker import PRInfo
 from .engine_audit import BlockedLane
 from .improver_inputs import applied_at, as_of, instant, ledger_coverage, staged_decision
 
-#: How many of an item's most recent block events are staged.
+#: How many of an item's most recent block events (and of each of its PRs'
+#: pipeline events) are staged.
 BLOCK_EVENTS_PER_ITEM = 20
 #: An event's detail is cut to this many characters.
 DETAIL_CHARS = 1500
@@ -60,11 +74,15 @@ _BLOCK_EVENTS = frozenset(
     }
 )
 _LABELS_CHANGED = EventName.ISSUE_LABELS_CHANGED.value
+#: Events whose detail is the labels they added and removed.
+_LABEL_DIFFS = frozenset({_LABELS_CHANGED, EventName.PR_VIEW_CHANGED.value})
 
 
 def blocked_items_input(
     issues: Sequence[OpenIssueLabels],
     *,
+    prs: Sequence[PRInfo],
+    audit: EngineAuditReport,
     lane: BlockedLane,
     causes: Sequence[NeedsHumanCauseRow] | str,
     ledger: Sequence[TechLeadCharterDecision] | str,
@@ -75,6 +93,10 @@ def blocked_items_input(
 ) -> BlockedItemsInput:
     """Every blocked item among ``issues`` (the audited repository's open
     issues, read at ``cutoff``), with its evidence.
+
+    ``prs`` are the same repository's open pull requests, read with the
+    issues by ``audit`` (of that repository): an item's open PRs come from
+    them, and the refused work about it from the audit.
 
     ``causes``, ``ledger`` and ``timeline`` are the records read (the
     timeline holding the blocked items' own events, oldest first), or why
@@ -89,6 +111,11 @@ def blocked_items_input(
             if event.issue_number in by_issue:
                 by_issue[event.issue_number].append(event)
     decisions = _decisions_about(ledger, numbers, cutoff)
+    prs_of: dict[int, list[PRInfo]] = {n: [] for n in numbers}
+    for pr in sorted(prs, key=lambda p: p.number):
+        for number in issues_of_pr(pr, repo_slug=audit.repo) & numbers:
+            prs_of[number].append(pr)
+    refused = _Refusals(audit)
     return BlockedItemsInput(
         read_at=cutoff,
         blocking_rule=f"{BLOCKING_RULE}; labels read by {lane.source}",
@@ -110,6 +137,8 @@ def blocked_items_input(
                 decisions=decisions.get(issue.number, ()),
                 case_files=case_files,
                 events=timeline if isinstance(timeline, str) else by_issue[issue.number],
+                prs=prs_of[issue.number],
+                refused=refused,
                 cutoff=cutoff,
             )
             for issue in blocked
@@ -125,6 +154,8 @@ def _item(
     decisions: tuple[StagedDecision, ...],
     case_files: CaseFilesInput | None,
     events: Sequence[TimelineEvent] | str,
+    prs: Sequence[PRInfo],
+    refused: "_Refusals",
     cutoff: datetime,
 ) -> BlockedItem:
     labels = lane.blocking(issue.labels)
@@ -164,7 +195,68 @@ def _item(
             for d in case_files.diagnoses
             if d.subject_issue_number == issue.number or mentions_issue(d.body, {issue.number})
         ),
+        open_prs=tuple(_pull_request(pr, events) for pr in prs),
+        stalled_work=refused.about(issue.number, prs),
     )
+
+
+def _pull_request(pr: PRInfo, events: Sequence[TimelineEvent] | str) -> ItemPullRequestInput:
+    if pr.draft is None:
+        raise ValueError(f"open PR #{pr.number} did not report whether it is a draft")
+    own = [] if isinstance(events, str) else [e for e in events if _pr_number(e) == pr.number]
+    staged = own[-BLOCK_EVENTS_PER_ITEM:]
+    return ItemPullRequestInput(
+        number=pr.number,
+        draft=pr.draft,
+        pipeline_events=tuple(
+            PipelineEventInput(
+                at=instant(e.record.timestamp), event=_name(e), reason=_reason(e), detail=_detail(e)
+            )
+            for e in staged
+        ),
+        last_event_at=instant(staged[-1].record.timestamp) if staged else None,
+    )
+
+
+def _reason(event: TimelineEvent) -> str | None:
+    value = event.record.data.get("reason")
+    return value if isinstance(value, str) and value else None
+
+
+def _pr_number(event: TimelineEvent) -> int | None:
+    value = event.record.data.get("pr_number")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return int(value) if isinstance(value, str) and value.isdigit() else None
+
+
+class _Refusals:
+    """The audit's refused-work anomalies, with the subjects each one names."""
+
+    def __init__(self, audit: EngineAuditReport) -> None:
+        records: dict[tuple[str, str], RefusedWork] = {
+            (r.subject, r.signature): r for r in audit.no_progress.refused_work
+        }
+        self._anomalies: list[tuple[Anomaly, frozenset[str]]] = [
+            (a, frozenset(records[(a.subject, a.signature)].related))
+            for a in audit.anomalies
+            if a.kind is AnomalyKind.REFUSED_WORK
+        ]
+
+    def about(self, number: int, prs: Sequence[PRInfo]) -> tuple[StalledWorkRef, ...]:
+        """The refused work downstream of item ``number``: work of the item
+        or of one of its open PRs, or work whose refusal names the item (the
+        engine refusing a PR's review because of THIS issue's block, however
+        the PR links to it)."""
+        item = f"#{number}"
+        subjects = {item, *(f"PR #{pr.number}" for pr in prs)}
+        return tuple(
+            StalledWorkRef(kind=a.kind.value, subject=a.subject, signature=a.signature, detail=a.detail)
+            for a, related in self._anomalies
+            if a.subject in subjects or item in related
+        )
 
 
 def _label_onsets(events: Sequence[TimelineEvent], lane: BlockedLane) -> dict[str, tuple[datetime, str]]:
@@ -217,7 +309,7 @@ def _block_events(events: Sequence[TimelineEvent], lane: BlockedLane) -> tuple[B
 
 def _detail(event: TimelineEvent) -> str:
     data = event.record.data
-    if _name(event) == _LABELS_CHANGED:
+    if _name(event) in _LABEL_DIFFS:
         text = f"added {list(_labels(data.get('added')))} removed {list(_labels(data.get('removed')))}"
     else:
         parts = [

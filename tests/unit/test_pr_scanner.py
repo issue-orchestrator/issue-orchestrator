@@ -7,10 +7,13 @@ Follows the testing patterns in tests/unit/CLAUDE.md:
 - Focus on behaviors and edge cases
 """
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.pr_scanner import PRScanner
+from issue_orchestrator.observation.no_progress import WorkRefusal, refusal_of_text
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import PendingReview, PendingRework
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -734,6 +737,25 @@ class TestScanForReworksEscalation:
 
         assert result == [], "Should skip rework when issue is blocked"
         assert escalations == []
+
+    def test_a_blocked_rework_is_logged_as_a_refusal_the_audit_counts(self, scanner, mock_repository, caplog):
+        """#7490: without the opt-in timeline trace, a blocked PR's rework
+        refused on every scan must still reach the log, at INFO, in the shape
+        the engine audit counts as refused work (as the review lane's does)."""
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Issue 42").with_agent("agent:developer")
+            .with_labels("agent:developer", "needs-human").build()
+        )
+        mock_repository.prs["42-feature"] = [
+            make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-rework"])
+        ]
+
+        with caplog.at_level(logging.INFO, logger="issue_orchestrator.control.pr_scanner"):
+            scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+
+        [record] = [r for r in caplog.records if "rework PR" in r.getMessage()]
+        assert record.levelno == logging.INFO
+        assert refusal_of_text(record.getMessage()) == WorkRefusal("PR #100", ("#42",), "rework", "issue_blocked")
 
     def test_no_escalation_at_max_cycle(self, scanner, mock_repository, mock_config):
         """Does not escalate when exactly at max rework cycles."""

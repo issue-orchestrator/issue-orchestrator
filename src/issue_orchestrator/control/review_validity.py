@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from ..domain.blocked_open_pr import BlockedPRSkipReason
+
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports.pull_request_tracker import PRInfo
@@ -89,7 +91,7 @@ def evaluate_review_validity(
         if pr_blocking:
             return ReviewValidity(
                 valid=False,
-                reason="pr_blocked",
+                reason=BlockedPRSkipReason.PR_BLOCKED.value,
                 issue_labels=issue_labels,
                 pr_labels=pr_labels,
                 blocking_labels=pr_blocking,
@@ -114,7 +116,7 @@ def evaluate_review_validity(
     if issue_blocking:
         return ReviewValidity(
             valid=False,
-            reason="issue_blocked",
+            reason=BlockedPRSkipReason.ISSUE_BLOCKED.value,
             issue_labels=issue_labels,
             pr_labels=pr_labels,
             blocking_labels=issue_blocking,
@@ -155,7 +157,7 @@ class ReviewWithholding:
     def withheld_only_by_block(self) -> bool:
         return (
             not self.current.valid
-            and self.current.reason == "issue_blocked"
+            and self.current.reason == BlockedPRSkipReason.ISSUE_BLOCKED
             and self.without_block.valid
         )
 

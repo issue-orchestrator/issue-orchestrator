@@ -22,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 #: Bump when a field is added, removed or changes meaning. The prompt's
 #: ``schema_version`` must match.
-IMPROVER_FINDINGS_SCHEMA_VERSION = 3
+IMPROVER_FINDINGS_SCHEMA_VERSION = 4
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
 FINDINGS_FILE = "improver-findings.json"
@@ -46,6 +46,11 @@ TrendValue = Literal["up", "flat", "down", "unobserved"]
 BlockedItemDisposition = Literal["finding", "awaiting_operator"]
 
 NonEmpty = Annotated[str, StringConstraints(min_length=1, strip_whitespace=False)]
+#: Text with something in it: not empty, not only whitespace.
+Stated = Annotated[str, StringConstraints(pattern=r"\S")]
+#: The pipeline action a block refuses: a PR's review or rework, or a
+#: queued tech-lead run (the audit's ``refused_work`` signature names it).
+RefusedAction = Literal["review", "rework", "tech_lead_run"]
 #: A finding's stable id: it keys the orchestrator's dedup marker.
 Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,79}$")]
 #: ``<staged input file>#<record id or JSON pointer>``.
@@ -148,6 +153,28 @@ class Trend(_Closed):
     notes: str
 
 
+class DownstreamStall(_Closed):
+    """One of a blocked item's ``stalled_work`` entries, accounted for: the
+    work its block holds up, what that costs, the finding that grades it,
+    and the PR pipeline event that shows the refusal."""
+
+    #: The ``stalled_work`` entry: a ``refused_work`` anomaly of ``audit.json``.
+    anomaly_key: AnomalyKeyRef
+    #: The finding that keys that anomaly and cites its snapshot.
+    finding_id: Slug
+    #: The pipeline action the block refuses: the one the anomaly's
+    #: ``<action>:<reason>`` signature names.
+    refused_action: RefusedAction
+    #: ``blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k>``: an
+    #: event of the refused PR's pipeline, its retained skip of that action
+    #: when there is one. Required when the refused work is an open PR of the
+    #: item with retained pipeline events; None otherwise.
+    pipeline_event: SourceRef | None = None
+    #: What the block holds up and why it cannot proceed (e.g. the published
+    #: work on PR #379 can never be reviewed while #364 is blocked).
+    impact: Stated
+
+
 class BlockedItemAccount(_Closed):
     """One staged blocked item (``blocked-items.json``), accounted for.
 
@@ -162,10 +189,14 @@ class BlockedItemAccount(_Closed):
     finding_id: Slug | None = None
     evidence: tuple[NonEmpty, ...] = ()
     why: NonEmpty
+    #: Every one of the item's ``stalled_work`` entries, each exactly once,
+    #: whatever the disposition: a hand-over or a grade of the block does not
+    #: account for the work the block holds up.
+    downstream: tuple[DownstreamStall, ...] = ()
 
 
 class ImproverFindings(_Closed):
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     engine_commit: NonEmpty
     engine_started_at: Timestamp
     findings: tuple[Finding, ...]
@@ -179,6 +210,7 @@ __all__ = [
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
     "BlockedItemAccount",
+    "DownstreamStall",
     "EngineTag",
     "Finding",
     "GradingWindow",

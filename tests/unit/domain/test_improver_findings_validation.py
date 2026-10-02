@@ -343,6 +343,7 @@ def test_breaking_one_rule_rejects_the_file_naming_it(
 #: Rules broken through the staged EVIDENCE rather than the findings file;
 #: their cases are the tests below.
 EVIDENCE_CASE_RULES = {
+    Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED,
     Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY,
     Rule.OCCURRENCE_BY_THE_CUTOFF,
     Rule.NOT_NOTICED_NEEDS_COVERAGE,
@@ -781,3 +782,155 @@ def test_a_remedy_before_the_latest_block_did_not_act_on_it(tmp_path: Path) -> N
     _finding(doc)["stall_point"] = "acted_not_effective"
     _finding(doc)["stall_evidence"] = ["R1"]
     assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in _rules(doc, evidence)
+
+
+_REFUSED = {
+    "kind": "refused_work", "sources": ["log", "timeline"], "subject": "PR #379", "signature": "review:issue_blocked",
+    "detail": "9 refusal(s) since it last changed state", "count": 9,
+}
+
+
+def _refused_review_of_the_items_pr(tmp_path: Path) -> tuple[StagedEvidence, int]:
+    """#353's open PR #379: its review found and dropped on every scan because
+    #353 is blocked (porchpin #364/#379, 2026-10-02). The audit names it; the
+    item carries it as its stalled work. Returns the anomaly's index."""
+    data = build_improver_data(tmp_path)
+    index: list[int] = []
+
+    def audit(d: dict) -> None:
+        d["no_progress"]["refused_work"].append({
+            "subject": "PR #379", "related": ["#353"], "action": "review", "reason": "issue_blocked",
+            "loggers": ["issue_orchestrator.control.pr_scanner"],
+            "example": "[SCANNER] Skipping stale review PR: pr=N issue=N reason=issue_blocked",
+            "count": 9, "since_state_change": 9,
+            "first_seen": "2026-09-28T14:00:00+00:00", "last_seen": "2026-09-28T17:50:00+00:00",
+        })
+        index.append(len(d["anomalies"]))
+        d["anomalies"].append(_REFUSED)
+
+    _with_notice(data, "audit.json", audit)
+    evidence = _with_notice(data, "blocked-items.json", lambda d: d["items"][0]["stalled_work"].append(
+        {key: _REFUSED[key] for key in ("kind", "subject", "signature", "detail")}
+    ))
+    return evidence, index[0]
+
+
+def test_work_a_block_keeps_refusing_needs_a_finding_that_keys_it(tmp_path: Path) -> None:
+    """The blind run graded #364's block and never saw its PR's review dropped
+    on every scan: grading the block does not examine what it holds up."""
+    evidence, _ = _refused_review_of_the_items_pr(tmp_path)
+
+    assert _rules(example("needs_investigation"), evidence) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+def test_a_hand_over_of_the_block_does_not_examine_the_work_it_refuses(tmp_path: Path) -> None:
+    evidence, _ = _refused_review_of_the_items_pr(tmp_path)
+
+    assert _rules(example("exam_case"), evidence) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+def test_a_key_without_its_own_evidence_does_not_examine_the_refused_work(tmp_path: Path) -> None:
+    """Review r1 F3: the refusal's key slipped into a finding about something
+    else, with nothing of it cited, examines nothing."""
+    evidence, _ = _refused_review_of_the_items_pr(tmp_path)
+    doc = example("needs_investigation")
+    _finding(doc)["anomaly_keys"].append({key: _REFUSED[key] for key in ("kind", "subject", "signature")})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",
+        "source": "audit.json#/no_progress/refused_work/0/first_seen", "supports": "recurs_after_start",
+    })
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
+
+    rejected = _rules(doc, evidence)
+
+    assert rejected == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+_DOWNSTREAM = {
+    "anomaly_key": {key: _REFUSED[key] for key in ("kind", "subject", "signature")},
+    "finding_id": "needs-human-353",
+    "refused_action": "review",
+    "impact": "PR #379's published work can never be reviewed while #353 is blocked",
+}
+
+
+def _examined(doc: Doc, index: int) -> Doc:
+    """``doc`` with its finding keyed to the refusal, citing its records."""
+    _finding(doc)["anomaly_keys"].append({key: _REFUSED[key] for key in ("kind", "subject", "signature")})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",
+        "source": "audit.json#/no_progress/refused_work/0/first_seen", "supports": "recurs_after_start",
+    })
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T18:00:00+00:00", "kind": "snapshot", "source": f"audit.json#/anomalies/{index}",
+        "supports": "present_after_start",
+    })
+    return doc
+
+
+def test_a_keyed_refusal_the_items_account_leaves_out_is_not_accounted_for(tmp_path: Path) -> None:
+    """Review r4: graded in a finding, the refusal still needs its item's
+    downstream account, naming the impact."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+
+    assert _rules(_examined(example("needs_investigation"), index), evidence) == {
+        Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED
+    }
+
+
+def test_downstream_names_only_the_items_stalled_work(tmp_path: Path) -> None:
+    doc = example("needs_investigation")
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
+
+    assert _rules(doc, load_staged_evidence(build_improver_data(tmp_path))) == {Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED}
+
+
+def test_a_hand_over_accounts_for_its_items_downstream_through_a_finding(tmp_path: Path) -> None:
+    """An awaiting_operator item: the refusal is still graded, by a finding."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+    doc = example("exam_case")
+    finding = _examined(example("needs_investigation"), index)["findings"][0]
+    doc["findings"].append(finding)
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
+
+    assert validate_findings(json.dumps(doc), evidence).blocked_items[0].downstream[0].finding_id == (
+        "needs-human-353"
+    )
+
+
+def test_a_finding_keyed_to_the_refused_work_examines_it(tmp_path: Path) -> None:
+    """Keyed, the refusal's dated records are its occurrences: its
+    ``first_seen`` is citable, like a log signature's."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+    doc = example("needs_investigation")
+    doc["blocked_items"][0]["downstream"] = [_DOWNSTREAM]
+    _finding(doc)["anomaly_keys"].append({key: _REFUSED[key] for key in ("kind", "subject", "signature")})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T14:00:00+00:00", "kind": "occurrence",
+        "source": "audit.json#/no_progress/refused_work/0/first_seen", "supports": "recurs_after_start",
+    })
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T18:00:00+00:00", "kind": "snapshot", "source": f"audit.json#/anomalies/{index}",
+        "supports": "present_after_start",
+    })
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].anomaly_keys[-1].subject == "PR #379"
+
+
+@pytest.mark.parametrize(
+    ("change", "rule"),
+    [
+        # The refused action is the one the anomaly names (review).
+        ({"refused_action": "rework"}, Rule.BLOCKED_ITEM_STALLED_WORK_EXAMINED),
+        ({"refused_action": None}, Rule.SCHEMA),
+        # The impact is stated, not blank.
+        ({"impact": " "}, Rule.SCHEMA),
+    ],
+)
+def test_a_downstream_claim_is_typed_and_stated(tmp_path: Path, change: dict, rule: Rule) -> None:
+    """Review r5: a downstream entry claims WHAT is refused, in so many words."""
+    evidence, index = _refused_review_of_the_items_pr(tmp_path)
+    doc = _examined(example("needs_investigation"), index)
+    doc["blocked_items"][0]["downstream"] = [{**_DOWNSTREAM, **change}]
+
+    assert rule in _rules(doc, evidence)

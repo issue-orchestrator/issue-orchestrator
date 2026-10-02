@@ -224,6 +224,43 @@ class BlockEventInput(_Closed):
     detail: str
 
 
+class PipelineEventInput(_Closed):
+    """One timeline event of a pull request's pipeline: a review or rework
+    queued, started, skipped or finished, a PR label change, a publication."""
+
+    at: AwareDatetime
+    event: str
+    #: The event's own ``reason`` (a skip's, e.g.
+    #: ``stale_pending_review:issue_blocked``); None when it records none.
+    reason: str | None
+    detail: str
+
+
+class ItemPullRequestInput(_Closed):
+    """One OPEN pull request of a blocked item: what is downstream of the
+    block, and whether it is moving."""
+
+    number: int
+    draft: bool
+    #: Its most recent events on the item's retained timeline, oldest first
+    #: (``timeline_coverage`` says what was retained).
+    pipeline_events: tuple[PipelineEventInput, ...]
+    #: Its latest retained pipeline event; None when none was retained.
+    last_event_at: AwareDatetime | None
+
+
+class StalledWorkRef(_Closed):
+    """A ``refused_work`` anomaly of ``audit.json`` about the item or one of
+    its pull requests: the engine refusing the item's own downstream work
+    again and again (a PR's review dropped on every scan while the issue is
+    blocked). Its key is ``(kind, subject, signature)``."""
+
+    kind: str
+    subject: str
+    signature: str
+    detail: str
+
+
 class BlockedItem(_Closed):
     """One open issue of the audited repository that is blocked."""
 
@@ -250,6 +287,11 @@ class BlockedItem(_Closed):
     #: ``case-files.json`` diagnoses (tech-lead runs) about it: its subject,
     #: or naming ``#<number>``.
     diagnosis_ids: tuple[str, ...]
+    #: Its open pull requests (its ``<n>-`` branch, or a closing/``Refs``
+    #: link): published work the block may be holding up.
+    open_prs: tuple[ItemPullRequestInput, ...]
+    #: Every ``refused_work`` anomaly about it or one of its open PRs.
+    stalled_work: tuple[StalledWorkRef, ...]
 
 
 class BlockedItemsInput(_Closed):
@@ -333,6 +375,9 @@ __all__ = [
     "BlockEventInput",
     "BlockedItem",
     "BlockedItemsInput",
+    "ItemPullRequestInput",
+    "PipelineEventInput",
+    "StalledWorkRef",
     "BlockingLabelInput",
     "CaseFileObservationInput",
     "CaseFilesInput",

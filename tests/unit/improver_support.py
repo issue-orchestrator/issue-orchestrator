@@ -135,7 +135,7 @@ def _report(
                 first_entry_at=window_start.isoformat(), last_entry_at=at.isoformat(),
                 covers_window=True,
             ),
-            log_signatures=signatures, timeline_repeats=(), state_changes=(),
+            log_signatures=signatures, refused_work=(), timeline_repeats=(), state_changes=(),
         ),
         fetch_cost=None,
         anomalies=anomalies,
@@ -229,6 +229,8 @@ def blocked_items() -> BlockedItemsInput:
                 decisions=(escalation_353(),),
                 case_file_ids=(),
                 diagnosis_ids=(),
+                open_prs=(),
+                stalled_work=(),
             ),
         ),
     )

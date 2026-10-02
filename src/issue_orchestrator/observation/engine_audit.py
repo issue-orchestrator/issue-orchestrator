@@ -261,6 +261,7 @@ def audit_engine(
         window_end=now.isoformat(),
         log=None if log_read is None else _coverage(*log_read, window_start),
         log_signatures=() if log_read is None else log_read[1].signatures,
+        refused_work=() if log_read is None else log_read[1].refusals,
         timeline_repeats=repeats,
         state_changes=tuple(
             StateChange(subject=subject, at=at.isoformat())
@@ -639,6 +640,21 @@ def _anomalies(
         )
         for s in no_progress.log_signatures
         if s.since_state_change is not None and s.since_state_change >= LIVELOCK_THRESHOLD
+    )
+    found.extend(
+        Anomaly(
+            kind=AnomalyKind.REFUSED_WORK,
+            sources=(AuditSource.LOG, AuditSource.TIMELINE),
+            subject=r.subject,
+            signature=r.signature,
+            detail=f"{r.since_state_change} refusal(s) since it last changed state"
+            f" ({r.count} in the window, by {', '.join(r.loggers)})"
+            + (f"; names {', '.join(r.related)}" if r.related else "")
+            + f": {r.example}",
+            count=r.since_state_change,
+        )
+        for r in no_progress.refused_work
+        if r.since_state_change is not None and r.since_state_change >= LIVELOCK_THRESHOLD
     )
     found.extend(
         Anomaly(

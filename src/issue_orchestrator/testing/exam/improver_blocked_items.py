@@ -194,7 +194,7 @@ def audit() -> EngineAuditReport:
                 first_read_at=WINDOW_START.isoformat(), first_entry_at=WINDOW_START.isoformat(),
                 last_entry_at=CUTOFF.isoformat(), covers_window=True,
             ),
-            log_signatures=(), timeline_repeats=(), state_changes=(),
+            log_signatures=(), refused_work=(), timeline_repeats=(), state_changes=(),
         ),
         fetch_cost=None,
         anomalies=anomalies,
@@ -305,7 +305,7 @@ def blocked_items() -> BlockedItemsInput:
                            f"question: {_QUESTION_262}; reason: Agent requested human input"),
                 ),
                 timeline_coverage=_timeline("2026-09-04T14:32:02+00:00"),
-                decisions=(), case_file_ids=(), diagnosis_ids=(),
+                decisions=(), case_file_ids=(), diagnosis_ids=(), open_prs=(), stalled_work=(),
             ),
             BlockedItem(
                 number=326, title="[CUJ:S0,R2,H1] Seller account deletion",
@@ -323,7 +323,7 @@ def blocked_items() -> BlockedItemsInput:
                     _event("2026-09-23T21:28:55+00:00", "issue.labels_changed", "added ['needs-human'] removed []"),
                 ),
                 timeline_coverage=_timeline("2026-09-23T05:27:16+00:00"),
-                decisions=(), case_file_ids=(), diagnosis_ids=(),
+                decisions=(), case_file_ids=(), diagnosis_ids=(), open_prs=(), stalled_work=(),
             ),
             BlockedItem(
                 number=364, title="[CUJ:R2,H1] Hold the batch's Delivery-owner provenance",
@@ -345,6 +345,7 @@ def blocked_items() -> BlockedItemsInput:
                 ),
                 timeline_coverage=_timeline("2026-09-23T05:27:15+00:00"),
                 decisions=(), case_file_ids=(CASE_FILE_364,), diagnosis_ids=(DIAGNOSIS_364,),
+                open_prs=(), stalled_work=(),
             ),
         ),
     )

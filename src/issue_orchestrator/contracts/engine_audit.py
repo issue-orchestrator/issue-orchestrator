@@ -19,8 +19,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-#: Bump when a field is added, removed or changes meaning.
-ENGINE_AUDIT_SCHEMA_VERSION = 1
+#: Bump when a field is added, removed or changes meaning. 3: refused work
+#: (#7490); 2 was its interim shape, written only by blind runs.
+ENGINE_AUDIT_SCHEMA_VERSION = 3
 
 
 class _Frozen(BaseModel):
@@ -203,6 +204,39 @@ class LogSignature(_Frozen):
     last_seen: str
 
 
+class RefusedWork(_Frozen):
+    """The engine deciding, again and again, not to do one subject's planned
+    work for one reason (:func:`~..observation.no_progress.refusal_of_text`):
+    a PR's review found and dropped on every scan, a pending run withdrawn on
+    every plan. Counted at every log level: the engine logs one such decision
+    at INFO because one is routine; its repeating is the livelock."""
+
+    subject: str
+    #: Every other subject the refusals name, e.g. the issue a refused PR
+    #: review belongs to (a refusal because of THAT issue's block).
+    related: tuple[str, ...]
+    #: The pipeline action refused: ``review`` or ``rework`` of a PR, or a
+    #: ``tech_lead_run``. One PR's review and rework are refused apart.
+    action: str
+    reason: str
+    #: The loggers that recorded it (the scanner, the launcher, startup ...).
+    loggers: tuple[str, ...]
+    #: The first refusal's normalized message, for a reader.
+    example: str
+    #: Refusals inside the audit window.
+    count: int
+    #: Refusals since the subject or a related one last changed state (its
+    #: timeline); None when the timeline was not read.
+    since_state_change: int | None
+    first_seen: str
+    last_seen: str
+
+    @property
+    def signature(self) -> str:
+        """Its anomaly's signature: the refused action and why."""
+        return f"{self.action}:{self.reason}"
+
+
 class FetchModeCost(_Frozen):
     """The engine's queue refreshes of one mode (``[FETCH-COST]`` log lines)."""
 
@@ -281,6 +315,8 @@ class NoProgressSection(_Frozen):
     #: None when the log was not read (see ``sources``).
     log: LogCoverage | None
     log_signatures: tuple[LogSignature, ...]
+    #: Every subject whose planned work the log shows refused in the window.
+    refused_work: tuple[RefusedWork, ...]
     timeline_repeats: tuple[TimelineRepeat, ...]
     #: Every subject whose state changed in the window, with the last change.
     #: A no-progress anomaly that is gone from a later audit is resolved only
@@ -299,6 +335,9 @@ class AnomalyKind(StrEnum):
     DRAFT_PR = "draft_pr"
     NO_PROGRESS_LOG = "no_progress_log"
     NO_PROGRESS_TIMELINE = "no_progress_timeline"
+    #: A subject's planned work refused again and again with nothing moving
+    #: (:class:`RefusedWork`); signed ``<action>:<reason>``.
+    REFUSED_WORK = "refused_work"
     #: Incremental refreshes cost more GitHub calls than full ones.
     FETCH_COST_INVERTED = "fetch_cost_inverted"
     #: Most loop iterations read the same issue more than once.
@@ -342,7 +381,7 @@ class AuditDiff(_Frozen):
 
 
 class EngineAuditReport(_Frozen):
-    schema_version: Literal[1] = ENGINE_AUDIT_SCHEMA_VERSION
+    schema_version: Literal[3] = ENGINE_AUDIT_SCHEMA_VERSION
     generated_at: str
     repo: str
     state_dir: str
@@ -391,6 +430,7 @@ __all__ = [
     "ParkedAction",
     "PersistingAnomaly",
     "QuarantinedClaim",
+    "RefusedWork",
     "SourceReading",
     "StateChange",
     "SourceStatus",
