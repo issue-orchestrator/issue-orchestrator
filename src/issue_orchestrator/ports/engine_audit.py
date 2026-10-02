@@ -8,7 +8,7 @@ snapshot of the engine's database, so none of them can reach the live file.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -18,7 +18,12 @@ from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from ..domain.tech_lead_findings import PromotedFinding
 from ..domain.tech_lead_run_record import TechLeadRunRecord
 from .action_liveness import PendingPause
-from .pending_work_claim_store import QuarantineRecord, UnreadableClaim, UnresolvedClaim
+from .pending_work_claim_store import (
+    NeedsHumanCauseRow,
+    QuarantineRecord,
+    UnreadableClaim,
+    UnresolvedClaim,
+)
 from .pull_request_tracker import PRInfo
 from .timeline_store import TimelineRecord
 
@@ -136,6 +141,20 @@ class TimelineAuditReader(Protocol):
         ...
 
 
+class TimelineIssueHistoryReader(Protocol):
+    def issue_events(self, issue_numbers: Collection[int], end: datetime) -> Iterable[TimelineEvent]:
+        """Every RETAINED event of ``issue_numbers`` up to ``end``, oldest
+        first. The store trims each issue's oldest rows, so this is a suffix
+        of the issue's history: an event not returned may have been trimmed."""
+        ...
+
+
+class NeedsHumanCauseAuditReader(Protocol):
+    def list_needs_human_causes(self) -> tuple[NeedsHumanCauseRow, ...]:
+        """Every recorded cause of the shared needs-human block, as stored."""
+        ...
+
+
 class OpenWorkHost(Protocol):
     """The two repository listings the audit reads: open issues and open PRs.
 
@@ -155,6 +174,7 @@ __all__ = [
     "CaseFileRecord",
     "CharterAuditReader",
     "ClaimAuditReader",
+    "NeedsHumanCauseAuditReader",
     "OpenIssueLabels",
     "OpenWorkHost",
     "PromotionAuditReader",
@@ -162,6 +182,7 @@ __all__ = [
     "TechLeadRunHistoryRead",
     "TimelineAuditReader",
     "TimelineEvent",
+    "TimelineIssueHistoryReader",
     "UnresolvedWorkRecord",
     "ValidatedWorkCensus",
     "ValidatedWorkCensusReader",

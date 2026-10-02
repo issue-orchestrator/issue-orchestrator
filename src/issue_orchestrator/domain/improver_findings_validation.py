@@ -42,11 +42,14 @@ from pydantic import ValidationError
 
 from ..contracts.engine_audit import AnomalyKind, AuditDiff, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
-from ..contracts.improver_findings import Finding, ImproverFindings, Observed
+from ..contracts.improver_findings import BlockedItemAccount, Finding, ImproverFindings, Observed
 from ..contracts.improver_inputs import (
     AUDIT_FILE,
     AUDIT_PREVIOUS_FILE,
+    BLOCKED_ITEMS_FILE,
     CHARTER_FILE,
+    BlockedItem,
+    BlockedItemsInput,
     CaseFilesInput,
     CharterDecisionsInput,
     EngineStartInput,
@@ -54,6 +57,7 @@ from ..contracts.improver_inputs import (
     OpenIssuesInput,
     StagedDecision,
 )
+from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
 ENGINE_SOURCE_CITATION = "engine-source:"
@@ -104,6 +108,16 @@ class Rule(StrEnum):
     EXAM_CASE_ID_IS_NEW = "exam_case_id_is_new"
     REPRODUCTION_FAILS_ON_ENGINE_COMMIT = "reproduction_fails_on_engine_commit"
     TREND_UNOBSERVED_WHEN_INCOMPARABLE = "trend_unobserved_when_incomparable"
+    #: Every staged blocked item is accounted for exactly once, and nothing else.
+    BLOCKED_ITEMS_ACCOUNTED = "blocked_items_accounted"
+    #: A ``finding`` account names a finding of the file, and only it names one;
+    #: ``awaiting_operator`` alone cites evidence.
+    BLOCKED_ITEM_ACCOUNT_SHAPE = "blocked_item_account_shape"
+    #: The finding an item is accounted to is about the item, and live.
+    BLOCKED_ITEM_FINDING_ABOUT_IT = "blocked_item_finding_about_it"
+    #: ``awaiting_operator`` cites a hand-over decision about the item,
+    #: applied by the cutoff, after its latest current block began.
+    BLOCKED_ITEM_HANDED_OVER = "blocked_item_handed_over"
 
 
 @dataclass(frozen=True)
@@ -156,10 +170,25 @@ class StagedEvidence:
     case_files: CaseFilesInput | None
     interventions: InterventionsInput | None
     open_issues: OpenIssuesInput
+    #: ``blocked-items.json``; None when it was not staged.
+    blocked_items: BlockedItemsInput | None
     existing_exam_case_ids: frozenset[str]
     exam_comparable: bool
     #: Every file of the staged engine source, relative and ``/``-separated.
     engine_source_files: frozenset[str]
+
+    def decisions_by_id(self) -> dict[str, StagedDecision]:
+        """Every staged decision: the window's (``charter-decisions.json``)
+        and each blocked item's from the whole ledger (``blocked-items.json``).
+        Both are the same ledger as of the same cutoff, so one id is one record."""
+        found: dict[str, StagedDecision] = {}
+        if self.decisions is not None:
+            found.update((d.decision_id, d) for d in self.decisions.decisions)
+        if self.blocked_items is not None:
+            found.update(
+                (d.decision_id, d) for item in self.blocked_items.items for d in item.decisions
+            )
+        return found
 
 
 def validate_findings(raw: str | bytes, evidence: StagedEvidence) -> ImproverFindings:
@@ -203,19 +232,20 @@ class _Checker:
             }
         )
         self._unobserved_keys = set() if diff is None else {a.key for a in diff.unobserved}
-        self._decisions: dict[str, StagedDecision] = (
-            {} if evidence.decisions is None
-            else {d.decision_id: d for d in evidence.decisions.decisions}
-        )
+        self._decisions: dict[str, StagedDecision] = evidence.decisions_by_id()
         cases = evidence.case_files
         self._notice_ids: set[str] = (
             set() if cases is None
             else {*(c.id for c in cases.case_files), *(d.id for d in cases.diagnoses)}
         ) | set(self._decisions)
         self._open_issues = {i.number for i in evidence.open_issues.issues}
+        self._blocked: dict[int, BlockedItem] = (
+            {} if evidence.blocked_items is None else {i.number: i for i in evidence.blocked_items.items}
+        )
 
     def violations(self) -> Iterator[Violation]:
         yield from self._file_rules()
+        yield from self._blocked_items()
         for finding in self._findings.findings:
             records = _AnomalyRecords(self._evidence, finding)
             yield from (
@@ -256,6 +286,105 @@ class _Checker:
             yield Violation(
                 Rule.TREND_UNOBSERVED_WHEN_INCOMPARABLE, None,
                 "operator interventions are not completely recorded, so no trend is comparable",
+            )
+
+    # -- the blocked items ----------------------------------------------------
+
+    def _blocked_items(self) -> Iterator[Violation]:
+        """Every staged blocked item accounted for exactly once (the
+        operator's objective is that each gets resolved, so none may be
+        silently dropped), each account well formed and backed."""
+        staged = self._evidence.blocked_items
+        items = {} if staged is None else {item.number: item for item in staged.items}
+        accounts = self._findings.blocked_items
+        counts: dict[int, int] = {}
+        for account in accounts:
+            counts[account.number] = counts.get(account.number, 0) + 1
+        missing = sorted(set(items) - set(counts))
+        if missing:
+            yield Violation(
+                Rule.BLOCKED_ITEMS_ACCOUNTED, None,
+                "blocked item(s) not accounted for: " + ", ".join(f"#{n}" for n in missing)
+                + " (each needs a finding about it, or an applied tech-lead hand-over)",
+            )
+        extra = sorted(set(counts) - set(items))
+        if extra:
+            yield Violation(
+                Rule.BLOCKED_ITEMS_ACCOUNTED, None,
+                ("blocked-items.json was not staged; " if staged is None else "")
+                + "not a staged blocked item: " + ", ".join(f"#{n}" for n in extra),
+            )
+        twice = sorted(n for n, c in counts.items() if c > 1)
+        if twice:
+            yield Violation(
+                Rule.BLOCKED_ITEMS_ACCOUNTED, None,
+                "accounted for more than once: " + ", ".join(f"#{n}" for n in twice),
+            )
+        findings = {f.id: f for f in self._findings.findings}
+        for account in accounts:
+            item = items.get(account.number)
+            if item is not None:
+                yield from (
+                    Violation(rule, account.finding_id, message)
+                    for rule, message in self._account_rules(account, item, findings)
+                )
+
+    def _account_rules(
+        self, account: BlockedItemAccount, item: BlockedItem, findings: Mapping[str, Finding]
+    ) -> Iterator[tuple[Rule, str]]:
+        n = account.number
+        if (account.finding_id is not None) != (account.disposition == "finding"):
+            yield Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, f"#{n}: a finding account, and only one, names its finding_id"
+        if account.evidence and account.disposition != "awaiting_operator":
+            yield Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, f"#{n}: only an awaiting_operator account cites evidence"
+        if account.disposition == "finding" and account.finding_id is not None:
+            finding = findings.get(account.finding_id)
+            if finding is None:
+                yield Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, f"#{n}: no finding {account.finding_id} in the file"
+                return
+            keyed = {
+                k.signature for k in finding.anomaly_keys
+                if k.kind == AnomalyKind.ATTENTION_LABEL.value and k.subject == f"#{n}"
+            }
+            unexamined = sorted({b.label for b in item.blocking_labels} - keyed)
+            if unexamined:
+                yield Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, (
+                    f"#{n}: finding {finding.id} leaves blocks unexamined: every current block is"
+                    f" one of its keys (attention_label of #{n} signed {', '.join(unexamined)})"
+                )
+            if finding.present_after_start != "true":
+                yield Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, (
+                    f"#{n}: it is still blocked after the engine start, so its finding is"
+                    ' present_after_start "true", whatever its origin'
+                )
+        if account.disposition == "awaiting_operator":
+            yield from self._handed_over(account, item)
+
+    def _handed_over(self, account: BlockedItemAccount, item: BlockedItem) -> Iterator[tuple[Rule, str]]:
+        n = account.number
+        about = {d.decision_id: d for d in item.decisions}
+        unknown = [e for e in account.evidence if e not in about]
+        if unknown:
+            yield Rule.BLOCKED_ITEM_HANDED_OVER, (
+                f"#{n}: {', '.join(unknown)} is not a staged decision about #{n} (blocked-items.json)"
+            )
+        since = _latest_block_onset(item)
+        if since is None:
+            yield Rule.BLOCKED_ITEM_HANDED_OVER, (
+                f"#{n}: when one of its blocks began is unknown, so no decision can be shown to"
+                " have handed EVERY current block over: account for it with a finding"
+            )
+            return
+        if not any(
+            d.action_kind in HAND_OVER_ACTION_KINDS
+            and d.applied_at is not None
+            and since <= d.applied_at <= self._cutoff
+            for d in (about[e] for e in account.evidence if e in about)
+        ):
+            yield Rule.BLOCKED_ITEM_HANDED_OVER, (
+                f"#{n}: cite a {'/'.join(sorted(HAND_OVER_ACTION_KINDS))} decision about it, applied"
+                f" after its latest block began ({since.isoformat()}) and by the cutoff; a diagnosis"
+                " without that is a finding (noticed_not_acted)"
             )
 
     # -- one finding ---------------------------------------------------------
@@ -452,10 +581,24 @@ class _Checker:
         about = set(_notices_about(self._evidence, f, None, None))
         for decision_id in sorted(about & set(self._decisions)):
             d = self._decisions[decision_id]
-            if d.binding in _REMEDY_BINDINGS and d.applied_at is not None and d.applied_at <= self._cutoff:
+            if self._applied_remedy(d, f):
                 yield Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY, (
                     f"{decision_id} was applied: the tech lead acted, so grade acted_not_effective"
                 )
+
+    def _applied_remedy(self, d: StagedDecision, f: Finding) -> bool:
+        """THE rule for "the tech lead acted on this anomaly": a remedy (an
+        approvable or destructive action, not advice or a floor) applied by
+        the cutoff, and not before the anomaly's onset, when that is known (a
+        remedy applied earlier acted on an earlier occurrence)."""
+        if d.binding not in _REMEDY_BINDINGS or d.applied_at is None or d.applied_at > self._cutoff:
+            return False
+        onset = f.grading_window.from_
+        # A blocked item the finding covers: a remedy before its latest
+        # current block began acted on an earlier block, not this one.
+        item = self._blocked.get(decision_issue(d.target_number, d.anchor_issue_number))
+        latest = None if item is None or item.number not in _issue_numbers(f) else _latest_block_onset(item)
+        return (onset == "unknown" or d.applied_at >= onset) and (latest is None or d.applied_at >= latest)
 
     def _stall_citation_resolves(self, item: str) -> bool:
         if item.startswith(CHARTER_CITATION):
@@ -486,11 +629,14 @@ class _Checker:
         applied = [
             d.applied_at
             for d in (self._decisions.get(i) for i in f.stall_evidence)
-            if d is not None and d.applied_at is not None and d.applied_at <= f.grading_window.to
+            if d is not None and d.applied_at is not None and self._applied_remedy(d, f)
             and (about is None or d.decision_id in about)
         ]
         if not applied:
-            yield Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION, "no cited decision was applied by the audit cutoff"
+            yield Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION, (
+                "no cited remedy (an approvable or destructive action) about it was applied"
+                " inside its grading window by the audit cutoff"
+            )
             return
         live = [o.at for o in f.observed if o.supports in ("present_after_start", "recurs_after_start")]
         if not any(t > at for at in applied for t in live):
@@ -543,6 +689,20 @@ class _AnomalyRecords:
         for name, report in ((AUDIT_FILE, evidence.audit), (AUDIT_PREVIOUS_FILE, evidence.previous_audit)):
             if report is not None:
                 self._collect(name, report, keys)
+        if evidence.blocked_items is not None:
+            self._collect_blocks(evidence.blocked_items, keys)
+
+    def _collect_blocks(self, staged: BlockedItemsInput, keys: set[tuple[str, str, str]]) -> None:
+        """A blocking label's ``since_at``: when the retained timeline last
+        shows it put on, an occurrence (the onset) of its attention anomaly."""
+        for i, item in enumerate(staged.items):
+            for j, block in enumerate(item.blocking_labels):
+                key = (AnomalyKind.ATTENTION_LABEL.value, f"#{item.number}", block.label)
+                if key in keys and block.since_at is not None:
+                    self._add(
+                        BLOCKED_ITEMS_FILE, f"/items/{i}/blocking_labels/{j}", "since_at",
+                        block.since_at, onset=True,
+                    )
 
     def _collect(self, name: str, report: EngineAuditReport, keys: set[tuple[str, str, str]]) -> None:
         for index, s in enumerate(report.no_progress.log_signatures):
@@ -559,8 +719,10 @@ class _AnomalyRecords:
                 if (AnomalyKind.STALE_UNRESOLVED_WORK.value, f"#{w.issue_number}", w.record_id) in keys:
                     self._add(name, f"/validated_work/unresolved/{index}", "created_at", w.created_at, onset=True)
 
-    def _add(self, name: str, record: str, field: str, stamp: str, *, onset: bool) -> None:
-        self._records.setdefault((name, record), {})[field] = datetime.fromisoformat(stamp)
+    def _add(self, name: str, record: str, field: str, stamp: str | datetime, *, onset: bool) -> None:
+        self._records.setdefault((name, record), {})[field] = (
+            stamp if isinstance(stamp, datetime) else datetime.fromisoformat(stamp)
+        )
         if onset:
             self._onsets.add((name, record, field))
 
@@ -641,6 +803,21 @@ def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: M
     }.get(parts[2], False)
 
 
+#: Decisions that hand a WHOLE blocked item to the operator rather than remedy
+#: it: an escalation to a human, which is issue-wide. A deferral to a tracker
+#: hands over one failure, not an agent's question beside it, and the staged
+#: decision does not say which block it covered; a comment does not say what
+#: it said. Either is a notice, never a hand-over.
+HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human"})
+
+def _latest_block_onset(item: BlockedItem) -> datetime | None:
+    """When the latest of an item's current blocks began; None when any
+    block's onset is unknown (THE current-block onset, for hand-overs and
+    remedies alike)."""
+    onsets = [b.since_at for b in item.blocking_labels]
+    return None if any(t is None for t in onsets) else max(t for t in onsets if t is not None)
+
+
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 
 
@@ -667,26 +844,24 @@ def _notices_about(
     if not numbers:
         return
     span = _Span(start, end)
-    mentioned = re.compile(r"(?<![\w/])#(?:" + "|".join(map(str, sorted(numbers))) + r")\b")
-    if evidence.decisions is not None:
-        yield from (
-            d.decision_id
-            for d in evidence.decisions.decisions
-            if (d.target_number if d.target_number is not None else d.anchor_issue_number) in numbers
-            and span.holds(d.decided_at)
-        )
+    yield from (
+        d.decision_id
+        for d in evidence.decisions_by_id().values()
+        if decision_issue(d.target_number, d.anchor_issue_number) in numbers
+        and span.holds(d.decided_at)
+    )
     if evidence.case_files is not None:
         yield from (
             c.id
             for c in evidence.case_files.case_files
-            if mentioned.search(c.body)
+            if mentions_issue(c.body, numbers)
             and any(span.holds(t) for t in (c.recorded_at, *(o.recorded_at for o in c.observations)))
         )
         yield from (
             r.id
             for r in evidence.case_files.diagnoses
             if span.overlaps(r.started_at, r.ended_at)
-            and (r.subject_issue_number in numbers or mentioned.search(r.body))
+            and (r.subject_issue_number in numbers or mentions_issue(r.body, numbers))
         )
 
 
@@ -733,6 +908,7 @@ def parse_documents(texts: Mapping[str, str]) -> dict[str, Any]:
 __all__ = [
     "CHARTER_CITATION",
     "ENGINE_SOURCE_CITATION",
+    "HAND_OVER_ACTION_KINDS",
     "ImproverFindingsRejected",
     "Rule",
     "StagedEvidence",

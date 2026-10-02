@@ -118,9 +118,21 @@ class ImproverRunRecord(_Closed):
     #: The latest exam result of each case the run saw.
     exam_scores: tuple[ExamScore, ...] = ()
     effects: tuple[EffectReceipt, ...] = ()
+    #: A BLIND run's hidden open issues (``--exclude-open-issue``): it was
+    #: staged without them, to test whether the improver finds what they
+    #: track. Its findings are graded and recorded, never filed: a blind run
+    #: owes GitHub nothing, and a later run does not compare its grades.
+    blind_excluded_issues: tuple[int, ...] = ()
     #: Earlier runs whose effects were still owed when this run finished:
     #: a run is not green while the improver owes GitHub anything.
     owed_by_earlier_runs: tuple[str, ...] = ()
+
+    @property
+    def is_engine_audit(self) -> bool:
+        """Whether this run counts as an audit of its engine: accepted, and
+        not blind. A blind run saw a doctored open-issue list, so it is never
+        the sweep's "already audited" mark nor the next run's baseline."""
+        return self.outcome is RunOutcome.ACCEPTED and not self.blind_excluded_issues
 
     @property
     def pending_effects(self) -> tuple[EffectReceipt, ...]:

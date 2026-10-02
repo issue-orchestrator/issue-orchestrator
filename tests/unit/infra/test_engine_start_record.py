@@ -69,3 +69,14 @@ def test_the_engine_records_its_start_when_it_takes_the_lock() -> None:
     record = source.index("record_engine_start(config, repo_root=repo_root")
     build = source.index("orchestrator = build_orchestrator(\n        config,")
     assert lock < record < build
+
+
+def test_a_start_records_the_engines_label_policy(tmp_path: Path) -> None:
+    """#7490 r3 F1: an outside reader recognises a prefixed engine's labels."""
+    config = Config(label_prefix="bot", label_needs_human="needs-person")
+
+    record_engine_start(config, repo_root=tmp_path, now=NOW)
+
+    labels = read_engine_start(state_dir(tmp_path)).labels
+    assert labels is not None
+    assert (labels.prefix, labels.needs_human, labels.blocked) == ("bot", "needs-person", "blocked")

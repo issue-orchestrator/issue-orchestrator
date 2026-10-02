@@ -133,6 +133,33 @@ def _drop_observed(index: int) -> Mutation:
     return mutate
 
 
+def _account(field: str, value: object, index: int = 0) -> Mutation:
+    """Set ``blocked_items[index].<field>``."""
+
+    def mutate(doc: Doc) -> None:
+        doc["blocked_items"][index][field] = value
+
+    return mutate
+
+
+def _add_account(account: dict) -> Mutation:
+    def mutate(doc: Doc) -> None:
+        doc["blocked_items"].append(account)
+
+    return mutate
+
+
+def _duplicate_account(doc: Doc) -> None:
+    doc["blocked_items"].append(json.loads(json.dumps(doc["blocked_items"][0])))
+
+
+#: #353 accounted for by the exam_case finding, which is about #410.
+def _account_to_another_finding(doc: Doc) -> None:
+    doc["blocked_items"][0] = {
+        "number": 353, "disposition": "finding", "finding_id": _finding(doc)["id"], "why": "w",
+    }
+
+
 PRE_START_LOG = {
     "at": "2026-09-27T18:05:00+00:00", "kind": "occurrence",
     "source": "audit.json#/no_progress/log_signatures/0/first_seen", "supports": "origin",
@@ -274,6 +301,23 @@ CASES: list[tuple[Rule, str, Mutation]] = [
     (Rule.EXAM_CASE_ID_IS_NEW, "exam_case", _set("reproduction.case_id", "A-halted-exchange-validated-work")),
     (Rule.EXAM_CASE_ID_IS_NEW, "exam_case", _second_finding_same_case),
     (Rule.REPRODUCTION_FAILS_ON_ENGINE_COMMIT, "exam_case", _set("reproduction.fails_on", "HEAD")),
+    # blocked items: every one accounted for, each account backed
+    (Rule.BLOCKED_ITEMS_ACCOUNTED, "exam_case", _top("blocked_items", [])),
+    (Rule.BLOCKED_ITEMS_ACCOUNTED, "needs_investigation", _top("blocked_items", [])),
+    (Rule.BLOCKED_ITEMS_ACCOUNTED, "exam_case",
+     _add_account({"number": 999, "disposition": "awaiting_operator", "evidence": ["D3"], "why": "w"})),
+    (Rule.BLOCKED_ITEMS_ACCOUNTED, "exam_case", _duplicate_account),
+    (Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, "exam_case", _account("finding_id", "parked-publish-divergent-heads")),
+    (Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, "needs_investigation", _account("evidence", ["D3"])),
+    (Rule.BLOCKED_ITEM_ACCOUNT_SHAPE, "needs_investigation", _account("finding_id", "no-such-finding")),
+    (Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, "exam_case", _account_to_another_finding),
+    # Still blocked after the start: live, whatever its origin (handover #1).
+    (Rule.BLOCKED_ITEM_FINDING_ABOUT_IT, "needs_investigation",
+     _all(_set("present_after_start", "false"), _set("recurs_after_start", "true"))),
+    # Someone else's remedy is not this item handed over.
+    (Rule.BLOCKED_ITEM_HANDED_OVER, "exam_case", _account("evidence", ["D2"])),
+    # A diagnosis is not a hand-over: a flag (D1) is not an escalation.
+    (Rule.BLOCKED_ITEM_HANDED_OVER, "exam_case", _account("evidence", [])),
     # trends
     (Rule.TREND_UNOBSERVED_WHEN_INCOMPARABLE, "exam_case",
      _top("trend", {"exam_scores": "up", "operator_interventions": "unobserved", "notes": ""})),
@@ -526,3 +570,214 @@ def test_a_missing_action_kind_with_its_source_is_a_valid_not_in_charter_claim(e
     del _finding(doc)["remedy_action_kind"]
 
     assert validate_findings(json.dumps(doc), evidence).findings[0].missing_action_kind == "clear_validation_refusal"
+
+
+# -- blocked items: the operator's objective (handover grade #1) --------------
+
+
+def test_a_hand_over_applied_before_the_item_was_blocked_does_not_account_for_it(tmp_path: Path) -> None:
+    """An escalation of an EARLIER block is not the tech lead acting on this one."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        lambda d: d["items"][0]["decisions"][0].update(applied_at="2026-09-28T13:00:00Z"),
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_an_item_blocked_since_an_unknown_time_cannot_be_shown_handed_over(tmp_path: Path) -> None:
+    def unknown_since(d: dict) -> None:
+        d["items"][0]["blocked_since"] = None
+        d["items"][0]["blocking_labels"][0]["since_at"] = None
+
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", unknown_since)
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_a_remedy_is_not_a_hand_over(tmp_path: Path) -> None:
+    """Only an escalation, a deferral or an explaining comment hands an item
+    to the operator; an applied remedy that left it blocked is a finding."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        lambda d: d["items"][0]["decisions"][0].update(action_kind="reset_retry", binding="destructive"),
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_without_staged_blocked_items_nothing_is_accounted_for(tmp_path: Path) -> None:
+    data = build_improver_data(tmp_path)
+    (data / "blocked-items.json").unlink()
+    evidence = load_staged_evidence(data)
+    doc = example("exam_case")
+
+    assert _rules(doc, evidence) == {Rule.BLOCKED_ITEMS_ACCOUNTED}
+    doc["blocked_items"] = []
+    assert validate_findings(json.dumps(doc), evidence).blocked_items == ()
+
+
+def test_a_blocked_items_decision_from_before_the_window_is_a_notice(tmp_path: Path) -> None:
+    """blocked-items.json carries the WHOLE ledger's decisions about an item:
+    one older than the observation window still resolves as stall evidence."""
+    def older(d: dict) -> None:
+        d["items"][0]["decisions"].append(
+            {**d["items"][0]["decisions"][0], "decision_id": "D0", "action_kind": "post_comment",
+             "binding": "advisory", "decided_at": "2026-09-20T10:00:00Z", "applied_at": "2026-09-20T10:00:00Z"}
+        )
+
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", older)
+    doc = example("needs_investigation")
+    _finding(doc)["stall_point"] = "noticed_not_acted"
+    _finding(doc)["stall_evidence"] = ["D0"]
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].stall_evidence == ("D0",)
+
+
+def test_a_remedy_applied_before_the_onset_does_not_make_a_later_notice_acted_on(tmp_path: Path) -> None:
+    """noticed_not_acted is refused only by a remedy applied inside the
+    grading window: one applied before the anomaly began acted on something else."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "charter-decisions.json",
+        lambda d: d["decisions"][0].update(binding="approvable", applied_at="2026-09-27T08:00:00Z"),
+    )
+
+    assert validate_findings(json.dumps(example("exam_case")), evidence).findings[0].stall_point == (
+        "noticed_not_acted"
+    )
+
+
+def test_a_comment_is_not_a_hand_over(tmp_path: Path) -> None:
+    """r1 F2: a staged comment does not say what it said, so it cannot show a hand-over."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        lambda d: d["items"][0]["decisions"][0].update(action_kind="post_comment", binding="advisory"),
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Advice applied (a comment, a flag) is not a remedy (r1 F3).
+        {"binding": "advisory"},
+        # A remedy applied before the anomaly's onset acted on an earlier occurrence.
+        {"applied_at": "2026-09-28T09:00:00Z"},
+    ],
+)
+def test_acted_not_effective_needs_a_remedy_applied_inside_the_window(tmp_path: Path, change: dict) -> None:
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "charter-decisions.json", lambda d: d["decisions"][1].update(**change),
+    )
+
+    assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in _rules(example("capability_issue"), evidence)
+
+
+def test_a_finding_about_another_anomaly_of_the_issue_does_not_account_for_its_block(tmp_path: Path) -> None:
+    """r2 F3: #353 also has an owed pause; a finding keyed only to that leaves its block unexamined."""
+    def owed_pause(d: dict) -> None:
+        d["anomalies"].append({
+            "kind": "owed_pause", "sources": ["action_liveness"], "subject": "#353",
+            "signature": "reconcile_pause", "detail": "owed", "count": 1,
+        })
+
+    evidence = _with_notice(build_improver_data(tmp_path), "audit.json", owed_pause)
+    doc = example("needs_investigation")
+    _finding(doc)["anomaly_keys"] = [{"kind": "owed_pause", "subject": "#353", "signature": "reconcile_pause"}]
+
+    assert Rule.BLOCKED_ITEM_FINDING_ABOUT_IT in _rules(doc, evidence)
+
+
+def _second_block(at: str) -> Callable[[dict], None]:
+    """#353 also carries recovery-pending, put on at ``at``."""
+    def mutate(d: dict) -> None:
+        d["items"][0]["labels"].append("recovery-pending")
+        d["items"][0]["blocking_labels"].append(
+            {"label": "recovery-pending", "since_at": at, "since_event": "issue.labels_changed"}
+        )
+
+    return mutate
+
+
+def test_a_hand_over_before_a_later_block_does_not_account_for_it(tmp_path: Path) -> None:
+    """r3 F2: D3 escalated #353's needs-human (13:45); recovery-pending went on
+    later (14:30). The newer block was never handed over."""
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", _second_block("2026-09-28T14:30:00Z"))
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_a_hand_over_after_every_current_block_accounts_for_it(tmp_path: Path) -> None:
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", _second_block("2026-09-28T13:35:00Z"))
+
+    assert validate_findings(json.dumps(example("exam_case")), evidence).blocked_items[0].disposition == (
+        "awaiting_operator"
+    )
+
+
+def test_an_item_whose_block_may_have_been_put_back_cannot_be_handed_over(tmp_path: Path) -> None:
+    """r7 F1: with the current block's onset unknown (an uncertain re-add),
+    an earlier escalation cannot be shown to cover it."""
+    def unknown_since(d: dict) -> None:
+        d["items"][0]["blocked_since"] = None
+        d["items"][0]["blocking_labels"][0].update(since_at=None, since_event=None)
+
+    evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", unknown_since)
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_a_deferral_to_a_tracker_is_not_a_hand_over_of_the_whole_item(tmp_path: Path) -> None:
+    """r8 F2: a defer_to_tracker hands over one failure, not an agent's question beside it."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        lambda d: d["items"][0]["decisions"][0].update(action_kind="defer_to_tracker"),
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def _two_blocks_with_a_remedy_between(tmp_path: Path) -> StagedEvidence:
+    """#353: needs-human since 13:30, recovery-pending since 14:30 (both in the
+    audit), and a remedy R1 about #353 applied at 14:00, between them."""
+    data = build_improver_data(tmp_path)
+    _with_notice(data, "audit.json", lambda d: d["anomalies"].append({
+        "kind": "attention_label", "sources": ["github"], "subject": "#353",
+        "signature": "recovery-pending", "detail": "open issue carries recovery-pending", "count": None,
+    }))
+
+    def blocked(d: dict) -> None:
+        _second_block("2026-09-28T14:30:00Z")(d)
+        d["items"][0]["decisions"].append({
+            **d["items"][0]["decisions"][0], "decision_id": "R1", "action_kind": "reset_retry",
+            "binding": "destructive", "decided_at": "2026-09-28T13:55:00Z", "applied_at": "2026-09-28T14:00:00Z",
+        })
+
+    return _with_notice(data, "blocked-items.json", blocked)
+
+
+def test_a_finding_must_key_every_current_block_of_the_item(tmp_path: Path) -> None:
+    """r9 F1: keyed to needs-human only, it leaves recovery-pending unexamined."""
+    evidence = _two_blocks_with_a_remedy_between(tmp_path)
+
+    assert Rule.BLOCKED_ITEM_FINDING_ABOUT_IT in _rules(example("needs_investigation"), evidence)
+
+
+def test_a_remedy_before_the_latest_block_did_not_act_on_it(tmp_path: Path) -> None:
+    """r9 F2: R1 (14:00) predates the recovery-pending block (14:30): a notice
+    without a later remedy is noticed_not_acted, and R1 cannot make it acted on."""
+    evidence = _two_blocks_with_a_remedy_between(tmp_path)
+    doc = example("needs_investigation")
+    _finding(doc)["anomaly_keys"].append({"kind": "attention_label", "subject": "#353", "signature": "recovery-pending"})
+    _finding(doc)["observed"].append({
+        "at": "2026-09-28T18:00:00+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/4",
+        "supports": "present_after_start",
+    })
+    _finding(doc)["stall_point"] = "noticed_not_acted"
+    _finding(doc)["stall_evidence"] = ["D3"]
+
+    assert validate_findings(json.dumps(doc), evidence).findings[0].stall_point == "noticed_not_acted"
+    _finding(doc)["stall_point"] = "acted_not_effective"
+    _finding(doc)["stall_evidence"] = ["R1"]
+    assert Rule.ACTED_NOT_EFFECTIVE_NEEDS_APPLIED_DECISION in _rules(doc, evidence)

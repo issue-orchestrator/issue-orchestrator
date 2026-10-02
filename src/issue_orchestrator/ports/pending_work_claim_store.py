@@ -174,6 +174,17 @@ class QuarantineLabelState(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class NeedsHumanCauseRow:
+    """One recorded cause of the shared needs-human block, as stored: the
+    cause token (a :class:`~..domain.human_block.NeedsHumanCause` value, or a
+    keyed one such as ``validated_work_disposition:<record>``) and its reason."""
+
+    issue_number: int
+    cause: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class QuarantineRecord:
     """The durable state of one quarantine.
 
@@ -571,6 +582,7 @@ __all__ = [
     "ClaimLookup",
     "ClaimQuarantineStore",
     "ClaimState",
+    "NeedsHumanCauseRow",
     "QuarantineCause",
     "QuarantineLabelState",
     "QuarantineRecord",

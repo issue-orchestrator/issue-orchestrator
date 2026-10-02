@@ -21,7 +21,7 @@ from typing import Protocol
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..contracts.improver_run import ImproverRunRecord, RunOutcome
+from ..contracts.improver_run import ImproverRunRecord
 from ..domain.engine_activity import EngineRef, UnidentifiedEngine
 from ..ports.engine_activity import EngineInventory
 from ..ports.improver import ImproverRunStore
@@ -40,6 +40,8 @@ class ImproverSweepRequest:
     log_tail_bytes: int
     #: How far back an engine never accepted before must have run.
     recent: timedelta
+    #: A blind sweep's hidden open issues (``ImproverRunRequest.excluded_open_issues``).
+    excluded_open_issues: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ class ImproverSweep:
                     exam_dir=request.exam_dir,
                     window=request.window,
                     log_tail_bytes=request.log_tail_bytes,
+                    excluded_open_issues=request.excluded_open_issues,
                 ),
                 apply=apply,
             )
@@ -129,9 +132,10 @@ class ImproverSweep:
     ) -> tuple[tuple[EngineRef, ...], tuple[EngineRef, ...], tuple[UnidentifiedEngine, ...]]:
         """The engines to audit, those an accepted run audited since they
         last ran, and those that cannot be identified. An engine never
-        accepted counts if it ran since ``floor``."""
+        accepted counts if it ran since ``floor``. A blind run audits nothing
+        (``ImproverRunRecord.is_engine_audit``)."""
         audited: dict[str, datetime] = {}
-        accepted = [run for run in self._runs.runs() if run.outcome is RunOutcome.ACCEPTED]
+        accepted = [run for run in self._runs.runs() if run.is_engine_audit]
         for run in accepted:  # newest first
             audited.setdefault(run.engine_id, run.started_at)
         # Back to the OLDEST accepted run: an engine that last wrote before

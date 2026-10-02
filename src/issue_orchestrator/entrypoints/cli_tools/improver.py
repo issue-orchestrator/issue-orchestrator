@@ -5,7 +5,7 @@
         --model gpt-5.6-sol [--exam-dir D] [--engine-source-repo .] [--recent-hours 24]
     improver run --state-dir ~/dev/porchpin/.issue-orchestrator/state \
         --audited-repo porchpin/porchpin --outputs-repo issue-orchestrator/issue-orchestrator \
-        --model gpt-5.6-sol
+        --model gpt-5.6-sol [--no-apply --exclude-open-issue N ...]
     improver status
     improver apply --outputs-repo issue-orchestrator/issue-orchestrator
     improver stage ... --run-dir RUN [--previous-audit A]
@@ -91,6 +91,11 @@ def _engine_arguments(parser: argparse.ArgumentParser, *, one_engine: bool) -> N
     parser.add_argument("--window-hours", type=float, default=24.0)
     parser.add_argument("--log-tail-mb", type=int, default=64)
     parser.add_argument("--no-github", action="store_true", help="Do not read the audited repo's GitHub")
+    parser.add_argument(
+        "--exclude-open-issue", type=int, action="append", default=[], metavar="N",
+        help="Blind test: hide outputs-repo issue N from open-issues.json (repeatable). A run with"
+        " it needs --no-apply and files nothing",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -168,6 +173,7 @@ def stage(args: argparse.Namespace) -> int:
                 exam_dir=args.exam_dir,
                 window=timedelta(hours=args.window_hours),
                 log_tail_bytes=args.log_tail_mb * 1024 * 1024,
+                excluded_open_issues=frozenset(args.exclude_open_issue),
             )
         )
     except ImproverInputsUnavailable as error:
@@ -191,6 +197,8 @@ def _effects(outputs_repo: str, store: FileImproverRunStore) -> ImproverEffects:
 def run(args: argparse.Namespace) -> int:
     if (args.state_dir is None) != (args.audited_repo is None):
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
+    if args.exclude_open_issue and not args.no_apply:
+        raise SystemExit("improver run: --exclude-open-issue is a blind run; it needs --no-apply")
     store = _store()
     prompt = args.prompt.read_text(encoding="utf-8")
 
@@ -214,6 +222,7 @@ def run(args: argparse.Namespace) -> int:
         window=timedelta(hours=args.window_hours),
         log_tail_bytes=args.log_tail_mb * 1024 * 1024,
         recent=timedelta(hours=args.recent_hours),
+        excluded_open_issues=frozenset(args.exclude_open_issue),
     )
     inventory: EngineInventory = (
         control_center_engine_inventory()

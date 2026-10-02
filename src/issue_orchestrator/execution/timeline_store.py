@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Iterable, Iterator
 
 from .timeline_artifact_expectations import RUN_SCOPED_TIMELINE_EVENTS, event_requires_run_dir
@@ -447,12 +447,7 @@ class SqliteTimelineAuditReader:
         with readonly_sqlite_transaction(
             self._db_path, timeout=self._timeout, row_factory=sqlite3.Row
         ) as conn:
-            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            if version != _SQLITE_SCHEMA_VERSION:
-                raise ReadOnlySqliteAccessError(
-                    ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA,
-                    f"timeline schema version {version} is not {_SQLITE_SCHEMA_VERSION}",
-                )
+            _require_known_version(conn)
             # Stored timestamps are UTC ISO strings (DefaultTimelineWriter), so
             # string order is time order; see event_time_bounds.
             rows = conn.execute(
@@ -466,6 +461,42 @@ class SqliteTimelineAuditReader:
                 yield TimelineEvent(
                     issue_number=int(row["issue_number"]), record=_record(row, strict=True)
                 )
+
+    def issue_events(self, issue_numbers: Collection[int], end: datetime) -> Iterator[TimelineEvent]:
+        """Every RETAINED event of ``issue_numbers`` up to ``end``, oldest
+        first (the improver's blocked-items input, #7490). The store trims
+        each issue's oldest rows, so this is a suffix of its history."""
+        if end.tzinfo is None:
+            raise ValueError("the timeline is read up to an aware instant")
+        numbers = sorted(set(issue_numbers))
+        if not numbers:
+            return
+        with readonly_sqlite_transaction(
+            self._db_path, timeout=self._timeout, row_factory=sqlite3.Row
+        ) as conn:
+            _require_known_version(conn)
+            for number in numbers:
+                rows = conn.execute(
+                    "SELECT issue_number, event_id, source_event, timestamp, event, data_json,"
+                    " instance_id FROM timeline_events WHERE issue_number = ? AND timestamp <= ?"
+                    " ORDER BY timestamp, sequence",
+                    (number, end.astimezone(UTC).isoformat()),
+                )
+                for row in rows:
+                    _require_instant(row)
+                    yield TimelineEvent(
+                        issue_number=int(row["issue_number"]), record=_record(row, strict=True)
+                    )
+
+
+def _require_known_version(conn: sqlite3.Connection) -> None:
+    """Refuse a timeline schema this build does not know (never read it as empty)."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version != _SQLITE_SCHEMA_VERSION:
+        raise ReadOnlySqliteAccessError(
+            ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA,
+            f"timeline schema version {version} is not {_SQLITE_SCHEMA_VERSION}",
+        )
 
 
 def _require_instant(row: sqlite3.Row) -> None:

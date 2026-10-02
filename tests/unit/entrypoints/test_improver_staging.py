@@ -176,7 +176,7 @@ def test_stages_every_input_the_prompt_lists_from_the_engine_records(state: Path
     assert {p.name for p in data.iterdir()} == {
         "audit.json", "engine-start.json", "charter.json", "charter-decisions.json",
         "case-files.json", "interventions.json", "open-issues.json", "inputs.json", "exam",
-        "engine-source",
+        "engine-source", "blocked-items.json",
     }
     decisions = json.loads((data / "charter-decisions.json").read_text())
     assert [d["action_id"] for d in decisions["decisions"]] == ["A2"]
@@ -303,8 +303,8 @@ def test_what_was_staged_reads_back_as_the_validators_evidence(state: Path, tmp_
         engine_at(state, "porchpin/porchpin").engine_id, "porchpin/porchpin"
     )
     empty = {
-        "schema_version": 2, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
-        "findings": [],
+        "schema_version": 3, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
+        "findings": [], "blocked_items": [],
         "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},
     }
     assert validate_findings(json.dumps(empty), evidence).findings == ()
@@ -404,3 +404,235 @@ def test_an_unreadable_scorecard_is_left_out_and_named(state: Path, tmp_path: Pa
     entry = next(i for i in staged.manifest.inputs if i.name == "exam")
     assert "A-one-x-3.json" in entry.detail
     assert staged.manifest.exam_scores_comparable is False
+
+
+# -- blocked-items.json: the operator's objective (handover grade #1) ---------
+
+
+def _timeline(state: Path, issue: int, name: str, at: datetime, data: dict) -> None:
+    from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+    from issue_orchestrator.ports.timeline_store import TimelineRecord
+
+    SqliteTimelineStore(state / "timeline.sqlite").append(
+        issue,
+        TimelineRecord(
+            event_id=f"{name}-{issue}-{at.isoformat()}", timestamp=at.isoformat(), event=name,
+            data={"issue_number": issue, **data}, source_event=name,
+        ),
+    )
+
+
+def _blocked_engine(state: Path) -> FakeHost:
+    """The handover-#1 shapes: #262 an agent's question, #326 an unexplained
+    block re-added after a removal, #364 a parked publish a case file names."""
+    from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+
+    claims = SqlitePendingWorkClaimStore(state / "pending_work_claims.sqlite")
+    claims.record_needs_human_cause(262, "agent_completion", reason="agent requested needs_human on completion")
+    claims.record_needs_human_cause(
+        364, "action_liveness", reason="parked recover_validated_work: pr_labels may not contain needs-human"
+    )
+    claims.record_needs_human_cause(999, "session_lifecycle", reason="a closed issue's stale row")
+    question = "Should I split #262: land this branch under 'Refs #262'?"
+    _timeline(state, 262, "issue.needs_human", NOW - timedelta(hours=50),
+              {"question": question, "reason": "Agent requested human input"})
+    _timeline(state, 326, "issue.labels_changed", NOW - timedelta(hours=60),
+              {"added": ["needs-human"], "removed": []})
+    _timeline(state, 326, "issue.labels_changed", NOW - timedelta(hours=59),
+              {"added": [], "removed": ["needs-human"]})
+    _timeline(state, 326, "issue.labels_changed", NOW - timedelta(hours=10),
+              {"added": ["needs-human"], "removed": []})
+    _timeline(state, 364, "issue.labels_changed", NOW - timedelta(hours=5),
+              {"added": ["needs-human"], "removed": []})
+    _timeline(state, 364, "issue.labels_changed", NOW - timedelta(hours=4),
+              {"added": ["pr-pending"], "removed": []})
+    authority = SqliteTechLeadAuthorityStore(state / "tech_lead_authority.sqlite")
+    old = TechLeadCharterDecision.from_verdict(
+        TechLeadCharterPolicy.from_config(Config()).decide("post_comment"),
+        decision_id="decision:old:262", source=CharterDecisionSource.DECISION, run_id="old",
+        action_id="C1", anchor_issue_number=262, target_number=262, target_is_pr=False,
+        decided_at=(NOW - timedelta(hours=45)).isoformat(), tracks_proposal=False,
+    )
+    authority.charter_ledger.record_decisions([old])
+    authority.record_pattern(
+        signature="exchange-escalation-pr-label-refused", issue_number=436, observation_id="o2",
+        diagnosis="On #364 / PR #379 the coder used --pr-labels needs-human; refused every round.",
+    )
+    del authority, claims
+    gc.collect()
+    return FakeHost(issues=[
+        OpenIssueLabels(number=7491, title="Fetch cost", labels=("bug",)),
+        OpenIssueLabels(number=262, title="Seller index", labels=("needs-human", "priority:high")),
+        OpenIssueLabels(number=326, title="Deletion", labels=("needs-human", "blocked-cross-milestone")),
+        OpenIssueLabels(number=364, title="Provenance", labels=("needs-human", "recovery-pending")),
+    ])
+
+
+def test_every_blocked_item_is_staged_with_its_cause_onset_and_tech_lead_record(
+    state: Path, tmp_path: Path
+) -> None:
+    audited = _blocked_engine(state)
+    before = _fingerprint(state)
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    items = {i["number"]: i for i in blocked["items"]}
+    assert sorted(items) == [262, 326, 364]
+    # The cause rows, byte for byte, and only the item's own.
+    assert items[262]["needs_human_causes"] == [
+        {"cause": "agent_completion", "reason": "agent requested needs_human on completion"}
+    ]
+    assert items[326]["needs_human_causes"] == []
+    # The agent's question is in the item's own events. A request is no onset
+    # (it is also emitted for a label already on): with no recorded add, unknown.
+    assert any("Should I split #262" in e["detail"] for e in items[262]["block_events"])
+    assert items[262]["blocked_since"] is None
+    # A removal forgets an earlier add: #326 has been blocked since the re-add.
+    [needs_human_326] = [b for b in items[326]["blocking_labels"] if b["label"] == "needs-human"]
+    assert datetime.fromisoformat(needs_human_326["since_at"]) == NOW - timedelta(hours=10)
+    # blocked-cross-milestone was never seen put on: the item's onset is unknown.
+    assert items[326]["blocked_since"] is None
+    # A decision from BEFORE the observation window is still the item's record.
+    assert [d["decision_id"] for d in items[262]["decisions"]] == ["decision:old:262"]
+    assert "decision:old:262" not in {
+        d["decision_id"] for d in json.loads((staged.data_dir / "charter-decisions.json").read_text())["decisions"]
+    }
+    assert items[364]["case_file_ids"] == ["case-file:exchange-escalation-pr-label-refused"]
+    # Every blocked item is an attention anomaly, whatever its blocking label.
+    attention = {(a["subject"], a["signature"]) for a in staged.audit.model_dump()["anomalies"]
+                 if a["kind"] == "attention_label"}
+    assert ("#326", "blocked-cross-milestone") in attention
+    # One listing served the audit and the blocked items.
+    assert audited.calls.count("issues") == 1
+    assert _fingerprint(state) == before
+    evidence = load_staged_evidence(staged.data_dir)
+    assert evidence.blocked_items is not None and len(evidence.blocked_items.items) == 3
+
+
+def test_blocked_items_are_missing_when_the_audited_issues_were_not_read(state: Path, tmp_path: Path) -> None:
+    from issue_orchestrator.contracts.engine_audit import SourceStatus
+    from issue_orchestrator.observation.engine_audit import Unavailable
+
+    stager = ImproverInputStager(
+        audited_host=Unavailable(SourceStatus.SKIPPED, "--no-github"),
+        outputs_host=FakeHost(), source=FakeSource(), clock=lambda: NOW,
+    )
+
+    staged = stager.stage(_request(state, tmp_path))
+
+    entry = next(i for i in staged.manifest.inputs if i.name == "blocked-items.json")
+    assert not entry.staged and "skipped" in entry.detail
+    assert not (staged.data_dir / "blocked-items.json").exists()
+
+
+def test_a_blind_run_hides_the_excluded_issues_from_open_issues(state: Path, tmp_path: Path) -> None:
+    outputs = FakeHost(issues=[
+        OpenIssueLabels(number=7491, title="Fetch cost", labels=("bug",)),
+        OpenIssueLabels(number=7592, title="Recovery pr_labels", labels=()),
+        OpenIssueLabels(number=7593, title="Triage blocked items", labels=()),
+    ])
+
+    staged = _stager(FakeHost(), outputs).stage(
+        _request(state, tmp_path, excluded_open_issues=frozenset({7592, 7593}))
+    )
+
+    issues = json.loads((staged.data_dir / "open-issues.json").read_text())["issues"]
+    assert [i["number"] for i in issues] == [7491]
+    entry = next(i for i in staged.manifest.inputs if i.name == "open-issues.json")
+    # Not even the numbers: naming them would point the improver at them.
+    assert "7592" not in entry.detail and "7593" not in entry.detail
+
+
+def test_blocked_items_unread_after_the_issue_listing_make_the_run_unavailable(state: Path, tmp_path: Path) -> None:
+    """r2 F1: the issues read, then the PR listing hit a rate limit. The audit
+    drops its GitHub section, so no blocked item could be accounted for: the
+    run must not accept findings that silently drop every live block."""
+    limited = RepositoryHostRateLimitedError("API rate limit exceeded")
+    limited.rate_limit = HostRateLimit(resets_at=NOW + timedelta(minutes=5), kind="primary")
+
+    class PrsLimited(FakeHost):
+        def list_open_prs_complete(self) -> list:
+            raise limited
+
+    audited = PrsLimited(issues=[OpenIssueLabels(number=364, title="parked", labels=("needs-human",))])
+
+    with pytest.raises(ImproverInputsUnavailable, match="blocked-items.json"):
+        _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+
+def test_a_prefixed_engines_blocked_items_are_read_by_its_recorded_label_policy(tmp_path: Path) -> None:
+    """#7490 r3 F1: an engine with label_prefix "bot" blocks with
+    bot:needs-human; read with the default names it would have none."""
+    from issue_orchestrator.contracts.engine_start import LabelPolicy
+    from issue_orchestrator.infra.engine_start_record import read_engine_start
+
+    state = make_engine_state(tmp_path / "engine")
+    record = read_engine_start(state)
+    write_engine_start(state, record.model_copy(update={
+        "labels": LabelPolicy(
+            prefix="bot", needs_human="needs-human", blocked="blocked", provider_unavailable="provider-unavailable"
+        ),
+    }))
+    audited = FakeHost(issues=[
+        OpenIssueLabels(number=364, title="parked", labels=("bot:needs-human",)),
+        OpenIssueLabels(number=365, title="unprefixed", labels=("needs-human-ish",)),
+    ])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [364]
+    assert "prefix bot" in blocked["blocking_rule"]
+    attention = {(a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"}
+    assert ("#364", "bot:needs-human") in attention
+
+
+def test_an_engine_that_recorded_no_label_policy_is_read_on_the_defaults_and_says_so(
+    state: Path, tmp_path: Path
+) -> None:
+    from issue_orchestrator.infra.engine_start_record import read_engine_start
+
+    write_engine_start(state, read_engine_start(state).model_copy(update={"labels": None}))
+    audited = FakeHost(issues=[OpenIssueLabels(number=364, title="parked", labels=("needs-human",))])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [364]
+    assert "recorded no label policy" in blocked["blocking_rule"]
+
+
+def test_a_renamed_provider_outage_label_is_a_blocked_item(tmp_path: Path) -> None:
+    """#7490 r4 F1: the circuit breaker's label is configurable and blocking."""
+    from issue_orchestrator.contracts.engine_start import LabelPolicy
+    from issue_orchestrator.infra.engine_start_record import read_engine_start
+
+    state = make_engine_state(tmp_path / "engine")
+    write_engine_start(state, read_engine_start(state).model_copy(update={
+        "labels": LabelPolicy(
+            prefix=None, needs_human="needs-human", blocked="blocked", provider_unavailable="waiting-for-provider"
+        ),
+    }))
+    audited = FakeHost(issues=[OpenIssueLabels(number=400, title="waits", labels=("waiting-for-provider",))])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [400]
+    assert ("#400", "waiting-for-provider") in {
+        (a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"
+    }
+
+
+def test_a_case_variant_tech_lead_marker_is_a_blocked_item(state: Path, tmp_path: Path) -> None:
+    """#7490 r5 F1: GitHub label names are case-insensitive."""
+    audited = FakeHost(issues=[OpenIssueLabels(number=179, title="human work", labels=("Tech-Lead-Needs-Human",))])
+
+    staged = _stager(audited, FakeHost()).stage(_request(state, tmp_path))
+
+    blocked = json.loads((staged.data_dir / "blocked-items.json").read_text())
+    assert [i["number"] for i in blocked["items"]] == [179]
+    assert ("#179", "Tech-Lead-Needs-Human") in {
+        (a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"
+    }

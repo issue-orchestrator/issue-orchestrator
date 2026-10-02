@@ -37,7 +37,9 @@ from ..infra.tech_lead_run_record_store import (
     SqliteTechLeadRunRecordStore,
 )
 from ..infra.validated_work_census import SqliteValidatedWorkCensus
+from ..infra.engine_start_record import EngineStartRecordUnavailable, read_engine_start
 from ..observation.engine_audit import (
+    BlockedLane,
     EngineAuditInputs,
     EngineLog,
     TechLeadReaders,
@@ -63,7 +65,7 @@ class EngineSnapshot:
     """An engine's stores, each opened on its own snapshot.
 
     ``audit`` is what :func:`~..observation.engine_audit.audit_engine` reads;
-    ``tech_lead`` and ``timeline`` are the same opened copies, for a reader
+    ``tech_lead``, ``timeline`` and ``claims`` are the same opened copies, for a reader
     that needs more of them than the audit does, so every reading of one
     source comes from ONE copy of it.
     """
@@ -71,6 +73,7 @@ class EngineSnapshot:
     audit: EngineAuditInputs
     tech_lead: SqliteTechLeadAuthorityStore | Unavailable
     timeline: SqliteTimelineAuditReader | Unavailable
+    claims: SqlitePendingWorkClaimStore | Unavailable
 
 
 def snapshot_engine(
@@ -90,9 +93,14 @@ def snapshot_engine(
         state_dir, scratch, TIMELINE_DB,
         lambda p: SqliteTimelineAuditReader(p, timeout=SQLITE_TIMEOUT),
     )
+    claims = snapshot_store(
+        state_dir, scratch, PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore,
+        CLAIM_AUDIT_TABLES,
+    )
     audit = EngineAuditInputs(
         repo=repo,
         state_dir=state_dir,
+        blocked_lane=blocked_lane(state_dir),
         validated_work=snapshot_store(
             state_dir, scratch, VALIDATED_WORK_DB,
             lambda p: SqliteValidatedWorkCensus(p, timeout=SQLITE_TIMEOUT),
@@ -104,15 +112,24 @@ def snapshot_engine(
         tech_lead=tech_lead
         if isinstance(tech_lead, Unavailable)
         else TechLeadReaders(charter=tech_lead.charter_ledger, promotions=tech_lead),
-        claims=snapshot_store(
-            state_dir, scratch, PENDING_WORK_CLAIMS_DB, SqlitePendingWorkClaimStore,
-            CLAIM_AUDIT_TABLES,
-        ),
+        claims=claims,
         timeline=timeline,
         log=_log(state_dir / ENGINE_LOG, tail_bytes=log_tail_bytes),
         github=github,
     )
-    return EngineSnapshot(audit=audit, tech_lead=tech_lead, timeline=timeline)
+    return EngineSnapshot(audit=audit, tech_lead=tech_lead, timeline=timeline, claims=claims)
+
+
+def blocked_lane(state_dir: Path) -> BlockedLane:
+    """The engine's blocked lane by the label policy its start recorded. An
+    engine with no readable start record is audited on the default label
+    names, and the lane says so."""
+    try:
+        record = read_engine_start(state_dir)
+    except EngineStartRecordUnavailable as error:
+        lane = BlockedLane.of(None)
+        return BlockedLane(lane.labels, f"no readable engine-start record ({error}): {lane.source}")
+    return BlockedLane.of(record.labels)
 
 
 def snapshot_tech_lead_runs(
@@ -162,6 +179,7 @@ __all__ = [
     "TECH_LEAD_RUNS_DB",
     "TIMELINE_DB",
     "VALIDATED_WORK_DB",
+    "blocked_lane",
     "snapshot_engine",
     "snapshot_store",
     "snapshot_tech_lead_runs",

@@ -181,6 +181,26 @@ class TestAddLabelAction:
         assert not result.success
         assert "API error" in result.error
 
+    @pytest.mark.parametrize(("presence", "flagged"), [(Exception("read failed"), True), (False, False)])
+    def test_an_add_records_whether_it_read_the_label_absent(
+        self, applier, mock_labels, mock_events, presence, flagged
+    ):
+        """#7490 r1 F4: the improver dates a block by its recorded add; an add
+        whose presence read failed may have found the label already on."""
+        if isinstance(presence, Exception):
+            mock_labels.has_label.side_effect = presence
+        else:
+            mock_labels.has_label.return_value = presence
+
+        assert applier.apply(AddLabelAction(issue_number=123, label="needs-human-x")).success
+
+        [changed] = [
+            call.args[0] for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.ISSUE_LABELS_CHANGED.value
+        ]
+        assert changed.data["added"] == ["needs-human-x"]
+        assert changed.data.get("presence_unknown", False) is flagged
+
     def test_rate_limited_label_failure_keeps_its_typed_limit(self, applier, mock_labels):
         """#7297: a launch must be able to tell a rate-limited write from a failed one."""
         import httpx

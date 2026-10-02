@@ -150,10 +150,10 @@ def charter_decisions_input(
         applied = applied_at(decision)
         if decided < window_start and (applied is None or applied < window_start):
             continue
-        staged.append(_staged_decision(decision, decided, applied))
+        staged.append(staged_decision(decision, decided, applied))
     earliest = instant(ledger[0].decided_at) if ledger else None
     return CharterDecisionsInput(
-        coverage=_ledger_coverage(
+        coverage=ledger_coverage(
             earliest,
             window_start=window_start,
             cutoff=cutoff,
@@ -165,7 +165,7 @@ def charter_decisions_input(
     )
 
 
-def _staged_decision(
+def staged_decision(
     decision: TechLeadCharterDecision, decided: datetime, applied: datetime | None
 ) -> StagedDecision:
     return StagedDecision(
@@ -223,7 +223,7 @@ def case_files_input(
         if staged_file.recorded_at <= cutoff
     )
     stamps = [t for c in staged for t in (c.recorded_at, *(o.recorded_at for o in c.observations))]
-    coverage = _ledger_coverage(
+    coverage = ledger_coverage(
         min(stamps) if stamps else None,
         window_start=window_start,
         cutoff=cutoff,
@@ -358,7 +358,7 @@ UNPROVEN_COMMIT_BOUNDARY = (
 )
 
 
-def _ledger_coverage(
+def ledger_coverage(
     earliest: datetime | None,
     *,
     window_start: datetime,
@@ -522,4 +522,6 @@ __all__ = [
     "exam_series",
     "instant",
     "interventions_input",
+    "ledger_coverage",
+    "staged_decision",
 ]

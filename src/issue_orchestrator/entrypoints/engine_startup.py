@@ -160,6 +160,7 @@ def record_engine_start(config: "Config", *, repo_root: Path, now: datetime) -> 
     source defaults say.
     """
     from ..contracts.engine_start import EngineStartRecord
+    from ..observation.engine_audit import BlockedLane
     from ..control.tech_lead_charter_policy import TechLeadCharterPolicy
     from ..infra.engine_start_record import write_engine_start
     from ..infra.repo_identity import get_repo_head_sha, state_dir
@@ -174,6 +175,7 @@ def record_engine_start(config: "Config", *, repo_root: Path, now: datetime) -> 
         repo_root=str(repo_root),
         repo_head=get_repo_head_sha(repo_root),
         charter=TechLeadCharterPolicy.from_config(config).effective_charter(),
+        labels=BlockedLane.policy_of(config),
     )
     path = write_engine_start(state_dir(repo_root), record)
     logger.info("Recorded engine start at %s (engine commit %s)", path, record.engine_commit)

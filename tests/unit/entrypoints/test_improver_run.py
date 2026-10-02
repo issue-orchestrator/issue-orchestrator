@@ -309,3 +309,44 @@ def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path
     assert stored.outcome is RunOutcome.AGENT_FAILED and stored.exit_code == 75
     assert "sandbox_mode" in stored.detail and stored.effects == ()
     assert record == stored
+
+
+def _blind(request: ImproverRunRequest, *hidden: int) -> ImproverRunRequest:
+    from dataclasses import replace
+
+    return replace(request, excluded_open_issues=frozenset(hidden))
+
+
+def test_a_blind_run_is_graded_and_recorded_but_owes_github_nothing(tmp_path: Path) -> None:
+    """Handover tests hide the issues that track the defects; a finding the
+    improver then makes would duplicate them, so nothing may ever be filed."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    stager = FakeStager()
+
+    record = _improver(store, host, FakeAgent(_findings("exam_case")), stager).run(
+        _blind(_request(), 7592, 7593), apply=False
+    )
+
+    assert stager.requests[0].excluded_open_issues == frozenset({7592, 7593})
+    assert record.outcome is RunOutcome.ACCEPTED and [g.stall_point for g in record.grades] == ["noticed_not_acted"]
+    assert record.effects == () and record.blind_excluded_issues == (7592, 7593)
+    assert "blind: hid #7592, #7593" in render_run(record)
+    # A later real run applies what is owed: the blind run owes nothing.
+    _improver(store, host, FakeAgent(_findings("prompt_proposal"))).run(_request())
+    assert all("Exam case" not in c["title"] for c in host.created)
+
+
+def test_a_blind_run_refuses_to_apply(tmp_path: Path) -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="blind"):
+        _improver(MemoryRunStore(tmp_path), FakeIssueHost(), FakeAgent("{}")).run(_blind(_request(), 7592))
+
+
+def test_a_blind_runs_grades_are_not_the_next_runs_baseline(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _improver(store, host, FakeAgent(_findings("exam_case"))).run(_blind(_request(), 7592), apply=False)
+
+    record = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request())
+
+    assert [(m.stall_point, m.previous) for m in record.stall_points] == [("noticed_not_acted", None)]

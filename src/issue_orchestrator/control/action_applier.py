@@ -39,6 +39,7 @@ from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
+from ..domain.label_change_event import labels_changed_payload
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
 from .action_results import FailureCollector
 from .session_launch_types import LaunchStep, launch_step_result
@@ -404,7 +405,7 @@ class ActionApplier:
                 label=action.label,
                 reason=action.reason,
             )
-            self._emit_issue_labels_changed(action.issue_number, [action.label], [], issue_key=action.issue_key)
+            self._emit_issue_labels_changed(action.issue_number, [action.label], [], action.issue_key, has_label is None)
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -1706,17 +1707,13 @@ class ActionApplier:
         added: list[str],
         removed: list[str],
         issue_key: str = "",
+        presence_unknown: bool = False,
     ) -> None:
         if not added and not removed:
             return
         self.events.publish(make_trace_event(
             EventName.ISSUE_LABELS_CHANGED,
-            {
-                "issue_number": issue_number,
-                "issue_key": issue_key or str(issue_number),
-                "added": added,
-                "removed": removed,
-            },
+            labels_changed_payload(issue_number, issue_key, added, removed, presence_unknown=presence_unknown),
         ))
 
     def _log_label_mutation(

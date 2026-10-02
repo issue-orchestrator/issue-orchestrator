@@ -76,6 +76,13 @@ class ImproverRunRequest:
     exam_dir: Path | None
     window: timedelta
     log_tail_bytes: int
+    #: A BLIND run: these open issues are hidden from the improver, and the
+    #: run files nothing (see ``ImproverRunRecord.blind_excluded_issues``).
+    excluded_open_issues: frozenset[int] = frozenset()
+
+    @property
+    def blind(self) -> bool:
+        return bool(self.excluded_open_issues)
 
     def staging(self, run_dir: Path, previous_audit: Path | None) -> ImproverStagingRequest:
         return ImproverStagingRequest(
@@ -86,6 +93,7 @@ class ImproverRunRequest:
             exam_dir=self.exam_dir,
             window=self.window,
             log_tail_bytes=self.log_tail_bytes,
+            excluded_open_issues=self.excluded_open_issues,
         )
 
 
@@ -116,6 +124,8 @@ class ImproverRun:
             return self._run(request, apply=apply)
 
     def _run(self, request: ImproverRunRequest, *, apply: bool) -> ImproverRunRecord:
+        if request.blind and apply:
+            raise ValueError("a blind run (hidden open issues) never applies: its findings would duplicate them")
         if request.outputs_repo != self._effects.outputs_repo:
             raise ValueError(
                 f"the run files into {request.outputs_repo} but its effects apply to"
@@ -136,6 +146,7 @@ class ImproverRun:
             audited_repo=request.engine.repo,
             outputs_repo=request.outputs_repo,
             run_dir=str(run_dir),
+            blind_excluded_issues=tuple(sorted(request.excluded_open_issues)),
         )
         try:
             staged = self._stager.stage(
@@ -178,11 +189,13 @@ class ImproverRun:
         accepted = self._finish(
             base,
             RunOutcome.ACCEPTED,
-            f"{len(findings.findings)} finding(s) accepted",
+            f"{len(findings.findings)} finding(s) accepted"
+            + ("; blind run: nothing is filed" if request.blind else ""),
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),
             trend=findings.trend,
-            effects=planned_effects(findings, request.engine),
+            # A blind run's findings may duplicate the issues it was not shown.
+            effects=() if request.blind else planned_effects(findings, request.engine),
         )
         if not apply:
             return accepted
@@ -236,7 +249,7 @@ class ImproverRun:
             (
                 r
                 for r in self._store.runs()
-                if r.outcome is RunOutcome.ACCEPTED and r.engine_id == engine_id
+                if r.is_engine_audit and r.engine_id == engine_id
             ),
             None,
         )
@@ -260,6 +273,10 @@ def render_run(record: ImproverRunRecord) -> str:
         f" outputs to {record.outputs_repo}",
         f"  run dir {record.run_dir}",
     ]
+    if record.blind_excluded_issues:
+        lines.append(
+            "  blind: hid " + ", ".join(f"#{n}" for n in record.blind_excluded_issues) + "; files nothing"
+        )
     lines += [f"  rejected: {reason}" for reason in record.rejections]
     lines += [
         f"  {g.finding_id}: stalled at {g.stall_point} -> {g.output} ({g.classification})"

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "engine_commit": "0123456789abcdef0123456789abcdef01234567",
   "engine_started_at": "2026-09-28T12:00:00+00:00",
   "findings": [
@@ -67,6 +67,16 @@
       },
       "proposal": "Tell the tech lead to escalate a refused retry with the refusal's reason instead of re-flagging it.",
       "remedy_action_kind": "reset_retry"
+    }
+  ],
+  "blocked_items": [
+    {
+      "number": 353,
+      "disposition": "awaiting_operator",
+      "evidence": [
+        "D3"
+      ],
+      "why": "The tech lead escalated #353 to the operator (D3, applied after it was blocked); the next step is the operator's product call."
     }
   ],
   "trend": {

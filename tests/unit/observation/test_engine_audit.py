@@ -61,6 +61,7 @@ from issue_orchestrator.observation import engine_audit as observed
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.observation.engine_audit import (
     STALE_UNRESOLVED_AFTER,
+    BlockedLane,
     EngineAuditInputs,
     Unavailable,
     audit_engine,
@@ -954,7 +955,8 @@ def test_the_census_counts_unresolved_by_state_not_by_terminal_at(tmp_path: Path
 def test_the_auditor_refuses_a_naive_instant() -> None:
     absent = Unavailable(SourceStatus.ABSENT, "none")
     inputs = EngineAuditInputs(
-        repo=REPO, state_dir=Path("/nowhere"), validated_work=absent, action_liveness=absent,
+        repo=REPO, state_dir=Path("/nowhere"), blocked_lane=BlockedLane.of(None),
+        validated_work=absent, action_liveness=absent,
         tech_lead=absent, claims=absent, timeline=absent, log=absent, github=absent,
     )
 

@@ -28,6 +28,7 @@ CHARTER_DECISIONS_FILE = "charter-decisions.json"
 CASE_FILES_FILE = "case-files.json"
 INTERVENTIONS_FILE = "interventions.json"
 OPEN_ISSUES_FILE = "open-issues.json"
+BLOCKED_ITEMS_FILE = "blocked-items.json"
 INPUTS_FILE = "inputs.json"
 EXAM_DIRNAME = "exam"
 ENGINE_SOURCE_DIRNAME = "engine-source"
@@ -195,6 +196,81 @@ class OpenIssuesInput(_Closed):
     issues: tuple[OpenIssue, ...]
 
 
+class NeedsHumanCauseInput(_Closed):
+    """One recorded cause of an item's needs-human block, byte for byte."""
+
+    cause: str
+    reason: str
+
+
+class BlockingLabelInput(_Closed):
+    """One blocking label an item carries, and when it was last put on."""
+
+    label: str
+    #: When the retained timeline last shows it put on, with no later
+    #: removal; None when the retained timeline holds no such event (it may
+    #: have been trimmed, or never recorded).
+    since_at: AwareDatetime | None
+    #: The timeline event that put it on.
+    since_event: str | None
+
+
+class BlockEventInput(_Closed):
+    """One timeline event about an item's block (a blocking label put on or
+    taken off, a block or needs-human request with its reason or question)."""
+
+    at: AwareDatetime
+    event: str
+    detail: str
+
+
+class BlockedItem(_Closed):
+    """One open issue of the audited repository that is blocked."""
+
+    number: int
+    title: str
+    labels: tuple[str, ...]
+    blocking_labels: tuple[BlockingLabelInput, ...] = Field(min_length=1)
+    #: When it became blocked: the earliest ``since_at`` of its blocking
+    #: labels when every one is known; None otherwise (it may be older).
+    blocked_since: AwareDatetime | None
+    #: The causes recorded for its needs-human block; None when the claim
+    #: store could not be read (``causes_coverage`` says why).
+    needs_human_causes: tuple[NeedsHumanCauseInput, ...] | None
+    #: The most recent timeline events about its block, oldest first.
+    block_events: tuple[BlockEventInput, ...]
+    #: What of the item's timeline was read: from its oldest retained event.
+    timeline_coverage: Coverage
+    #: Every tech-lead charter decision about it (it is the target, or the
+    #: anchor of a decision with no target), from the WHOLE ledger as of the
+    #: cutoff, not only the observation window.
+    decisions: tuple[StagedDecision, ...]
+    #: ``case-files.json`` case files whose diagnosis names ``#<number>``.
+    case_file_ids: tuple[str, ...]
+    #: ``case-files.json`` diagnoses (tech-lead runs) about it: its subject,
+    #: or naming ``#<number>``.
+    diagnosis_ids: tuple[str, ...]
+
+
+class BlockedItemsInput(_Closed):
+    """``blocked-items.json``: every blocked item of the audited engine.
+
+    The operator's objective is that blocked items get resolved, so the
+    improver accounts for each one and grades the tech lead on it (#7490).
+    Every item here is present after the engine start: the listing was read
+    at ``read_at``, after it.
+    """
+
+    read_at: AwareDatetime
+    #: Which labels make an open issue blocked.
+    blocking_rule: str
+    #: The claim store's needs-human causes: current rows only, as copied.
+    causes_coverage: Coverage
+    #: The charter ledger the per-item ``decisions`` come from.
+    decisions_coverage: Coverage
+    items: tuple[BlockedItem, ...]
+
+
 class ScorecardHead(BaseModel):
     """The part of a tech-lead exam scorecard (``Scorecard.to_dict``) staging reads."""
 
@@ -242,6 +318,7 @@ __all__ = [
     "AUDIT_DIFF_FILE",
     "AUDIT_FILE",
     "AUDIT_PREVIOUS_FILE",
+    "BLOCKED_ITEMS_FILE",
     "CASE_FILES_FILE",
     "CHARTER_DECISIONS_FILE",
     "CHARTER_FILE",
@@ -253,6 +330,10 @@ __all__ = [
     "INTERVENTIONS_FILE",
     "OPEN_ISSUES_FILE",
     "PREVIOUS_SCORECARD_SUFFIX",
+    "BlockEventInput",
+    "BlockedItem",
+    "BlockedItemsInput",
+    "BlockingLabelInput",
     "CaseFileObservationInput",
     "CaseFilesInput",
     "CharterDecisionsInput",
@@ -260,6 +341,7 @@ __all__ = [
     "EngineStartInput",
     "InputsManifest",
     "Intervention",
+    "NeedsHumanCauseInput",
     "InterventionsInput",
     "OpenIssue",
     "OpenIssuesInput",
