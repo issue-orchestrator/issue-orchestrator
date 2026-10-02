@@ -42,7 +42,7 @@ Output = Literal[
 ReproductionKind = Literal["exam_case", "unit_test", "integration_test"]
 TrendValue = Literal["up", "flat", "down", "unobserved"]
 #: How a blocked item is accounted for: by a finding about it, or as handed
-#: to the operator by an applied tech-lead escalation or deferral of its own.
+#: to the operator by an applied tech-lead escalation of its own.
 BlockedItemDisposition = Literal["finding", "awaiting_operator"]
 
 NonEmpty = Annotated[str, StringConstraints(min_length=1, strip_whitespace=False)]

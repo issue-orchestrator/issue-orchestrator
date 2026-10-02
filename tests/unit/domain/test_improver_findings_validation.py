@@ -726,3 +726,13 @@ def test_an_item_whose_block_may_have_been_put_back_cannot_be_handed_over(tmp_pa
     evidence = _with_notice(build_improver_data(tmp_path), "blocked-items.json", unknown_since)
 
     assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)
+
+
+def test_a_deferral_to_a_tracker_is_not_a_hand_over_of_the_whole_item(tmp_path: Path) -> None:
+    """r8 F2: a defer_to_tracker hands over one failure, not an agent's question beside it."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        lambda d: d["items"][0]["decisions"][0].update(action_kind="defer_to_tracker"),
+    )
+
+    assert Rule.BLOCKED_ITEM_HANDED_OVER in _rules(example("exam_case"), evidence)

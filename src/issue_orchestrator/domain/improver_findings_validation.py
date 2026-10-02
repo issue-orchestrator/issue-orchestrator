@@ -801,10 +801,12 @@ def _holds_back(charter: EffectiveCharter, kind: str, pointer: str, documents: M
     }.get(parts[2], False)
 
 
-#: Decisions that hand a blocked item to the operator rather than remedy it:
-#: an escalation or a deferral to a tracker. A comment is not one: the staged
-#: decision does not say what it said, so it cannot show a hand-over.
-HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human", "defer_to_tracker"})
+#: Decisions that hand a WHOLE blocked item to the operator rather than remedy
+#: it: an escalation to a human, which is issue-wide. A deferral to a tracker
+#: hands over one failure, not an agent's question beside it, and the staged
+#: decision does not say which block it covered; a comment does not say what
+#: it said. Either is a notice, never a hand-over.
+HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human"})
 
 _ISSUE_SUBJECT = re.compile(r"^(?:PR )?#(\d+)$")
 

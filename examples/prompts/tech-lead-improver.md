@@ -65,9 +65,10 @@ they can, `not_noticed` grades `unknown`. **Absence of evidence is "unobserved",
      action. Is it genuine human work, a decision the operator owes, or a
      defect (in io or in the tech lead's triage)?
    - **Dispose of it** in `blocked_items` (Outputs). Use a `finding` unless
-     an applied tech-lead decision of its own (an `escalate_to_human` or
-     `defer_to_tracker` about it, applied after its latest block began) handed
-     it to the operator: then `awaiting_operator`. A comment is not a hand-over.
+     an applied tech-lead `escalate_to_human` about it, applied after its
+     latest block began, handed the whole item to the operator: then
+     `awaiting_operator`. A comment or a deferral to a tracker is not a
+     hand-over (it does not say which block it covered).
      Several items with one root cause share one finding.
 1. **Observe.** Read `audit-diff.json` first. For each anomaly, record three
    separate facts, each backed by a cited record, and never infer one from
@@ -315,7 +316,7 @@ in `engine-source/examples/improver/findings/`.
   file keyed to one of the item's blocks (an `attention_label` anomaly
   with `subject` `#<n>` and a blocking label as `signature`) and
   `present_after_start: "true"`. An `awaiting_operator` account cites in
-  `evidence` an `escalate_to_human` or `defer_to_tracker` decision from
+  `evidence` an `escalate_to_human` decision from
   that item's `decisions`, applied after the latest `since_at` of its
   blocking labels and by the cutoff; with any `since_at` unknown, or no
   such decision, the item needs a finding. Only a `finding` account names `finding_id`; only an
