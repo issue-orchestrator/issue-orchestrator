@@ -1023,7 +1023,7 @@ def test_the_report_json_is_the_contract(state, tmp_path, monkeypatch) -> None:
     report = _run(state, tmp_path, monkeypatch, FakeHost())
     payload = json.loads(report.model_dump_json())
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     payload["surprise"] = True
     with pytest.raises(ValueError):
         EngineAuditReport.model_validate(payload)

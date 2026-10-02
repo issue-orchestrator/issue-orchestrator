@@ -19,8 +19,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-#: Bump when a field is added, removed or changes meaning.
-ENGINE_AUDIT_SCHEMA_VERSION = 2
+#: Bump when a field is added, removed or changes meaning. 3: refused work
+#: (#7490); 2 was its interim shape, written only by blind runs.
+ENGINE_AUDIT_SCHEMA_VERSION = 3
 
 
 class _Frozen(BaseModel):
@@ -380,7 +381,7 @@ class AuditDiff(_Frozen):
 
 
 class EngineAuditReport(_Frozen):
-    schema_version: Literal[2] = ENGINE_AUDIT_SCHEMA_VERSION
+    schema_version: Literal[3] = ENGINE_AUDIT_SCHEMA_VERSION
     generated_at: str
     repo: str
     state_dir: str
