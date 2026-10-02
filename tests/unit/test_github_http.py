@@ -3433,3 +3433,32 @@ def test_rate_limited_page_keeps_the_scan_incomplete_contract() -> None:
 
     assert isinstance(caught.value, GitHubRateLimitedError)
     assert caught.value.rate_limit.kind == "primary"
+
+
+def test_comment_bodies_containing_reads_every_page_uncached() -> None:
+    """#7658: a resolution marker past the first 100 comments still counts.
+    The tech lead decides from its ABSENCE, so a first-page read (the cached
+    ``get_issue_comments``) would let it clear a block a second time."""
+    pages_requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_requested.append(page)
+        if page == 1:
+            return httpx.Response(200, json=[{"body": f"chatter {i}"} for i in range(100)])
+        return httpx.Response(200, json=[{"body": f"decided\n{_TEST_MARKER}"}, {"body": "later"}])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.issue_comment_bodies_containing(318, _TEST_MARKER) == (f"decided\n{_TEST_MARKER}",)
+    assert pages_requested == [1, 2]
+
+
+def test_comment_bodies_containing_fails_loud_on_a_malformed_page() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "not a list"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError):
+        client.issue_comment_bodies_containing(318, _TEST_MARKER)

@@ -366,6 +366,10 @@ def human_only_work(texts: Iterable[str | None]) -> HumanOnlyMatch | None:
 
 # -- durable markers -----------------------------------------------------------
 
+#: Every resolution marker starts with this: a comment read for them asks the
+#: host for exactly the comments that carry one.
+RESOLUTION_MARKER_PREFIX = "<!-- io:resolve-block:"
+
 _CAUSE_MARKER = re.compile(
     r"<!-- io:resolve-block:cause=(?P<cause>[a-z_]+):decision=(?P<decision>[^ ]+) -->"
 )

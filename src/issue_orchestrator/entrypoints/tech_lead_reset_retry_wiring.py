@@ -30,6 +30,7 @@ from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
 from ..control.tech_lead_operator_decision import OperatorDecisionExecutor
 from ..control.tech_lead_block_resolution import TechLeadBlockResolutionExecutor
 from ..control.blocked_item_triage import AGENT_QUESTION_RECORDS, agent_question_in
+from ..domain.block_resolution import RESOLUTION_MARKER_PREFIX
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
     KillSessionRunOutcome,
@@ -150,9 +151,9 @@ def build_tech_lead_block_resolution_executor(
         labels=deps.label_manager,
         block=deps.needs_human_block,
         read_issue=host.get_issue,
-        read_comment_bodies=lambda number: [
-            str(comment.get("body") or "") for comment in host.get_issue_comments(number)
-        ],
+        read_comment_bodies=lambda number: host.issue_comment_bodies_containing(
+            number, RESOLUTION_MARKER_PREFIX
+        ),
         agent_question=lambda number: agent_question_in(
             deps.timeline_store.read(number, limit=AGENT_QUESTION_RECORDS)
         ),

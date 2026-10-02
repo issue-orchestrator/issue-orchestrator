@@ -144,7 +144,8 @@ class TechLeadBlockResolutionExecutor:
     block: "SharedNeedsHumanBlock"
     #: Fresh issue read (labels, body, milestone, state).
     read_issue: Callable[[int], "Issue | None"]
-    #: Every comment body on the item, for the durable resolution markers.
+    #: The item's comment bodies that carry a resolution marker, from a
+    #: complete, uncached scan that raises rather than answer partially.
     read_comment_bodies: Callable[[int], Sequence[str]]
     #: The last question an agent put to a human about the item, if recorded.
     agent_question: Callable[[int], str | None]
