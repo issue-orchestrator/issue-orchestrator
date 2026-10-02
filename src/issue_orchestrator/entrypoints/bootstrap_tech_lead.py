@@ -143,6 +143,7 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     """
     from .tech_lead_reset_retry_wiring import (
         build_tech_lead_kill_session_executor,
+        build_tech_lead_operator_decision_executor,
         build_tech_lead_reset_retry_executor,
         build_tech_lead_review_release_executor,
         build_tech_lead_validated_work_recovery_executor,
@@ -160,6 +161,8 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     applier.pattern_registry = orchestrator.deps.services.pattern_registry
     if orchestrator.deps.repository_host is not None:
         applier.release_withheld_review = build_tech_lead_review_release_executor(
+            orchestrator, orchestrator.deps.repository_host)
+        applier.apply_operator_decision = build_tech_lead_operator_decision_executor(
             orchestrator, orchestrator.deps.repository_host)
         applier.request_rework = RequestReworkExecutor(
             repository=orchestrator.deps.repository_host,

@@ -54,6 +54,7 @@ from .tech_lead_actions import (
     NO_RECONCILIATION_SUBJECT as NO_RECONCILIATION_SUBJECT,
     TECH_LEAD_ISSUE_CREATION_ACTION_TYPES as TECH_LEAD_ISSUE_CREATION_ACTION_TYPES,
     AppendPatternObservationAction as AppendPatternObservationAction,
+    ApplyOperatorDecisionAction as ApplyOperatorDecisionAction,
     CreateTechLeadCaseFileIssueAction as CreateTechLeadCaseFileIssueAction,
     CreateTechLeadIssueAction as CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction as CreateTechLeadProposalIssueAction,

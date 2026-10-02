@@ -179,9 +179,27 @@ def test_a_disabled_role_makes_every_restricted_action_advice(kind: str) -> None
         # Noticing and advising are never restricted by the charter (#7329).
         assert verdict.outcome is CharterOutcome.EXECUTED
         assert verdict.reason_code is CharterReason.ADVISORY_EXECUTES
+    elif action_class.binding is CharterBinding.OPERATOR_DECISION:
+        # Putting a decision to the operator is a hand-over, not an act (#7593).
+        assert verdict.outcome is CharterOutcome.PROPOSED
+        assert verdict.reason_code is CharterReason.OPERATOR_DECISION_ALWAYS_PROPOSED
     else:
         assert verdict.outcome is CharterOutcome.ADVICE_ONLY
         assert verdict.reason_code is CharterReason.ROLE_DISABLED
+
+
+@pytest.mark.parametrize("ceiling", AUTHORITIES)
+def test_an_operator_decision_is_always_proposed_whatever_the_charter_says(
+    ceiling: CharterAuthority,
+) -> None:
+    """#7593: no dial lets the tech lead make the operator's decision, and no
+    dial can stop it putting one in front of them."""
+    for charter in _every_charter():
+        verdict = decide_charter(
+            "propose_decision", charter, action_ceiling=ceiling, ceiling_source="c"
+        )
+        assert verdict.outcome is CharterOutcome.PROPOSED
+        assert verdict.awaits_approval
 
 
 def _every_charter() -> list[TechLeadCharter]:

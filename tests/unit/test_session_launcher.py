@@ -618,6 +618,7 @@ def _build_launcher_bundle(
     refresh_issue_fn: Callable[[int], Any] | None = None,
     recovery_holds: Any = None,
     needs_human_block: Any = None,
+    blocked_item_triage: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -688,6 +689,8 @@ def _build_launcher_bundle(
         launcher_kwargs["recovery_holds"] = recovery_holds
     if needs_human_block is not None:
         launcher_kwargs["needs_human_block"] = needs_human_block
+    if blocked_item_triage is not None:
+        launcher_kwargs["blocked_item_triage"] = blocked_item_triage
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
@@ -4361,7 +4364,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert run_manifest["tech_lead_charter"] == str(charter_path)
         charter = charter_path.read_text()
         assert "## flow (depth: restructure, authority: propose)" in charter
-        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `create_issue`" in charter
+        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `create_issue`" in charter
 
     def test_failure_investigation_skips_manifest_and_records_focus(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
@@ -4679,6 +4682,67 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43}), (
             "the snapshot's cohort surface is the grant, not its failure list"
         )
+
+    def test_health_review_is_granted_and_told_its_triage_agenda(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+        mock_working_copy, mock_command_runner, tmp_path,
+    ):
+        """#7593: the blocked items owed a triage become the run's grants, its
+        agenda file, and an orchestrator-owned addendum to its prompt, so the
+        duty reaches a repository whose own tech-lead prompt never heard of it."""
+        from issue_orchestrator.domain.blocked_item_triage import (
+            TriageAgenda,
+            TriageAgendaItem,
+            TriageGrant,
+        )
+        from issue_orchestrator.domain.tech_lead_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        question = "Should I split #262 and land the share-page slice under Refs?"
+        agenda = TriageAgenda(items=(TriageAgendaItem(
+            issue_number=262, title="Live seller pickup index", labels=("needs-human",),
+            blocking_labels=("needs-human",), needs_human_causes=("agent_completion",),
+            fingerprint="needs-human", agent_question=question, reason="never triaged",
+            prior=None,
+        ),), in_force=(179,))
+
+        class _Agenda:
+            def agenda(self, *, anchor_issue_number):
+                assert anchor_issue_number == 906
+                return agenda
+
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+            mock_working_copy, mock_command_runner, blocked_item_triage=_Agenda(),
+        )
+        config = bundle.launcher.config
+        self.enable_tech_lead_agent(config, tmp_path)
+        issue = Issue(
+            number=906, title="Health Review", repo="test/repo",
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
+        )
+
+        result = bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.triage_grants == (TriageGrant(262, "needs-human"),)
+        assert 262 in authority.allowed_targets()
+        assert 262 in authority.allowed_act_level_targets()
+        run_dir = self.started_run_dir(mock_events)
+        written = json.loads((run_dir / "tech-lead-data" / "blocked-item-triage.json").read_text())
+        assert [item["issue_number"] for item in written["items"]] == [262]
+        assert written["items"][0]["agent_question"] == question
+        assert written["triage_in_force"] == [179]
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        prompt = Path(manifest["session_prompt_path"]).read_text()
+        assert "## Blocked-item triage (REQUIRED by the orchestrator" in prompt
+        assert "#262 Live seller pickup index" in prompt
 
     def test_periodic_health_review_gains_no_cohort_from_pending_failures(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path

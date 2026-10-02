@@ -60,6 +60,7 @@ from ..domain.tech_lead_session import (
     PROPOSED_TECH_LEAD_LABEL,
     ApprovedTechLeadOp,
     GatedTechLeadProposal,
+    OperatorDecision,
     StoredTechLeadOp,
     TechLeadCreationOrigin,
     TechLeadSessionGeneration,
@@ -68,6 +69,7 @@ from ..domain.tech_lead_session import (
 from .actions import (
     Action,
     ActionResult,
+    ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
@@ -104,6 +106,8 @@ logger = logging.getLogger(__name__)
 # counts (≤2 anchors + a handful of proposals) are orders of magnitude below.
 TECH_LEAD_PROPOSAL_SCAN_LIMIT = 2000
 
+_MAX_DECISION_TITLE_CHARS = 200
+
 # Human-facing verbs per op type, used in proposal issue titles/bodies.
 # Titles must never contain "Batch Review"/"Tech Lead Review" (the historical
 # batch-anchor title heuristic), and classification additionally excludes
@@ -114,6 +118,7 @@ _OP_TITLES: dict[str, str] = {
     "kill_hung_session": "kill hung session for issue #{target}",
     "recover_validated_work": "recover retained validated work for issue #{target}",
     "release_withheld_review": "release the withheld review of issue #{target}'s PR",
+    "propose_decision": "decide for issue #{target}",
 }
 
 
@@ -176,7 +181,45 @@ def build_stored_tech_lead_op(
         target_session_type=(target_session.task_kind.value if target_session else ""),
         finding_ids=tuple(proposed.finding_ids),
         observed_at=observed_at,
+        decision=(
+            OperatorDecision(
+                title=proposed.title or "",
+                body=proposed.body or "",
+                follow_ups=proposed.follow_up_issues,
+            )
+            if proposed.action_type == "propose_decision"
+            else None
+        ),
     )
+
+
+def _decision_section(op: StoredTechLeadOp) -> str:
+    """What approving a ``propose_decision`` does, in the operator's words (#7593)."""
+    assert op.decision is not None
+    follow_ups = "".join(
+        f"\n#### Follow-up {index}: {item.title}\n\n{item.body}\n"
+        for index, item in enumerate(op.decision.follow_ups, start=1)
+    )
+    filed = (
+        f"\n### Issues approval files\n{follow_ups}"
+        if op.decision.follow_ups
+        else "\nApproval files no new issue.\n"
+    )
+    return f"""## Decision for #{op.target_issue_number}: {op.decision.title}
+
+{op.decision.body}
+{filed}
+### What approving does
+
+1. Retries #{op.target_issue_number} through the operator's own retry (its
+   blocking labels come off; a cause the retry may not override, such as a
+   claim quarantine, stops here and this proposal closes saying so).
+2. Files the issues above, if any, with #{op.target_issue_number}'s own labels
+   and milestone.
+3. Posts this decision on #{op.target_issue_number}, so the session that resumes
+   it works to it.
+
+"""
 
 
 def _proposal_issue_body(
@@ -231,7 +274,8 @@ def _proposal_issue_body(
             f"| Approved remote baseline | `{remote_head}`;"
             f" PR `{authority.pr_number if authority.pr_number is not None else 'none'}` |\n"
         )
-    return f"""## Gated tech_lead proposal (ADR-0031 §2)
+    decision = _decision_section(op) if op.decision is not None else ""
+    return f"""{decision}## Gated tech_lead proposal (ADR-0031 §2)
 
 A tech_lead session proposed an act-level operation. It is **inert** until a
 human approves it.
@@ -293,6 +337,9 @@ def build_tech_lead_proposal_issue_action(
         now_iso=now_iso,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
+    if op.decision is not None:
+        # GitHub caps a title at 256 characters; the full decision is in the body.
+        title_detail = f"{title_detail}: {op.decision.title}"[:_MAX_DECISION_TITLE_CHARS]
     return CreateTechLeadProposalIssueAction(
         title=f"Tech Lead proposal: {title_detail}",
         body=_proposal_issue_body(
@@ -602,6 +649,20 @@ def plan_approved_tech_lead_op_executions(
                     proposal_issue_number=item.proposal_issue_number,
                     observed_at=op.observed_at,
                     source_session_name=op.source_session_name,
+                    reason=reason,
+                    expected=build_expected_for_mutation(),
+                )
+            )
+        elif op.op_type == "propose_decision":
+            assert op.decision is not None
+            actions.append(
+                ApplyOperatorDecisionAction(
+                    issue_number=op.target_issue_number,
+                    decision=op.decision,
+                    proposal_id=op.source_action_id,
+                    finding_ids=op.finding_ids,
+                    anchor_issue_number=item.proposal_issue_number,
+                    proposal_issue_number=item.proposal_issue_number,
                     reason=reason,
                     expected=build_expected_for_mutation(),
                 )

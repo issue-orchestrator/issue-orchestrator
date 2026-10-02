@@ -50,6 +50,7 @@ from ..domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from .actions import CreateTechLeadIssueAction, SupportsApplyAction
+from .blocked_item_triage import label_blocked_work_items
 from .board_review_fingerprint import board_review_fingerprint
 from .reconciliation import without_paused_subjects
 from .tech_lead_issue_policy import (
@@ -134,7 +135,9 @@ def health_review_decision(
     ``interval_minutes=0``, where it is the only trigger) and must record the
     board it walked.
     """
-    fingerprint = board_review_fingerprint(state, now)
+    fingerprint = board_review_fingerprint(
+        state, now, label_blocked=label_blocked_work_items(config, state)
+    )
     interval_minutes = health_review_interval_minutes(config)
     if interval_minutes <= 0:
         return HealthReviewDecision(due=False, fingerprint=fingerprint)

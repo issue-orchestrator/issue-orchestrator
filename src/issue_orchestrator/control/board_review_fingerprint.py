@@ -25,6 +25,8 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ..domain.models import OrchestratorState, Session
 
 # Deliberately a fixed constant rather than a config knob. The adjacent
@@ -67,12 +69,23 @@ def session_is_hung(session: "Session", now: float) -> bool:
     return _session_silent_since(session, now) >= _HUNG_SESSION_NO_OUTPUT_SECONDS
 
 
-def board_review_fingerprint(state: "OrchestratorState", now: float) -> str:
+def board_review_fingerprint(
+    state: "OrchestratorState",
+    now: float,
+    *,
+    label_blocked: "Sequence[tuple[int, str]]" = (),
+) -> str:
     """Stable fingerprint of the reviewable board, or "" when nothing is on it.
 
     Captures the identities/shape a health review would walk: blocked issues,
     active sessions (each with a hung flag), the depth of every pending queue,
     and this cycle's failures. A fully idle board yields "".
+
+    ``label_blocked`` is every label-blocked work item with what blocks it
+    (#7593): a health review owes each one a triage, so an item that becomes
+    blocked, or whose block changes, is a board change even when nothing is
+    running - a board of only parked items was otherwise "idle" and never
+    reviewed.
 
     Sessions are keyed by ``SessionKey.stable_id()`` (the domain identity,
     "code:M1-011"), NOT by issue number: two sessions can share an issue, so an
@@ -96,9 +109,12 @@ def board_review_fingerprint(state: "OrchestratorState", now: float) -> str:
         len(state.priority_queue),
     ]
     failures = sorted(state.failed_this_cycle)
-    if not (blocked or sessions or any(queue_depths) or failures):
+    parked = sorted(label_blocked)
+    if not (blocked or sessions or any(queue_depths) or failures or parked):
         return ""
     canonical = json.dumps(
-        [blocked, sessions, queue_depths, failures], separators=(",", ":")
+        [blocked, sessions, queue_depths, failures]
+        + ([[list(item) for item in parked]] if parked else []),
+        separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

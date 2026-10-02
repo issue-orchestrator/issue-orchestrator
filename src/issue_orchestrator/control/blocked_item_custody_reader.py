@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .blocked_item_triage import StateBlockedItemTriage
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -526,3 +527,21 @@ __all__ = [
     "StateBlockedItemCustodyReader",
     "build_blocked_item_custody_reader",
 ]
+
+
+def build_blocked_item_triage(
+    config: "Config",
+    deps: "OrchestratorDeps",
+    state: Callable[[], "OrchestratorState"],
+) -> "StateBlockedItemTriage":
+    """Bind the triage owner (#7593) to the same read-only owners custody reads."""
+    from .blocked_item_triage import StateBlockedItemTriage
+
+    return StateBlockedItemTriage(
+        config=config,
+        state=state,
+        labels=deps.label_manager,
+        needs_human_causes=deps.needs_human_block.recorded_causes,
+        charter_ledger=deps.tech_lead_authority.charter_ledger,
+        timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
+    )

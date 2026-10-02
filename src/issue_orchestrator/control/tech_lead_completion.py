@@ -99,6 +99,7 @@ from .in_flight_work import SettlementOutcome
 from ..domain.registered_completion import CompletionProcessingPolicy
 from .tech_lead_target_scope import target_scope_violation
 from .tech_lead_dispositions import investigation_disposition_violation
+from .blocked_item_triage import triage_coverage_violation
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_artifacts import TechLeadDecision
@@ -232,6 +233,8 @@ def validate_decision_for_authority(
         if not focus_comments:
             return f"failure investigation decision must propose at least one post_comment targeting the originating issue #{focus} (the diagnosis has no channel otherwise)"
     if violation := investigation_disposition_violation(decision, authority):
+        return violation
+    if violation := triage_coverage_violation(decision, authority):
         return violation
     for action in decision.proposed_actions:
         if action.action_type != "create_issue":
@@ -507,6 +510,7 @@ def generate_tech_lead_completion_actions(
             run_id=session.run_assets.run_id,
             anchor_issue_number=session.issue.number,
             decided_at=datetime.now(timezone.utc).isoformat(),
+            triage_fingerprints={g.issue_number: g.fingerprint for g in authority.triage_grants},
         )
         decision_actions = plan_tech_lead_decision_actions(
                 load_result.decision,

@@ -320,9 +320,11 @@ class TestProposedActionParsing:
     @pytest.mark.parametrize("act_type", sorted(ACT_LEVEL_TECH_LEAD_ACTIONS))
     def test_act_level_requires_target_and_rationale(self, act_type):
         action = _action(action_type=act_type, target_is_pr=act_type == "request_rework")
+        if act_type == "propose_decision":
+            action["title"] = "Split the issue"
         parsed = TechLeadDecision.from_agent_payload(_payload(proposed_actions=[action]))
         assert parsed.proposed_actions[0].is_act_level
-        broken = _action(action_type=act_type, target_is_pr=act_type == "request_rework")
+        broken = dict(action)
         del broken["body"]
         with pytest.raises(ValueError, match="rationale"):
             TechLeadDecision.from_agent_payload(_payload(proposed_actions=[broken]))

@@ -48,11 +48,13 @@ def _launch_scope_description(
     if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
         return f"the originating issue #{authority.focus_issue_number}"
     if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
+        granted = ", ".join(f"#{n}" for n in sorted(authority.triage_issue_numbers()))
         return (
             f"the health-review anchor issue #{authority.anchor_issue_number}"
-            " (board-wide comments/escalations belong on the anchor; act-level"
-            " proposals instead use the cohort this review owns, published as"
-            " problem_cohort in board-snapshot.json)"
+            f" and the blocked items granted for triage ({granted or 'none this run'},"
+            " listed in blocked-item-triage.json); board-wide comments/escalations"
+            " belong on the anchor, and act-level proposals use the cohort this"
+            " review owns (problem_cohort in board-snapshot.json) or a granted item"
         )
     return (
         "the audited manifest PRs and the tracking issue"
@@ -66,10 +68,12 @@ def _act_level_scope_description(authority: TechLeadLaunchAuthority) -> str:
         return f"the originating work issue #{authority.focus_issue_number}"
     if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
         cohort = ", ".join(f"#{n}" for n in authority.problem_issue_numbers)
+        granted = ", ".join(f"#{n}" for n in sorted(authority.triage_issue_numbers()))
         return (
             "the health review's immutable problem cohort, published as"
             " problem_cohort in board-snapshot.json"
-            f" ({cohort or 'empty — a periodic review owns no act-level target'})"
+            f" ({cohort or 'empty'}), and the blocked items granted for triage in"
+            f" blocked-item-triage.json ({granted or 'none this run'})"
         )
     return (
         "no work issue is in scope for an act-level mutation from this"

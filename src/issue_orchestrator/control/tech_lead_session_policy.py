@@ -19,6 +19,7 @@ the single owner for:
 
 import logging
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from collections.abc import Callable
@@ -35,6 +36,11 @@ from ..domain.tech_lead_scratch_identity import (
     parse_scratch_branch_name,
     parse_scratch_worktree_name,
     new_scratch_identity,
+)
+from ..domain.blocked_item_triage import (
+    BLOCKED_ITEM_TRIAGE_FILENAME,
+    TriageAgenda,
+    render_triage_instructions,
 )
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.tech_lead_session import (
@@ -71,6 +77,7 @@ from .tech_lead_run_inputs import (
 
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
+    from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
     from ..ports import EventSink
@@ -493,10 +500,11 @@ def prepare_tech_lead_session_data(
         NoValidatedWorkRecoveryAuthority()
     ),
     board_snapshot_provider: "BoardSnapshotProvider",
+    blocked_item_triage: "BlockedItemTriageAgenda",
     issue: "Issue",
     ctx: "WorktreeContext",
     tech_lead_scope: "TechLeadLaunchScope | None",
-) -> tuple[Path, ...]:
+) -> "TechLeadLaunchInputs":
     """Prepare per-flavor tech_lead session inputs (ADR-0031).
 
     BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
@@ -518,7 +526,7 @@ def prepare_tech_lead_session_data(
     BATCH_REVIEW.
     """
     if kind is not SessionKind.TECH_LEAD:
-        return ()
+        return TechLeadLaunchInputs()
     flavor = (
         (tech_lead_scope.flavor if tech_lead_scope is not None else None)
         or health_review_flavor_if_anchored(issue.labels)
@@ -564,6 +572,13 @@ def prepare_tech_lead_session_data(
     board_snapshot = board_snapshot_provider.snapshot(
         focus_issue, problem_issue_numbers
     )
+    # Every blocked item owed a triage this run (#7593): the agenda the agent
+    # reads, and the grants its decision is held to at completion.
+    triage_agenda = (
+        blocked_item_triage.agenda(anchor_issue_number=issue.number)
+        if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
+        else TriageAgenda()
+    )
     observed_session_generations = tuple(
         sorted(
             (
@@ -582,7 +597,8 @@ def prepare_tech_lead_session_data(
     rework_issue_numbers = (
         (issue.number,) if focused else tuple(sorted(set(problem_issue_numbers) | {
             item.issue_number for item in board_snapshot.blocked_issues
-        } | {item.issue_number for item in board_snapshot.recent_failures}))
+        } | {item.issue_number for item in board_snapshot.recent_failures}
+          | {grant.issue_number for grant in triage_agenda.grants}))
     ) if flavor is not TechLeadSessionFlavor.BATCH_REVIEW else ()
     rework_targets = observe_rework_targets(
         repository_host,
@@ -597,7 +613,9 @@ def prepare_tech_lead_session_data(
     act_level_issue_numbers = (
         (issue.number,)
         if focused
-        else problem_issue_numbers
+        else tuple(sorted(
+            set(problem_issue_numbers) | {grant.issue_number for grant in triage_agenda.grants}
+        ))
         if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         else ()
     )
@@ -635,23 +653,46 @@ def prepare_tech_lead_session_data(
             observed_rework_targets=rework_targets,
             observed_validated_work_authorities=validated_work_authorities,
             recovery_tracker_numbers=tracker_grants,
+            triage_grants=triage_agenda.grants,
         ),
     )
+    if flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
+        triage_path = run_dir / TECH_LEAD_DATA_DIRNAME / BLOCKED_ITEM_TRIAGE_FILENAME
+        triage_path.write_text(json.dumps(triage_agenda.to_dict(), indent=2) + "\n", encoding="utf-8")
+        ctx.update_manifest({"blocked_item_triage": str(triage_path)})
     logger.info("[tech_lead] Wrote %s assignment: %s", flavor.value, assignment_path)
     _write_board_snapshot(
         ctx,
         run_dir,
         board_snapshot,
     )
-    return _stage_evidence_map(
-        config=config,
-        repository_host=repository_host,
-        ctx=ctx,
-        run_dir=run_dir,
-        flavor=flavor,
-        focus_issue_number=focus_issue,
-        board_snapshot=board_snapshot,
+    return TechLeadLaunchInputs(
+        read_roots=_stage_evidence_map(
+            config=config,
+            repository_host=repository_host,
+            ctx=ctx,
+            run_dir=run_dir,
+            flavor=flavor,
+            focus_issue_number=focus_issue,
+            board_snapshot=board_snapshot,
+        ),
+        prompt_addendum=render_triage_instructions(triage_agenda),
     )
+
+
+@dataclass(frozen=True)
+class TechLeadLaunchInputs:
+    """What a tech-lead launch hands the session beyond its files.
+
+    ``read_roots`` are the evidence map's sandbox read grants (#6824 R5).
+    ``prompt_addendum`` is orchestrator-owned text appended to the session's
+    prompt whatever repository prompt it runs (#7593): a duty the completion
+    enforces must be stated by the engine that enforces it, not left to each
+    repository's prompt file to learn about.
+    """
+
+    read_roots: tuple[Path, ...] = ()
+    prompt_addendum: str = ""
 
 
 def _write_board_snapshot(

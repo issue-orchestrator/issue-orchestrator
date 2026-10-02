@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Mapping
+from enum import Enum
+from typing import Any, Literal, cast
 
 from .tech_lead_findings import VALID_FINDING_FIX_CLASSES
 
@@ -44,6 +46,7 @@ TechLeadActionType = Literal[
     "request_rework",
     "recover_validated_work",
     "release_withheld_review",
+    "propose_decision",
 ]
 TechLeadFindingClassification = Literal["infra", "task", "agent", "systemic"]
 TechLeadAuthorityMode = Literal["execute", "propose"]
@@ -65,6 +68,7 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "request_rework",
         "recover_validated_work",
         "release_withheld_review",
+        "propose_decision",
     )
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
@@ -80,6 +84,8 @@ ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
         "request_rework",
         "recover_validated_work",
         "release_withheld_review",
+        # Always a gated proposal: approving it is the operator's decision (#7593).
+        "propose_decision",
     )
 )
 UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset()
@@ -113,6 +119,95 @@ MAX_LABEL_CHARS = 100
 MAX_PATTERN_SIGNATURE_CHARS = 200
 MAX_AREA_CHARS = 50
 
+#: Drafted follow-up issues one ``propose_decision`` may file on approval.
+MAX_DECISION_FOLLOW_UPS = 3
+
+
+class TriageClass(str, Enum):
+    """The one disposition a health review gives a blocked item (#7593).
+
+    See :mod:`.blocked_item_triage` for the policy; the class lives here
+    because it is part of the decision artifact's contract.
+    """
+
+    OPERATOR_DECISION = "operator_decision"
+    HUMAN_HAND_OVER = "human_hand_over"
+    EXPLAINED = "explained"
+    REMEDY = "remedy"
+
+
+#: The action types that carry each class. A diagnosis (a comment on the
+#: anchor), a pattern case file or a new issue alone is not a disposition of an
+#: item, so ``flag_pattern`` and ``create_issue`` carry none.
+TRIAGE_CLASS_ACTION_TYPES: Mapping[TriageClass, frozenset[str]] = {
+    TriageClass.OPERATOR_DECISION: frozenset({"propose_decision"}),
+    TriageClass.HUMAN_HAND_OVER: frozenset({"escalate_to_human"}),
+    TriageClass.EXPLAINED: frozenset({"post_comment"}),
+    # defer_to_tracker is a failure investigation's disposition only, and a
+    # triage is a health review's: it cannot carry one.
+    TriageClass.REMEDY: ACT_LEVEL_TECH_LEAD_ACTIONS - {"propose_decision"},
+}
+
+
+@dataclass(frozen=True)
+class DecisionFollowUp:
+    """An issue a ``propose_decision`` drafts, filed only if the operator approves."""
+
+    title: str
+    body: str
+
+    def __post_init__(self) -> None:
+        title = cast(object, self.title)
+        body = cast(object, self.body)
+        _require(
+            isinstance(title, str) and bool(title.strip()) and len(title) <= MAX_TITLE_CHARS,
+            f"follow-up title must be non-empty and at most {MAX_TITLE_CHARS} characters",
+        )
+        _require(
+            isinstance(body, str) and bool(body.strip()) and len(body) <= MAX_ACTION_BODY_CHARS,
+            f"follow-up body must be non-empty and at most {MAX_ACTION_BODY_CHARS} characters",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"title": self.title, "body": self.body}
+
+    @classmethod
+    def from_mapping(cls, data: Any, *, context: str) -> "DecisionFollowUp":
+        if not isinstance(data, dict):
+            raise ValueError(f"{context} must be an object, got {type(data).__name__}")
+        return cls(
+            title=_required_str(data, "title", context),
+            body=_required_str(data, "body", context),
+        )
+
+
+def _follow_ups(value: Any, *, context: str) -> tuple[DecisionFollowUp, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{context} follow_up_issues must be a list")
+    if len(value) > MAX_DECISION_FOLLOW_UPS:
+        raise ValueError(
+            f"{context} has {len(value)} follow_up_issues (max {MAX_DECISION_FOLLOW_UPS})"
+        )
+    return tuple(
+        DecisionFollowUp.from_mapping(item, context=f"{context} follow-up #{index}")
+        for index, item in enumerate(value, start=1)
+    )
+
+
+def _triage_class(value: Any, *, context: str) -> TriageClass | None:
+    if value is None:
+        return None
+    try:
+        return TriageClass(value)
+    except ValueError:
+        raise ValueError(
+            f"{context} triage_class must be one of"
+            f" {sorted(item.value for item in TriageClass)}, got {value!r}"
+        ) from None
+
+
 # Optional action fields that are meaningful on exactly ONE action type, as
 # (field name, owning action type, issue reference). One table so a new
 # type-scoped field cannot be added without declaring where it belongs, and so
@@ -122,6 +217,7 @@ _TYPE_SCOPED_ACTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("duplicate_of", "create_issue", "#6878"),
     ("fix_class", "flag_pattern", "#6957"),
     ("tracker_number", "defer_to_tracker", "#6971"),
+    ("follow_up_issues", "propose_decision", "#7593"),
 )
 
 
@@ -266,6 +362,13 @@ class ProposedTechLeadAction:
     # moment the tracker closes with the issue still blocked. Only meaningful for
     # ``defer_to_tracker``; ``validate()`` rejects it on any other action type.
     tracker_number: int | None = None
+    # The blocked-item triage this action is (#7593): set on exactly one action
+    # per item a health review was granted to triage. Valid only on the action
+    # types :data:`TRIAGE_CLASS_ACTION_TYPES` lists for the class.
+    triage_class: TriageClass | None = None
+    # Issues a ``propose_decision`` drafts; the orchestrator files them only
+    # when the operator approves the decision (a split names the remainder).
+    follow_up_issues: tuple[DecisionFollowUp, ...] = ()
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -347,6 +450,12 @@ class ProposedTechLeadAction:
             ),
             duplicate_of=duplicate_of,
             tracker_number=tracker_number,
+            triage_class=_triage_class(
+                data.get("triage_class"), context=f"proposed action {action_id}"
+            ),
+            follow_up_issues=_follow_ups(
+                data.get("follow_up_issues"), context=f"proposed action {action_id}"
+            ),
         )
         action.validate()
         return action
@@ -421,6 +530,30 @@ class ProposedTechLeadAction:
                 f"{context} fix_class must be one of"
                 f" {sorted(VALID_FINDING_FIX_CLASSES)}, got {self.fix_class!r}",
             )
+        if self.triage_class is not None:
+            triage = cast(object, self.triage_class)
+            _require(
+                isinstance(triage, TriageClass),
+                f"{context} triage_class must be a TriageClass",
+            )
+            _require(
+                self.action_type in TRIAGE_CLASS_ACTION_TYPES[self.triage_class],
+                f"{context} cannot carry triage_class {self.triage_class.value}:"
+                " that class is disposed of only by"
+                f" {sorted(TRIAGE_CLASS_ACTION_TYPES[self.triage_class])}",
+            )
+            _require(
+                not self.target_is_pr,
+                f"{context} triages an issue, so it cannot target a PR",
+            )
+        follow_ups = cast(object, self.follow_up_issues)
+        _require(
+            isinstance(follow_ups, tuple)
+            and len(follow_ups) <= MAX_DECISION_FOLLOW_UPS
+            and all(isinstance(item, DecisionFollowUp) for item in cast(tuple[object, ...], follow_ups)),
+            f"{context} follow_up_issues must be at most {MAX_DECISION_FOLLOW_UPS}"
+            " DecisionFollowUp items",
+        )
 
     def _validate_required_fields(self, context: str) -> None:
         """Per-action-type required fields (see the class docstring)."""
@@ -470,6 +603,9 @@ class ProposedTechLeadAction:
             if self.action_type == "request_rework":
                 _require(self.target_is_pr, f"{context} requires target_is_pr=true")
                 _require(bool(self.finding_ids), f"{context} requires finding_ids")
+            if self.action_type == "propose_decision":
+                _require(bool(self.title), f"{context} requires title (the decision)")
+                _require(not self.target_is_pr, f"{context} targets an issue, not a PR")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -493,6 +629,8 @@ class ProposedTechLeadAction:
             ("expedite", self.expedite),
             ("duplicate_of", self.duplicate_of),
             ("tracker_number", self.tracker_number),
+            ("triage_class", self.triage_class.value if self.triage_class else None),
+            ("follow_up_issues", [item.to_dict() for item in self.follow_up_issues]),
         )
         for key, value in optional:
             if value:

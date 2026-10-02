@@ -27,6 +27,7 @@ from ..control.issue_work_claims import claims_on_issue
 from ..control.session_history import SessionHistoryOwner
 from ..infra.repo_scope import require_repo
 from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
+from ..control.tech_lead_operator_decision import OperatorDecisionExecutor
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
     KillSessionRunOutcome,
@@ -98,6 +99,29 @@ def build_tech_lead_review_release_executor(
             review_label=orchestrator.config.code_review_label or "",
         ),
         repo_slug=require_repo(orchestrator.config),
+    )
+
+
+def build_tech_lead_operator_decision_executor(
+    orchestrator: "Orchestrator", host: "RepositoryHost"
+) -> OperatorDecisionExecutor:
+    """Bind an approved ``propose_decision`` (#7593) to the operator's own retry.
+
+    Approving a decision is the operator saying "go ahead", so the item is
+    retried through the very command the dashboard's Retry runs, under the
+    facade's state lock; the follow-ups and the decision comment are
+    create-once writes on the repository host.
+    """
+    deps = orchestrator.deps
+    return OperatorDecisionExecutor(
+        events=deps.events,
+        labels=deps.label_manager,
+        read_issue=host.get_issue,
+        retry_issue=orchestrator.operator_issue_commands.retry,
+        find_issue_by_marker=host.find_issue_by_marker,
+        create_issue=host.create_issue,
+        comment_marker_present=host.issue_comment_marker_present,
+        apply_action=deps.action_applier.apply,
     )
 
 

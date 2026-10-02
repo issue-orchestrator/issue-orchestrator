@@ -234,7 +234,7 @@ artifact; see the contract below.)
   is marked failed.
 - **Leave exactly one terminal disposition for the focus issue.** A diagnosis
   alone, duplicate dispositions, or conflicting remedies are rejected. Choose
-  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `escalate_to_human`, or `defer_to_tracker`.
+  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `escalate_to_human`, or `defer_to_tracker`.
   Read `tech-lead-data/recovery-context.json` first: it contains
   `recovery_tracker_numbers` and any `previous_disposition`. Do not repeat an
   unchanged diagnosis; explain progress, the missed recovery deadline, or the
@@ -321,13 +321,28 @@ than guessing.
   each protects and how long it has been down. And if a critical journey the
   system depends on has NO test or signal covering it, that gap is itself a
   finding: `create_issue` to instrument it rather than assume it works.
-- `post_comment`/`escalate_to_human` may only target THIS tracking issue;
-  board-wide findings belong in `create_issue`/`flag_pattern` proposals.
-- Issue-level act proposals (`reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`) may only target
+- `post_comment`/`escalate_to_human` may only target THIS tracking issue or a
+  blocked item in `tech-lead-data/blocked-item-triage.json`; board-wide findings
+  belong in `create_issue`/`flag_pattern` proposals.
+- **Triage every blocked item you are granted.** `blocked-item-triage.json`
+  lists each open blocked item whose blocking state has no triage in force,
+  with its labels, needs-human causes, the agent's own question and why it is
+  owed one. Give each exactly ONE action that targets it and carries a
+  `triage_class`: `operator_decision` (a `propose_decision` the operator can
+  approve: a split, a scope call, the answer to the agent's question),
+  `human_hand_over` (`escalate_to_human` for genuinely human work: credentials,
+  provisioning), `explained` (`post_comment` on the item saying what it waits on
+  and who acts next, naming an engine defect's tracking issue) or `remedy` (an
+  act-level action on the item). A diagnosis on this anchor, a case file or a
+  new issue alone is not a disposition; a decision that leaves a granted item
+  untriaged is rejected. An item whose triage is in force is not listed again
+  until its block changes.
+- Issue-level act proposals (`reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`) may only target
   issue numbers listed in the snapshot's `problem_cohort` - the storm cohort
-  this review owns. An EMPTY `problem_cohort` means you own no act-level
-  targets at all (a periodic review walks the floor and proposes; it does not
-  act): report the problem and use `create_issue`/`escalate_to_human` instead.
+  this review owns - or a blocked item in `blocked-item-triage.json`. With an
+  EMPTY `problem_cohort` and no granted items you own no act-level targets at
+  all (a periodic review walks the floor and proposes; it does not act):
+  report the problem and use `create_issue`/`escalate_to_human` instead.
 - `recent_failures` is CONTEXT, not authority. It shows what else is failing
   on the board, including issues another review already owns. An act-level
   proposal for an issue outside `problem_cohort` is rejected at completion, so
@@ -419,13 +434,14 @@ Compact `tech-lead-decision.json` example:
   splits by action kind:
   - `post_comment` and `escalate_to_human` may only target the manifest PRs or
     your own tracking issue (batch review), `focus_issue_number` (failure
-    investigation), or THIS tracking issue (health review).
+    investigation), or THIS tracking issue and the blocked items in
+    `tech-lead-data/blocked-item-triage.json` (health review).
   - `defer_to_tracker` may only target `focus_issue_number` in a failure
     investigation, with `tracker_number` from `recovery_tracker_numbers` in
     `tech-lead-data/recovery-context.json`. It is not a batch or health action.
-  - Act-level `reset_retry`, `kill_hung_session`, `recover_validated_work`, and `release_withheld_review` may only target the
+  - Act-level `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, and `propose_decision` may only target the
     `focus_issue_number` (failure investigation), or an issue number listed
-    in the snapshot's `problem_cohort` (health review). A batch review owns
+    in the snapshot's `problem_cohort` or in `blocked-item-triage.json` (health review). A batch review owns
     no act-level target at all for these reset/stop operations: manifest entries are PRs and the anchor is
     bookkeeping, so resetting either would hit the wrong entity.
   - Act-level `request_rework` targets only a PR in your orchestrator-supplied
@@ -481,7 +497,7 @@ Compact `tech-lead-decision.json` example:
   completion-mandatory command; failed publication/storage fails completion.
   See the Failure Investigation Flow for the finite deadline and release rules.
 - Valid `action_type` values: `post_comment`, `create_issue`,
-  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`, `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`.
+  `escalate_to_human`, `defer_to_tracker`, `flag_pattern`, `reset_retry`, `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`, `propose_decision`.
 - For retained validated work, propose `recover_validated_work` only for an issue listed in `tech-lead-data/validated-work-recovery-targets.json`. The orchestrator binds the full listed authority snapshot, and any later evidence, PR, or remote-baseline change makes approval stale.
 - When an issue's only fault is its own `blocked-failed` while its open, CI-green PR waits on code review (review discovery skips it as `issue_blocked`), propose `release_withheld_review` with the ISSUE as `target_number`: it puts `pr-pending` on, then removes only `blocked-failed`, so the PR's review runs. Never `reset_retry` such a PR. The orchestrator re-verifies at apply time that exactly one open PR is the issue's, its checks are green, no session or claim holds the issue, review validity withholds the review for that block alone, and no failure was recorded after you observed it; otherwise it refuses the release with a typed reason. It is not destructive, so the charter lets it run on its own when the flow role executes.
 - For an existing PR needing scoped corrections, propose `request_rework` with
@@ -493,9 +509,25 @@ Compact `tech-lead-decision.json` example:
   proposed-tech-lead gate. Execution preserves the branch and uses normal
   rework policy; changed heads require fresh review, and merged PRs receive
   one forward fix. `flag_pattern` promotion is a different lane.
+- `propose_decision` puts ONE decision to the operator: `target_number` (the
+  ISSUE it decides), the decision you recommend as `title`, and the question,
+  your recommendation and its consequences as `body`. Optional
+  `follow_up_issues` (`[{"title": ..., "body": ...}]`, at most 3) are issues the
+  decision splits out. It ALWAYS waits for the operator, whatever the charter
+  says: it becomes a `proposed-tech-lead` issue, and removing that label
+  retries the item through the operator's own retry, files the follow-ups with
+  the item's labels and milestone, and posts the decision on the item for the
+  session that resumes it. Use it when an item waits on a decision (an agent's
+  question, a split, a scope call) rather than escalating the question as-is.
+- `triage_class` marks the ONE action that disposes of a blocked item a health
+  review was granted in `tech-lead-data/blocked-item-triage.json`:
+  `operator_decision` (`propose_decision`), `human_hand_over`
+  (`escalate_to_human`), `explained` (`post_comment` on the item) or `remedy`
+  (an act-level action on the item). Every granted item needs exactly one; no
+  other action may carry it. Only health reviews are granted items.
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
-  `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`) under `propose` authority become reviewable GitHub
+  `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`, `propose_decision`) under `propose` authority become reviewable GitHub
   issues carrying the `proposed-tech-lead` label; a human approves one by
   removing that label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not

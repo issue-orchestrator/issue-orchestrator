@@ -27,7 +27,8 @@ from typing import TYPE_CHECKING, Any, Collection, cast
 
 from .session_kind import SessionKind
 from .session_run import SessionRunIdentity, canonical_run_dir_name
-from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
+from .blocked_item_triage import TriageGrant
+from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, DecisionFollowUp
 from .scoped_rework import ReworkRequest, ReworkTarget
 
 if TYPE_CHECKING:
@@ -535,6 +536,11 @@ class TechLeadLaunchAuthority:
         ValidatedWorkAuthoritySnapshot, ...
     ] = ()
     recovery_tracker_numbers: tuple[int, ...] = ()
+    # The blocked items this health review must triage (#7593), each with its
+    # blocking state as observed at launch. Recorded, never inferred: the
+    # decision must cover exactly these, and the charter record of each
+    # triage carries the observed fingerprint as the re-triage watermark.
+    triage_grants: tuple[TriageGrant, ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -542,6 +548,7 @@ class TechLeadLaunchAuthority:
             raise ValueError(
                 f"Unsupported tech_lead authority schema_version: {self.schema_version!r}"
             )
+        _validate_triage_grants(self)
         if (
             self.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
             and self.focus_issue_number is None
@@ -618,8 +625,18 @@ class TechLeadLaunchAuthority:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
         if self.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
-            return frozenset((self.anchor_issue_number,))
+            return frozenset((self.anchor_issue_number, *self.triage_issue_numbers()))
         return frozenset((*self.manifest_pr_numbers, self.anchor_issue_number))
+
+    def triage_issue_numbers(self) -> frozenset[int]:
+        """The blocked items this run was granted to triage (#7593)."""
+        return frozenset(grant.issue_number for grant in self.triage_grants)
+
+    def triage_grant(self, issue_number: int) -> TriageGrant | None:
+        return next(
+            (grant for grant in self.triage_grants if grant.issue_number == issue_number),
+            None,
+        )
 
     def allowed_act_level_targets(self) -> frozenset[int]:
         """Issue numbers an ACT-LEVEL proposal (reset_retry/kill_hung_session)
@@ -642,7 +659,9 @@ class TechLeadLaunchAuthority:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
         if self.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
-            return frozenset(self.problem_issue_numbers)
+            # Plus every blocked item it was granted to triage (#7593): a
+            # remedy is one of the four dispositions it owes each of them.
+            return frozenset(self.problem_issue_numbers) | self.triage_issue_numbers()
         return frozenset()
 
     def matches_assignment(self, assignment: TechLeadAssignment) -> bool:
@@ -697,6 +716,7 @@ class TechLeadLaunchAuthority:
             ],
             "problem_issue_numbers": list(self.problem_issue_numbers),
             "recovery_tracker_numbers": list(self.recovery_tracker_numbers),
+            "triage_grants": [grant.to_dict() for grant in self.triage_grants],
             "observed_session_generations": [
                 generation.to_dict() for generation in self.observed_session_generations
             ],
@@ -780,6 +800,7 @@ class TechLeadLaunchAuthority:
             ),
             problem_issue_numbers=tuple(raw_problems),
             recovery_tracker_numbers=tuple(raw_trackers),
+            triage_grants=_triage_grants_from(data.get("triage_grants", [])),
             observed_session_generations=tuple(
                 TechLeadSessionGeneration.from_dict(item) for item in raw_generations
             ),
@@ -819,6 +840,25 @@ def _validate_validated_work_authorities(
         raise ValueError("Validated-work recovery grants must belong to act-level scope")
     if grants != tuple(sorted(grants, key=lambda grant: grant.issue_number)):
         raise ValueError("Observed validated-work authorities must be sorted by issue")
+
+
+def _triage_grants_from(raw: object) -> tuple[TriageGrant, ...]:
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError(f"tech_lead authority triage_grants must be a list of objects, got {raw!r}")
+    return tuple(TriageGrant.from_dict(cast(dict[str, Any], item)) for item in raw)
+
+
+def _validate_triage_grants(authority: TechLeadLaunchAuthority) -> None:
+    grants = cast(object, authority.triage_grants)
+    if not isinstance(grants, tuple) or any(not isinstance(g, TriageGrant) for g in grants):
+        raise ValueError("triage grants must be typed TriageGrant facts")
+    if grants and authority.flavor is not TechLeadSessionFlavor.HEALTH_REVIEW:
+        raise ValueError("triage grants are valid only for a health review (#7593)")
+    numbers = [grant.issue_number for grant in authority.triage_grants]
+    if numbers != sorted(set(numbers)):
+        raise ValueError("triage grants must be sorted and unique by issue")
+    if authority.anchor_issue_number in numbers:
+        raise ValueError("a health review cannot be granted its own anchor to triage")
 
 
 def _validate_recovery_tracker_grants(authority: TechLeadLaunchAuthority) -> None:
@@ -867,6 +907,9 @@ class StoredTechLeadOp:
     # ``release_withheld_review``: a failure recorded for its target since
     # then is newer than the block the tech lead diagnosed (#7399).
     observed_at: str = ""
+    # What the operator approves for a ``propose_decision`` op (#7593): the
+    # decision as written for them, and the follow-up issues it files.
+    decision: OperatorDecision | None = None
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -874,6 +917,7 @@ class StoredTechLeadOp:
             raise ValueError(
                 f"Unsupported tech_lead op schema_version: {self.schema_version!r}"
             )
+        _validate_stored_op_decision(self)
         if self.op_type not in ACT_LEVEL_TECH_LEAD_ACTIONS:
             raise ValueError(
                 f"StoredTechLeadOp op_type must be one of"
@@ -941,6 +985,7 @@ class StoredTechLeadOp:
                 if self.validated_work_authority is not None
                 else None
             ),
+            "decision": self.decision.to_dict() if self.decision is not None else None,
         }
 
     @classmethod
@@ -983,8 +1028,65 @@ class StoredTechLeadOp:
                 if data.get("validated_work_authority") is not None
                 else None
             ),
+            decision=(
+                OperatorDecision.from_dict(cast(dict[str, Any], data["decision"]))
+                if data.get("decision") is not None
+                else None
+            ),
             schema_version=raw_schema,
         )
+
+
+@dataclass(frozen=True)
+class OperatorDecision:
+    """The decision a ``propose_decision`` op puts to the operator (#7593).
+
+    ``title`` and ``body`` are exactly what the proposal shows and what is
+    posted on the item once approved; ``follow_ups`` are the drafted issues the
+    approval files (a split names the remainder here). Recorded with the op,
+    never re-read from the proposal issue's editable body.
+    """
+
+    title: str
+    body: str
+    follow_ups: tuple[DecisionFollowUp, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("title", "body"):
+            value: object = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"OperatorDecision {name} must be a non-empty string")
+        follow_ups = cast(object, self.follow_ups)
+        if not isinstance(follow_ups, tuple) or any(
+            not isinstance(item, DecisionFollowUp) for item in follow_ups
+        ):
+            raise ValueError("OperatorDecision follow_ups must be DecisionFollowUp items")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "body": self.body,
+            "follow_ups": [item.to_dict() for item in self.follow_ups],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "OperatorDecision":
+        raw = data.get("follow_ups", [])
+        if not isinstance(raw, list):
+            raise ValueError("OperatorDecision follow_ups must be a list")
+        return cls(
+            title=str(data.get("title", "")),
+            body=str(data.get("body", "")),
+            follow_ups=tuple(
+                DecisionFollowUp(title=str(item["title"]), body=str(item["body"]))
+                for item in raw
+            ),
+        )
+
+
+def _validate_stored_op_decision(op: StoredTechLeadOp) -> None:
+    if (op.op_type == "propose_decision") != isinstance(op.decision, OperatorDecision):
+        raise ValueError("Only propose_decision carries, and requires, an OperatorDecision")
 
 
 def _validate_stored_op_recovery_authority(op: StoredTechLeadOp) -> None:

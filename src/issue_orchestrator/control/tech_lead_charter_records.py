@@ -9,8 +9,9 @@ translation from verdict to action and does not grow the record format.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Sequence
+from typing import Any, Sequence
 
 from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, ProposedTechLeadAction
 from ..domain.tech_lead_charter import CharterOutcome, CharterReason, CharterVerdict
@@ -47,6 +48,9 @@ class CharterDecisionLog:
     run_id: str
     anchor_issue_number: int
     decided_at: str
+    #: Each granted blocked item's fingerprint at launch (#7593), stamped on
+    #: the record of the action that triages it.
+    triage_fingerprints: Mapping[int, str] = field(default_factory=dict)
     _verdicts: dict[str, tuple[ProposedTechLeadAction, CharterVerdict]] = field(
         default_factory=dict
     )
@@ -126,9 +130,21 @@ class CharterDecisionLog:
                 tracks_proposal=proposed.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS,
                 proposal_issue_number=self._reused_proposals.get(proposed.id),
                 proposal_origin_action_id=self._coalesced.get(proposed.id),
+                **self._triage(proposed),
             )
             for proposed, verdict in self._verdicts.values()
         )
+
+    def _triage(self, proposed: ProposedTechLeadAction) -> dict[str, Any]:
+        """The triage stamp of *proposed*, if it triages a granted item."""
+        if proposed.triage_class is None:
+            return {}
+        assert proposed.target_number is not None  # a triage targets its item
+        # Completion validation already proved the target was granted.
+        return {
+            "triage_class": proposed.triage_class,
+            "triage_fingerprint": self.triage_fingerprints[proposed.target_number],
+        }
 
     def record_action(self) -> list[Action]:
         records = self.records()

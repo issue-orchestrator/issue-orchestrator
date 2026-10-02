@@ -80,6 +80,10 @@ def _proposal_reuse_stale_reason(
     recovery: TechLeadValidatedWorkRecoveryExecutor | None,
     release: TechLeadReviewReleaseExecutor | None = None,
 ) -> str | None:
+    if stored.op_type == "propose_decision":
+        # Waiting on the operator is all it does until approved; the target's
+        # being open (checked by the caller) is its whole applicability.
+        return None
     if stored.op_type == "release_withheld_review" and release is not None:
         return release.stale_reason(
             stored.target_issue_number, stored.observed_at, stored.source_session_name)

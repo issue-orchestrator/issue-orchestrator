@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
     from .tech_lead_validated_work_recovery import TechLeadValidatedWorkRecoveryExecutor
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
+    from .tech_lead_operator_decision import OperatorDecisionExecutor
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
 from .label_mutation_stats import LabelMutationStatField, LabelMutationStats
@@ -108,6 +109,7 @@ from .actions import (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
     RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
@@ -146,6 +148,7 @@ _TechLeadOpAction = TypeVar(
     RequestReworkAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
 )
 @dataclass
 class ActionApplier:
@@ -217,6 +220,7 @@ class ActionApplier:
     request_rework: Optional["RequestReworkExecutor"] = None
     recover_validated_work: Optional["TechLeadValidatedWorkRecoveryExecutor"] = None
     release_withheld_review: Optional["TechLeadReviewReleaseExecutor"] = None
+    apply_operator_decision: Optional["OperatorDecisionExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     pattern_registry: Optional["PatternCaseFileRegistry"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
@@ -319,6 +323,7 @@ class ActionApplier:
                 recover_validated_work=self._tech_lead_op(RecoverValidatedWorkAction, lambda: self.recover_validated_work),
                 release_withheld_review=self._tech_lead_op(
                     ReleaseWithheldReviewAction, lambda: self.release_withheld_review),
+                apply_operator_decision=self._tech_lead_op(ApplyOperatorDecisionAction, lambda: self.apply_operator_decision),
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,

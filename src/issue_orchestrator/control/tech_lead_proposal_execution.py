@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, TypeVar
 from ..domain.tech_lead_session import is_proposed_tech_lead_gate
 from .actions import (
     ActionResult,
+    ApplyOperatorDecisionAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
@@ -32,6 +33,7 @@ _TechLeadOpAction = TypeVar(
     RequestReworkAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
 )
 
 

@@ -360,14 +360,17 @@ def test_generic_target_scope_rule_matches_the_two_scope_runtime_split(
     assert "and `kill_hung_session` may only\n  target the manifest PRs" not in (
         section
     ), f"{variant} generic rule still forbids the health review's cohort targets"
-    # The generic rule must name the health-review act-level authority.
-    assert "`problem_cohort` (health review)" in section, (
-        f"{variant} generic rule does not name problem_cohort act-level authority"
+    # The generic rule must name the health-review act-level authority: the
+    # cohort it owns plus the blocked items it was granted to triage (#7593).
+    assert "`problem_cohort` or in `blocked-item-triage.json` (health review)" in section, (
+        f"{variant} generic rule does not name the health review's act-level authority"
     )
-    # Anchor-scoped verbs stay anchor-scoped, including in a health review.
-    assert "THIS tracking issue (health review)" in section, (
-        f"{variant} generic rule does not keep post_comment anchor-scoped"
-    )
+    # Anchor-scoped verbs stay anchor-scoped in a health review, apart from the
+    # granted blocked items they may hand over or explain (#7593).
+    assert (
+        "THIS tracking issue and the blocked items in\n"
+        "    `tech-lead-data/blocked-item-triage.json` (health review)"
+    ) in section, f"{variant} generic rule does not keep post_comment anchor-scoped"
     # A batch review's act-level scope is empty at runtime (frozenset()), so
     # the prompt must not invite a manifest-PR/anchor reset (#6764 F1).
     assert "no act-level target at all" in section, (

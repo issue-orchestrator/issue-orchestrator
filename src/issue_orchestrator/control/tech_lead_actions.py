@@ -30,6 +30,7 @@ from .tech_lead_mutation import (
 # The act-level op commands live in their own module; re-exported here so
 # ``actions`` (and existing importers) see one vocabulary.
 from .tech_lead_op_actions import (
+    ApplyOperatorDecisionAction as ApplyOperatorDecisionAction,
     EFFECTIVE_DISPOSITION_OP_ACTIONS as EFFECTIVE_DISPOSITION_OP_ACTIONS,
     KillHungSessionAction as KillHungSessionAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,

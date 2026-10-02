@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from ..domain.scoped_rework import ReworkRequest
+from ..domain.tech_lead_session import OperatorDecision
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
 from .action_base import Action, ActionType
 
@@ -204,6 +205,46 @@ class ReleaseWithheldReviewAction(Action):
             raise ValueError("ReleaseWithheldReviewAction requires the proposing session")
         if self.proposal_issue_number < 0:
             raise ValueError("proposal_issue_number cannot be negative")
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
+@dataclass(frozen=True)
+class ApplyOperatorDecisionAction(Action):
+    """Carry out a ``propose_decision`` the operator approved (#7593).
+
+    Only ever built from an approved gated proposal: the decision is the
+    operator's, so there is no direct-execute path. Its owner
+    (``tech_lead_operator_decision``) files the drafted follow-up issues
+    create-once, posts the decision on the item, and retries the item through
+    the operator's own retry command.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "propose_decision"
+
+    issue_number: int = 0
+    decision: OperatorDecision = field(kw_only=True)
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    requires_effective_disposition: bool = False
+    action_type: ActionType = field(
+        default=ActionType.APPLY_OPERATOR_DECISION, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("ApplyOperatorDecisionAction requires a positive issue_number")
+        if not self.proposal_id:
+            raise ValueError("ApplyOperatorDecisionAction requires the proposal id")
+        if self.proposal_issue_number <= 0:
+            raise ValueError(
+                "ApplyOperatorDecisionAction runs only from an approved proposal:"
+                " the decision is the operator's"
+            )
 
     def reconciliation_subject(self) -> int:
         return self.issue_number

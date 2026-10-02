@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
+    from .blocked_item_triage import BlockedItemTriageAgenda
     from .board_snapshot_provider import BoardSnapshotProvider
     from .issue import Issue as IssueProtocol
 
@@ -57,6 +58,7 @@ class SessionLauncherFactory(Protocol):
         self,
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
+        blocked_item_triage: "BlockedItemTriageAgenda",
         session_exists_fn: Callable[[str], bool],
         create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[

@@ -3386,6 +3386,12 @@ class TestClaimGateAudit:
         ActionType.KILL_HUNG_SESSION,
         ActionType.RECOVER_VALIDATED_WORK,
         ActionType.RELEASE_WITHHELD_REVIEW,
+        # An APPROVED operator decision (#7593): its target write is the
+        # operator's own retry command (the dashboard's Retry, which is not
+        # claim-gated either), then create-once follow-up issues and one
+        # marker-deduped comment; the tech-lead dispatch gate checks the
+        # target's reconciliation state first.
+        ActionType.APPLY_OPERATOR_DECISION,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         # Writes only the local charter decision ledger (#7330); no GitHub call.
