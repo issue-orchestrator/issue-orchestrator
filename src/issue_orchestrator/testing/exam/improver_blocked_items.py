@@ -290,8 +290,10 @@ def blocked_items() -> BlockedItemsInput:
             BlockedItem(
                 number=262, title="[CUJ:S1] Live seller pickup index",
                 labels=("agent:backend", "enhancement", "needs-human", "priority:high", "v1"),
-                blocking_labels=(_label("needs-human", "2026-09-23T06:38:06+00:00", "issue.needs_human"),),
-                blocked_since=_at("2026-09-23T06:38:06+00:00"),
+                # The engine put needs-human on through the agent's request,
+                # which records no label change: when it went on is unknown.
+                blocking_labels=(_label("needs-human", None),),
+                blocked_since=None,
                 needs_human_causes=(
                     NeedsHumanCauseInput(cause="agent_completion", reason="agent requested needs_human on completion"),
                     stuck_sweep,

@@ -484,9 +484,10 @@ def test_every_blocked_item_is_staged_with_its_cause_onset_and_tech_lead_record(
         {"cause": "agent_completion", "reason": "agent requested needs_human on completion"}
     ]
     assert items[326]["needs_human_causes"] == []
-    # The agent's question is in the item's own events; the onset is when it asked.
+    # The agent's question is in the item's own events. A request is no onset
+    # (it is also emitted for a label already on): with no recorded add, unknown.
     assert any("Should I split #262" in e["detail"] for e in items[262]["block_events"])
-    assert items[262]["blocked_since"] == (NOW - timedelta(hours=50)).isoformat().replace("+00:00", "Z")
+    assert items[262]["blocked_since"] is None
     # A removal forgets an earlier add: #326 has been blocked since the re-add.
     [needs_human_326] = [b for b in items[326]["blocking_labels"] if b["label"] == "needs-human"]
     assert datetime.fromisoformat(needs_human_326["since_at"]) == NOW - timedelta(hours=10)

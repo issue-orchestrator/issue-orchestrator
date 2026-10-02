@@ -65,8 +65,7 @@ def test_the_onset_is_the_last_put_on_that_was_never_taken_off() -> None:
         _event(262, "issue.labels_changed", t0, added=["needs-human"], removed=[]),
         _event(262, "issue.labels_changed", t0 + timedelta(hours=1), added=[], removed=["needs-human"]),
         _event(262, "issue.needs_human", t0 + timedelta(hours=5), question="Split it?"),
-        # The request's own label change, just after it: still the same onset.
-        _event(262, "issue.labels_changed", t0 + timedelta(hours=5, seconds=3), added=[], removed=[]),
+        _event(262, "issue.labels_changed", t0 + timedelta(hours=5, seconds=3), added=["needs-human"], removed=[]),
         _event(262, "issue.labels_changed", t0 + timedelta(hours=7), added=["in-progress"], removed=[]),
     ]
 
@@ -75,14 +74,26 @@ def test_the_onset_is_the_last_put_on_that_was_never_taken_off() -> None:
     )
 
     item = staged.items[0]
-    assert item.blocked_since == t0 + timedelta(hours=5)
-    assert item.blocking_labels[0].since_event == "issue.needs_human"
+    assert item.blocked_since == t0 + timedelta(hours=5, seconds=3)
+    assert item.blocking_labels[0].since_event == "issue.labels_changed"
     # Label changes that touch no blocking label are not block events.
     assert [e.event for e in item.block_events] == [
-        "issue.labels_changed", "issue.labels_changed", "issue.needs_human",
+        "issue.labels_changed", "issue.labels_changed", "issue.needs_human", "issue.labels_changed",
     ]
     assert "question: Split it?" in item.block_events[2].detail
     assert item.timeline_coverage.from_ == t0
+
+
+def test_a_needs_human_request_alone_is_no_onset() -> None:
+    """r6 F1: the escalation reconciler emits the request for a label already
+    on (put on before the retained timeline began): it dates nothing."""
+    events = [_event(262, "issue.needs_human", CUTOFF - timedelta(hours=2), question="q")]
+
+    staged = blocked_items_input(
+        ISSUES, lane=LANE, causes=(), ledger=(), case_files=None, timeline=events, cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert staged.items[0].blocking_labels[0].since_at is None and staged.items[0].blocked_since is None
 
 
 def test_a_recorded_add_is_a_fresh_onset_even_with_no_recorded_removal() -> None:
@@ -199,3 +210,14 @@ def test_the_recorded_policy_rebuilds_the_engines_own_blocking_rule() -> None:
     ]
     assert [lane.labels.is_blocking(c) for c in candidates] == [engine.is_blocking(c) for c in candidates]
     assert any(engine.is_blocking(c) for c in ("waiting-for-provider", "bot:waiting-for-provider"))
+
+
+def test_a_case_variant_of_a_blocked_pattern_label_is_blocking() -> None:
+    """r6 F2: GitHub folds label case; a Blocked-* label still blocks (registered names, like blocked:claim-lost, the owner folds already)."""
+    issues = [OpenIssueLabels(number=400, title="lost", labels=("Blocked-Upstream-Outage",))]
+
+    staged = blocked_items_input(
+        issues, lane=LANE, causes=(), ledger=(), case_files=None, timeline=(), cutoff=CUTOFF, coverage_proven=False
+    )
+
+    assert [b.label for b in staged.items[0].blocking_labels] == ["Blocked-Upstream-Outage"]

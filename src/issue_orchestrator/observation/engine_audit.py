@@ -141,15 +141,15 @@ class BlockedLane:
             provider_unavailable=config.provider_resilience.circuit_breaker.label,
         )
 
-    @property
-    def needs_human(self) -> str:
-        return self.labels.needs_human
-
     def is_blocking(self, label: str) -> bool:
         labels = self.labels
-        # GitHub folds label case; the label owner's own rule does too.
+        # GitHub folds label case, so a case variant of a blocking label is
+        # the same label. The owner folds its configured names but not its
+        # blocked-* patterns; the lane asks it of the folded name too rather
+        # than change the running engine's own scheduling rule.
         return label.casefold() == labels.tech_lead_needs_human.casefold() or (
-            labels.is_blocking(label) and not labels.is_tech_lead_artifact_any((label,))
+            (labels.is_blocking(label) or labels.is_blocking(label.casefold()))
+            and not labels.is_tech_lead_artifact_any((label,))
         )
 
     def blocking(self, labels: Iterable[str]) -> tuple[str, ...]:

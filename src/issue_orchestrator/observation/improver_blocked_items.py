@@ -49,8 +49,6 @@ BLOCKING_RULE = (
     " proposal or case file"
 )
 
-#: Events that put a needs-human block on without a recorded label change.
-_NEEDS_HUMAN_EVENTS = frozenset({EventName.ISSUE_NEEDS_HUMAN.value})
 #: Events about a block that carry no label change of their own.
 _BLOCK_EVENTS = frozenset(
     {
@@ -181,32 +179,18 @@ def _label_onsets(events: Sequence[TimelineEvent], lane: BlockedLane) -> dict[st
     (``presence_unknown``) may have found the label already on, so it is no
     onset: it moves no known onset, and with none known the onset stays
     unknown until a certain add or a removal. A removal forgets the label. A
-    needs-human request with no label change of its own (``issue.needs_human``)
-    is an onset only while the label is neither known to be on nor possibly
-    on since an uncertain add."""
+    needs-human request (``issue.needs_human``) is never an onset: it is
+    emitted also for a label already on (the tech lead's escalation
+    reconciler re-asserts an existing block), so it is a block event only."""
     on: dict[str, tuple[datetime, str]] = {}
-    #: Labels an uncertain add may have found already on, with no onset known.
-    doubtful: set[str] = set()
-    for event in events:
-        name = _name(event)
-        at = instant(event.record.timestamp)
-        if name == _LABELS_CHANGED:
-            data = event.record.data
-            for label in _labels(data.get("removed")):
-                on.pop(label.casefold(), None)
-                doubtful.discard(label.casefold())
-            uncertain = data.get(PRESENCE_UNKNOWN) is True
-            for label in (b for b in _labels(data.get("added")) if lane.is_blocking(b)):
-                key = label.casefold()
-                if not uncertain:
-                    on[key] = (at, name)
-                    doubtful.discard(key)
-                elif key not in on:
-                    doubtful.add(key)
-        elif name in _NEEDS_HUMAN_EVENTS:
-            key = lane.needs_human.casefold()
-            if key not in on and key not in doubtful:
-                on[key] = (at, name)
+    for event in (e for e in events if _name(e) == _LABELS_CHANGED):
+        data = event.record.data
+        for label in _labels(data.get("removed")):
+            on.pop(label.casefold(), None)
+        if data.get(PRESENCE_UNKNOWN) is True:
+            continue
+        for label in (b for b in _labels(data.get("added")) if lane.is_blocking(b)):
+            on[label.casefold()] = (instant(event.record.timestamp), _LABELS_CHANGED)
     return on
 
 
