@@ -32,14 +32,63 @@ def test_the_latest_matching_labeled_event_wins_across_pages() -> None:
                 json=[_labeled(1, "Approved", "lead")]
                 + [_labeled(2, "other", "lead") for _ in range(99)],
             )
-        return httpx.Response(200, json=[_labeled(3, "approved", "io-bot[bot]"), _labeled(4, "approved", "x", kind="unlabeled")])
+        return httpx.Response(200, json=[_labeled(3, "approved", "io-bot[bot]")])
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
     event = client.latest_label_event(5, "approved")
 
     assert event is not None and event["id"] == 3
-    assert client.latest_label_event(5, "approved", removed=True)["id"] == 4
+
+
+def test_only_a_standing_transition_is_returned() -> None:
+    """#7763 review r8 F1: a later opposite transition voids an earlier one."""
+    events = [_labeled(1, "approved", "lead"), _labeled(2, "approved", "x", kind="unlabeled")]
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=events)))
+
+    assert client.latest_label_event(5, "approved") is None
+    assert client.latest_label_event(5, "approved", removed=True)["id"] == 2
+
+    readded = [*events, _labeled(3, "approved", "lead")]
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=readded)))
+
+    assert client.latest_label_event(5, "approved")["id"] == 3
+    assert client.latest_label_event(5, "approved", removed=True) is None
+
+
+def test_an_approval_removed_after_the_issue_read_never_consents() -> None:
+    """#7763 review r8 F1: the issue snapshot still shows `approved`, but the
+    maintainer removed it before the event read. Neither the launch boundary
+    nor the op-execution consent may act on the old `labeled` event."""
+    from issue_orchestrator.control.tech_lead_approval import (
+        TechLeadApprovals,
+        unapproved_proposal_launch,
+    )
+    from issue_orchestrator.domain.models import Issue
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+    from issue_orchestrator.ports.approval_evidence import (
+        InMemoryOperatorApprovalRecords,
+        InMemoryProposalIssueIndex,
+    )
+
+    def github(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json=[
+                _labeled(1, "approved", "lead"),
+                _labeled(2, "approved", "lead", kind="unlabeled"),  # after the issue read
+            ])
+        return httpx.Response(200, json={"permission": "admin", "role_name": "admin"})
+
+    client = _client_with_transport(httpx.MockTransport(github))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+    approvals = TechLeadApprovals(adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex())
+    snapshot = Issue(number=5, title="t", labels=["tech-lead-proposal", "approved"], state="open",
+                     repo="owner/repo", body=with_proposal_marker("b"))
+    repository = MagicMock()
+    repository.get_issue.return_value = snapshot
+
+    assert unapproved_proposal_launch(5, repository, approvals) is not None
+    assert not approvals.confirm(snapshot)
 
 
 def test_a_reopen_voids_every_earlier_approval() -> None:

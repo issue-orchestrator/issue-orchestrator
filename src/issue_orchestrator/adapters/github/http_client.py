@@ -1603,9 +1603,12 @@ class GitHubHttpClient:
         ``None`` is answered only after the true final page. GitHub lists
         events oldest first, so the last match wins.
 
-        A ``reopened`` event voids every earlier match (#7763 review r7 F2):
-        closing a proposal declines it, so an approval given before the
-        decline never carries over to the reopened issue.
+        Only a STANDING transition is returned (#7763 review r8 F1): a later
+        opposite transition for the label voids an earlier match, so an
+        ``approved`` removed after the caller read the issue is no approval,
+        whatever the issue snapshot said. A ``reopened`` event voids every
+        earlier match too (#7763 review r7 F2): closing a proposal declines
+        it, so an approval given before the decline never carries over.
         """
         folded = label.casefold()
         kind = "unlabeled" if removed else "labeled"
@@ -1621,11 +1624,11 @@ class GitHubHttpClient:
                 if isinstance(event, dict) and event.get("event") == "reopened":
                     latest = None
                     continue
-                if not isinstance(event, dict) or event.get("event") != kind:
+                if not isinstance(event, dict) or event.get("event") not in ("labeled", "unlabeled"):
                     continue
                 named = event.get("label")
                 if isinstance(named, dict) and str(named.get("name", "")).casefold() == folded:
-                    latest = event
+                    latest = event if event.get("event") == kind else None
         return latest
 
     def app_identity(self) -> GitHubAppIdentity | None:
