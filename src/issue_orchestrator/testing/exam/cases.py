@@ -398,4 +398,3 @@ def positive_approval_executes_once(
             "#7763 approval was the REMOVAL of proposed-tech-lead: any strip approved",
         ),
     )
-
