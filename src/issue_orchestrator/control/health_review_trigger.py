@@ -789,9 +789,12 @@ def recover_pending_tech_lead_anchors(
         if tech_lead_authority is not None
         else {}
     )
+    index = tech_lead_authority.proposal_index if tech_lead_authority is not None else None
     reconciled = reconcile_tech_lead_proposals(issues, ops=ops, verdicts={},
         pending_markers=tuple(item.marker for item in tech_lead_authority.list_pending_proposals())
-        if tech_lead_authority is not None else ())
+        if tech_lead_authority is not None else (),
+        # Known proposals stay proposals whatever was stripped (#7763 r15 F1).
+        known=index.indexed_proposals() | index.declined_proposals() if index is not None else frozenset())
     proposal_skipped = len(issues) - len(reconciled.anchor_candidate_issues)
     anchors, case_files = split_tech_lead_case_file_issues(
         reconciled.anchor_candidate_issues

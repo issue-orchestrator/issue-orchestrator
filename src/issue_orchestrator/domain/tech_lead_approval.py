@@ -169,6 +169,15 @@ def proposal_label_state(labels: Collection[str]) -> ProposalLabelState:
     return ProposalLabelState.ADMITTED
 
 
+def known_proposal_state(labels: Collection[str], body: str | None, *, known: bool) -> ProposalLabelState:
+    """:func:`proposal_state`, where *known* says the engine's durable
+    proposal index names this issue (#7763 review r15 F1): a known proposal
+    stripped of every approval label AND its body marker is still a proposal
+    awaiting approval, never ordinary work."""
+    state = proposal_state(labels, body)
+    return ProposalLabelState.AWAITING if known and not state.is_proposal else state
+
+
 def labels_named(labels: Collection[str], name: str) -> list[str]:
     """Every label in *labels* that is *name* (GitHub folds label case)."""
     folded = name.casefold()
@@ -386,6 +395,7 @@ __all__ = [
     "filed_proposal_numbers",
     "gate_blocking_labels",
     "is_approval_model_label",
+    "known_proposal_state",
     "labels_named",
     "missing_labels",
     "proposal_label_state",

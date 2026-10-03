@@ -72,7 +72,8 @@ def classify_tech_lead_anchor_scan(
     existing = discover_open_tech_lead_anchor_issues(repository_host, config)
     verdicts = approvals.verify_claims(existing) if approvals is not None else {}
     reconciled = reconcile_tech_lead_proposals(
-        existing, ops=ops, verdicts=verdicts, pending_markers=pending_markers
+        existing, ops=ops, verdicts=verdicts, pending_markers=pending_markers,
+        known=approvals.known_proposals() if approvals is not None else frozenset(),
     )
     remaining, case_files = split_tech_lead_case_file_issues(
         reconciled.anchor_candidate_issues

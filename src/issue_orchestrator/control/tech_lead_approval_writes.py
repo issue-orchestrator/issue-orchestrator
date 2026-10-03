@@ -35,7 +35,6 @@ from ..domain.tech_lead_approval import (
     ProposalLabelState,
     labels_named,
     missing_labels,
-    proposal_state,
 )
 from .actions import Action, ActionResult, SettleProposalApprovalAction
 from .tech_lead_charter_lifecycle import link_declined_proposal
@@ -88,7 +87,7 @@ def apply_settle_proposal_approval(
         case ApprovalTransition.REJECT_CLAIM:
             return _reject_claim(action, issue, approvals, repository)
         case ApprovalTransition.RESTORE_WAITING:
-            return _restore_waiting(action, issue, repository)
+            return _restore_waiting(action, issue, approvals, repository)
         case _:
             assert_never(transition)
 
@@ -157,10 +156,12 @@ def _reject_claim(
 def _restore_waiting(
     action: "SettleProposalApprovalAction",
     issue: "Issue",
+    approvals: "TechLeadApprovals",
     repository: "RepositoryHost",
 ) -> ActionResult:
-    """Put back whichever gate labels a strip took (provenance, waiting, or both)."""
-    if proposal_state(issue.labels, issue.body) is not ProposalLabelState.AWAITING:
+    """Put back whichever gate labels a strip took (provenance, waiting, or
+    both), for a proposal the owner knows even with its marker gone."""
+    if approvals.proposal_state_of(issue) is not ProposalLabelState.AWAITING:
         return ActionResult.ok(action, settled="unchanged")
     restored = restore_gate_labels(repository, issue)
     return ActionResult.ok(action, settled="waiting_restored" if restored else "unchanged")
@@ -196,9 +197,13 @@ def apply_operator_proposal_command(
         issue = repository.get_issue(number)
         if issue is None or issue.state != "open":
             return TechLeadProposalCommandOutcome("unavailable", "Proposal is closed or missing", number)
-        if not proposal_state(issue.labels, issue.body).is_proposal:
+        if not approvals.proposal_state_of(issue).is_proposal:
             return TechLeadProposalCommandOutcome(
                 "unavailable", "This issue is not a tech-lead proposal", number
+            )
+        if approvals.is_declined(number):  # final (#7763 review r15 F2)
+            return TechLeadProposalCommandOutcome(
+                "unavailable", "This proposal was declined; a new proposal is needed", number
             )
         started = _execution_started(ops, number)
         if started:

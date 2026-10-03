@@ -267,3 +267,22 @@ def test_an_unobserved_scope_is_unavailable_never_an_all_clear(client, tmp_path)
     approvals.record_scope((), {})  # the first observation: genuinely empty
     assert http.get("/api/tech-lead/page").status_code == 200
     assert cc.page().unreported_count == 0
+
+
+
+def test_approving_a_declined_reopened_proposal_is_refused(client) -> None:
+    """#7763 review r15 F2: Decline is final; a later Approve reports 409 and
+    writes nothing, instead of a success the engine would never honour."""
+    http, engine = client
+    orchestrator, approvals, host = _engine(GitHubIssue(number=505, repo=REPO, title="p", labels=GATED))
+    engine.request_tech_lead_proposal.side_effect = lambda command: proposal_command(orchestrator, command)
+    assert http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 505, "decision": "decline"}).status_code == 200
+    host.issue = GitHubIssue(number=505, repo=REPO, title="p", labels=GATED, state="open")  # reopened
+    host.writes.clear()
+
+    response = http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 505, "decision": "approve"})
+
+    assert response.status_code == 409 and response.json()["outcome"] == "unavailable"
+    assert host.writes == []
+    assert approvals.records.load_operator_approval(505) is None
+    assert approvals.verify(host.issue, fresh=True).kind is ApprovalVerdictKind.DECLINED

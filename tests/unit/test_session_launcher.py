@@ -10695,6 +10695,25 @@ class TestTechLeadProposalLaunchConsent:
         [prepared] = mock_worktree_manager.create_calls  # it got that far...
         assert len(mock_worktree_manager.remove_calls) == 1  # ...and was cleaned up
 
+    def test_a_known_proposal_stripped_of_labels_and_marker_never_spawns(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r15 F1: proposal identity is the owner's index, not
+        what the issue's labels and body say after an edit."""
+        from tests.approval_helpers import approving_everything
+
+        approvals = approving_everything()
+        approvals.remember_proposals([123])  # filed by the tech lead, indexed
+        ordinary_looking = Issue(number=123, title="Follow-up", labels=["agent:web"], repo="test/repo", body="b")
+        mock_repo_host.issues[123] = ordinary_looking
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        assert not approvals.admits(ordinary_looking)
+        result = launcher_bundle.launcher.launch_issue_session(ordinary_looking, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
     def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
         from tests.approval_helpers import ADMITTED, approving_everything
 

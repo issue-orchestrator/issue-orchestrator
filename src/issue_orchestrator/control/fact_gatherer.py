@@ -531,6 +531,7 @@ class FactGatherer:
         settlements = plan_approval_settlements(
             (*board_issues, *scope.issues), verdicts, op_backed=ops.keys(),
             declined=self.approvals.declined_numbers() if self.approvals is not None else frozenset(),
+            known=self.approvals.known_proposals() if self.approvals is not None else frozenset(),
         )
 
         # Lets the next tick tell "still empty" from "just emptied".

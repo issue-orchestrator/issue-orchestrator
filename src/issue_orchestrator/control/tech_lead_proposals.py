@@ -57,7 +57,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Collection, Iterable, Mapping, Sequence
 
 from ..domain.scoped_rework import ReworkRequest, ReworkReceipt
 from ..domain.validated_work import RemoteBaselineStatus
@@ -65,6 +65,7 @@ from ..domain.tech_lead_approval import (
     GATED_PROPOSAL_LABELS,
     HOW_TO_APPROVE,
     ApprovalVerdict,
+    known_proposal_state,
     proposal_state,
     with_proposal_marker,
 )
@@ -458,6 +459,7 @@ def reconcile_tech_lead_proposals(
     ops: Mapping[int, StoredTechLeadOp],
     verdicts: Mapping[int, ApprovalVerdict],
     pending_markers: tuple[str, ...] = (),
+    known: Collection[int] = frozenset(),
 ) -> ReconciledTechLeadProposals:
     """Classify the exhaustive open scan against the durable ledger.
 
@@ -482,7 +484,7 @@ def reconcile_tech_lead_proposals(
                     ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
                 )
             continue
-        if proposal_state(issue.labels, issue.body).is_proposal:
+        if known_proposal_state(issue.labels, issue.body, known=issue.number in known).is_proposal:
             # A proposal without an op (follow-up, promotion): inert, and its
             # body marker keeps it one even with every gate label stripped
             # (#7763 review r10 F2).

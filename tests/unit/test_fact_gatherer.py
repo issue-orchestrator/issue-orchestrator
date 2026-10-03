@@ -2518,3 +2518,34 @@ def test_an_indexed_proposal_stripped_of_every_label_stays_in_the_scope(
         (720, ApprovalTransition.RESTORE_WAITING)
     ]
     assert approvals.indexed_proposals() == {720}
+
+
+def test_an_indexed_proposal_stripped_of_labels_and_marker_stays_a_proposal(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r15 F1: discovery keeps an open indexed issue whatever its
+    labels and body say, and the settlement restores its gate."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = make_approvals()
+    approvals.remember_proposals([730])
+    edited = Issue(number=730, title="t", labels=["agent:backend"], body="no marker any more")
+    _host_sees_gated(mock_repository_host)
+    mock_repository_host.get_issue.side_effect = {730: edited}.get
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None
+    assert approvals.indexed_proposals() == {730}  # never retired while open
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (730, ApprovalTransition.RESTORE_WAITING)
+    ]
+    assert not approvals.admits(edited)

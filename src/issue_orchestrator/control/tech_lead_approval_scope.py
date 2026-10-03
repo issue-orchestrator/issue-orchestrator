@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 from ..domain.tech_lead_approval import (
     AWAITING_APPROVAL_LABEL,
     TECH_LEAD_PROPOSAL_LABEL,
-    proposal_state,
 )
 from ..domain.tech_lead_session import GatedTechLeadProposal
 from .tech_lead_proposals import (
@@ -120,11 +119,9 @@ def discover_open_gated_proposals(
     retired: list[int] = []
     for number in sorted(set(indexed) - set(found)):
         issue = repository_host.get_issue(number)
-        if (
-            issue is None
-            or issue.state != "open"
-            or not proposal_state(issue.labels, issue.body).is_proposal
-        ):
+        # An open indexed issue stays in scope whatever its labels and body
+        # say now (#7763 review r15 F1): only closing it retires it.
+        if issue is None or issue.state != "open":
             retired.append(number)
         else:
             found[number] = issue

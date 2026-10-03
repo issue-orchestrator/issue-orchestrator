@@ -902,3 +902,14 @@ def test_a_decline_interrupted_after_its_first_durable_write_never_executes(op_b
     assert finish_interrupted_declines(host, restarted, ops) == (500,)
     assert host.issue.state == "closed" and "approved" not in host.issue.labels
     assert ops.load_op(issue_number=500) is None
+
+
+def test_a_known_proposal_is_never_an_anchor_candidate_whatever_was_edited() -> None:
+    """r15 F1: anchor reconciliation asks the owner's proposal identity too."""
+    from issue_orchestrator.control.tech_lead_proposals import reconcile_tech_lead_proposals
+
+    edited = Issue(number=740, title="Tech Lead Batch Review", labels=["agent:tech-lead"], repo="o/r", body="b")
+
+    assert reconcile_tech_lead_proposals([edited], ops={}, verdicts={}).anchor_candidate_issues == [edited]
+    known = reconcile_tech_lead_proposals([edited], ops={}, verdicts={}, known={740})
+    assert known.anchor_candidate_issues == []

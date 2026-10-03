@@ -44,6 +44,7 @@ from ..domain.tech_lead_approval import (
     ApprovalVerdict,
     ApprovalVerdictKind,
     ProposalLabelState,
+    known_proposal_state,
     proposal_label_state,
     proposal_state,
 )
@@ -80,6 +81,7 @@ class TechLeadApprovals:
     _scope_verdicts: dict[int, ApprovalVerdict] = field(default_factory=dict, init=False)
     _declined: frozenset[int] | None = field(default=None, init=False)
     _scope_observed: bool = field(default=False, init=False)
+    _known: frozenset[int] | None = field(default=None, init=False)
 
     # -- the last observed scope (read model) --------------------------------
 
@@ -104,6 +106,7 @@ class TechLeadApprovals:
         self._scope_observed = True
         self.index.index_proposals(issue.number for issue in issues)
         self.index.retire_proposals(retired)
+        self._known = None
 
     def decline(self, issue_number: int) -> None:
         """An operator declines *issue_number*: final, for every proposal kind.
@@ -118,6 +121,7 @@ class TechLeadApprovals:
         """
         self.index.decline_proposals([issue_number])
         self._declined = None
+        self._known = None
         self._verified.pop(issue_number, None)
         self.records.discard_operator_approval(issue_number)
         self.forget_from_scope(issue_number)
@@ -135,6 +139,23 @@ class TechLeadApprovals:
     def remember_proposals(self, numbers: Iterable[int]) -> None:
         """Index proposals filed or migrated outside a scope observation."""
         self.index.index_proposals(numbers)
+        self._known = None
+
+    def known_proposals(self) -> frozenset[int]:
+        """Every issue the engine knows is a proposal: indexed or declined.
+
+        Proposal identity belongs to this owner (#7763 review r15 F1), not to
+        what an issue's labels and body say today.
+        """
+        if self._known is None:
+            self._known = self.index.indexed_proposals() | self.declined_numbers()
+        return self._known
+
+    def proposal_state_of(self, issue: "Issue") -> ProposalLabelState:
+        """The issue's approval state, its known proposal identity included."""
+        return known_proposal_state(
+            issue.labels, issue.body, known=issue.number in self.known_proposals()
+        )
 
     def indexed_proposals(self) -> frozenset[int]:
         """Every proposal the approval scope must keep finding."""
@@ -289,7 +310,7 @@ class TechLeadApprovals:
         AND while this process holds a verified approval for it: labels alone
         never admit.
         """
-        state = proposal_state(issue.labels, issue.body)
+        state = self.proposal_state_of(issue)
         if state is ProposalLabelState.NOT_A_PROPOSAL:
             return True
         return (
@@ -332,7 +353,10 @@ def unapproved_proposal_launch(
         # Fail closed (#7763 review r5 F2): with no fresh read there is
         # nothing to judge a proposal's approval by.
         return f"#{issue_number} could not be read fresh at launch; not launched"
-    if not proposal_state(issue.labels, issue.body).is_proposal:
+    state = (
+        approvals.proposal_state_of(issue) if approvals is not None else proposal_state(issue.labels, issue.body)
+    )
+    if not state.is_proposal:
         return None
     if approvals is not None and approvals.confirm(issue):
         return None
@@ -348,6 +372,7 @@ def plan_approval_settlements(
     *,
     op_backed: Collection[int],
     declined: Collection[int] = frozenset(),
+    known: Collection[int] = frozenset(),
 ) -> tuple[ApprovalSettlement, ...]:
     """The approval-label transitions one tick's observations call for.
 
@@ -362,7 +387,7 @@ def plan_approval_settlements(
         issue = latest[number]
         if issue.state != "open":
             continue
-        state = proposal_state(issue.labels, issue.body)
+        state = known_proposal_state(issue.labels, issue.body, known=number in known)
         if not state.is_proposal:
             continue
         verdict = verdicts.get(number)
