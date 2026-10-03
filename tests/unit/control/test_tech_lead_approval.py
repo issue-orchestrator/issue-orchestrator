@@ -620,3 +620,26 @@ class TestControlCenterApprovalIsAttributed:
         approvals.records.record_operator_approval(OperatorApprovalRecord(500, event.event_id, "t"))
 
         assert approvals.verify(_issue(500, CLAIMED), fresh=True).kind is ApprovalVerdictKind.BOT_ACTOR
+
+
+def test_a_personal_token_engine_approves_as_its_maintainer_user() -> None:
+    """No App identity: the engine's write is its user's, judged by the actor
+    check alone — no record is bound, and a maintainer user's label approves."""
+    evidence = FakeApprovalEvidence()
+    approvals = make_approvals(evidence)
+
+    class _TokenHost(_Host):
+        def add_label(self, number: int, label: str) -> None:
+            self.issue = _issue(number, [*self.issue.labels, label], state=self.issue.state)
+            self.evidence.label(number, label, by=MAINTAINER)
+
+    host = _TokenHost(evidence, _issue(500, GATED))
+
+    outcome = apply_operator_proposal_command(
+        TechLeadProposalCommand(500, "approve"), repository=host,
+        ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+
+    assert outcome.outcome == "approved"
+    assert approvals.records.load_operator_approval(500) is None
+    assert approvals.verify(host.issue, fresh=True).kind is ApprovalVerdictKind.MAINTAINER

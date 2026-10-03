@@ -126,6 +126,14 @@ class TechLeadApprovals:
             self._verified.pop(number, None)
         return verdict
 
+    def judge_latest_approval(self, number: int) -> ApprovalVerdict:
+        """The verdict on the latest ``approved`` event alone, read fresh.
+
+        For a caller that just wrote the label itself and so knows it is
+        present without trusting a possibly-cached issue read.
+        """
+        return self._read_verdict(number, fresh=True)
+
     def _read_verdict(self, number: int, *, fresh: bool) -> ApprovalVerdict:
         event = self.evidence.latest_label_event(number, APPROVED_LABEL)
         if event is None:

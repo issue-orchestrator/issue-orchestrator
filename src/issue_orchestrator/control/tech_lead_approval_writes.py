@@ -256,7 +256,7 @@ def _approve(
         approvals.records.record_operator_approval(
             OperatorApprovalRecord(number, event.event_id, now())
         )
-    elif not approvals.verify(repository.get_issue(number) or issue, fresh=True).approved:
+    elif not approvals.judge_latest_approval(number).approved:
         # A personal-token engine writes as its user, whose label is judged
         # like anyone's; and an event someone else's write produced (a relabel
         # racing ours) is never bound to the operator (#7763 review F3).
