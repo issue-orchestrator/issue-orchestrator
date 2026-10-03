@@ -67,7 +67,7 @@ from ..domain.block_resolution import (
 )
 from ..domain.dependencies import DependencyMode, parse_dependency_edges
 from ..domain.host_rate_limit import rate_limit_cause
-from ..domain.human_block import BlockOutcome, NeedsHumanCause
+from ..domain.human_block import BlockOutcome, HumanHoldScope, NeedsHumanCause
 from ..domain.operator_decision_retry import DecisionRetryState
 from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 from ..events import EventName
@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from .issue_work_claims import IssueWorkClaim
     from .label_manager import LabelManager
     from ..ports.block_resolution_discharges import BlockResolutionDischarges
+    from .human_gates import HumanGates
     from .needs_human_block import SharedNeedsHumanBlock
     from .published_review_custody import PublishedReviewHolds
     from .review_exchange_lifecycle import IssueRuntimeActivity
@@ -99,6 +100,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OP_TYPE = ResolveBlockAction.op_type
+_COMMITTED, _BEGUN = DecisionRetryState.COMMITTED, DecisionRetryState.BEGUN
 _RATIONALE_PREVIEW_CHARS = 500
 
 
@@ -115,6 +117,8 @@ class BlockResolutionRefusal(StrEnum):
     NOT_BLOCKED = "not_blocked"
     #: The tech lead's own hand-over holds it: that is the operator's, always.
     TECH_LEAD_HAND_OVER = "tech_lead_hand_over"
+    #: The item's needs-human holds only a merge (#7678): the operator's.
+    MERGE_HOLD = "merge_hold"
     #: A split that closes the item while a cause it does not name holds it.
     CLOSE_WHILE_HELD = "close_while_held"
     #: The engine stopped mid-discharge: what stands now may be newer.
@@ -154,6 +158,9 @@ class TechLeadBlockResolutionExecutor:
     events: EventSink
     labels: "LabelManager"
     block: "SharedNeedsHumanBlock"
+    #: THE owner of what a blocking label holds (#7678): a resolution acts
+    #: only where the item's work is held, never on a merge hold.
+    gates: "HumanGates"
     #: Fresh issue read (labels, body, milestone, state).
     read_issue: Callable[[int], "Issue | None"]
     #: The item's comment bodies that carry a resolution marker, from a
@@ -257,10 +264,15 @@ class TechLeadBlockResolutionExecutor:
             return RefusedResolution(BlockResolutionRefusal.HUMAN_ONLY_WORK,
                                      f"#{number} names human-only work, {screened.describe()}:"
                                      " it is handed over, never resolved")
-        blocked = self.labels.needs_human.casefold() in folded
-        if not blocked:
+        scope = self.gates.needs_human_scope(number, issue.labels)
+        if scope is None:
             return RefusedResolution(BlockResolutionRefusal.NOT_BLOCKED,
                                      f"#{number} no longer carries {self.labels.needs_human}")
+        work_held = scope is HumanHoldScope.WORK and self.gates.holds_work(number, issue.labels)
+        if not work_held:
+            return RefusedResolution(BlockResolutionRefusal.MERGE_HOLD,
+                                     f"#{number}'s {self.labels.needs_human} holds only a merge:"
+                                     " the operator merges, by design")
         recorded = self.block.recorded_causes((number,)).get(number, frozenset())
         missing = sorted(cause.value for cause in causes if cause not in recorded)
         if missing:
@@ -281,9 +293,10 @@ class TechLeadBlockResolutionExecutor:
     def apply(self, action: ResolveBlockAction) -> ActionResult:
         """Decide afresh, finish a committed discharge, or hand back an interrupted one."""
         prior = self.discharges.block_resolution_state(decision_id=action.decision_id)
-        if prior is DecisionRetryState.COMMITTED:
+        committed, interrupted = (prior is state for state in (_COMMITTED, _BEGUN))
+        if committed:
             return self._finish(action)
-        if prior is DecisionRetryState.BEGUN:
+        if interrupted:
             return self._refuse(action, RefusedResolution(
                 BlockResolutionRefusal.INTERRUPTED,
                 f"the engine stopped while {action.decision_id} discharged #{action.issue_number}'s"

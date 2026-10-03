@@ -151,6 +151,7 @@ def build_tech_lead_block_resolution_executor(
         events=deps.events,
         labels=deps.label_manager,
         block=deps.needs_human_block,
+        gates=deps.human_gates,
         read_issue=host.get_issue,
         read_comment_bodies=lambda number: host.issue_comment_bodies_containing(
             number, RESOLUTION_MARKER_PREFIX

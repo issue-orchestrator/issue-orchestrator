@@ -36,7 +36,7 @@ from enum import StrEnum
 from typing import Any, cast
 
 from .dependencies import EDGE_DIRECTIVE_PATTERN
-from .human_block import NeedsHumanCause
+from .human_block import HumanHoldScope, NeedsHumanCause
 
 #: The tech-lead action type this module types (one charter row, one ceiling).
 RESOLVE_BLOCK_ACTION = "resolve_block"
@@ -45,14 +45,17 @@ def is_resolvable_work_block(cause: NeedsHumanCause) -> bool:
     """THE one decision of whether a needs-human cause is a WORK block a
     resolution may decide (#7658).
 
-    An agent's own question and the engine giving up ask nothing only a
-    person can answer. A merge escalation is a merge gate the operator owns by
-    design, and every other cause has its own owner, so none is resolvable.
-    Every check (the decision's validation, the shared block's owner) asks
-    this function, so the vocabulary that types a block as work or as a merge
-    gate (#7678) replaces this body, not its callers.
+    Only a cause that holds the item's WORK (#7678's :class:`HumanHoldScope`)
+    can be resolvable: a merge decision holds a PR's merge, which the operator
+    makes by design. Among work holds, an agent's own question and the engine
+    giving up ask nothing only a person can answer; every other cause has its
+    own owner (a tech-lead hand-over, a quarantine, a disposition, a parked
+    action, a merge escalation), so none of those is resolvable. Every check
+    (the decision's validation, the shared block's owner) asks this function.
     """
-    return cause in (NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE)
+    return cause.scope is HumanHoldScope.WORK and cause in (
+        NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE,
+    )
 
 
 #: The causes :func:`is_resolvable_work_block` admits, for display and prompts.

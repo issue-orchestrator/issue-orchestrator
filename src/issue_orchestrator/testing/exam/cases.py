@@ -372,32 +372,23 @@ def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[
         # carrying it, and the block stays until the operator approves.
         decided = tuple(
             goal
-            for role in (SPLIT, STALE, BESIDE_PR)
+            for role in (SPLIT, STALE)
             for goal in (
                 item_resolved(role, ("awaiting_approval",)),
                 issue_keeps_labels(role, (needs_human_label,)),
             )
         )
-        beside_pr: tuple[Goal, ...] = (
-            pr_in_state(BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
-        )
         progress: tuple[Goal, ...] = ()
     else:
         # Decided, cleared and moving: each item's next session published
-        # its work (a narrowed split, a lifted block), and the PR beside the
-        # answered question went on to review.
+        # its work (a narrowed split, a lifted block).
         decided = tuple(
             goal
-            for role in (SPLIT, STALE, BESIDE_PR)
+            for role in (SPLIT, STALE)
             for goal in (
                 item_resolved(role, ("applied",)),
                 issue_lacks_labels(role, (needs_human_label,)),
             )
-        )
-        beside_pr = (
-            pr_in_state(
-                BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY, PullRequestState.MERGED
-            ),
         )
         progress = tuple(
             goal
@@ -407,8 +398,14 @@ def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[
     return (
         *decided,
         *progress,
-        *beside_pr,
+        # porchpin#364: a question beside published work is a MERGE hold on
+        # its PR (#7678), not a work block. Its work proceeds under either
+        # setting (the issue is never held, the PR is reviewed) and no
+        # resolution touches the merge: the operator merges, by design.
+        issue_lacks_labels(BESIDE_PR, (needs_human_label,)),
         single_pull_request(BESIDE_PR),
+        pr_in_state(BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
+        pr_has_label(BESIDE_PR, needs_human_label),
         pr_review_approved(BESIDE_PR),
         published_work_survives(BESIDE_PR),
         # Account provisioning is a person's work under every setting.
@@ -423,8 +420,9 @@ def needs_human_blocks_resolved(*, needs_human_label: str) -> ExamCase:
     The operator wants to do less: ``tech_lead.authority.resolve_block`` is
     ``execute``. Right answer: a health review decides the three work blocks
     itself and they end cleared and moving (the split question is decided and
-    the item requeued, the stale block lifted, the beside-PR question answered
-    from the spec), while the provisioning item is still handed over, because
+    the item requeued, the stale block lifted); the question beside a
+    published PR is a merge hold (#7678) its review proceeds under and no
+    resolution touches; the provisioning item is still handed over, because
     human-only work is never resolvable.
     """
     return ExamCase(

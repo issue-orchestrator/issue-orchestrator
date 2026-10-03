@@ -25,6 +25,7 @@ from issue_orchestrator.control.actions import (
     CloseIssueAction,
     ResolveBlockAction,
 )
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.needs_human_block import (
     ResolutionOutcome,
@@ -175,6 +176,7 @@ class World:
             events=_Sink(self.events),
             labels=labels,
             block=self.block,
+            gates=HumanGates.over(self.block, labels),
             read_issue=self.github.issue,
             read_comment_bodies=lambda number: list(self.github.comments.get(number, [])),
             agent_questions=lambda number: (self.question,) if self.question else (),
@@ -971,3 +973,16 @@ def test_a_label_cleared_before_the_discharge_records_no_discharge(tmp_path: Pat
     world.blocked_by(ITEM, _AGENT)
     later = world.executor().apply(_action(_resolution(), action_id="A2", run="run-2"))
     assert later.success, later.error
+
+
+def test_a_merge_hold_is_never_resolved(tmp_path: Path) -> None:
+    """#7678: a person asked to decide before a merge holds only the merge;
+    the operator merges, by design, so a resolution never touches it."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, NeedsHumanCause.MERGE_DECISION)
+
+    result = world.executor().apply(_action(_resolution()))
+
+    assert result.details["refusal"] == BlockResolutionRefusal.MERGE_HOLD.value
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.applier.applied == []

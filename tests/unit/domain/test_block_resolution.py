@@ -27,6 +27,13 @@ def _data(**overrides: object) -> dict[str, object]:
     return data
 
 
+def test_a_merge_decision_is_never_resolvable() -> None:
+    from issue_orchestrator.domain.block_resolution import is_resolvable_work_block
+
+    assert NeedsHumanCause.MERGE_DECISION.scope is not NeedsHumanCause.AGENT_COMPLETION.scope
+    assert not is_resolvable_work_block(NeedsHumanCause.MERGE_DECISION)
+
+
 def test_only_work_blocks_are_resolvable() -> None:
     assert RESOLVABLE_CAUSES == {NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}
     for cause in set(NeedsHumanCause) - RESOLVABLE_CAUSES:

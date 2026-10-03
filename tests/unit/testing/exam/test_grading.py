@@ -942,8 +942,10 @@ class TestCasesFAndGResolution:
         stale = replace(item(issue_labels=labels, prs=tuple(replace(p, number=923) for p in progressed)),
                         role=self._STALE, issue_number=922, triage=resolve)
         beside = replace(
-            item(issue_labels=(*labels, "pr-pending"), prs=(pr(number=925, state=PullRequestState.READY),)),
-            role=self._BESIDE, issue_number=924, triage=resolve,
+            item(issue_labels=("pr-pending",),
+                 prs=(pr(number=925, state=PullRequestState.READY,
+                         labels=("needs-code-review", "needs-human")),)),
+            role=self._BESIDE, issue_number=924, triage=None,
         )
         provisioning_item = replace(item(issue_labels=("needs-human",)), role=self._PROVISIONING,
                                     issue_number=926, triage=provisioning)
@@ -983,7 +985,7 @@ class TestCasesFAndGResolution:
             failed = {goal.name for goal in self._grade(execute, items).goals if not goal.passed}
 
             effect = "applied" if execute else "awaiting_approval"
-            assert {f"{role}.resolved_{effect}" for role in ("split", "stale", "beside_pr")} <= failed
+            assert {f"{role}.resolved_{effect}" for role in ("split", "stale")} <= failed
 
     def test_a_resolved_provisioning_item_fails(self) -> None:
         items = self._items(execute=True, resolve=TriageFact("remedy", "resolve_block", "applied", None),
@@ -1006,15 +1008,24 @@ def test_case_d_accepts_a_filed_resolution_put_to_the_operator() -> None:
     """#7658: under propose, a filed resolve_block proposal puts the split
     decision to the operator as a propose_decision does; an applied one
     (decided without the operator) does not answer case D's question."""
-    case = TestCaseDBlockedItemsTriaged.CASE
-    proposed = TriageFact("remedy", "resolve_block", "awaiting_approval", 952)
-    asks, beside = TestCaseDBlockedItemsTriaged._items(asks_triage=proposed, beside_triage=proposed)
-    obs = replace(observation(BLOCKED_ITEMS_TRIAGED, asks), items=(asks, beside),
-                  owned_numbers=frozenset({910, 911, 912, 950, 952}))
-    assert grade(case, obs).passed
+    case = TestCaseDBlockedItemsTriaged()
+    proposed = case._asks(TriageFact("remedy", "resolve_block", "awaiting_approval", 950))
+    assert case._grade(proposed).passed
 
-    applied = TriageFact("remedy", "resolve_block", "applied", None)
-    asks, beside = TestCaseDBlockedItemsTriaged._items(asks_triage=applied, beside_triage=proposed)
-    obs = replace(obs, items=(asks, beside))
-    failed = {goal.name for goal in grade(case, obs).goals if not goal.passed}
+    applied = case._asks(TriageFact("remedy", "resolve_block", "applied", None))
+    failed = {goal.name for goal in case._grade(applied).goals if not goal.passed}
     assert "asks.triaged_operator_decision" in failed
+
+
+def test_cases_f_and_g_fail_a_merge_hold_that_was_cleared() -> None:
+    """#7678: the question beside a published PR is a merge hold; clearing it
+    (or merging) fails both cases, whatever the dial."""
+    cls = TestCasesFAndGResolution
+    for execute in (True, False):
+        resolve = TriageFact("remedy", "resolve_block", "applied" if execute else "awaiting_approval",
+                             None if execute else 951)
+        items = list(cls()._items(execute=execute, resolve=resolve,
+                                  provisioning=cls.HANDED_OVER, blocked=not execute))
+        items[2] = replace(items[2], pull_requests=(pr(number=925, state=PullRequestState.READY),))
+        failed = {goal.name for goal in cls()._grade(execute, tuple(items)).goals if not goal.passed}
+        assert "beside_pr.pr_label.needs-human" in failed
