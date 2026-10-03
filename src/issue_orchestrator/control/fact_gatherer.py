@@ -527,7 +527,9 @@ class FactGatherer:
         gated_proposals = scope.backlog
         if scope.refreshed:
             state.tech_lead_approval_scan_at = now_ts
-        if scope.refreshed and self.approvals is not None:
+        if self.approvals is not None:
+            # A reused scope still takes this tick's newer snapshots and
+            # verdicts into the page model (#7763 review r22 F2).
             verdicts = self.approvals.supersede_verdicts(verdicts, scope.issues)
             self.approvals.record_scope(scope.issues, verdicts, retired=scope.retired)
         # The board joins the scope: a proposal stripped of EVERY label is out

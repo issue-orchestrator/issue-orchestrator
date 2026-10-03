@@ -262,8 +262,12 @@ def approval_scope_for_tick(
     never served as current (#7763 review r16 F2).
     """
     if not due and approvals is not None and approvals.scope_observed:
-        retained = tuple(issue for issue, _verdict in approvals.observed_scope())
-        in_scope = {issue.number for issue in retained}
+        kept = {issue.number: issue for issue, _verdict in approvals.observed_scope()}
+        # This tick's own reads of the same issues are newer (#7763 r22 F2).
+        newer = {issue.number: issue for issues in partial for issue in issues}
+        current = kept | {number: issue for number, issue in newer.items() if number in kept}
+        retained = tuple(current[number] for number in sorted(current))
+        in_scope = set(current)
         observed = observe_gated_tech_lead_proposals(
             retained, *partial, known=approvals.indexed_proposals()
         )

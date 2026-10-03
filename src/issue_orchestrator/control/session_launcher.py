@@ -1315,8 +1315,8 @@ class SessionLauncher:
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, carried)
 
-        # Durable before anything irreversible (#6999 A2).
-        if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
+        # Durable before anything irreversible (#6999 A2); a proposal's consent too (#7763 r22).
+        if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(run, issue_number=issue.number):
             self._release_claim_if_held(issue.number, claim)
             return failure
 
@@ -2170,6 +2170,7 @@ class SessionLauncher:
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
+            refuse_unapproved=self._refuse_unapproved,
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim

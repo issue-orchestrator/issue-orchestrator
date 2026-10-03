@@ -2733,3 +2733,41 @@ def test_a_pending_op_does_not_re_run_the_gate_queries_every_tick(
     ]
     assert gate_queries == []
     assert second is not None and [p.issue_number for p in second.gated_proposals] == [780]
+
+
+def test_a_reused_scope_takes_this_ticks_newer_snapshot(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r22 F2: between gate refreshes, the anchor scan's newer
+    read of a proposal (its `approved` removed) replaces the reused snapshot,
+    so the page shows it waiting, with no gate query."""
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import CLAIMED, approving_everything
+    from tests.unit.view_models.test_tech_lead_page import _section
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_op(issue_number=790, op=_op_for(790))
+    approved = Issue(number=790, title="t", labels=["agent:tech-lead", *CLAIMED])
+    revoked = Issue(number=790, title="t", labels=["agent:tech-lead", *GATED])
+    mock_repository_host.list_issues.side_effect = lambda **kw: [approved]
+    approvals = approving_everything()
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=authority, approvals=approvals,
+    )
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    [(_, verdict)] = approvals.observed_scope()
+    assert verdict is not None and verdict.approved
+    mock_repository_host.list_issues.reset_mock()
+    mock_repository_host.list_issues.side_effect = lambda **kw: [revoked]
+
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])  # within the cadence
+
+    assert not [
+        call for call in mock_repository_host.list_issues.call_args_list
+        if _is_scope_query(call.kwargs.get("labels") or [])
+    ]
+    [card] = _section(proposals=approvals.observed_scope()).waiting
+    assert card.status == "awaiting_approval" and card.can_approve

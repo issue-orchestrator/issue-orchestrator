@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
@@ -173,6 +173,8 @@ class ReworkLaunchDependencies:
     resolve_stack_decision: StackDecisionResolverFn
     coder_prompt_addendum: CoderPromptAddendumProvider
     scoped_rework: ScopedReworkLaunch
+    #: The launch-boundary consent check every coding launch asks (#7763 r22).
+    refuse_unapproved: Callable[[int], "LaunchResult | None"]
 
 
 @dataclass(frozen=True)
@@ -402,7 +404,7 @@ def launch_rework_session(
     run = ctx.run
     claude_project_dir = ctx.claude_project_dir
 
-    if failure := work_claim.hold_before_spawn(run, issue_number=issue_number):
+    if failure := deps.refuse_unapproved(issue_number) or work_claim.hold_before_spawn(run, issue_number=issue_number):
         return failure
 
     with abandon_claim_unless_spawned(work_claim, run) as spawn:

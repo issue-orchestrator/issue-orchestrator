@@ -10735,6 +10735,41 @@ class TestTechLeadProposalLaunchConsent:
         approvals.observe([ordinary_looking])  # seen on the board: back in the scope's reads
         assert 123 in approvals.indexed_proposals()
 
+    def test_a_validation_retry_and_a_rework_of_a_revoked_proposal_never_spawn(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r22 F1: every coding launch path asks the same consent
+        check: an admitted proposal whose `approved` was removed gets no
+        validation retry and no rework session."""
+        from tests.approval_helpers import make_approvals
+
+        revoked = self._proposal(["tech-lead-proposal"])  # admitted, then `approved` removed
+        mock_repo_host.issues[123] = revoked
+        launcher_bundle.action_applier.tech_lead_approvals = make_approvals()
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Follow-up", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-follow-up",
+            original_prompt="Work on issue #123", validation_error="tests failed",
+            validation_error_file="/tmp/validation-errors.txt", retry_count=1,
+            source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        retried = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert not retried.success and retried.disposition is LaunchDisposition.WITHDRAWN
+        mock_repo_host.prs[123] = [
+            PRInfo(456, "Fix #123", "url", "123-follow-up", "Fixes #123", "open", [], head_sha="a" * 40)
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Address the review",
+        )
+
+        reworked = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert not reworked.success and reworked.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+
     def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
         from tests.approval_helpers import ADMITTED, approving_everything
 
