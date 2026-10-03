@@ -61,6 +61,8 @@ class CaseEngine:
     """Add the coders that end by asking the operator (``exam_config``)."""
     reviewer_changes_once: Path | None = None
     """The first post-publish review requests changes (``exam_config``)."""
+    resolution_coders: bool = False
+    """Add the coders that plant Cases F/G's needs-human blocks (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -88,6 +90,7 @@ class CaseEngine:
             release_file=self.release_file,
             asking_coders=self.asking_coders,
             reviewer_changes_once=self.reviewer_changes_once,
+            resolution_coders=self.resolution_coders,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -207,4 +210,27 @@ def case_e_engine(changes_once: Path) -> CaseEngine:
                 "tech_lead_follow_up_agent": CODER_LABEL,
             },
         },
+    )
+
+
+def case_resolution_engine(*, resolve_block: str) -> CaseEngine:
+    """Cases F (``resolve_block: execute``) and G (``propose``, the default) (#7658).
+
+    The Case D engine (health reviews grant blocked items to triage; the stuck
+    sweep is off, so the only tech-lead run on each item is the triage) with
+    the coders that plant porchpin's four needs-human blocks. Only the
+    ``resolve_block`` dial differs between the two cases: that dial alone is
+    what an operator changes to hand the tech lead these decisions.
+    """
+    base = case_d_engine({**EXAM_TECH_LEAD_AUTHORITY, "resolve_block": resolve_block})
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        resolution_coders=True,
+        worktree_reuse=True,
+        # The give-up coder's exit must land as the engine giving up
+        # (needs-human, session_lifecycle) at once, as porchpin#326's did. With
+        # the interrupted-coding auto-retry on, the first run put the retry
+        # guard label on and the item was never relaunched in 38 minutes.
+        overlay={**base.overlay, "retry": {"interrupted_sessions": {"retry_coding": False}}},
     )

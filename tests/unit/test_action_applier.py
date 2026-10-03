@@ -3433,6 +3433,11 @@ class TestClaimGateAudit:
         # marker-deduped comment; the tech-lead dispatch gate checks the
         # target's reconciliation state first.
         ActionType.APPLY_OPERATOR_DECISION,
+        # A tech lead's resolution of a needs-human block (#7658): its owner
+        # writes only through the shared block's owner and the applier's own
+        # claim-verified comment/label/close dispatch; the tech-lead dispatch
+        # gate checks the target's reconciliation state first.
+        ActionType.RESOLVE_BLOCK,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
         # Writes only the local charter decision ledger (#7330); no GitHub call.

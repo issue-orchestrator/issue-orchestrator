@@ -1844,6 +1844,10 @@ class GitHubAdapter:
         """
         return self._client.issue_comment_marker_present(issue_number, marker)
 
+    def issue_comment_bodies_containing(self, issue_number: int, needle: str) -> tuple[str, ...]:
+        """Every comment body containing ``needle``, from a complete fail-loud scan."""
+        return self._client.issue_comment_bodies_containing(issue_number, needle)
+
     def issue_closed_on_or_after(self, issue_number: int, timestamp: str) -> bool:
         """Return True if the issue has a ``closed`` event at/after ``timestamp``.
 

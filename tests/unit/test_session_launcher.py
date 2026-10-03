@@ -4364,7 +4364,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert run_manifest["tech_lead_charter"] == str(charter_path)
         charter = charter_path.read_text()
         assert "## flow (depth: restructure, authority: propose)" in charter
-        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `create_issue`" in charter
+        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `resolve_block`, `propose_decision`, `create_issue`" in charter
 
     def test_failure_investigation_skips_manifest_and_records_focus(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path

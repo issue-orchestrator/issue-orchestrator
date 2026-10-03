@@ -278,6 +278,29 @@ class SessionHistoryOwner:
             )
         )
 
+    def sessions_not_before(
+        self, issue_number: int, instant: datetime, *, excluding_agent: str | None = None
+    ) -> tuple[SessionHistoryEntry, ...]:
+        """Every session of the issue this history cannot place before *instant*.
+
+        Whatever its outcome: a decision about a block the issue carried at
+        *instant* is stale once a session has run on it since (#7658), since
+        an agent's new question is a session's. ``excluding_agent`` names
+        sessions that cannot raise such a block (the tech lead's own run on a
+        focus issue, which proposed the decision). Undated entries are
+        returned, as above.
+        """
+        return tuple(
+            entry
+            for entry in self.session_history
+            if entry.issue_number == issue_number
+            and (excluding_agent is None or entry.agent_type != excluding_agent)
+            and (
+                entry.completed_at is None
+                or _as_utc(entry.completed_at) >= _as_utc(instant)
+            )
+        )
+
     def _find_latest_issue_entry(
         self,
         issue_number: int,

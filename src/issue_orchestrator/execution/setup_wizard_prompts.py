@@ -464,7 +464,7 @@ instrument it rather than guessing. (Writes still go only through your decision
 artifact; see the contract below.)
 
 - **Use your focus-scoped act-level authority.** In a failure investigation,
-  `reset_retry`, `kill_hung_session`, `recover_validated_work`, and `release_withheld_review` may target only `focus_issue_number`.
+  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, and `resolve_block` may target only `focus_issue_number`.
   Propose `reset_retry` when the issue is blocked, no live session, persistent
   pair, background job, or pending publish retry still owns its work, and the
   evidence supports a fresh implementation. Inspect local commits, uncommitted
@@ -482,7 +482,7 @@ artifact; see the contract below.)
   is marked failed.
 - **Leave exactly one terminal disposition for the focus issue.** A diagnosis
   alone, duplicate dispositions, or conflicting remedies are rejected. Choose
-  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `escalate_to_human`, or `defer_to_tracker`.
+  `reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `resolve_block`, `escalate_to_human`, or `defer_to_tracker`.
   Read `tech-lead-data/recovery-context.json` first: it contains
   `recovery_tracker_numbers` and any `previous_disposition`. Do not repeat an
   unchanged diagnosis; explain progress, the missed recovery deadline, or the
@@ -573,7 +573,7 @@ than guessing.
   blocked item in `tech-lead-data/blocked-item-triage.json`; board-wide findings
   belong in `create_issue`/`flag_pattern` proposals.
 {TECH_LEAD_HEALTH_TRIAGE_RULES}
-- Issue-level act proposals (`reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`) may only target
+- Issue-level act proposals (`reset_retry`, `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `resolve_block`) may only target
   issue numbers listed in the snapshot's `problem_cohort` - the storm cohort
   this review owns - or a blocked item in `blocked-item-triage.json`. With an
   EMPTY `problem_cohort` and no granted items you own no act-level targets at

@@ -55,8 +55,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
+from ..domain.block_resolution import is_resolvable_work_block
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.human_block import (
+    ResolutionOutcome as ResolutionOutcome,
     BlockOutcome as BlockOutcome,
     HumanBlockRequest as HumanBlockRequest,
     NeedsHumanCause as NeedsHumanCause,
@@ -137,6 +139,13 @@ class SharedNeedsHumanBlock(Protocol):
         self, target: int, reason: str, *, before_write: Callable[[], None]
     ) -> BlockOutcome:
         """Clear an approved operator block, preserving every recorded cause."""
+        ...
+
+    def resolve(
+        self, target: int, causes: frozenset[NeedsHumanCause], reason: str
+    ) -> ResolutionOutcome:
+        """Discharge exactly the named work-block causes standing on the live
+        label, decided in a human's stead (#7658); others keep the label."""
         ...
 
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
@@ -390,6 +399,35 @@ class NeedsHumanBlock:
             return BlockOutcome.HELD_BY_ANOTHER_CAUSE
         before_write()
         return self._take_label_off(target, reason)
+
+    def resolve(
+        self, target: int, causes: frozenset[NeedsHumanCause], reason: str
+    ) -> ResolutionOutcome:
+        outside = sorted(cause.value for cause in causes if not is_resolvable_work_block(cause))
+        if not causes or outside:  # the typed rule, held by the owner itself
+            raise ValueError(f"only work-block causes are resolvable, not {outside or 'none'}")
+        return self._mutate(
+            target, lambda: self._resolve(target, causes, reason),
+            busy=ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False),
+        )
+
+    def _resolve(
+        self, target: int, causes: frozenset[NeedsHumanCause], reason: str
+    ) -> ResolutionOutcome:
+        """Withdraw the named causes, all of which must stand; the label goes
+        only if nothing else holds it. Otherwise nothing is touched."""
+        present = self._label_present_now(target)
+        if not present:  # unreadable, or someone already cleared it: not ours
+            return ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)
+        standing = [cause for cause in causes if self._recorded_cause_holds(cause, target)]
+        if len(standing) != len(causes):  # all of the decision, or none of it
+            return ResolutionOutcome(BlockOutcome.FAILED, mutation_attempted=False)
+        if any(self._holds(cause, target) for cause in NeedsHumanCause if cause not in causes):
+            for cause in standing:
+                self._withdraw(HumanBlockRequest(target=target, cause=cause, reason=reason))
+            logger.info("[BLOCK] #%d keeps needs-human after a resolution: another cause holds it", target)
+            return ResolutionOutcome(BlockOutcome.HELD_BY_ANOTHER_CAUSE, mutation_attempted=True)
+        return ResolutionOutcome(self._take_label_off(target, reason), mutation_attempted=True)
 
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
         return self._mutate(
@@ -745,6 +783,12 @@ class _NoOtherCauses:
         del target, reason
         return BlockOutcome.UNGOVERNED
 
+    def resolve(
+        self, target: int, causes: frozenset[NeedsHumanCause], reason: str
+    ) -> ResolutionOutcome:
+        del target, causes, reason
+        return ResolutionOutcome(BlockOutcome.UNGOVERNED, mutation_attempted=False)
+
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
         del target, reason
         return BlockOutcome.UNGOVERNED
@@ -767,6 +811,7 @@ NO_OTHER_NEEDS_HUMAN_CAUSES: SharedNeedsHumanBlock = _NoOtherCauses()
 
 
 __all__ = [
+    "ResolutionOutcome",
     "NO_OTHER_NEEDS_HUMAN_CAUSES",
     "UNCAUSED_BLOCK_MUTATION",
     "BlockLabelWriter",

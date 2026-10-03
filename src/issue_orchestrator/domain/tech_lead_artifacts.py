@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import Any, Literal, cast
 
+from .block_resolution import BlockResolution
 from .tech_lead_findings import VALID_FINDING_FIX_CLASSES
 
 
@@ -47,6 +48,7 @@ TechLeadActionType = Literal[
     "recover_validated_work",
     "release_withheld_review",
     "propose_decision",
+    "resolve_block",
 ]
 TechLeadFindingClassification = Literal["infra", "task", "agent", "systemic"]
 TechLeadAuthorityMode = Literal["execute", "propose"]
@@ -69,6 +71,7 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "recover_validated_work",
         "release_withheld_review",
         "propose_decision",
+        "resolve_block",
     )
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
@@ -86,6 +89,8 @@ ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
         "release_withheld_review",
         # Always a gated proposal: approving it is the operator's decision (#7593).
         "propose_decision",
+        # Decides a needs-human work block in the operator's stead (#7658).
+        "resolve_block",
     )
 )
 UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset()
@@ -220,6 +225,7 @@ _TYPE_SCOPED_ACTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("fix_class", "flag_pattern", "#6957"),
     ("tracker_number", "defer_to_tracker", "#6971"),
     ("follow_up_issues", "propose_decision", "#7593"),
+    ("resolution", "resolve_block", "#7658"),
 )
 
 
@@ -321,6 +327,11 @@ class ProposedTechLeadAction:
       issue's open, CI-green PR when the issue's own ``blocked-failed`` is the
       only thing withholding it. The orchestrator re-verifies every
       precondition when it applies the release and refuses a stale one.
+    * ``resolve_block`` — ``target_number`` (the ISSUE) + ``body`` (the
+      rationale) + ``resolution`` (#7658): decides a ``needs-human`` WORK
+      block in the operator's stead (answer the agent's question, decide a
+      split, or lift a stale block), discharging only the causes it names.
+      See :mod:`.block_resolution` for the typed rules it cannot bypass.
     """
 
     id: str
@@ -371,6 +382,9 @@ class ProposedTechLeadAction:
     # Issues a ``propose_decision`` drafts; the orchestrator files them only
     # when the operator approves the decision (a split names the remainder).
     follow_up_issues: tuple[DecisionFollowUp, ...] = ()
+    # What a ``resolve_block`` decides (#7658): the work-block causes it
+    # discharges, the decision and its evidence, and a split's children.
+    resolution: BlockResolution | None = None
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -457,6 +471,13 @@ class ProposedTechLeadAction:
             ),
             follow_up_issues=_follow_ups(
                 data.get("follow_up_issues"), context=f"proposed action {action_id}"
+            ),
+            resolution=(
+                BlockResolution.from_mapping(
+                    data["resolution"], context=f"proposed action {action_id}"
+                )
+                if data.get("resolution") is not None
+                else None
             ),
         )
         action.validate()
@@ -608,6 +629,12 @@ class ProposedTechLeadAction:
             if self.action_type == "propose_decision":
                 _require(bool(self.title), f"{context} requires title (the decision)")
                 _require(not self.target_is_pr, f"{context} targets an issue, not a PR")
+            if self.action_type == "resolve_block":
+                _require(
+                    isinstance(cast(object, self.resolution), BlockResolution),
+                    f"{context} requires resolution (the decision it makes, #7658)",
+                )
+                _require(not self.target_is_pr, f"{context} resolves an issue's block, not a PR's")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -633,6 +660,7 @@ class ProposedTechLeadAction:
             ("tracker_number", self.tracker_number),
             ("triage_class", self.triage_class.value if self.triage_class else None),
             ("follow_up_issues", [item.to_dict() for item in self.follow_up_issues]),
+            ("resolution", self.resolution.to_dict() if self.resolution else None),
         )
         for key, value in optional:
             if value:
