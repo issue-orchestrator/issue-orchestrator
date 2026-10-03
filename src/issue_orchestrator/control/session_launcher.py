@@ -1061,7 +1061,8 @@ class SessionLauncher:
 
             # Create terminal session
             step_start = time.time()
-            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            # Consent once more at the terminal boundary (#7763 r26 F1); a refusal takes the spawn-failure cleanup.
+            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1410,7 +1411,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._retry_in_progress(

@@ -10770,6 +10770,91 @@ class TestTechLeadProposalLaunchConsent:
         assert not reworked.success and reworked.disposition is LaunchDisposition.WITHDRAWN
         assert launcher_bundle.create_session_calls == []
 
+    def test_a_revocation_after_the_hold_is_caught_at_terminal_creation(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1: consent is read once more right before the
+        terminal is created; a revocation after the durable hold (here, while
+        the launch moves the issue to in-progress) spawns nothing and undoes
+        the in-progress move."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        moves = []
+
+        def apply(action, *_args, **_kwargs):
+            moves.append(action)
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])  # revoked now
+            return MagicMock(success=True)
+
+        launcher_bundle.action_applier.apply.side_effect = apply
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        labels = [(type(m).__name__, m.label) for m in moves if isinstance(m, (AddLabelAction, RemoveLabelAction))]
+        assert ("AddLabelAction", "in-progress") in labels and ("RemoveLabelAction", "in-progress") in labels
+
+    def test_a_revocation_after_a_retrys_hold_is_caught_at_terminal_creation(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1, the validation-retry path."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        mock_repo_host.issues[123] = self._proposal(ADMITTED)
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+
+        def apply(action, *_args, **_kwargs):
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])  # revoked now
+            return MagicMock(success=True)
+
+        launcher_bundle.action_applier.apply.side_effect = apply
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Follow-up", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-follow-up",
+            original_prompt="Work on issue #123", validation_error="tests failed",
+            validation_error_file="/tmp/validation-errors.txt", retry_count=1,
+            source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_revocation_during_the_rework_feedback_fetch_spawns_nothing(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1, the rework path."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        mock_repo_host.issues[123] = self._proposal(ADMITTED)
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        mock_repo_host.prs[123] = [
+            PRInfo(456, "Fix #123", "url", "123-follow-up", "Fixes #123", "open", [], head_sha="a" * 40)
+        ]
+        reviews = mock_repo_host.get_pr_reviews
+
+        def fetch_while_revoked(pr_number):
+            mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])
+            return reviews(pr_number)
+
+        mock_repo_host.get_pr_reviews = fetch_while_revoked
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Address the review",
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert not result.success and result.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+
     def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
         from tests.approval_helpers import ADMITTED, approving_everything
 

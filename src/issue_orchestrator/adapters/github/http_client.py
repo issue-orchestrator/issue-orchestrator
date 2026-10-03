@@ -1623,10 +1623,14 @@ class GitHubHttpClient:
             what=f"issue #{issue_number} events",
         ):
             for event in batch:
-                if isinstance(event, dict) and event.get("event") in ("closed", "reopened"):
+                if not isinstance(event, dict) or not str(event.get("event") or ""):
+                    # A row we cannot read could be this label's removal: no
+                    # standing answer exists (#7763 review r26 F2).
+                    raise GitHubScanIncompleteError(f"issue #{issue_number} events: a malformed event row")
+                if event.get("event") in ("closed", "reopened"):
                     latest = None
                     continue
-                if not isinstance(event, dict) or event.get("event") not in ("labeled", "unlabeled"):
+                if event.get("event") not in ("labeled", "unlabeled"):
                     continue
                 named = event.get("label")
                 if not isinstance(named, dict) or not str(named.get("name") or ""):

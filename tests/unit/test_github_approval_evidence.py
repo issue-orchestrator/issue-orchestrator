@@ -186,8 +186,10 @@ def test_an_event_without_an_actor_fails_loud() -> None:
     [
         {"id": 2, "event": "closed", "actor": {"login": "lead", "type": "User"}},
         {"id": 2, "event": "unlabeled", "actor": {"login": "lead", "type": "User"}},  # r23 F2: no label
+        {"id": 2, "actor": {"login": "lead", "type": "User"}},  # r26 F2: no event kind
+        "not an event",  # r26 F2: not an object
     ],
-    ids=["closed", "unattributable-removal"],
+    ids=["closed", "unattributable-removal", "no-event-kind", "not-an-object"],
 )
 def test_an_approval_closed_after_the_issue_read_never_executes_its_op(intervening) -> None:
     """#7763 review r17 F1: the snapshot is open and approved, but the issue

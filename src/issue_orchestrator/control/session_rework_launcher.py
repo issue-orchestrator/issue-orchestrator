@@ -523,7 +523,8 @@ def launch_rework_session(
             command,
         )
 
-        if failure := deps.scoped_rework.before_spawn(scoped.keys, run.identity):
+        # Consent once more at the terminal boundary (#7763 review r26 F1).
+        if failure := deps.refuse_unapproved(issue_number) or deps.scoped_rework.before_spawn(scoped.keys, run.identity):
             return failure
         session_created = deps.create_session(
             session_name,
