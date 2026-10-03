@@ -79,6 +79,7 @@ from tests.e2e.exam.observe import (
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
 from tests.e2e.fixtures import fetch_gh_audit_report
+from tests.e2e.fixtures.github_client import get_issue_labels_fresh
 from tests.e2e.flows import E2EFlow
 
 logger = logging.getLogger(__name__)
@@ -677,8 +678,19 @@ async def run_case_resolution(
                     f"[{external_id}] [EXAM-FG] {title}", [agent, E2E_DATA_LABEL], body=body,
                 )
                 planted[role] = (key, TrackedItem(role, number, external_id=external_id))
-            stale_key, _ = planted[STALE]
-            await flow.issue_has_label(stale_key, labels.needs_human, timeout_s=CASE_FG_PLANT_S)
+            stale_key, stale = planted[STALE]
+            # Read GitHub, not the watcher: the engine's label on a blocked
+            # issue reaches no watcher snapshot (the first runs waited out the
+            # whole window with the label long on the issue).
+            landed = await settle(
+                lambda: labels.needs_human in get_issue_labels_fresh(run.repo, stale.issue_number),
+                timeout_s=CASE_FG_PLANT_S, poll_s=30,
+            )
+            if not landed:
+                raise RuntimeError(
+                    f"case F/G's premise was not planted: #{stale.issue_number} never got"
+                    f" {labels.needs_human} within {CASE_FG_PLANT_S // 60} min"
+                )
             flow.update_issue(stale_key, add_labels=[labels.blocked_cross_milestone])
             items = [item for _key, item in planted.values()]
             ended_by = await drive(
