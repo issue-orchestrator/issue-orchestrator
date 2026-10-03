@@ -170,6 +170,7 @@ export interface ConfigDialogPayload {
 export interface ControlCenterTechLeadPayload {
   generated_at: string;
   repos: ControlCenterTechLeadRepoPayload[];
+  unreported_count: number;
   waiting_count: number;
 }
 

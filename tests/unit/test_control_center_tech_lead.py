@@ -87,6 +87,8 @@ def test_page_sums_waiting_across_running_engines_and_names_stopped_ones(tmp_pat
     page = owner.page()
 
     assert page.waiting_count == 3
+    # #7763 review r3 F3: c's backlog is unknown, so the count is a lower bound.
+    assert page.unreported_count == 1
     availability = {row.name: row.availability for row in page.repos}
     assert availability == {"a": "available", "b": "available", "c": "engine_not_running"}
     assert next(row for row in page.repos if row.name == "c").section is None
@@ -101,6 +103,7 @@ def test_an_engine_answering_off_contract_is_unavailable_not_trusted(tmp_path) -
     page = owner.page()
 
     assert page.waiting_count == 0
+    assert page.unreported_count == 2  # zero known, never an all-clear
     assert [row.availability for row in page.repos] == ["unavailable", "unavailable"]
 
 

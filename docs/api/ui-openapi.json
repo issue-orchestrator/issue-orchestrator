@@ -1698,6 +1698,7 @@
         "additionalProperties": false,
         "required": [
           "waiting_count",
+          "unreported_count",
           "generated_at",
           "repos"
         ],
@@ -1705,6 +1706,11 @@
           "waiting_count": {
             "type": "integer",
             "minimum": 0
+          },
+          "unreported_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Configured repositories whose engine did not report: waiting_count is then a lower bound, never an all-clear."
           },
           "generated_at": {
             "type": "string"

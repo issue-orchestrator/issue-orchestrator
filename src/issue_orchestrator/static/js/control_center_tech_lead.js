@@ -29,7 +29,10 @@
     let latest = null;
     let rootNode = null;
 
-    function badgeText(count) {
+    // An unreported repository's backlog is unknown: never an all-clear then.
+    function badgeText(count, unreported = 0) {
+        const repos = unreported === 1 ? '1 repository' : `${unreported} repositories`;
+        if (unreported) return `${count} waiting on you; ${repos} not reporting`;
         if (!count) return 'Nothing waiting on you';
         return `${count} waiting on you`;
     }
@@ -152,9 +155,12 @@
         const waiting = waitingEntries(payload);
         // The count is the payload's: an approved proposal the engine is acting
         // on stays listed with its status, but it no longer waits on you.
-        const clear = payload.waiting_count === 0
-            ? '<p class="tl-empty tl-all-clear">Nothing is waiting on you. The tech lead will list proposals, merge-ready PRs and hand-overs here.</p>'
-            : '';
+        let clear = '';
+        if (payload.waiting_count === 0 && payload.unreported_count > 0) {
+            clear = '<p class="tl-empty">Nothing reported as waiting, but not every repository reported (see below): its backlog is unknown.</p>';
+        } else if (payload.waiting_count === 0) {
+            clear = '<p class="tl-empty tl-all-clear">Nothing is waiting on you. The tech lead will list proposals, merge-ready PRs and hand-overs here.</p>';
+        }
         const waitingHtml = clear + (waiting.length
             ? `<ol class="tl-cards">${waiting.map(({ repo, item }) => renderWaitingCard(repo, item)).join('')}</ol>`
             : '');
@@ -191,14 +197,41 @@
         return outcome;
     }
 
+    // Where keyboard focus sits inside the waiting list, by identity, so a
+    // refresh that rebuilds the list can put it back (#7763 review r3 F2).
+    function focusedControl() {
+        const active = rootNode.ownerDocument && rootNode.ownerDocument.activeElement;
+        const list = rootNode.querySelector('#techLeadWaitingList');
+        if (!active || !list || !list.contains(active)) return null;
+        const card = active.closest('.tl-card');
+        if (!card) return null;
+        return {
+            repository: card.dataset.repository,
+            number: card.dataset.number,
+            command: active.dataset ? active.dataset.tlCommand || '' : '',
+        };
+    }
+
+    function restoreFocus(place) {
+        const list = rootNode.querySelector('#techLeadWaitingList');
+        const card = [...list.querySelectorAll('.tl-card')]
+            .find(node => node.dataset.repository === place.repository && node.dataset.number === place.number);
+        const target = card && (place.command
+            ? card.querySelector(`[data-tl-command="${place.command}"]`)
+            : card);
+        (target || rootNode.querySelector('#techLeadWaitingHeading')).focus();
+    }
+
     function paint(payload) {
         if (!rootNode) return;
         const html = renderPage(payload);
+        const place = focusedControl();
         rootNode.querySelector('#techLeadRunStrip').innerHTML = html.runStrip;
         rootNode.querySelector('#techLeadWaitingHeading').textContent = html.waitingHeading;
         rootNode.querySelector('#techLeadWaitingList').innerHTML = html.waiting;
         rootNode.querySelector('#techLeadDoingList').innerHTML = html.doing;
         rootNode.querySelector('#techLeadWatchingList').innerHTML = html.watching;
+        if (place) restoreFocus(place);
     }
 
     async function refresh() {

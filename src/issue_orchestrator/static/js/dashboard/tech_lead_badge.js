@@ -6,10 +6,6 @@
 // drawer's "Open in the Tech lead page" button there — the drawer never
 // approves anything itself. Standalone (no CC), both stay out of the way.
 
-function techLeadBadgeText(count) {
-    return count ? `${count} waiting on you` : 'Nothing waiting on you';
-}
-
 function initTechLeadBadge(win, doc) {
     const button = doc.getElementById('dashboardTechLeadBadge');
     if (!button) return false;
@@ -19,7 +15,9 @@ function initTechLeadBadge(win, doc) {
     win.addEventListener('message', event => {
         const data = event.data;
         if (!data || data.type !== 'cc-tech-lead-waiting' || !Number.isInteger(data.count) || data.count < 0) return;
-        button.textContent = techLeadBadgeText(data.count);
+        if (typeof data.text !== 'string' || !data.text) return;
+        // The CC's own wording: it knows whether every repository reported.
+        button.textContent = data.text;
         button.dataset.waiting = String(data.count);
     });
     button.addEventListener('click', () => post({ type: 'cc-open-tech-lead' }));
@@ -37,7 +35,7 @@ function initTechLeadBadge(win, doc) {
 }
 
 if (typeof module === 'object' && module.exports) {
-    module.exports = { initTechLeadBadge, techLeadBadgeText };
+    module.exports = { initTechLeadBadge };
 } else if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     initTechLeadBadge(window, document);
 }

@@ -721,6 +721,10 @@
                     },
                     "type": "array"
                 },
+                "unreported_count": {
+                    "minimum": 0,
+                    "type": "integer"
+                },
                 "waiting_count": {
                     "minimum": 0,
                     "type": "integer"
@@ -728,6 +732,7 @@
             },
             "required": [
                 "waiting_count",
+                "unreported_count",
                 "generated_at",
                 "repos"
             ],

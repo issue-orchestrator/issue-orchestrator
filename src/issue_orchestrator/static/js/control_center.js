@@ -57,9 +57,9 @@ function getTechLeadView() {
     return techLeadView;
 }
 
-function updateTechLeadBadges(count) {
+function updateTechLeadBadges(count, unreported) {
     const view = getTechLeadView();
-    const text = view.badgeText(count);
+    const text = view.badgeText(count, unreported);
     document.getElementById('techLeadNavCount').textContent = text;
     const badge = document.getElementById('techLeadHeaderBadge');
     badge.textContent = text;
@@ -67,7 +67,7 @@ function updateTechLeadBadges(count) {
     // The embedded repo dashboard hides this header; it shows the same count.
     const iframe = document.getElementById('activityIframe');
     try {
-        iframe?.contentWindow?.postMessage({ type: 'cc-tech-lead-waiting', count }, '*');
+        iframe?.contentWindow?.postMessage({ type: 'cc-tech-lead-waiting', count, text }, '*');
     } catch (e) { /* cross-origin, ignore */ }
 }
 
@@ -76,7 +76,7 @@ async function refreshTechLead() {
     if (!view) return null;
     try {
         const payload = await view.refresh();
-        if (payload !== null) updateTechLeadBadges(payload.waiting_count);
+        if (payload !== null) updateTechLeadBadges(payload.waiting_count, payload.unreported_count);
         return payload;
     } catch (error) {
         console.error('Failed to load the Tech lead page:', error);
@@ -816,7 +816,7 @@ window.addEventListener('message', (event) => {
     }
     if (event.data.type === 'cc-tech-lead-waiting-request') {
         const latest = getTechLeadView()?.latest();
-        if (latest) updateTechLeadBadges(latest.waiting_count);
+        if (latest) updateTechLeadBadges(latest.waiting_count, latest.unreported_count);
         return;
     }
     if (event.data.type !== 'dashboard-status') return;

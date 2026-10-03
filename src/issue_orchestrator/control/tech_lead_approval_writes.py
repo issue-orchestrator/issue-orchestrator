@@ -29,6 +29,7 @@ from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
     AWAITING_APPROVAL_LABEL,
     GATED_PROPOSAL_LABELS,
+    TECH_LEAD_PROPOSAL_LABEL,
     ApprovalTransition,
     OperatorApprovalRecord,
     ProposalLabelState,
@@ -94,7 +95,14 @@ def _admit(
             f"#{issue.number} no longer carries a verified approval"
             f" ({verdict.describe()}); not admitted",
         )
-    if AWAITING_APPROVAL_LABEL.casefold() in _labels_folded(issue):
+    folded = _labels_folded(issue)
+    # Provenance first (#7763 review r3 F1): an admitted proposal is
+    # `tech-lead-proposal` + `approved`; without provenance, taking the waiting
+    # label off would leave a marked body with no gate label — still a
+    # proposal awaiting approval, never schedulable.
+    if TECH_LEAD_PROPOSAL_LABEL.casefold() not in folded:
+        repository.add_label(issue.number, TECH_LEAD_PROPOSAL_LABEL)
+    if AWAITING_APPROVAL_LABEL.casefold() in folded:
         repository.remove_label(issue.number, AWAITING_APPROVAL_LABEL)
     repository.add_comment(
         issue.number,

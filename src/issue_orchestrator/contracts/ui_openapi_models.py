@@ -206,6 +206,7 @@ class ControlCenterTechLeadPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     generated_at: str
     repos: list[ControlCenterTechLeadRepoPayload]
+    unreported_count: int = Field(..., ge=0, strict=True)
     waiting_count: int = Field(..., ge=0, strict=True)
 
 class ControlCenterTechLeadRepoPayload(BaseModel):

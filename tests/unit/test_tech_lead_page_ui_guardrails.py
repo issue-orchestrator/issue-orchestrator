@@ -22,7 +22,8 @@ DASHBOARD_CSS = (ROOT / "static" / "css" / "dashboard" / "base.css").read_text(e
 def test_header_badge_is_a_labelled_link_to_the_page() -> None:
     badge = re.search(r'<a class="waiting-badge" id="techLeadHeaderBadge" href="\?view=techLead"[^>]*>([^<]+)</a>', CC_HTML)
     assert badge, "the header badge must be a native link to the Tech lead view"
-    assert badge.group(1) == "Nothing waiting on you"  # quiet empty state, as text
+    # Text, never a bare number; and no all-clear before the count is known.
+    assert badge.group(1) == "Checking what waits on you…"
     # It lives in the global header, outside any view container.
     header = CC_HTML[CC_HTML.index('<header class="header">'):CC_HTML.index("</header>", CC_HTML.index('<header class="header">'))]
     assert 'id="techLeadHeaderBadge"' in header
@@ -32,7 +33,7 @@ def test_nav_item_carries_the_count_as_text_inside_its_accessible_name() -> None
     nav = re.search(r'<button class="nav-item" data-view="techLead" id="techLeadNavItem">(.*?)</button>', CC_HTML, re.S)
     assert nav, "the Tech lead nav entry must be a native button"
     assert "Tech lead" in nav.group(1)
-    assert '<span class="waiting-count" id="techLeadNavCount">Nothing waiting on you</span>' in nav.group(1)
+    assert '<span class="waiting-count" id="techLeadNavCount">Checking what waits on you…</span>' in nav.group(1)
     # First nav section: pending items are front and centre.
     assert CC_HTML.index('data-view="techLead"') < CC_HTML.index('data-view="repositories"')
 
@@ -69,7 +70,7 @@ def test_landing_switches_to_the_page_when_anything_waits() -> None:
 
 
 def test_dashboard_badge_is_a_native_button_with_text() -> None:
-    assert '<button type="button" class="tech-lead-waiting-badge" id="dashboardTechLeadBadge" hidden>Nothing waiting on you</button>' in DASHBOARD_HTML
+    assert '<button type="button" class="tech-lead-waiting-badge" id="dashboardTechLeadBadge" hidden>Checking what waits on you…</button>' in DASHBOARD_HTML
 
 
 def test_one_approval_surface_the_rework_panel_is_gone() -> None:

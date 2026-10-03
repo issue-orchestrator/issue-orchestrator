@@ -99,6 +99,9 @@ class ControlCenterTechLead:
         rows = [self._repo_row(repo) for repo in self.list_repos()]
         return ControlCenterTechLeadPayload(
             waiting_count=sum(row.section.waiting_count for row in rows if row.section is not None),
+            # A repository that did not report has an UNKNOWN backlog: the
+            # count is then a lower bound and the page must not say all-clear.
+            unreported_count=sum(1 for row in rows if row.section is None),
             generated_at=self.clock().isoformat(),
             repos=rows,
         )

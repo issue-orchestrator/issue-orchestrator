@@ -381,12 +381,16 @@ class _Host:
     def get_issue(self, number: int) -> Issue:
         return self.issue
 
+    def _relabel(self, labels) -> Issue:
+        return Issue(number=self.issue.number, title=self.issue.title, labels=list(labels),
+                     state=self.issue.state, repo="o/r", body=self.issue.body)
+
     def add_label(self, number: int, label: str) -> None:
-        self.issue = _issue(number, [*self.issue.labels, label], state=self.issue.state)
+        self.issue = self._relabel([*self.issue.labels, label])
         self.evidence.engine_write(number, label)
 
     def remove_label(self, number: int, label: str) -> None:
-        self.issue = _issue(number, [l for l in self.issue.labels if l != label], state=self.issue.state)
+        self.issue = self._relabel([l for l in self.issue.labels if l != label])
 
     def add_comment(self, number: int, body: str) -> str:
         self.comments.append((number, body))
@@ -643,3 +647,27 @@ def test_a_personal_token_engine_approves_as_its_maintainer_user() -> None:
     assert outcome.outcome == "approved"
     assert approvals.records.load_operator_approval(500) is None
     assert approvals.verify(host.issue, fresh=True).kind is ApprovalVerdictKind.MAINTAINER
+
+
+def test_admitting_a_proposal_whose_provenance_was_stripped_restores_it_first() -> None:
+    """#7763 review r3 F1: admission must leave `tech-lead-proposal` +
+    `approved`, or the marked body keeps the issue awaiting forever."""
+    evidence = FakeApprovalEvidence()
+    evidence.label(720, by=MAINTAINER)
+    approvals = make_approvals(evidence)
+    claimed = Issue(
+        number=720, title="t", labels=["agent:backend", "awaiting-approval", "approved"],
+        repo="o/r", body=with_proposal_marker("b"),
+    )
+    [settlement] = plan_approval_settlements([claimed], approvals.verify_claims([claimed]), op_backed=())
+    host = _Host(evidence, claimed)
+
+    result = apply_settle_proposal_approval(
+        _action(720, settlement.transition), approvals=approvals, repository=host
+    )
+
+    assert settlement.transition is ApprovalTransition.ADMIT and result.success
+    assert set(host.issue.labels) == {"agent:backend", "approved", "tech-lead-proposal"}
+    scheduler = Scheduler(Config(), approval_admission=approvals.admits)
+    [decision] = scheduler.evaluate_issues([host.issue], check_dependencies=False)
+    assert decision.available

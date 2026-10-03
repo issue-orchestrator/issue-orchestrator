@@ -21,6 +21,7 @@ const section = (waiting, extra = {}) => ({
 });
 const page = (repos) => ({
     waiting_count: repos.reduce((n, r) => n + (r.section ? r.section.waiting_count : 0), 0),
+    unreported_count: repos.filter(r => !r.section).length,
     generated_at: 'now', repos,
 });
 const repo = (sec, extra = {}) => ({ repo_key: KEY, name: 'a', availability: 'available', detail: '', section: sec, ...extra });
@@ -107,4 +108,60 @@ test('an approved proposal stays visible but is not counted as waiting on you', 
     assert.equal(html.waitingHeading, 'Waiting on you (0)');
     assert.match(html.waiting, /Nothing is waiting on you/);
     assert.match(html.waiting, /Proposal 9/);
+});
+
+// A minimal DOM stand-in (tests/js/AGENTS.md: no jsdom): the waiting list
+// rebuilds its cards from the markup it is given, so a refresh replaces them.
+function domHarness() {
+    let active = null;
+    const focusable = name => ({ name, focus() { active = this; } });
+    const heading = { ...focusable('heading'), textContent: '' };
+    const plain = () => ({ innerHTML: '' });
+    const list = {
+        cards: [],
+        set innerHTML(html) {
+            this.cards = [...html.matchAll(/data-repository="([^"]*)" data-number="(\d+)"/g)].map(([, repository, number]) => {
+                const card = { ...focusable(`card ${number}`), dataset: { repository, number } };
+                const approve = { ...focusable(`approve ${number}`), dataset: { tlCommand: 'approve' }, closest: () => card };
+                card.querySelector = selector => (selector === '[data-tl-command="approve"]' ? approve : null);
+                card.approve = approve;
+                return card;
+            });
+        },
+        querySelectorAll: () => list.cards,
+        contains: node => list.cards.some(card => card === node || card.approve === node),
+    };
+    const nodes = { '#techLeadWaitingHeading': heading, '#techLeadWaitingList': list,
+        '#techLeadRunStrip': plain(), '#techLeadDoingList': plain(), '#techLeadWatchingList': plain() };
+    const root = {
+        ownerDocument: { get activeElement() { return active; } },
+        querySelector: selector => nodes[selector],
+        addEventListener: () => {},
+    };
+    return { root, list, heading, active: () => active };
+}
+
+test('a refresh keeps keyboard focus on the same control, or moves it to the heading', () => {
+    const v = view();
+    const dom = domHarness();
+    v.bind(dom.root);
+    v.paint(page([repo(section([item(7), item(8)]))]));
+    dom.list.cards[1].approve.focus();
+
+    const before = dom.active();
+    v.paint(page([repo(section([item(7), item(8)]))]));
+    assert.notEqual(dom.active(), before);  // the old button is gone...
+    assert.equal(dom.active(), dom.list.cards[1].approve);  // ...focus is on its replacement
+
+    v.paint(page([repo(section([item(7)]))]));  // #8 was decided elsewhere
+    assert.equal(dom.active(), dom.heading);
+});
+
+test('an unreported repository never reads as an all-clear', () => {
+    const p = { ...page([repo(section([])), repo(null, { availability: 'engine_not_running', detail: 'Engine not running', name: 'b' })]), unreported_count: 1 };
+    const html = view().renderPage(p);
+    assert.doesNotMatch(html.waiting, /Nothing is waiting on you/);
+    assert.match(html.waiting, /not every repository reported/);
+    assert.equal(view().badgeText(0, 1), '0 waiting on you; 1 repository not reporting');
+    assert.equal(view().badgeText(2, 3), '2 waiting on you; 3 repositories not reporting');
 });
