@@ -181,7 +181,15 @@ def test_an_event_without_an_actor_fails_loud() -> None:
         _adapter(payload).latest_label_event(5, "approved")
 
 
-def test_an_approval_closed_after_the_issue_read_never_executes_its_op() -> None:
+@pytest.mark.parametrize(
+    "intervening",
+    [
+        {"id": 2, "event": "closed", "actor": {"login": "lead", "type": "User"}},
+        {"id": 2, "event": "unlabeled", "actor": {"login": "lead", "type": "User"}},  # r23 F2: no label
+    ],
+    ids=["closed", "unattributable-removal"],
+)
+def test_an_approval_closed_after_the_issue_read_never_executes_its_op(intervening) -> None:
     """#7763 review r17 F1: the snapshot is open and approved, but the issue
     was closed (declined) before the event read; the op never executes."""
     from issue_orchestrator.control.tech_lead_approval import TechLeadApprovals
@@ -197,10 +205,7 @@ def test_an_approval_closed_after_the_issue_read_never_executes_its_op() -> None
 
     def github(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/events"):
-            return httpx.Response(200, json=[
-                _labeled(1, "approved", "lead"),
-                {"id": 2, "event": "closed", "actor": {"login": "lead", "type": "User"}},
-            ])
+            return httpx.Response(200, json=[_labeled(1, "approved", "lead"), intervening])
         return httpx.Response(200, json={"permission": "admin", "role_name": "admin"})
 
     client = _client_with_transport(httpx.MockTransport(github))

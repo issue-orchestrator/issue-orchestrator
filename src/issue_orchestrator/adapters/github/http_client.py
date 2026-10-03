@@ -1629,7 +1629,14 @@ class GitHubHttpClient:
                 if not isinstance(event, dict) or event.get("event") not in ("labeled", "unlabeled"):
                     continue
                 named = event.get("label")
-                if isinstance(named, dict) and str(named.get("name", "")).casefold() == folded:
+                if not isinstance(named, dict) or not str(named.get("name") or ""):
+                    # A label transition we cannot attribute to a label could
+                    # be the removal of this one: no standing answer exists
+                    # (#7763 review r23 F2).
+                    raise GitHubScanIncompleteError(
+                        f"issue #{issue_number} events: a {event.get('event')} event names no label"
+                    )
+                if str(named["name"]).casefold() == folded:
                     latest = event if event.get("event") == kind else None
         return latest
 

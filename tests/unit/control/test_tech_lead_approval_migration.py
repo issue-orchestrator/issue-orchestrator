@@ -14,6 +14,7 @@ from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.control.tech_lead_approval_scope import discover_open_gated_proposals
 from issue_orchestrator.ports.approval_evidence import InMemoryProposalIssueIndex
 from issue_orchestrator.domain.tech_lead_approval import (
+    with_proposal_marker,
     ApprovalVerdictKind,
     ProposalLabelState,
     carries_proposal_marker,
@@ -368,3 +369,28 @@ def test_a_proposal_filed_but_never_indexed_is_recovered_at_startup() -> None:
     assert [issue.number for issue in found] == [800]
     [settlement] = plan_approval_settlements(found, {}, op_backed=set())
     assert settlement.transition is ApprovalTransition.RESTORE_WAITING
+
+
+
+def test_startup_never_finishes_another_engines_decline() -> None:
+    """#7763 review r23 F1: a shared authority store's declined run-b
+    proposal is left alone by an engine scoped to run-a."""
+    from issue_orchestrator.control.tech_lead_approval_migration import migrate_engine_proposals
+
+    evidence = FakeApprovalEvidence()
+    other = Issue(number=900, title="t", labels=["run-b", "tech-lead-proposal", "approved"], state="open",
+                  repo="o/r", body=with_proposal_marker("b"))
+    repo = _Repo(evidence, [other])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=900, op=_op())
+    approvals = make_approvals(evidence)
+    approvals.decline(900)
+
+    migrate_engine_proposals(
+        repo, SimpleNamespace(tech_lead_approvals=approvals), ops,
+        SimpleNamespace(filtering=SimpleNamespace(label="run-a")),
+    )
+
+    assert repo.writes == [] and repo.comments == []
+    assert repo.issues[900].state == "open"
+    assert ops.load_op(issue_number=900) is not None

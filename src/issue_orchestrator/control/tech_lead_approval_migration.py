@@ -84,6 +84,11 @@ class ApprovalMigrationError(RuntimeError):
         self.report = report
 
 
+def _in_engine_scope(issue: "Issue", filtering_label: str | None) -> bool:
+    """Whether *issue* belongs to this engine (its scope label, if any)."""
+    return not filtering_label or _carries(issue, filtering_label)
+
+
 def _carries(issue: "Issue", label: str) -> bool:
     folded = label.casefold()
     return any(str(name).casefold() == folded for name in issue.labels)
@@ -101,12 +106,16 @@ def migrate_engine_proposals(
     approvals = applier.tech_lead_approvals if applier is not None else None
     if approvals is None or ops is None:
         return None
-    finish_interrupted_declines(repository, approvals, ops)
+    finish_interrupted_declines(repository, approvals, ops, filtering_label=config.filtering.label)
     return migrate_legacy_proposals(repository, approvals, ops, filtering_label=config.filtering.label)
 
 
 def finish_interrupted_declines(
-    repository: "RepositoryHost", approvals: "TechLeadApprovals", ops: "TechLeadAuthorityStore"
+    repository: "RepositoryHost",
+    approvals: "TechLeadApprovals",
+    ops: "TechLeadAuthorityStore",
+    *,
+    filtering_label: str | None,
 ) -> tuple[int, ...]:
     """Complete every Decline a crash interrupted after its durable record
     (#7763 review r13/r14 F1): an open declined proposal loses `approved` and
@@ -115,7 +124,10 @@ def finish_interrupted_declines(
     finished = []
     for number in sorted(approvals.declined_numbers()):
         issue = repository.get_issue(number)
-        reopened = issue is not None and issue.state == "open"
+        mine = issue is not None and _in_engine_scope(issue, filtering_label)
+        if not mine:
+            continue  # unreadable now (a later startup retries), or another engine's (#7763 r23 F1)
+        reopened = issue.state == "open"
         if reopened:
             for label in labels_named(issue.labels, APPROVED_LABEL):
                 repository.remove_label(number, label)

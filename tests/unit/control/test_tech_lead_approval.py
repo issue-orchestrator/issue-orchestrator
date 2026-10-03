@@ -841,10 +841,10 @@ def test_a_decline_interrupted_after_the_close_stays_declined_and_is_finished_at
     assert restarted.is_declined(500)
     assert not restarted.confirm(host.issue)  # the op can never execute
 
-    assert finish_interrupted_declines(host, restarted, ops) == (500,)
+    assert finish_interrupted_declines(host, restarted, ops, filtering_label=None) == (500,)
     assert host.issue.state == "closed"
     assert ops.load_op(issue_number=500) is None
-    assert finish_interrupted_declines(host, restarted, ops) == ()  # idempotent
+    assert finish_interrupted_declines(host, restarted, ops, filtering_label=None) == ()  # idempotent
 
 
 
@@ -899,7 +899,7 @@ def test_a_decline_interrupted_after_its_first_durable_write_never_executes(op_b
         restarted.verify(issue)
         assert not restarted.admits(issue)
 
-    assert finish_interrupted_declines(host, restarted, ops) == (500,)
+    assert finish_interrupted_declines(host, restarted, ops, filtering_label=None) == (500,)
     assert host.issue.state == "closed" and "approved" not in host.issue.labels
     assert ops.load_op(issue_number=500) is None
 
