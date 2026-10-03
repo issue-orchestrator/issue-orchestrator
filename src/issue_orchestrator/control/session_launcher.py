@@ -110,6 +110,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
+from .tech_lead_approval import unapproved_proposal_launch
 from .session_launch_types import (
     ClaimAcquisitionResult,
     LaunchDisposition,
@@ -435,6 +436,12 @@ class SessionLauncher:
     # the launch process. See .claude/skills/refactoring/SKILL.md
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _refuse_unapproved(self, issue_number: int) -> LaunchResult | None:
+        refused = unapproved_proposal_launch(
+            issue_number, self.repository_host, self._action_applier.tech_lead_approvals
+        )
+        return LaunchResult(None, False, refused, disposition=LaunchDisposition.WITHDRAWN) if refused else None
+
     def _check_launch_preconditions(
         self,
         issue: "IssueProtocol",
@@ -739,8 +746,9 @@ class SessionLauncher:
         if freshness.failure:
             return freshness.failure
 
-        # Provider circuit breaker check
-        if result := self._check_provider_ready(agent_config, issue.number):
+        # Provider circuit breaker check; a tech-lead proposal launches only on a
+        # STANDING maintainer approval (#7763).
+        if result := self._check_provider_ready(agent_config, issue.number) or self._refuse_unapproved(issue.number):
             return result
         # An open PR carrying published validated work owns the issue (#7293).
         if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,

@@ -268,3 +268,19 @@ def test_an_engine_only_migrates_its_own_scope() -> None:
 
     assert report.regated == (1,)
     assert LEGACY in repo.issues[2].labels
+
+
+def test_an_out_of_scope_op_backed_proposal_is_never_touched() -> None:
+    """#7763 review r4 F2: the op-ledger path honours the scope too."""
+    evidence = FakeApprovalEvidence()
+    evidence.label(444, LEGACY, by=MAINTAINER, removed=True)
+    repo = _Repo(evidence, [_issue(444, ["agent:tech-lead", "run-b"])])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=444, op=_op())
+    approvals = make_approvals(evidence)
+
+    report = migrate_legacy_proposals(repo, approvals, ops, filtering_label="run-a")
+
+    assert not report.changed
+    assert repo.writes == [] and repo.comments == []
+    assert approvals.records.load_operator_approval(444) is None

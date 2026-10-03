@@ -10621,3 +10621,57 @@ class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
         status = self._observer(sample_config, runner, host).check_session(session)
 
         assert (status is SessionStatus.COMPLETED) is completed
+
+
+class TestTechLeadProposalLaunchConsent:
+    """#7763 review r4 F1: the ONE launch boundary — planned launches and
+    startup's resumption of partial work alike — re-checks a proposal's
+    approval fresh and refuses without a standing maintainer approval."""
+
+    @staticmethod
+    def _proposal(labels) -> Issue:
+        from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+        return Issue(number=123, title="Follow-up", labels=["agent:web", *labels],
+                     repo="test/repo", body=with_proposal_marker("b"))
+
+    def test_an_unapproved_proposal_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import GATED, make_approvals
+
+        proposal = self._proposal([*GATED, "in-progress"])
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = make_approvals()
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert "tech-lead proposal" in result.reason
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_bot_reapproval_since_the_last_tick_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import ADMITTED, BOT, FakeApprovalEvidence, make_approvals
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(123)  # a maintainer approved; the scan verified it
+        approvals = make_approvals(evidence)
+        proposal = self._proposal(ADMITTED)
+        approvals.verify(proposal)
+        evidence.label(123, by=BOT)  # removed and re-applied by a bot, unobserved
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert result.success

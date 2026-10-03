@@ -128,7 +128,6 @@ from .published_review_release import apply_release_published_review
 from .tech_lead_issue_creation import apply_create_tech_lead_issue
 from .history_reconciliation import apply_history_reconciliation
 from .tech_lead_proposals import execute_approved_tech_lead_op
-from .tech_lead_approval import refuse_unapproved_proposal_launch
 from .tech_lead_reset_retry import apply_surface_tech_lead_proposal
 
 logger = logging.getLogger(__name__)
@@ -996,9 +995,6 @@ class ActionApplier:
         Issue/PendingReview/PendingRework entity types.
         """
         assert isinstance(action, LaunchSessionAction)
-        refused = refuse_unapproved_proposal_launch(action, self.repository_host, self.tech_lead_approvals)
-        if refused is not None:  # a tech-lead proposal needs a standing approval (#7763)
-            return refused
 
         # Use the callback if provided (preferred path - handles entity lookup)
         if self.session_launcher is not None:

@@ -35,7 +35,6 @@ from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..domain.session_kind import SessionType
 from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
     GATED_PROPOSAL_LABELS,
@@ -57,7 +56,6 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_approval import LabelEvent
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
-    from .actions import ActionResult, LaunchSessionAction
 
 logger = logging.getLogger(__name__)
 
@@ -246,33 +244,30 @@ def admits_without_evidence(issue: "Issue") -> bool:
     return not proposal_state(issue.labels, issue.body).is_proposal
 
 
-def refuse_unapproved_proposal_launch(
-    action: "LaunchSessionAction",
-    repository: "RepositoryHost | None",
+def unapproved_proposal_launch(
+    issue_number: int,
+    repository: "RepositoryHost",
     approvals: "TechLeadApprovals | None",
-) -> "ActionResult | None":
-    """The launch boundary's own consent check for a proposal (#7763 review F2).
+) -> str | None:
+    """Why a session must not launch on *issue_number*, or None (#7763 review F2).
 
-    The scheduler admits on the verified CACHE, which is only as fresh as the
-    last tick's observation: an ``approved`` removed and re-applied by a bot
-    between two ticks still looks verified there. So a coding launch of a
-    tech-lead proposal re-reads the issue, its latest ``approved`` event and
-    the actor's role, all fresh, and refuses unless a maintainer's approval
-    still stands. Ordinary issues cost one (ETag-cached) issue read.
+    The ONE launch-boundary consent check, asked by
+    ``SessionLauncher.launch_issue_session`` for every issue session — planned
+    launches and startup's resumption of partial work alike. The scheduler
+    admits on the verified CACHE, which is only as fresh as the last tick's
+    observation: an ``approved`` removed and re-applied by a bot between two
+    ticks still looks verified there. So a launch re-reads the issue and, for
+    a proposal, its latest ``approved`` event and the actor's role, all fresh.
+    Ordinary issues cost one (ETag-cached) issue read. No owner: fail closed.
     """
-    from .actions import ActionResult
-
-    if action.session_type is not SessionType.ISSUE or repository is None:
-        return None
-    issue = repository.get_issue(action.number)
+    issue = repository.get_issue(issue_number)
     if issue is None or not proposal_state(issue.labels, issue.body).is_proposal:
         return None
     if approvals is not None and approvals.confirm(issue):
         return None
-    return ActionResult.fail(
-        action,
-        f"#{action.number} is a tech-lead proposal without a maintainer's approval"
-        " standing at launch; not launched",
+    return (
+        f"#{issue_number} is a tech-lead proposal without a maintainer's approval"
+        " standing at launch; not launched"
     )
 
 
@@ -335,5 +330,5 @@ __all__ = [
     "TechLeadApprovals",
     "admits_without_evidence",
     "plan_approval_settlements",
-    "refuse_unapproved_proposal_launch",
+    "unapproved_proposal_launch",
 ]

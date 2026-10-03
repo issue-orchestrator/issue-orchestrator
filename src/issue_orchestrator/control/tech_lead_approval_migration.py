@@ -106,7 +106,7 @@ def migrate_legacy_proposals(
     outcomes = _each(
         [number for number, _op in ops.list_ops() if number not in regated], errors,
         "Migrating op-backed proposal",
-        lambda number: _migrate_legacy_approval(repository, approvals, number),
+        lambda number: _migrate_legacy_approval(repository, approvals, number, filtering_label),
     )
     report = ApprovalMigrationReport(
         tuple(regated),
@@ -181,7 +181,10 @@ def _regate(repository: "RepositoryHost", issue: "Issue") -> None:
 
 
 def _migrate_legacy_approval(
-    repository: "RepositoryHost", approvals: "TechLeadApprovals", number: int
+    repository: "RepositoryHost",
+    approvals: "TechLeadApprovals",
+    number: int,
+    filtering_label: str | None,
 ) -> bool | None:
     """None: nothing to migrate. True: honoured as approved. False: re-gated.
 
@@ -193,6 +196,8 @@ def _migrate_legacy_approval(
     issue = repository.get_issue(number)
     if issue is None or issue.state != "open" or _carries(issue, LEGACY_GATE_LABEL):
         return None
+    if filtering_label and not _carries(issue, filtering_label):
+        return None  # another engine's proposal (a shared authority store)
     if _carries(issue, TECH_LEAD_PROPOSAL_LABEL) or _carries(issue, AWAITING_APPROVAL_LABEL):
         return None
     _mark_body(repository, issue)  # first, so every outcome below stays a proposal

@@ -523,16 +523,11 @@ class TestBodyMarkerSurvivesAFullStrip:
 
 
 class TestTheLaunchBoundaryRechecksFresh:
-    """F2: the scheduler's cache can be a tick stale; launch reads fresh."""
+    """F2: the scheduler's cache can be a tick stale; launch reads fresh.
+    (The launcher wiring is pinned in test_session_launcher.)"""
 
-    @staticmethod
-    def _launch(number: int):
-        from issue_orchestrator.control.actions import LaunchSessionAction
-
-        return LaunchSessionAction(number=number)
-
-    def test_a_bot_reapplied_approval_between_ticks_is_not_launched(self) -> None:
-        from issue_orchestrator.control.tech_lead_approval import refuse_unapproved_proposal_launch
+    def test_a_bot_reapplied_approval_between_ticks_is_refused(self) -> None:
+        from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
 
         evidence = FakeApprovalEvidence()
         evidence.label(700, by=MAINTAINER)
@@ -544,12 +539,10 @@ class TestTheLaunchBoundaryRechecksFresh:
         host = MagicMock()
         host.get_issue.return_value = admitted
 
-        refused = refuse_unapproved_proposal_launch(self._launch(700), host, approvals)
-
-        assert refused is not None and not refused.success
+        assert unapproved_proposal_launch(700, host, approvals) is not None
 
     def test_a_demoted_approver_is_read_fresh_at_launch(self) -> None:
-        from issue_orchestrator.control.tech_lead_approval import refuse_unapproved_proposal_launch
+        from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
 
         evidence = FakeApprovalEvidence()
         evidence.label(700, by=MAINTAINER)
@@ -561,37 +554,25 @@ class TestTheLaunchBoundaryRechecksFresh:
         host.get_issue.return_value = admitted
         reads_before = len(evidence.role_reads)
 
-        refused = refuse_unapproved_proposal_launch(self._launch(700), host, approvals)
-
-        assert refused is not None
+        assert unapproved_proposal_launch(700, host, approvals) is not None
         assert len(evidence.role_reads) == reads_before + 1  # a fresh role read
 
     def test_a_standing_approval_and_ordinary_work_launch(self) -> None:
-        from issue_orchestrator.control.tech_lead_approval import refuse_unapproved_proposal_launch
+        from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
 
         approvals = make_approvals(FakeApprovalEvidence(default_approver=MAINTAINER))
         host = MagicMock()
         host.get_issue.return_value = _issue(700, ["agent:backend", *ADMITTED])
-        assert refuse_unapproved_proposal_launch(self._launch(700), host, approvals) is None
+        assert unapproved_proposal_launch(700, host, approvals) is None
         host.get_issue.return_value = _issue(701, ["agent:backend"])
-        assert refuse_unapproved_proposal_launch(self._launch(701), host, approvals) is None
+        assert unapproved_proposal_launch(701, host, approvals) is None
 
-    def test_the_applier_refuses_before_any_launch(self) -> None:
-        from tests.runtime_lifecycle_helpers import make_action_applier
+    def test_no_owner_fails_closed(self) -> None:
+        from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
 
         host = MagicMock()
         host.get_issue.return_value = _issue(700, ["agent:backend", *ADMITTED])
-        launcher = MagicMock()
-        applier = make_action_applier(
-            labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),
-            repository_host=host, session_launcher=launcher,
-        )
-        applier.tech_lead_approvals = make_approvals()
-
-        result = applier.apply(self._launch(700))
-
-        assert not result.success
-        launcher.assert_not_called()
+        assert unapproved_proposal_launch(700, host, None) is not None
 
 
 class TestControlCenterApprovalIsAttributed:
