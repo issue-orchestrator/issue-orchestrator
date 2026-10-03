@@ -9,7 +9,9 @@ from issue_orchestrator.control.tech_lead_approval_migration import (
     migrate_legacy_proposals,
 )
 from issue_orchestrator.domain.models import Issue
+from issue_orchestrator.control.tech_lead_approval import plan_approval_settlements
 from issue_orchestrator.domain.tech_lead_approval import (
+    ApprovalTransition,
     ApprovalVerdictKind,
     ProposalLabelState,
     carries_proposal_marker,
@@ -228,9 +230,15 @@ def test_a_crash_mid_carry_over_resumes_on_the_next_startup() -> None:
 
     repo.add_label = original_add
     restarted = TechLeadApprovals(evidence, durable)
-    report = migrate_legacy_proposals(repo, restarted, ops, filtering_label=None)
+    migrate_legacy_proposals(repo, restarted, ops, filtering_label=None)
 
-    assert report.legacy_approved == (444,)
+    # Marked and bound before the crash: a proposal whose engine-restored gate
+    # labels make its carried approval verify (the RESTORE settlement's job).
+    issue = repo.issues[444]
+    assert proposal_state(issue.labels, issue.body) is ProposalLabelState.AWAITING
+    [restore] = plan_approval_settlements([issue], {}, op_backed={444})
+    assert restore.transition is ApprovalTransition.RESTORE_WAITING
+    repo._set(444, [*issue.labels, "tech-lead-proposal", "awaiting-approval"])
     assert restarted.verify(repo.issues[444], fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
 
 
@@ -253,7 +261,9 @@ def test_a_carried_over_approval_marks_the_body_first() -> None:
 
     migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
 
-    assert repo.writes[0] == ("body", 444, "marked")
+    # Approval bound first, then the marker, then provenance (resumable).
+    assert [w[0] for w in repo.writes] == ["add", "body", "add"]
+    assert repo.writes[1] == ("body", 444, "marked")
 
 
 def test_an_engine_only_migrates_its_own_scope() -> None:
@@ -284,3 +294,23 @@ def test_an_out_of_scope_op_backed_proposal_is_never_touched() -> None:
     assert not report.changed
     assert repo.writes == [] and repo.comments == []
     assert approvals.records.load_operator_approval(444) is None
+
+
+def test_an_approval_revoked_after_migration_is_never_carried_again() -> None:
+    """#7763 review r5 F1: the marker records that migration happened, so a
+    later strip of the new labels re-gates the proposal on restart."""
+    evidence = FakeApprovalEvidence()
+    evidence.label(444, LEGACY, by=MAINTAINER, removed=True)
+    repo = _Repo(evidence, [_issue(444, ["agent:tech-lead"])])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=444, op=_op())
+    migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
+    repo._set(444, ["agent:tech-lead"])  # someone strips every approval label
+    writes = list(repo.writes)
+
+    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
+
+    assert report.legacy_approved == () and repo.writes == writes  # nothing re-carried
+    issue = repo.issues[444]
+    assert proposal_state(issue.labels, issue.body) is ProposalLabelState.AWAITING
+    assert not make_approvals(evidence).verify(issue, fresh=True).approved

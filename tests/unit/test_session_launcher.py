@@ -971,6 +971,8 @@ class TestLaunchIssueSession:
 
         ledger = MagicMock(spec=IssueRunLedger)
         ledger.record_run.side_effect = IssueRunEvidenceUnavailable("ledger unavailable")
+        # The launch boundary reads the issue fresh (#7763); it exists on GitHub.
+        mock_repository_host.issues.append(sample_issue)
         bundle = _build_launcher_bundle(
             sample_config, mock_event_sink, mock_repository_host,
             mock_worktree_manager, mock_working_copy, mock_command_runner,

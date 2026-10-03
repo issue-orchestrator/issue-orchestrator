@@ -6,16 +6,18 @@
 // drawer's "Open in the Tech lead page" button there — the drawer never
 // approves anything itself. Standalone (no CC), both stay out of the way.
 
-function initTechLeadBadge(win, doc) {
+function initTechLeadBadge(win, doc, contractJson) {
     const button = doc.getElementById('dashboardTechLeadBadge');
     if (!button) return false;
     if (new URLSearchParams(win.location.search).get('embedded') !== '1') return false;
     const post = message => win.parent.postMessage(message, '*');
     button.hidden = false;
     win.addEventListener('message', event => {
-        const data = event.data;
-        if (!data || data.type !== 'cc-tech-lead-waiting' || !Number.isInteger(data.count) || data.count < 0) return;
-        if (typeof data.text !== 'string' || !data.text) return;
+        // Only the Control Center that embeds this dashboard (contextual), and
+        // only in the generated contract's shape (#7763 review r5 F4).
+        if (event.source !== win.parent || !event.data || event.data.type !== 'cc-tech-lead-waiting') return;
+        const data = contractJson.fromValue(event.data, 'TechLeadWaitingMessage', 'control center message');
+        if (data === null) return;
         // The CC's own wording: it knows whether every repository reported.
         button.textContent = data.text;
         button.dataset.waiting = String(data.count);
@@ -37,5 +39,5 @@ function initTechLeadBadge(win, doc) {
 if (typeof module === 'object' && module.exports) {
     module.exports = { initTechLeadBadge };
 } else if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-    initTechLeadBadge(window, document);
+    initTechLeadBadge(window, document, window.uiContractJson);
 }

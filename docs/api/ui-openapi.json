@@ -1723,6 +1723,77 @@
           }
         }
       },
+      "TechLeadWaitingMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Control Center -> embedded repo dashboard: the waiting count and its wording (#7763).",
+        "required": [
+          "type",
+          "count",
+          "text"
+        ],
+        "properties": {
+          "type": {
+            "const": "cc-tech-lead-waiting"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "TechLeadOpenMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Embedded repo dashboard -> Control Center: open the Tech lead page, optionally at one proposal (#7763).",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "cc-open-tech-lead"
+          },
+          "repository": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TechLeadWaitingRequestMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Embedded repo dashboard -> Control Center: ask for the current waiting count (#7763).",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "cc-tech-lead-waiting-request"
+          }
+        }
+      },
       "TechLeadProposalCommandPayload": {
         "type": "object",
         "properties": {

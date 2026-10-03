@@ -261,7 +261,11 @@ def unapproved_proposal_launch(
     Ordinary issues cost one (ETag-cached) issue read. No owner: fail closed.
     """
     issue = repository.get_issue(issue_number)
-    if issue is None or not proposal_state(issue.labels, issue.body).is_proposal:
+    if issue is None:
+        # Fail closed (#7763 review r5 F2): with no fresh read there is
+        # nothing to judge a proposal's approval by.
+        return f"#{issue_number} could not be read fresh at launch; not launched"
+    if not proposal_state(issue.labels, issue.body).is_proposal:
         return None
     if approvals is not None and approvals.confirm(issue):
         return None

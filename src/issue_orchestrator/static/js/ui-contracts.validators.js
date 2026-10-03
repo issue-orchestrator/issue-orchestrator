@@ -7699,6 +7699,40 @@
             ],
             "type": "object"
         },
+        "TechLeadOpenMessage": {
+            "additionalProperties": false,
+            "properties": {
+                "number": {
+                    "oneOf": [
+                        {
+                            "minimum": 1,
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "repository": {
+                    "oneOf": [
+                        {
+                            "minLength": 1,
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "type": {
+                    "const": "cc-open-tech-lead"
+                }
+            },
+            "required": [
+                "type"
+            ],
+            "type": "object"
+        },
         "TechLeadPageSectionPayload": {
             "additionalProperties": false,
             "properties": {
@@ -8186,6 +8220,40 @@
                 "can_approve",
                 "can_decline",
                 "details"
+            ],
+            "type": "object"
+        },
+        "TechLeadWaitingMessage": {
+            "additionalProperties": false,
+            "properties": {
+                "count": {
+                    "minimum": 0,
+                    "type": "integer"
+                },
+                "text": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "type": {
+                    "const": "cc-tech-lead-waiting"
+                }
+            },
+            "required": [
+                "type",
+                "count",
+                "text"
+            ],
+            "type": "object"
+        },
+        "TechLeadWaitingRequestMessage": {
+            "additionalProperties": false,
+            "properties": {
+                "type": {
+                    "const": "cc-tech-lead-waiting-request"
+                }
+            },
+            "required": [
+                "type"
             ],
             "type": "object"
         },

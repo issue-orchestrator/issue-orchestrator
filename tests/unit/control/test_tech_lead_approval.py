@@ -40,6 +40,7 @@ from tests.approval_helpers import (
     GATED,
     MAINTAINER,
     FakeApprovalEvidence,
+    approving_everything,
     make_approvals,
 )
 
@@ -652,3 +653,12 @@ def test_admitting_a_proposal_whose_provenance_was_stripped_restores_it_first() 
     scheduler = Scheduler(Config(), approval_admission=approvals.admits)
     [decision] = scheduler.evaluate_issues([host.issue], check_dependencies=False)
     assert decision.available
+
+
+def test_a_launch_fails_closed_when_the_issue_cannot_be_read() -> None:
+    from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
+
+    host = MagicMock()
+    host.get_issue.return_value = None
+
+    assert unapproved_proposal_launch(700, host, approving_everything()) is not None

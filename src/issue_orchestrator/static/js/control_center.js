@@ -810,12 +810,15 @@ window.addEventListener('message', (event) => {
         return;
     }
     // The repo dashboard's badge and its blocked-item drawer open the page.
+    const dashboardFrame = document.getElementById('activityIframe')?.contentWindow;
     if (event.data.type === 'cc-open-tech-lead') {
-        openTechLead(event.data.repository || null, event.data.number || null);
+        const message = getTechLeadView()?.readFrameMessage(event, dashboardFrame, 'TechLeadOpenMessage');
+        if (message) openTechLead(message.repository ?? null, message.number ?? null);
         return;
     }
     if (event.data.type === 'cc-tech-lead-waiting-request') {
-        const latest = getTechLeadView()?.latest();
+        if (!getTechLeadView()?.readFrameMessage(event, dashboardFrame, 'TechLeadWaitingRequestMessage')) return;
+        const latest = getTechLeadView().latest();
         if (latest) updateTechLeadBadges(latest.waiting_count, latest.unreported_count);
         return;
     }

@@ -30,7 +30,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, TypeVar
 
 from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
@@ -47,6 +48,8 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .tech_lead_approval import TechLeadApprovals
+
+_Item = TypeVar("_Item", "Issue", int)
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +145,12 @@ def _open_with(repository: "RepositoryHost", label: str, filtering_label: str | 
     return _scoped_issues(issues, filtering_label)
 
 
-def _each(items, errors: list[str], what: str, step) -> dict[int, bool | None]:
+def _each(
+    items: "Iterable[_Item]",
+    errors: list[str],
+    what: str,
+    step: "Callable[[_Item], bool | None]",
+) -> dict[int, bool | None]:
     """Run *step* on every item; one failure never stops the others.
 
     Returns ``{number: outcome}`` for the items whose step returned a verdict.
@@ -188,10 +196,16 @@ def _migrate_legacy_approval(
 ) -> bool | None:
     """None: nothing to migrate. True: honoured as approved. False: re-gated.
 
-    Resumable without a journal (#7763 review F1/F4): the approval half is
-    written BEFORE the provenance label, so a crash anywhere before the
-    provenance write leaves the issue looking exactly as it did ("no approval
-    labels"), and the next startup redoes the step, re-reading what is there.
+    The body marker is the record that this item was migrated (#7763 review
+    r5 F1): once present, the approval model owns the item, so an item whose
+    approval labels were stripped AFTER migration is a stripped proposal (the
+    engine re-gates it), never an old-model approval to carry again.
+
+    Resumable without a journal: on the approval path the label is written
+    and bound FIRST, then the marker, then provenance. A crash before the
+    marker redoes the step on the next startup; a crash after it leaves a
+    marked proposal whose bound approval verifies once the engine restores its
+    gate labels.
     """
     issue = repository.get_issue(number)
     if issue is None or issue.state != "open" or _carries(issue, LEGACY_GATE_LABEL):
@@ -200,11 +214,13 @@ def _migrate_legacy_approval(
         return None  # another engine's proposal (a shared authority store)
     if _carries(issue, TECH_LEAD_PROPOSAL_LABEL) or _carries(issue, AWAITING_APPROVAL_LABEL):
         return None
-    _mark_body(repository, issue)  # first, so every outcome below stays a proposal
+    if carries_proposal_marker(issue.body):
+        return None  # migrated already: the approval model owns it now
     removal = approvals.evidence.latest_label_event(number, LEGACY_GATE_LABEL, removed=True)
     if removal is not None and approvals.is_maintainer(removal) and _bind_carried_approval(
         repository, approvals, issue
     ):
+        _mark_body(repository, issue)
         repository.add_label(number, TECH_LEAD_PROPOSAL_LABEL)
         repository.add_comment(
             number,
@@ -214,6 +230,7 @@ def _migrate_legacy_approval(
             f" `{APPROVED_LABEL}`; the engine re-validates and acts on it once.",
         )
         return True
+    _mark_body(repository, issue)
     repository.add_label(number, TECH_LEAD_PROPOSAL_LABEL)
     repository.add_label(number, AWAITING_APPROVAL_LABEL)
     who = (

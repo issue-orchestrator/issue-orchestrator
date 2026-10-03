@@ -60,17 +60,21 @@
         return entries;
     }
 
-    function renderDetails(item) {
+    // Every focusable control carries a ``data-focus-key`` naming its item and
+    // role, unique in its lane, so a refresh can return focus to the same
+    // control's replacement (#7763 review r3 F2 / r5 F3).
+    function renderDetails(repo, item) {
         if (!item.details.length) return '';
         const rows = item.details.map(row =>
             `<dt>${escapeHtml(row.label)}</dt><dd>${escapeHtml(row.value)}</dd>`).join('');
-        return `<details class="tl-details"><summary>Details for #${escapeHtml(item.number)}</summary><dl>${rows}</dl></details>`;
+        const key = `details:${repo.repo_key}:${item.number}`;
+        return `<details class="tl-details"><summary data-focus-key="${escapeHtml(key)}">Details for #${escapeHtml(item.number)}</summary><dl>${rows}</dl></details>`;
     }
 
     function renderActions(repo, item) {
         if (item.kind !== 'proposal') return '';
         const name = `proposal #${item.number} in ${repo.name}`;
-        const attrs = decision => `data-tl-command="${escapeHtml(decision)}" data-repo-key="${escapeHtml(repo.repo_key)}" data-number="${escapeHtml(item.number)}"`;
+        const attrs = decision => `data-tl-command="${escapeHtml(decision)}" data-repo-key="${escapeHtml(repo.repo_key)}" data-number="${escapeHtml(item.number)}" data-focus-key="${escapeHtml(`${decision}:${repo.repo_key}:${item.number}`)}"`;
         return `<div class="tl-actions">
             <button type="button" class="btn btn-primary" ${attrs('approve')} ${item.can_approve ? '' : 'disabled'} aria-label="Approve ${escapeHtml(name)}">Approve</button>
             <button type="button" class="btn" ${attrs('decline')} ${item.can_decline ? '' : 'disabled'} aria-label="Decline ${escapeHtml(name)}">Decline</button>
@@ -79,16 +83,17 @@
 
     function renderWaitingCard(repo, item) {
         const headingId = `tl-card-${escapeHtml(repo.repo_key)}-${escapeHtml(item.number)}`;
+        const key = `${repo.repo_key}:${item.number}`;
         return `<li><article class="tl-card tl-kind-${escapeHtml(item.kind)}" tabindex="-1" aria-labelledby="${headingId}"
-                data-repository="${escapeHtml(repo.section.repository)}" data-number="${escapeHtml(item.number)}">
+                data-repository="${escapeHtml(repo.section.repository)}" data-number="${escapeHtml(item.number)}" data-focus-key="${escapeHtml(`card:${key}`)}">
             <p class="tl-card-meta"><span class="tl-kind">${escapeHtml(KIND_LABELS[item.kind])}</span>
                 · <span class="tl-repo">${escapeHtml(repo.name)}</span>
                 ${item.waiting_since ? `· waiting since <time datetime="${escapeHtml(item.waiting_since)}">${escapeHtml(item.waiting_since)}</time>` : ''}</p>
-            <h3 id="${headingId}"><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener">#${escapeHtml(item.number)} ${escapeHtml(item.title)}</a></h3>
+            <h3 id="${headingId}"><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`link:${key}`)}">#${escapeHtml(item.number)} ${escapeHtml(item.title)}</a></h3>
             <p class="tl-status tl-status-${escapeHtml(item.status)}"><strong>Status:</strong> ${escapeHtml(item.status_label)}</p>
             <p><strong>Recommendation:</strong> ${escapeHtml(item.recommendation)}</p>
             <p><strong>${item.kind === 'proposal' ? 'Approving' : 'What to do'}:</strong> ${escapeHtml(item.approval_effect)}</p>
-            ${renderDetails(item)}
+            ${renderDetails(repo, item)}
             ${renderActions(repo, item)}
         </article></li>`;
     }
@@ -98,14 +103,14 @@
         for (const repo of payload.repos) {
             if (!repo.section) continue;
             for (const item of repo.section.doing) {
-                const target = item.target_number ? ` <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener">#${escapeHtml(item.target_number)}</a>` : '';
+                const target = item.target_number ? ` <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`doing:${repo.repo_key}:${item.decision_id}`)}">#${escapeHtml(item.target_number)}</a>` : '';
                 rows.push(`<li><span class="tl-outcome tl-outcome-${escapeHtml(item.outcome)}">${escapeHtml(item.outcome_label)}</span>
                     ${escapeHtml(item.action_label)}${target} · ${escapeHtml(repo.name)}
                     <span class="tl-when">${escapeHtml(item.at)}</span>
                     ${item.reason ? `<span class="tl-reason">${escapeHtml(item.reason)}</span>` : ''}</li>`);
             }
             for (const park of repo.section.parked) {
-                const target = park.issue_number ? ` <a href="${escapeHtml(park.link)}" target="_blank" rel="noopener">#${escapeHtml(park.issue_number)}</a>` : ` ${escapeHtml(park.subject)}`;
+                const target = park.issue_number ? ` <a href="${escapeHtml(park.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`parked:${repo.repo_key}:${park.action}:${park.subject}`)}">#${escapeHtml(park.issue_number)}</a>` : ` ${escapeHtml(park.subject)}`;
                 rows.push(`<li class="tl-parked"><span class="tl-outcome tl-outcome-parked">Parked${park.escalated ? ', escalated' : ''}</span>
                     ${escapeHtml(park.action)}${target} · ${escapeHtml(repo.name)}
                     <span class="tl-when">since ${escapeHtml(park.parked_since)}</span>
@@ -123,10 +128,10 @@
             if (!repo.section) continue;
             const section = repo.section;
             const triaged = section.triaged.map(item =>
-                `<li><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener">#${escapeHtml(item.issue_number)}</a>
+                `<li><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`triaged:${repo.repo_key}:${item.issue_number}`)}">#${escapeHtml(item.issue_number)}</a>
                  <span class="tl-triage">${escapeHtml(item.triage_label)}</span> <span class="tl-reason">${escapeHtml(item.reason)}</span></li>`).join('');
             const cases = section.case_files.map(item =>
-                `<li><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener">#${escapeHtml(item.issue_number)} ${escapeHtml(item.title)}</a>
+                `<li><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`case:${repo.repo_key}:${item.issue_number}`)}">#${escapeHtml(item.issue_number)} ${escapeHtml(item.title)}</a>
                  ${item.area ? `<span class="tl-area">${escapeHtml(item.area)}</span>` : ''} · ${escapeHtml(item.comment_count)} observations</li>`).join('');
             blocks.push(`<div class="tl-watch-repo"><h3>${escapeHtml(repo.name)}</h3>
                 <p><strong>Health review:</strong> ${escapeHtml(section.health_review.label)}</p>
@@ -197,29 +202,34 @@
         return outcome;
     }
 
-    // Where keyboard focus sits inside the waiting list, by identity, so a
-    // refresh that rebuilds the list can put it back (#7763 review r3 F2).
+    // The page's lanes, each with the heading focus falls back to when the
+    // focused item is gone after a refresh (#7763 review r5 F3).
+    const LANES = [
+        ['#techLeadWaitingList', '#techLeadWaitingHeading'],
+        ['#techLeadDoingList', '#techLeadDoingHeading'],
+        ['#techLeadWatchingList', '#techLeadWatchingHeading'],
+    ];
+
+    // Where keyboard focus sits inside a lane, by identity, so a refresh that
+    // rebuilds the lane can put it back on the same control's replacement.
     function focusedControl() {
         const active = rootNode.ownerDocument && rootNode.ownerDocument.activeElement;
-        const list = rootNode.querySelector('#techLeadWaitingList');
-        if (!active || !list || !list.contains(active)) return null;
-        const card = active.closest('.tl-card');
-        if (!card) return null;
-        return {
-            repository: card.dataset.repository,
-            number: card.dataset.number,
-            command: active.dataset ? active.dataset.tlCommand || '' : '',
-        };
+        if (!active) return null;
+        for (const [listSelector, headingSelector] of LANES) {
+            const list = rootNode.querySelector(listSelector);
+            if (list && list.contains(active)) {
+                return { listSelector, headingSelector, key: (active.dataset && active.dataset.focusKey) || '' };
+            }
+        }
+        return null;
     }
 
     function restoreFocus(place) {
-        const list = rootNode.querySelector('#techLeadWaitingList');
-        const card = [...list.querySelectorAll('.tl-card')]
-            .find(node => node.dataset.repository === place.repository && node.dataset.number === place.number);
-        const target = card && (place.command
-            ? card.querySelector(`[data-tl-command="${place.command}"]`)
-            : card);
-        (target || rootNode.querySelector('#techLeadWaitingHeading')).focus();
+        const list = rootNode.querySelector(place.listSelector);
+        const target = place.key
+            ? [...list.querySelectorAll('[data-focus-key]')].find(node => node.dataset.focusKey === place.key)
+            : null;
+        (target || rootNode.querySelector(place.headingSelector)).focus();
     }
 
     function paint(payload) {
@@ -238,6 +248,14 @@
         const payload = await load();
         if (payload !== null) paint(payload);
         return payload;
+    }
+
+    // A message from the embedded repo dashboard (#7763 review r5 F4): only
+    // from the frame the Control Center embedded (a contextual invariant the
+    // schema cannot know), and only in its generated contract's shape.
+    function readFrameMessage(event, expectedSource, schemaName) {
+        if (!expectedSource || event.source !== expectedSource) return null;
+        return uiContractJson.fromValue(event.data, schemaName, 'dashboard frame message');
     }
 
     function focusEntry(repository, number) {
@@ -284,6 +302,7 @@
         latest: () => latest,
         load,
         paint,
+        readFrameMessage,
         refresh,
         renderPage,
         waitingEntries,

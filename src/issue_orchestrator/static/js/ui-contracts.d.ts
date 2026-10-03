@@ -1689,6 +1689,12 @@ export interface TechLeadIssueScopePayload {
   kind: "issue";
 }
 
+export interface TechLeadOpenMessage {
+  number?: number | null;
+  repository?: string | null;
+  type: "cc-open-tech-lead";
+}
+
 export interface TechLeadPageSectionPayload {
   case_files: TechLeadCaseFilePayload[];
   doing: TechLeadDoingItemPayload[];
@@ -1794,6 +1800,16 @@ export interface TechLeadWaitingItemPayload {
   status_label: string;
   title: string;
   waiting_since: string;
+}
+
+export interface TechLeadWaitingMessage {
+  count: number;
+  text: string;
+  type: "cc-tech-lead-waiting";
+}
+
+export interface TechLeadWaitingRequestMessage {
+  type: "cc-tech-lead-waiting-request";
 }
 
 export interface TestCaseHistoryPayload {

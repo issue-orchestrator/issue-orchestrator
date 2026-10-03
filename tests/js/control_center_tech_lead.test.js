@@ -110,51 +110,67 @@ test('an approved proposal stays visible but is not counted as waiting on you', 
     assert.match(html.waiting, /Proposal 9/);
 });
 
-// A minimal DOM stand-in (tests/js/AGENTS.md: no jsdom): the waiting list
-// rebuilds its cards from the markup it is given, so a refresh replaces them.
+// A minimal DOM stand-in (tests/js/AGENTS.md: no jsdom): each lane rebuilds
+// its focusable controls from the markup it is given, so a refresh replaces
+// every control object, as innerHTML does in a browser.
 function domHarness() {
     let active = null;
     const focusable = name => ({ name, focus() { active = this; } });
-    const heading = { ...focusable('heading'), textContent: '' };
-    const plain = () => ({ innerHTML: '' });
-    const list = {
-        cards: [],
-        set innerHTML(html) {
-            this.cards = [...html.matchAll(/data-repository="([^"]*)" data-number="(\d+)"/g)].map(([, repository, number]) => {
-                const card = { ...focusable(`card ${number}`), dataset: { repository, number } };
-                const approve = { ...focusable(`approve ${number}`), dataset: { tlCommand: 'approve' }, closest: () => card };
-                card.querySelector = selector => (selector === '[data-tl-command="approve"]' ? approve : null);
-                card.approve = approve;
-                return card;
-            });
-        },
-        querySelectorAll: () => list.cards,
-        contains: node => list.cards.some(card => card === node || card.approve === node),
+    const lane = name => {
+        const node = {
+            controls: [],
+            set innerHTML(html) {
+                node.controls = [...html.matchAll(/data-focus-key="([^"]*)"/g)]
+                    .map(([, key]) => ({ ...focusable(`${name} ${key}`), dataset: { focusKey: key } }));
+            },
+            querySelectorAll: () => node.controls,
+            contains: control => node.controls.includes(control),
+            control: key => node.controls.find(control => control.dataset.focusKey === key),
+        };
+        return node;
     };
-    const nodes = { '#techLeadWaitingHeading': heading, '#techLeadWaitingList': list,
-        '#techLeadRunStrip': plain(), '#techLeadDoingList': plain(), '#techLeadWatchingList': plain() };
+    const lanes = { waiting: lane('waiting'), doing: lane('doing'), watching: lane('watching') };
+    const headings = { waiting: focusable('waiting heading'), doing: focusable('doing heading'), watching: focusable('watching heading') };
+    const nodes = {
+        '#techLeadWaitingHeading': { ...headings.waiting, textContent: '' },
+        '#techLeadDoingHeading': headings.doing, '#techLeadWatchingHeading': headings.watching,
+        '#techLeadWaitingList': lanes.waiting, '#techLeadDoingList': lanes.doing, '#techLeadWatchingList': lanes.watching,
+        '#techLeadRunStrip': { innerHTML: '' },
+    };
     const root = {
         ownerDocument: { get activeElement() { return active; } },
         querySelector: selector => nodes[selector],
         addEventListener: () => {},
     };
-    return { root, list, heading, active: () => active };
+    return { root, lanes, nodes, active: () => active };
 }
 
-test('a refresh keeps keyboard focus on the same control, or moves it to the heading', () => {
+test('a refresh keeps keyboard focus on the same control, or moves it to its lane heading', () => {
     const v = view();
     const dom = domHarness();
     v.bind(dom.root);
-    v.paint(page([repo(section([item(7), item(8)]))]));
-    dom.list.cards[1].approve.focus();
+    const withDetails = item(8, { details: [{ label: 'PR', value: 'o/a#9' }] });
+    const doing = [{ decision_id: 'd1', action_kind: 'kill_hung_session', action_label: 'kill hung session', target_number: 402,
+        link: 'https://github.com/o/a/issues/402', outcome: 'applied', outcome_label: 'Applied', at: 'now', reason: '', in_flight: false }];
+    const render = (waiting, doingRows) => page([repo(section(waiting, { doing: doingRows }))]);
+    v.paint(render([item(7), withDetails], doing));
 
-    const before = dom.active();
-    v.paint(page([repo(section([item(7), item(8)]))]));
-    assert.notEqual(dom.active(), before);  // the old button is gone...
-    assert.equal(dom.active(), dom.list.cards[1].approve);  // ...focus is on its replacement
+    for (const key of [`approve:${KEY}:8`, `link:${KEY}:8`, `details:${KEY}:8`]) {
+        const before = dom.lanes.waiting.control(key);
+        before.focus();
+        v.paint(render([item(7), withDetails], doing));
+        assert.notEqual(dom.active(), before, key);  // the old control is gone...
+        assert.equal(dom.active(), dom.lanes.waiting.control(key), key);  // ...its replacement has focus
+    }
+    dom.lanes.doing.control(`doing:${KEY}:d1`).focus();
+    v.paint(render([item(7), withDetails], doing));
+    assert.equal(dom.active(), dom.lanes.doing.control(`doing:${KEY}:d1`));
 
-    v.paint(page([repo(section([item(7)]))]));  // #8 was decided elsewhere
-    assert.equal(dom.active(), dom.heading);
+    v.paint(render([item(7), withDetails], []));  // the doing row aged out
+    assert.equal(dom.active().name, 'doing heading');
+    dom.lanes.waiting.control(`approve:${KEY}:8`).focus();
+    v.paint(render([item(7)], []));  // #8 was decided elsewhere
+    assert.equal(dom.active().name, 'waiting heading');
 });
 
 test('an unreported repository never reads as an all-clear', () => {
@@ -164,4 +180,16 @@ test('an unreported repository never reads as an all-clear', () => {
     assert.match(html.waiting, /not every repository reported/);
     assert.equal(view().badgeText(0, 1), '0 waiting on you; 1 repository not reporting');
     assert.equal(view().badgeText(2, 3), '2 waiting on you; 3 repositories not reporting');
+});
+
+test('frame messages are read only from the embedded dashboard, in contract shape', () => {
+    const v = view();
+    const frame = {};
+    const open = { type: 'cc-open-tech-lead', repository: 'o/a', number: 700 };
+    assert.deepEqual(v.readFrameMessage({ source: frame, data: open }, frame, 'TechLeadOpenMessage'), open);
+    assert.equal(v.readFrameMessage({ source: {}, data: open }, frame, 'TechLeadOpenMessage'), null);
+    assert.equal(v.readFrameMessage({ source: frame, data: { ...open, number: 'x' } }, frame, 'TechLeadOpenMessage'), null);
+    assert.equal(v.readFrameMessage({ source: frame, data: open }, undefined, 'TechLeadOpenMessage'), null);
+    const ask = { type: 'cc-tech-lead-waiting-request' };
+    assert.deepEqual(v.readFrameMessage({ source: frame, data: ask }, frame, 'TechLeadWaitingRequestMessage'), ask);
 });

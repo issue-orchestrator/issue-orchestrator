@@ -1833,6 +1833,12 @@ class TechLeadIssueScopePayload(BaseModel):
     issue_number: int = Field(..., ge=1, strict=True)
     kind: Literal['issue']
 
+class TechLeadOpenMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    number: int | None = None
+    repository: str | None = None
+    type: Literal['cc-open-tech-lead']
+
 class TechLeadPageSectionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case_files: list[TechLeadCaseFilePayload]
@@ -1939,6 +1945,16 @@ class TechLeadWaitingItemPayload(BaseModel):
     status_label: str
     title: str
     waiting_since: str
+
+class TechLeadWaitingMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int = Field(..., ge=0, strict=True)
+    text: str = Field(..., min_length=1)
+    type: Literal['cc-tech-lead-waiting']
+
+class TechLeadWaitingRequestMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal['cc-tech-lead-waiting-request']
 
 class TestCaseHistoryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
