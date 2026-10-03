@@ -66,6 +66,7 @@ from .review_validity import evaluate_review_withholding
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE, publish_proposal_surfaced
 
 if TYPE_CHECKING:
+    from .human_gates import HumanGates
     from ..domain.models import SessionHistoryEntry
     from ..infra.config import Config
     from ..ports.issue import Issue
@@ -142,6 +143,8 @@ class TechLeadReviewReleaseExecutor:
     events: EventSink
     config: "Config"
     labels: "LabelManager"
+    #: What each block holds (#7678): a PR's merge-scoped hold is no veto.
+    gates: "HumanGates"
     read_issue: Callable[[int], "Issue | None"]
     list_open_prs: Callable[[], Sequence["PRInfo"]]
     #: One fresh read of the PR the listing named: the listing carries no
@@ -267,7 +270,7 @@ class TechLeadReviewReleaseExecutor:
                                   "; ".join(hold.describe() for hold in holds))
         withholding = evaluate_review_withholding(
             config=self.config, label_manager=self.labels, issue=issue, pr=pr,
-            block_label=self.labels.blocked_failed,
+            block_label=self.labels.blocked_failed, gates=self.gates,
         )
         if withholding.current.valid:
             return RefusedRelease(ReviewReleaseRefusal.REVIEW_NOT_WITHHELD,

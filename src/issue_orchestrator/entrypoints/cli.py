@@ -25,6 +25,7 @@ from .cli_support import (
     resolve_repo as _resolve_repo,
     run_test_setup as _run_test_setup,
 )
+from .cli_merge_hold import cmd_hold_merge_for_human
 from .cli_tech_lead import (
     cmd_health_review,
     cmd_reconcile_case_files,
@@ -865,6 +866,7 @@ def main() -> int:
             tech_lead=cmd_tech_lead,
             health_review=cmd_health_review,
             reconcile_case_files=cmd_reconcile_case_files,
+            hold_merge_for_human=cmd_hold_merge_for_human,
             refresh=cmd_refresh,
             restart=cmd_restart,
             setup=cmd_setup,

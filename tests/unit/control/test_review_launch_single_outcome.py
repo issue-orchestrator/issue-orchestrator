@@ -100,6 +100,9 @@ class _RecordedCauses:
     def held_by_another_cause(self, issue_number, *, excluding):
         return bool(self.causes.get(issue_number, frozenset()) - {excluding})
 
+    def forget_stale_causes(self):
+        return ()
+
 
 @pytest.fixture
 def recorded_causes() -> _RecordedCauses:
@@ -263,7 +266,8 @@ def test_one_queued_review_is_one_attempt_and_one_success(
 
 
 def _startup_manager(
-    config: Config, *, issue_labels: tuple[str, ...] = (), needs_human_block=None,
+    config: Config, *, issue_labels: tuple[str, ...] = (), pr_labels: tuple[str, ...] = (),
+    needs_human_block=None,
 ) -> StartupManager:
     """The real startup recovery over a host that shows one PR awaiting review."""
     host = MagicMock()
@@ -275,7 +279,7 @@ def _startup_manager(
             branch=f"{ISSUE}-feature",
             body=f"Closes #{ISSUE}\n\n{ORCHESTRATOR_PR_MARKER}",
             state="open",
-            labels=["needs-code-review"],
+            labels=["needs-code-review", *pr_labels],
         )
     ]
     host.get_issue.return_value = Issue(
@@ -311,25 +315,31 @@ def _startup_manager(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("causes", "queued"),
+    ("number", "cause", "on_pr", "queued"),
     [
-        ({NeedsHumanCause.AGENT_COMPLETION}, True),
-        ({NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}, False),
+        # A person decides before the PR merges: the review runs (#7678).
+        (PR, NeedsHumanCause.MERGE_DECISION, True, True),
+        # The engine escalated the PR itself: its work is held.
+        (PR, NeedsHumanCause.MERGE_ESCALATION, True, False),
+        # An agent's pre-work question on the issue holds the work (porchpin#262).
+        (ISSUE, NeedsHumanCause.AGENT_COMPLETION, False, False),
     ],
 )
-async def test_startup_recovers_a_review_held_only_by_the_agents_question(
+async def test_startup_types_a_needs_human_before_recovering_the_review(
     launcher_bundle: LauncherTestBundle,
-    recorded_causes: _RecordedCauses, causes: set[NeedsHumanCause], queued: bool,
+    recorded_causes: _RecordedCauses, number: int, cause: NeedsHumanCause, on_pr: bool,
+    queued: bool,
 ) -> None:
-    """#7593: a restart must not drop the review the launch path would admit."""
+    """A restart must decide the review exactly as the launch path would."""
     config = launcher_bundle.launcher.config
     config.code_review_label = "needs-code-review"
-    recorded_causes.causes[ISSUE] = frozenset(causes)
+    recorded_causes.causes[number] = frozenset({cause})
     state = OrchestratorState()
 
     await _startup_manager(
         config,
-        issue_labels=("needs-human",),
+        issue_labels=() if on_pr else ("needs-human",),
+        pr_labels=("needs-human",) if on_pr else (),
         needs_human_block=recorded_causes,
     ).run_startup(state)
 
@@ -390,7 +400,9 @@ def test_a_queue_holding_one_pr_twice_plans_and_applies_one_launch(
 # --- #7455: a withdrawn or held review is not a failed launch ----------------
 
 
-def _host_shows(bundle: LauncherTestBundle, *issue_labels: str) -> None:
+def _host_shows(
+    bundle: LauncherTestBundle, *issue_labels: str, pr_labels: tuple[str, ...] = ()
+) -> None:
     """The live issue carries ``issue_labels``; its PR is open and awaits review."""
     host = bundle.launcher.repository_host
     host.labels[ISSUE] = set(issue_labels) | {"agent:web"}
@@ -402,7 +414,7 @@ def _host_shows(bundle: LauncherTestBundle, *issue_labels: str) -> None:
             branch=f"{ISSUE}-feature",
             body="",
             state="open",
-            labels=["needs-code-review"],
+            labels=["needs-code-review", *pr_labels],
         )
     ]
 
@@ -444,16 +456,16 @@ def test_a_review_of_a_blocked_issue_is_withdrawn_not_failed(
 # --- #7593: an agent's own question does not withhold its PR's review --------
 
 
-def test_an_agents_own_question_does_not_withhold_its_prs_review(
+def test_a_merge_hold_on_the_pr_does_not_withhold_its_review(
     tmp_path: Path, recovery_holds: _RecoveryHolds, recorded_causes: _RecordedCauses
 ) -> None:
-    """porchpin#364: PR #379 was dropped every loop (``QUEUED → SKIP (stale
-    pending review: issue_blocked)``) because the coding agent asked the
-    maintainer a question. A needs-human held ONLY by that question admits the
-    review: the human decides with a reviewed PR in hand."""
+    """porchpin#379 (#7678): PR #379 was dropped every loop (``QUEUED → SKIP
+    (stale pending review: issue_blocked)``) because the agent's question about
+    the PR's merge sat on the issue. Typed as a merge hold on the PR, the
+    review runs: the person decides with a reviewed PR in hand."""
     bundle = _bundle(tmp_path, recovery_holds, needs_human_block=recorded_causes)
-    _host_shows(bundle, "needs-human", "pr-pending")
-    recorded_causes.causes[ISSUE] = frozenset({NeedsHumanCause.AGENT_COMPLETION})
+    _host_shows(bundle, "pr-pending", pr_labels=("needs-human",))
+    recorded_causes.causes[PR] = frozenset({NeedsHumanCause.MERGE_DECISION})
     state = OrchestratorState()
     assert state.queue_pending_review(_review(agent_label=None))
     engine = _Engine(bundle, state)
@@ -466,14 +478,14 @@ def test_an_agents_own_question_does_not_withhold_its_prs_review(
 @pytest.mark.parametrize(
     ("causes", "extra_labels"),
     [
-        # The stuck sweep escalated it too: not only a question any more.
+        # An agent's question on the ISSUE: a pre-work question holds the work.
+        ({NeedsHumanCause.AGENT_COMPLETION}, ()),
+        # The stuck sweep escalated it.
         ({NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}, ()),
-        # A tech-lead hand-over: a review session would supersede it.
+        # A tech-lead hand-over.
         ({NeedsHumanCause.AGENT_COMPLETION}, ("tech-lead-needs-human",)),
         # No recorded cause: the operator put it on by hand.
         (set(), ()),
-        # Another block besides the question.
-        ({NeedsHumanCause.AGENT_COMPLETION}, ("blocked-failed",)),
     ],
 )
 def test_any_other_human_block_still_withdraws_the_review(

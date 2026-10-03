@@ -20,7 +20,8 @@ HELD_CODER_LABEL = "agent:exam-coder-held"
 ASKING_CODER_LABEL = "agent:exam-coder-asks"
 """A coder that ends by asking the operator a question, with no PR (Case D)."""
 ASKING_BESIDE_PR_CODER_LABEL = "agent:exam-coder-asks-beside-pr"
-"""A coder that publishes its work and asks the operator beside it (Case D)."""
+"""A coder that publishes its work and asks a person to decide before it
+merges (``--pr-labels needs-human``, Case E)."""
 
 #: The question Case D's asking coder puts to the operator (porchpin#262's).
 SPLIT_QUESTION = (
@@ -37,6 +38,7 @@ def shim_command(
     hold_until: Path | None = None,
     asks: str | None = None,
     pr_labels: tuple[str, ...] = (),
+    changes_once: Path | None = None,
 ) -> str:
     """Agent command running the shim; no ``{}`` placeholders on purpose.
 
@@ -56,5 +58,6 @@ def shim_command(
             *(("--hold-until", str(hold_until)) if hold_until is not None else ()),
             *(("--asks", asks) if asks is not None else ()),
             *(part for label in pr_labels for part in ("--pr-label", label)),
+            *(("--changes-once", str(changes_once)) if changes_once is not None else ()),
         )
     )

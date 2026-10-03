@@ -159,6 +159,17 @@ class SharedNeedsHumanBlock(Protocol):
         """The causes a force-clear cannot settle, for an operator to act on."""
         ...
 
+    def forget_stale_causes(self) -> tuple[int, ...]:
+        """Drop the recorded causes of every number whose label is gone (#7678).
+
+        A person who clears the label ends every cause and tells nobody; the
+        rows are dropped by the next owner call ON THAT NUMBER, and a number
+        nothing touches again keeps them, misleading every reader of the
+        record (the improver's blocked-items accounting). Run at startup.
+        Returns the numbers reconciled; an unreadable label keeps its rows.
+        """
+        ...
+
 
 #: Causes whose provenance already lives somewhere durable and lifecycle-owned:
 #: the tech-lead marker label and the quarantine ledger row. This owner reads
@@ -456,6 +467,20 @@ class NeedsHumanBlock:
             if self._holds(cause, issue_number)
         )
 
+    def forget_stale_causes(self) -> tuple[int, ...]:
+        return tuple(
+            target
+            for target in sorted(self.causes.needs_human_cause_targets())
+            if self._mutate(target, lambda target=target: self._forget_if_unlabelled(target), busy=False)
+        )
+
+    def _forget_if_unlabelled(self, target: int) -> bool:
+        """Only an observed ABSENCE retires the rows; unreadable keeps them."""
+        absent = self._label_present_now(target) is False
+        if absent:
+            self._forget(target)
+        return absent
+
     def _forget(self, target: int) -> None:
         self.causes.clear_needs_human_causes(target)
 
@@ -732,6 +757,9 @@ class _NoOtherCauses:
 
     def unsettleable_holders(self, issue_number: int) -> tuple[NeedsHumanCause, ...]:
         del issue_number
+        return ()
+
+    def forget_stale_causes(self) -> tuple[int, ...]:
         return ()
 
 

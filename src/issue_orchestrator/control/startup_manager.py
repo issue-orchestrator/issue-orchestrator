@@ -59,7 +59,7 @@ from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchErr
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES, SharedNeedsHumanBlock
-from .review_question_hold import AgentQuestionReviewHolds
+from .human_gates import HumanGates
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from .retrospective_review import discover_retrospective_review_issues
@@ -153,7 +153,8 @@ class StartupManager:
         # review; ending them must retire their durable claims too (#7348).
         self._pending_work_claims = pending_work_claims
         # The owner of which issue blocks a review may run over (#7593).
-        self._review_question_holds = AgentQuestionReviewHolds(needs_human_block, self._lm)
+        self._needs_human_block = needs_human_block
+        self._human_gates = HumanGates.over(needs_human_block, self._lm)
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -311,6 +312,9 @@ class StartupManager:
         # mirror cannot silently diverge from the source of truth.
         with self._phase("reconcile_label_store", timings):
             self._reconcile_label_store(state)
+            # Causes recorded under a label a person already took off (#7678).
+            if forgotten := self._needs_human_block.forget_stale_causes():
+                logger.info("[STARTUP] Dropped stale needs-human causes of %s", list(forgotten))
 
         # Step 13: Audit and cache the queue
         state.startup_message = "Auditing queue..."
@@ -694,7 +698,7 @@ class StartupManager:
                 issue=issue,
                 pr=pr,
                 review_label_confirmed=True,
-                review_admitted_blocks=self._review_question_holds.review_admitted_blocks(issue),
+                gates=self._human_gates,
             )
             if not validity.valid:
                 logger.info(

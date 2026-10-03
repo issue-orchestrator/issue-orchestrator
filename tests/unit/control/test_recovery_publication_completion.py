@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from issue_orchestrator.domain.human_block import BlockOutcome
+from issue_orchestrator.domain.recovery_attempt import RecoveryAttemptPending
 from issue_orchestrator.adapters.issue_disposition_gate import FileIssueDispositionMutationGate
 from issue_orchestrator.control.actions import AddLabelAction, ActionResult
 from issue_orchestrator.control.aggregate_recovery_block import AggregateRecoveryBlocks
@@ -66,12 +68,17 @@ def completion(publication):
         review_policy=RetryReviewPolicy(code_review_agent_configured=True), routing_label="pr-pending")
     workspaces = EscrowPublicationWorkspaces(root=rig.custody.escrow.root.parent / "validated-work-publications", repository=rig.custody.repo,
         repo_slug="owner/repo", escrow=rig.custody.escrow, git=rig.custody.git, prepare=lambda _: None)
+    holds = SimpleNamespace(calls=[], outcome=BlockOutcome.HELD)
+    def hold_merge(pr_number):
+        holds.calls.append((pr_number, tuple(labels.operations)))
+        return holds.outcome
     def build_owner(assets):
         cleanup = RecoveryPublicationCleanup(store=rig.store, effects=rig.effects,
             blocks=aggregate, workspaces=assets, gate=gate)
         return RecoveryPublicationCompletion(store=rig.store, effects=rig.effects, finalizer=finalizer,
-            verifier=rig.verifier, cleanup=cleanup, recovery_label="recovery-pending")
-    return SimpleNamespace(rig=rig, owner=build_owner(workspaces), labels=labels,
+            verifier=rig.verifier, cleanup=cleanup, recovery_label="recovery-pending",
+            hold_merge=hold_merge)
+    return SimpleNamespace(rig=rig, owner=build_owner(workspaces), labels=labels, holds=holds,
         workspaces=workspaces, build_owner=build_owner, aggregate=aggregate, gate=gate)
 
 
@@ -92,6 +99,36 @@ def test_actual_publication_routes_review_before_releasing_recovery_and_keeps_es
         assert not rig.prepared.workspace.checkout.exists()
         assert rig.custody.escrow.verifies(record.current_evidence)
         assert rig.store.holds_claim(claim)
+
+
+def test_an_agents_merge_hold_goes_on_the_published_pr_before_review_is_routed(completion):
+    """#7678: recovery of a record whose agent asked a person to decide before
+    the PR merges holds THAT PR's merge, before the publication resolves."""
+    from dataclasses import replace
+
+    rig, owner = completion.rig, completion.owner
+    prepared = replace(rig.prepared, merge_hold_requested=True)
+    with held(rig) as (token, claim):
+        target = rig.worker.advance(token, claim, prepared, approved=rig.authority)
+        result = owner.complete(token, claim, prepared, target, OrchestratorState(), "Retained feature")
+
+    assert isinstance(result, RecoveryCompleted)
+    assert completion.holds.calls == [(target.pr_number, ())]  # before any routing write
+
+
+def test_a_merge_hold_that_does_not_commit_leaves_recovery_pending(completion):
+    from dataclasses import replace
+
+    rig, owner = completion.rig, completion.owner
+    completion.holds.outcome = BlockOutcome.FAILED
+    prepared = replace(rig.prepared, merge_hold_requested=True)
+    with held(rig) as (token, claim):
+        target = rig.worker.advance(token, claim, prepared, approved=rig.authority)
+        result = owner.complete(token, claim, prepared, target, OrchestratorState(), "Retained feature")
+        assert isinstance(result, RecoveryAttemptPending)
+        assert "merge hold" in result.message
+        assert rig.store.get(claim.record_id).state is not ValidatedWorkState.RECOVERED
+    assert completion.labels.operations == []
 
 
 def test_retry_after_cleanup_failure_replays_memory_without_publishing_again(completion):

@@ -565,6 +565,14 @@ class SqlitePendingWorkClaimStore:
             )
         )
 
+    def needs_human_cause_targets(self) -> frozenset[int]:
+        return frozenset(
+            int(row["issue_number"])
+            for row in self._get_connection().execute(
+                "SELECT DISTINCT issue_number FROM needs_human_cause"
+            )
+        )
+
     def withdraw_needs_human_cause(self, issue_number: int, cause: str) -> None:
         with self._write_lock, self._transaction() as conn:
             conn.execute(

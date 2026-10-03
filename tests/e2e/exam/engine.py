@@ -60,12 +60,15 @@ def exam_config(
     tech_lead_model: str | None = None,
     release_file: Path | None = None,
     asking_coders: bool = False,
+    reviewer_changes_once: Path | None = None,
 ) -> Config:
     """The e2e session config, pointed at the checkout, with exam agents.
 
-    With ``asking_coders`` (Case D), two more coders end by asking the
-    operator a question: ``ASKING_CODER_LABEL`` with no commit, and
-    ``ASKING_BESIDE_PR_CODER_LABEL`` beside a PR of its published work.
+    With ``asking_coders`` (Cases D and E), two more coders end by asking a
+    person: ``ASKING_CODER_LABEL`` a pre-work question with no commit, and
+    ``ASKING_BESIDE_PR_CODER_LABEL`` a decision before its published PR
+    merges. With ``reviewer_changes_once`` the first post-publish review
+    requests changes (creating that file) and later ones approve.
 
     With ``release_file``, work is held mid-flight until the file exists:
     every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
@@ -103,7 +106,8 @@ def exam_config(
             timeout_minutes=held_minutes or 1,
             model="sonnet",
             command=shim_command(
-                "reviewer", exchange_fault=reviewer_exchange_fault, hold_until=release_file
+                "reviewer", exchange_fault=reviewer_exchange_fault, hold_until=release_file,
+                changes_once=reviewer_changes_once,
             ),
             meta_agent="claude-code",
             ai_system="claude-code",

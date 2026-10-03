@@ -3256,6 +3256,19 @@ class TestEnqueueToMergeQueueAction:
         assert result.result_type == ActionResultType.SKIPPED
         mock_repository_host.enqueue_to_merge_queue.assert_not_called()
 
+    def test_a_merge_hold_put_on_the_pr_since_classification_keeps_it_out(
+        self, applier, mock_repository_host
+    ):
+        """#7678: the enqueue write re-reads the PR's labels too."""
+        mock_repository_host.get_issue_labels_fresh.side_effect = lambda number: (
+            ["code-reviewed", "needs-human"] if number == 318 else ["agent:backend"]
+        )
+
+        result = applier.apply(EnqueueToMergeQueueAction(issue_number=228, pr_number=318))
+
+        assert result.result_type == ActionResultType.SKIPPED
+        mock_repository_host.enqueue_to_merge_queue.assert_not_called()
+
     def test_an_unreadable_issue_enqueues_nothing(self, applier, mock_repository_host):
         mock_repository_host.get_issue_labels_fresh.side_effect = RuntimeError("502")
 

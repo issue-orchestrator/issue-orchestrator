@@ -28,16 +28,25 @@ flowchart TD
 ### A Blocked Issue Withholds Its PR's Review, With One Exception
 
 Review discovery, startup recovery and the review launch all drop a pending
-review whose issue carries a blocking label (`issue_blocked`). One block is
-admitted (#7593, `control/review_question_hold.py`): a `needs-human` held ONLY
-by the coding agent's own question (`coding-done needs_human`, or a reserved
-`needs-human` pr_label routed to the issue). The work is already published on
-its PR, and a reviewed PR is a better basis for the human's answer, so the
-review runs; rework stays withheld, the coder is not relaunched, and the merge
-queue never enqueues a PR whose issue carries `needs-human`, so an approval
-cannot land the work before the human answers. A tech-lead escalation, a sweep
-or liveness cause beside the question, an operator's uncaused `needs-human`, or
-any other blocking label still withholds the review.
+review whose issue or PR carries a block that holds its WORK. What a block
+holds is decided by one owner, `control/human_gates.py` (#7678), over the
+causes the shared needs-human block records against the number:
+
+| Where `needs-human` is | Recorded cause | Holds | Review / rework / conflict rework | Merge queue |
+|---|---|---|---|---|
+| issue | any (an agent's pre-work question, a sweep, an escalation, a label put on by hand) | the work | withheld | held |
+| PR | `merge_decision` only (an agent asked a person to decide before the PR merges) | only the merge | run | held |
+| PR | anything else (`merge_escalation`, none recorded, a tech-lead hand-over) | the PR's work | withheld | held |
+
+An agent asks for a merge decision with `coding-done ... --pr-labels needs-human`:
+the completion door types it as `HOLD_MERGE_FOR_HUMAN`, and the owner records a
+`merge_decision` cause on the PR once its number is known (a created PR, a
+reused PR, or a recovered one, before its publication resolves). The issue's
+work is not blocked. The awaiting-merge "now reworkable" clear withdraws only
+the engine's own `merge_escalation`, so it never takes a person's merge
+decision off. A PR-scoped request that #7595 had already put on the ISSUE is
+moved by the operator with `issue-orchestrator hold-merge-for-human --issue N
+--pr P --apply` (dry-run by default; the engine must be stopped).
 
 ### Internal Review Within a Coder Turn
 

@@ -16,9 +16,12 @@ misbehaves and how:
 ``--asks QUESTION`` makes an initial coding session end by asking the
 operator QUESTION (``coding-done needs_human``) without committing (Case D,
 porchpin#262). ``--pr-label LABEL`` adds LABEL to the labels a completing
-coder asks its PR to carry; ``needs-human`` there is routed onto the issue
-while the work still publishes (#7592), which is porchpin#364's question
-asked beside its PR.
+coder asks its PR to carry; ``needs-human`` there asks a person to decide
+before the PR merges (#7678): porchpin#364's question asked beside its PR.
+
+``--changes-once PATH`` makes a post-publish review request changes the first
+time (creating PATH) and approve every later time, so the PR goes through one
+rework (Case E: rework runs under a merge hold).
 
 ``--hold-until PATH`` makes a session wait, before doing anything, until
 PATH exists. The upgrade case (Case U) uses it to keep work mid-flight across
@@ -110,6 +113,24 @@ def approve_review() -> None:
     )
 
 
+def request_changes_once(marker: Path) -> bool:
+    """Request changes the first time only; True when it did."""
+    if marker.exists():
+        return False
+    marker.write_text("changes requested once\n", encoding="utf-8")
+    run(
+        [
+            "reviewer-done",
+            "changes_requested",
+            "--issues",
+            "Exam reviewer: one round of changes before approval",
+            "--risk",
+            "low",
+        ]
+    )
+    return True
+
+
 def hold_until(release: Path) -> None:
     """Stay mid-flight until the harness releases the work."""
     log(f"holding until {release} exists")
@@ -125,6 +146,7 @@ def main() -> int:
     parser.add_argument("--hold-until", type=Path, default=None)
     parser.add_argument("--asks", default=None)
     parser.add_argument("--pr-label", action="append", default=[])
+    parser.add_argument("--changes-once", type=Path, default=None)
     args = parser.parse_args()
     in_exchange = bool(os.environ.get(RESPONSE_FILE_ENV))
     log(f"role={args.role} in_exchange={in_exchange} fault={args.exchange_fault}")
@@ -141,7 +163,8 @@ def main() -> int:
         return 0
 
     if not in_exchange:
-        approve_review()
+        if args.changes_once is None or not request_changes_once(args.changes_once):
+            approve_review()
         return 0
     if args.exchange_fault == "exit-silently":
         log("exchange reviewer: planted fault, exiting without a verdict")

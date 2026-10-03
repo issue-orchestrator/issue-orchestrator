@@ -98,7 +98,7 @@ from .needs_human_block import (
     NO_OTHER_NEEDS_HUMAN_CAUSES,
     SharedNeedsHumanBlock,
 )
-from .review_question_hold import AgentQuestionReviewHolds
+from .human_gates import HumanGates
 from ..ports.blocked_item_triage import NO_BLOCKED_ITEM_TRIAGE, BlockedItemTriageAgenda
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager
@@ -269,7 +269,7 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
-        self._review_question_holds = AgentQuestionReviewHolds(needs_human_block, label_manager)
+        self._human_gates = HumanGates.over(needs_human_block, label_manager)
         self._tech_lead_needs_human = TechLeadNeedsHumanLifecycle(
             labels=label_manager,
             events=events,
@@ -1529,7 +1529,7 @@ class SessionLauncher:
                 repository_host=self.repository_host,
                 label_manager=self._lm,
                 recovery_holds=self._recovery_holds,
-                question_holds=self._review_question_holds,
+                gates=self._human_gates,
             ),
             review,
             self.events,
