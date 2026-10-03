@@ -59,7 +59,7 @@ coordination requires a *shared* (i.e. GitHub) point.
   without *being* the subject.
 - **Two surfaces, two owners.** The dashboard is *our* surface — the run's
   existence and detail live there. GitHub is the *client's* surface — only the
-  run's **output** (proposals, `proposed-tech-lead` issues) belongs there, by
+  run's **output** (proposals, `tech-lead-proposal` issues) belongs there, by
   design. Any GitHub footprint for the run beyond the thin claim is
   **config-opt-in** (e.g. a client who wants the health-review report posted as
   an issue).

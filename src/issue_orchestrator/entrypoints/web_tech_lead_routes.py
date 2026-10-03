@@ -24,7 +24,7 @@ from ..domain.scoped_rework import TechLeadProposalCommand
 from fastapi.responses import JSONResponse
 
 from ..contracts.ui_openapi_models import (
-    ReworkProposalPayload, ReworkProposalsPayload, TechLeadProposalCommandPayload, TechLeadProposalOutcomePayload,
+    TechLeadPageSectionPayload, TechLeadProposalCommandPayload, TechLeadProposalOutcomePayload,
     TechLeadIssueScopePayload,
     TechLeadRunAdmissionPayload,
     TechLeadRunRequestPayload,
@@ -129,17 +129,18 @@ async def request_tech_lead_run(
     )
 
 
-@web_tech_lead_router.get("/api/tech-lead/rework-proposals", response_model=ReworkProposalsPayload)
-async def get_rework_proposals(orchestrator: WebOrchestratorDependency) -> ReworkProposalsPayload:
+@web_tech_lead_router.get("/api/tech-lead/page", response_model=TechLeadPageSectionPayload)
+async def get_tech_lead_page_section(orchestrator: WebOrchestratorDependency) -> TechLeadPageSectionPayload:
+    """This engine's section of the Control Center's Tech lead page (#7763)."""
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Repository Engine is not running")
-    views = await asyncio.to_thread(orchestrator.tech_lead_rework_proposals)
-    return ReworkProposalsPayload(proposals=[ReworkProposalPayload.model_validate(view.to_dict()) for view in views])
+    return await asyncio.to_thread(orchestrator.tech_lead_page_section)
 
 
-@web_tech_lead_router.post("/api/tech-lead/rework-proposals", response_model=TechLeadProposalOutcomePayload)
-async def command_rework_proposal(payload: TechLeadProposalCommandPayload,
-                                  orchestrator: WebOrchestratorDependency) -> JSONResponse:
+@web_tech_lead_router.post("/api/tech-lead/proposals", response_model=TechLeadProposalOutcomePayload)
+async def command_tech_lead_proposal(payload: TechLeadProposalCommandPayload,
+                                     orchestrator: WebOrchestratorDependency) -> JSONResponse:
+    """Approve or Decline one proposal: the one command path (#7763)."""
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Repository Engine is not running")
     outcome = await asyncio.to_thread(orchestrator.request_tech_lead_proposal,

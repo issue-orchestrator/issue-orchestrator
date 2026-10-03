@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Protocol, Sequence
 
 from ..ports.issue import Issue
 from ..domain.models import Session
@@ -19,6 +19,7 @@ from ..domain.models import Session
 SortKey = tuple[float | int | str, ...]
 from ..infra.config import Config
 from .dependency_evaluator import DependencyEvaluator
+from .tech_lead_approval import admits_without_evidence
 from .dependency_pressure import DependencyPressure, local_work_blockers, project_dependency_pressure
 
 if TYPE_CHECKING:
@@ -243,6 +244,7 @@ class Scheduler:
         milestone_strategy: Optional[MilestoneSortStrategy] = None,
         dependency_evaluator: Optional[DependencyEvaluator] = None,
         label_manager: "LabelManager | None" = None,
+        approval_admission: Callable[[Issue], bool] = admits_without_evidence,
     ) -> None:
         """Initialize scheduler with configuration.
 
@@ -263,6 +265,9 @@ class Scheduler:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        # The approval owner's admission rule (#7763), bound by the composition
+        # root; unbound it admits no tech-lead proposal (fail closed).
+        self.approval_admission = approval_admission
 
     def get_available_issues(
         self,
@@ -360,6 +365,15 @@ class Scheduler:
                 available=False,
                 reason=AvailabilityReason.BLOCKED_LABEL,
                 detail=self._blocking_label_detail(issue.labels),
+            )
+        # Labels alone never admit a tech-lead proposal: its approval must be
+        # one the approval owner verified in this process (#7763).
+        if not self.approval_admission(issue):
+            return IssueAvailabilityDecision(
+                issue=issue,
+                available=False,
+                reason=AvailabilityReason.BLOCKED_LABEL,
+                detail="tech-lead proposal without a verified maintainer approval",
             )
 
         if check_dependencies and self.dependency_evaluator and issue.body:

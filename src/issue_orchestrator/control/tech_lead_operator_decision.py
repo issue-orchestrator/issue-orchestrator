@@ -3,8 +3,8 @@
 A ``propose_decision`` is a tech lead turning an open question about a blocked
 item (an agent asking whether to split its issue, a maintainer call about
 scope) into one concrete proposal the operator can approve or decline. It is
-always a gated proposal: removing ``proposed-tech-lead`` is the operator's
-answer. This owner is what that answer does, in an order that keeps the item
+always a gated proposal: a maintainer's verified approval is the operator's
+answer (#7763). This owner is what that answer does, in an order that keeps the item
 gated until everything the resumed session needs exists:
 
 1. **Refuse what cannot be carried out, writing nothing.** An item that closed,

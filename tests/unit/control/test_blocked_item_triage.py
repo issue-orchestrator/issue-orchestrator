@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.control.actions import (
     ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
@@ -62,7 +63,6 @@ from issue_orchestrator.domain.tech_lead_charter_decisions import (
 from issue_orchestrator.domain.tech_lead_session import (
     ApprovedTechLeadOp,
     OperatorDecision,
-    PROPOSED_TECH_LEAD_LABEL,
     TechLeadLaunchAuthority,
     TechLeadSessionFlavor,
 )
@@ -182,7 +182,7 @@ def _porchpin_board() -> list[Issue]:
         _issue(364, "agent:backend", "needs-human", "pr-pending"),
         _issue(400, "agent:backend"),  # runnable, not blocked
         _issue(410, "agent:tech-lead", "needs-human"),  # tech-lead machinery
-        _issue(411, "agent:tech-lead", PROPOSED_TECH_LEAD_LABEL),  # a proposal
+        _issue(411, "agent:tech-lead", AWAITING_APPROVAL_LABEL),  # a proposal
         _issue(ANCHOR, "agent:tech-lead", "needs-human"),  # this review's anchor
     ]
 
@@ -497,7 +497,7 @@ def test_the_split_question_becomes_an_approvable_proposal_with_its_triage_on_re
     actions, log = _plan(_decide(_split()), fingerprints={262: "needs-human"})
 
     [proposal] = [a for a in actions if isinstance(a, CreateTechLeadProposalIssueAction)]
-    assert PROPOSED_TECH_LEAD_LABEL in proposal.labels
+    assert AWAITING_APPROVAL_LABEL in proposal.labels
     assert proposal.op.op_type == "propose_decision"
     assert proposal.op.target_issue_number == 262
     assert proposal.op.decision == OperatorDecision(

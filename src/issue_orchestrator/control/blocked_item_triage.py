@@ -37,8 +37,8 @@ from ..domain.blocked_item_triage import (
     block_fingerprint,
 )
 from ..domain.session_kind import SessionKind
+from ..domain.tech_lead_approval import APPROVAL_MODEL_LABELS
 from ..domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadSessionFlavor,
 )
@@ -62,7 +62,8 @@ logger = logging.getLogger(__name__)
 _TIMELINE_RECORDS_PER_ITEM = 50
 
 _MACHINERY = frozenset(
-    {PROPOSED_TECH_LEAD_LABEL.casefold(), TECH_LEAD_OBSERVATION_LABEL.casefold()}
+    {label.casefold() for label in APPROVAL_MODEL_LABELS}
+    | {TECH_LEAD_OBSERVATION_LABEL.casefold()}
 )
 
 

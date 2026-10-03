@@ -1,5 +1,6 @@
 """Unit tests for FactGatherer."""
 
+from tests.approval_helpers import CLAIMED, GATED, approving_everything
 import pytest
 
 from issue_orchestrator.domain.pause_state import PauseState
@@ -43,7 +44,7 @@ def _host_sees_gated(mock_repository_host, *gated) -> None:
     """
     def _list(**kwargs):
         labels = kwargs.get("labels") or []
-        return list(gated) if "proposed-tech-lead" in labels else []
+        return list(gated) if "tech-lead-proposal" in labels else []
 
     mock_repository_host.list_issues.side_effect = _list
 
@@ -63,7 +64,7 @@ def _anchor_scan_calls(mock_repository_host) -> list:
     return [
         call
         for call in mock_repository_host.list_issues.call_args_list
-        if "proposed-tech-lead" not in (call.kwargs.get("labels") or [])
+        if "tech-lead-proposal" not in (call.kwargs.get("labels") or [])
     ]
 
 
@@ -1091,7 +1092,7 @@ class TestFactGathererHealthReviewFacts:
         # The due health review uses the shared exhaustive tech-lead-agent scan,
         # which both finds the anchor beyond the first page and supplies open
         # case files to the health-review snapshot (#6781).
-        assert [call for call in tracker.calls if "proposed-tech-lead" not in call["labels"]] == [
+        assert [call for call in tracker.calls if "tech-lead-proposal" not in call["labels"]] == [
             {
                 "labels": ["agent:tech-lead"],
                 "state": "open",
@@ -1102,9 +1103,9 @@ class TestFactGathererHealthReviewFacts:
         # The approval-scope query is a SEPARATE observation, by gate label
         # rather than agent label, because promoted findings carry the target's
         # worker agent label and no agent-scoped scan can see them.
-        assert [call for call in tracker.calls if "proposed-tech-lead" in call["labels"]] == [
+        assert [call for call in tracker.calls if "tech-lead-proposal" in call["labels"]] == [
             {
-                "labels": ["proposed-tech-lead"],
+                "labels": ["tech-lead-proposal"],
                 "state": "open",
                 "limit": 2000,
                 "exhaustive": True,
@@ -1404,7 +1405,7 @@ class TestGatedProposalScanClassification:
             created_at="2026-07-11T00:00:00+00:00",
         )
 
-    def _gatherer(self, mock_config, mock_repository_host, ops):
+    def _gatherer(self, mock_config, mock_repository_host, ops, approvals=None):
         from issue_orchestrator.ports.tech_lead_authority import (
             InMemoryTechLeadAuthorityStore,
         )
@@ -1419,16 +1420,17 @@ class TestGatedProposalScanClassification:
             config=mock_config,
             repository_host=mock_repository_host,
             tech_lead_authority=store,
+            approvals=approvals or approving_everything(),
         )
 
     def test_approved_op_classified_from_same_scan(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        """An op-backed issue WITHOUT the gate label is approved; the anchor
+        """An op-backed issue a maintainer approved is approved; the anchor
         classification still works on the remaining issues — all from one
-        list_issues call."""
+        anchor list_issues call."""
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Tech Lead proposal: reset & retry issue #13 from scratch", labels=["tech-lead-agent"]),
+            Issue(number=500, title="Tech Lead proposal: reset & retry issue #13 from scratch", labels=["tech-lead-agent", *CLAIMED]),
             Issue(number=7, title="Tech Lead Batch Review: 3 PRs pending", labels=["tech-lead-agent"]),
         ]
         gatherer = self._gatherer(
@@ -1452,7 +1454,7 @@ class TestGatedProposalScanClassification:
             Issue(
                 number=500,
                 title="Tech Lead proposal: kill hung session for issue #14",
-                labels=["tech-lead-agent", "proposed-tech-lead"],
+                labels=["tech-lead-agent", "tech-lead-proposal"],
             ),
         ]
         gatherer = self._gatherer(
@@ -1496,7 +1498,7 @@ class TestGatedProposalScanClassification:
         delete a live op)."""
         # #500 is still an open proposal; #501's issue is absent from the scan.
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Tech Lead proposal", labels=["tech-lead-agent", "proposed-tech-lead"]),
+            Issue(number=500, title="Tech Lead proposal", labels=["tech-lead-agent", "tech-lead-proposal"]),
         ]
         gatherer = self._gatherer(
             mock_config,
@@ -1525,7 +1527,7 @@ class TestGatedProposalScanClassification:
             Issue(
                 number=500,
                 title="Tech Lead proposal: reset & retry issue #13 from scratch",
-                labels=["tech-lead-agent", "proposed-tech-lead"],
+                labels=["tech-lead-agent", "tech-lead-proposal"],
             ),
         ]
         gatherer = FactGatherer(
@@ -1557,6 +1559,7 @@ class TestGatedProposalScanClassification:
             config=mock_config,
             repository_host=mock_repository_host,
             tech_lead_authority=store,
+            approvals=approving_everything(),
         )
 
     def test_batch_disabled_proposals_still_execute_and_clean_up(
@@ -1568,10 +1571,10 @@ class TestGatedProposalScanClassification:
         reconcile is decoupled from the batch review threshold — otherwise
         manual-approval / default-threshold proposals never advance or
         self-heal."""
-        # #500 is approved (op-backed issue WITHOUT the gate label); #501's
-        # issue is absent from the scan (terminal cleanup candidate).
+        # #500 is approved (a maintainer's `approved`); #501's issue is absent
+        # from the scan (terminal cleanup candidate).
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Tech Lead proposal for issue #13", labels=["tech-lead-agent"]),
+            Issue(number=500, title="Tech Lead proposal for issue #13", labels=["tech-lead-agent", *CLAIMED]),
         ]
         gatherer = self._gatherer_batch_disabled(
             mock_config,
@@ -1781,14 +1784,10 @@ class TestApprovalBacklogFacts:
 
     @staticmethod
     def _gated(number: int, title: str = "gated") -> Issue:
-        from issue_orchestrator.domain.tech_lead_session import (
-            PROPOSED_TECH_LEAD_LABEL,
-        )
-
         return Issue(
             number=number,
             title=title,
-            labels=["agent:backend", PROPOSED_TECH_LEAD_LABEL],
+            labels=["agent:backend", *GATED],
             created_at="2026-07-28T00:00:00+00:00",
         )
 
@@ -2042,7 +2041,7 @@ class TestTheApprovalBacklogIsObservedCompletelyAndCleared:
         return Issue(
             number=number,
             title=title,
-            labels=["tech-lead-agent", "proposed-tech-lead"],
+            labels=["tech-lead-agent", "tech-lead-proposal"],
         )
 
     def test_clearing_the_last_approval_still_publishes_an_empty_backlog(
@@ -2130,7 +2129,7 @@ class _LabelAwareIssueHost:
     def list_issues(self, **kwargs):
         self.calls.append(kwargs)
         labels = kwargs.get("labels") or []
-        return list(self._approval if "proposed-tech-lead" in labels else self._anchor)
+        return list(self._approval if "tech-lead-proposal" in labels else self._anchor)
 
     def get_prs_with_label(self, *_a, **_k):
         return []
@@ -2163,7 +2162,7 @@ class TestTheBacklogSeesWhatOnlyItsOwnScopeCanSee:
         promoted = Issue(
             number=8100,
             title="Promoted finding: condor lane forks a shell",
-            labels=["agent:backend", "proposed-tech-lead"],
+            labels=["agent:backend", "tech-lead-proposal"],
         )
         host = _LabelAwareIssueHost(anchor=[], approval=[promoted])
         gatherer = FactGatherer(
@@ -2205,7 +2204,7 @@ class TestApprovalDiscoveryDoesNotDependOnTheBoard:
         hidden = Issue(
             number=8100,
             title="Promoted finding: condor lane forks a shell",
-            labels=["agent:backend", "proposed-tech-lead"],
+            labels=["agent:backend", "tech-lead-proposal"],
         )
         host = _LabelAwareIssueHost(anchor=[], approval=[hidden])
         gatherer = FactGatherer(
@@ -2272,7 +2271,7 @@ class TestAFailedApprovalQueryDoesNotDiscardObservedFacts:
 
         def list_issues(self, **kwargs):
             self.calls.append(kwargs)
-            if "proposed-tech-lead" in (kwargs.get("labels") or []):
+            if "tech-lead-proposal" in (kwargs.get("labels") or []):
                 from issue_orchestrator.ports.repository_host import (
                     RepositoryHostError,
                 )
@@ -2354,3 +2353,70 @@ class TestAFailedApprovalQueryDoesNotDiscardObservedFacts:
         )
         # ...and the retry is not deferred: the cadence timestamp is untouched.
         assert sample_state.tech_lead_approval_scan_at == 0.0
+
+
+class TestApprovalSettlementFacts:
+    """#7763: the approval scope's verdicts become planned label transitions,
+    with event reads only for items that carry `approved`."""
+
+    @staticmethod
+    def _gatherer(mock_config, mock_repository_host, approvals) -> FactGatherer:
+        from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 0
+        mock_config.tech_lead.health_review.interval_minutes = 0
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+            approvals=approvals,
+        )
+
+    def test_scope_verdicts_plan_admit_reject_and_restore(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+        from tests.approval_helpers import BOT, FakeApprovalEvidence, make_approvals
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(601)  # a maintainer
+        evidence.label(602, by=BOT)
+        _host_sees_gated(
+            mock_repository_host,
+            Issue(number=600, title="waiting", labels=["agent:backend", *GATED]),
+            Issue(number=601, title="maintainer", labels=["agent:backend", *CLAIMED]),
+            Issue(number=602, title="bot", labels=["agent:backend", *CLAIMED]),
+            Issue(number=603, title="stripped", labels=["agent:backend", "tech-lead-proposal"]),
+        )
+        approvals = make_approvals(evidence)
+        gatherer = self._gatherer(mock_config, mock_repository_host, approvals)
+
+        facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+        assert facts is not None
+        assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+            (601, ApprovalTransition.ADMIT),
+            (602, ApprovalTransition.REJECT_CLAIM),
+            (603, ApprovalTransition.RESTORE_WAITING),
+        ]
+        # Evidence was read for the two items carrying `approved`, nothing else.
+        assert sorted({number for number, _, _ in evidence.event_reads}) == [601, 602]
+        # Until the engine admits it, a claimed approval is still in the backlog.
+        assert [p.issue_number for p in facts.gated_proposals] == [600, 601, 602, 603]
+
+    def test_a_removed_approval_un_admits_on_the_next_tick_without_a_scan(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        approvals = approving_everything()
+        admitted = Issue(number=601, title="worked", labels=["agent:backend", *ADMITTED])
+        approvals.verify(admitted)
+        assert approvals.admits(admitted)
+        gatherer = self._gatherer(mock_config, mock_repository_host, approvals)
+        stripped = Issue(number=601, title="worked", labels=["agent:backend", "tech-lead-proposal"])
+
+        gatherer.gather_tech_lead_facts(sample_state, board_issues=[stripped])
+
+        assert not approvals.admits(admitted)

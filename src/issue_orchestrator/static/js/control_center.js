@@ -36,6 +36,72 @@ function getRecoveryView() {
     return recoveryView;
 }
 
+// ============================================
+// Tech lead page (#7763): one cross-repo view model, a badge on every view
+// ============================================
+let techLeadView = null;
+let techLeadLandingDecided = false;
+const TECH_LEAD_REFRESH_MS = 30000;
+
+function getTechLeadView() {
+    if (techLeadView === null && typeof createControlCenterTechLeadView === 'function') {
+        techLeadView = createControlCenterTechLeadView({
+            fetch: (...args) => fetch(...args),
+            contractJson: window.uiContractJson,
+            escapeHtml,
+            notify: showToast,
+            confirm: (message) => window.confirm(message),
+        });
+        techLeadView.bind(document.getElementById('techLeadView'));
+    }
+    return techLeadView;
+}
+
+function updateTechLeadBadges(count) {
+    const view = getTechLeadView();
+    const text = view.badgeText(count);
+    document.getElementById('techLeadNavCount').textContent = text;
+    const badge = document.getElementById('techLeadHeaderBadge');
+    badge.textContent = text;
+    badge.dataset.waiting = String(count);
+    // The embedded repo dashboard hides this header; it shows the same count.
+    const iframe = document.getElementById('activityIframe');
+    try {
+        iframe?.contentWindow?.postMessage({ type: 'cc-tech-lead-waiting', count }, '*');
+    } catch (e) { /* cross-origin, ignore */ }
+}
+
+async function refreshTechLead() {
+    const view = getTechLeadView();
+    if (!view) return null;
+    try {
+        const payload = await view.refresh();
+        if (payload !== null) updateTechLeadBadges(payload.waiting_count);
+        return payload;
+    } catch (error) {
+        console.error('Failed to load the Tech lead page:', error);
+        return null;
+    }
+}
+
+async function openTechLead(repository = null, number = null) {
+    switchView('techLead');
+    await refreshTechLead();
+    if (repository && number) getTechLeadView()?.focusEntry(repository, number);
+}
+
+async function initTechLead() {
+    const params = new URLSearchParams(window.location.search);
+    const payload = await refreshTechLead();
+    if (techLeadLandingDecided) return;
+    techLeadLandingDecided = true;
+    // Pending items are front and centre: land on the page when anything
+    // waits, unless a deep link asked for something else.
+    if (params.get('view') === 'techLead' || (!params.get('repo') && payload?.waiting_count > 0)) {
+        switchView('techLead');
+    }
+}
+
 function focusRecoveryEngineControls(repoKey) {
     const card = [...document.querySelectorAll('.repo-card[data-repo-key]')]
         .find(candidate => candidate.dataset.repoKey === repoKey);
@@ -654,6 +720,7 @@ function switchView(viewName, repoPath = null) {
 
     // Update header title
     const titles = {
+        techLead: 'Tech lead',
         repositories: 'Repository Engines',
         activity: 'Repository Engine',
         tools: 'Tools',
@@ -670,6 +737,9 @@ function switchView(viewName, repoPath = null) {
     if (viewName === 'goalPilot') {
         goalPilotConfig();
         goalPilotLoadRuns();
+    }
+    if (viewName === 'techLead') {
+        refreshTechLead();
     }
 }
 
@@ -737,6 +807,16 @@ window.addEventListener('message', (event) => {
     // Dashboard requests navigation back to repositories
     if (event.data.type === 'cc-back-to-repos') {
         switchView('repositories');
+        return;
+    }
+    // The repo dashboard's badge and its blocked-item drawer open the page.
+    if (event.data.type === 'cc-open-tech-lead') {
+        openTechLead(event.data.repository || null, event.data.number || null);
+        return;
+    }
+    if (event.data.type === 'cc-tech-lead-waiting-request') {
+        const latest = getTechLeadView()?.latest();
+        if (latest) updateTechLeadBadges(latest.waiting_count);
         return;
     }
     if (event.data.type !== 'dashboard-status') return;
@@ -2830,6 +2910,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load repos
     loadRepos();
     loadSystemState();
+    initTechLead();
+    setInterval(refreshTechLead, TECH_LEAD_REFRESH_MS);
+    document.getElementById('techLeadHeaderBadge').addEventListener('click', (event) => {
+        event.preventDefault();
+        openTechLead();
+    });
 
     // Navigation
     document.querySelectorAll('.nav-item[data-view]').forEach(item => {

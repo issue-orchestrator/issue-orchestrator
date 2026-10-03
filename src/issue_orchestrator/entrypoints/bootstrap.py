@@ -144,7 +144,7 @@ from .bootstrap_tech_lead import (
     create_board_snapshot_builder,
     create_rework_scanner,
     create_tech_lead_composition,
-    wire_tech_lead_act_executors,
+    wire_tech_lead_act_executors, wire_tech_lead_approvals,
 )
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
@@ -1308,5 +1308,5 @@ def build_orchestrator_for_testing(
         action_liveness=action_liveness,
         services=infra_services,
     )
-
+    wire_tech_lead_approvals(deps.fact_gatherer, deps.action_applier, deps.planner.scheduler)
     return Orchestrator(config=config, deps=deps, state=runtime_state)

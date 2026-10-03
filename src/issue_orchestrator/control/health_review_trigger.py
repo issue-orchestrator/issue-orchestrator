@@ -757,9 +757,9 @@ def recover_pending_tech_lead_anchors(
     """Requeue open tech_lead anchors on startup (crash-safe label recovery).
 
     Gated tech_lead proposals share the tech lead agent label (#6778) but are
-    never anchors: gate-labeled issues await operator approval, and
-    op-backed issues without the gate label are approved ops the planner
-    executes from the fact scan. Requeuing either as a batch anchor would
+    never anchors: unapproved proposals await a maintainer (#7763), and
+    approved op-backed issues are ops the planner executes from the fact
+    scan (anchor recovery needs no verdicts, so it passes none). Requeuing either as a batch anchor would
     launch a tech_lead session on a proposal issue — the same
     ``reconcile_tech_lead_proposals`` owner the fact gatherer uses excludes
     them here, over an EXHAUSTIVE open scan (#6779 R4) so a proposal backlog
@@ -789,7 +789,7 @@ def recover_pending_tech_lead_anchors(
         if tech_lead_authority is not None
         else {}
     )
-    reconciled = reconcile_tech_lead_proposals(issues, ops=ops,
+    reconciled = reconcile_tech_lead_proposals(issues, ops=ops, verdicts={},
         pending_markers=tuple(item.marker for item in tech_lead_authority.list_pending_proposals())
         if tech_lead_authority is not None else ())
     proposal_skipped = len(issues) - len(reconciled.anchor_candidate_issues)

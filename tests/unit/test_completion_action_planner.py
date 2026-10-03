@@ -1714,7 +1714,7 @@ class TestResetRetryExecutionPipeline:
         from issue_orchestrator.control.actions import (
             CreateTechLeadProposalIssueAction,
         )
-        from issue_orchestrator.domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+        from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 
         config, session = self._armed_investigation(tmp_path, authority_mode="propose")
 
@@ -1736,7 +1736,7 @@ class TestResetRetryExecutionPipeline:
         assert proposal.op.source_action_id == "A2"
         assert proposal.op.source_run_id == session.run_assets.run_id
         assert proposal.op.source_session_name == session.run_assets.session_name
-        assert PROPOSED_TECH_LEAD_LABEL in proposal.labels
+        assert AWAITING_APPROVAL_LABEL in proposal.labels
 
 
 class TestCharterDecisionsArePersisted:
@@ -2236,10 +2236,10 @@ class TestMilestoneResolutionBoundary:
     ) -> None:
         """Propose-authority create_issue is a GATED creation now (#6778):
         it still plans milestone INTENT with zero GitHub reads, and the
-        planned issue carries the proposed-tech-lead gate label."""
+        planned issue carries the approval model's waiting label (#7763)."""
         from unittest.mock import MagicMock
 
-        from issue_orchestrator.domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+        from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 
         config = make_tech_lead_config(tmp_path)
         config.tech_lead.milestone_strategy.explicit = "M5"
@@ -2263,7 +2263,7 @@ class TestMilestoneResolutionBoundary:
             for action in actions
             if isinstance(action, CreateTechLeadIssueAction)
         ]
-        assert PROPOSED_TECH_LEAD_LABEL in create.labels
+        assert AWAITING_APPROVAL_LABEL in create.labels
 
     def test_execute_create_issue_plans_name_intent_without_reads(
         self, tmp_path: Path

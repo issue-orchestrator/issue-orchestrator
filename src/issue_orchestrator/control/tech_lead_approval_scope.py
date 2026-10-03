@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..domain.tech_lead_session import (
-    GatedTechLeadProposal,
-    PROPOSED_TECH_LEAD_LABEL,
-)
+from ..domain.tech_lead_approval import TECH_LEAD_PROPOSAL_LABEL
+from ..domain.tech_lead_session import GatedTechLeadProposal
 from .tech_lead_proposals import (
     TECH_LEAD_PROPOSAL_SCAN_LIMIT,
     observe_gated_tech_lead_proposals,
@@ -64,10 +63,12 @@ def approval_refresh_due(
 def discover_open_gated_proposals(
     repository_host: "RepositoryHost", config: "Config"
 ) -> list["Issue"]:
-    """AUTHORITATIVE observation of the approval backlog, in its own scope.
+    """AUTHORITATIVE observation of every open proposal, in its own scope.
 
-    The backlog is defined by a LABEL, so the only complete observation of it
-    is a query for that label. Everything the tick already holds is a query
+    Proposals are defined by their provenance LABEL (#7763), so the only
+    complete observation of them is a query for that label. It returns the
+    unapproved backlog AND the approved items the approval owner must verify
+    (a claimed approval, or an admitted follow-up still in the work queue). Everything the tick already holds is a query
     for something else that merely overlaps:
 
     - the worker board is narrowed by configured agents, milestones, exclusion
@@ -94,7 +95,7 @@ def discover_open_gated_proposals(
     issues = repository_host.list_issues(
         labels=[
             value
-            for value in (PROPOSED_TECH_LEAD_LABEL, config.filtering.label)
+            for value in (TECH_LEAD_PROPOSAL_LABEL, config.filtering.label)
             if value
         ],
         state="open",
@@ -104,11 +105,33 @@ def discover_open_gated_proposals(
     return _scoped_issues(issues, config.filtering.label)
 
 
+@dataclass(frozen=True)
+class ApprovalScopeObservation:
+    """One observation of the approval scope (#7763).
+
+    ``backlog`` is what the board publishes (unapproved proposals);
+    ``issues`` is the authoritative scope itself — every open proposal,
+    approved or not — which the approval owner verifies and settles.
+    """
+
+    backlog: tuple[GatedTechLeadProposal, ...]
+    issues: tuple["Issue", ...]
+
+
 def observe_approval_backlog(
     repository_host: "RepositoryHost",
     config: "Config",
     *partial: Sequence["Issue"],
 ) -> tuple[GatedTechLeadProposal, ...]:
+    """The unapproved backlog alone; see :func:`observe_approval_scope`."""
+    return observe_approval_scope(repository_host, config, *partial).backlog
+
+
+def observe_approval_scope(
+    repository_host: "RepositoryHost",
+    config: "Config",
+    *partial: Sequence["Issue"],
+) -> ApprovalScopeObservation:
     """The backlog as the board should publish it: complete, and this tick's.
 
     Composes the two halves so no caller has to remember to do both. The sets
@@ -137,17 +160,20 @@ def observe_approval_backlog(
     # handles by resolving the latest observation per issue.)
     in_scope = {issue.number for issue in authoritative}
     observed = observe_gated_tech_lead_proposals(*partial, authoritative)
-    return tuple(
-        proposal for proposal in observed if proposal.issue_number in in_scope
+    return ApprovalScopeObservation(
+        backlog=tuple(
+            proposal for proposal in observed if proposal.issue_number in in_scope
+        ),
+        issues=tuple(authoritative),
     )
 
 
-def observe_approval_backlog_or_none(
+def observe_approval_scope_or_none(
     repository_host: "RepositoryHost",
     config: "Config",
     *partial: Sequence["Issue"],
     decline_on_failure: bool = True,
-) -> tuple[GatedTechLeadProposal, ...] | None:
+) -> ApprovalScopeObservation | None:
     """The backlog, or None when this tick could not observe its scope.
 
     ``decline_on_failure`` must be False whenever the tick has ALREADY gathered
@@ -172,7 +198,7 @@ def observe_approval_backlog_or_none(
     from ..ports.repository_host import RepositoryHostError
 
     try:
-        return observe_approval_backlog(repository_host, config, *partial)
+        return observe_approval_scope(repository_host, config, *partial)
     except RepositoryHostError as error:
         if not decline_on_failure:
             raise

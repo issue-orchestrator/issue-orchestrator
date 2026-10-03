@@ -152,13 +152,30 @@ Semantics:
   most once — the op row is discarded after terminal handling (outcome
   comment + close on execution, or stale-downgrade comment + close).
   Per-instance approval and config-level trust coexist.
+  **Positive approval (amended by #7763).** Approval is no longer the
+  REMOVAL of a label — anything that strips labels (a retry clearing every
+  blocking label, a reconcile, a bulk edit, an agent) used to approve. The
+  gate is now three labels with one meaning each, owned by
+  `control/tech_lead_approval.py`: `tech-lead-proposal` (provenance,
+  permanent), `awaiting-approval` (state, blocking-class) and `approved`
+  (the approval). An `approved` label counts only when the latest `labeled`
+  event's actor is a person with the `admin` or `maintain` repository role,
+  or when it is the exact event the engine's own write produced for an
+  operator's Approve in the Control Center (recorded orchestrator-side).
+  Bot/App identities and agent sessions never approve; an `approved` that
+  does not count is removed with a comment. A proposal is schedulable only
+  when the engine has verified its approval in this process (it then removes
+  `awaiting-approval`); labels alone never admit. Decline is closing the
+  issue. The `proposed-tech-lead` label below is retired: startup migrates
+  open legacy proposals, honouring an old-model removal only when a
+  maintainer made it.
   **Backlog visibility (amended by #7014).** The op ledger is not the approval
   backlog: only act-level proposals leave a row, while `create_issue`
   proposals and promoted findings (#6957) carry the same gate with none. The
   local tech lead board therefore projects the backlog from the **gate label**
   observed on the tick's open issues, unioned with the ledger for the
   operation an approval will execute. "Open proposals: None." must never be
-  printable while a `proposed-tech-lead` issue is open.
+  printable while an unapproved proposal is open.
 - **Durable pattern case files (amended by #6781).** `flag_pattern` under
   `execute` is no longer event-only. Each flag_pattern action carries a
   required `pattern_signature` (a short stable slug; a decision without one is
@@ -449,10 +466,12 @@ booleans do not prove App installation write access.
 
 On the tick a signature crosses `min_evidence`, has no promotion row, fits its
 routed target's cap, and is classified `fix:code`, the orchestrator files ONE
-issue in the routed repo carrying `proposed-tech-lead` plus the route's full
-scheduling contract (worker agent + scope label) and the area label. Removing
-the gate label is the operator's whole approval — the issue is then discoverable
-by the target's unchanged pipeline with nothing else missing. Closing the issue
+issue in the routed repo carrying the approval labels (`tech-lead-proposal`,
+`awaiting-approval`; #7763) plus the route's full scheduling contract (worker
+agent + scope label) and the area label. A maintainer's `approved` in the
+target repo is the operator's whole approval — once the target engine verifies
+it, the issue is discoverable by the target's unchanged pipeline with nothing
+else missing. Closing the issue
 is a decline, recorded permanently so it is never re-filed. When a promoted
 issue closes and the pull request GitHub records as its CLOSER is merged, the
 source orchestrator writes the `tech_lead_shipped_fixes` row, comments the fix

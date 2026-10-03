@@ -422,6 +422,29 @@ def single_pull_request(role: str) -> Goal:
     return Goal(f"{role}.single_pull_request", role, f"the {role} work is published as exactly one PR", check)
 
 
+#: The engine's event for a session it launched on an item (``session_launcher``).
+SESSION_STARTED_EVENT = "session.started"
+
+
+def never_worked(role: str) -> Goal:
+    """The engine never worked the item: no session launched, no pull request.
+
+    For an item that must stay inert (a proposal nobody approved, #7763):
+    the scheduler admitting it even once is the failure, whatever happened
+    after.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        launches = item.events.count(SESSION_STARTED_EVENT)
+        numbers = sorted(pr.number for pr in item.pull_requests)
+        return GoalCheck(
+            not launches and not numbers,
+            f"issue #{item.issue_number}: {launches} session(s) launched, PRs {numbers or '(none)'}",
+        )
+
+    return Goal(f"{role}.never_worked", role, f"the {role} issue is never worked", check)
+
+
 def published_work_survives(role: str) -> Goal:
     """No pull request of the item was closed unmerged or lost its branch."""
 

@@ -25,8 +25,9 @@ from .proposal_dedup_gate import (
 )
 
 _PROPOSE_AUTHORITY_NOTE = (
-    "Gated with the proposed-tech-lead label under `propose` authority (#6778):"
-    " remove the label to approve."
+    "Filed as a tech-lead proposal under `propose` authority (#6778, #7763):"
+    " a maintainer approves it in the Control Center's Approvals inbox or by"
+    " adding the `approved` label."
 )
 
 
@@ -42,15 +43,14 @@ def _suspected_note(outcome: GateSuspectedDuplicate) -> str:
         headline = f"DUPLICATE of #{outcome.issue_number}"
     return (
         f"Gated as a {headline}: {outcome.reason}. Confirm and dedup onto that"
-        " issue, or remove the proposed-tech-lead label to file this as a new"
-        " issue."
+        " issue, or approve this proposal to file it as a new issue."
     )
 
 
 def _unavailable_note(outcome: GateDedupUnavailable) -> str:
     return (
         f"Gated for review: {outcome.reason}. Filed nothing automatically —"
-        " remove the proposed-tech-lead label once checked, or dedup by hand."
+        " approve this proposal once checked, or dedup by hand."
     )
 
 
@@ -58,15 +58,15 @@ def _unverified_note(outcome: GateUnverifiedDuplicate) -> str:
     return (
         f"Gated as a possible DUPLICATE of #{outcome.issue_number}:"
         f" {outcome.reason}. Verify against #{outcome.issue_number}, then dedup"
-        " onto it, or remove the proposed-tech-lead label to file this as new."
+        " onto it, or approve this proposal to file it as new."
     )
 
 
 def _rejected_note(outcome: RejectCandidate) -> str:
     return (
         f"Gated for review: the agent cited #{outcome.issue_number} as a duplicate"
-        f" but {outcome.reason}. Filed as a new issue pending confirmation; remove"
-        " the proposed-tech-lead label to approve."
+        f" but {outcome.reason}. Filed as a new issue pending confirmation;"
+        " approve this proposal to keep it."
     )
 
 
@@ -86,8 +86,8 @@ def batch_duplicate_note(sibling_action_id: str) -> str:
         f"Gated as an intra-decision duplicate of proposal {sibling_action_id} in"
         " the same tech-lead decision — only the first of identical sibling"
         " create_issue proposals takes a primary action (filed, or routed onto an"
-        " existing issue); the rest are gated. Remove the proposed-tech-lead label"
-        " to file this as a separate issue."
+        " existing issue); the rest are gated. Approve this proposal to file it"
+        " as a separate issue."
     )
 
 

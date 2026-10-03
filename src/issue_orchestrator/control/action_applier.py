@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from ..ports.promotion_target import PromotionTargetHost
+    from .tech_lead_approval import TechLeadApprovals
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.pattern_registry import PatternCaseFileRegistry
     from .retry_history_state import ExpediteLane
@@ -223,6 +224,8 @@ class ActionApplier:
     apply_operator_decision: Optional["OperatorDecisionExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     pattern_registry: Optional["PatternCaseFileRegistry"] = None
+    # Approval owner (#7763): approval-label writes and the consent re-check.
+    tech_lead_approvals: Optional["TechLeadApprovals"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
     # means promotion actions fail loudly instead of silently no-oping — the
     # lane is only ever planned when tech_lead.findings is enabled.
@@ -331,7 +334,7 @@ class ActionApplier:
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,
                 pattern_registry=self.pattern_registry,
-                promotion_target=self.promotion_target,
+                promotion_target=self.promotion_target, approvals=self.tech_lead_approvals,
             ),
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
@@ -1534,7 +1537,7 @@ class ActionApplier:
             action,
             apply_fn,
             repository_host=self.repository_host,
-            ops=self.tech_lead_ops,
+            ops=self.tech_lead_ops, approvals=self.tech_lead_approvals,
             before_finalize_write=(lambda: self.require_scoped_rework_authority(action))
             if isinstance(action, RequestReworkAction) else None,
         )

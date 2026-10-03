@@ -24,6 +24,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.tech_lead_authority_store import (
     SqliteTechLeadAuthorityStore,
 )
+from tests.approval_helpers import GATED
 from tests.unit.control.test_scoped_rework import lane as lane
 from tests.unit.control.test_scoped_rework_repair import dispatcher
 
@@ -41,7 +42,7 @@ def creation(lane):
     host.get_issue_state.side_effect = lambda number: (
         host.get_issue(number).state if host.get_issue(number) is not None else None
     )
-    host.list_labels.return_value = [{"name": "proposed-tech-lead"}]
+    host.list_labels.return_value = [{"name": label} for label in GATED]
     host.list_milestones.return_value = []
     host.list_issues.side_effect = lambda **_: (
         [proposal] if "<!-- tech-lead-proposal:" in proposal.body else []
@@ -50,7 +51,7 @@ def creation(lane):
     action = CreateTechLeadProposalIssueAction(
         title="Original gated title",
         body="Original instruction",
-        labels=("proposed-tech-lead",),
+        labels=GATED,
         op=op,
         origin=TechLeadCreationOrigin.derived_from_anchor(77),
         expected=ExpectedState.with_labels(
@@ -151,7 +152,7 @@ def test_normal_ticks_complete_original_intent_once_after_restart(
     [
         "ambiguous",
         "stale-head",
-        "missing-gate",
+        "unprovisionable-gate",
         "original-expectation",
         "legacy-authority",
     ],
@@ -171,8 +172,9 @@ def test_absence_cannot_bypass_original_authority_or_eligibility(creation, refus
         host.find_issue_by_marker.side_effect = TimeoutError("absence is not proven")
     elif refusal == "stale-head":
         pr.head_sha = "b" * 40
-    elif refusal == "missing-gate":
+    elif refusal == "unprovisionable-gate":
         host.list_labels.return_value = []
+        host.create_label.side_effect = RuntimeError("cannot create approval labels")
     elif refusal == "original-expectation":
         anchor.labels.clear()
     for _ in range(3):

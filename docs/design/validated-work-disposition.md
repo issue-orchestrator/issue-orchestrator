@@ -5618,7 +5618,7 @@ Required admission and multi-record regressions (in addition to the tables below
   operator actions offered (§2.2's `no_work()`; there is no `NONE` member to
   render).
 - The tech-lead board renders a `recover_validated_work` gated op; removing
-  `proposed-tech-lead` and the Control Center command reach the same owner and
+  a maintainer's `approved` label and the Control Center command reach the same owner and
   produce the same typed result.
 - `session_controller`/`session_completion` classification: an issue whose batch
   `found_work` is never recorded as generic `timed_out`.

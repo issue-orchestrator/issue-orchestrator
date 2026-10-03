@@ -261,8 +261,8 @@ Last health review: 2026-07-11T00:00:00+00:00
 
 ## Open proposals
 
-2 awaiting operator approval — remove the `proposed-tech-lead` label from a \
-proposal to approve it.
+2 awaiting operator approval — a maintainer approves one in the Control \
+Center's Approvals inbox or by adding the `approved` label.
 
 | Proposal | Operation | Target | Age | Title |
 |---|---|---|---|---|

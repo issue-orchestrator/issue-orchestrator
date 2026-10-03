@@ -448,8 +448,10 @@ tech_lead:
   #   (except create_issue, see below).
   # escalate_to_human is not configurable: it always executes (the floor).
   # create_issue "propose" is NOT shadow: it files a REAL gated proposal issue
-  # carrying the proposed-tech-lead label, inert until an operator removes it
-  # (per-instance approval, #6778). "execute" files the follow-up issue directly.
+  # labelled tech-lead-proposal + awaiting-approval, inert until a maintainer
+  # adds the approved label or approves it in the Control Center's Approvals
+  # inbox (per-instance approval, #6778, #7763). An approved label added by a
+  # bot or an agent never counts. "execute" files the follow-up issue directly.
   # reset_retry is destructive (reset from scratch): it is always "propose"
   # (a gated proposal issue) and "execute" is rejected at startup (#7330).
   # kill_hung_session "execute" terminates only the exact session generation
@@ -516,8 +518,9 @@ tech_lead:
   # tech lead classified `fix:code` - a human-gated problem made runnable just
   # manufactures doomed rework.
   #   promote: off | gated | auto
-  #     gated (default) files the issue carrying `proposed-tech-lead`, so
-  #       operator approval is exactly one action: removing the label. Closing
+  #     gated (default) files the issue labelled `tech-lead-proposal` and
+  #       `awaiting-approval`, so operator approval is exactly one action: a
+  #       maintainer's `approved` label in the target repo. Closing
   #       the issue while gated declines it permanently (never re-filed).
   #     auto files it ungated - immediately runnable in the target's pipeline.
   #     off disables the lane entirely (no issues filed, no follow-up reads).

@@ -239,7 +239,7 @@ def test_done_guard_skips_issue_without_blocking_label():
 
 
 def test_excludes_machinery_and_reconciler_owned_labels():
-    # F2 (#6824): only proposed-tech-lead/tech-lead-observation are BLANKET machinery
+    # F2 (#6824): only awaiting-approval/tech-lead-observation are BLANKET machinery
     # exclusions. provider-unavailable is owned while its circuit is open (the
     # default None predicate treats it as owned), and the tech-lead-needs-human
     # MARKER is reconciler-owned — both skipped, but not permanently blind.
@@ -250,7 +250,7 @@ def test_excludes_machinery_and_reconciler_owned_labels():
         [
             _issue(2, labels=[labels.tech_lead_needs_human]),   # marker: reconciler owns
             _issue(3, labels=[labels.provider_unavailable]),  # circuit owns (default)
-            _issue(4, labels=["proposed-tech-lead"]),            # machinery
+            _issue(4, labels=["awaiting-approval"]),            # machinery
             _issue(5, labels=["tech-lead-observation"]),         # machinery
         ]
     )

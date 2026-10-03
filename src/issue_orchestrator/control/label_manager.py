@@ -14,11 +14,16 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
+from ..domain.tech_lead_approval import (
+    APPROVED_LABEL,
+    AWAITING_APPROVAL_LABEL,
+    TECH_LEAD_PROPOSAL_LABEL,
+    is_approval_model_label,
+    proposal_label_state,
+)
 from ..domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     TECH_LEAD_AREA_LABEL_PREFIX,
     TECH_LEAD_OBSERVATION_LABEL,
-    is_proposed_tech_lead_gate,
 )
 from .reconciliation import RECONCILE_PAUSE_LABEL
 
@@ -62,6 +67,10 @@ _TECH_LEAD_ISSUE_LABEL_METADATA = {
         "B60205",
         "Pattern case file (tech_lead observation ledger)",
     ),
+    # The approval model (#7763): provenance, waiting state, approval.
+    TECH_LEAD_PROPOSAL_LABEL.casefold(): ("5319E7", "Filed by the tech lead under propose authority"),
+    AWAITING_APPROVAL_LABEL.casefold(): ("FBCA04", "Tech-lead proposal awaiting a maintainer's approval"),
+    APPROVED_LABEL.casefold(): ("0E8A16", "Approved by a maintainer (tech-lead proposals)"),
 }
 
 
@@ -199,10 +208,14 @@ class LabelManager:
             LabelEntry("review_keep_approach", config.review_keep_current_approach_label, LabelCategory.INFORMATIONAL, "Keep current approach"),
             LabelEntry("code_review", config.code_review_label or "needs-code-review", LabelCategory.LIFECYCLE, "Needs code review"),
             LabelEntry("code_reviewed", config.code_reviewed_label or "code-reviewed", LabelCategory.LIFECYCLE, "Code reviewed"),
-            # Gated tech_lead proposal issues (#6778): blocking-class so the
-            # scheduler never picks one up; raw (never prefixed) like the
-            # rest of the tech_lead subsystem's labels.
-            LabelEntry("proposed_tech_lead", PROPOSED_TECH_LEAD_LABEL, LabelCategory.BLOCKING, "Tech Lead proposal awaiting operator approval", raw=True),
+            # The proposal approval model (#7763), raw like the rest of the
+            # tech_lead subsystem's labels. Only the waiting state is
+            # blocking-class; provenance and approval are informational, and
+            # ``is_blocking_any`` keeps an unapproved proposal blocked even
+            # when its waiting label was stripped.
+            LabelEntry("awaiting_approval", AWAITING_APPROVAL_LABEL, LabelCategory.BLOCKING, "Tech Lead proposal awaiting a maintainer's approval", raw=True),
+            LabelEntry("tech_lead_proposal", TECH_LEAD_PROPOSAL_LABEL, LabelCategory.INFORMATIONAL, "Filed by the Tech Lead under propose authority", raw=True),
+            LabelEntry("approved", APPROVED_LABEL, LabelCategory.INFORMATIONAL, "Approved by a maintainer", raw=True),
             # Pattern case-file issues (#6781): same treatment as the gate
             # label — blocking-class (never picked up), raw (never prefixed).
             LabelEntry("tech_lead_observation", TECH_LEAD_OBSERVATION_LABEL, LabelCategory.BLOCKING, "Pattern case file (tech_lead observation ledger)", raw=True),
@@ -340,9 +353,9 @@ class LabelManager:
         return self._tech_lead_reviewed_base
 
     @property
-    def proposed_tech_lead(self) -> str:
-        """The gated-proposal label (#6778). Raw — never prefixed."""
-        return self._resolved["proposed_tech_lead"]
+    def gated_proposal_labels(self) -> tuple[str, str]:
+        """What a gated proposal is filed with (#7763): provenance + waiting state."""
+        return (self._resolved["tech_lead_proposal"], self._resolved["awaiting_approval"])
 
     @property
     def tech_lead_observation(self) -> str:
@@ -416,28 +429,30 @@ class LabelManager:
     def is_blocking(self, label: str) -> bool:
         """Return True if *label* blocks processing (prefix-aware).
 
-        ``proposed-tech-lead`` is blocking-class (#6778): gated tech_lead proposal
-        issues are excluded from pickup until an operator removes the gate
-        label (per-instance approval, ADR-0031 §2 amendment). The gate match is
-        case-insensitive via the shared owner (#6779 R15) — GitHub folds label
-        names, so a canonical ``Proposed-Tech-Lead`` still blocks and can never be
-        classified as approved by reconciliation while blocking treats it as
-        absent.
-        ``tech-lead-observation`` is blocking-class the same way (#6781):
-        pattern case files are evidence ledgers, never agent work items.
+        ``awaiting-approval`` is blocking-class (#7763): a tech-lead proposal
+        waits on a maintainer's approval. Case-insensitive, since GitHub folds
+        label names. ``tech-lead-observation`` is blocking-class the same way
+        (#6781): pattern case files are evidence ledgers, never agent work
+        items. A proposal whose waiting label was stripped is still blocked,
+        but that is a property of its label SET — see :meth:`is_blocking_any`.
         """
         base = self._strip_prefix(label)
         return (
             label.casefold() in self._blocking_folded
             or base == "blocked"
             or base.startswith(("blocked-", "blocked:"))
-            or is_proposed_tech_lead_gate(base)
+            or base.casefold() == self._resolved["awaiting_approval"].casefold()
             or base.casefold() == self._resolved["tech_lead_observation"].casefold()
             or base in _LEGACY_BLOCKING
         )
 
     def is_blocking_any(self, labels: Sequence[str]) -> bool:
-        return any(self.is_blocking(l) for l in labels)
+        """Any blocking label, or an unapproved tech-lead proposal (#7763).
+
+        A proposal stays blocked until it carries ``approved``, whatever else
+        was stripped: removing ``awaiting-approval`` alone approves nothing.
+        """
+        return any(self.is_blocking(l) for l in labels) or proposal_label_state(labels).gate_closed
 
     def is_tech_lead_artifact_any(self, labels: Sequence[str]) -> bool:
         """Return whether labels identify non-executable Tech Lead evidence.
@@ -447,18 +462,23 @@ class LabelManager:
         Keeping that distinction here lets scheduling and operator projections use
         the same label owner without conflating their different meanings.
         """
-        for label in labels:
-            base = self._strip_prefix(label)
-            if (
-                is_proposed_tech_lead_gate(base)
-                or base.casefold()
-                == self._resolved["tech_lead_observation"].casefold()
-            ):
-                return True
-        return False
+        if proposal_label_state(labels).gate_closed:
+            return True
+        observation = self._resolved["tech_lead_observation"].casefold()
+        return any(self._strip_prefix(label).casefold() == observation for label in labels)
 
     def get_blocking(self, labels: Sequence[str]) -> list[str]:
-        return [l for l in labels if self.is_blocking(l)]
+        """The labels that block, consistent with :meth:`is_blocking_any`.
+
+        An unapproved proposal whose waiting label was stripped is blocked by
+        its provenance label, so that label is named here. Callers that CLEAR
+        blocking labels must still leave the approval model's labels alone
+        (``is_approval_model_label``): only the approval owner writes them.
+        """
+        blocking = [l for l in labels if self.is_blocking(l)]
+        if not blocking and proposal_label_state(labels).gate_closed:
+            blocking = [l for l in labels if is_approval_model_label(l)]
+        return blocking
 
     # ------------------------------------------------------------------
     # Strip helpers
@@ -503,7 +523,7 @@ class LabelManager:
         """
         # Only the aggregate disposition owner can release this interest: a
         # landed PR does not settle another retained record on the same issue.
-        return label.casefold() not in self._retained_on_recovery and (
+        return label.casefold() not in self._retained_on_recovery and not is_approval_model_label(label) and (
             label == self.pr_pending
             or label == self.tech_lead_needs_human
             or self.is_blocking(label)

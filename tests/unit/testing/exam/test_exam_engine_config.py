@@ -33,6 +33,7 @@ from tests.e2e.exam.case_engines import (
     case_b_engine,
     case_c_engine,
     case_d_engine,
+    case_h_engine,
     case_u_engine,
 )
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
@@ -99,8 +100,9 @@ def _load_case_config(
         case_c_engine(),
         case_u_engine(Path("/tmp/exam-u-release")),
         case_d_engine(),
+        case_h_engine(),
     ],
-    ids=["A", "B", "C", "U", "D"],
+    ids=["A", "B", "C", "U", "D", "H"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -223,3 +225,17 @@ def test_only_case_d_lets_the_engine_reuse_worktrees() -> None:
         engine = spec.engine(Config(), checkout)
         expected = {"ORCHESTRATOR_DISABLE_WORKTREE_REUSE": "0"} if reuse else {}
         assert dict(engine.process.env_overrides) == expected
+
+
+def test_case_h_enables_the_tech_lead_but_never_triggers_a_run(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """Approval verification needs an enabled tech lead (#7763); the case
+    must never spend its model, so every run trigger is off."""
+    loaded = _load_case_config(case_h_engine(), tmp_path, written)
+
+    assert loaded.tech_lead_enabled
+    assert loaded.tech_lead_review_threshold == 0
+    assert loaded.tech_lead.health_review.interval_minutes == 0
+    assert loaded.tech_lead.stuck_sweep.enabled is False
+    assert loaded.tech_lead.findings.promote == "off"

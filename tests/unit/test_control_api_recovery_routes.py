@@ -56,6 +56,7 @@ def recovery_queries(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         get_expected_engine_identity_raw=MagicMock(),
         get_recovery_queries=lambda: queries,
         get_recovery_stops=MagicMock(),
+        get_tech_lead=MagicMock(),
     )
     monkeypatch.setitem(
         control_app.dependency_overrides,

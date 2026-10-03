@@ -36,6 +36,7 @@
     <link rel="stylesheet" href="/static/css/control_center.css?v={{ static_version }}">
     <link rel="stylesheet" href="/static/css/ui_primitives.css?v={{ static_version }}">
     <link rel="stylesheet" href="/static/css/control_center_setup.css?v={{ static_version }}">
+    <link rel="stylesheet" href="/static/css/control_center_tech_lead.css?v={{ static_version }}">
 </head>
 <body>
     {{ dev_no_auth_banner }}
@@ -65,6 +66,19 @@
             </div>
 
             <nav class="sidebar-nav">
+                <!-- Tech lead page (#7763): what waits on the operator, across
+                     repositories. The count is TEXT inside the control's
+                     accessible name, never colour alone. -->
+                <div class="nav-section">
+                    <button class="nav-item" data-view="techLead" id="techLeadNavItem">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M8 0a8 8 0 110 16A8 8 0 018 0zM1.5 8a6.5 6.5 0 1013 0 6.5 6.5 0 00-13 0zm7-3.25v2.992l2.028.812a.75.75 0 01-.557 1.392l-2.5-1A.75.75 0 017 8.25v-3.5a.75.75 0 011.5 0z"/>
+                        </svg>
+                        Tech lead
+                        <span class="waiting-count" id="techLeadNavCount">Nothing waiting on you</span>
+                    </button>
+                </div>
+
                 <div class="nav-section">
                     <button class="nav-item active" data-view="repositories" aria-current="page">
                         <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -120,7 +134,28 @@
                     <div class="header-subtitle">Control Center window visibility is independent from repository engine runtime.</div>
                     <div class="active-summary" id="activeSummary">Registered engines: 0 Running · 0 Paused · 0 Stopped</div>
                 </div>
+                <a class="waiting-badge" id="techLeadHeaderBadge" href="?view=techLead" data-waiting="0">Nothing waiting on you</a>
             </header>
+
+            <!-- Tech lead View (#7763): ONE cross-repo page over
+                 ControlCenterTechLeadPayload. Three labelled lanes; the only
+                 actions are Approve / Decline on proposals. -->
+            <div class="view-container" id="techLeadView" role="main" aria-labelledby="viewTitle">
+                <p class="tl-run-strip" id="techLeadRunStrip" role="status" aria-live="polite">Loading the tech lead's latest run…</p>
+                <p class="tl-command-status" id="techLeadCommandStatus" role="status" aria-live="polite"></p>
+                <section class="tl-lane tl-lane-waiting" aria-labelledby="techLeadWaitingHeading">
+                    <h2 id="techLeadWaitingHeading" tabindex="-1">Waiting on you</h2>
+                    <div id="techLeadWaitingList"><p class="tl-empty">Loading…</p></div>
+                </section>
+                <section class="tl-lane" aria-labelledby="techLeadDoingHeading">
+                    <h2 id="techLeadDoingHeading">Doing on its own</h2>
+                    <div id="techLeadDoingList"></div>
+                </section>
+                <section class="tl-lane" aria-labelledby="techLeadWatchingHeading">
+                    <h2 id="techLeadWatchingHeading">Watching</h2>
+                    <div id="techLeadWatchingList"></div>
+                </section>
+            </div>
 
             <!-- Repositories View -->
             <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
@@ -969,6 +1004,9 @@
     </div>
 
     <script src="/static/js/browser_auth.js?v={{ static_version }}"></script>
+    <script src="/static/js/ui-contracts.validators.js?v={{ static_version }}"></script>
+    <script src="/static/js/ui_contract_json.js?v={{ static_version }}"></script>
+    <script src="/static/js/control_center_tech_lead.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center_setup_commands.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center_setup.js?v={{ static_version }}"></script>
     <script src="/static/js/control_center_recovery_stop.js?v={{ static_version }}"></script>

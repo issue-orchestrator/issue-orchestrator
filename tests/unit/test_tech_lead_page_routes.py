@@ -1,0 +1,202 @@
+"""Engine side of the Tech lead page (#7763): both sides of the command boundary.
+
+* producer -> payload: the engine's section route serves the page facade's
+  projection, and the facade reads only engine-held state (no GitHub calls);
+* command payload -> owner: the typed POST reaches the ONE approval owner and
+  writes exactly the approval it records, and the retired rework-proposal
+  routes are gone.
+"""
+
+from __future__ import annotations
+
+import threading
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from issue_orchestrator.adapters.github.github_issue import GitHubIssue
+from issue_orchestrator.domain.scoped_rework import TechLeadProposalCommand
+from issue_orchestrator.domain.tech_lead_approval import APPROVED_LABEL, ApprovalVerdictKind
+from issue_orchestrator.infra.tech_lead_proposal_facade import (
+    proposal_command,
+    tech_lead_page_section,
+)
+from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+from tests.approval_helpers import BOT, GATED, FakeApprovalEvidence, make_approvals
+
+REPO = "porchpin/porchpin"
+
+
+class _Host:
+    """The GitHub writes an approval may make, recorded."""
+
+    def __init__(self, evidence: FakeApprovalEvidence, issue: GitHubIssue) -> None:
+        self.evidence, self.issue = evidence, issue
+        self.writes: list[tuple] = []
+
+    def get_issue(self, number):
+        return self.issue if number == self.issue.number else None
+
+    def add_label(self, number, label):
+        self.writes.append(("add_label", number, label))
+        self.evidence.label(number, label, by=BOT)  # the engine's own identity
+        self.issue = GitHubIssue(number=number, repo=REPO, title=self.issue.title,
+                                 labels=(*self.issue.labels, label), state=self.issue.state)
+
+    def remove_label(self, number, label):
+        self.writes.append(("remove_label", number, label))
+
+    def add_comment(self, number, body):
+        self.writes.append(("add_comment", number))
+        return ""
+
+    def update_issue_state(self, number, state):
+        self.writes.append(("update_issue_state", number, state))
+        self.issue = GitHubIssue(number=number, repo=REPO, title=self.issue.title,
+                                 labels=self.issue.labels, state=state)
+
+
+def _engine(issue: GitHubIssue):
+    evidence = FakeApprovalEvidence()
+    approvals = make_approvals(evidence)
+    host = _Host(evidence, issue)
+    authority = InMemoryTechLeadAuthorityStore()
+    orchestrator = SimpleNamespace(
+        state_lock=threading.RLock(),
+        state=SimpleNamespace(tech_lead_approval_scan_at=123.0),
+        deps=SimpleNamespace(
+            action_applier=SimpleNamespace(tech_lead_approvals=approvals),
+            services=SimpleNamespace(tech_lead_authority=authority),
+            repository_host=host,
+        ),
+    )
+    return orchestrator, approvals, host
+
+
+@pytest.fixture
+def client(fake_browser_auth):
+    from issue_orchestrator.entrypoints.web import app, set_orchestrator
+
+    engine = MagicMock()
+    set_orchestrator(engine)
+    try:
+        yield TestClient(app, headers=fake_browser_auth.bearer_headers()), engine
+    finally:
+        set_orchestrator(None)
+
+
+def test_approve_route_records_an_operator_approval_the_owner_verifies(client) -> None:
+    http, engine = client
+    orchestrator, approvals, host = _engine(GitHubIssue(number=501, repo=REPO, title="p", labels=GATED))
+    engine.request_tech_lead_proposal.side_effect = lambda command: proposal_command(orchestrator, command)
+
+    response = http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 501, "decision": "approve"})
+
+    assert response.status_code == 200 and response.json()["outcome"] == "approved"
+    assert ("add_label", 501, APPROVED_LABEL) in host.writes
+    # The engine's (bot) label counts only because the operator's act is on record.
+    assert approvals.verify(host.issue, fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
+    assert orchestrator.state.tech_lead_approval_scan_at == 0.0  # next tick acts on it
+
+
+def test_decline_route_closes_the_proposal_and_executes_nothing(client) -> None:
+    http, engine = client
+    orchestrator, _, host = _engine(GitHubIssue(number=502, repo=REPO, title="p", labels=GATED))
+    engine.request_tech_lead_proposal.side_effect = lambda command: proposal_command(orchestrator, command)
+
+    response = http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 502, "decision": "decline"})
+
+    assert response.status_code == 200 and response.json()["outcome"] == "declined"
+    assert ("update_issue_state", 502, "closed") in host.writes
+    assert not any(write[0] == "add_label" for write in host.writes)
+
+
+def test_refused_command_maps_to_409_with_the_typed_outcome(client) -> None:
+    http, engine = client
+    orchestrator, _, _ = _engine(GitHubIssue(number=503, repo=REPO, title="ordinary", labels=()))
+    engine.request_tech_lead_proposal.side_effect = lambda command: proposal_command(orchestrator, command)
+
+    response = http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 503, "decision": "approve"})
+
+    assert response.status_code == 409
+    assert response.json() == {"proposal_issue_number": 503, "outcome": "unavailable",
+                               "detail": "This issue is not a tech-lead proposal"}
+
+
+def test_route_hands_the_owner_one_typed_command(client) -> None:
+    http, engine = client
+    engine.request_tech_lead_proposal.return_value = SimpleNamespace(
+        outcome="approved", detail="ok", proposal_issue_number=7)
+    http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 7, "decision": "approve"})
+    assert engine.request_tech_lead_proposal.call_args.args == (TechLeadProposalCommand(7, "approve"),)
+    rejected = http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 0, "decision": "approve"})
+    assert rejected.status_code == 422
+
+
+def test_section_route_serves_the_engine_projection(client) -> None:
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        TechLeadHealthReviewPayload,
+        TechLeadPageSectionPayload,
+        TechLeadRunStripPayload,
+    )
+
+    http, engine = client
+    engine.tech_lead_page_section.return_value = TechLeadPageSectionPayload(
+        repository=REPO, generated_at="now", waiting_count=0,
+        run=TechLeadRunStripPayload(has_run=False, label="", phase="", phase_label="", started_at="", ended_at="", detail=""),
+        waiting=[], doing=[], parked=[], triaged=[], case_files=[],
+        health_review=TechLeadHealthReviewPayload(enabled=False, interval_minutes=0, last_at="", next_due_at="", label="off"),
+    )
+    response = http.get("/api/tech-lead/page")
+    assert response.status_code == 200 and response.json()["repository"] == REPO
+
+
+def test_retired_rework_proposal_routes_are_gone(client) -> None:
+    http, _ = client
+    assert http.get("/api/tech-lead/rework-proposals").status_code == 404
+    assert http.post("/api/tech-lead/rework-proposals",
+                     json={"proposal_issue_number": 1, "decision": "approve"}).status_code in (404, 405)
+
+
+class _WeakReferenceable:
+    """An engine stand-in the page facade can key its PR-status cache on, as
+    it does the real Orchestrator."""
+
+    def __init__(self, **fields) -> None:
+        self.__dict__.update(fields)
+
+
+def test_page_facade_reads_engine_state_only() -> None:
+    """The page makes no GitHub call: the repository host is never touched."""
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.infra.config import Config
+
+    approvals = make_approvals()
+    proposal = GitHubIssue(number=600, repo=REPO, title="p", labels=GATED, created_at="2026-10-01T00:00:00Z")
+    approvals.record_scope((proposal,), {})
+    host = MagicMock()
+    history = MagicMock()
+    history.recent.return_value = ()
+    claims = MagicMock()
+    claims.list_needs_human_causes.return_value = ()
+    liveness = SimpleNamespace(owner=SimpleNamespace(parked=lambda: ()))
+    orchestrator = _WeakReferenceable(
+        state_lock=threading.RLock(),
+        config=Config(repo=REPO),
+        state=SimpleNamespace(cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0),
+        tech_lead_run_history=history,
+        deps=SimpleNamespace(
+            action_applier=SimpleNamespace(tech_lead_approvals=approvals, request_rework=None),
+            services=SimpleNamespace(tech_lead_authority=InMemoryTechLeadAuthorityStore()),
+            label_manager=LabelManager(Config(repo=REPO)),
+            pending_work_claims=claims,
+            fact_gatherer=SimpleNamespace(board_publisher=None),
+            action_liveness=liveness,
+            repository_host=host,
+        ),
+    )
+    section = tech_lead_page_section(orchestrator)
+    assert [item.number for item in section.waiting] == [600]
+    assert host.mock_calls == []

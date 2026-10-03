@@ -167,6 +167,20 @@ export interface ConfigDialogPayload {
   title: string;
 }
 
+export interface ControlCenterTechLeadPayload {
+  generated_at: string;
+  repos: ControlCenterTechLeadRepoPayload[];
+  waiting_count: number;
+}
+
+export interface ControlCenterTechLeadRepoPayload {
+  availability: "available" | "engine_not_running" | "unavailable";
+  detail: string;
+  name: string;
+  repo_key: string;
+  section: TechLeadPageSectionPayload | null;
+}
+
 export interface CopySessionRecordingCommandPayload {
   issue_number: number;
   kind: "copy_session_recording";
@@ -1464,27 +1478,6 @@ export interface ReviewTranscriptUnavailablePayload {
   reason: string;
 }
 
-export interface ReworkProposalPayload {
-  can_approve: boolean;
-  can_decline: boolean;
-  detail: string;
-  evidence_identity: string;
-  expected_head: string;
-  feedback: string;
-  forward_issue_number: number;
-  issue_number: number;
-  mutations: string;
-  pr_number: number;
-  proposal_issue_number: number;
-  report: string;
-  repository: string;
-  status: string;
-}
-
-export interface ReworkProposalsPayload {
-  proposals: ReworkProposalPayload[];
-}
-
 export interface RunningCodingAttemptPayload {
   agent: AgentIdentityPayload;
   commands: TimelineCommandPayload[];
@@ -1651,13 +1644,72 @@ export interface TechLeadActivityPayload {
   entries: TechLeadRunActivityEntryPayload[];
 }
 
+export interface TechLeadCaseFilePayload {
+  area: string;
+  comment_count: number;
+  issue_number: number;
+  link: string;
+  title: string;
+  updated_at: string;
+}
+
+export interface TechLeadDetailRowPayload {
+  label: string;
+  value: string;
+}
+
+export interface TechLeadDoingItemPayload {
+  action_kind: string;
+  action_label: string;
+  at: string;
+  decision_id: string;
+  in_flight: boolean;
+  link: string;
+  outcome: string;
+  outcome_label: string;
+  reason: string;
+  target_number: number;
+}
+
 export interface TechLeadGlobalHealthReviewScopePayload {
   kind: "global_health_review";
+}
+
+export interface TechLeadHealthReviewPayload {
+  enabled: boolean;
+  interval_minutes: number;
+  label: string;
+  last_at: string;
+  next_due_at: string;
 }
 
 export interface TechLeadIssueScopePayload {
   issue_number: number;
   kind: "issue";
+}
+
+export interface TechLeadPageSectionPayload {
+  case_files: TechLeadCaseFilePayload[];
+  doing: TechLeadDoingItemPayload[];
+  generated_at: string;
+  health_review: TechLeadHealthReviewPayload;
+  parked: TechLeadParkedActionPayload[];
+  repository: string;
+  run: TechLeadRunStripPayload;
+  triaged: TechLeadTriagedItemPayload[];
+  waiting: TechLeadWaitingItemPayload[];
+  waiting_count: number;
+}
+
+export interface TechLeadParkedActionPayload {
+  action: string;
+  escalated: boolean;
+  issue_number: number;
+  link: string;
+  outcome: string;
+  parked_since: string;
+  reason: string;
+  subject: string;
 }
 
 export interface TechLeadProposalCommandPayload {
@@ -1706,6 +1758,41 @@ export interface TechLeadRunAdmissionPayload {
 
 export interface TechLeadRunRequestPayload {
   scope: TechLeadRunScopePayload;
+}
+
+export interface TechLeadRunStripPayload {
+  detail: string;
+  ended_at: string;
+  has_run: boolean;
+  label: string;
+  phase: string;
+  phase_label: string;
+  started_at: string;
+}
+
+export interface TechLeadTriagedItemPayload {
+  decided_at: string;
+  issue_number: number;
+  link: string;
+  reason: string;
+  triage_class: string;
+  triage_label: string;
+}
+
+export interface TechLeadWaitingItemPayload {
+  approval_effect: string;
+  can_approve: boolean;
+  can_decline: boolean;
+  details: TechLeadDetailRowPayload[];
+  kind: "proposal" | "merge_ready_pr" | "hand_over";
+  link: string;
+  number: number;
+  operation: string;
+  recommendation: string;
+  status: "awaiting_approval" | "approved" | "approval_not_accepted" | "executing" | "merge_held" | "handed_over";
+  status_label: string;
+  title: string;
+  waiting_since: string;
 }
 
 export interface TestCaseHistoryPayload {

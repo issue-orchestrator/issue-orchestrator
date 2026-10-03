@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from ..domain.scoped_rework import ReworkReceipt
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
+from .approval_evidence import InMemoryOperatorApprovalRecords, OperatorApprovalRecords
 from .operator_decision_retries import DecisionRetryState
 from .tech_lead_charter_ledger import (
     InMemoryTechLeadCharterLedger,
@@ -543,6 +544,11 @@ class TechLeadAuthorityStore(Protocol):
         """The per-action charter decision ledger, beside the op ledger it links to."""
         ...
 
+    @property
+    def operator_approvals(self) -> "OperatorApprovalRecords":
+        """Control Center approvals of gated proposals (#7763)."""
+        ...
+
 
 class InMemoryTechLeadAuthorityStore:
     """In-memory store for tests."""
@@ -565,10 +571,15 @@ class InMemoryTechLeadAuthorityStore:
         self._dispositions: dict[int, "TechLeadDisposition"] = {}
         self._disposition_publication_locks: dict[int, Lock] = {}
         self._charter_ledger = InMemoryTechLeadCharterLedger()
+        self._operator_approvals = InMemoryOperatorApprovalRecords()
 
     @property
     def charter_ledger(self) -> "InMemoryTechLeadCharterLedger":
         return self._charter_ledger
+
+    @property
+    def operator_approvals(self) -> InMemoryOperatorApprovalRecords:
+        return self._operator_approvals
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"

@@ -52,8 +52,19 @@ from issue_orchestrator.control.tech_lead_reset_retry import (
 )
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.tech_lead_artifacts import ProposedTechLeadAction
+from tests.approval_helpers import (
+    ADMITTED,
+    BOT,
+    CLAIMED,
+    CONTRIBUTOR,
+    GATED,
+    MAINTAINER,
+    FakeApprovalEvidence,
+    approving_everything,
+    make_approvals,
+    maintainer_approved,
+)
 from issue_orchestrator.domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     TECH_LEAD_OBSERVATION_LABEL,
     ApprovedTechLeadOp,
     StoredTechLeadOp,
@@ -184,9 +195,9 @@ def _host(created_number: int = 500) -> MagicMock:
     # No orphaned remote case file unless a test says otherwise (#6957 F10).
     host.find_issue_by_marker.return_value = None
     host.list_milestones.return_value = []
-    # The gate must be provisioned or the applier refuses to create (#6779 R3).
+    # The approval labels are provisioned (#6779 R3, #7763).
     host.list_labels.return_value = [
-        {"name": PROPOSED_TECH_LEAD_LABEL},
+        *({"name": label} for label in GATED),
         {"name": "tech-lead-agent"},
         {"name": TECH_LEAD_OBSERVATION_LABEL},
     ]
@@ -199,7 +210,8 @@ def _host(created_number: int = 500) -> MagicMock:
 def test_proposal_action_carries_gate_label_and_scan_labels() -> None:
     action = _proposal_action()
 
-    assert PROPOSED_TECH_LEAD_LABEL in action.labels
+    assert set(GATED) <= set(action.labels)
+    assert "approved" not in action.labels
     # The tech lead agent label keeps the proposal inside the ONE anchor scan.
     assert "tech-lead-agent" in action.labels
     # R6: the proposal's findings are persisted onto the stored op.
@@ -247,12 +259,17 @@ def test_recovery_proposal_renders_remote_authority_without_inventing_absence(
     assert all(line in action.body for line in expected_lines)
 
 
-def test_proposal_action_requires_gate_label() -> None:
-    with pytest.raises(ValueError, match="gate label"):
+@pytest.mark.parametrize(
+    "labels",
+    [("x",), ("x", "tech-lead-proposal", "awaiting-approval", "approved")],
+    ids=["ungated", "pre-approved"],
+)
+def test_proposal_action_requires_the_waiting_state(labels) -> None:
+    with pytest.raises(ValueError, match="provenance and waiting labels"):
         CreateTechLeadProposalIssueAction(
             title="t",
             body="b",
-            labels=("x",),
+            labels=labels,
             op=_op(),
             origin=TechLeadCreationOrigin.derived_from_anchor(99),
             expected=build_expected_for_mutation(),
@@ -280,15 +297,23 @@ def test_op_ledger_projects_rows_by_op_and_target() -> None:
 # --- Classification (the ONE anchor scan) ---------------------------------
 
 
+def _verdicts(approvals, *issues):
+    return approvals.verify_claims(issues)
+
+
 def test_split_classifies_open_approved_and_anchors() -> None:
-    gated = _issue(500, ["tech-lead-agent", PROPOSED_TECH_LEAD_LABEL])
-    approved = _issue(501, ["tech-lead-agent"])
+    gated = _issue(500, ["tech-lead-agent", *GATED])
+    approved = _issue(501, ["tech-lead-agent", *CLAIMED])
     anchor = _issue(
         7, ["tech-lead-agent"], title="Tech Lead Batch Review: 3 PRs pending"
     )
     ops = {500: _op(13), 501: _kill_op(14)}
+    approvals = maintainer_approved(501)
 
-    reconciled = reconcile_tech_lead_proposals([gated, approved, anchor], ops=ops)
+    reconciled = reconcile_tech_lead_proposals(
+        [gated, approved, anchor], ops=ops,
+        verdicts=_verdicts(approvals, gated, approved, anchor),
+    )
 
     # Open proposal: excluded everywhere. Approved: op returned for planning.
     assert [i.number for i in reconciled.anchor_candidate_issues] == [7]
@@ -300,45 +325,77 @@ def test_split_classifies_open_approved_and_anchors() -> None:
 
 
 def test_split_still_gated_yields_nothing_to_execute() -> None:
-    gated = _issue(500, ["tech-lead-agent", PROPOSED_TECH_LEAD_LABEL])
+    gated = _issue(500, ["tech-lead-agent", *GATED])
 
-    reconciled = reconcile_tech_lead_proposals([gated], ops={500: _op(13)})
+    reconciled = reconcile_tech_lead_proposals([gated], ops={500: _op(13)}, verdicts={})
 
     assert reconciled.anchor_candidate_issues == []
     assert reconciled.approved == ()
     assert reconciled.absent_op_issue_numbers == ()
 
 
-def test_reconcile_treats_canonical_cased_gate_as_still_gated() -> None:
-    """R15 (act-level gate): GitHub folds label names, so a repo whose canonical
-    spelling is ``Proposed-Tech-Lead`` still gates. A case-variant gate must NOT be
-    mistaken for operator approval — the op stays inert, never `approved=[500]`."""
-    canonical = _issue(500, ["agent:tech-lead", "Proposed-Tech-Lead"])
+@pytest.mark.parametrize(
+    "labels",
+    [
+        # A retry or bulk edit stripped every label: the old model's approval.
+        pytest.param(["tech-lead-agent"], id="all-approval-labels-stripped"),
+        # Only the waiting state was stripped.
+        pytest.param(["tech-lead-agent", "tech-lead-proposal"], id="waiting-label-stripped"),
+    ],
+)
+def test_a_label_strip_never_approves_an_op(labels) -> None:
+    """Escape vector (#7763): removing labels is not approval. An op-backed
+    proposal with no verified approval stays inert and is never an anchor."""
+    stripped = _issue(500, labels)
+    approvals = maintainer_approved()
 
-    reconciled = reconcile_tech_lead_proposals([canonical], ops={500: _op(13)})
+    reconciled = reconcile_tech_lead_proposals(
+        [stripped], ops={500: _op(13)}, verdicts=_verdicts(approvals, stripped)
+    )
 
-    # Case-insensitive: an open proposal, not an approved op and not an anchor.
     assert reconciled.approved == ()
     assert reconciled.anchor_candidate_issues == []
-    # Still present in the open scan, so never a terminal-cleanup candidate.
     assert reconciled.absent_op_issue_numbers == ()
 
 
-def test_reconcile_gate_case_variants_all_block_approval() -> None:
-    """R15: every case spelling of the gate keeps the op inert (no divergence)."""
-    for spelling in ("proposed-tech-lead", "Proposed-Tech-Lead", "PROPOSED-TECH-LEAD"):
-        issue = _issue(500, ["agent:tech-lead", spelling])
-        reconciled = reconcile_tech_lead_proposals([issue], ops={500: _op(13)})
-        assert reconciled.approved == (), spelling
+@pytest.mark.parametrize("actor", [BOT, CONTRIBUTOR], ids=["bot", "contributor"])
+def test_an_approved_label_from_a_non_maintainer_never_approves_an_op(actor) -> None:
+    claimed = _issue(500, ["tech-lead-agent", *CLAIMED])
+    evidence = FakeApprovalEvidence()
+    evidence.label(500, by=actor)
+    approvals = make_approvals(evidence)
+
+    reconciled = reconcile_tech_lead_proposals(
+        [claimed], ops={500: _op(13)}, verdicts=_verdicts(approvals, claimed)
+    )
+
+    assert reconciled.approved == ()
 
 
-def test_split_without_ops_excludes_gate_labeled_issues() -> None:
-    """A gate-labeled issue with no op row is inert — excluded from anchors,
-    never executed."""
-    gated = _issue(500, ["tech-lead-agent", PROPOSED_TECH_LEAD_LABEL])
+def test_reconcile_approval_labels_fold_case() -> None:
+    """GitHub folds label names: a canonical-cased waiting label still gates,
+    and a canonical-cased approval from a maintainer still approves."""
+    gated = _issue(500, ["agent:tech-lead", "Tech-Lead-Proposal", "AWAITING-APPROVAL"])
+    claimed = _issue(501, ["agent:tech-lead", "Tech-Lead-Proposal", "Awaiting-Approval", "Approved"])
+    approvals = maintainer_approved(501)
+
+    reconciled = reconcile_tech_lead_proposals(
+        [gated, claimed], ops={500: _op(13), 501: _op(14)},
+        verdicts=_verdicts(approvals, gated, claimed),
+    )
+
+    assert [item.proposal_issue_number for item in reconciled.approved] == [501]
+    assert reconciled.anchor_candidate_issues == []
+
+
+def test_split_without_ops_excludes_proposal_issues() -> None:
+    """A proposal with no op row (follow-up, promotion) is inert — excluded
+    from anchors, never executed, approved or not."""
+    gated = _issue(500, ["tech-lead-agent", *GATED])
+    admitted = _issue(501, ["tech-lead-agent", *ADMITTED])
     plain = _issue(7, ["tech-lead-agent"])
 
-    reconciled = reconcile_tech_lead_proposals([gated, plain], ops={})
+    reconciled = reconcile_tech_lead_proposals([gated, admitted, plain], ops={}, verdicts={})
 
     assert [i.number for i in reconciled.anchor_candidate_issues] == [7]
     assert reconciled.approved == ()
@@ -350,10 +407,10 @@ def test_reconcile_flags_ledger_row_absent_from_scan_as_candidate_only() -> None
     scan) is surfaced only as a cleanup CANDIDATE — reconciliation is read-only
     and never proves terminality on absence alone."""
     # #500 is still open+gated; #501's proposal issue is gone from the scan.
-    gated = _issue(500, ["tech-lead-agent", PROPOSED_TECH_LEAD_LABEL])
+    gated = _issue(500, ["tech-lead-agent", *GATED])
     ops = {500: _op(13), 501: _kill_op(14)}
 
-    reconciled = reconcile_tech_lead_proposals([gated], ops=ops)
+    reconciled = reconcile_tech_lead_proposals([gated], ops=ops, verdicts={})
 
     assert reconciled.approved == ()
     assert reconciled.anchor_candidate_issues == []
@@ -370,24 +427,31 @@ def test_backlog_includes_a_gated_issue_with_no_ledger_row() -> None:
     ``tech_lead_proposal_ops`` row, so a backlog derived from the ledger reports
     nothing pending while they wait on the operator.
     """
-    promoted = _issue(6922, ["agent:backend", PROPOSED_TECH_LEAD_LABEL], title="Fix seam")
+    promoted = _issue(6922, ["agent:backend", *GATED], title="Fix seam")
 
     [pending] = observe_gated_tech_lead_proposals([promoted])
 
     assert (pending.issue_number, pending.title) == (6922, "Fix seam")
 
 
-def test_backlog_excludes_issues_without_the_gate() -> None:
+def test_backlog_excludes_ordinary_and_approved_issues() -> None:
     ungated = _issue(7, ["agent:backend"])
-    approved = _issue(8, ["agent:tech-lead"])  # gate removed = approved
+    admitted = _issue(8, ["agent:backend", *ADMITTED])
 
-    assert observe_gated_tech_lead_proposals([ungated, approved]) == ()
+    assert observe_gated_tech_lead_proposals([ungated, admitted]) == ()
 
 
-def test_backlog_folds_gate_label_case() -> None:
+def test_backlog_keeps_a_proposal_whose_waiting_label_was_stripped() -> None:
+    """Nothing approved it, so it still waits on a maintainer (#7763)."""
+    stripped = _issue(9, ["agent:backend", "tech-lead-proposal"])
+
+    assert [p.issue_number for p in observe_gated_tech_lead_proposals([stripped])] == [9]
+
+
+def test_backlog_folds_approval_label_case() -> None:
     """R15: GitHub folds label names, so a canonical spelling still gates."""
     canonical = Issue(
-        number=500, title="t", labels=["agent:tech-lead", "Proposed-Tech-Lead"]
+        number=500, title="t", labels=["agent:tech-lead", "Tech-Lead-Proposal", "Awaiting-Approval"]
     )
 
     assert [p.issue_number for p in observe_gated_tech_lead_proposals([canonical])] == [500]
@@ -396,7 +460,7 @@ def test_backlog_folds_gate_label_case() -> None:
 def test_backlog_excludes_a_closed_gated_issue() -> None:
     """A closed proposal was rejected or already handled: nobody is waiting."""
     closed = Issue(
-        number=500, title="t", labels=[PROPOSED_TECH_LEAD_LABEL], state="closed"
+        number=500, title="t", labels=list(GATED), state="closed"
     )
 
     assert observe_gated_tech_lead_proposals([closed]) == ()
@@ -404,8 +468,8 @@ def test_backlog_excludes_a_closed_gated_issue() -> None:
 
 def test_backlog_unions_observed_sets_and_orders_by_issue_number() -> None:
     """Callers pass whatever open-issue sets the tick already holds."""
-    board = [_issue(7008, [PROPOSED_TECH_LEAD_LABEL]), _issue(6922, [PROPOSED_TECH_LEAD_LABEL])]
-    scan = [_issue(500, [PROPOSED_TECH_LEAD_LABEL]), _issue(6922, [PROPOSED_TECH_LEAD_LABEL])]
+    board = [_issue(7008, list(GATED)), _issue(6922, list(GATED))]
+    scan = [_issue(500, list(GATED)), _issue(6922, list(GATED))]
 
     backlog = observe_gated_tech_lead_proposals(board, scan)
 
@@ -417,7 +481,7 @@ def test_backlog_carries_the_filing_time_the_board_ages_it_by() -> None:
     filed = Issue(
         number=6922,
         title="t",
-        labels=[PROPOSED_TECH_LEAD_LABEL],
+        labels=list(GATED),
         created_at="2026-07-28T00:00:00+00:00",
     )
 
@@ -599,13 +663,37 @@ def test_apply_proposal_creation_records_op_and_links_anchor() -> None:
     (anchor_number, comment), _ = host.add_comment.call_args
     assert anchor_number == 99
     assert "#500" in comment
-    assert PROPOSED_TECH_LEAD_LABEL in comment
+    assert "`approved`" in comment
 
 
-def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
-    """R3: a fresh repo without the gate label must NOT get an orphan issue."""
+def test_apply_proposal_creation_provisions_missing_approval_labels_first() -> None:
+    """R3: a fresh repo without the approval labels gets them created BEFORE
+    the issue, so GitHub can never drop one and leave a schedulable orphan."""
     host = _host(500)
-    host.list_labels.return_value = [{"name": "some-other-label"}]  # no gate
+    host.list_labels.return_value = [{"name": "tech-lead-agent"}]
+    order: list[str] = []
+    host.create_label.side_effect = lambda name, **_: order.append(f"label:{name}")
+    host.create_issue.side_effect = lambda *a, **k: order.append("issue") or {"number": 500}
+    ops = InMemoryTechLeadAuthorityStore()
+
+    result = apply_create_tech_lead_issue(
+        _proposal_action(),
+        proposal_guard=lambda *args: None, before_case_file_write=lambda *args: None, repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+
+    assert result.success
+    assert order[:2] == ["label:tech-lead-proposal", "label:awaiting-approval"]
+    assert order[-1] == "issue"
+
+
+def test_apply_proposal_creation_refuses_when_label_provisioning_fails() -> None:
+    host = _host(500)
+    host.list_labels.return_value = [{"name": "tech-lead-agent"}]
+    host.create_label.side_effect = RuntimeError("403")
     ops = InMemoryTechLeadAuthorityStore()
 
     result = apply_create_tech_lead_issue(
@@ -618,7 +706,7 @@ def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
     )
 
     assert not result.success
-    assert PROPOSED_TECH_LEAD_LABEL in (result.error or "")
+    assert "tech-lead-proposal" in (result.error or "")
     host.create_issue.assert_not_called()  # no orphan
     assert ops.list_ops() == ()
 
@@ -1306,14 +1394,15 @@ def test_body_tamper_has_zero_effect_on_execution() -> None:
     )
 
     # Attacker edits the issue body to point at another issue. The scan sees
-    # the edited issue (gate removed = approved); the stored op is unchanged.
+    # the edited, maintainer-approved issue; the stored op is unchanged.
     tampered_issue = _issue(
         500,
-        ["tech-lead-agent"],
+        ["tech-lead-agent", *CLAIMED],
         title="Tech Lead proposal: reset & retry issue #6666 from scratch",
     )
     approved_ops = reconcile_tech_lead_proposals(
-        [tampered_issue], ops=dict(ops.list_ops())
+        [tampered_issue], ops=dict(ops.list_ops()),
+        verdicts=maintainer_approved(500).verify_claims([tampered_issue]),
     ).approved
     [planned] = plan_approved_tech_lead_op_executions(approved_ops)
 
@@ -1414,11 +1503,12 @@ def _applier(host: MagicMock, ops: InMemoryTechLeadAuthorityStore) -> ActionAppl
         repository_host=host,
     )
     applier.tech_lead_ops = ops
-    # Apply-time consent re-check (#6779 R16): the owner freshly re-reads the
-    # proposal issue immediately before the target mutation. By default model an
-    # issue that STILL confirms approval (open, gate absent) so the op proceeds;
-    # withdrawal tests override this side_effect.
-    host.get_issue.side_effect = lambda n: _issue(n, ["tech-lead-agent"])
+    applier.tech_lead_approvals = approving_everything()
+    # Apply-time consent re-check (#6779 R16, #7763): the owner freshly re-reads
+    # the proposal issue immediately before the target mutation. By default
+    # model an issue that STILL confirms approval (open, a maintainer's
+    # `approved`) so the op proceeds; withdrawal tests override this.
+    host.get_issue.side_effect = lambda n: _issue(n, ["tech-lead-agent", *CLAIMED])
     return applier
 
 
@@ -1603,20 +1693,16 @@ def test_applier_direct_kill_executes_without_proposal_consent_round_trip() -> N
     assert ops.list_ops() == ()
 
 
-def test_applier_reset_op_preserved_inert_when_gate_readded_before_apply() -> None:
-    """R16: remove-gate -> plan -> RE-ADD-gate -> apply. The fact scan planned
-    the reset while the gate was absent; the operator re-added it before apply.
-    The fresh consent re-read sees the gate back, so the op is PRESERVED inert —
-    the reset never runs and the proposal is NOT closed."""
+def test_applier_reset_op_preserved_inert_when_approval_removed_before_apply() -> None:
+    """R16 (#7763): approve -> plan -> REMOVE `approved` -> apply. The fresh
+    consent re-read sees no approval, so the op is PRESERVED inert — not
+    executed, the proposal not closed, the op kept for a later approval."""
     host = MagicMock()
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=500, op=_op())
     run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
     applier = _wired_reset_applier(host, ops, run_reset)
-    # The operator re-added the gate between plan and apply.
-    host.get_issue.side_effect = lambda n: _issue(
-        n, ["tech-lead-agent", PROPOSED_TECH_LEAD_LABEL]
-    )
+    host.get_issue.side_effect = lambda n: _issue(n, ["tech-lead-agent", *GATED])
 
     result = applier.apply(_reset_execution())
 
@@ -1626,18 +1712,16 @@ def test_applier_reset_op_preserved_inert_when_gate_readded_before_apply() -> No
     assert ops.load_op(issue_number=500) is not None  # op preserved for next tick
 
 
-def test_applier_kill_op_preserved_inert_when_gate_readded_before_apply() -> None:
-    """R16 (kill path): the same withdraw-before-apply consent gate protects the
-    kill execution path, not just reset."""
+def test_applier_kill_op_preserved_inert_when_approval_removed_before_apply() -> None:
+    """R16 (kill path): the same withdraw-before-apply consent check protects
+    the kill execution path, not just reset."""
     host = MagicMock()
     ops = InMemoryTechLeadAuthorityStore()
     op = _kill_op(14, session_id="RUN-14")
     ops.record_op(issue_number=501, op=op)
     run_kill = MagicMock(return_value=KillSessionRunOutcome(success=True))
     applier = _wired_kill_applier(host, ops, run_kill)
-    host.get_issue.side_effect = lambda n: _issue(
-        n, ["tech-lead-agent", PROPOSED_TECH_LEAD_LABEL]
-    )
+    host.get_issue.side_effect = lambda n: _issue(n, ["tech-lead-agent", *GATED])
 
     result = applier.apply(_kill_execution())
 
@@ -1647,35 +1731,55 @@ def test_applier_kill_op_preserved_inert_when_gate_readded_before_apply() -> Non
     assert ops.load_op(issue_number=501) is not None
 
 
-def test_applier_gate_readded_case_variant_still_withholds() -> None:
-    """R16 x R15: a case-variant gate re-added before apply still withdraws
-    consent (the apply-time gate shares the case-insensitive predicate)."""
+def test_applier_withholds_when_a_bot_reapplied_approved_after_planning() -> None:
+    """Escape vector (#7763): a maintainer approved, the tick planned the
+    reset, then `approved` was removed and a BOT put it back. The consent
+    re-check reads the label event FRESH (bypassing the verified cache), sees
+    automation as the latest approver, and withholds."""
     host = MagicMock()
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=500, op=_op())
     run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
     applier = _wired_reset_applier(host, ops, run_reset)
-    host.get_issue.side_effect = lambda n: _issue(
-        n, ["tech-lead-agent", "Proposed-Tech-Lead"]
-    )
+    evidence = FakeApprovalEvidence()
+    evidence.label(500, by=MAINTAINER)
+    applier.tech_lead_approvals = make_approvals(evidence)
+    claimed = _issue(500, ["tech-lead-agent", *CLAIMED])
+    assert applier.tech_lead_approvals.verify(claimed).approved  # planned + cached
+    evidence.label(500, by=BOT)  # removed and re-applied by automation
+    host.get_issue.side_effect = lambda n: claimed
 
     result = applier.apply(_reset_execution())
 
     assert not result.success
     run_reset.assert_not_called()
-    assert ops.load_op(issue_number=500) is not None
+    host.update_issue_state.assert_not_called()
 
 
-def test_applier_reset_op_executes_when_gate_still_absent_at_apply() -> None:
-    """R16 (no regression): remove-gate -> plan -> apply with the gate STILL
-    absent. The fresh consent re-read confirms approval, so the reset runs once
-    and the proposal is finalized/closed — the gate has not withdrawn it."""
+def test_applier_withholds_when_no_approval_owner_is_wired() -> None:
     host = MagicMock()
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=500, op=_op())
     run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
     applier = _wired_reset_applier(host, ops, run_reset)
-    host.get_issue.side_effect = lambda n: _issue(n, ["tech-lead-agent"])  # gate absent
+    applier.tech_lead_approvals = None
+
+    result = applier.apply(_reset_execution())
+
+    assert not result.success
+    assert "approval owner" in (result.error or "")
+    run_reset.assert_not_called()
+
+
+def test_applier_reset_op_executes_when_approval_still_holds_at_apply() -> None:
+    """R16 (no regression): approve -> plan -> apply with the maintainer's
+    approval STILL in place. The fresh consent re-read confirms it, so the
+    reset runs once and the proposal is finalized/closed."""
+    host = MagicMock()
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
+    applier = _wired_reset_applier(host, ops, run_reset)
 
     result = applier.apply(_reset_execution())
 
@@ -1696,7 +1800,7 @@ def test_applier_closed_proposal_preserves_op_without_executing() -> None:
     host.get_issue.side_effect = lambda n: Issue(
         number=n,
         title="t",
-        labels=["tech-lead-agent"],
+        labels=["tech-lead-agent", *CLAIMED],
         state="closed",
         repo="owner/repo",
     )
@@ -1811,10 +1915,12 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
     assert dedup_comment.number == 500
     assert not any(isinstance(a, CreateTechLeadProposalIssueAction) for a in replanned)
 
-    # 3. Simulate operator approval: the scan shows #500 without the gate.
-    approved_issue = _issue(500, ["tech-lead-agent"])
+    # 3. A maintainer approves: the scan shows #500 carrying `approved`, and
+    # the approval owner verifies the label event's actor.
+    approved_issue = _issue(500, ["tech-lead-agent", *CLAIMED])
     approved_ops = reconcile_tech_lead_proposals(
-        [approved_issue], ops=dict(ops.list_ops())
+        [approved_issue], ops=dict(ops.list_ops()),
+        verdicts=applier.tech_lead_approvals.verify_claims([approved_issue]),
     ).approved
     [execution] = plan_approved_tech_lead_op_executions(approved_ops)
 
@@ -1835,7 +1941,8 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
 
     # 5. The next scan finds no op row -> nothing further to execute.
     leftover = reconcile_tech_lead_proposals(
-        [approved_issue], ops=dict(ops.list_ops())
+        [approved_issue], ops=dict(ops.list_ops()),
+        verdicts=applier.tech_lead_approvals.verify_claims([approved_issue]),
     ).approved
     assert plan_approved_tech_lead_op_executions(leftover) == []
 
@@ -1862,8 +1969,8 @@ class TestALaterObservationCanRetireAnEarlierOne:
             observe_gated_tech_lead_proposals,
         )
 
-        gated = self._issue(9000, labels=["agent:tech-lead", "proposed-tech-lead"])
-        approved = self._issue(9000, labels=["agent:tech-lead"])
+        gated = self._issue(9000, labels=["agent:tech-lead", *GATED])
+        approved = self._issue(9000, labels=["agent:tech-lead", *ADMITTED])
 
         assert observe_gated_tech_lead_proposals([gated], [approved]) == ()
 
@@ -1872,9 +1979,9 @@ class TestALaterObservationCanRetireAnEarlierOne:
             observe_gated_tech_lead_proposals,
         )
 
-        gated = self._issue(9000, labels=["agent:tech-lead", "proposed-tech-lead"])
+        gated = self._issue(9000, labels=["agent:tech-lead", *GATED])
         closed = self._issue(
-            9000, labels=["agent:tech-lead", "proposed-tech-lead"], state="closed"
+            9000, labels=["agent:tech-lead", *GATED], state="closed"
         )
 
         assert observe_gated_tech_lead_proposals([gated], [closed]) == ()
@@ -1891,7 +1998,7 @@ class TestALaterObservationCanRetireAnEarlierOne:
             observe_gated_tech_lead_proposals,
         )
 
-        gated = self._issue(9000, labels=["agent:tech-lead", "proposed-tech-lead"])
+        gated = self._issue(9000, labels=["agent:tech-lead", *GATED])
         unrelated = self._issue(9001, labels=["agent:tech-lead"])
 
         observed = observe_gated_tech_lead_proposals([gated], [unrelated])
@@ -1920,7 +2027,7 @@ class TestTheAuthoritativeQueryDecidesMembership:
     def _issue(number: int, *, gated: bool = True):
         from issue_orchestrator.domain.models import Issue
 
-        labels = ["agent:backend"] + (["proposed-tech-lead"] if gated else [])
+        labels = ["agent:backend"] + ([*GATED] if gated else [])
         return Issue(number=number, title="Proposal", labels=labels)
 
     @staticmethod

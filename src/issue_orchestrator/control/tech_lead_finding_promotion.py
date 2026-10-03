@@ -67,7 +67,7 @@ from ..domain.tech_lead_findings import (
     promotion_issue_marker,
     promotion_issue_title,
 )
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.tech_lead_approval import GATED_PROPOSAL_LABELS, HOW_TO_APPROVE
 from .actions import (
     Action,
     PromoteTechLeadFindingAction,
@@ -170,18 +170,18 @@ def promotion_issue_labels(config: "Config", *, area: str) -> tuple[str, ...]:
 
     Mirrors :func:`~.tech_lead_proposals.proposal_issue_labels` and
     :func:`~.tech_lead_issue_policy.case_file_issue_labels`: the target's worker
-    agent label plus its scope label make the issue DISCOVERABLE the moment the
-    gate comes off, the ``area:*`` tag keeps evidence clusters queryable, and
-    the gate label (in ``gated`` mode) is the only blocking one — removing it is
-    the operator's single action. The gate is orchestrator-attached and exempt
-    from the agent-label allowlist here and ONLY here.
+    agent label plus its scope label make the issue DISCOVERABLE the moment a
+    maintainer's approval admits it, the ``area:*`` tag keeps evidence clusters
+    queryable, and the approval model's labels (in ``gated`` mode) are the only
+    blocking ones. They are orchestrator-attached and exempt from the
+    agent-label allowlist here and ONLY here.
     """
     return resolve_promotion_route(config, area=area).issue_labels(
         area=area,
-        gate_label=(
-            PROPOSED_TECH_LEAD_LABEL
+        gate_labels=(
+            GATED_PROPOSAL_LABELS
             if TechLeadCharterPolicy.from_config(config).promotion_gated()
-            else ""
+            else ()
         ),
     )
 
@@ -342,12 +342,11 @@ def build_promotion_issue_body(
     )
     approval = (
         (
-            f"**Remove the `{PROPOSED_TECH_LEAD_LABEL}` label** to approve this"
-            " work. The issue then becomes an ordinary queue issue in this"
-            " repository's own pipeline, under all of its existing gates.\n\n"
-            "To decline, close this issue: the signature is recorded as declined"
-            " and never re-filed (later observations still accrue on the case"
-            " file)."
+            f"{HOW_TO_APPROVE} Once approved, the issue becomes an ordinary"
+            " queue issue in this repository's own pipeline, under all of its"
+            " existing gates.\n\n"
+            "A declined (closed) signature is recorded as declined and never"
+            " re-filed (later observations still accrue on the case file)."
         )
         if gated
         else (

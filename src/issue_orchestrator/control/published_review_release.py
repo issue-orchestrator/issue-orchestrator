@@ -30,8 +30,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from ..domain.tech_lead_approval import APPROVAL_MODEL_LABELS
 from ..domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadSessionFlavor,
 )
@@ -56,7 +56,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MACHINERY = frozenset(
-    {PROPOSED_TECH_LEAD_LABEL.casefold(), TECH_LEAD_OBSERVATION_LABEL.casefold()}
+    {label.casefold() for label in APPROVAL_MODEL_LABELS}
+    | {TECH_LEAD_OBSERVATION_LABEL.casefold()}
 )
 
 

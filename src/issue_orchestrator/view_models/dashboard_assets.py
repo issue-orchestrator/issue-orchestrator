@@ -69,6 +69,9 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     # after ``core.js`` (``escapeHtml`` / ``escapeAttr``) and after
     # ``timestamp_formatting.js`` (``formatTimestamp``).
     "tech_lead_activity.js",
+    # ``tech_lead_badge.js`` (#7763): the embedded "N waiting on you" badge and
+    # the custody drawer's link into the Control Center's Tech lead page.
+    "tech_lead_badge.js",
     "e2e_runtime.js",
     "e2e_triage.js",
     # ``e2e_canonical_payload.js`` provides the pure translator from

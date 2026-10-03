@@ -40,6 +40,7 @@ from .tech_lead_op_actions import (
 )
 
 if TYPE_CHECKING:
+    from ..domain.tech_lead_approval import ApprovalTransition
     from ..domain.tech_lead_findings import PatternObservation
     from ..domain.tech_lead_session import StoredTechLeadOp, TechLeadDisposition
 
@@ -151,17 +152,17 @@ class CreateTechLeadProposalIssueAction(CreateTechLeadIssueAction):
     )
 
     def __post_init__(self) -> None:
-        from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+        from ..domain.tech_lead_approval import ProposalLabelState, proposal_label_state
 
         super().__post_init__()
         # Self-validating type: an ungated proposal issue would be
         # schedulable before any approval. (Baseline note: this branch is an
         # accepted control_policy_branch_sites entry — the invariant is
         # inherently about the gate label, not scattered policy.)
-        if PROPOSED_TECH_LEAD_LABEL not in self.labels:
+        if proposal_label_state(self.labels) is not ProposalLabelState.AWAITING:
             raise ValueError(
-                "CreateTechLeadProposalIssueAction must carry the"
-                f" {PROPOSED_TECH_LEAD_LABEL!r} gate label"
+                "CreateTechLeadProposalIssueAction must carry the approval"
+                " model's provenance and waiting labels, and no approval"
             )
         # A gated proposal is always something a session DECIDED; it can never
         # be the anchor. The positive anchor number itself is guaranteed by the
@@ -355,6 +356,36 @@ class DiscardTerminalTechLeadProposalOpsAction(Action):
 
 
 @dataclass(frozen=True)
+class SettleProposalApprovalAction(Action):
+    """One approval-label transition on a tech-lead proposal (#7763).
+
+    Planned read-only from the tick's verdicts
+    (:func:`~.tech_lead_approval.plan_approval_settlements`); applied by
+    :func:`~.tech_lead_approval_writes.apply_settle_proposal_approval`, which
+    re-reads the issue and re-verifies before writing. ``verdict_kind`` and
+    ``actor`` record what the plan saw, for the audit trail only.
+    """
+
+    issue_number: int = 0
+    transition: "ApprovalTransition | None" = None
+    verdict_kind: str = ""
+    actor: str = ""
+    action_type: ActionType = field(
+        default=ActionType.SETTLE_PROPOSAL_APPROVAL, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("SettleProposalApprovalAction requires the proposal issue")
+        if self.transition is None:
+            raise ValueError("SettleProposalApprovalAction requires its transition")
+
+    def reconciliation_subject(self) -> int:
+        """The proposal issue whose approval labels this writes."""
+        return self.issue_number
+
+
+@dataclass(frozen=True)
 class AppendPatternObservationAction(Action):
     """Append a REPEAT observation to an existing pattern case file (#6781/#6957).
 
@@ -519,7 +550,7 @@ class PromoteTechLeadFindingAction(Action):
         return self.case_file_issue_number
 
     def __post_init__(self) -> None:
-        from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+        from ..domain.tech_lead_approval import ProposalLabelState, proposal_label_state
 
         if not self.signature.strip():
             raise ValueError(
@@ -554,18 +585,18 @@ class PromoteTechLeadFindingAction(Action):
         # gate would file schedulable work nobody approved; an auto command
         # CARRYING the gate would file work nobody can start without noticing
         # a label the operator was never told about.
-        has_gate = PROPOSED_TECH_LEAD_LABEL in self.labels
-        if self.gated and not has_gate:
+        state = proposal_label_state(self.labels)
+        if self.gated and state is not ProposalLabelState.AWAITING:
             raise ValueError(
                 "PromoteTechLeadFindingAction planned as gated must carry the"
-                f" {PROPOSED_TECH_LEAD_LABEL!r} label; filing it without the gate"
-                " creates immediately schedulable work nobody approved"
+                " approval model's provenance and waiting labels; filing it"
+                " without them creates immediately schedulable work nobody approved"
             )
-        if not self.gated and has_gate:
+        if not self.gated and state.is_proposal:
             raise ValueError(
                 "PromoteTechLeadFindingAction planned as ungated"
                 " (tech_lead.findings.promote: auto) must NOT carry the"
-                f" {PROPOSED_TECH_LEAD_LABEL!r} label"
+                " approval model's labels"
             )
 
 

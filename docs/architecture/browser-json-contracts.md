@@ -140,3 +140,8 @@ The UI contract now includes Control Center status, setup, worktree-audit,
 and validated-work recovery responses. Their existing readers predate the
 browser validator and remain classified follow-ups. `control_center_setup_commands.js`
 only builds typed request descriptions and does not read response bodies.
+
+| Site | Boundary | Class | Status |
+|------|----------|-------|--------|
+| `control_center_tech_lead.js` — `/api/control-center/tech-lead` | `fetch().json()` | contract-covered | Validated as `ControlCenterTechLeadPayload` (#7763); each engine's section was already validated server-side as `TechLeadPageSectionPayload` |
+| `control_center_tech_lead.js` — `/api/control-center/repositories/{repo_key}/tech-lead/proposals` | `fetch().json()` | contract-covered | Validated as `TechLeadProposalOutcomePayload` (#7763) |

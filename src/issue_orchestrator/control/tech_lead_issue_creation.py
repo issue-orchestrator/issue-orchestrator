@@ -11,11 +11,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from ..domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
-    TechLeadCreationKind,
-    is_proposed_tech_lead_gate,
-)
+from ..domain.tech_lead_approval import HOW_TO_APPROVE, proposal_label_state
+from ..domain.tech_lead_session import TechLeadCreationKind
 from ..events import EventName
 from ..ports import make_trace_event
 from .actions import (
@@ -50,8 +47,8 @@ def _proposal_link_comment(
         "## 🗳️ Tech Lead proposal filed as a gated issue\n\n"
         f"Proposal {op.source_action_id} (`{op.op_type}` for"
         f" #{op.target_issue_number}) was filed as #{issue_number}. It is"
-        f" inert until someone removes its `{PROPOSED_TECH_LEAD_LABEL}` label"
-        " (per-instance approval, ADR-0031 §2)."
+        " inert until a maintainer approves it (per-instance approval,"
+        f" ADR-0031 §2). {HOW_TO_APPROVE.replace('this issue', 'it')}"
     )
 
 
@@ -261,11 +258,11 @@ def apply_create_tech_lead_issue(
     if (
         action.origin.kind is TechLeadCreationKind.DERIVED_FROM_ANCHOR
         and not isinstance(action, CreateTechLeadProposalIssueAction)
-        and PROPOSED_TECH_LEAD_LABEL not in action.labels
+        and not proposal_label_state(action.labels).is_proposal
     ):
         # A create_issue a session DECIDED and that is live on arrival IS an
         # executed decision. A GATED proposal is not: it is created and then sits
-        # inert until an operator removes its label, which is exactly the state
+        # inert until a maintainer approves it, which is exactly the state
         # #7080 is about, so reporting it as executed would have the alarm say
         # "writing" for a subsystem whose decisions are piling up unapproved
         # (#7262 review F2).
@@ -302,16 +299,16 @@ def _apply_expedite_lane(
     """Route an expedite-marked create_issue onto the worker lane (#6870).
 
     Inherits the ADR-0031 create_issue gate rather than bypassing it: a GATED
-    (propose-authority) creation carries ``proposed-tech-lead``, so it is only
-    DEFERRED here — the planning cycle promotes it once an operator removes the
-    gate. An UNGATED (execute-authority) creation jumps the lane immediately.
+    (propose-authority) creation carries the approval model's labels, so it is
+    only DEFERRED here — the planning cycle promotes it once a verified
+    approval admits it (#7763). An UNGATED (execute-authority) creation jumps the lane immediately.
     Either way the write goes through the ExpediteLane owner, never a direct
     priority_queue mutation, and the cap is enforced there. Unwired lane (tests
     / no orchestrator) or a non-expedite action is a no-op.
     """
     if not action.expedite or expedite_lane is None:
         return
-    gated = any(is_proposed_tech_lead_gate(name) for name in action.labels)
+    gated = proposal_label_state(action.labels).is_proposal
     if gated:
         expedite_lane.defer_until_ungated(issue_number)
     else:

@@ -1,0 +1,71 @@
+"""Ports: the evidence behind a tech-lead proposal approval (#7763).
+
+Two reads and one ledger, kept apart from the fat repository host so the
+approval owner depends on exactly what it uses:
+
+* :class:`ApprovalEvidenceReader` — who last applied a label, and what role a
+  login holds in the repository. GitHub's issue events and collaborator
+  permission endpoints back it.
+* :class:`OperatorApprovalRecords` — the engine-owned record of approvals an
+  operator gave in the Control Center, keyed by proposal and bound to the
+  exact label event the engine's write produced.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+from ..domain.tech_lead_approval import LabelEvent, OperatorApprovalRecord
+
+
+class ApprovalEvidenceReader(Protocol):
+    """Read-only evidence about who approved an item."""
+
+    def latest_label_event(
+        self, issue_number: int, label: str, *, removed: bool = False
+    ) -> LabelEvent | None:
+        """The newest ``labeled`` event adding *label* (case-insensitive), or
+        with ``removed`` the newest ``unlabeled`` event taking it off.
+
+        ``None`` means the complete event history has no such event. A read
+        that cannot prove completeness raises instead of answering ``None``.
+        """
+        ...
+
+    def repository_role(self, login: str) -> str | None:
+        """*login*'s role in the repository (``admin``, ``maintain``,
+        ``write``, ``triage``, ``read``), or ``None`` for a non-collaborator."""
+        ...
+
+
+class OperatorApprovalRecords(Protocol):
+    """Control Center approvals, owned by the engine and nothing else."""
+
+    def record_operator_approval(self, record: OperatorApprovalRecord) -> None: ...
+
+    def load_operator_approval(self, issue_number: int) -> OperatorApprovalRecord | None: ...
+
+    def discard_operator_approval(self, issue_number: int) -> None: ...
+
+
+class InMemoryOperatorApprovalRecords:
+    """Process-local :class:`OperatorApprovalRecords` for tests and fakes."""
+
+    def __init__(self) -> None:
+        self._records: dict[int, OperatorApprovalRecord] = {}
+
+    def record_operator_approval(self, record: OperatorApprovalRecord) -> None:
+        self._records[record.issue_number] = record
+
+    def load_operator_approval(self, issue_number: int) -> OperatorApprovalRecord | None:
+        return self._records.get(issue_number)
+
+    def discard_operator_approval(self, issue_number: int) -> None:
+        self._records.pop(issue_number, None)
+
+
+__all__ = [
+    "ApprovalEvidenceReader",
+    "InMemoryOperatorApprovalRecords",
+    "OperatorApprovalRecords",
+]

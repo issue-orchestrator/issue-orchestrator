@@ -290,6 +290,10 @@ class StartupManager:
         with self._phase("recover_pr_pending_history", timings):
             self._recover_pr_pending_history(state, issue_branches)
 
+        # Step 9a: the legacy proposal gate moves to the approval model (#7763).
+        with self._phase("migrate_proposal_approvals", timings):
+            self._migrate_proposal_approvals()
+
         # Step 9: Recover pending tech_lead reviews
         if self.config.tech_lead_enabled:
             with self._phase("recover_pending_tech_lead", timings):
@@ -728,6 +732,15 @@ class StartupManager:
                     print(f"  PR #{pr_number}: Already queued for code review")
             else:
                 print(f"  PR #{pr_number}: Review already in progress")
+
+    def _migrate_proposal_approvals(self) -> None:
+        """Fail-fast: an unmigrated legacy gate no longer blocks anything."""
+        approvals = self._action_applier.tech_lead_approvals if self._action_applier else None
+        if approvals is None or self._tech_lead_authority is None:
+            return
+        from .tech_lead_approval_migration import migrate_legacy_proposals
+
+        migrate_legacy_proposals(self.repository_host, approvals, self._tech_lead_authority)
 
     async def _recover_pending_tech_lead(self, state: OrchestratorState) -> None:
         """Recover pending tech_lead review issues after crash/restart.

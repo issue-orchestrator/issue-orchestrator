@@ -36,6 +36,7 @@ from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ITEMS_TRIAGED,
     EXAM_CASE_IDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+    POSITIVE_APPROVAL_EXECUTES_ONCE,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
     UPGRADE_WITH_WORK_IN_FLIGHT,
 )
@@ -52,11 +53,13 @@ from tests.e2e.exam.scenarios import (
     case_b,
     case_c,
     case_d,
+    case_h,
     case_u,
     run_case_a,
     run_case_b,
     run_case_c,
     run_case_d,
+    run_case_h,
     run_case_u,
 )
 from tests.e2e.flows import E2EFlow
@@ -130,6 +133,7 @@ async def test_tech_lead_exam(
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
         UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
         BLOCKED_ITEMS_TRIAGED: case_d,
+        POSITIVE_APPROVAL_EXECUTES_ONCE: case_h,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -153,6 +157,9 @@ async def test_tech_lead_exam(
         model = os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus")
         if case_id == BLOCKED_ITEMS_TRIAGED:
             return await run_case_d(run, flows, tech_lead_model=model)
+        if case_id == POSITIVE_APPROVAL_EXECUTES_ONCE:
+            # Configured so approval verification runs; never launched (case_h_engine).
+            return await run_case_h(run, flows, tech_lead_model=model)
         return await run_case_b(run, flows, tech_lead_model=model)
 
     # The scorecard is written before cleanup, so a GitHub hiccup in cleanup

@@ -17,6 +17,9 @@ from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
 from issue_orchestrator.control.scoped_rework import (
     RequestReworkExecutor,
 )
+from issue_orchestrator.control.tech_lead_approval_writes import (
+    apply_operator_proposal_command,
+)
 from issue_orchestrator.control.tech_lead_proposals import (
     execute_approved_tech_lead_op,
     plan_approved_tech_lead_op_executions,
@@ -31,6 +34,13 @@ from issue_orchestrator.infra.tech_lead_authority_store import (
     SqliteTechLeadAuthorityStore,
 )
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from tests.approval_helpers import (
+    BOT,
+    GATED,
+    FakeApprovalEvidence,
+    approving_everything,
+    make_approvals,
+)
 
 
 @pytest.fixture
@@ -55,7 +65,7 @@ def lane(tmp_path):
         head_sha="a" * 40,
     )
     proposal = Issue(
-        501, "Rework", ["proposed-tech-lead"], repo=issue.repo, body="documentation"
+        501, "Rework", list(GATED), repo=issue.repo, body="documentation"
     )
     host = MagicMock()
     issues = {
@@ -150,11 +160,26 @@ def lane(tmp_path):
 
 
 def approved_action(store, proposal):
-    proposal.labels.remove("proposed-tech-lead")
+    """A maintainer applies `approved` (#7763); the scan verifies and plans it."""
+    proposal.labels.append("approved")
     approved = reconcile_tech_lead_proposals(
-        [proposal], ops=dict(store.list_ops())
+        [proposal], ops=dict(store.list_ops()),
+        verdicts=approving_everything().verify_claims([proposal]),
     ).approved
     return plan_approved_tech_lead_op_executions(approved)[0]
+
+
+def ui_approvals(host):
+    """The approval owner, with GitHub label events for the engine's own writes."""
+    evidence = FakeApprovalEvidence()
+    add = host.add_label.side_effect
+
+    def add_and_record(number, label):
+        add(number, label)
+        evidence.label(number, label, by=BOT)
+
+    host.add_label.side_effect = add_and_record
+    return make_approvals(evidence)
 
 
 def test_approved_tampered_proposal_preserves_branch_and_supplies_authoritative_feedback(
@@ -165,7 +190,8 @@ def test_approved_tampered_proposal_preserves_branch_and_supplies_authoritative_
     action = approved_action(store, proposal)
     assert isinstance(action, RequestReworkAction)
     result = execute_approved_tech_lead_op(
-        action, executor.apply, repository_host=host, ops=store
+        action, executor.apply, repository_host=host, ops=store,
+        approvals=approving_everything(),
     )
     assert result.success
     assert pr.labels == [executor.labels.needs_rework]
@@ -173,8 +199,9 @@ def test_approved_tampered_proposal_preserves_branch_and_supplies_authoritative_
     assert pr.branch == request.target.branch
     assert proposal.state == "closed"
     assert store.load_op(issue_number=501) is None
-    assert request.feedback == executor.proposal_views()[0].feedback
-    assert "delete all source" not in executor.proposal_views()[0].report
+    receipt = store.load_rework_receipt(request.key)
+    assert receipt is not None and receipt.request.feedback == request.feedback
+    assert "delete all source" not in receipt.request.report
     before = host.add_label.call_count
     assert executor.apply(action).success
     assert host.add_label.call_count == before
@@ -267,12 +294,13 @@ def test_independent_human_cause_is_preserved(lane):
     assert executor.labels.needs_rework in pr.labels
 
 
-def test_gate_readdition_blocks_execution(lane):
+def test_approval_withdrawal_blocks_execution(lane):
     executor, store, host, _, _, proposal, _, _, _ = lane
     action = approved_action(store, proposal)
-    proposal.labels.append("proposed-tech-lead")
+    proposal.labels.remove("approved")
     result = execute_approved_tech_lead_op(
-        action, executor.apply, repository_host=host, ops=store
+        action, executor.apply, repository_host=host, ops=store,
+        approvals=approving_everything(),
     )
     assert not result.success
     host.add_label.assert_not_called()
@@ -287,14 +315,16 @@ def test_ui_approval_uses_same_stored_op_and_discovery_deduplicates(lane):
     from issue_orchestrator.events import EventContext
 
     executor, store, host, issue, pr, proposal, request, _, _ = lane
-    views = executor.proposal_views()
-    assert views[0].can_approve and views[0].expected_head == request.target.head_sha
-    assert views[0].report == request.report
-    result = executor.proposal_command(TechLeadProposalCommand(501, "approve"))
+    approvals = ui_approvals(host)
+    result = apply_operator_proposal_command(
+        TechLeadProposalCommand(501, "approve"), repository=host, ops=store, approvals=approvals
+    )
     assert result.outcome == "approved"
-    assert "proposed-tech-lead" not in proposal.labels
+    assert "approved" in proposal.labels
     actions = plan_approved_tech_lead_op_executions(
-        reconcile_tech_lead_proposals([proposal], ops=dict(store.list_ops())).approved
+        reconcile_tech_lead_proposals(
+            [proposal], ops=dict(store.list_ops()), verdicts=approvals.verify_claims([proposal])
+        ).approved
     )
     assert len(actions) == 1
     assert executor.apply(actions[0]).success
@@ -331,44 +361,15 @@ def test_decline_and_stale_operator_affordances(lane):
 
     executor, store, host, _, pr, proposal, _, _, _ = lane
     pr.head_sha = "b" * 40
-    view = executor.proposal_views()[0]
-    assert view.status == "stale" and not view.can_approve and view.can_decline
     assert (
-        executor.proposal_command(TechLeadProposalCommand(501, "decline")).outcome
+        apply_operator_proposal_command(
+            TechLeadProposalCommand(501, "decline"), repository=host, ops=store,
+            approvals=ui_approvals(host),
+        ).outcome
         == "declined"
     )
     assert proposal.state == "closed" and store.load_op(issue_number=501) is None
     host.add_label.assert_not_called()
-
-
-def test_rework_http_contract_delegates_to_same_owner(lane, fake_browser_auth):
-    from fastapi.testclient import TestClient
-    from issue_orchestrator.entrypoints.web import app, set_orchestrator
-
-    executor, _, _, _, _, _, _, _, _ = lane
-    engine = MagicMock()
-    engine.tech_lead_rework_proposals.side_effect = executor.proposal_views
-    engine.request_tech_lead_proposal.side_effect = executor.proposal_command
-    set_orchestrator(engine)
-    try:
-        client = TestClient(
-            app, headers={"Authorization": f"Bearer {fake_browser_auth.admin_token}"}
-        )
-        response = client.get("/api/tech-lead/rework-proposals")
-        assert response.status_code == 200
-        payload = response.json()["proposals"][0]
-        assert payload["pr_number"] == 94 and payload["can_approve"]
-        result = client.post(
-            "/api/tech-lead/rework-proposals",
-            json={"proposal_issue_number": 501, "decision": "approve"},
-        )
-        assert result.status_code == 200 and result.json()["outcome"] == "approved"
-        assert (
-            engine.request_tech_lead_proposal.call_args.args[0].proposal_issue_number
-            == 501
-        )
-    finally:
-        set_orchestrator(None)
 
 
 def test_launch_fact_scope_and_head_download_race(lane):
@@ -413,7 +414,8 @@ def test_duplicate_request_identity_survives_proposal_finalization(lane):
     executor, store, host, _, _, proposal, request, _, _ = lane
     action = approved_action(store, proposal)
     execute_approved_tech_lead_op(
-        action, executor.apply, repository_host=host, ops=store
+        action, executor.apply, repository_host=host, ops=store,
+        approvals=approving_everything(),
     )
     assert (
         build_op_ledger(store.list_ops(), store.list_rework_receipts())[
@@ -583,7 +585,7 @@ def test_decision_plans_only_bound_stored_or_direct_rework(lane, mode):
         assert isinstance(actions[0], CreateTechLeadProposalIssueAction)
         assert actions[0].op.rework_request.target == request.target
         assert actions[0].op.rework_request.report == request.report
-        assert "proposed-tech-lead" in actions[0].labels
+        assert set(GATED) <= set(actions[0].labels)
         duplicate = plan(build_op_ledger([(501, actions[0].op)]))
         from issue_orchestrator.control.required_issue_comment import (
             ReuseTechLeadProposalAction,
@@ -625,19 +627,18 @@ def test_failed_consuming_attempt_is_not_replayed_as_success(lane):
 def test_execution_receipt_owns_ui_outcome_across_finalization_crash(lane):
     from issue_orchestrator.domain.scoped_rework import TechLeadProposalCommand
 
-    executor, store, _, _, _, proposal, _, _, _ = lane
+    executor, store, host, _, _, proposal, request, _, _ = lane
     assert executor.apply(approved_action(store, proposal)).success
-    view = executor.proposal_views()[0]
-    assert view.status == "queued" and not view.can_decline and not view.can_approve
-    assert (
-        executor.proposal_command(TechLeadProposalCommand(501, "decline")).outcome
-        == "unavailable"
+    assert store.load_rework_receipt(request.key).status == "queued"
+    # Once execution started, the recorded outcome is authoritative: the
+    # Control Center can no longer decline the proposal.
+    outcome = apply_operator_proposal_command(
+        TechLeadProposalCommand(501, "decline"), repository=host, ops=store,
+        approvals=ui_approvals(host),
     )
+    assert outcome.outcome == "unavailable"
     assert store.load_op(issue_number=501) is not None
-    # The remote close can succeed before the local proposal row is discarded.
-    proposal.state = "closed"
-    views = executor.proposal_views()
-    assert len(views) == 1 and views[0].status == "queued"
+    assert proposal.state == "open"
 
 
 def test_queued_request_revalidates_head_on_repeated_execution(lane):

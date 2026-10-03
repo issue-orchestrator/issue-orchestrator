@@ -23,10 +23,15 @@ from issue_orchestrator.testing.exam.cases import (
     ASKS_BESIDE_PR,
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     BLOCKED_ITEMS_TRIAGED,
+    BOT_APPROVED,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+    MAINTAINER_APPROVED,
+    POSITIVE_APPROVAL_EXECUTES_ONCE,
+    STRIPPED,
     blocked_issue_green_pr_awaiting_review,
     blocked_items_triaged,
     halted_exchange_with_validated_work,
+    positive_approval_executes_once,
 )
 from issue_orchestrator.testing.exam.scorecard import RemedyVerdict
 
@@ -887,3 +892,93 @@ class TestCaseDBlockedItemsTriaged:
         del data["triage"]
 
         assert WorkItemFact.from_dict(data).triage is None
+
+
+class TestCaseHPositiveApproval:
+    """#7763: only a maintainer's positive `approved` executes a proposal."""
+
+    CASE = positive_approval_executes_once(
+        proposal_label="tech-lead-proposal",
+        awaiting_label="awaiting-approval",
+        approved_label="approved",
+    )
+
+    def _grade(self, maintainer: WorkItemFact, stripped: WorkItemFact, bot: WorkItemFact):
+        obs = observation(POSITIVE_APPROVAL_EXECUTES_ONCE, maintainer)
+        obs = replace(
+            obs,
+            items=(maintainer, stripped, bot),
+            owned_numbers=frozenset({901, 902, 910, 920}),
+        )
+        return grade(self.CASE, obs)
+
+    def _items(
+        self,
+        *,
+        maintainer_labels=("tech-lead-proposal", "approved"),
+        maintainer_prs=(pr(state=PullRequestState.READY),),
+        stripped_labels=("tech-lead-proposal", "awaiting-approval"),
+        stripped_prs=(),
+        stripped_events=(),
+        bot_labels=("tech-lead-proposal", "awaiting-approval"),
+        bot_events=(),
+    ):
+        maintainer = replace(
+            item(issue_labels=maintainer_labels, prs=maintainer_prs, events=("session.started",)),
+            role=MAINTAINER_APPROVED,
+        )
+        stripped = replace(
+            item(issue_labels=stripped_labels, prs=stripped_prs, events=stripped_events),
+            role=STRIPPED, issue_number=910,
+        )
+        bot = replace(
+            item(issue_labels=bot_labels, events=bot_events), role=BOT_APPROVED, issue_number=920,
+        )
+        return maintainer, stripped, bot
+
+    def test_the_right_answer_passes(self) -> None:
+        assert self._grade(*self._items()).passed
+
+    def test_a_stripped_proposal_that_was_worked_fails(self) -> None:
+        """The old model: removing the gate WAS approval, so the strip ran it."""
+        card = self._grade(*self._items(
+            stripped_labels=("tech-lead-proposal",),
+            stripped_prs=(pr(number=911),),
+            stripped_events=("session.started",),
+        ))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {"stripped.never_worked", "stripped.keeps_labels"} <= failed
+
+    def test_a_bot_approval_that_was_honoured_fails(self) -> None:
+        card = self._grade(*self._items(
+            bot_labels=("tech-lead-proposal", "approved"), bot_events=("session.started",),
+        ))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {
+            "bot_approved.never_worked",
+            "bot_approved.keeps_labels",
+            "bot_approved.issue_free_of_blocks",
+        } <= failed
+
+    def test_a_maintainer_approval_worked_twice_fails(self) -> None:
+        card = self._grade(*self._items(
+            maintainer_prs=(pr(state=PullRequestState.READY), pr(number=903)),
+        ))
+
+        assert "maintainer_approved.single_pull_request" in {
+            goal.name for goal in card.goals if not goal.passed
+        }
+
+    def test_a_maintainer_approval_never_admitted_fails(self) -> None:
+        card = self._grade(*self._items(
+            maintainer_labels=("tech-lead-proposal", "awaiting-approval", "approved"),
+            maintainer_prs=(),
+        ))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {
+            "maintainer_approved.single_pull_request",
+            "maintainer_approved.issue_free_of_blocks",
+        } <= failed

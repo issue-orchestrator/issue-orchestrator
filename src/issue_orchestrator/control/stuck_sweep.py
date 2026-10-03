@@ -47,7 +47,7 @@ Design boundaries (kept deliberately narrow, ADR-0031):
   live failure-investigation DISPOSITION (#6971 — a completed investigation
   bound the issue to an open recovery tracker), or an open PR carrying the
   issue's published validated work (#7293 — its review owns it; investigating
-  it only ends in a needs-human escalation or a reset that closes the PR). Only ``proposed-tech-lead`` /
+  it only ends in a needs-human escalation or a reset that closes the PR). Only the approval model's labels /
   ``tech-lead-observation`` are true machinery labels never treated as work items.
 * **A diagnosed issue is not a stuck issue (#6971).** Budget exists to find
   issues whose diagnosis is MISSING. An issue whose completed investigation
@@ -66,7 +66,8 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import DiscoveredFailure, SessionStatus
 from ..domain.session_kind import SessionKind
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL, TECH_LEAD_OBSERVATION_LABEL
+from ..domain.tech_lead_approval import APPROVAL_MODEL_LABELS
+from ..domain.tech_lead_session import TECH_LEAD_OBSERVATION_LABEL
 from .stuck_sweep_state import persist_stuck_sweep_state
 from ..ports.repository_host import (
     RepositoryHostError,
@@ -401,7 +402,7 @@ def _scan_stuck_issues(
     reconciler (an active session / open proposal / open provider circuit /
     needs-human marker). Provider-unavailable and needs-human are recoverable
     labels (#6824 F2), not blanket exclusions; only tech_lead machinery
-    (proposed-tech-lead / observation case files) is never a work item.
+    (approval-model proposals / observation case files) is never a work item.
 
     An open PR carrying the issue's published validated work also owns it
     (#7293). That question costs a store read, and a PR read only when a
@@ -488,7 +489,7 @@ def _stuck_blocking_label(
     Prefers the ``blocked-failed`` label (the canonical failed-session signal)
     when present, else the first remaining recoverable blocking label. Returns
     None when the issue carries no blocking label, or only machinery labels
-    (proposed-tech-lead / observation) — the done guard. Ownership (provider
+    (approval-model proposals / observation) — the done guard. Ownership (provider
     circuit / needs-human marker / open proposal) is decided BEFORE this by the
     scan; here every non-machinery blocking label is eligible (#6824 F2).
     """
@@ -508,17 +509,16 @@ def _stuck_blocking_label(
 def _machinery_blocking_folded() -> frozenset[str]:
     """Casefolded blocking labels that are tech_lead MACHINERY, never work items.
 
-    ``proposed-tech-lead`` gates an awaiting-approval proposal issue and
-    ``tech-lead-observation`` marks an evidence case file — re-injecting either
-    would launch a tech_lead session on tech_lead's own bookkeeping. Unlike
-    provider-unavailable and needs-human (which are recoverable stuck states
-    gated by ownership, #6824 F2), these are ALWAYS excluded.
+    The approval model's labels (#7763) gate an awaiting-approval proposal
+    issue and ``tech-lead-observation`` marks an evidence case file —
+    re-injecting either would launch a tech_lead session on tech_lead's own
+    bookkeeping. Unlike provider-unavailable and needs-human (which are
+    recoverable stuck states gated by ownership, #6824 F2), these are ALWAYS
+    excluded.
     """
     return frozenset(
-        {
-            PROPOSED_TECH_LEAD_LABEL.casefold(),
-            TECH_LEAD_OBSERVATION_LABEL.casefold(),
-        }
+        {label.casefold() for label in APPROVAL_MODEL_LABELS}
+        | {TECH_LEAD_OBSERVATION_LABEL.casefold()}
     )
 
 

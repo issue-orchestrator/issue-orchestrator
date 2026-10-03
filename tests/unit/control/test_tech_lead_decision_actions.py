@@ -2,6 +2,7 @@
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.control.actions import (
     AddCommentAction,
     AppendPatternObservationAction,
@@ -38,7 +39,6 @@ from issue_orchestrator.domain.tech_lead_artifacts import (
 )
 from issue_orchestrator.domain.tech_lead_findings import PatternEvidence
 from issue_orchestrator.domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadSessionGeneration,
 )
@@ -337,7 +337,7 @@ class TestCreateIssueDedup:
             dedup_grant=DuplicateTargetGrant.none(),
         )
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert "#1234" in gated.body and "score" in gated.body.lower()
 
     def test_similarity_threshold_controls_lexical_backstop(self) -> None:
@@ -349,7 +349,7 @@ class TestCreateIssueDedup:
             dedup_corpus=self._ready(),
         )
         assert isinstance(created, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL not in created.labels
+        assert AWAITING_APPROVAL_LABEL not in created.labels
 
         permissive = _config()
         permissive.tech_lead.dedup.similarity_threshold = 0.98
@@ -359,7 +359,7 @@ class TestCreateIssueDedup:
             dedup_corpus=self._ready(),
         )
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert "#1234" in gated.body
 
     def test_missing_citation_is_gated_never_comments_it(self) -> None:
@@ -370,7 +370,7 @@ class TestCreateIssueDedup:
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert not any(
             isinstance(a, AddCommentAction) and a.number == 999 for a in planned
         )
@@ -383,7 +383,7 @@ class TestCreateIssueDedup:
             _decision(self._issue()), dedup_corpus=OpenIssueCorpus.disabled()
         )
         assert isinstance(created, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL not in created.labels
+        assert AWAITING_APPROVAL_LABEL not in created.labels
 
     def test_disabled_corpus_with_citation_accrues_not_filed(self) -> None:
         # The agent's dedup intent is preserved (the candidate rides the
@@ -408,7 +408,7 @@ class TestCreateIssueDedup:
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert not any(isinstance(a, AddCommentAction) for a in planned)
 
     def test_unavailable_corpus_with_citation_accrues_with_candidate(self) -> None:
@@ -430,7 +430,7 @@ class TestCreateIssueDedup:
             dedup_grant=self._GRANT,
         )
         assert isinstance(created, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL not in created.labels
+        assert AWAITING_APPROVAL_LABEL not in created.labels
 
     # --- Intra-decision dedup (#6883 review): siblings within ONE decision ---
 
@@ -447,8 +447,8 @@ class TestCreateIssueDedup:
             dedup_grant=DuplicateTargetGrant.none(),
         )
         creates = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
-        ungated = [c for c in creates if PROPOSED_TECH_LEAD_LABEL not in c.labels]
-        gated = [c for c in creates if PROPOSED_TECH_LEAD_LABEL in c.labels]
+        ungated = [c for c in creates if AWAITING_APPROVAL_LABEL not in c.labels]
+        gated = [c for c in creates if AWAITING_APPROVAL_LABEL in c.labels]
         assert len(ungated) == 1  # only the FIRST is filed directly under execute
         assert len(gated) == 1  # the identical sibling is gated, not spam-filed
         assert "intra-decision duplicate" in gated[0].body
@@ -464,7 +464,7 @@ class TestCreateIssueDedup:
         )
         creates = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
         assert len(creates) == 2
-        assert all(PROPOSED_TECH_LEAD_LABEL not in c.labels for c in creates)
+        assert all(AWAITING_APPROVAL_LABEL not in c.labels for c in creates)
 
     def test_cited_sibling_is_gated_not_a_second_ungated_create(self) -> None:
         # #6883 review case 1: a CommentExisting proposal must still register as a
@@ -482,9 +482,9 @@ class TestCreateIssueDedup:
         comments = [a for a in planned if isinstance(a, AddCommentAction)]
         assert len(comments) == 1 and comments[0].number == 1234  # only A1 routes
         creates = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
-        assert [PROPOSED_TECH_LEAD_LABEL in c.labels for c in creates] == [True]
+        assert [AWAITING_APPROVAL_LABEL in c.labels for c in creates] == [True]
         assert not any(  # the invariant the reviewer proved was broken
-            PROPOSED_TECH_LEAD_LABEL not in c.labels for c in creates
+            AWAITING_APPROVAL_LABEL not in c.labels for c in creates
         )
         assert "intra-decision duplicate" in creates[0].body
         assert "A1" in creates[0].body
@@ -505,7 +505,7 @@ class TestCreateIssueDedup:
         comments = [a for a in planned if isinstance(a, AddCommentAction)]
         assert len(comments) == 1 and comments[0].number == 1234  # never two
         [gated] = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert "intra-decision duplicate" in gated.body and "A1" in gated.body
         assert "#1234" in gated.body  # composed: the cited candidate survives
 
@@ -523,7 +523,7 @@ class TestCreateIssueDedup:
         )
         creates = [x for x in planned if isinstance(x, CreateTechLeadIssueAction)]
         assert len(creates) == 2 and all(
-            PROPOSED_TECH_LEAD_LABEL in c.labels for c in creates
+            AWAITING_APPROVAL_LABEL in c.labels for c in creates
         )
         [sibling] = [c for c in creates if "intra-decision duplicate" in c.body]
         [first] = [c for c in creates if "intra-decision duplicate" not in c.body]
@@ -719,7 +719,7 @@ class TestDuplicateObservationAccrual:
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert "#6928" in gated.body and "score" in gated.body.lower()
 
     def test_rejected_candidate_still_gates_a_fresh_issue(self) -> None:
@@ -732,7 +732,7 @@ class TestDuplicateObservationAccrual:
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
 
     def test_no_candidate_and_unavailable_corpus_still_gates(self) -> None:
         planned = _plan(
@@ -741,7 +741,7 @@ class TestDuplicateObservationAccrual:
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
 
     def test_verified_and_granted_citation_still_comments_on_the_candidate(
         self,
@@ -871,7 +871,7 @@ class TestDuplicateObservationAccrual:
         )
         [gated] = planned
         assert isinstance(gated, CreateTechLeadIssueAction)
-        assert PROPOSED_TECH_LEAD_LABEL in gated.labels
+        assert AWAITING_APPROVAL_LABEL in gated.labels
         assert "#6928" in gated.body
 
 
@@ -1468,7 +1468,7 @@ def test_act_level_under_propose_plans_gated_proposal_issue(act_type: str) -> No
     [planned] = _plan(_decision(action))
 
     assert isinstance(planned, CreateTechLeadProposalIssueAction)
-    assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+    assert AWAITING_APPROVAL_LABEL in planned.labels
     assert planned.anchor_issue_number == 99
     assert planned.expected is EXPECTED
     # The stored op is the executable payload; the body is documentation.
@@ -1481,7 +1481,7 @@ def test_act_level_under_propose_plans_gated_proposal_issue(act_type: str) -> No
     # Human documentation names the op, target, and the approval gesture.
     assert f"`{act_type}`" in planned.body
     assert "#13" in planned.body
-    assert PROPOSED_TECH_LEAD_LABEL in planned.body
+    assert "`approved`" in planned.body
     assert "Batch Review" not in planned.title
     assert "Tech Lead Review" not in planned.title
 
@@ -1507,7 +1507,7 @@ def test_duplicate_open_proposal_comments_instead_of_second_issue(
     assert evaluate_required_act_level_outcome([ActionResult.fail(planned, "failed")]).failed
     assert planned.number == 321
     assert planned.is_pr is False
-    assert PROPOSED_TECH_LEAD_LABEL in planned.comment
+    assert "`approved`" in planned.comment
     assert "Again." in planned.comment
     assert not isinstance(planned, CreateTechLeadProposalIssueAction)
 
@@ -1553,7 +1553,7 @@ def test_create_issue_propose_creates_gated_issue() -> None:
 
     assert isinstance(planned, CreateTechLeadIssueAction)
     assert not isinstance(planned, CreateTechLeadProposalIssueAction)
-    assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+    assert AWAITING_APPROVAL_LABEL in planned.labels
     assert "ci" in planned.labels
     assert not any(isinstance(a, SurfaceTechLeadProposalAction) for a in [planned])
 
@@ -1704,7 +1704,7 @@ def test_mixed_decision_preserves_order_and_authority() -> None:
     assert isinstance(planned[0], AddCommentAction)
     # create_issue under propose is a gated creation now (#6778), not shadow.
     assert isinstance(planned[1], CreateTechLeadIssueAction)
-    assert PROPOSED_TECH_LEAD_LABEL in planned[1].labels
+    assert AWAITING_APPROVAL_LABEL in planned[1].labels
     # flag_pattern under execute surfaces the event AND opens the case file.
     assert isinstance(planned[2], SurfaceTechLeadProposalAction)
     assert planned[2].mode == "pattern"
@@ -1786,9 +1786,9 @@ class TestCreateIssueExpediteProducer:
         [planned] = _plan(_decision(self._expedite_action()))
         assert isinstance(planned, CreateTechLeadIssueAction)
         assert planned.expedite is True
-        # Execute authority creates an UNGATED issue: no proposed-tech-lead gate,
+        # Execute authority creates an UNGATED issue: no awaiting-approval gate,
         # so the applier expedites it immediately.
-        assert PROPOSED_TECH_LEAD_LABEL not in planned.labels
+        assert AWAITING_APPROVAL_LABEL not in planned.labels
 
     def test_propose_authority_carries_expedite_but_is_gated(self) -> None:
         config = _config(create_issue="propose")
@@ -1796,7 +1796,7 @@ class TestCreateIssueExpediteProducer:
         assert isinstance(planned, CreateTechLeadIssueAction)
         assert planned.expedite is True
         # Propose authority gates the issue: expedite must wait for un-gating.
-        assert PROPOSED_TECH_LEAD_LABEL in planned.labels
+        assert AWAITING_APPROVAL_LABEL in planned.labels
 
     def test_expedite_defaults_false_on_the_action(self) -> None:
         [planned] = _plan(_decision(self._expedite_action(expedite=False)))

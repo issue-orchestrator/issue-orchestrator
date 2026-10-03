@@ -245,14 +245,17 @@ def test_act_level_wiring_state_is_synchronized(variant: str) -> None:
     assert "never auto-executes" not in text, (
         f"{variant} still promises human gating for every kill"
     )
-    assert "`proposed-tech-lead`" in text, (
-        f"{variant} does not document the gated-proposal label"
+    assert "`tech-lead-proposal` and `awaiting-approval`" in text, (
+        f"{variant} does not document the gated-proposal labels"
     )
-    assert "removing that label" in text, (
-        f"{variant} does not document label removal as the approval gesture"
+    assert "approves one with the `approved` label" in text, (
+        f"{variant} does not document the positive `approved` label as the approval gesture"
     )
-    assert "Never propose or\n  touch the `proposed-tech-lead` label" in text, (
-        f"{variant} does not forbid the agent from touching the gate label"
+    assert "proposed-tech-lead" not in text, (
+        f"{variant} still documents the retired proposed-tech-lead gate"
+    )
+    assert "Never propose or\n  touch `tech-lead-proposal`, `awaiting-approval` or `approved`" in text, (
+        f"{variant} does not forbid the agent from touching the approval labels"
     )
     # The pre-#6778 shadow-only claim must be gone from every variant.
     assert "recorded as would-have-done until its" not in text, (

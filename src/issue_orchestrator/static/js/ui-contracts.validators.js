@@ -709,6 +709,71 @@
                 }
             ]
         },
+        "ControlCenterTechLeadPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "repos": {
+                    "items": {
+                        "$ref": "#/components/schemas/ControlCenterTechLeadRepoPayload"
+                    },
+                    "type": "array"
+                },
+                "waiting_count": {
+                    "minimum": 0,
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "waiting_count",
+                "generated_at",
+                "repos"
+            ],
+            "type": "object"
+        },
+        "ControlCenterTechLeadRepoPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "availability": {
+                    "enum": [
+                        "available",
+                        "engine_not_running",
+                        "unavailable"
+                    ],
+                    "type": "string"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "repo_key": {
+                    "pattern": "^repo-[0-9a-f]{64}$",
+                    "type": "string"
+                },
+                "section": {
+                    "oneOf": [
+                        {
+                            "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "repo_key",
+                "name",
+                "availability",
+                "detail",
+                "section"
+            ],
+            "type": "object"
+        },
         "CopySessionRecordingCommandPayload": {
             "additionalProperties": false,
             "properties": {
@@ -6730,85 +6795,6 @@
             ],
             "type": "object"
         },
-        "ReworkProposalPayload": {
-            "additionalProperties": false,
-            "properties": {
-                "can_approve": {
-                    "type": "boolean"
-                },
-                "can_decline": {
-                    "type": "boolean"
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "evidence_identity": {
-                    "type": "string"
-                },
-                "expected_head": {
-                    "type": "string"
-                },
-                "feedback": {
-                    "type": "string"
-                },
-                "forward_issue_number": {
-                    "type": "integer"
-                },
-                "issue_number": {
-                    "type": "integer"
-                },
-                "mutations": {
-                    "type": "string"
-                },
-                "pr_number": {
-                    "type": "integer"
-                },
-                "proposal_issue_number": {
-                    "type": "integer"
-                },
-                "report": {
-                    "type": "string"
-                },
-                "repository": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                }
-            },
-            "required": [
-                "proposal_issue_number",
-                "pr_number",
-                "issue_number",
-                "forward_issue_number",
-                "repository",
-                "expected_head",
-                "evidence_identity",
-                "feedback",
-                "report",
-                "status",
-                "detail",
-                "mutations",
-                "can_approve",
-                "can_decline"
-            ],
-            "type": "object"
-        },
-        "ReworkProposalsPayload": {
-            "additionalProperties": false,
-            "properties": {
-                "proposals": {
-                    "items": {
-                        "$ref": "#/components/schemas/ReworkProposalPayload"
-                    },
-                    "type": "array"
-                }
-            },
-            "required": [
-                "proposals"
-            ],
-            "type": "object"
-        },
         "RunningCodingAttemptPayload": {
             "additionalProperties": false,
             "properties": {
@@ -7554,6 +7540,103 @@
             ],
             "type": "object"
         },
+        "TechLeadCaseFilePayload": {
+            "additionalProperties": false,
+            "properties": {
+                "area": {
+                    "type": "string"
+                },
+                "comment_count": {
+                    "type": "integer"
+                },
+                "issue_number": {
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                "link": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "issue_number",
+                "title",
+                "area",
+                "comment_count",
+                "updated_at",
+                "link"
+            ],
+            "type": "object"
+        },
+        "TechLeadDetailRowPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "label": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "label",
+                "value"
+            ],
+            "type": "object"
+        },
+        "TechLeadDoingItemPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "action_kind": {
+                    "type": "string"
+                },
+                "action_label": {
+                    "type": "string"
+                },
+                "at": {
+                    "type": "string"
+                },
+                "decision_id": {
+                    "type": "string"
+                },
+                "in_flight": {
+                    "type": "boolean"
+                },
+                "link": {
+                    "type": "string"
+                },
+                "outcome": {
+                    "type": "string"
+                },
+                "outcome_label": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "target_number": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "decision_id",
+                "action_kind",
+                "action_label",
+                "target_number",
+                "link",
+                "outcome",
+                "outcome_label",
+                "at",
+                "reason",
+                "in_flight"
+            ],
+            "type": "object"
+        },
         "TechLeadGlobalHealthReviewScopePayload": {
             "additionalProperties": false,
             "properties": {
@@ -7563,6 +7646,34 @@
             },
             "required": [
                 "kind"
+            ],
+            "type": "object"
+        },
+        "TechLeadHealthReviewPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "interval_minutes": {
+                    "type": "integer"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "last_at": {
+                    "type": "string"
+                },
+                "next_due_at": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "enabled",
+                "interval_minutes",
+                "last_at",
+                "next_due_at",
+                "label"
             ],
             "type": "object"
         },
@@ -7580,6 +7691,110 @@
             "required": [
                 "kind",
                 "issue_number"
+            ],
+            "type": "object"
+        },
+        "TechLeadPageSectionPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "case_files": {
+                    "items": {
+                        "$ref": "#/components/schemas/TechLeadCaseFilePayload"
+                    },
+                    "type": "array"
+                },
+                "doing": {
+                    "items": {
+                        "$ref": "#/components/schemas/TechLeadDoingItemPayload"
+                    },
+                    "type": "array"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "health_review": {
+                    "$ref": "#/components/schemas/TechLeadHealthReviewPayload"
+                },
+                "parked": {
+                    "items": {
+                        "$ref": "#/components/schemas/TechLeadParkedActionPayload"
+                    },
+                    "type": "array"
+                },
+                "repository": {
+                    "type": "string"
+                },
+                "run": {
+                    "$ref": "#/components/schemas/TechLeadRunStripPayload"
+                },
+                "triaged": {
+                    "items": {
+                        "$ref": "#/components/schemas/TechLeadTriagedItemPayload"
+                    },
+                    "type": "array"
+                },
+                "waiting": {
+                    "items": {
+                        "$ref": "#/components/schemas/TechLeadWaitingItemPayload"
+                    },
+                    "type": "array"
+                },
+                "waiting_count": {
+                    "minimum": 0,
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "repository",
+                "generated_at",
+                "waiting_count",
+                "run",
+                "waiting",
+                "doing",
+                "parked",
+                "triaged",
+                "case_files",
+                "health_review"
+            ],
+            "type": "object"
+        },
+        "TechLeadParkedActionPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "escalated": {
+                    "type": "boolean"
+                },
+                "issue_number": {
+                    "type": "integer"
+                },
+                "link": {
+                    "type": "string"
+                },
+                "outcome": {
+                    "type": "string"
+                },
+                "parked_since": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "subject": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "action",
+                "subject",
+                "issue_number",
+                "outcome",
+                "reason",
+                "parked_since",
+                "escalated",
+                "link"
             ],
             "type": "object"
         },
@@ -7822,6 +8037,152 @@
                     "$ref": "#/components/schemas/TechLeadIssueScopePayload"
                 }
             ]
+        },
+        "TechLeadRunStripPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "ended_at": {
+                    "type": "string"
+                },
+                "has_run": {
+                    "type": "boolean"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "phase_label": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "has_run",
+                "label",
+                "phase",
+                "phase_label",
+                "started_at",
+                "ended_at",
+                "detail"
+            ],
+            "type": "object"
+        },
+        "TechLeadTriagedItemPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "decided_at": {
+                    "type": "string"
+                },
+                "issue_number": {
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                "link": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "triage_class": {
+                    "type": "string"
+                },
+                "triage_label": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "issue_number",
+                "triage_class",
+                "triage_label",
+                "decided_at",
+                "reason",
+                "link"
+            ],
+            "type": "object"
+        },
+        "TechLeadWaitingItemPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "approval_effect": {
+                    "type": "string"
+                },
+                "can_approve": {
+                    "type": "boolean"
+                },
+                "can_decline": {
+                    "type": "boolean"
+                },
+                "details": {
+                    "items": {
+                        "$ref": "#/components/schemas/TechLeadDetailRowPayload"
+                    },
+                    "type": "array"
+                },
+                "kind": {
+                    "enum": [
+                        "proposal",
+                        "merge_ready_pr",
+                        "hand_over"
+                    ],
+                    "type": "string"
+                },
+                "link": {
+                    "type": "string"
+                },
+                "number": {
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                "operation": {
+                    "type": "string"
+                },
+                "recommendation": {
+                    "type": "string"
+                },
+                "status": {
+                    "enum": [
+                        "awaiting_approval",
+                        "approved",
+                        "approval_not_accepted",
+                        "executing",
+                        "merge_held",
+                        "handed_over"
+                    ],
+                    "type": "string"
+                },
+                "status_label": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "waiting_since": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "kind",
+                "number",
+                "operation",
+                "title",
+                "recommendation",
+                "approval_effect",
+                "link",
+                "waiting_since",
+                "status",
+                "status_label",
+                "can_approve",
+                "can_decline",
+                "details"
+            ],
+            "type": "object"
         },
         "TestCaseHistoryPayload": {
             "additionalProperties": false,

@@ -152,8 +152,8 @@ Compact `tech-lead-decision.json` example:
   feedback in `body`. Target only PRs in `scoped-rework-targets.json`; those
   immutable launch facts bind the repository, linked issue, head and branch.
   The report is preserved as the coder instruction. Default authority is
-  `propose`: approve in the rework proposal panel or remove the existing
-  proposed-tech-lead gate. Execution preserves the branch and uses normal
+  `propose`: a maintainer approves it in the Control Center's Approvals
+  inbox or with the `approved` label. Execution preserves the branch and uses normal
   rework policy; changed heads require fresh review, and merged PRs receive
   one forward fix. `flag_pattern` promotion is a different lane.
 """
@@ -161,14 +161,15 @@ Compact `tech-lead-decision.json` example:
     + """- Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
   `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`, `propose_decision`) under `propose` authority become reviewable GitHub
-  issues carrying the `proposed-tech-lead` label; a human approves one by
-  removing that label, and the orchestrator re-checks the target's state
+  issues labelled `tech-lead-proposal` and `awaiting-approval`; a maintainer
+  approves one with the `approved` label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not
   executed. `reset_retry` is destructive and ALWAYS waits for that approval;
   `kill_hung_session` under `tech_lead.authority.kill_hung_session: execute`
   runs directly with its execution-time re-check. Never propose or
-  touch the `proposed-tech-lead` label yourself; it is orchestrator-owned and
-  rejected like other workflow labels.
+  touch `tech-lead-proposal`, `awaiting-approval` or `approved` yourself: they
+  are orchestrator- and maintainer-owned, rejected like other workflow labels,
+  and an `approved` label from an agent or bot never counts.
 - A completed session missing either artifact — or violating any rule
   above — is recorded as FAILED and marked tech-lead-failed.
 """

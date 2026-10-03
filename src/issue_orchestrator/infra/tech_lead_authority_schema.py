@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS tech_lead_decision_retries (
     state TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+-- #7763: approvals an operator gave in the Control Center, each bound to the
+-- exact `approved` label event the engine's write produced.
+CREATE TABLE IF NOT EXISTS tech_lead_operator_approvals (
+    issue_number INTEGER PRIMARY KEY,
+    label_event_id INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,
     issue_number INTEGER NOT NULL,

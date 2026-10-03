@@ -42,6 +42,7 @@ from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
     from ...domain.issue_key import IssueKey, GitHubIssueKey
+    from ...domain.tech_lead_approval import LabelEvent
     from ...ports.issue import Issue
 
 logger = logging.getLogger(__name__)
@@ -1853,6 +1854,41 @@ class GitHubAdapter:
         truncated or malformed reads.
         """
         return self._client.issue_closed_on_or_after(issue_number, timestamp)
+
+    def latest_label_event(
+        self, issue_number: int, label: str, *, removed: bool = False
+    ) -> "LabelEvent | None":
+        """Approval evidence (#7763): who last applied (or removed) ``label``.
+
+        Automation is anything GitHub marks as such: a ``Bot`` account, a
+        ``[bot]`` login, or an event performed through a GitHub App. A labeled
+        event without an id or actor is malformed and raises.
+        """
+        from ...domain.tech_lead_approval import LabelEvent
+
+        payload = self._client.latest_label_event(issue_number, label, removed=removed)
+        if payload is None:
+            return None
+        actor = payload.get("actor")
+        if not isinstance(actor, dict):
+            raise GitHubHttpError(
+                f"label event on #{issue_number} carries no actor; cannot attribute it"
+            )
+        login = str(actor.get("login") or "")
+        return LabelEvent(
+            event_id=int(payload.get("id") or 0),
+            actor_login=login,
+            actor_is_bot=(
+                actor.get("type") == "Bot"
+                or login.casefold().endswith("[bot]")
+                or bool(payload.get("performed_via_github_app"))
+            ),
+            created_at=str(payload.get("created_at") or ""),
+        )
+
+    def repository_role(self, login: str) -> str | None:
+        """``login``'s role in this repository, or None for an unknown user."""
+        return self._client.repository_role(login)
 
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.
