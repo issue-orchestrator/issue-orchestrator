@@ -74,7 +74,7 @@ def exam_config(
     operator a question: ``ASKING_CODER_LABEL`` with no commit, and
     ``ASKING_BESIDE_PR_CODER_LABEL`` beside a PR of its published work.
 
-    With ``resolution_coders`` (Cases E/F), four coders plant porchpin's
+    With ``resolution_coders`` (Cases F/G), four coders plant porchpin's
     needs-human blocks (#7658): a split question asked until the tech lead
     resolves it, a coder that gives up until then, a question beside a PR that
     the issue's spec answers, and an account-provisioning question.

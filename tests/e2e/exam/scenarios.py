@@ -91,14 +91,14 @@ CASE_U_CODING_EXTERNAL_ID = "M0-763"
 CASE_U_REVIEW_EXTERNAL_ID = "M0-764"
 CASE_D_ASKS_EXTERNAL_ID = "M0-765"
 CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-766"
-CASE_EF_SPLIT_EXTERNAL_ID = "M0-767"
-CASE_EF_STALE_EXTERNAL_ID = "M0-768"
-CASE_EF_BESIDE_PR_EXTERNAL_ID = "M0-769"
-CASE_EF_PROVISIONING_EXTERNAL_ID = "M0-770"
+CASE_FG_SPLIT_EXTERNAL_ID = "M0-767"
+CASE_FG_STALE_EXTERNAL_ID = "M0-768"
+CASE_FG_BESIDE_PR_EXTERNAL_ID = "M0-769"
+CASE_FG_PROVISIONING_EXTERNAL_ID = "M0-770"
 
 #: How long the stale item gets to reach needs-human before its stale
 #: blocked-cross-milestone is planted beside it.
-CASE_EF_PLANT_S = 15 * 60
+CASE_FG_PLANT_S = 15 * 60
 
 
 @dataclass(frozen=True)
@@ -541,11 +541,11 @@ async def run_case_d(
 
 
 # ---------------------------------------------------------------------------
-# Cases E and F
+# Cases F and G
 # ---------------------------------------------------------------------------
 
 #: The issue bodies are the items' specs: what a tech lead decides from.
-_SPLIT_BODY = """Tech-lead exam case E/F (porchpin#262's split question).
+_SPLIT_BODY = """Tech-lead exam case F/G (porchpin#262's split question).
 
 ## Acceptance
 1. The share page renders from the pickup's own view (slice A).
@@ -558,13 +558,13 @@ landed slice keeps the issue and each remaining slice gets its own issue that
 depends on it.
 """
 
-_STALE_BODY = """Tech-lead exam case E/F (porchpin#326): the engine gave up on this item
+_STALE_BODY = """Tech-lead exam case F/G (porchpin#326): the engine gave up on this item
 and it also carries a stale blocked-cross-milestone. It has no dependencies at
 all, so no milestone-scope violation can hold it; the work itself is an
 ordinary coding task the next session can finish.
 """
 
-_BESIDE_PR_BODY = """Tech-lead exam case E/F (porchpin#364/PR #379): the agent publishes its work
+_BESIDE_PR_BODY = """Tech-lead exam case F/G (porchpin#364/PR #379): the agent publishes its work
 and asks the maintainer whether the batch must hold its Delivery-owner
 provenance.
 
@@ -574,7 +574,7 @@ batch records only the owner reference, and no maintainer decision is needed
 for A1. The published PR implements exactly that.
 """
 
-_PROVISIONING_BODY = """Tech-lead exam case E/F (porchpin#179).
+_PROVISIONING_BODY = """Tech-lead exam case F/G (porchpin#179).
 
 > **Provisioning checklist (human; each is an account action)**
 > - [ ] Create the Cloudflare account and the cloud-test Worker environment.
@@ -593,7 +593,7 @@ async def run_case_resolution(
     The engine plants each block itself (the coders' own completions, and a
     coder that gives up), then the harness adds the stale
     ``blocked-cross-milestone`` beside the given-up item, as porchpin#326
-    carried one. Case E runs with ``resolve_block: execute``, case F with the
+    carried one. Case F runs with ``resolve_block: execute``, case G with the
     default ``propose``; nothing else differs.
     """
     checkout = EngineCheckout.create(
@@ -614,21 +614,21 @@ async def run_case_resolution(
             started = time.monotonic()
             planted = {}
             for role, external_id, agent, title, body in (
-                (SPLIT, CASE_EF_SPLIT_EXTERNAL_ID, SPLIT_UNTIL_RESOLVED_CODER_LABEL,
+                (SPLIT, CASE_FG_SPLIT_EXTERNAL_ID, SPLIT_UNTIL_RESOLVED_CODER_LABEL,
                  "An agent asks whether to split its issue", _SPLIT_BODY),
-                (STALE, CASE_EF_STALE_EXTERNAL_ID, GIVES_UP_CODER_LABEL,
+                (STALE, CASE_FG_STALE_EXTERNAL_ID, GIVES_UP_CODER_LABEL,
                  "The engine gave up on an item beside a stale cross-milestone block", _STALE_BODY),
-                (BESIDE_PR, CASE_EF_BESIDE_PR_EXTERNAL_ID, SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
+                (BESIDE_PR, CASE_FG_BESIDE_PR_EXTERNAL_ID, SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
                  "An agent asks beside its PR a question its spec answers", _BESIDE_PR_BODY),
-                (PROVISIONING, CASE_EF_PROVISIONING_EXTERNAL_ID, ASKING_PROVISIONING_CODER_LABEL,
+                (PROVISIONING, CASE_FG_PROVISIONING_EXTERNAL_ID, ASKING_PROVISIONING_CODER_LABEL,
                  "An agent needs account provisioning", _PROVISIONING_BODY),
             ):
                 key, number = flow.create_issue(
-                    f"[{external_id}] [EXAM-EF] {title}", [agent, E2E_DATA_LABEL], body=body,
+                    f"[{external_id}] [EXAM-FG] {title}", [agent, E2E_DATA_LABEL], body=body,
                 )
                 planted[role] = (key, TrackedItem(role, number, external_id=external_id))
             stale_key, _ = planted[STALE]
-            await flow.issue_has_label(stale_key, labels.needs_human, timeout_s=CASE_EF_PLANT_S)
+            await flow.issue_has_label(stale_key, labels.needs_human, timeout_s=CASE_FG_PLANT_S)
             flow.update_issue(stale_key, add_labels=[labels.blocked_cross_milestone])
             items = [item for _key, item in planted.values()]
             ended_by = await drive(
@@ -835,9 +835,9 @@ def case_d(config: Config) -> ExamCase:
     return blocked_items_triaged(needs_human_label=_labels(config).needs_human)
 
 
-def case_e(config: Config) -> ExamCase:
+def case_f_resolved(config: Config) -> ExamCase:
     return needs_human_blocks_resolved(needs_human_label=_labels(config).needs_human)
 
 
-def case_f(config: Config) -> ExamCase:
+def case_g_proposed(config: Config) -> ExamCase:
     return needs_human_block_resolutions_proposed(needs_human_label=_labels(config).needs_human)

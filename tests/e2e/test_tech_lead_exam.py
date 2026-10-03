@@ -54,8 +54,8 @@ from tests.e2e.exam.scenarios import (
     case_b,
     case_c,
     case_d,
-    case_e,
-    case_f,
+    case_f_resolved,
+    case_g_proposed,
     case_u,
     run_case_a,
     run_case_b,
@@ -135,8 +135,8 @@ async def test_tech_lead_exam(
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
         UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
         BLOCKED_ITEMS_TRIAGED: case_d,
-        BLOCKS_RESOLVED_UNDER_EXECUTE: case_e,
-        BLOCK_RESOLUTIONS_PROPOSED: case_f,
+        BLOCKS_RESOLVED_UNDER_EXECUTE: case_f_resolved,
+        BLOCK_RESOLUTIONS_PROPOSED: case_g_proposed,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),

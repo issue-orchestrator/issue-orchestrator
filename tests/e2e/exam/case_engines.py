@@ -60,7 +60,7 @@ class CaseEngine:
     asking_coders: bool = False
     """Add the coders that end by asking the operator (``exam_config``)."""
     resolution_coders: bool = False
-    """Add the coders that plant Cases E/F's needs-human blocks (``exam_config``)."""
+    """Add the coders that plant Cases F/G's needs-human blocks (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -191,7 +191,7 @@ def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> Ca
 
 
 def case_resolution_engine(*, resolve_block: str) -> CaseEngine:
-    """Cases E (``resolve_block: execute``) and F (``propose``, the default) (#7658).
+    """Cases F (``resolve_block: execute``) and G (``propose``, the default) (#7658).
 
     The Case D engine (health reviews grant blocked items to triage; the stuck
     sweep is off, so the only tech-lead run on each item is the triage) with

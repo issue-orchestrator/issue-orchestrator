@@ -103,7 +103,7 @@ def _load_case_config(
         case_resolution_engine(resolve_block="execute"),
         case_resolution_engine(resolve_block="propose"),
     ],
-    ids=["A", "B", "C", "U", "D", "E", "F"],
+    ids=["A", "B", "C", "U", "D", "F", "G"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -229,7 +229,7 @@ def test_only_case_d_lets_the_engine_reuse_worktrees() -> None:
 
 
 @pytest.mark.parametrize("mode", ["execute", "propose"])
-def test_cases_e_and_f_differ_only_in_the_resolve_block_dial(
+def test_cases_f_and_g_differ_only_in_the_resolve_block_dial(
     mode: str, tmp_path: Path, written: list[Path]
 ) -> None:
     """#7658: the operator hands the tech lead these decisions through config

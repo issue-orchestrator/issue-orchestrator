@@ -889,9 +889,9 @@ class TestCaseDBlockedItemsTriaged:
         assert WorkItemFact.from_dict(data).triage is None
 
 
-class TestCasesEAndFResolution:
+class TestCasesFAndGResolution:
     """#7658: porchpin's needs-human blocks, decided by the tech lead itself
-    (case E, ``resolve_block: execute``) or as approvable proposals (case F)."""
+    (case F, ``resolve_block: execute``) or as approvable proposals (case G)."""
 
     from issue_orchestrator.testing.exam.cases import (
         BESIDE_PR as _BESIDE,

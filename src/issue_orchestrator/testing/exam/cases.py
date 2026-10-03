@@ -37,8 +37,8 @@ STALE_CLAIM_PAUSED_FOR_RECONCILE = "C-stale-claim-paused-for-reconcile"
 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-review"
 UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
 BLOCKED_ITEMS_TRIAGED = "D-blocked-items-triaged"
-BLOCKS_RESOLVED_UNDER_EXECUTE = "E-needs-human-blocks-resolved"
-BLOCK_RESOLUTIONS_PROPOSED = "F-needs-human-block-resolutions-proposed"
+BLOCKS_RESOLVED_UNDER_EXECUTE = "F-needs-human-blocks-resolved"
+BLOCK_RESOLUTIONS_PROPOSED = "G-needs-human-block-resolutions-proposed"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -61,7 +61,7 @@ REVIEW = "review"
 ASKS = "asks"
 ASKS_BESIDE_PR = "asks_beside_pr"
 
-#: Cases E and F's four needs-human blocks, each a porchpin item on 2026-10-02:
+#: Cases F and G's four needs-human blocks, each a porchpin item on 2026-10-02:
 #: an agent's split question (porchpin#262), a block the engine gave up on
 #: beside a stale blocked-cross-milestone (#326), an agent question beside its
 #: published PR that the issue's own spec answers (#364/#379), and account
@@ -342,7 +342,7 @@ def blocked_items_triaged(*, needs_human_label: str) -> ExamCase:
 
 
 def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[Goal, ...]:
-    """What cases E (``proposals=False``) and F (``proposals=True``) demand."""
+    """What cases F (``proposals=False``) and G (``proposals=True``) demand."""
     if proposals:
         # The decision waits for the operator: a filed, approvable proposal
         # carrying it, and the block stays until the operator approves.
@@ -394,7 +394,7 @@ def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[
 
 
 def needs_human_blocks_resolved(*, needs_human_label: str) -> ExamCase:
-    """Case E — porchpin's needs-human blocks, with ``resolve_block: execute`` (#7658).
+    """Case F — porchpin's needs-human blocks, with ``resolve_block: execute`` (#7658).
 
     The operator wants to do less: ``tech_lead.authority.resolve_block`` is
     ``execute``. Right answer: a health review decides the three work blocks
@@ -420,7 +420,7 @@ def needs_human_blocks_resolved(*, needs_human_label: str) -> ExamCase:
 
 
 def needs_human_block_resolutions_proposed(*, needs_human_label: str) -> ExamCase:
-    """Case F — the same blocks under the default ``resolve_block: propose`` (#7658).
+    """Case G — the same blocks under the default ``resolve_block: propose`` (#7658).
 
     Right answer: each work block ends with an approvable ``resolve_block``
     proposal carrying the decision, the block still in place until the
@@ -430,7 +430,7 @@ def needs_human_block_resolutions_proposed(*, needs_human_label: str) -> ExamCas
         case_id=BLOCK_RESOLUTIONS_PROPOSED,
         title="Needs-human work blocks resolved as approvable proposals",
         fault=(
-            f"the same four {needs_human_label} items as case E, with the default"
+            f"the same four {needs_human_label} items as case F, with the default"
             " resolve_block authority (propose)"
         ),
         goals=_resolution_case_goals(needs_human_label=needs_human_label, proposals=True),
