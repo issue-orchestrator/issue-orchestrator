@@ -168,6 +168,31 @@ class _WeakReferenceable:
         self.__dict__.update(fields)
 
 
+def _page_engine(approvals):
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.infra.config import Config
+
+    history = MagicMock()
+    history.recent.return_value = ()
+    claims = MagicMock()
+    claims.list_needs_human_causes.return_value = ()
+    return _WeakReferenceable(
+        state_lock=threading.RLock(),
+        config=Config(repo=REPO),
+        state=SimpleNamespace(cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0),
+        tech_lead_run_history=history,
+        deps=SimpleNamespace(
+            action_applier=SimpleNamespace(tech_lead_approvals=approvals, request_rework=None),
+            services=SimpleNamespace(tech_lead_authority=InMemoryTechLeadAuthorityStore()),
+            label_manager=LabelManager(Config(repo=REPO)),
+            pending_work_claims=claims,
+            fact_gatherer=SimpleNamespace(board_publisher=None),
+            action_liveness=SimpleNamespace(owner=SimpleNamespace(parked=lambda: ())),
+            repository_host=MagicMock(),
+        ),
+    )
+
+
 def test_page_facade_reads_engine_state_only() -> None:
     """The page makes no GitHub call: the repository host is never touched."""
     from issue_orchestrator.control.label_manager import LabelManager
@@ -200,3 +225,45 @@ def test_page_facade_reads_engine_state_only() -> None:
     section = tech_lead_page_section(orchestrator)
     assert [item.number for item in section.waiting] == [600]
     assert host.mock_calls == []
+
+
+
+def test_an_unobserved_scope_is_unavailable_never_an_all_clear(client, tmp_path) -> None:
+    """#7763 review r10 F1: before its first complete approval-scope
+    observation the engine answers 503, which the Control Center counts as
+    not reporting; afterwards an empty scope is a real, empty section."""
+    from issue_orchestrator.execution.control_center_tech_lead import ControlCenterTechLead
+    from issue_orchestrator.infra.repo_registry import RegisteredRepo
+    from issue_orchestrator.infra.tech_lead_proposal_facade import TechLeadPageNotObserved
+    from issue_orchestrator.ports.repository_engine_supervisor import (
+        MultiInstanceStatus,
+        SupervisorStatus,
+    )
+
+    http, engine = client
+    approvals = make_approvals()
+    orchestrator = _page_engine(approvals)
+    engine.tech_lead_page_section.side_effect = lambda: tech_lead_page_section(orchestrator)
+
+    with pytest.raises(TechLeadPageNotObserved):
+        tech_lead_page_section(orchestrator)
+    response = http.get("/api/tech-lead/page")
+    assert response.status_code == 503
+
+    class _Transport:
+        def read_section(self, port):
+            answer = http.get("/api/tech-lead/page")
+            return answer.json() if answer.status_code == 200 else None
+
+    supervisor = MagicMock()
+    supervisor.status_all_instances.side_effect = lambda path, *a, **k: MultiInstanceStatus(
+        repo_root=str(path), instances=[SupervisorStatus(state="running", port=8001)])
+    (tmp_path / "a").mkdir()
+    cc = ControlCenterTechLead(supervisor, lambda: [RegisteredRepo(path=str(tmp_path / "a"), name="a")], _Transport())
+
+    page = cc.page()
+    assert page.unreported_count == 1 and page.waiting_count == 0
+
+    approvals.record_scope((), {})  # the first observation: genuinely empty
+    assert http.get("/api/tech-lead/page").status_code == 200
+    assert cc.page().unreported_count == 0

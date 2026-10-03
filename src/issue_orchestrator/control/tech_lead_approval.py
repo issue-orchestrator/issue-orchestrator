@@ -79,6 +79,7 @@ class TechLeadApprovals:
     _scope: tuple["Issue", ...] = field(default=(), init=False)
     _scope_verdicts: dict[int, ApprovalVerdict] = field(default_factory=dict, init=False)
     _declined: frozenset[int] | None = field(default=None, init=False)
+    _scope_observed: bool = field(default=False, init=False)
 
     # -- the last observed scope (read model) --------------------------------
 
@@ -100,6 +101,7 @@ class TechLeadApprovals:
         """
         self._scope = tuple(issue for issue in issues if not self.is_declined(issue.number))
         self._scope_verdicts = dict(verdicts)
+        self._scope_observed = True
         self.index.index_proposals(issue.number for issue in issues)
         self.index.retire_proposals(retired)
 
@@ -140,6 +142,15 @@ class TechLeadApprovals:
         """Drop one item after a decline closed it, so the read model is current."""
         self._scope = tuple(issue for issue in self._scope if issue.number != issue_number)
         self._scope_verdicts.pop(issue_number, None)
+
+    @property
+    def scope_observed(self) -> bool:
+        """Whether a complete approval-scope observation has succeeded yet.
+
+        Until then ``observed_scope()`` is empty because nothing was looked
+        at, not because nothing waits (#7763 review r10 F1).
+        """
+        return self._scope_observed
 
     def observed_scope(self) -> tuple[tuple["Issue", ApprovalVerdict | None], ...]:
         """Every open proposal last observed, with its verdict when it claims one."""

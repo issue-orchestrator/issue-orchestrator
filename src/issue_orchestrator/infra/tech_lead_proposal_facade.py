@@ -68,6 +68,10 @@ def tech_lead_page_section(orchestrator: Orchestrator) -> "TechLeadPageSectionPa
         deps, state, config = orchestrator.deps, orchestrator.state, orchestrator.config
         authority = deps.services.tech_lead_authority
         approvals = deps.action_applier.tech_lead_approvals
+        if approvals is not None and not approvals.scope_observed:
+            # An unobserved scope is unknown, not empty: publishing "nothing
+            # waiting" here would be an all-clear nobody checked (#7763 r10 F1).
+            raise TechLeadPageNotObserved("the approval scope has not been observed yet")
         labels = deps.label_manager
         issues: dict[int, "Issue"] = {}
         for issue in (*state.cached_scope_issues, *state.cached_queue_issues):
@@ -104,6 +108,10 @@ def tech_lead_page_section(orchestrator: Orchestrator) -> "TechLeadPageSectionPa
     return build_tech_lead_page_section(
         replace(inputs, merge_statuses=_merge_statuses(orchestrator).read(held))
     )
+
+
+class TechLeadPageNotObserved(RuntimeError):
+    """The engine has not completed an approval-scope observation yet."""
 
 
 def _rework_receipts(orchestrator: Orchestrator) -> tuple[ReworkReceiptView, ...]:

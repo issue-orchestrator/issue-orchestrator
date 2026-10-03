@@ -38,6 +38,7 @@ from ..domain.tech_lead_run import (
     TechLeadRunScope,
     TechLeadRunTrigger,
 )
+from ..infra.tech_lead_proposal_facade import TechLeadPageNotObserved
 from .web_session_context import WebOrchestratorDependency
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,11 @@ async def get_tech_lead_page_section(orchestrator: WebOrchestratorDependency) ->
     """This engine's section of the Control Center's Tech lead page (#7763)."""
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Repository Engine is not running")
-    return await asyncio.to_thread(orchestrator.tech_lead_page_section)
+    try:
+        return await asyncio.to_thread(orchestrator.tech_lead_page_section)
+    except TechLeadPageNotObserved as exc:
+        # The Control Center counts this repository as not reporting.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @web_tech_lead_router.post("/api/tech-lead/proposals", response_model=TechLeadProposalOutcomePayload)

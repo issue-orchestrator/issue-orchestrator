@@ -65,7 +65,6 @@ from ..domain.tech_lead_approval import (
     GATED_PROPOSAL_LABELS,
     HOW_TO_APPROVE,
     ApprovalVerdict,
-    proposal_label_state,
     proposal_state,
     with_proposal_marker,
 )
@@ -483,8 +482,11 @@ def reconcile_tech_lead_proposals(
                     ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
                 )
             continue
-        if proposal_label_state(issue.labels).is_proposal:
-            continue  # a proposal without an op (follow-up, promotion): inert
+        if proposal_state(issue.labels, issue.body).is_proposal:
+            # A proposal without an op (follow-up, promotion): inert, and its
+            # body marker keeps it one even with every gate label stripped
+            # (#7763 review r10 F2).
+            continue
         # Accepted creates awaiting ledger recovery are never review anchors,
         # even if their labels were edited.
         if not any(marker in (issue.body or "") for marker in pending_markers):

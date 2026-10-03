@@ -10677,3 +10677,38 @@ class TestTechLeadProposalLaunchConsent:
         result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
 
         assert result.success
+
+
+def test_startup_never_queues_a_fully_stripped_proposal_as_an_anchor(
+    sample_config, mock_repo_host, tmp_path
+) -> None:
+    """#7763 review r10 F2: a non-op follow-up whose gate labels were all
+    stripped is still a proposal by its body marker, so a batch-anchor title
+    and the tech-lead agent label never make it an anchor."""
+    from issue_orchestrator.control.health_review_trigger import (
+        recover_pending_tech_lead_anchors,
+    )
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+    TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+    mock_repo_host.issues = {
+        906: Issue(
+            number=906,
+            title="Tech Lead Batch Review follow-up",
+            labels=["agent:tech-lead"],
+            repo="test/repo",
+            body=with_proposal_marker("Proposed follow-up."),
+        )
+    }
+    state = OrchestratorState()
+
+    recover_pending_tech_lead_anchors(
+        state,
+        repository_host=mock_repo_host,
+        config=sample_config,
+        session_exists=lambda name: False,
+        tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+        claims=_claims_store(),
+    )
+
+    assert state.pending_tech_lead_reviews == []
