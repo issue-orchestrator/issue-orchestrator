@@ -939,7 +939,7 @@ class CompletionProcessor:
         self, prepared: PreparedManualPublication, publication: PublishValidatedHeadOutcome,
     ) -> ProcessingResult:
         return settle_manual_publication(
-            prepared, publication, session_output=self.session_output, labels=self.label_adapter,
+            prepared, publication, session_output=self.session_output, labels=self.label_adapter, block=self.needs_human_block,
             finalize_review_exchange=self._finalize_review_exchange_pr,
             execute_planned_actions=self._execute_planned_actions, emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment, cleanup_completion_record=self._cleanup_completion_record,
@@ -2187,7 +2187,7 @@ class CompletionProcessor:
 
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
-            issue_number=issue_number,
+            issue_number=issue_number, record=record,
             branch=branch,
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
@@ -2274,7 +2274,7 @@ class CompletionProcessor:
     def _reuse_existing_pr_if_available(
         self,
         *,
-        issue_number: int,
+        issue_number: int, record: CompletionRecord,
         branch: str,
         exchange_mode: str | None,
         exchange_result: Any | None,
@@ -2309,12 +2309,11 @@ class CompletionProcessor:
             if retarget is not None:
                 return retarget
         actions_taken.append(f"Reused PR #{existing_pr.number}")
-        logger.info(
-            "Reused existing PR #%d for issue #%d: %s",
-            existing_pr.number,
-            issue_number,
-            existing_pr.url,
-        )
+        logger.info("Reused existing PR #%d for issue #%d: %s", existing_pr.number, issue_number, existing_pr.url)
+        # The reused PR gets the record's labels and merge hold too (#7678).
+        if not apply_pr_labels(pr_number=existing_pr.number, record=record, labels=self.label_adapter,
+                               block=self.needs_human_block, actions_taken=actions_taken, errors=errors):
+            return self._ActionResult(branch=branch, pr_url=existing_pr.url, halt=True)
         review_exchange_completed = False
         if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
             review_exchange_completed = True
@@ -2526,11 +2525,8 @@ class CompletionProcessor:
         actions_taken.append(f"Created PR #{pr.number}")
         logger.info("Created PR #%d: %s", pr.number, pr.url)
         if not apply_pr_labels(
-            pr_number=pr.number,
-            record=record,
-            labels=self.label_adapter,
-            actions_taken=actions_taken,
-            errors=errors,
+            pr_number=pr.number, record=record, labels=self.label_adapter, block=self.needs_human_block,
+            actions_taken=actions_taken, errors=errors,
         ):
             return self._ActionResult(branch=branch, pr_url=pr.url, halt=True)
         return None

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.review_validity import (
     evaluate_review_validity,
@@ -16,7 +17,7 @@ def test_query_filtered_pr_does_not_require_embedded_review_label() -> None:
     config.code_review_label = "needs-code-review"
     validity = evaluate_review_validity(
         config=config,
-        label_manager=LabelManager(config),
+        label_manager=LabelManager(config), gates=HumanGates.unrecorded(LabelManager(config)),
         issue=None,
         pr=PRInfo(
             number=1,
@@ -39,7 +40,7 @@ def test_direct_pr_snapshot_requires_review_label_when_missing() -> None:
     config.code_review_label = "needs-code-review"
     validity = evaluate_review_validity(
         config=config,
-        label_manager=LabelManager(config),
+        label_manager=LabelManager(config), gates=HumanGates.unrecorded(LabelManager(config)),
         issue=SimpleNamespace(labels=["agent:web"]),
         pr=PRInfo(
             number=1,
@@ -64,7 +65,7 @@ def _withholding(issue_labels: list[str], pr_labels: list[str] | None = None):
     config.code_review_label = "needs-code-review"
     return evaluate_review_withholding(
         config=config,
-        label_manager=LabelManager(config),
+        label_manager=LabelManager(config), gates=HumanGates.unrecorded(LabelManager(config)),
         issue=SimpleNamespace(labels=issue_labels),  # type: ignore[arg-type]
         pr=PRInfo(
             number=2, title="PR", url="https://example.test/pull/2", branch="1-feature",

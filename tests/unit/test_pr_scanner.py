@@ -12,6 +12,7 @@ import logging
 import pytest
 from unittest.mock import MagicMock
 
+from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.observation.no_progress import WorkRefusal, refusal_of_text
 from issue_orchestrator.infra.config import Config
@@ -395,38 +396,60 @@ class TestScanForReviewsFiltering:
         assert "Skipping stale review PR: pr=100 issue=42 reason=issue_blocked" in caplog.text
 
 
-    def test_an_agents_own_question_admits_its_prs_review(
+    def test_a_merge_hold_on_the_pr_admits_its_review(
         self, scanner, mock_repository,
     ):
-        """#7593 / porchpin#364: discovery must not skip the PR either."""
-        from issue_orchestrator.control.review_question_hold import AgentQuestionReviewHolds
+        """#7678 / porchpin#379: a person deciding before the PR merges does
+        not hold its review; the issue carries no work block."""
+        from issue_orchestrator.control.human_gates import HumanGates
         from issue_orchestrator.domain.human_block import NeedsHumanCause
 
         block = MagicMock()
-        block.recorded_causes.return_value = {42: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
-        scanner.attach_review_question_holds(AgentQuestionReviewHolds(block, scanner._lm))
+        block.recorded_causes.return_value = {100: frozenset({NeedsHumanCause.MERGE_DECISION})}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
         mock_repository.issues.append(
             IssueBuilder().with_number(42).with_title("Asks the maintainer")
-            .with_labels("agent:developer", "needs-human").build()
+            .with_labels("agent:developer", "pr-pending").build()
         )
-        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review", "needs-human"])
         mock_repository.prs["42-feature"] = [pr]
 
         scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
 
         assert [review.pr_number for review in scan.reviews] == [100]
 
-    def test_a_sweep_escalated_question_still_withholds_review(
-        self, scanner, mock_repository,
+    @pytest.mark.parametrize("cause", [NeedsHumanCause.MERGE_ESCALATION, None])
+    def test_a_work_hold_on_the_pr_still_withholds_review(
+        self, scanner, mock_repository, cause,
     ):
-        from issue_orchestrator.control.review_question_hold import AgentQuestionReviewHolds
-        from issue_orchestrator.domain.human_block import NeedsHumanCause
+        """An engine escalation of the PR, or a label with no recorded cause,
+        holds the PR's work: no review."""
+        from issue_orchestrator.control.human_gates import HumanGates
 
         block = MagicMock()
-        block.recorded_causes.return_value = {42: frozenset({
-            NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE,
-        })}
-        scanner.attach_review_question_holds(AgentQuestionReviewHolds(block, scanner._lm))
+        block.recorded_causes.return_value = {100: frozenset({cause} if cause else set())}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Asks the maintainer")
+            .with_labels("agent:developer", "pr-pending").build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review", "needs-human"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert scan.reviews == []
+
+    def test_an_issue_level_question_still_withholds_review(
+        self, scanner, mock_repository,
+    ):
+        """An agent's question on the ISSUE (a pre-work question, porchpin#262)
+        holds the work, its review included."""
+        from issue_orchestrator.control.human_gates import HumanGates
+
+        block = MagicMock()
+        block.recorded_causes.return_value = {42: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
         mock_repository.issues.append(
             IssueBuilder().with_number(42).with_title("Asks the maintainer")
             .with_labels("agent:developer", "needs-human").build()
@@ -718,6 +741,29 @@ class TestScanForReworksFiltering:
 
         assert result == []
         assert escalations == []
+
+
+class TestScanForReworksMergeHold:
+    """#7678: a PR's merge hold is no bar to its rework; a work hold is."""
+
+    @pytest.mark.parametrize(
+        ("cause", "reworked"),
+        [(NeedsHumanCause.MERGE_DECISION, True), (NeedsHumanCause.MERGE_ESCALATION, False), (None, False)],
+    )
+    def test_only_a_merge_hold_lets_the_rework_through(self, scanner, mock_repository, cause, reworked):
+        from issue_orchestrator.control.human_gates import HumanGates
+
+        block = MagicMock()
+        block.recorded_causes.return_value = {100: frozenset({cause} if cause else set())}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
+        add_issue_with_agent(mock_repository, 42, "agent:developer")
+        mock_repository.prs["42-feature"] = [make_pr_info(
+            100, branch="42-feature", body="Closes #42", labels=["needs-rework", "needs-human"],
+        )]
+
+        scan = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+
+        assert [r.pr_number for r in scan.reworks] == ([100] if reworked else [])
 
 
 class TestScanForReworksEscalation:

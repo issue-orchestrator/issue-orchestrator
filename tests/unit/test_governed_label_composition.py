@@ -113,7 +113,7 @@ def test_the_composed_completion_door_routes_it_off_the_pr(orchestrator) -> None
 
     The door consults the block owner the processor was composed with, so this
     proves that owner knows the CONFIGURED label: an agent naming it in
-    ``pr_labels`` asks for the issue's block (#7592) and never gets it on a PR,
+    ``pr_labels`` asks for a merge hold on its PR (#7678), never a raw label,
     while the default spelling, which this repo does not use, is an ordinary
     label here.
     """
@@ -136,7 +136,7 @@ def test_the_composed_completion_door_routes_it_off_the_pr(orchestrator) -> None
     routed = route_reserved_pr_labels(record(CONFIGURED_BLOCK, ORDINARY), block)
     assert routed.pr_labels == [ORDINARY]
     assert routed.requested_actions == [
-        RequestedAction.CREATE_PR, RequestedAction.ADD_NEEDS_HUMAN_LABEL,
+        RequestedAction.CREATE_PR, RequestedAction.HOLD_MERGE_FOR_HUMAN,
     ]
     unrouted = record("needs-human", ORDINARY)
     assert route_reserved_pr_labels(unrouted, block) is unrouted

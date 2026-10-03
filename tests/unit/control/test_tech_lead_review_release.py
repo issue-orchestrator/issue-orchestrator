@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.action_results import ActionResult
 from issue_orchestrator.control.actions import (
     Action,
@@ -187,6 +188,7 @@ class Board:
             events=self,  # type: ignore[arg-type]
             config=config,
             labels=labels,
+            gates=HumanGates.unrecorded(labels),
             read_issue=lambda number: self.issue,
             # Like the real complete listing: no labels, no draft flag.
             list_open_prs=lambda: [replace(pr, labels=[], draft=None) for pr in self.prs],

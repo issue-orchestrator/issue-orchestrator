@@ -178,21 +178,18 @@ def _real_block(tmp_path, live, label="needs-human"):
 
 
 def test_a_retained_record_naming_the_human_block_in_pr_labels_still_publishes(retained, tmp_path):
-    """porchpin #364 (#7592): a review-exchange coder ran ``coding-done completed
-    --pr-labels needs-human``. Recovery refused that retained record on every
-    pass, so the validated work could never publish and the liveness owner
-    parked it behind a block of its own.
+    """porchpin #364 (#7592, #7678): a review-exchange coder ran ``coding-done
+    completed --pr-labels needs-human``. Recovery refused that retained record
+    on every pass, so the validated work could never publish.
 
-    The reserved label never reaches the PR; the request it expresses goes on
-    the ISSUE through the block owner, with the agent's cause recorded.
+    The reserved label never reaches the PR as a label, and no longer becomes
+    a block on the ISSUE: it is the agent asking a person to decide before the
+    PR merges, carried to the recovery completion as a merge hold.
     """
-    from issue_orchestrator.domain.human_block import NeedsHumanCause
-
     raw = json.loads(completion())
     raw["pr_labels"] = ["needs-human", "size:small"]
     rig = prepare(retained, raw=raw)
-    # The issue already carries the block, as #364 did once its recovery parked.
-    live = {42: {"needs-human"}}
+    live: dict[int, set[str]] = {42: set()}
     block, claims = _real_block(tmp_path, live)
     rig.processor.needs_human_block = block
 
@@ -200,8 +197,9 @@ def test_a_retained_record_naming_the_human_block_in_pr_labels_still_publishes(r
 
     assert isinstance(result, PreparedRecoveryPublication), result
     assert result.command.target_head_sha == rig.row.admission.evidence.identity.key.validated_head_sha
-    assert claims.needs_human_causes(42) == frozenset({NeedsHumanCause.AGENT_COMPLETION.value})
-    assert live[42] == {"needs-human"}
+    assert result.merge_hold_requested is True
+    assert claims.needs_human_causes(42) == frozenset()
+    assert live[42] == set()
     assert_no_effects(rig)
 
 
@@ -212,10 +210,10 @@ def test_a_retained_human_request_that_cannot_be_recorded_does_not_publish(retai
     from issue_orchestrator.domain.human_block import BlockOutcome
 
     raw = json.loads(completion())
-    raw["pr_labels"] = ["operator-human-block"]
+    raw["requested_actions"] = [*raw.get("requested_actions", []), "add_needs_human_label"]
     rig = prepare(retained, raw=raw)
     block = Mock(spec=SharedNeedsHumanBlock)
-    block.owns.side_effect = lambda label: label == "operator-human-block"
+    block.owns.return_value = False
     block.acquire.return_value = BlockOutcome.FAILED
     rig.processor.needs_human_block = block
 

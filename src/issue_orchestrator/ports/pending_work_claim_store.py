@@ -492,6 +492,10 @@ class NeedsHumanCauseStore(Protocol):
         """Every cause currently recorded against ``issue_number``."""
         ...
 
+    def needs_human_cause_targets(self) -> frozenset[int]:
+        """Every number with at least one cause recorded (#7678 stale-row reconcile)."""
+        ...
+
     def withdraw_needs_human_cause(self, issue_number: int, cause: str) -> None:
         """Drop one cause's row, leaving any others in place."""
         ...

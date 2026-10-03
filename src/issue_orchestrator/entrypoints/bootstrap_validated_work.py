@@ -1,6 +1,7 @@
 """Composition root for retained-work admission, custody, and recovery."""
 
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -274,6 +275,7 @@ def build_validated_work_recovery(
     from ..control.retained_claim_maintenance import RetainedClaimMaintenance
     from ..control.recovery_publication_attempt import RecoveryPublicationAttempt
     from ..control.recovery_publication_cleanup import RecoveryPublicationCleanup
+    from ..control.completion_pr_labels import acquire_merge_hold
     from ..control.recovery_publication_completion import RecoveryPublicationCompletion
     from ..control.recovery_record_operation import RecoveryRecordOperation
     from ..control.remote_authority_refresh import RemoteAuthorityRefreshOperation
@@ -336,6 +338,7 @@ def build_validated_work_recovery(
         verifier=verifier,
         cleanup=cleanup,
         recovery_label=label_manager.recovery_pending,
+        hold_merge=partial(acquire_merge_hold, completion_processor.needs_human_block),
     )
     operation = RecoveryRecordOperation(
         execution=owners.execution,
