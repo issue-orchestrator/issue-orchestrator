@@ -87,10 +87,28 @@ class SqliteProposalIssueIndex:
             )
 
     def indexed_proposals(self) -> frozenset[int]:
+        return self._numbers(declined=False)
+
+    def declined_proposals(self) -> frozenset[int]:
+        return self._numbers(declined=True)
+
+    def _numbers(self, *, declined: bool) -> frozenset[int]:
         rows = self._connection().execute(
-            "SELECT issue_number FROM tech_lead_proposal_index"
+            "SELECT issue_number FROM tech_lead_proposal_index WHERE declined = ?",
+            (int(declined),),
         ).fetchall()
         return frozenset(int(row["issue_number"]) for row in rows)
+
+    def decline_proposals(self, numbers: Iterable[int]) -> None:
+        rows = [(int(number),) for number in numbers]
+        if not rows:
+            return
+        with self._transaction() as tx:
+            tx.executemany(
+                "INSERT INTO tech_lead_proposal_index (issue_number, declined) VALUES (?, 1)"
+                " ON CONFLICT(issue_number) DO UPDATE SET declined = 1",
+                rows,
+            )
 
     def retire_proposals(self, numbers: Iterable[int]) -> None:
         rows = [(int(number),) for number in numbers]
@@ -98,5 +116,6 @@ class SqliteProposalIssueIndex:
             return
         with self._transaction() as tx:
             tx.executemany(
-                "DELETE FROM tech_lead_proposal_index WHERE issue_number = ?", rows
+                "DELETE FROM tech_lead_proposal_index WHERE issue_number = ? AND declined = 0",
+                rows,
             )

@@ -346,3 +346,25 @@ def test_the_migration_seeds_the_proposal_index() -> None:
     migrate_legacy_proposals(repo, approvals, ops, filtering_label=None)
 
     assert approvals.indexed_proposals() == {1, 444, 500}
+
+
+def test_a_proposal_filed_but_never_indexed_is_recovered_at_startup() -> None:
+    """#7763 review r7 F3: the engine died between GitHub's create and the
+    index write, then a bulk edit stripped every gate label. The startup
+    marker sweep indexes it, so the approval scope finds and restores it."""
+    from issue_orchestrator.control.tech_lead_approval import plan_approval_settlements
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition, with_proposal_marker
+
+    evidence = FakeApprovalEvidence()
+    orphan = Issue(number=800, title="t", labels=["agent:backend"], state="open",
+                   repo="o/r", body=with_proposal_marker("b"))
+    repo = _Repo(evidence, [orphan, _issue(801, ["agent:backend"])])
+    approvals = make_approvals(evidence)
+
+    migrate_legacy_proposals(repo, approvals, InMemoryTechLeadAuthorityStore(), filtering_label=None)
+
+    assert approvals.indexed_proposals() == {800}  # never the unmarked #801
+    found, _retired = discover_open_gated_proposals(repo, _NO_SCOPE, approvals.indexed_proposals())
+    assert [issue.number for issue in found] == [800]
+    [settlement] = plan_approval_settlements(found, {}, op_backed=set())
+    assert settlement.transition is ApprovalTransition.RESTORE_WAITING

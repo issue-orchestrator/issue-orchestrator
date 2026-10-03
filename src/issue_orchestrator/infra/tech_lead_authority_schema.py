@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS tech_lead_operator_approvals (
 -- #7763: every proposal this engine filed or migrated, so the approval scope
 -- finds one whose gate labels were all stripped.
 CREATE TABLE IF NOT EXISTS tech_lead_proposal_index (
-    issue_number INTEGER PRIMARY KEY
+    issue_number INTEGER PRIMARY KEY,
+    declined INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,

@@ -1602,6 +1602,10 @@ class GitHubHttpClient:
         page is read fresh, a malformed or truncated listing raises, and
         ``None`` is answered only after the true final page. GitHub lists
         events oldest first, so the last match wins.
+
+        A ``reopened`` event voids every earlier match (#7763 review r7 F2):
+        closing a proposal declines it, so an approval given before the
+        decline never carries over to the reopened issue.
         """
         folded = label.casefold()
         kind = "unlabeled" if removed else "labeled"
@@ -1614,6 +1618,9 @@ class GitHubHttpClient:
             what=f"issue #{issue_number} events",
         ):
             for event in batch:
+                if isinstance(event, dict) and event.get("event") == "reopened":
+                    latest = None
+                    continue
                 if not isinstance(event, dict) or event.get("event") != kind:
                     continue
                 named = event.get("label")

@@ -259,3 +259,14 @@ def test_merge_held_pr_shows_mergeability_and_checks_and_drops_once_released() -
     details = {row.label: row.value for row in held.details}
     assert details["Mergeability"] == "blocked" and details["Checks"] == "FAILURE"
     assert section.waiting_count == 1
+
+
+def test_a_proposal_stripped_of_every_gate_label_still_waits() -> None:
+    """r7 F1: the body marker keeps it a proposal, so the inbox shows it."""
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+    stripped = replace(_issue(30, ("agent:backend",)), body=with_proposal_marker("b"))
+    section = _section(proposals=((stripped, None),))
+
+    assert [item.number for item in section.waiting] == [30]
+    assert section.waiting_count == 1

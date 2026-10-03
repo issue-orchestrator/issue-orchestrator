@@ -41,6 +41,7 @@ from ..domain.tech_lead_approval import (
     carries_proposal_marker,
     with_proposal_marker,
 )
+from .tech_lead_approval_writes import restore_gate_labels
 from .tech_lead_proposals import TECH_LEAD_PROPOSAL_SCAN_LIMIT
 
 if TYPE_CHECKING:
@@ -112,7 +113,10 @@ def migrate_legacy_proposals(
         lambda number: _migrate_legacy_approval(repository, approvals, number, filtering_label),
     )
     # Seed the approval scope's index (#7763 review r6 F2): a later strip of
-    # every gate label must not hide any of these from the inbox.
+    # every gate label must not hide any of these from the inbox. The marker
+    # sweep also recovers a proposal filed but never indexed — the engine died
+    # between GitHub's create and the index write (#7763 review r7 F3).
+    _sweep_proposal_markers(repository, approvals, filtering_label, errors)
     approvals.remember_proposals({*regated, *marked, *outcomes})
     report = ApprovalMigrationReport(
         tuple(regated),
@@ -134,6 +138,36 @@ def migrate_legacy_proposals(
             report.legacy_unapproved,
         )
     return report
+
+
+#: The marker sweep reads every open issue in scope once per startup.
+_MARKER_SWEEP_LIMIT = 10_000
+
+
+def _sweep_proposal_markers(
+    repository: "RepositoryHost",
+    approvals: "TechLeadApprovals",
+    filtering_label: str | None,
+    errors: list[str],
+) -> None:
+    """Index every open in-scope issue whose body carries the proposal marker."""
+    from .health_review_trigger import _scoped_issues
+
+    try:
+        issues = repository.list_issues(
+            labels=[filtering_label] if filtering_label else [],
+            state="open",
+            limit=_MARKER_SWEEP_LIMIT,
+            exhaustive=True,
+        )
+        approvals.remember_proposals(
+            issue.number
+            for issue in _scoped_issues(issues, filtering_label)
+            if carries_proposal_marker(issue.body)
+        )
+    except Exception as exc:  # the rest of the migration still runs
+        logger.exception("[tech_lead] Sweeping proposal markers failed")
+        errors.append(f"marker sweep: {exc}")
 
 
 def _open_with(repository: "RepositoryHost", label: str, filtering_label: str | None) -> list["Issue"]:
@@ -222,7 +256,7 @@ def _migrate_legacy_approval(
         # never carried again (a strip after migration revoked it), but a
         # crash between the marker and the gate labels, or a later strip of
         # them, must not leave it outside every label query (#7763 r6 F1).
-        _restore_gate(repository, issue)
+        restore_gate_labels(repository, issue)
         approvals.remember_proposals([number])
         return None
     removal = approvals.evidence.latest_label_event(number, LEGACY_GATE_LABEL, removed=True)
@@ -254,13 +288,6 @@ def _migrate_legacy_approval(
         " approval. This proposal waits for a maintainer's approval.",
     )
     return False
-
-
-def _restore_gate(repository: "RepositoryHost", issue: "Issue") -> None:
-    """Re-add whichever gate labels a marked proposal lacks."""
-    for label in (TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL):
-        if not _carries(issue, label):
-            repository.add_label(issue.number, label)
 
 
 def _bind_carried_approval(

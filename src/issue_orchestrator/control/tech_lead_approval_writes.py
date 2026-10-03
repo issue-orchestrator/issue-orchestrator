@@ -33,7 +33,6 @@ from ..domain.tech_lead_approval import (
     ApprovalTransition,
     OperatorApprovalRecord,
     ProposalLabelState,
-    proposal_label_state,
     proposal_state,
 )
 from .actions import Action, ActionResult, SettleProposalApprovalAction
@@ -158,11 +157,18 @@ def _restore_waiting(
     """Put back whichever gate labels a strip took (provenance, waiting, or both)."""
     if proposal_state(issue.labels, issue.body) is not ProposalLabelState.AWAITING:
         return ActionResult.ok(action, settled="unchanged")
+    restored = restore_gate_labels(repository, issue)
+    return ActionResult.ok(action, settled="waiting_restored" if restored else "unchanged")
+
+
+def restore_gate_labels(repository: "RepositoryHost", issue: "Issue") -> list[str]:
+    """Re-add whichever gate labels *issue* lacks; the ONE gate-restore write
+    (settlement, the startup migration and an operator's Approve share it)."""
     folded = _labels_folded(issue)
     restored = [label for label in GATED_PROPOSAL_LABELS if label.casefold() not in folded]
     for label in restored:
         repository.add_label(issue.number, label)
-    return ActionResult.ok(action, settled="waiting_restored" if restored else "unchanged")
+    return restored
 
 
 def _utc_now() -> str:
@@ -189,7 +195,7 @@ def apply_operator_proposal_command(
         issue = repository.get_issue(number)
         if issue is None or issue.state != "open":
             return TechLeadProposalCommandOutcome("unavailable", "Proposal is closed or missing", number)
-        if not proposal_label_state(issue.labels).is_proposal:
+        if not proposal_state(issue.labels, issue.body).is_proposal:
             return TechLeadProposalCommandOutcome(
                 "unavailable", "This issue is not a tech-lead proposal", number
             )
@@ -226,10 +232,15 @@ def _decline(
         "## ✖️ Declined\n\nThe operator declined this tech-lead proposal in the"
         " Control Center. Closing it; nothing was executed.",
     )
+    # Take any approval off BEFORE closing (#7763 review r7 F2): a reopened
+    # proposal must never be admitted on an approval given before its decline.
+    for label in issue.labels:
+        if str(label).casefold() == APPROVED_LABEL.casefold():
+            repository.remove_label(number, label)
     repository.update_issue_state(number, "closed")
-    approvals.records.discard_operator_approval(number)
-    approvals.forget_from_scope(number)
-    if ops.load_op(issue_number=number) is not None:
+    op_backed = ops.load_op(issue_number=number) is not None
+    approvals.decline(number, op_backed=op_backed)
+    if op_backed:
         link_declined_proposal(ops, number)
         ops.discard_op(issue_number=number)
     return TechLeadProposalCommandOutcome("declined", "Proposal declined and closed", number)
@@ -247,6 +258,10 @@ def _approve(
         return TechLeadProposalCommandOutcome(
             "approved", "Already approved; the engine will act on it", number
         )
+    # A proposal whose gate labels were stripped (#7763 review r7 F1) is put
+    # back in the approval scope first, so the approval lands on a proposal
+    # the engine's label queries see.
+    restore_gate_labels(repository, issue)
     # An `approved` label that does not count (a bot's) would make our add a
     # GitHub no-op with no new event to bind to, so take it off first.
     for label in issue.labels:

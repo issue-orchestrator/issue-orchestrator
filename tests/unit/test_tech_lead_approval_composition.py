@@ -52,9 +52,12 @@ def test_the_sqlite_proposal_index_survives_a_restart(tmp_path) -> None:
     from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
 
     store = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
-    store.proposal_index.index_proposals([5, 7, 7])
+    store.proposal_index.index_proposals([5, 7, 7, 9])
     store.proposal_index.retire_proposals([5])
+    store.proposal_index.decline_proposals([9])
+    store.proposal_index.retire_proposals([9])  # a declined row is kept for good
 
     reopened = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
 
     assert reopened.proposal_index.indexed_proposals() == {7}
+    assert reopened.proposal_index.declined_proposals() == {9}

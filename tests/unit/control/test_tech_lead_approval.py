@@ -399,7 +399,8 @@ class _Host:
 
     def update_issue_state(self, number: int, state: str) -> None:
         self.states.append((number, state))
-        self.issue = _issue(number, self.issue.labels, state=state)
+        self.issue = Issue(number=number, title=self.issue.title, labels=list(self.issue.labels),
+                           state=state, repo="o/r", body=self.issue.body)
 
 
 class TestOperatorCommand:
@@ -662,3 +663,85 @@ def test_a_launch_fails_closed_when_the_issue_cannot_be_read() -> None:
     host.get_issue.return_value = None
 
     assert unapproved_proposal_launch(700, host, approving_everything()) is not None
+
+
+# --- review round 7 (#7763) -------------------------------------------------
+
+
+def _marked(number: int, labels) -> Issue:
+    return Issue(number=number, title=f"proposal {number}", labels=list(labels), state="open",
+                 repo="o/r", body=with_proposal_marker("b"))
+
+
+def test_approving_a_fully_stripped_proposal_restores_its_gate_first() -> None:
+    """r7 F1: the inbox shows a marker-only proposal, so its Approve works."""
+    evidence = FakeApprovalEvidence()
+    approvals = make_approvals(evidence)
+    host = _Host(evidence, _marked(500, ["agent:backend"]))
+
+    outcome = apply_operator_proposal_command(
+        TechLeadProposalCommand(500, "approve"), repository=host,
+        ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+
+    assert outcome.outcome == "approved"
+    assert {"tech-lead-proposal", "awaiting-approval", "approved"} <= set(host.issue.labels)
+    assert approvals.verify(host.issue, fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
+
+
+def _decline_then_reopen(host: _Host, approvals, ops) -> Issue:
+    outcome = apply_operator_proposal_command(
+        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
+    )
+    assert outcome.outcome == "declined"
+    host.update_issue_state(500, "open")  # someone reopens it on GitHub
+    return host.issue
+
+
+def test_a_declined_follow_up_reopened_needs_a_fresh_approval() -> None:
+    """r7 F2: decline takes `approved` off, so a reopen admits nothing."""
+    evidence = FakeApprovalEvidence()
+    evidence.label(500)  # a maintainer approved it...
+    approvals = make_approvals(evidence)
+    host = _Host(evidence, _marked(500, CLAIMED))
+    approvals.verify(host.issue)
+    ops = InMemoryTechLeadAuthorityStore()
+
+    reopened = _decline_then_reopen(host, approvals, ops)  # ...then the operator declined
+
+    assert "approved" not in reopened.labels
+    verdicts = approvals.verify_claims([reopened])
+    settlements = plan_approval_settlements([reopened], verdicts, op_backed=set())
+    assert all(s.transition is not ApprovalTransition.ADMIT for s in settlements)
+    assert not approvals.admits(reopened)
+
+
+def test_a_declined_op_backed_proposal_reopened_is_never_admitted_or_launched() -> None:
+    """r7 F2: its op is gone; even a maintainer's later `approved` never turns
+    the reopened issue into follow-up work."""
+    from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
+
+    evidence = FakeApprovalEvidence(default_approver=MAINTAINER)
+    approvals = make_approvals(evidence)
+    host = _Host(evidence, _marked(500, GATED))
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+
+    _decline_then_reopen(host, approvals, ops)
+    host.add_label(500, "approved")
+    evidence.label(500)  # a maintainer re-approves the reopened issue
+    reopened = host.issue
+    verdicts = approvals.verify_claims([reopened])
+
+    settlements = plan_approval_settlements(
+        [reopened], verdicts, op_backed={n for n, _op in ops.list_ops()},
+        declined=approvals.declined_numbers(),
+    )
+    assert all(s.transition is not ApprovalTransition.ADMIT for s in settlements)
+    admitted = _marked(500, ["tech-lead-proposal", "approved"])
+    assert not approvals.admits(admitted)
+    assert unapproved_proposal_launch(500, host, approvals) is not None
+    # Durable: a restarted engine reading the same store still refuses it.
+    restarted = make_approvals(evidence)
+    restarted.index = approvals.index
+    assert restarted.is_declined(500) and not restarted.confirm(admitted)

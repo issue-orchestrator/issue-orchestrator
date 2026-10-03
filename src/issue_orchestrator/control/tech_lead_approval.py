@@ -78,6 +78,7 @@ class TechLeadApprovals:
     _roles: dict[str, tuple[float, str | None]] = field(default_factory=dict, init=False)
     _scope: tuple["Issue", ...] = field(default=(), init=False)
     _scope_verdicts: dict[int, ApprovalVerdict] = field(default_factory=dict, init=False)
+    _declined: frozenset[int] | None = field(default=None, init=False)
 
     # -- the last observed scope (read model) --------------------------------
 
@@ -97,10 +98,35 @@ class TechLeadApprovals:
         ones the scope read found closed, gone or no longer a proposal leave
         it (#7763 review r6 F2).
         """
-        self._scope = tuple(issues)
+        self._scope = tuple(issue for issue in issues if not self.is_declined(issue.number))
         self._scope_verdicts = dict(verdicts)
         self.index.index_proposals(issue.number for issue in issues)
         self.index.retire_proposals(retired)
+
+    def decline(self, issue_number: int, *, op_backed: bool) -> None:
+        """An operator declined (and the caller closed) *issue_number*.
+
+        Its verified approval and Control Center record go, and it leaves the
+        read model. An op-backed proposal is also marked declined for good
+        (#7763 review r7 F2): its op is discarded, so a reopened issue must
+        never be reinterpreted as follow-up work and admitted.
+        """
+        self._verified.pop(issue_number, None)
+        self.records.discard_operator_approval(issue_number)
+        self.forget_from_scope(issue_number)
+        if op_backed:
+            self.index.decline_proposals([issue_number])
+            self._declined = None
+
+    def is_declined(self, issue_number: int) -> bool:
+        if self._declined is None:
+            self._declined = self.index.declined_proposals()
+        return issue_number in self._declined
+
+    def declined_numbers(self) -> frozenset[int]:
+        if self._declined is None:
+            self._declined = self.index.declined_proposals()
+        return self._declined
 
     def remember_proposals(self, numbers: Iterable[int]) -> None:
         """Index proposals filed or migrated outside a scope observation."""
@@ -231,8 +257,9 @@ class TechLeadApprovals:
                 self._verified.pop(issue.number, None)
 
     def confirm(self, issue: "Issue | None") -> bool:
-        """Apply-time consent: open, claimed, and approved by a FRESH read."""
-        if issue is None:
+        """Apply-time consent: open, claimed, approved by a FRESH read, and
+        never declined."""
+        if issue is None or self.is_declined(issue.number):
             return False
         return self.verify(issue, fresh=True).approved
 
@@ -249,7 +276,11 @@ class TechLeadApprovals:
         state = proposal_state(issue.labels, issue.body)
         if state is ProposalLabelState.NOT_A_PROPOSAL:
             return True
-        return state is ProposalLabelState.ADMITTED and issue.number in self._verified
+        return (
+            state is ProposalLabelState.ADMITTED
+            and issue.number in self._verified
+            and not self.is_declined(issue.number)
+        )
 
     def verified_numbers(self) -> frozenset[int]:
         return frozenset(self._verified)
@@ -300,12 +331,14 @@ def plan_approval_settlements(
     verdicts: dict[int, ApprovalVerdict],
     *,
     op_backed: Collection[int],
+    declined: Collection[int] = frozenset(),
 ) -> tuple[ApprovalSettlement, ...]:
     """The approval-label transitions one tick's observations call for.
 
     Read-free. Op-backed proposals are never ADMITTED: their approval executes
-    the stored op, which closes the proposal with its outcome. Everything else
-    a verified approval admits to the work queue.
+    the stored op, which closes the proposal with its outcome. Nor is a
+    *declined* one reopened later (its op is gone; #7763 review r7 F2).
+    Everything else a verified approval admits to the work queue.
     """
     latest = {issue.number: issue for issue in issues}
     settlements: list[ApprovalSettlement] = []
@@ -336,6 +369,7 @@ def plan_approval_settlements(
             and verdict.approved
             and state is ProposalLabelState.APPROVAL_CLAIMED
             and number not in op_backed
+            and number not in declined
         ):
             settlements.append(
                 ApprovalSettlement(number, ApprovalTransition.ADMIT, verdict)

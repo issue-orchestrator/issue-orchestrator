@@ -42,6 +42,24 @@ def test_the_latest_matching_labeled_event_wins_across_pages() -> None:
     assert client.latest_label_event(5, "approved", removed=True)["id"] == 4
 
 
+def test_a_reopen_voids_every_earlier_approval() -> None:
+    """#7763 review r7 F2: closing declines; an approval from before the
+    decline never carries over to the reopened proposal."""
+    events = [
+        _labeled(1, "approved", "lead"),
+        {"id": 2, "event": "closed", "actor": {"login": "lead", "type": "User"}},
+        {"id": 3, "event": "reopened", "actor": {"login": "lead", "type": "User"}},
+    ]
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=events)))
+
+    assert client.latest_label_event(5, "approved") is None
+
+    renewed = [*events, _labeled(4, "approved", "lead")]
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=renewed)))
+
+    assert client.latest_label_event(5, "approved")["id"] == 4
+
+
 def test_no_matching_event_is_none_only_after_the_final_page() -> None:
     client = _client_with_transport(
         httpx.MockTransport(lambda request: httpx.Response(200, json=[_labeled(1, "bug", "lead")]))

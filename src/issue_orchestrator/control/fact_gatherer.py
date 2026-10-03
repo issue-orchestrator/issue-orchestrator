@@ -526,7 +526,8 @@ class FactGatherer:
         # The board joins the scope: a proposal stripped of EVERY label is out
         # of the labelled scope query, but its body marker still names it (#7763).
         settlements = plan_approval_settlements(
-            (*board_issues, *scope.issues), verdicts, op_backed=ops.keys()
+            (*board_issues, *scope.issues), verdicts, op_backed=ops.keys(),
+            declined=self.approvals.declined_numbers() if self.approvals is not None else frozenset(),
         )
 
         # Lets the next tick tell "still empty" from "just emptied".

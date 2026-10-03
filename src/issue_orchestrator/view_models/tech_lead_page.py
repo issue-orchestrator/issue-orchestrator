@@ -39,7 +39,7 @@ from ..contracts.ui_openapi_models import (
     TechLeadWaitingItemPayload,
 )
 from ..domain.human_block import NeedsHumanCause
-from ..domain.tech_lead_approval import ApprovalVerdict, proposal_label_state
+from ..domain.tech_lead_approval import ApprovalVerdict, proposal_state
 from ..domain.tech_lead_charter import CharterOutcome
 from ..domain.tech_lead_charter_decisions import (
     CharterProposalLifecycle,
@@ -166,12 +166,12 @@ def build_tech_lead_page_section(inputs: TechLeadPageInputs) -> TechLeadPageSect
 
 
 def _waiting(inputs: TechLeadPageInputs) -> list[TechLeadWaitingItemPayload]:
-    # An ADMITTED proposal is ordinary work now (#7763): only proposals the
-    # labels still gate are waiting.
+    # An ADMITTED proposal is ordinary work now (#7763): only proposals still
+    # gated are waiting, a marker-only one (every gate label stripped) too.
     items = [
         _proposal(inputs, issue, verdict)
         for issue, verdict in inputs.proposals
-        if issue.state == "open" and proposal_label_state(issue.labels).gate_closed
+        if issue.state == "open" and proposal_state(issue.labels, issue.body).gate_closed
     ]
     proposal_numbers = {item.number for item in items}
     by_number = {issue.number: issue for issue in inputs.issues}

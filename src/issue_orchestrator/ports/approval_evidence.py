@@ -85,9 +85,20 @@ class ProposalIssueIndex(Protocol):
 
     def index_proposals(self, numbers: Iterable[int]) -> None: ...
 
-    def indexed_proposals(self) -> frozenset[int]: ...
+    def indexed_proposals(self) -> frozenset[int]:
+        """The live (not declined) proposals."""
+        ...
 
-    def retire_proposals(self, numbers: Iterable[int]) -> None: ...
+    def retire_proposals(self, numbers: Iterable[int]) -> None:
+        """Drop closed or gone proposals; a DECLINED one is kept for good."""
+        ...
+
+    def decline_proposals(self, numbers: Iterable[int]) -> None:
+        """Mark op-backed proposals the operator declined (#7763 review r7 F2):
+        a reopened one is never reinterpreted as follow-up work."""
+        ...
+
+    def declined_proposals(self) -> frozenset[int]: ...
 
 
 class InMemoryProposalIssueIndex:
@@ -95,15 +106,22 @@ class InMemoryProposalIssueIndex:
 
     def __init__(self) -> None:
         self._numbers: set[int] = set()
+        self._declined: set[int] = set()
 
     def index_proposals(self, numbers: Iterable[int]) -> None:
         self._numbers.update(numbers)
 
     def indexed_proposals(self) -> frozenset[int]:
-        return frozenset(self._numbers)
+        return frozenset(self._numbers - self._declined)
 
     def retire_proposals(self, numbers: Iterable[int]) -> None:
-        self._numbers.difference_update(numbers)
+        self._numbers.difference_update(set(numbers) - self._declined)
+
+    def decline_proposals(self, numbers: Iterable[int]) -> None:
+        self._declined.update(numbers)
+
+    def declined_proposals(self) -> frozenset[int]:
+        return frozenset(self._declined)
 
 
 __all__ = [
