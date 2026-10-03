@@ -156,6 +156,69 @@ def test_check_repo_guardrails_reports_baked_mode_selection_drift(tmp_path):
     assert "configuration selection drifted" in checks[0].detail
 
 
+def test_check_repo_guardrails_warns_on_outdated_managed_pre_push(tmp_path):
+    """An install from before the current wrapper template is flagged for repair.
+
+    This is how a regenerated wrapper (for example, #7765's delete-only skip)
+    reaches existing installs: doctor warns, the operator (or the Control
+    Center repair action) re-runs setup-guardrails, and the warning clears.
+    It is a warning, not an error, so an engine with the old wrapper still starts.
+    """
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+    config.validation.publish.cmd = "make validate-pr"
+    config.agents = {}
+    result = setup_repo_guardrails(config)
+    current = result.pre_push_hook.read_text()
+    # The pre-#7765 wrapper ran verify-pr on every push, deletions included.
+    result.pre_push_hook.write_text(
+        current.replace('if push_is_delete_only "$PUSH_REFS_FILE"; then', "if false; then")
+    )
+
+    checks = hook_checks.check_repo_guardrails(config)
+
+    assert len(checks) == 1
+    assert checks[0].status == "warning"
+    assert "older managed wrapper" in checks[0].detail
+    assert "setup-guardrails" in checks[0].detail
+
+    setup_repo_guardrails(config)
+
+    assert result.pre_push_hook.read_text() == current
+    assert hook_checks.check_repo_guardrails(config)[0].status == "ok"
+
+
+def test_regenerated_hooks_pass_the_corruption_check(tmp_path):
+    """The repo wrapper and worktree hooks embed the shared ref functions; none of
+    that may look like a recursive ``pre-push.project`` to doctor."""
+    from issue_orchestrator.adapters.worktree._worktree_hooks import install_hooks
+
+    for args in (["init"], ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "T"], ["commit", "--allow-empty", "-m", "seed"]):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    config = Config(repo_root=tmp_path)
+    config.validation.publish.cmd = "make validate-pr"
+    config.agents = {}
+    project_hook = tmp_path / ".githooks" / "pre-push"
+    project_hook.parent.mkdir()
+    project_hook.write_text("#!/usr/bin/env bash\nexit 0\n")
+    project_hook.chmod(0o755)
+    setup_repo_guardrails(config)
+    worktree = tmp_path.parent / f"{tmp_path.name}-wt"
+    subprocess.run(
+        ["git", "worktree", "add", str(worktree), "-b", "feature"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+    assert install_hooks(worktree) is True
+    worktree_hooks = tmp_path / ".git" / "worktrees" / worktree.name / "hooks"
+    assert (worktree_hooks / "pre-push.project").read_text() == "#!/usr/bin/env bash\nexit 0\n"
+    assert "push_is_delete_only" in (worktree_hooks / "pre-push").read_text()
+
+    checks = hook_checks.check_worktree_hook_corruption(config)
+
+    assert [(c.name, c.status) for c in checks] == [("Pre-push Hook Corruption", "ok")]
+
+
 class TestAiGate:
     """Tests for _check_ai_gate_report function."""
 
