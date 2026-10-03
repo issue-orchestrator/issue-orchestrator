@@ -79,6 +79,7 @@ from tests.e2e.exam.observe import (
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
 from tests.e2e.fixtures import fetch_gh_audit_report
+from tests.e2e.fixtures.data_factory import inflight_update
 from tests.e2e.fixtures.github_client import get_issue_labels_fresh
 from tests.e2e.flows import E2EFlow
 
@@ -691,7 +692,10 @@ async def run_case_resolution(
                     f"case F/G's premise was not planted: #{stale.issue_number} never got"
                     f" {labels.needs_human} within {CASE_FG_PLANT_S // 60} min"
                 )
-            flow.update_issue(stale_key, add_labels=[labels.blocked_cross_milestone])
+            inflight_update(
+                stale_key, add_labels=[labels.blocked_cross_milestone],
+                port=config.control_api_port, issue_number=stale.issue_number,
+            )
             items = [item for _key, item in planted.values()]
             ended_by = await drive(
                 engine,
