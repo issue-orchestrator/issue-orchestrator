@@ -51,15 +51,17 @@ function getTechLeadView() {
             escapeHtml,
             notify: showToast,
             confirm: (message) => window.confirm(message),
+            onBadgeChange: () => updateTechLeadBadges(),
         });
         techLeadView.bind(document.getElementById('techLeadView'));
     }
     return techLeadView;
 }
 
-function updateTechLeadBadges(count, unreported) {
-    const view = getTechLeadView();
-    const text = view.badgeText(count, unreported);
+function updateTechLeadBadges() {
+    const state = getTechLeadView()?.badgeState();
+    if (!state) return;  // nothing read yet: the badges keep "Checking…"
+    const { count, text } = state;
     document.getElementById('techLeadNavCount').textContent = text;
     const badge = document.getElementById('techLeadHeaderBadge');
     badge.textContent = text;
@@ -74,14 +76,9 @@ function updateTechLeadBadges(count, unreported) {
 async function refreshTechLead() {
     const view = getTechLeadView();
     if (!view) return null;
-    try {
-        const payload = await view.refresh();
-        if (payload !== null) updateTechLeadBadges(payload.waiting_count, payload.unreported_count);
-        return payload;
-    } catch (error) {
-        console.error('Failed to load the Tech lead page:', error);
-        return null;
-    }
+    // The view owns success vs "unable to check" (#7763 review r17 F2) and
+    // tells updateTechLeadBadges after every refresh: never a stale all-clear.
+    return view.refresh();
 }
 
 async function openTechLead(repository = null, number = null) {
@@ -806,8 +803,7 @@ function handleTechLeadFrameMessage(message) {
     if (message.type === 'cc-open-tech-lead') {
         openTechLead(message.repository ?? null, message.number ?? null);
     } else if (message.type === 'cc-tech-lead-waiting-request') {
-        const latest = getTechLeadView().latest();
-        if (latest) updateTechLeadBadges(latest.waiting_count, latest.unreported_count);
+        updateTechLeadBadges();
     }
 }
 

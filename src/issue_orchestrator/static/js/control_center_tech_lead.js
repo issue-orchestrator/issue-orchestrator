@@ -20,6 +20,9 @@
     const { fetch, escapeHtml } = deps;
     const uiContractJson = deps.contractJson;
     const notify = deps.notify || (() => {});
+    // Told after every refresh, success or not, so every badge follows the
+    // page's current answer (a command's refresh included).
+    const onBadgeChange = deps.onBadgeChange || (() => {});
     const PAGE_ENDPOINT = '/api/control-center/tech-lead';
     const KIND_LABELS = {
         proposal: 'Proposal',
@@ -27,6 +30,7 @@
         hand_over: 'Hand-over',
     };
     let latest = null;
+    let unavailable = false;
     let rootNode = null;
 
     // An unreported repository's backlog is unknown: never an all-clear then.
@@ -35,6 +39,26 @@
         if (unreported) return `${count} waiting on you; ${repos} not reporting`;
         if (!count) return 'Nothing waiting on you';
         return `${count} waiting on you`;
+    }
+
+    const UNAVAILABLE_TEXT = 'Unable to check what waits on you';
+
+    // What every badge shows, from the one place that knows whether the last
+    // read succeeded (#7763 review r17 F2): an unreadable page is never an
+    // all-clear, and never the previous count either. ``null`` before the
+    // first read has finished: nothing is known yet.
+    function badgeState() {
+        if (latest) return { count: latest.waiting_count, text: badgeText(latest.waiting_count, latest.unreported_count) };
+        return unavailable ? { count: 0, text: UNAVAILABLE_TEXT } : null;
+    }
+
+    function showUnavailable() {
+        latest = null;
+        unavailable = true;
+        if (!rootNode) return;
+        rootNode.querySelector('#techLeadWaitingHeading').textContent = 'Waiting on you';
+        rootNode.querySelector('#techLeadWaitingList').innerHTML =
+            `<p class="tl-empty" role="status">${UNAVAILABLE_TEXT} right now; it retries shortly.</p>`;
     }
 
     function commandEndpoint(repoKey) {
@@ -186,6 +210,7 @@
         const payload = await uiContractJson.fromResponse(response, 'ControlCenterTechLeadPayload', PAGE_ENDPOINT);
         if (payload === null) return null;  // the reader already reported why
         latest = payload;
+        unavailable = false;
         return payload;
     }
 
@@ -247,9 +272,18 @@
         if (place) restoreFocus(place);
     }
 
+    // The page's refresh: a failed or off-contract read shows "unable to
+    // check" rather than leaving the last answer up as if it were current.
     async function refresh() {
-        const payload = await load();
-        if (payload !== null) paint(payload);
+        let payload = null;
+        try {
+            payload = await load();
+        } catch (error) {
+            console.error('Failed to load the Tech lead page:', error);
+        }
+        if (payload === null) showUnavailable();
+        else paint(payload);
+        onBadgeChange();
         return payload;
     }
 
@@ -311,8 +345,10 @@
         focusEntry,
         latest: () => latest,
         load,
+        badgeState,
         paint,
         readFrameMessage,
+        showUnavailable,
         refresh,
         renderPage,
         waitingEntries,

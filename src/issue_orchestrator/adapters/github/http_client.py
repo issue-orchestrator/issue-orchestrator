@@ -1606,9 +1606,11 @@ class GitHubHttpClient:
         Only a STANDING transition is returned (#7763 review r8 F1): a later
         opposite transition for the label voids an earlier match, so an
         ``approved`` removed after the caller read the issue is no approval,
-        whatever the issue snapshot said. A ``reopened`` event voids every
-        earlier match too (#7763 review r7 F2): closing a proposal declines
-        it, so an approval given before the decline never carries over.
+        whatever the issue snapshot said. A ``closed`` or ``reopened`` event
+        voids every earlier match too (#7763 review r7 F2, r17 F1): closing a
+        proposal declines it, so an approval given before the close never
+        counts — not for a reopened issue, and not for a caller whose issue
+        snapshot predates the close.
         """
         folded = label.casefold()
         kind = "unlabeled" if removed else "labeled"
@@ -1621,7 +1623,7 @@ class GitHubHttpClient:
             what=f"issue #{issue_number} events",
         ):
             for event in batch:
-                if isinstance(event, dict) and event.get("event") == "reopened":
+                if isinstance(event, dict) and event.get("event") in ("closed", "reopened"):
                     latest = None
                     continue
                 if not isinstance(event, dict) or event.get("event") not in ("labeled", "unlabeled"):

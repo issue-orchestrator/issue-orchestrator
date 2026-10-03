@@ -119,7 +119,9 @@ function domHarness() {
     const lane = name => {
         const node = {
             controls: [],
+            lastHtml: '',
             set innerHTML(html) {
+                node.lastHtml = html;
                 // A disabled native control refuses focus, as in a browser.
                 node.controls = [...html.matchAll(/<[^>]*data-focus-key="([^"]*)"[^>]*>/g)]
                     .map(([tag, key]) => {
@@ -217,4 +219,36 @@ test('no handler branches on a raw Tech lead message type before the contract re
         assert.doesNotMatch(source, /event\.data\??\.type\s*[!=]==\s*'cc-(open-tech-lead|tech-lead-waiting)/, file);
         assert.match(source, /fromUnionMember\(event\.data, 'TechLeadFrameMessage'|readFrameMessage\(/, file);
     }
+});
+
+
+test('a failed or off-contract refresh after an all-clear shows "unable to check", never the old answer', async () => {
+    // #7763 review r17 F2.
+    let answer = { payload: page([repo(section([]))]) };
+    let badges = [];
+    const v = createView({
+        fetch: async () => {
+            if (answer.throws) throw new Error('network down');
+            return response(200, answer.payload);
+        },
+        contractJson,
+        escapeHtml,
+        onBadgeChange: () => badges.push(v.badgeState()),
+    });
+    contractJson.setViolationReporter(() => {});
+    const dom = domHarness();
+    v.bind(dom.root);
+
+    await v.refresh();
+    assert.equal(badges.at(-1).text, 'Nothing waiting on you');
+
+    for (const failure of [{ throws: true }, { payload: { not: 'the contract' } }]) {
+        answer = failure;
+        await v.refresh();
+        assert.equal(v.latest(), null);
+        assert.equal(badges.at(-1).text, 'Unable to check what waits on you');
+        assert.match(dom.nodes['#techLeadWaitingList'].lastHtml, /Unable to check what waits on you/);
+        assert.doesNotMatch(dom.nodes['#techLeadWaitingList'].lastHtml, /Nothing waiting/);
+    }
+    contractJson.setViolationReporter(null);
 });

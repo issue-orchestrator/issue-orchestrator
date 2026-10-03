@@ -83,3 +83,11 @@ def test_one_approval_surface_the_rework_panel_is_gone() -> None:
     # The custody drawer links into the page and never approves on its own.
     custody = (ROOT / "templates" / "_blocked_custody.html").read_text(encoding="utf-8")
     assert "Open in the Tech lead page" in custody and "Approve" not in custody
+
+
+def test_badges_follow_the_views_answer_including_unable_to_check() -> None:
+    """#7763 review r17 F2: every badge reads the view's current state, which
+    turns a failed refresh into "unable to check" rather than a stale count."""
+    update = CC_JS[CC_JS.index("function updateTechLeadBadges()"):CC_JS.index("async function refreshTechLead")]
+    assert "getTechLeadView()?.badgeState()" in update
+    assert "onBadgeChange: () => updateTechLeadBadges()" in CC_JS

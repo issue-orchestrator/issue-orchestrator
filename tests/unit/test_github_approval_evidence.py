@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import httpx
@@ -178,3 +179,48 @@ def test_an_event_without_an_actor_fails_loud() -> None:
 
     with pytest.raises(GitHubHttpError, match="no actor"):
         _adapter(payload).latest_label_event(5, "approved")
+
+
+def test_an_approval_closed_after_the_issue_read_never_executes_its_op() -> None:
+    """#7763 review r17 F1: the snapshot is open and approved, but the issue
+    was closed (declined) before the event read; the op never executes."""
+    from issue_orchestrator.control.tech_lead_approval import TechLeadApprovals
+    from issue_orchestrator.control.tech_lead_proposal_execution import execute_approved_tech_lead_op
+    from issue_orchestrator.domain.models import Issue
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+    from issue_orchestrator.ports.approval_evidence import (
+        InMemoryOperatorApprovalRecords,
+        InMemoryProposalIssueIndex,
+    )
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+    def github(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json=[
+                _labeled(1, "approved", "lead"),
+                {"id": 2, "event": "closed", "actor": {"login": "lead", "type": "User"}},
+            ])
+        return httpx.Response(200, json={"permission": "admin", "role_name": "admin"})
+
+    client = _client_with_transport(httpx.MockTransport(github))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+    approvals = TechLeadApprovals(adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex())
+    snapshot = Issue(number=5, title="t", labels=["tech-lead-proposal", "awaiting-approval", "approved"],
+                     state="open", repo="owner/repo", body=with_proposal_marker("b"))
+    host = MagicMock()
+    host.get_issue.return_value = snapshot
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=5, op=StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z"))
+    apply_fn = MagicMock()
+
+    result = execute_approved_tech_lead_op(
+        SimpleNamespace(proposal_issue_number=5), apply_fn,
+        repository_host=host, ops=ops, approvals=approvals,
+    )
+
+    assert not result.success
+    apply_fn.assert_not_called()
+    assert ops.load_op(issue_number=5) is not None
