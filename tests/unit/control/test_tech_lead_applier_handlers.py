@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.domain.tech_lead_session import OperatorDecision
 from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
@@ -118,7 +119,7 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
         ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE: (
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal",
-                body="b",
+                body=with_proposal_marker("b"),
                 labels=("agent:tech-lead", AWAITING_APPROVAL_LABEL),
                 origin=TechLeadCreationOrigin.derived_from_anchor(ANCHOR),
                 op=_op(),

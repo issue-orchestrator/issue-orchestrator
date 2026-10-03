@@ -26,6 +26,8 @@ from issue_orchestrator.domain.tech_lead_approval import (
     ApprovalTransition,
     ApprovalVerdictKind,
     OperatorApprovalRecord,
+    carries_proposal_marker,
+    with_proposal_marker,
 )
 from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
 from issue_orchestrator.infra.config import Config
@@ -139,7 +141,7 @@ class TestVerification:
     def test_a_control_center_approval_counts_only_for_its_own_label_event(self) -> None:
         evidence = FakeApprovalEvidence()
         approvals = make_approvals(evidence)
-        event = evidence.label(500, by=BOT)  # the engine's write on the operator's behalf
+        event = evidence.engine_write(500)  # the engine's write on the operator's behalf
         approvals.records.record_operator_approval(OperatorApprovalRecord(500, event.event_id, "t"))
 
         assert approvals.verify(_issue(500, CLAIMED), fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
@@ -381,7 +383,7 @@ class _Host:
 
     def add_label(self, number: int, label: str) -> None:
         self.issue = _issue(number, [*self.issue.labels, label], state=self.issue.state)
-        self.evidence.label(number, label, by=BOT)
+        self.evidence.engine_write(number, label)
 
     def remove_label(self, number: int, label: str) -> None:
         self.issue = _issue(number, [l for l in self.issue.labels if l != label], state=self.issue.state)
@@ -467,3 +469,154 @@ class TestOperatorCommand:
 
         assert outcome.outcome == "unavailable"
         assert host.issue.labels == ["agent:backend"]
+
+
+# --- review round 1 (#7763) -------------------------------------------------
+
+
+class TestBodyMarkerSurvivesAFullStrip:
+    """F1: stripping EVERY approval label must not turn a proposal into work."""
+
+    def _stripped(self, number: int = 700) -> Issue:
+        return Issue(
+            number=number, title="t", labels=["agent:backend"], repo="o/r",
+            body=with_proposal_marker("follow-up body"),
+        )
+
+    def test_the_scheduler_refuses_a_fully_stripped_proposal(self) -> None:
+        scheduler = Scheduler(Config(), approval_admission=make_approvals().admits)
+
+        [decision] = scheduler.evaluate_issues([self._stripped()], check_dependencies=False)
+
+        assert not decision.available
+
+    def test_reconciliation_restores_both_gate_labels(self) -> None:
+        [settlement] = plan_approval_settlements([self._stripped()], {}, op_backed=())
+        host = MagicMock()
+        host.get_issue.return_value = self._stripped()
+
+        result = apply_settle_proposal_approval(
+            _action(700, settlement.transition), approvals=make_approvals(), repository=host
+        )
+
+        assert settlement.transition is ApprovalTransition.RESTORE_WAITING and result.success
+        assert [c.args for c in host.add_label.call_args_list] == [
+            (700, "tech-lead-proposal"), (700, "awaiting-approval"),
+        ]
+
+    def test_gated_promotions_carry_the_marker(self) -> None:
+        from issue_orchestrator.control.tech_lead_finding_promotion import build_promotion_issue_body
+        from issue_orchestrator.domain.tech_lead_findings import PatternEvidence, PromotableFinding
+
+        evidence = PatternEvidence(
+            signature="sig", case_file_issue_number=65, observation_count=3,
+            fix_class="code", area="a", diagnosis="d",
+        )
+        finding = PromotableFinding(evidence=evidence, target_repo="o/r")
+
+        assert carries_proposal_marker(build_promotion_issue_body(finding, source_repo="s/r", gated=True))
+        assert not carries_proposal_marker(build_promotion_issue_body(finding, source_repo="s/r", gated=False))
+
+
+class TestTheLaunchBoundaryRechecksFresh:
+    """F2: the scheduler's cache can be a tick stale; launch reads fresh."""
+
+    @staticmethod
+    def _launch(number: int):
+        from issue_orchestrator.control.actions import LaunchSessionAction
+
+        return LaunchSessionAction(number=number)
+
+    def test_a_bot_reapplied_approval_between_ticks_is_not_launched(self) -> None:
+        from issue_orchestrator.control.tech_lead_approval import refuse_unapproved_proposal_launch
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(700, by=MAINTAINER)
+        approvals = make_approvals(evidence)
+        admitted = _issue(700, ["agent:backend", *ADMITTED])
+        approvals.verify(admitted)
+        assert approvals.admits(admitted)  # the scheduler's view: still verified
+        evidence.label(700, by=BOT)  # removed and re-applied by a bot, unobserved
+        host = MagicMock()
+        host.get_issue.return_value = admitted
+
+        refused = refuse_unapproved_proposal_launch(self._launch(700), host, approvals)
+
+        assert refused is not None and not refused.success
+
+    def test_a_demoted_approver_is_read_fresh_at_launch(self) -> None:
+        from issue_orchestrator.control.tech_lead_approval import refuse_unapproved_proposal_launch
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(700, by=MAINTAINER)
+        approvals = make_approvals(evidence)
+        admitted = _issue(700, ["agent:backend", *ADMITTED])
+        approvals.verify(admitted)
+        evidence.roles[MAINTAINER] = "write"  # demoted after approving
+        host = MagicMock()
+        host.get_issue.return_value = admitted
+        reads_before = len(evidence.role_reads)
+
+        refused = refuse_unapproved_proposal_launch(self._launch(700), host, approvals)
+
+        assert refused is not None
+        assert len(evidence.role_reads) == reads_before + 1  # a fresh role read
+
+    def test_a_standing_approval_and_ordinary_work_launch(self) -> None:
+        from issue_orchestrator.control.tech_lead_approval import refuse_unapproved_proposal_launch
+
+        approvals = make_approvals(FakeApprovalEvidence(default_approver=MAINTAINER))
+        host = MagicMock()
+        host.get_issue.return_value = _issue(700, ["agent:backend", *ADMITTED])
+        assert refuse_unapproved_proposal_launch(self._launch(700), host, approvals) is None
+        host.get_issue.return_value = _issue(701, ["agent:backend"])
+        assert refuse_unapproved_proposal_launch(self._launch(701), host, approvals) is None
+
+    def test_the_applier_refuses_before_any_launch(self) -> None:
+        from tests.runtime_lifecycle_helpers import make_action_applier
+
+        host = MagicMock()
+        host.get_issue.return_value = _issue(700, ["agent:backend", *ADMITTED])
+        launcher = MagicMock()
+        applier = make_action_applier(
+            labels=MagicMock(), sessions=MagicMock(), events=MagicMock(),
+            repository_host=host, session_launcher=launcher,
+        )
+        applier.tech_lead_approvals = make_approvals()
+
+        result = applier.apply(self._launch(700))
+
+        assert not result.success
+        launcher.assert_not_called()
+
+
+class TestControlCenterApprovalIsAttributed:
+    """F3: only the engine's OWN write is ever bound to an operator approval."""
+
+    def test_a_relabel_racing_the_engine_write_is_not_bound(self) -> None:
+        evidence = FakeApprovalEvidence()
+        approvals = make_approvals(evidence)
+
+        class _RacedHost(_Host):
+            def add_label(self, number: int, label: str) -> None:
+                super().add_label(number, label)
+                self.evidence.label(number, label, by=BOT)  # removed and re-added by a bot
+
+        host = _RacedHost(evidence, _issue(500, GATED))
+
+        outcome = apply_operator_proposal_command(
+            TechLeadProposalCommand(500, "approve"), repository=host,
+            ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+        )
+
+        assert outcome.outcome == "failed"
+        assert approvals.records.load_operator_approval(500) is None
+        assert not approvals.verify(host.issue, fresh=True).approved
+
+    def test_a_record_never_vouches_for_an_event_the_engine_did_not_write(self) -> None:
+        evidence = FakeApprovalEvidence()
+        approvals = make_approvals(evidence)
+        event = evidence.label(500, by=BOT)
+        approvals.records.record_operator_approval(OperatorApprovalRecord(500, event.event_id, "t"))
+
+        assert approvals.verify(_issue(500, CLAIMED), fresh=True).kind is ApprovalVerdictKind.BOT_ACTOR

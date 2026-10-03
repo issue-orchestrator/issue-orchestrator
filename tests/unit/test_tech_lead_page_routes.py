@@ -41,7 +41,7 @@ class _Host:
 
     def add_label(self, number, label):
         self.writes.append(("add_label", number, label))
-        self.evidence.label(number, label, by=BOT)  # the engine's own identity
+        self.evidence.engine_write(number, label)  # the engine's own App identity
         self.issue = GitHubIssue(number=number, repo=REPO, title=self.issue.title,
                                  labels=(*self.issue.labels, label), state=self.issue.state)
 

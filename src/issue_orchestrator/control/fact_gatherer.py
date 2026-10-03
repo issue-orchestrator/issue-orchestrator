@@ -522,7 +522,11 @@ class FactGatherer:
         if self.approvals is not None:
             verdicts.update(self.approvals.verify_claims(scope.issues))
             self.approvals.record_scope(scope.issues, verdicts)
-        settlements = plan_approval_settlements(scope.issues, verdicts, op_backed=ops.keys())
+        # The board joins the scope: a proposal stripped of EVERY label is out
+        # of the labelled scope query, but its body marker still names it (#7763).
+        settlements = plan_approval_settlements(
+            (*board_issues, *scope.issues), verdicts, op_backed=ops.keys()
+        )
 
         # Lets the next tick tell "still empty" from "just emptied".
         state.tech_lead_gated_backlog_seen = bool(gated_proposals)

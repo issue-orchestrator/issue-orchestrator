@@ -176,7 +176,7 @@ def ui_approvals(host):
 
     def add_and_record(number, label):
         add(number, label)
-        evidence.label(number, label, by=BOT)
+        evidence.engine_write(number, label)
 
     host.add_label.side_effect = add_and_record
     return make_approvals(evidence)

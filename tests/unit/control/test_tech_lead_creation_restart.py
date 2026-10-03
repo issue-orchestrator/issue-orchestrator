@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.control.actions import AddCommentAction
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.fact_gatherer import FactGatherer
@@ -50,7 +51,7 @@ def creation(lane):
     applier = dispatcher(executor, host, store)
     action = CreateTechLeadProposalIssueAction(
         title="Original gated title",
-        body="Original instruction",
+        body=with_proposal_marker("Original instruction"),
         labels=GATED,
         op=op,
         origin=TechLeadCreationOrigin.derived_from_anchor(77),

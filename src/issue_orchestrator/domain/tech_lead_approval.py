@@ -59,6 +59,24 @@ APPROVAL_MODEL_LABELS: tuple[str, ...] = (
 MAINTAINER_ROLES: frozenset[str] = frozenset({"admin", "maintain"})
 
 
+#: Written into the body of every gated filing (#7763 review F1). Labels can
+#: all be stripped by a bulk edit; the body survives a strip, so an issue the
+#: tech lead filed under ``propose`` authority stays a proposal even with no
+#: approval label left — and the engine restores its labels.
+PROPOSAL_BODY_MARKER = "<!-- issue-orchestrator:tech-lead-proposal -->"
+
+
+def with_proposal_marker(body: str) -> str:
+    """*body* carrying the proposal marker exactly once."""
+    if PROPOSAL_BODY_MARKER in body:
+        return body
+    return f"{body.rstrip()}\n\n{PROPOSAL_BODY_MARKER}\n"
+
+
+def carries_proposal_marker(body: str | None) -> bool:
+    return PROPOSAL_BODY_MARKER in (body or "")
+
+
 #: The one way every proposal body and comment tells a human how to approve.
 HOW_TO_APPROVE = (
     "Approve it with **Approve** in the Control Center's Approvals inbox, or"
@@ -119,6 +137,19 @@ class ProposalLabelState(StrEnum):
         )
 
 
+def proposal_state(labels: Collection[str], body: str | None) -> ProposalLabelState:
+    """Classify an issue: its labels, or its body marker when every label is gone.
+
+    A filed proposal whose approval labels were ALL stripped is still a
+    proposal awaiting approval (#7763 review F1): only a verified approval
+    ever admits it.
+    """
+    state = proposal_label_state(labels)
+    if state is ProposalLabelState.NOT_A_PROPOSAL and carries_proposal_marker(body):
+        return ProposalLabelState.AWAITING
+    return state
+
+
 def proposal_label_state(labels: Collection[str]) -> ProposalLabelState:
     """Classify *labels* under the approval model.
 
@@ -150,6 +181,10 @@ class LabelEvent:
     actor_login: str
     actor_is_bot: bool
     created_at: str
+    #: ``performed_via_github_app`` (id and client id), when an App made it.
+    #: It is how the engine recognises an event its OWN write produced.
+    app_id: str = ""
+    app_client_id: str = ""
 
     def __post_init__(self) -> None:
         if type(self.event_id) is not int or self.event_id <= 0:
@@ -286,9 +321,13 @@ __all__ = [
     "LabelEvent",
     "MAINTAINER_ROLES",
     "OperatorApprovalRecord",
+    "PROPOSAL_BODY_MARKER",
     "ProposalLabelState",
     "REJECTED_APPROVAL_KINDS",
     "TECH_LEAD_PROPOSAL_LABEL",
+    "carries_proposal_marker",
     "is_approval_model_label",
     "proposal_label_state",
+    "proposal_state",
+    "with_proposal_marker",
 ]

@@ -150,13 +150,18 @@
 
     function renderPage(payload) {
         const waiting = waitingEntries(payload);
-        const waitingHtml = waiting.length
+        // The count is the payload's: an approved proposal the engine is acting
+        // on stays listed with its status, but it no longer waits on you.
+        const clear = payload.waiting_count === 0
+            ? '<p class="tl-empty tl-all-clear">Nothing is waiting on you. The tech lead will list proposals, merge-ready PRs and hand-overs here.</p>'
+            : '';
+        const waitingHtml = clear + (waiting.length
             ? `<ol class="tl-cards">${waiting.map(({ repo, item }) => renderWaitingCard(repo, item)).join('')}</ol>`
-            : '<p class="tl-empty tl-all-clear">Nothing is waiting on you. The tech lead will list proposals, merge-ready PRs and hand-overs here.</p>';
+            : '');
         return {
             runStrip: renderRunStrip(payload),
             waiting: renderUnavailable(payload) + waitingHtml,
-            waitingHeading: `Waiting on you (${waiting.length})`,
+            waitingHeading: `Waiting on you (${payload.waiting_count})`,
             doing: renderDoing(payload),
             watching: renderWatching(payload),
         };

@@ -36,6 +36,7 @@ from .rate_limit import github_http_failure, graphql_rate_limit
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
+    GitHubAppIdentity,
     GitHubTokenProvider,
     StaticGitHubTokenProvider,
     TokenValidationResult,
@@ -1619,6 +1620,10 @@ class GitHubHttpClient:
                 if isinstance(named, dict) and str(named.get("name", "")).casefold() == folded:
                     latest = event
         return latest
+
+    def app_identity(self) -> GitHubAppIdentity | None:
+        """This client's effective GitHub App identity, or None for a token."""
+        return self._auth.comment_app_identity()
 
     def repository_role(self, login: str) -> str | None:
         """``login``'s repository role, or None when GitHub knows no such user.

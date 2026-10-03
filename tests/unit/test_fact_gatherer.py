@@ -2420,3 +2420,26 @@ class TestApprovalSettlementFacts:
         gatherer.gather_tech_lead_facts(sample_state, board_issues=[stripped])
 
         assert not approvals.admits(admitted)
+
+
+def test_a_fully_stripped_proposal_on_the_board_is_restored(mock_config, mock_repository_host, sample_state) -> None:
+    """#7763 review F1: out of the labelled scope, still named by its marker."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition, with_proposal_marker
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    _host_sees_gated(mock_repository_host)  # the labelled scope query finds nothing
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(),
+    )
+    stripped = Issue(number=700, title="t", labels=["agent:backend"], body=with_proposal_marker("b"))
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[stripped])
+
+    assert facts is not None
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (700, ApprovalTransition.RESTORE_WAITING)
+    ]

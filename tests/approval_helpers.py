@@ -30,6 +30,9 @@ ADMITTED: tuple[str, ...] = (TECH_LEAD_PROPOSAL_LABEL, APPROVED_LABEL)
 MAINTAINER = "octo-maintainer"
 CONTRIBUTOR = "octo-contributor"
 BOT = "io-bot[bot]"
+#: The engine's own GitHub App: its writes carry ``performed_via_github_app``.
+ENGINE = "io-engine[bot]"
+ENGINE_APP_ID = "4250697"
 
 
 @dataclass
@@ -49,13 +52,16 @@ class FakeApprovalEvidence:
 
     def label(self, issue_number: int, label: str = APPROVED_LABEL, *, by: str = MAINTAINER,
               removed: bool = False) -> LabelEvent:
-        """Record that *by* applied (or removed) *label* on the issue, newest."""
+        """Record that *by* applied (or removed) *label* on the issue, newest.
+
+        ``by=ENGINE`` is the engine's own App write (``engine_write``)."""
         self._next_id += 1
         event = LabelEvent(
             event_id=self._next_id,
             actor_login=by,
             actor_is_bot=by.endswith("[bot]"),
             created_at=f"2026-10-03T00:00:{self._next_id % 60:02d}Z",
+            app_id=ENGINE_APP_ID if by == ENGINE else "",
         )
         self.events[(issue_number, label.casefold(), removed)] = event
         return event
@@ -70,6 +76,13 @@ class FakeApprovalEvidence:
     def repository_role(self, login: str) -> str | None:
         self.role_reads.append(login)
         return self.roles.get(login)
+
+    def is_own_write(self, event: LabelEvent) -> bool:
+        return event.app_id == ENGINE_APP_ID
+
+    def engine_write(self, issue_number: int, label: str = APPROVED_LABEL) -> LabelEvent:
+        """The event the engine's own App write produces."""
+        return self.label(issue_number, label, by=ENGINE)
 
 
 def make_approvals(evidence: FakeApprovalEvidence | None = None) -> TechLeadApprovals:
@@ -97,6 +110,8 @@ __all__ = [
     "BOT",
     "CLAIMED",
     "CONTRIBUTOR",
+    "ENGINE",
+    "ENGINE_APP_ID",
     "FakeApprovalEvidence",
     "GATED",
     "MAINTAINER",

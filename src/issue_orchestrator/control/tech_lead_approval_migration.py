@@ -35,7 +35,6 @@ from ..domain.tech_lead_approval import (
     AWAITING_APPROVAL_LABEL,
     TECH_LEAD_PROPOSAL_LABEL,
     OperatorApprovalRecord,
-    proposal_label_state,
 )
 from .tech_lead_proposals import TECH_LEAD_PROPOSAL_SCAN_LIMIT
 
@@ -146,22 +145,23 @@ def _regate(repository: "RepositoryHost", issue: "Issue") -> None:
 def _migrate_legacy_approval(
     repository: "RepositoryHost", approvals: "TechLeadApprovals", number: int
 ) -> bool | None:
-    """None: nothing to migrate. True: honoured as approved. False: re-gated."""
+    """None: nothing to migrate. True: honoured as approved. False: re-gated.
+
+    Resumable without a journal (#7763 review F1/F4): the approval half is
+    written BEFORE the provenance label, so a crash anywhere before the
+    provenance write leaves the issue looking exactly as it did ("no approval
+    labels"), and the next startup redoes the step, re-reading what is there.
+    """
     issue = repository.get_issue(number)
-    if issue is None or issue.state != "open":
+    if issue is None or issue.state != "open" or _carries(issue, LEGACY_GATE_LABEL):
         return None
-    if proposal_label_state(issue.labels).is_proposal or _carries(issue, LEGACY_GATE_LABEL):
+    if _carries(issue, TECH_LEAD_PROPOSAL_LABEL) or _carries(issue, AWAITING_APPROVAL_LABEL):
         return None
     removal = approvals.evidence.latest_label_event(number, LEGACY_GATE_LABEL, removed=True)
-    if removal is not None and approvals.is_maintainer(removal):
+    if removal is not None and approvals.is_maintainer(removal) and _bind_carried_approval(
+        repository, approvals, issue
+    ):
         repository.add_label(number, TECH_LEAD_PROPOSAL_LABEL)
-        repository.add_label(number, APPROVED_LABEL)
-        event = approvals.evidence.latest_label_event(number, APPROVED_LABEL)
-        if event is None:
-            raise RuntimeError(f"applied {APPROVED_LABEL!r} to #{number} but no labeled event is on record")
-        approvals.records.record_operator_approval(
-            OperatorApprovalRecord(number, event.event_id, datetime.now(timezone.utc).isoformat())
-        )
         repository.add_comment(
             number,
             "## 🔁 Approval carried over\n\n"
@@ -184,6 +184,30 @@ def _migrate_legacy_approval(
         " approval. This proposal waits for a maintainer's approval.",
     )
     return False
+
+
+def _bind_carried_approval(
+    repository: "RepositoryHost", approvals: "TechLeadApprovals", issue: "Issue"
+) -> bool:
+    """Make the maintainer's old-model approval an `approved` that verifies.
+
+    The engine applies the label (unless one is already there) and binds the
+    resulting event: its OWN write is recorded as the approval; a maintainer's
+    own `approved` counts by itself. Anything else is not bound (False).
+    """
+    if not _carries(issue, APPROVED_LABEL):
+        repository.add_label(issue.number, APPROVED_LABEL)
+    event = approvals.evidence.latest_label_event(issue.number, APPROVED_LABEL)
+    if event is None:
+        raise RuntimeError(
+            f"applied {APPROVED_LABEL!r} to #{issue.number} but no labeled event is on record"
+        )
+    if approvals.evidence.is_own_write(event):
+        approvals.records.record_operator_approval(
+            OperatorApprovalRecord(issue.number, event.event_id, datetime.now(timezone.utc).isoformat())
+        )
+        return True
+    return approvals.is_maintainer(event)
 
 
 __all__ = [

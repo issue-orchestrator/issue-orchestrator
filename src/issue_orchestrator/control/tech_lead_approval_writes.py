@@ -28,10 +28,12 @@ from ..domain.scoped_rework import (
 from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
     AWAITING_APPROVAL_LABEL,
+    GATED_PROPOSAL_LABELS,
     ApprovalTransition,
     OperatorApprovalRecord,
     ProposalLabelState,
     proposal_label_state,
+    proposal_state,
 )
 from .actions import Action, ActionResult, SettleProposalApprovalAction
 from .tech_lead_charter_lifecycle import link_declined_proposal
@@ -145,14 +147,14 @@ def _restore_waiting(
     issue: "Issue",
     repository: "RepositoryHost",
 ) -> ActionResult:
+    """Put back whichever gate labels a strip took (provenance, waiting, or both)."""
+    if proposal_state(issue.labels, issue.body) is not ProposalLabelState.AWAITING:
+        return ActionResult.ok(action, settled="unchanged")
     folded = _labels_folded(issue)
-    if (
-        proposal_label_state(issue.labels) is ProposalLabelState.AWAITING
-        and AWAITING_APPROVAL_LABEL.casefold() not in folded
-    ):
-        repository.add_label(issue.number, AWAITING_APPROVAL_LABEL)
-        return ActionResult.ok(action, settled="waiting_restored")
-    return ActionResult.ok(action, settled="unchanged")
+    restored = [label for label in GATED_PROPOSAL_LABELS if label.casefold() not in folded]
+    for label in restored:
+        repository.add_label(issue.number, label)
+    return ActionResult.ok(action, settled="waiting_restored" if restored else "unchanged")
 
 
 def _utc_now() -> str:
@@ -249,9 +251,19 @@ def _approve(
             f"applied {APPROVED_LABEL!r} to #{number} but GitHub shows no labeled"
             " event to bind the approval to"
         )
-    approvals.records.record_operator_approval(
-        OperatorApprovalRecord(number, event.event_id, now())
-    )
+    if approvals.evidence.is_own_write(event):
+        # The engine's App wrote it: that exact event is the operator's act.
+        approvals.records.record_operator_approval(
+            OperatorApprovalRecord(number, event.event_id, now())
+        )
+    elif not approvals.verify(repository.get_issue(number) or issue, fresh=True).approved:
+        # A personal-token engine writes as its user, whose label is judged
+        # like anyone's; and an event someone else's write produced (a relabel
+        # racing ours) is never bound to the operator (#7763 review F3).
+        raise RuntimeError(
+            f"the {APPROVED_LABEL!r} label on #{number} cannot be attributed to this"
+            " engine's write and is not a maintainer's; approval not recorded"
+        )
     repository.add_comment(
         number,
         "## 👍 Approved in the Control Center\n\nThe operator approved this"

@@ -59,7 +59,7 @@ class _Repo:
             raise RuntimeError("403")
         self.writes.append(("add", number, label))
         self._set(number, [*self.issues[number].labels, label])
-        self.evidence.label(number, label, by=BOT)
+        self.evidence.engine_write(number, label)
 
     def remove_label(self, number: int, label: str) -> None:
         self.writes.append(("remove", number, label))
@@ -180,3 +180,36 @@ def test_a_failed_item_fails_the_startup_after_migrating_the_rest() -> None:
         migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore())
 
     assert proposal_label_state(repo.issues[2].labels) is ProposalLabelState.AWAITING
+
+
+def test_a_crash_mid_carry_over_resumes_on_the_next_startup() -> None:
+    """#7763 review F4: the approval half is written before provenance, so a
+    crash right after it leaves an issue the next startup still migrates —
+    and the maintainer's old-model approval is not lost."""
+    from issue_orchestrator.control.tech_lead_approval import TechLeadApprovals
+    from issue_orchestrator.ports.approval_evidence import InMemoryOperatorApprovalRecords
+
+    evidence = FakeApprovalEvidence()
+    evidence.label(444, LEGACY, by=MAINTAINER, removed=True)
+    repo = _Repo(evidence, [_issue(444, ["agent:tech-lead"])])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=444, op=_op())
+    durable = InMemoryOperatorApprovalRecords()  # the authority store outlives the engine
+    original_add = repo.add_label
+
+    def crash_on_provenance(number: int, label: str) -> None:
+        if label == "tech-lead-proposal":
+            raise RuntimeError("engine killed mid-migration")
+        original_add(number, label)
+
+    repo.add_label = crash_on_provenance
+    with pytest.raises(ApprovalMigrationError):
+        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable), ops)
+    assert "approved" in repo.issues[444].labels  # half-done
+
+    repo.add_label = original_add
+    restarted = TechLeadApprovals(evidence, durable)
+    report = migrate_legacy_proposals(repo, restarted, ops)
+
+    assert report.legacy_approved == (444,)
+    assert restarted.verify(repo.issues[444], fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER

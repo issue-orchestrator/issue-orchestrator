@@ -67,7 +67,7 @@ from ..domain.tech_lead_findings import (
     promotion_issue_marker,
     promotion_issue_title,
 )
-from ..domain.tech_lead_approval import GATED_PROPOSAL_LABELS, HOW_TO_APPROVE
+from ..domain.tech_lead_approval import GATED_PROPOSAL_LABELS, HOW_TO_APPROVE, PROPOSAL_BODY_MARKER
 from .actions import (
     Action,
     PromoteTechLeadFindingAction,
@@ -391,7 +391,7 @@ starting — it is the diagnosis this issue exists to act on.
 > anything.
 
 {marker}
-"""
+{PROPOSAL_BODY_MARKER if gated else ""}"""
 
 
 def build_repeat_observation_comment(

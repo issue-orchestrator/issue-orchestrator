@@ -35,9 +35,10 @@ from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ..domain.session_kind import SessionType
 from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
-    AWAITING_APPROVAL_LABEL,
+    GATED_PROPOSAL_LABELS,
     MAINTAINER_ROLES,
     ApprovalSettlement,
     ApprovalTransition,
@@ -45,6 +46,7 @@ from ..domain.tech_lead_approval import (
     ApprovalVerdictKind,
     ProposalLabelState,
     proposal_label_state,
+    proposal_state,
 )
 
 if TYPE_CHECKING:
@@ -53,7 +55,9 @@ if TYPE_CHECKING:
         OperatorApprovalRecords,
     )
     from ..domain.tech_lead_approval import LabelEvent
+    from ..ports import RepositoryHost
     from ..ports.issue import Issue
+    from .actions import ActionResult, LaunchSessionAction
 
 logger = logging.getLogger(__name__)
 
@@ -115,19 +119,26 @@ class TechLeadApprovals:
         cached = None if fresh else self._verified.get(number)
         if cached is not None:
             return cached
-        verdict = self._read_verdict(number)
+        verdict = self._read_verdict(number, fresh=fresh)
         if verdict.approved:
             self._verified[number] = verdict
         else:
             self._verified.pop(number, None)
         return verdict
 
-    def _read_verdict(self, number: int) -> ApprovalVerdict:
+    def _read_verdict(self, number: int, *, fresh: bool) -> ApprovalVerdict:
         event = self.evidence.latest_label_event(number, APPROVED_LABEL)
         if event is None:
             return ApprovalVerdict(number, ApprovalVerdictKind.NO_LABEL_EVENT)
         record = self.records.load_operator_approval(number)
-        if record is not None and record.label_event_id == event.event_id:
+        # Both halves: the recorded event, AND an event this engine's own
+        # credential produced — a record can never vouch for someone else's
+        # label, however it came to hold that id (#7763 review F3).
+        if (
+            record is not None
+            and record.label_event_id == event.event_id
+            and self.evidence.is_own_write(event)
+        ):
             return ApprovalVerdict(
                 number,
                 ApprovalVerdictKind.CONTROL_CENTER,
@@ -138,7 +149,7 @@ class TechLeadApprovals:
             return ApprovalVerdict(
                 number, ApprovalVerdictKind.BOT_ACTOR, event.actor_login, event.event_id
             )
-        if self._role(event.actor_login) not in MAINTAINER_ROLES:
+        if self._role(event.actor_login, fresh=fresh) not in MAINTAINER_ROLES:
             return ApprovalVerdict(
                 number,
                 ApprovalVerdictKind.NOT_A_MAINTAINER,
@@ -151,12 +162,14 @@ class TechLeadApprovals:
 
     def is_maintainer(self, event: "LabelEvent") -> bool:
         """Whether *event* was a maintainer's act: a person, in a maintainer role."""
-        return not event.actor_is_bot and self._role(event.actor_login) in MAINTAINER_ROLES
+        return not event.actor_is_bot and self._role(event.actor_login, fresh=True) in MAINTAINER_ROLES
 
-    def _role(self, login: str) -> str | None:
+    def _role(self, login: str, *, fresh: bool) -> str | None:
+        """A login's role; ``fresh`` reads it now (a just-demoted maintainer
+        must not keep approving on a cached answer, #7763 review F2)."""
         now = self.clock()
         cached = self._roles.get(login)
-        if cached is not None and now - cached[0] < ROLE_CACHE_SECONDS:
+        if not fresh and cached is not None and now - cached[0] < ROLE_CACHE_SECONDS:
             return cached[1]
         role = self.evidence.repository_role(login)
         self._roles[login] = (now, role)
@@ -207,7 +220,7 @@ class TechLeadApprovals:
         AND while this process holds a verified approval for it: labels alone
         never admit.
         """
-        state = proposal_label_state(issue.labels)
+        state = proposal_state(issue.labels, issue.body)
         if state is ProposalLabelState.NOT_A_PROPOSAL:
             return True
         return state is ProposalLabelState.ADMITTED and issue.number in self._verified
@@ -222,7 +235,37 @@ def admits_without_evidence(issue: "Issue") -> bool:
     Fails closed: with nothing able to verify an approval, no proposal is
     admitted, whatever its labels say.
     """
-    return not proposal_label_state(issue.labels).is_proposal
+    return not proposal_state(issue.labels, issue.body).is_proposal
+
+
+def refuse_unapproved_proposal_launch(
+    action: "LaunchSessionAction",
+    repository: "RepositoryHost | None",
+    approvals: "TechLeadApprovals | None",
+) -> "ActionResult | None":
+    """The launch boundary's own consent check for a proposal (#7763 review F2).
+
+    The scheduler admits on the verified CACHE, which is only as fresh as the
+    last tick's observation: an ``approved`` removed and re-applied by a bot
+    between two ticks still looks verified there. So a coding launch of a
+    tech-lead proposal re-reads the issue, its latest ``approved`` event and
+    the actor's role, all fresh, and refuses unless a maintainer's approval
+    still stands. Ordinary issues cost one (ETag-cached) issue read.
+    """
+    from .actions import ActionResult
+
+    if action.session_type is not SessionType.ISSUE or repository is None:
+        return None
+    issue = repository.get_issue(action.number)
+    if issue is None or not proposal_state(issue.labels, issue.body).is_proposal:
+        return None
+    if approvals is not None and approvals.confirm(issue):
+        return None
+    return ActionResult.fail(
+        action,
+        f"#{action.number} is a tech-lead proposal without a maintainer's approval"
+        " standing at launch; not launched",
+    )
 
 
 def plan_approval_settlements(
@@ -243,7 +286,7 @@ def plan_approval_settlements(
         issue = latest[number]
         if issue.state != "open":
             continue
-        state = proposal_label_state(issue.labels)
+        state = proposal_state(issue.labels, issue.body)
         if not state.is_proposal:
             continue
         verdict = verdicts.get(number)
@@ -252,7 +295,7 @@ def plan_approval_settlements(
                 ApprovalSettlement(number, ApprovalTransition.REJECT_CLAIM, verdict)
             )
             continue
-        if state is ProposalLabelState.AWAITING and not _carries_waiting(issue.labels):
+        if state is ProposalLabelState.AWAITING and not _carries_gate(issue.labels):
             settlements.append(
                 ApprovalSettlement(
                     number,
@@ -273,9 +316,10 @@ def plan_approval_settlements(
     return tuple(settlements)
 
 
-def _carries_waiting(labels: Collection[str]) -> bool:
-    folded = AWAITING_APPROVAL_LABEL.casefold()
-    return any(str(label).casefold() == folded for label in labels)
+def _carries_gate(labels: Collection[str]) -> bool:
+    """Both the provenance and the waiting label are present."""
+    folded = {str(label).casefold() for label in labels}
+    return all(label.casefold() in folded for label in GATED_PROPOSAL_LABELS)
 
 
 __all__ = [
@@ -283,4 +327,5 @@ __all__ = [
     "TechLeadApprovals",
     "admits_without_evidence",
     "plan_approval_settlements",
+    "refuse_unapproved_proposal_launch",
 ]

@@ -64,6 +64,7 @@ from tests.approval_helpers import (
     make_approvals,
     maintainer_approved,
 )
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.domain.tech_lead_session import (
     TECH_LEAD_OBSERVATION_LABEL,
     ApprovedTechLeadOp,
@@ -268,7 +269,7 @@ def test_proposal_action_requires_the_waiting_state(labels) -> None:
     with pytest.raises(ValueError, match="provenance and waiting labels"):
         CreateTechLeadProposalIssueAction(
             title="t",
-            body="b",
+            body=with_proposal_marker("b"),
             labels=labels,
             op=_op(),
             origin=TechLeadCreationOrigin.derived_from_anchor(99),
@@ -2097,7 +2098,7 @@ def test_proposal_creation_recovers_original_durable_intent(tmp_path, monkeypatc
     recovered = SqliteTechLeadAuthorityStore(database)
     pending = recovered.load_pending_proposal(proposal_creation_key(action.op))
     assert pending is not None and pending.op == action.op
-    retry = replace(action, title="Changed retry title", body="Changed retry instructions")
+    retry = replace(action, title="Changed retry title", body=with_proposal_marker("Changed retry instructions"))
     assert apply(recovered, retry).success
     host.create_issue.assert_called_once()
     assert recovered.load_op(issue_number=500) == action.op
@@ -2175,3 +2176,23 @@ def test_finalizing_an_approved_release_names_its_operation() -> None:
 
     (number, comment), _ = host.add_comment.call_args
     assert number == 502 and "`release_withheld_review` for #14" in comment
+
+
+def test_a_proposal_action_must_carry_its_body_marker() -> None:
+    """#7763 review F1: the marker is what keeps a fully-stripped proposal a
+    proposal, so a gated filing without one is refused at construction."""
+    with pytest.raises(ValueError, match="proposal body marker"):
+        CreateTechLeadProposalIssueAction(
+            title="t",
+            body="b",
+            labels=GATED,
+            op=_op(),
+            origin=TechLeadCreationOrigin.derived_from_anchor(99),
+            expected=build_expected_for_mutation(),
+        )
+
+
+def test_every_composed_proposal_carries_its_body_marker() -> None:
+    from issue_orchestrator.domain.tech_lead_approval import carries_proposal_marker
+
+    assert carries_proposal_marker(_proposal_action().body)

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.control.actions import AddCommentAction, RequestReworkAction
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.reconciliation import (
@@ -157,7 +158,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
     host.create_issue.side_effect = accepted
     create = CreateTechLeadProposalIssueAction(
         title="Original",
-        body="Original report",
+        body=with_proposal_marker("Original report"),
         labels=GATED,
         op=op,
         origin=TechLeadCreationOrigin.derived_from_anchor(5),

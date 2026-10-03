@@ -11,6 +11,7 @@ import hashlib
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.control.actions import (
     PromoteTechLeadFindingAction,
@@ -466,7 +467,7 @@ class TestPromotionCommandEncodesItsApprovalMode:
             case_file_issue_number=65,
             target_repo=UPSTREAM,
             title="[tech-lead:porchpin/porchpin] sig",
-            body=f"body\n\n{self.MARKER}",
+            body=with_proposal_marker(f"body\n\n{self.MARKER}"),
             labels=("agent:backend", AWAITING_APPROVAL_LABEL),
             observation_count=2,
             idempotency_marker=self.MARKER,

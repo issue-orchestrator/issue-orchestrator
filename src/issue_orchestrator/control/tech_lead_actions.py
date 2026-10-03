@@ -123,6 +123,15 @@ class CreateTechLeadIssueAction(Action):
                 " issue to check an ExpectedState against; carrying one means"
                 " the reconciliation subject was dropped in composition"
             )
+        from ..domain.tech_lead_approval import carries_proposal_marker, proposal_label_state
+
+        # A gated filing carries its proposal marker, so stripping every
+        # approval label cannot turn it into ordinary work (#7763).
+        if proposal_label_state(self.labels).is_proposal and not carries_proposal_marker(self.body):
+            raise ValueError(
+                f"{type(self).__name__} carries approval labels but not the"
+                " proposal body marker"
+            )
 
     @property
     def anchor_issue_number(self) -> int:
@@ -152,7 +161,11 @@ class CreateTechLeadProposalIssueAction(CreateTechLeadIssueAction):
     )
 
     def __post_init__(self) -> None:
-        from ..domain.tech_lead_approval import ProposalLabelState, proposal_label_state
+        from ..domain.tech_lead_approval import (
+            ProposalLabelState,
+            carries_proposal_marker,
+            proposal_label_state,
+        )
 
         super().__post_init__()
         # Self-validating type: an ungated proposal issue would be
@@ -163,6 +176,11 @@ class CreateTechLeadProposalIssueAction(CreateTechLeadIssueAction):
             raise ValueError(
                 "CreateTechLeadProposalIssueAction must carry the approval"
                 " model's provenance and waiting labels, and no approval"
+            )
+        if not carries_proposal_marker(self.body):
+            raise ValueError(
+                "CreateTechLeadProposalIssueAction must carry the proposal body"
+                " marker, so a label strip cannot turn it into ordinary work"
             )
         # A gated proposal is always something a session DECIDED; it can never
         # be the anchor. The positive anchor number itself is guaranteed by the
@@ -550,7 +568,11 @@ class PromoteTechLeadFindingAction(Action):
         return self.case_file_issue_number
 
     def __post_init__(self) -> None:
-        from ..domain.tech_lead_approval import ProposalLabelState, proposal_label_state
+        from ..domain.tech_lead_approval import (
+            ProposalLabelState,
+            carries_proposal_marker,
+            proposal_label_state,
+        )
 
         if not self.signature.strip():
             raise ValueError(
@@ -586,11 +608,14 @@ class PromoteTechLeadFindingAction(Action):
         # CARRYING the gate would file work nobody can start without noticing
         # a label the operator was never told about.
         state = proposal_label_state(self.labels)
-        if self.gated and state is not ProposalLabelState.AWAITING:
+        if self.gated and (
+            state is not ProposalLabelState.AWAITING or not carries_proposal_marker(self.body)
+        ):
             raise ValueError(
                 "PromoteTechLeadFindingAction planned as gated must carry the"
-                " approval model's provenance and waiting labels; filing it"
-                " without them creates immediately schedulable work nobody approved"
+                " approval model's provenance and waiting labels and its body"
+                " marker; filing it without them creates immediately schedulable"
+                " work nobody approved"
             )
         if not self.gated and state.is_proposal:
             raise ValueError(

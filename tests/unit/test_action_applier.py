@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
-from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, with_proposal_marker
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCreationKind,
     TechLeadCreationOrigin,
@@ -1611,7 +1611,7 @@ class TestCreateTechLeadIssueAction:
         mock_repository_host.create_issue.return_value = {"number": 100}
         action = CreateTechLeadIssueAction(
             title="Gated follow-up the review decided on",
-            body="Body",
+            body=with_proposal_marker("Body"),
             labels=("agent:backend", AWAITING_APPROVAL_LABEL),
             reason="tech_lead decision action A4: create follow-up issue (gated)",
             flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
@@ -3814,7 +3814,7 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
             ),
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal: reset_retry #12",
-                body="documentation only",
+                body=with_proposal_marker("documentation only"),
                 labels=("agent:tech-lead", "awaiting-approval"),
                 origin=origin,
                 op=StoredTechLeadOp(

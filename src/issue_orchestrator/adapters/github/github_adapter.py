@@ -1875,20 +1875,36 @@ class GitHubAdapter:
                 f"label event on #{issue_number} carries no actor; cannot attribute it"
             )
         login = str(actor.get("login") or "")
+        app = payload.get("performed_via_github_app")
+        app = app if isinstance(app, dict) else {}
         return LabelEvent(
             event_id=int(payload.get("id") or 0),
             actor_login=login,
             actor_is_bot=(
                 actor.get("type") == "Bot"
                 or login.casefold().endswith("[bot]")
-                or bool(payload.get("performed_via_github_app"))
+                or bool(app)
             ),
             created_at=str(payload.get("created_at") or ""),
+            app_id=str(app.get("id") or ""),
+            app_client_id=str(app.get("client_id") or ""),
         )
 
     def repository_role(self, login: str) -> str | None:
         """``login``'s role in this repository, or None for an unknown user."""
         return self._client.repository_role(login)
+
+    def is_own_write(self, event: "LabelEvent") -> bool:
+        """Whether *event* was performed through this engine's own GitHub App.
+
+        Uses the same effective App identity that verifies server-authored
+        comment provenance. A personal-token engine has none: False.
+        """
+        identity = self._client.app_identity()
+        if identity is None:
+            return False
+        observed = event.app_id if identity.field == "id" else event.app_client_id
+        return bool(observed) and observed == identity.value
 
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.

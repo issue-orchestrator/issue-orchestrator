@@ -37,6 +37,15 @@ class ApprovalEvidenceReader(Protocol):
         ``write``, ``triage``, ``read``), or ``None`` for a non-collaborator."""
         ...
 
+    def is_own_write(self, event: LabelEvent) -> bool:
+        """Whether *event* was produced by THIS engine's own credential.
+
+        Decidable only for a GitHub App identity (the event's
+        ``performed_via_github_app`` names the app); a personal-token engine
+        answers ``False``, so its writes are judged by the actor check alone.
+        """
+        ...
+
 
 class OperatorApprovalRecords(Protocol):
     """Control Center approvals, owned by the engine and nothing else."""

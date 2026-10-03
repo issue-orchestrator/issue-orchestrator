@@ -66,6 +66,8 @@ from ..domain.tech_lead_approval import (
     HOW_TO_APPROVE,
     ApprovalVerdict,
     proposal_label_state,
+    proposal_state,
+    with_proposal_marker,
 )
 from ..domain.tech_lead_session import (
     ApprovedTechLeadOp,
@@ -351,11 +353,11 @@ def build_tech_lead_proposal_issue_action(
         title_detail = f"{title_detail}: {op.decision.title}"[:_MAX_DECISION_TITLE_CHARS]
     return CreateTechLeadProposalIssueAction(
         title=f"Tech Lead proposal: {title_detail}",
-        body=_proposal_issue_body(
+        body=with_proposal_marker(_proposal_issue_body(
             op,
             anchor_issue_number=anchor_issue_number,
             finding_ids=proposed.finding_ids,
-        ),
+        )),
         labels=proposal_issue_labels(config),
         pr_count=0,
         op=op,
@@ -554,7 +556,7 @@ def _gated_proposal_summary(issue: "Issue") -> GatedTechLeadProposal:
 
 def _awaits_approval(issue: "Issue") -> bool:
     """True iff *issue* is an open proposal no one has approved (#7763)."""
-    return issue.state == "open" and proposal_label_state(issue.labels).gate_closed
+    return issue.state == "open" and proposal_state(issue.labels, issue.body).gate_closed
 
 
 def _proposal_issue_is_open(tracker: "RepositoryHost", issue_number: int) -> bool:

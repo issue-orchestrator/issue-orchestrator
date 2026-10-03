@@ -99,3 +99,12 @@ test('a refused command surfaces its detail instead of reporting success', async
 test('the run strip names the latest run per repository', () => {
     assert.match(view().renderPage(page([repo(section([]))])).runStrip, /a: Running — Health review — Whole board/);
 });
+
+test('an approved proposal stays visible but is not counted as waiting on you', () => {
+    const approved = item(9, { status: 'approved', status_label: 'Approved (by @octo); the engine will act on it', can_approve: false });
+    const sec = section([approved], { waiting_count: 0 });
+    const html = view().renderPage(page([repo(sec)]));
+    assert.equal(html.waitingHeading, 'Waiting on you (0)');
+    assert.match(html.waiting, /Nothing is waiting on you/);
+    assert.match(html.waiting, /Proposal 9/);
+});

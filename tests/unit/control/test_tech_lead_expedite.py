@@ -15,6 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.control.actions import CreateTechLeadIssueAction
@@ -47,7 +48,7 @@ def _apply_create(state, *, labels, expedite, issue_number=100, lane=None,
     repo.create_issue.return_value = {"number": issue_number}
     action = CreateTechLeadIssueAction(
         title="Fix it",
-        body="Body",
+        body=with_proposal_marker("Body"),
         labels=tuple(labels),
         expedite=expedite,
         # Expedite intent only ever rides a DECISION-driven create_issue, so
