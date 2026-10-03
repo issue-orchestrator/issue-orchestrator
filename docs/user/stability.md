@@ -87,6 +87,7 @@ and this table is the same set with the tier each command carries:
 | `tech_lead` | Runtime | Supported |
 | `health-review` | Runtime | Supported |
 | `reconcile-case-files` | Runtime | Supported |
+| `hold-merge-for-human` | Runtime | Supported |
 | `refresh` | Runtime | Supported |
 | `restart` | Runtime | Supported |
 | `setup` | Setup | Supported |

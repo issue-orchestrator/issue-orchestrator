@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Callable, Generator, Optional, Sequence
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
+from .tech_lead_approval_migration import migrate_engine_proposals
 from ..ports.issue import Issue
 
 if TYPE_CHECKING:
@@ -59,7 +60,7 @@ from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchErr
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES, SharedNeedsHumanBlock
-from .review_question_hold import AgentQuestionReviewHolds
+from .human_gates import HumanGates
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from .retrospective_review import discover_retrospective_review_issues
@@ -153,7 +154,8 @@ class StartupManager:
         # review; ending them must retire their durable claims too (#7348).
         self._pending_work_claims = pending_work_claims
         # The owner of which issue blocks a review may run over (#7593).
-        self._review_question_holds = AgentQuestionReviewHolds(needs_human_block, self._lm)
+        self._needs_human_block = needs_human_block
+        self._human_gates = HumanGates.over(needs_human_block, self._lm)
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -292,7 +294,7 @@ class StartupManager:
 
         # Step 9a: the legacy proposal gate moves to the approval model (#7763).
         with self._phase("migrate_proposal_approvals", timings):
-            self._migrate_proposal_approvals()
+            migrate_engine_proposals(self.repository_host, self._action_applier, self._tech_lead_authority, self.config)
 
         # Step 9: Recover pending tech_lead reviews
         if self.config.tech_lead_enabled:
@@ -315,6 +317,9 @@ class StartupManager:
         # mirror cannot silently diverge from the source of truth.
         with self._phase("reconcile_label_store", timings):
             self._reconcile_label_store(state)
+            # Causes recorded under a label a person already took off (#7678).
+            if forgotten := self._needs_human_block.forget_stale_causes():
+                logger.info("[STARTUP] Dropped stale needs-human causes of %s", list(forgotten))
 
         # Step 13: Audit and cache the queue
         state.startup_message = "Auditing queue..."
@@ -698,7 +703,7 @@ class StartupManager:
                 issue=issue,
                 pr=pr,
                 review_label_confirmed=True,
-                review_admitted_blocks=self._review_question_holds.review_admitted_blocks(issue),
+                gates=self._human_gates,
             )
             if not validity.valid:
                 logger.info(
@@ -732,16 +737,6 @@ class StartupManager:
                     print(f"  PR #{pr_number}: Already queued for code review")
             else:
                 print(f"  PR #{pr_number}: Review already in progress")
-
-    def _migrate_proposal_approvals(self) -> None:
-        """Fail-fast: an unmigrated legacy gate no longer blocks anything."""
-        approvals = self._action_applier.tech_lead_approvals if self._action_applier else None
-        if approvals is None or self._tech_lead_authority is None:
-            return
-        from .tech_lead_approval_migration import migrate_legacy_proposals
-
-        migrate_legacy_proposals(self.repository_host, approvals, self._tech_lead_authority,
-                                 filtering_label=self.config.filtering.label)
 
     async def _recover_pending_tech_lead(self, state: OrchestratorState) -> None:
         """Recover pending tech_lead review issues after crash/restart.

@@ -2475,7 +2475,7 @@ def _refusing_release_executor(claimed_by: str):
                            started_at="2026-09-27T13:00:00+00:00", readable=True, work="rework")
     writes = MagicMock()
     executor = TechLeadReviewReleaseExecutor(
-        events=MagicMock(), config=Config(), labels=MagicMock(), read_issue=MagicMock(),
+        events=MagicMock(), config=Config(), labels=MagicMock(), gates=MagicMock(), read_issue=MagicMock(),
         list_open_prs=MagicMock(), read_pr=MagicMock(), issue_branches=MagicMock(),
         review_admission=MagicMock(), read_checks=MagicMock(),
         runtime_activity=lambda _n: IssueRuntimeActivity(frozenset(), frozenset()),

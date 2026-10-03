@@ -34,6 +34,7 @@ from ..ports.repository_host import (
     RepositoryHostError,
     RepositoryScanIncompleteError,
 )
+from .human_gates import holds_merge
 from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_COMMENT_MARKER,
     POST_PUBLISH_VALIDATION_SOURCE,
@@ -44,8 +45,6 @@ from .awaiting_merge_post_publish_policy import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from .action_results import ActionResult
     from .actions import EnqueueToMergeQueueAction
     from ..events import EventContext
@@ -191,7 +190,7 @@ class MergeQueueCoordinator:
             decision,
         )
         if decision == "ENQUEUE":
-            if self._awaits_a_human(issue):
+            if self._awaits_a_human(issue, pr):
                 return MergeQueueFollowup()
             return MergeQueueFollowup(
                 enqueue=DiscoveredMergeQueueEnqueue(
@@ -218,10 +217,10 @@ class MergeQueueCoordinator:
         # WAIT
         return MergeQueueFollowup()
 
-    def _awaits_a_human(self, issue: "Issue") -> bool:
-        held = awaits_a_human(issue.labels, self.label_manager)
+    def _awaits_a_human(self, issue: "Issue", pr: "PRInfo") -> bool:
+        held = holds_merge(self.label_manager, issue.labels, pr.labels)
         if held:
-            logger.info("Merge queue waits: issue=#%s awaits a human", issue.number)
+            logger.info("Merge queue waits: issue=#%s / PR #%s awaits a human", issue.number, pr.number)
         return held
 
     # ------------------------------------------------------------------ #
@@ -356,18 +355,6 @@ class MergeQueueCoordinator:
         ])
 
 
-def awaits_a_human(labels: "Sequence[str]", label_manager: "LabelManager") -> bool:
-    """An issue still waiting on a human never has its PR enqueued (#7593).
-
-    A review may run over the coding agent's own open question (see
-    ``review_question_hold``) so the human decides with a reviewed PR in hand;
-    an approval must not then merge the work before they answer. The ONE rule
-    for both classification and the enqueue write.
-    """
-    needs_human = label_manager.needs_human.casefold()
-    return any(label.casefold() == needs_human for label in labels)
-
-
 def apply_enqueue_to_merge_queue(
     action: "EnqueueToMergeQueueAction",
     *,
@@ -377,20 +364,20 @@ def apply_enqueue_to_merge_queue(
 ) -> "ActionResult":
     """The enqueue write, re-checking the human hold on a fresh label read.
 
-    Classification observed the issue a tick earlier; a ``needs-human`` put
-    on since then must still keep the PR out of the queue (#7593 review r2).
-    An unreadable issue enqueues nothing.
+    Classification observed the issue and PR a tick earlier; a
+    ``needs-human`` put on either since then must still keep the PR out of the
+    queue (#7593 review r2, #7678). Unreadable labels enqueue nothing.
     """
     from .actions import ActionResult
 
     try:
-        current = host.get_issue_labels_fresh(action.issue_number)
+        current = [host.get_issue_labels_fresh(n) for n in (action.issue_number, action.pr_number)]
     except Exception as error:
         return ActionResult.fail(
-            action, f"issue #{action.issue_number}'s labels unreadable before enqueue: {error}",
+            action, f"#{action.issue_number}/PR #{action.pr_number} labels unreadable before enqueue: {error}",
             pr_number=action.pr_number,
         )
-    held = awaits_a_human(current, labels)
+    held = holds_merge(labels, *current)
     if held:
         return ActionResult.skip(
             action, f"issue #{action.issue_number} now awaits a human; PR #{action.pr_number} not enqueued",

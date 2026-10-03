@@ -202,8 +202,10 @@ def require_proposal_marker(labels: Collection[str], body: str, *, what: str) ->
 
 
 def require_gated_filing(labels: Collection[str], body: str, *, what: str) -> None:
-    """A gated filing: provenance + waiting labels, no approval, and the marker."""
-    if proposal_label_state(labels) is not ProposalLabelState.AWAITING:
+    """A gated filing: BOTH gate labels (provenance and waiting), no approval,
+    and the marker (#7763 review r12 F2: either gate label alone also reads
+    as AWAITING, but is not the state a filing promises)."""
+    if missing_labels(labels, GATED_PROPOSAL_LABELS) or labels_named(labels, APPROVED_LABEL):
         raise ValueError(
             f"{what} must carry the approval model's provenance and waiting"
             " labels, and no approval; filing it without them creates"

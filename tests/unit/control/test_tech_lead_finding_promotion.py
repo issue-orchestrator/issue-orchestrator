@@ -468,7 +468,7 @@ class TestPromotionCommandEncodesItsApprovalMode:
             target_repo=UPSTREAM,
             title="[tech-lead:porchpin/porchpin] sig",
             body=with_proposal_marker(f"body\n\n{self.MARKER}"),
-            labels=("agent:backend", AWAITING_APPROVAL_LABEL),
+            labels=("agent:backend", "tech-lead-proposal", AWAITING_APPROVAL_LABEL),
             observation_count=2,
             idempotency_marker=self.MARKER,
             gated=True,

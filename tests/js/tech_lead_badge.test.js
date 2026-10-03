@@ -45,6 +45,9 @@ test('embedded: shown, asks the Control Center for the count, and renders it as 
     h.listeners.message(fromCc({ type: 'cc-tech-lead-waiting', count: -1, text: 'x' }));
     h.listeners.message(fromCc({ type: 'cc-tech-lead-waiting', count: 2 }));
     h.listeners.message(fromCc({ type: 'cc-tech-lead-waiting', count: 2, text: 'y', extra: true }));
+    // Another Tech lead message, or none of them: never read as the count.
+    h.listeners.message(fromCc({ type: 'cc-tech-lead-waiting-request' }));
+    h.listeners.message(fromCc({ type: 'something-else', text: 'z' }));
     assert.equal(h.button.textContent, '4 waiting on you');
     // Not from the embedding Control Center: a forged all-clear is ignored.
     h.listeners.message({ source: {}, data: { type: 'cc-tech-lead-waiting', count: 0, text: 'Nothing waiting on you' } });

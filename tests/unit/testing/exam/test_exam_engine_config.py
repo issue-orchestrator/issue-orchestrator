@@ -34,6 +34,7 @@ from tests.e2e.exam.case_engines import (
     case_c_engine,
     case_d_engine,
     case_h_engine,
+    case_e_engine,
     case_u_engine,
 )
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
@@ -101,8 +102,9 @@ def _load_case_config(
         case_u_engine(Path("/tmp/exam-u-release")),
         case_d_engine(),
         case_h_engine(),
+        case_e_engine(Path("/tmp/exam-e-changes-once")),
     ],
-    ids=["A", "B", "C", "U", "D", "H"],
+    ids=["A", "B", "C", "U", "D", "H", "E"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -239,3 +241,19 @@ def test_case_h_enables_the_tech_lead_but_never_triggers_a_run(
     assert loaded.tech_lead.health_review.interval_minutes == 0
     assert loaded.tech_lead.stuck_sweep.enabled is False
     assert loaded.tech_lead.findings.promote == "off"
+
+
+def test_case_e_reviews_with_one_round_of_changes_and_no_tech_lead(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """#7678: the first post-publish review requests changes, so the merge-held
+    PR is reworked; the engine alone (no tech lead) must keep the merge held."""
+    from tests.e2e.exam.agents import ASKING_BESIDE_PR_CODER_LABEL, ASKING_CODER_LABEL, REVIEWER_LABEL
+
+    marker = tmp_path / "changes-once"
+    loaded = _load_case_config(case_e_engine(marker), tmp_path, written)
+
+    reviewer = loaded.agents[REVIEWER_LABEL].command
+    assert reviewer is not None and f"--changes-once {marker}" in reviewer
+    assert {ASKING_CODER_LABEL, ASKING_BESIDE_PR_CODER_LABEL} <= set(loaded.agents)
+    assert loaded.tech_lead_review_agent is None

@@ -258,3 +258,20 @@ test('fromValue validates an already-decoded object', () => {
         assert.strictEqual(violations.length, 1);
     });
 });
+
+test('fromUnionMember: a non-member is not this reader\'s message and reports nothing', () => {
+    withCapture((violations) => {
+        const read = value => uiContractJson.fromUnionMember(value, 'TechLeadFrameMessage', 'test');
+        assert.equal(read({ type: 'dashboard-status', payload: {} }), undefined);
+        assert.equal(read(null), undefined);
+        assert.equal(violations.length, 0);
+        // A member's tag, off contract: refused once.
+        assert.equal(read({ type: 'cc-tech-lead-waiting', count: -1, text: 'x' }), null);
+        assert.equal(violations.length, 1);
+        // A member, on contract: the payload.
+        const ok = { type: 'cc-tech-lead-waiting', count: 2, text: '2 waiting on you' };
+        assert.deepEqual(read(ok), ok);
+        // Not a union schema at all: refused, never guessed at.
+        assert.equal(uiContractJson.fromUnionMember(ok, 'TechLeadWaitingMessage', 'test'), null);
+    });
+});

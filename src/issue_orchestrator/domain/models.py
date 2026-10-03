@@ -143,6 +143,9 @@ class RequestedAction(Enum):
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
     POST_COMMENT = "post_comment"
     PUSH_BRANCH = "push_branch"
+    #: A person must decide before the PR merges (#7678): the agent's question
+    #: is about its published work, so it holds the PR's merge, not the issue.
+    HOLD_MERGE_FOR_HUMAN = "hold_merge_for_human"
 
 
 # ---------------------------------------------------------------------------

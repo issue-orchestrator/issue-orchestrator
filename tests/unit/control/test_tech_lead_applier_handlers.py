@@ -120,7 +120,7 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal",
                 body=with_proposal_marker("b"),
-                labels=("agent:tech-lead", AWAITING_APPROVAL_LABEL),
+                labels=("agent:tech-lead", "tech-lead-proposal", AWAITING_APPROVAL_LABEL),
                 origin=TechLeadCreationOrigin.derived_from_anchor(ANCHOR),
                 op=_op(),
                 expected=expected,

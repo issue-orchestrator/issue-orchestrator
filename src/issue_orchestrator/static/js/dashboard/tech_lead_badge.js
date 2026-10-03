@@ -13,11 +13,11 @@ function initTechLeadBadge(win, doc, contractJson) {
     const post = message => win.parent.postMessage(message, '*');
     button.hidden = false;
     win.addEventListener('message', event => {
-        // Only the Control Center that embeds this dashboard (contextual), and
-        // only in the generated contract's shape (#7763 review r5 F4).
-        if (event.source !== win.parent || !event.data || event.data.type !== 'cc-tech-lead-waiting') return;
-        const data = contractJson.fromValue(event.data, 'TechLeadWaitingMessage', 'control center message');
-        if (data === null) return;
+        // Read through the generated contract first (#7763 review r12 F3), then
+        // only the Control Center that embeds this dashboard (contextual), and
+        // dispatch on the VALIDATED type.
+        const data = contractJson.fromUnionMember(event.data, 'TechLeadFrameMessage', 'control center message');
+        if (!data || event.source !== win.parent || data.type !== 'cc-tech-lead-waiting') return;
         // The CC's own wording: it knows whether every repository reported.
         button.textContent = data.text;
         button.dataset.waiting = String(data.count);

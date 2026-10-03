@@ -47,6 +47,8 @@ from .tech_lead_approval_writes import restore_gate_labels
 from .tech_lead_proposals import TECH_LEAD_PROPOSAL_SCAN_LIMIT
 
 if TYPE_CHECKING:
+    from ..infra.config import Config
+    from .action_applier import ActionApplier
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -85,6 +87,21 @@ class ApprovalMigrationError(RuntimeError):
 def _carries(issue: "Issue", label: str) -> bool:
     folded = label.casefold()
     return any(str(name).casefold() == folded for name in issue.labels)
+
+
+def migrate_engine_proposals(
+    repository: "RepositoryHost",
+    applier: "ActionApplier | None",
+    ops: "TechLeadAuthorityStore | None",
+    config: "Config",
+) -> ApprovalMigrationReport | None:
+    """Startup's step (#7763): migrate when this engine has an approval owner
+    and an authority store; fail-fast, since an unmigrated legacy gate no
+    longer blocks anything."""
+    approvals = applier.tech_lead_approvals if applier is not None else None
+    if approvals is None or ops is None:
+        return None
+    return migrate_legacy_proposals(repository, approvals, ops, filtering_label=config.filtering.label)
 
 
 def migrate_legacy_proposals(

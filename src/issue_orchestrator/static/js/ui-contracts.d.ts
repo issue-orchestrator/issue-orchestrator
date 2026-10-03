@@ -1989,6 +1989,8 @@ export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload |
 
 export type StopValidatedWorkOwnerOutcomePayload = StopOwnerObservedOutcomePayload | StopOwnerAbsentOutcomePayload | StopOwnerOptionalOutcomePayload;
 
+export type TechLeadFrameMessage = TechLeadWaitingMessage | TechLeadOpenMessage | TechLeadWaitingRequestMessage;
+
 export type TechLeadRunArtifactCommandPayload = OpenSessionRecordingCommandPayload | OpenReviewArtifactCommandPayload;
 
 export type TechLeadRunScopePayload = TechLeadGlobalHealthReviewScopePayload | TechLeadIssueScopePayload;

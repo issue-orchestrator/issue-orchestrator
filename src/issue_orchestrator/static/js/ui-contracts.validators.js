@@ -7642,6 +7642,22 @@
             ],
             "type": "object"
         },
+        "TechLeadFrameMessage": {
+            "discriminator": {
+                "propertyName": "type"
+            },
+            "oneOf": [
+                {
+                    "$ref": "#/components/schemas/TechLeadWaitingMessage"
+                },
+                {
+                    "$ref": "#/components/schemas/TechLeadOpenMessage"
+                },
+                {
+                    "$ref": "#/components/schemas/TechLeadWaitingRequestMessage"
+                }
+            ]
+        },
         "TechLeadGlobalHealthReviewScopePayload": {
             "additionalProperties": false,
             "properties": {

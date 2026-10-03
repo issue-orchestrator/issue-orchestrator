@@ -155,12 +155,14 @@ def test_merge_held_prs_and_hand_overs_wait_without_approve_buttons() -> None:
             NeedsHumanCauseRow(40, NeedsHumanCause.MERGE_ESCALATION.value, "branch protection blocks merge"),
             NeedsHumanCauseRow(41, NeedsHumanCause.TECH_LEAD_ESCALATION.value, "needs a credential"),
             NeedsHumanCauseRow(42, NeedsHumanCause.AGENT_COMPLETION.value, "agent asked"),
+            NeedsHumanCauseRow(43, NeedsHumanCause.MERGE_DECISION.value, "pick the API shape before merge"),
         ),
         issues=(_issue(41, ("needs-human", "tech-lead-needs-human"), title="Rotate key"),
                 _issue(42, ("needs-human",))),
     )
     by_number = {item.number: item for item in section.waiting}
-    assert set(by_number) == {40, 41}  # an agent's question is not a hand-over
+    assert set(by_number) == {40, 41, 43}  # an agent's work question is not a hand-over
+    assert by_number[43].kind == "merge_ready_pr"  # a merge decision waits on you (#7678)
     assert by_number[40].kind == "merge_ready_pr" and by_number[40].recommendation == "branch protection blocks merge"
     assert by_number[41].kind == "hand_over" and by_number[41].recommendation == "needs a credential"
     assert not any(item.can_approve or item.can_decline for item in section.waiting)

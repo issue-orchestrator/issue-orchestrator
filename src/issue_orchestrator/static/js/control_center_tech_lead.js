@@ -256,9 +256,16 @@
     // A message from the embedded repo dashboard (#7763 review r5 F4): only
     // from the frame the Control Center embedded (a contextual invariant the
     // schema cannot know), and only in its generated contract's shape.
-    function readFrameMessage(event, expectedSource, schemaName) {
+    //
+    // ``undefined``: not a Tech lead message at all (the window's message
+    // stream is shared), so the caller handles it otherwise. ``null``: a Tech
+    // lead message refused. Otherwise the validated message, to dispatch on
+    // its validated ``type`` (#7763 review r12 F3).
+    function readFrameMessage(event, expectedSource) {
+        const message = uiContractJson.fromUnionMember(event.data, 'TechLeadFrameMessage', 'dashboard frame message');
+        if (message === undefined) return undefined;
         if (!expectedSource || event.source !== expectedSource) return null;
-        return uiContractJson.fromValue(event.data, schemaName, 'dashboard frame message');
+        return message;
     }
 
     function focusEntry(repository, number) {

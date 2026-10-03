@@ -1723,6 +1723,23 @@
           }
         }
       },
+      "TechLeadFrameMessage": {
+        "description": "Every message the Control Center and its embedded repo dashboard exchange about the Tech lead page (#7763).",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TechLeadWaitingMessage"
+          },
+          {
+            "$ref": "#/components/schemas/TechLeadOpenMessage"
+          },
+          {
+            "$ref": "#/components/schemas/TechLeadWaitingRequestMessage"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
       "TechLeadWaitingMessage": {
         "type": "object",
         "additionalProperties": false,

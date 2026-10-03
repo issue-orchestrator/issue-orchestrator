@@ -2135,6 +2135,8 @@ SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | 
 
 StopValidatedWorkOwnerOutcomePayload: TypeAlias = StopOwnerObservedOutcomePayload | StopOwnerAbsentOutcomePayload | StopOwnerOptionalOutcomePayload
 
+TechLeadFrameMessage: TypeAlias = TechLeadWaitingMessage | TechLeadOpenMessage | TechLeadWaitingRequestMessage
+
 TechLeadRunArtifactCommandPayload: TypeAlias = OpenSessionRecordingCommandPayload | OpenReviewArtifactCommandPayload
 
 TechLeadRunScopePayload: TypeAlias = TechLeadGlobalHealthReviewScopePayload | TechLeadIssueScopePayload

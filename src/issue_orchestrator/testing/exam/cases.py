@@ -18,6 +18,7 @@ from .case import (
     issue_lacks_labels,
     item_triaged,
     never_worked,
+    no_pull_request,
     pr_checks_green,
     pr_has_label,
     pr_in_state,
@@ -37,6 +38,7 @@ BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-revi
 UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
 BLOCKED_ITEMS_TRIAGED = "D-blocked-items-triaged"
 POSITIVE_APPROVAL_EXECUTES_ONCE = "H-positive-approval-executes-once"
+MERGE_HELD_WORK_PROCEEDS = "E-merge-held-work-proceeds"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -47,15 +49,16 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     UPGRADE_WITH_WORK_IN_FLIGHT,
     BLOCKED_ITEMS_TRIAGED,
     POSITIVE_APPROVAL_EXECUTES_ONCE,
+    MERGE_HELD_WORK_PROCEEDS,
 )
 
 #: Case U's two in-flight items.
 CODING = "coding"
 REVIEW = "review"
 
-#: Case D's two blocked items: a coding agent's split question with no PR
-#: (porchpin#262), and a question asked beside work it published (#364/#379).
+#: A coding agent's pre-work question with no PR (porchpin#262): Cases D and E.
 ASKS = "asks"
+#: A decision a person makes before a published PR merges (#364/#379): Case E.
 ASKS_BESIDE_PR = "asks_beside_pr"
 
 #: Case H's three gated tech-lead proposals (#7763): one a maintainer
@@ -287,44 +290,68 @@ def upgrade_with_work_in_flight(
 
 
 def blocked_items_triaged(*, needs_human_label: str) -> ExamCase:
-    """Case D — porchpin's blocked items on 2026-10-02 (#7593).
+    """Case D — a coding agent's pre-work question (porchpin#262, #7593).
 
-    Two coding agents finish by asking the operator a question, which puts
-    ``needs_human_label`` on their issues (cause: the agent's own completion):
+    The agent finishes by asking the operator "should I split this issue:
+    land the done slice under Refs and move the rest into its own issue?",
+    which holds the issue's work (``needs_human_label``, cause: the agent's own
+    completion). No PR.
 
-    * ``asks`` (porchpin#262): "should I split this issue: land the done slice
-      under Refs and move the rest into its own issue?" No PR.
-    * ``asks_beside_pr`` (porchpin#364): the agent publishes its validated work
-      on a PR and asks the maintainer a question beside it.
-
-    Right answer: a health review triages both. The split question becomes an
+    Right answer: a health review triages it. The split question becomes an
     approvable proposal for the operator (``operator_decision``), filed, never
-    a dangling question or advice on the review's anchor. The PR beside the
-    question is still reviewed (porchpin#379 was dropped from review every
-    loop for the question), stays open (an approval must not merge the work
-    before the human answers), and its item is triaged too. Nobody decides
-    for the operator: both questions stand.
+    a dangling question or advice on the review's anchor. Nobody decides for
+    the operator: the question stands. (The question asked beside a published
+    PR is no blocked item any more since #7678: see Case E.)
     """
     return ExamCase(
         case_id=BLOCKED_ITEMS_TRIAGED,
-        title="Blocked items a coding agent asked the operator about",
-        fault=(
-            f"two coding agents end by asking the operator a question ({needs_human_label});"
-            " one of them beside a PR of its published work"
-        ),
+        title="A blocked item a coding agent asked the operator about",
+        fault=f"a coding agent ends by asking the operator a pre-work question ({needs_human_label})",
         goals=(
             item_triaged(ASKS, ("operator_decision",)),
             issue_keeps_labels(ASKS, (needs_human_label,)),
+            no_pull_request(ASKS),
+        ),
+        known_blockers=("#7593 the tech lead advised on blocked items and acted on none",),
+    )
+
+
+def merge_held_work_proceeds(*, needs_human_label: str, rework_label: str) -> ExamCase:
+    """Case E — one label, two holds (#7678).
+
+    Two coding agents finish by asking a person:
+
+    * ``asks`` (porchpin#262): a pre-work question. It holds the WORK: the
+      issue keeps ``needs_human_label`` and nothing is published.
+    * ``asks_beside_pr`` (porchpin#364): the agent publishes and asks a person
+      to decide before the PR merges (``--pr-labels needs-human``). It holds
+      only the MERGE: the issue's work is not blocked, the PR is reviewed and
+      reworked (the first review requests changes), approved, and still
+      carries ``needs_human_label`` - open, never merged.
+
+    Before #7678 the second question landed on the ISSUE (#7595): the review
+    was vetoed (porchpin#379) and no rework could run.
+    """
+    return ExamCase(
+        case_id=MERGE_HELD_WORK_PROCEEDS,
+        title="A merge held for a person; the work around it proceeds",
+        fault=(
+            f"one agent asks a pre-work question ({needs_human_label} on its issue);"
+            " another asks for a decision before its published PR merges"
+        ),
+        goals=(
+            issue_keeps_labels(ASKS, (needs_human_label,)),
+            no_pull_request(ASKS),
             single_pull_request(ASKS_BESIDE_PR),
-            pr_in_state(ASKS_BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
+            issue_lacks_labels(ASKS_BESIDE_PR, (needs_human_label,)),
+            pr_has_label(ASKS_BESIDE_PR, rework_label),
             pr_review_approved(ASKS_BESIDE_PR),
+            pr_has_label(ASKS_BESIDE_PR, needs_human_label),
+            pr_in_state(ASKS_BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
             published_work_survives(ASKS_BESIDE_PR),
-            issue_keeps_labels(ASKS_BESIDE_PR, (needs_human_label,)),
-            item_triaged(ASKS_BESIDE_PR, ("operator_decision", "human_hand_over", "explained")),
         ),
         known_blockers=(
-            "#7593 the tech lead advised on blocked items and acted on none",
-            "porchpin#379 an agent's question vetoed its published PR's review",
+            "porchpin#379 an agent's question about its PR's merge blocked the issue's work",
         ),
     )
 

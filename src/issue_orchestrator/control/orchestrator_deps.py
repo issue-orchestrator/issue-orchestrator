@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..ports.issue_run_evidence import IssueRunLedger
     from ..ports.issue_run_allocator import IssueRunAllocator
     from .claim_quarantine import ClaimQuarantineOwner
+    from .human_gates import HumanGates
     from .needs_human_block import SharedNeedsHumanBlock
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports import (
@@ -188,6 +189,13 @@ class OrchestratorDeps:
     @property
     def label_manager(self) -> "LabelManager":
         return self.services.label_manager
+
+    @property
+    def human_gates(self) -> "HumanGates":
+        """What each block holds, work or only a merge (#7678): the one owner."""
+        from .human_gates import HumanGates
+
+        return HumanGates.over(self.needs_human_block, self.services.label_manager)
 
     @property
     def label_store(self) -> "LabelStore":

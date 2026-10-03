@@ -66,6 +66,7 @@ from .tech_lead_reaction import storm_possible
 clear_discovered_facts = _clear_discovered_facts
 
 if TYPE_CHECKING:
+    from .human_gates import HumanGates
     from ..ports.issue import Issue
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.queue_cache_store import QueueCacheStore
@@ -142,6 +143,8 @@ class FactGatherer:
     published_review: PublishedReviewHolds = field(
         default_factory=lambda: NO_PUBLISHED_REVIEW_HOLDS
     )
+    # What each block holds (#7678); production binds the shared block's owner.
+    human_gates: "HumanGates | None" = None
     # The recovery owner's holds, read at planning time (#7455).
     recovery_holds: RecoveryHolds = field(default_factory=lambda: NO_RECOVERY_HOLDS)
     # Per-target read budget for finding-promotion loop closure (#6957 F5). Owned
@@ -597,7 +600,7 @@ class FactGatherer:
             dispositions=build_disposition_ledger(
                 self.tech_lead_authority, self.repository_host, now
             ),
-            published_review=self.published_review,
+            published_review=self.published_review, gates=self.human_gates,
         )
 
     def _open_proposal_targets(self) -> frozenset[int]:

@@ -56,9 +56,13 @@ if TYPE_CHECKING:
 
 #: How far back the "doing on its own" lane reaches.
 DOING_WINDOW = timedelta(hours=24)
-#: Causes of the shared needs-human block that hold only a MERGE for a person.
-#: #7712 adds the agent's merge decision here as a cause of its own.
-MERGE_HOLD_CAUSES: frozenset[str] = frozenset({NeedsHumanCause.MERGE_ESCALATION.value})
+#: Causes of the shared needs-human block that hold a PR's MERGE for a
+#: person: the engine's merge escalation, and a person's merge decision an
+#: agent asked for (#7678, the one MERGE-scoped cause).
+MERGE_HOLD_CAUSES: frozenset[str] = frozenset({
+    NeedsHumanCause.MERGE_ESCALATION.value,
+    NeedsHumanCause.MERGE_DECISION.value,
+})
 
 _RECOMMENDATION_CHARS = 200
 

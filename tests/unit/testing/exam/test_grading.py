@@ -24,12 +24,14 @@ from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     BLOCKED_ITEMS_TRIAGED,
     BOT_APPROVED,
+    MERGE_HELD_WORK_PROCEEDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     MAINTAINER_APPROVED,
     POSITIVE_APPROVAL_EXECUTES_ONCE,
     STRIPPED,
     blocked_issue_green_pr_awaiting_review,
     blocked_items_triaged,
+    merge_held_work_proceeds,
     halted_exchange_with_validated_work,
     positive_approval_executes_once,
 )
@@ -806,89 +808,52 @@ class TestRoundFifteenFindings:
 
 
 class TestCaseDBlockedItemsTriaged:
-    """#7593: porchpin's blocked items, graded on what the engine RECORDED."""
+    """#7593: a coding agent's pre-work question, graded on what the engine RECORDED."""
 
     CASE = blocked_items_triaged(needs_human_label="needs-human")
 
     @staticmethod
-    def _items(
-        *,
-        asks_triage: TriageFact | None,
-        beside_triage: TriageFact | None,
-        beside_approved: tuple[int, ...] | None = None,
-        beside_pr_state: PullRequestState = PullRequestState.READY,
-    ) -> tuple[WorkItemFact, WorkItemFact]:
-        asks = replace(
-            item(issue_labels=("needs-human",)), role=ASKS, issue_number=910, triage=asks_triage,
+    def _asks(triage: TriageFact | None, *, prs=()) -> WorkItemFact:
+        return replace(
+            item(issue_labels=("needs-human",), prs=prs), role=ASKS, issue_number=910, triage=triage,
         )
-        beside = replace(
-            item(
-                issue_labels=("needs-human", "pr-pending"),
-                prs=(pr(number=912, state=beside_pr_state),),
-                approved=beside_approved,
-            ),
-            role=ASKS_BESIDE_PR, issue_number=911, triage=beside_triage,
-        )
-        return asks, beside
 
-    def _grade(self, asks: WorkItemFact, beside: WorkItemFact):
+    def _grade(self, asks: WorkItemFact):
         obs = observation(BLOCKED_ITEMS_TRIAGED, asks)
-        obs = replace(obs, items=(asks, beside), owned_numbers=frozenset({910, 911, 912, 950}))
+        obs = replace(obs, items=(asks,), owned_numbers=frozenset({910, 950}))
         return grade(self.CASE, obs)
 
-    def test_both_items_triaged_and_the_pr_reviewed_passes(self) -> None:
-        asks, beside = self._items(
-            asks_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950),
-            beside_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", 951),
-        )
+    def test_the_question_triaged_as_an_approvable_proposal_passes(self) -> None:
+        asks = self._asks(TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950))
 
-        assert self._grade(asks, beside).passed
+        assert self._grade(asks).passed
 
     def test_the_porchpin_shape_fails(self) -> None:
-        """What porchpin's engine did: advice only (no triage recorded), and
-        the PR beside the question never reviewed (#379)."""
-        asks, beside = self._items(asks_triage=None, beside_triage=None, beside_approved=())
+        """What porchpin's engine did: advice only, no triage recorded."""
+        card = self._grade(self._asks(None))
 
-        card = self._grade(asks, beside)
-
-        assert not card.passed
-        failed = {goal.name for goal in card.goals if not goal.passed}
-        assert {
-            "asks.triaged_operator_decision",
-            "asks_beside_pr.pr_review_approved",
-            "asks_beside_pr.triaged_explained/human_hand_over/operator_decision",
-        } <= failed
+        assert {goal.name for goal in card.goals if not goal.passed} == {"asks.triaged_operator_decision"}
 
     def test_the_split_question_handed_over_as_is_is_not_an_approvable_proposal(self) -> None:
-        asks, beside = self._items(
-            asks_triage=TriageFact("human_hand_over", "escalate_to_human", "applied", None),
-            beside_triage=TriageFact("human_hand_over", "escalate_to_human", "applied", None),
-        )
-
-        card = self._grade(asks, beside)
+        card = self._grade(self._asks(TriageFact("human_hand_over", "escalate_to_human", "applied", None)))
 
         assert {goal.name for goal in card.goals if not goal.passed} == {"asks.triaged_operator_decision"}
 
     def test_a_decision_whose_proposal_never_got_filed_is_not_a_triage(self) -> None:
-        asks, beside = self._items(
-            asks_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", None),
-            beside_triage=TriageFact("explained", "post_comment", "applied", None),
+        asks = self._asks(TriageFact("operator_decision", "propose_decision", "awaiting_approval", None))
+
+        assert not self._grade(asks).passed
+
+    def test_work_published_past_the_question_fails(self) -> None:
+        asks = self._asks(
+            TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950),
+            prs=(pr(number=912, state=PullRequestState.READY),),
         )
 
-        assert not self._grade(asks, beside).passed
-
-    def test_merging_before_the_human_answers_fails(self) -> None:
-        asks, beside = self._items(
-            asks_triage=TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950),
-            beside_triage=TriageFact("explained", "post_comment", "applied", None),
-            beside_pr_state=PullRequestState.MERGED,
-        )
-
-        assert not self._grade(asks, beside).passed
+        assert {goal.name for goal in self._grade(asks).goals if not goal.passed} == {"asks.no_pull_request"}
 
     def test_an_observation_saved_before_triage_existed_still_loads(self) -> None:
-        asks, _ = self._items(asks_triage=None, beside_triage=None)
-        data = asks.to_dict()
+        data = self._asks(None).to_dict()
         del data["triage"]
 
         assert WorkItemFact.from_dict(data).triage is None
@@ -982,3 +947,61 @@ class TestCaseHPositiveApproval:
             "maintainer_approved.single_pull_request",
             "maintainer_approved.issue_free_of_blocks",
         } <= failed
+
+
+class TestCaseEMergeHeldWorkProceeds:
+    """#7678: one label, two holds: a pre-work question holds the work, a
+    decision before a PR merges holds only the merge."""
+
+    CASE = merge_held_work_proceeds(needs_human_label="needs-human", rework_label="rework-cycle-1")
+
+    @staticmethod
+    def _items(
+        *,
+        issue_labels: tuple[str, ...] = ("pr-pending",),
+        pr_labels: tuple[str, ...] = ("code-reviewed", "rework-cycle-1", "needs-human"),
+        state: PullRequestState = PullRequestState.READY,
+        approved: tuple[int, ...] | None = None,
+        asks_labels: tuple[str, ...] = ("needs-human",),
+        asks_prs=(),
+    ) -> tuple[WorkItemFact, WorkItemFact]:
+        asks = replace(item(issue_labels=asks_labels, prs=asks_prs), role=ASKS, issue_number=920)
+        beside = replace(
+            item(issue_labels=issue_labels, prs=(pr(number=922, state=state, labels=pr_labels),),
+                 approved=approved),
+            role=ASKS_BESIDE_PR, issue_number=921,
+        )
+        return asks, beside
+
+    def _failed(self, asks: WorkItemFact, beside: WorkItemFact) -> set[str]:
+        obs = observation(MERGE_HELD_WORK_PROCEEDS, asks)
+        obs = replace(obs, items=(asks, beside), owned_numbers=frozenset({920, 921, 922}))
+        return {goal.name for goal in grade(self.CASE, obs).goals if not goal.passed}
+
+    def test_a_reviewed_reworked_merge_held_pr_beside_a_held_question_passes(self) -> None:
+        assert self._failed(*self._items()) == set()
+
+    def test_the_pre_7678_shape_fails(self) -> None:
+        """#7595 put the PR's question on the ISSUE: no merge hold on the PR,
+        the review vetoed (porchpin#379), and no rework."""
+        failed = self._failed(*self._items(
+            issue_labels=("needs-human", "pr-pending"), pr_labels=("needs-code-review",),
+            state=PullRequestState.DRAFT, approved=(),
+        ))
+
+        assert {
+            "asks_beside_pr.issue_free_of_blocks",
+            "asks_beside_pr.pr_label.rework-cycle-1",
+            "asks_beside_pr.pr_review_approved",
+            "asks_beside_pr.pr_label.needs-human",
+        } <= failed
+
+    def test_a_merged_pr_fails_however_it_was_reviewed(self) -> None:
+        failed = self._failed(*self._items(state=PullRequestState.MERGED))
+
+        assert "asks_beside_pr.pr_draft/ready" in failed
+
+    def test_a_pre_work_question_that_published_or_lost_its_hold_fails(self) -> None:
+        failed = self._failed(*self._items(asks_labels=(), asks_prs=(pr(number=923),)))
+
+        assert {"asks.keeps_labels", "asks.no_pull_request"} <= failed

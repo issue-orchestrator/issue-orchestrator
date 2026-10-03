@@ -74,6 +74,7 @@ from ..ports.repository_host import (
     RepositoryScanIncompleteError,
 )
 from .needs_human_block import NeedsHumanCause
+from .human_gates import HumanGates
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
 from .published_review_release import log_held_for_review, review_releasable
 from .tech_lead_dispositions import (
@@ -217,6 +218,7 @@ def run_stuck_sweep(
     provider_circuit_open: "Callable[[Issue], bool] | None" = None,
     dispositions: StuckSweepDispositions = NO_TECH_LEAD_DISPOSITIONS,
     published_review: PublishedReviewHolds = NO_PUBLISHED_REVIEW_HOLDS,
+    gates: "HumanGates | None" = None,
 ) -> StuckSweepResult:
     """Find stuck issues and return recovered failures + exhausted numbers.
 
@@ -253,6 +255,8 @@ def run_stuck_sweep(
         ),
         provider_circuit_open=provider_circuit_open,
         published_review=published_review,
+        # Without the shared block's record every needs-human holds work (#7678).
+        gates=gates or HumanGates.unrecorded(label_manager),
     )
     _clear_recovered_counters(state, scan, dispositions.incident_issue_numbers())
     released = dispositions.release_recovered(scan.blocked_numbers, scan.observed_numbers)
@@ -392,6 +396,7 @@ def _scan_stuck_issues(
     base_owned: set[int],
     provider_circuit_open: "Callable[[Issue], bool] | None",
     published_review: PublishedReviewHolds,
+    gates: "HumanGates",
 ) -> "_StuckScan":
     """Scan open issues and split them into eligible candidates vs owned.
 
@@ -445,7 +450,7 @@ def _scan_stuck_issues(
         if blocker is None:
             continue
         holds = published_review.holds(issue.number)
-        releasable = bool(holds) and review_releasable(issue.labels, holds, label_manager)
+        releasable = bool(holds) and review_releasable(issue.labels, holds, gates)
         if holds and not releasable:
             owned.add(issue.number)
             held_for_review.add(issue.number)
@@ -677,6 +682,7 @@ def run_stuck_sweep_cycle(
     on_scan_incomplete: "Callable[[Exception], None]",
     dispositions: StuckSweepDispositions = NO_TECH_LEAD_DISPOSITIONS,
     published_review: PublishedReviewHolds = NO_PUBLISHED_REVIEW_HOLDS,
+    gates: "HumanGates | None" = None,
 ) -> None:
     """Arm the sweep, absorb what it is allowed to absorb, record the rest.
 
@@ -720,6 +726,7 @@ def run_stuck_sweep_cycle(
             provider_circuit_open=provider_circuit_open,
             dispositions=dispositions,
             published_review=published_review,
+            gates=gates,
         )
     except RepositoryScanIncompleteError as error:
         logger.error(

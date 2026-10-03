@@ -777,3 +777,21 @@ def test_a_retrospective_review_never_clears_the_approval_gate() -> None:
     removed = {a.label for a in actions if isinstance(a, RemoveLabelAction)}
     assert "blocked" in removed
     assert not removed & {"tech-lead-proposal", "awaiting-approval", "approved"}
+
+
+# --- review round 12 (#7763) ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [("tech-lead-proposal",), ("awaiting-approval",), ("Tech-Lead-Proposal", "awaiting-approval", "approved")],
+    ids=["provenance-only", "waiting-only", "approved"],
+)
+def test_a_gated_filing_needs_both_gate_labels_and_no_approval(labels) -> None:
+    """r12 F2: one gate label alone reads as AWAITING but is not the state a
+    gated filing promises; construction refuses it before any create."""
+    from issue_orchestrator.domain.tech_lead_approval import require_gated_filing
+
+    with pytest.raises(ValueError, match="provenance and waiting"):
+        require_gated_filing(("agent:web", *labels), with_proposal_marker("b"), what="filing")
+    require_gated_filing(("agent:web", *GATED), with_proposal_marker("b"), what="filing")

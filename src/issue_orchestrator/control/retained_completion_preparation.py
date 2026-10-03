@@ -10,7 +10,7 @@ from ..domain.validated_work import EvidenceRole, RemoteBaselineStatus, ReviewDi
 from ..domain.validated_work_store import EvidenceRow
 from ..ports.completion_intake import CompletionIntakeLedger
 from ..ports.working_copy import WorkingCopy
-from .completion_pr_labels import requests_human_block
+from .completion_pr_labels import requests_human_block, requests_merge_hold
 from .completion_processor import CompletionProcessor
 from .pull_request_preparation import PullRequestPreparationRefusal
 
@@ -84,7 +84,8 @@ class RetainedCompletionPreparation:
             ),
         )
         return PreparedRecoveryPublication(command, workspace, completion, prepared.processing_policy,
-                                           admitted.identity.review_disposition)
+                                           admitted.identity.review_disposition,
+                                           merge_hold_requested=requests_merge_hold(prepared.record))
 
     def _require_source(self, workspace: PublicationWorkspace) -> None:
         if (self._working_copy.get_head_sha(workspace.checkout) != workspace.key.validated_head_sha

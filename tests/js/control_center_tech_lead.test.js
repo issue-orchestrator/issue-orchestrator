@@ -197,10 +197,24 @@ test('frame messages are read only from the embedded dashboard, in contract shap
     const v = view();
     const frame = {};
     const open = { type: 'cc-open-tech-lead', repository: 'o/a', number: 700 };
-    assert.deepEqual(v.readFrameMessage({ source: frame, data: open }, frame, 'TechLeadOpenMessage'), open);
-    assert.equal(v.readFrameMessage({ source: {}, data: open }, frame, 'TechLeadOpenMessage'), null);
-    assert.equal(v.readFrameMessage({ source: frame, data: { ...open, number: 'x' } }, frame, 'TechLeadOpenMessage'), null);
-    assert.equal(v.readFrameMessage({ source: frame, data: open }, undefined, 'TechLeadOpenMessage'), null);
+    assert.deepEqual(v.readFrameMessage({ source: frame, data: open }, frame), open);
+    assert.equal(v.readFrameMessage({ source: {}, data: open }, frame), null);
+    assert.equal(v.readFrameMessage({ source: frame, data: { ...open, number: 'x' } }, frame), null);
+    assert.equal(v.readFrameMessage({ source: frame, data: open }, undefined), null);
     const ask = { type: 'cc-tech-lead-waiting-request' };
-    assert.deepEqual(v.readFrameMessage({ source: frame, data: ask }, frame, 'TechLeadWaitingRequestMessage'), ask);
+    assert.deepEqual(v.readFrameMessage({ source: frame, data: ask }, frame), ask);
+    // Not a Tech lead message at all: left to the window's other handlers.
+    assert.equal(v.readFrameMessage({ source: frame, data: { type: 'dashboard-status', payload: {} } }, frame), undefined);
+});
+
+test('no handler branches on a raw Tech lead message type before the contract reads it', () => {
+    // #7763 review r12 F3: the discriminator is contract-owned.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const js = path.join(__dirname, '../../src/issue_orchestrator/static/js');
+    for (const file of ['control_center.js', 'dashboard/tech_lead_badge.js']) {
+        const source = fs.readFileSync(path.join(js, file), 'utf8');
+        assert.doesNotMatch(source, /event\.data\??\.type\s*[!=]==\s*'cc-(open-tech-lead|tech-lead-waiting)/, file);
+        assert.match(source, /fromUnionMember\(event\.data, 'TechLeadFrameMessage'|readFrameMessage\(/, file);
+    }
 });

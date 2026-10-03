@@ -445,6 +445,16 @@ def never_worked(role: str) -> Goal:
     return Goal(f"{role}.never_worked", role, f"the {role} issue is never worked", check)
 
 
+def no_pull_request(role: str) -> Goal:
+    """The item published nothing: its work never ran past the person's hold."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        numbers = sorted(pr.number for pr in item.pull_requests)
+        return GoalCheck(not numbers, f"linked PRs: {numbers or '(none)'}")
+
+    return Goal(f"{role}.no_pull_request", role, f"the {role} work published no PR", check)
+
+
 def published_work_survives(role: str) -> Goal:
     """No pull request of the item was closed unmerged or lost its branch."""
 

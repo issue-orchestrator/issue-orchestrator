@@ -801,6 +801,16 @@ setInterval(() => {
     }
 }, 5000);
 
+function handleTechLeadFrameMessage(message) {
+    if (message === null) return;  // refused; already reported
+    if (message.type === 'cc-open-tech-lead') {
+        openTechLead(message.repository ?? null, message.number ?? null);
+    } else if (message.type === 'cc-tech-lead-waiting-request') {
+        const latest = getTechLeadView().latest();
+        if (latest) updateTechLeadBadges(latest.waiting_count, latest.unreported_count);
+    }
+}
+
 // Listen for messages from embedded dashboard iframe
 window.addEventListener('message', (event) => {
     if (!event.data?.type) return;
@@ -809,17 +819,12 @@ window.addEventListener('message', (event) => {
         switchView('repositories');
         return;
     }
-    // The repo dashboard's badge and its blocked-item drawer open the page.
-    const dashboardFrame = document.getElementById('activityIframe')?.contentWindow;
-    if (event.data.type === 'cc-open-tech-lead') {
-        const message = getTechLeadView()?.readFrameMessage(event, dashboardFrame, 'TechLeadOpenMessage');
-        if (message) openTechLead(message.repository ?? null, message.number ?? null);
-        return;
-    }
-    if (event.data.type === 'cc-tech-lead-waiting-request') {
-        if (!getTechLeadView()?.readFrameMessage(event, dashboardFrame, 'TechLeadWaitingRequestMessage')) return;
-        const latest = getTechLeadView().latest();
-        if (latest) updateTechLeadBadges(latest.waiting_count, latest.unreported_count);
+    // The repo dashboard's badge and its blocked-item drawer open the page:
+    // read through the generated contract, then dispatch on the VALIDATED type.
+    const techLeadMessage = getTechLeadView()?.readFrameMessage(
+        event, document.getElementById('activityIframe')?.contentWindow);
+    if (techLeadMessage !== undefined) {
+        handleTechLeadFrameMessage(techLeadMessage);
         return;
     }
     if (event.data.type !== 'dashboard-status') return;
