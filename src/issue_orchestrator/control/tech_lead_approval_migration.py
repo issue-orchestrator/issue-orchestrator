@@ -102,15 +102,18 @@ def migrate_legacy_proposals(
     )
     # Proposals already on the new labels but filed before the body marker
     # existed (or migrated by a run that crashed before marking them).
-    _each(
+    marked = _each(
         _open_with(repository, TECH_LEAD_PROPOSAL_LABEL, filtering_label), errors, "Marking proposal body",
-        lambda issue: _mark_body(repository, issue) or None,
+        lambda issue: _mark_body(repository, issue) or True,
     )
     outcomes = _each(
         [number for number, _op in ops.list_ops() if number not in regated], errors,
         "Migrating op-backed proposal",
         lambda number: _migrate_legacy_approval(repository, approvals, number, filtering_label),
     )
+    # Seed the approval scope's index (#7763 review r6 F2): a later strip of
+    # every gate label must not hide any of these from the inbox.
+    approvals.remember_proposals({*regated, *marked, *outcomes})
     report = ApprovalMigrationReport(
         tuple(regated),
         tuple(n for n, outcome in outcomes.items() if outcome is True),
@@ -204,8 +207,8 @@ def _migrate_legacy_approval(
     Resumable without a journal: on the approval path the label is written
     and bound FIRST, then the marker, then provenance. A crash before the
     marker redoes the step on the next startup; a crash after it leaves a
-    marked proposal whose bound approval verifies once the engine restores its
-    gate labels.
+    marked proposal whose gate labels the next startup restores, after which
+    its bound approval verifies.
     """
     issue = repository.get_issue(number)
     if issue is None or issue.state != "open" or _carries(issue, LEGACY_GATE_LABEL):
@@ -215,7 +218,13 @@ def _migrate_legacy_approval(
     if _carries(issue, TECH_LEAD_PROPOSAL_LABEL) or _carries(issue, AWAITING_APPROVAL_LABEL):
         return None
     if carries_proposal_marker(issue.body):
-        return None  # migrated already: the approval model owns it now
+        # Migrated already: the approval model owns it now. Its approval is
+        # never carried again (a strip after migration revoked it), but a
+        # crash between the marker and the gate labels, or a later strip of
+        # them, must not leave it outside every label query (#7763 r6 F1).
+        _restore_gate(repository, issue)
+        approvals.remember_proposals([number])
+        return None
     removal = approvals.evidence.latest_label_event(number, LEGACY_GATE_LABEL, removed=True)
     if removal is not None and approvals.is_maintainer(removal) and _bind_carried_approval(
         repository, approvals, issue
@@ -245,6 +254,13 @@ def _migrate_legacy_approval(
         " approval. This proposal waits for a maintainer's approval.",
     )
     return False
+
+
+def _restore_gate(repository: "RepositoryHost", issue: "Issue") -> None:
+    """Re-add whichever gate labels a marked proposal lacks."""
+    for label in (TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL):
+        if not _carries(issue, label):
+            repository.add_label(issue.number, label)
 
 
 def _bind_carried_approval(

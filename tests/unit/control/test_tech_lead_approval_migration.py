@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from issue_orchestrator.control.tech_lead_approval_migration import (
@@ -9,9 +11,9 @@ from issue_orchestrator.control.tech_lead_approval_migration import (
     migrate_legacy_proposals,
 )
 from issue_orchestrator.domain.models import Issue
-from issue_orchestrator.control.tech_lead_approval import plan_approval_settlements
+from issue_orchestrator.control.tech_lead_approval_scope import discover_open_gated_proposals
+from issue_orchestrator.ports.approval_evidence import InMemoryProposalIssueIndex
 from issue_orchestrator.domain.tech_lead_approval import (
-    ApprovalTransition,
     ApprovalVerdictKind,
     ProposalLabelState,
     carries_proposal_marker,
@@ -21,6 +23,8 @@ from issue_orchestrator.domain.tech_lead_approval import (
 from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from tests.approval_helpers import BOT, CONTRIBUTOR, MAINTAINER, FakeApprovalEvidence, make_approvals
+
+_NO_SCOPE = SimpleNamespace(filtering=SimpleNamespace(label=None))
 
 LEGACY = "proposed-tech-lead"
 
@@ -46,6 +50,10 @@ class _Repo:
         self.writes: list[tuple[str, int, str]] = []
         self.comments: list[tuple[int, str]] = []
         self.fail_on: set[int] = set()
+
+    def strip_all_but(self, number: int, labels: list[str]) -> None:
+        """A bulk edit outside the engine: leaves only *labels*."""
+        self._set(number, labels)
 
     def _set(self, number: int, labels: list[str]) -> None:
         old = self.issues[number]
@@ -224,22 +232,24 @@ def test_a_crash_mid_carry_over_resumes_on_the_next_startup() -> None:
         original_add(number, label)
 
     repo.add_label = crash_on_provenance
+    index = InMemoryProposalIssueIndex()  # durable too
     with pytest.raises(ApprovalMigrationError):
-        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable), ops, filtering_label=None)
+        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable, index), ops, filtering_label=None)
     assert "approved" in repo.issues[444].labels  # half-done
+    assert "tech-lead-proposal" not in repo.issues[444].labels  # outside every label query
 
     repo.add_label = original_add
-    restarted = TechLeadApprovals(evidence, durable)
+    restarted = TechLeadApprovals(evidence, durable, index)
     migrate_legacy_proposals(repo, restarted, ops, filtering_label=None)
 
-    # Marked and bound before the crash: a proposal whose engine-restored gate
-    # labels make its carried approval verify (the RESTORE settlement's job).
+    # The restarted migration itself restores the gate (#7763 review r6 F1):
+    # the proposal is back in the labelled approval scope, and its carried
+    # approval still verifies.
     issue = repo.issues[444]
-    assert proposal_state(issue.labels, issue.body) is ProposalLabelState.AWAITING
-    [restore] = plan_approval_settlements([issue], {}, op_backed={444})
-    assert restore.transition is ApprovalTransition.RESTORE_WAITING
-    repo._set(444, [*issue.labels, "tech-lead-proposal", "awaiting-approval"])
-    assert restarted.verify(repo.issues[444], fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
+    assert {"tech-lead-proposal", "awaiting-approval", "approved"} <= set(issue.labels)
+    found, retired = discover_open_gated_proposals(repo, _NO_SCOPE)
+    assert [i.number for i in found] == [444] and retired == ()
+    assert restarted.verify(issue, fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
 
 
 def test_proposals_on_the_new_labels_without_a_marker_are_marked() -> None:
@@ -305,12 +315,34 @@ def test_an_approval_revoked_after_migration_is_never_carried_again() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=444, op=_op())
     migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
-    repo._set(444, ["agent:tech-lead"])  # someone strips every approval label
+    repo.strip_all_but(444, ["agent:tech-lead"])  # someone strips every approval label
     writes = list(repo.writes)
 
     report = migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
 
-    assert report.legacy_approved == () and repo.writes == writes  # nothing re-carried
+    # Nothing re-carried: only the gate comes back, never `approved`.
+    assert report.legacy_approved == ()
+    assert repo.writes[len(writes):] == [
+        ("add", 444, "tech-lead-proposal"), ("add", 444, "awaiting-approval"),
+    ]
     issue = repo.issues[444]
     assert proposal_state(issue.labels, issue.body) is ProposalLabelState.AWAITING
     assert not make_approvals(evidence).verify(issue, fresh=True).approved
+
+
+def test_the_migration_seeds_the_proposal_index() -> None:
+    """#7763 review r6 F2: every proposal migration touches is indexed."""
+    evidence = FakeApprovalEvidence()
+    evidence.label(444, LEGACY, by=MAINTAINER, removed=True)
+    repo = _Repo(evidence, [
+        _issue(1, [LEGACY]),
+        _issue(500, ["tech-lead-proposal", "awaiting-approval"]),
+        _issue(444, ["agent:tech-lead"]),
+    ])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=444, op=_op())
+    approvals = make_approvals(evidence)
+
+    migrate_legacy_proposals(repo, approvals, ops, filtering_label=None)
+
+    assert approvals.indexed_proposals() == {1, 444, 500}

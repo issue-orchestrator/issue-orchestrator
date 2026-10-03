@@ -1600,8 +1600,8 @@ class TestCreateTechLeadIssueAction:
         """A gated proposal is created, and is deliberately INERT (#7262 F2).
 
         Under `propose` authority a follow-up is filed carrying
-        `awaiting-approval` and does nothing until an operator removes that
-        label. Counting it as executed would make the write-health alarm report
+        `awaiting-approval` and does nothing until a maintainer labels it
+        `approved`. Counting it as executed would make the write-health alarm report
         `writing` for precisely the state #7080 is about -- decisions piling up
         unapproved -- so the one signal that would have caught it says the
         opposite.
@@ -1626,6 +1626,28 @@ class TestCreateTechLeadIssueAction:
             for call in mock_events.publish.call_args_list
             if call.args[0].name == EventName.TECH_LEAD_ACTION_EXECUTED.value
         ]
+
+    def test_a_filed_proposal_joins_the_approval_index(self, applier, mock_repository_host):
+        """#7763 review r6 F2: a strip of every gate label before the approval
+        scope first observes it must not hide the proposal from the inbox."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+        from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+        applier.tech_lead_ops = InMemoryTechLeadAuthorityStore()
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTechLeadIssueAction(
+            title="Gated follow-up",
+            body=with_proposal_marker("Body"),
+            labels=("agent:backend", AWAITING_APPROVAL_LABEL),
+            reason="tech_lead decision action A4: create follow-up issue (gated)",
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            origin=TechLeadCreationOrigin.derived_from_anchor(7255),
+            expected=ExpectedState.with_labels(required={"agent:tech-lead"}),
+        )
+
+        assert applier.apply(action).success
+
+        assert applier.tech_lead_ops.proposal_index.indexed_proposals() == {100}
 
     def test_a_decided_follow_up_is_reported_as_an_executed_decision(
         self, applier, mock_repository_host, mock_events

@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS tech_lead_operator_approvals (
     label_event_id INTEGER NOT NULL,
     recorded_at TEXT NOT NULL
 );
+-- #7763: every proposal this engine filed or migrated, so the approval scope
+-- finds one whose gate labels were all stripped.
+CREATE TABLE IF NOT EXISTS tech_lead_proposal_index (
+    issue_number INTEGER PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,
     issue_number INTEGER NOT NULL,

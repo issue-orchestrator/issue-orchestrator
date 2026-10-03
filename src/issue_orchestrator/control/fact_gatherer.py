@@ -514,6 +514,7 @@ class FactGatherer:
         scope = observe_approval_scope_or_none(
             self.repository_host, self.config, board_issues, scan_observations,
             decline_on_failure=not other_armed,
+            indexed=self.approvals.indexed_proposals() if self.approvals is not None else frozenset(),
         )
         if scope is None:
             return None
@@ -521,7 +522,7 @@ class FactGatherer:
         state.tech_lead_approval_scan_at = now_ts
         if self.approvals is not None:
             verdicts.update(self.approvals.verify_claims(scope.issues))
-            self.approvals.record_scope(scope.issues, verdicts)
+            self.approvals.record_scope(scope.issues, verdicts, retired=scope.retired)
         # The board joins the scope: a proposal stripped of EVERY label is out
         # of the labelled scope query, but its body marker still names it (#7763).
         settlements = plan_approval_settlements(

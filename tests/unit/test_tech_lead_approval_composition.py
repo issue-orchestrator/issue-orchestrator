@@ -43,3 +43,18 @@ def test_operator_approvals_persist_in_the_authority_store(orchestrator) -> None
     approvals = orchestrator.deps.fact_gatherer.approvals
 
     assert approvals.records is orchestrator.deps.services.tech_lead_authority.operator_approvals
+    # ...and so does the proposal index the approval scope reads (#7763 r6 F2).
+    authority = orchestrator.deps.services.tech_lead_authority
+    assert approvals.index is authority.proposal_index
+
+
+def test_the_sqlite_proposal_index_survives_a_restart(tmp_path) -> None:
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+
+    store = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
+    store.proposal_index.index_proposals([5, 7, 7])
+    store.proposal_index.retire_proposals([5])
+
+    reopened = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
+
+    assert reopened.proposal_index.indexed_proposals() == {7}

@@ -2478,3 +2478,43 @@ def test_a_proposal_missing_only_its_provenance_label_is_in_the_scope(
     assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
         (710, ApprovalTransition.RESTORE_WAITING)
     ]
+
+
+def test_an_indexed_proposal_stripped_of_every_label_stays_in_the_scope(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r6 F2: a non-op proposal off the worker board, stripped of
+    every approval label, is found through the index, restored and shown; a
+    closed one leaves the index."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition, with_proposal_marker
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    body = with_proposal_marker("b")
+    filed = Issue(number=720, title="t", labels=["agent:backend", *GATED], body=body)
+    closed = Issue(number=721, title="t", labels=["agent:backend", *GATED], body=body)
+    _host_sees_gated(mock_repository_host, filed, closed)
+    approvals = make_approvals()
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])  # first observation
+    assert approvals.indexed_proposals() == {720, 721}
+
+    stripped = Issue(number=720, title="t", labels=["agent:backend"], body=body)
+    gone = Issue(number=721, title="t", labels=["agent:backend", *GATED], body=body, state="closed")
+    _host_sees_gated(mock_repository_host)  # no label query names either any more
+    mock_repository_host.get_issue.side_effect = {720: stripped, 721: gone}.get
+    sample_state.tech_lead_approval_scan_at = 0.0  # the next approval refresh
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None
+    assert [p.issue_number for p in facts.gated_proposals] == [720]
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (720, ApprovalTransition.RESTORE_WAITING)
+    ]
+    assert approvals.indexed_proposals() == {720}

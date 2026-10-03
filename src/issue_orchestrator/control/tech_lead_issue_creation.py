@@ -143,6 +143,15 @@ def _inspect_existing_case_file(
         return ActionResult.fail_from(action, exc)
 
 
+def _index_filed_proposal(
+    ops: "TechLeadAuthorityStore | None", action: CreateTechLeadIssueAction, issue_number: int
+) -> None:
+    """Index a filed proposal so the approval scope keeps finding it even if
+    every gate label is stripped before its first observation (#7763 r6 F2)."""
+    if ops is not None and proposal_label_state(action.labels).is_proposal:
+        ops.proposal_index.index_proposals([issue_number])
+
+
 def apply_create_tech_lead_issue(
     action: CreateTechLeadIssueAction,
     *,
@@ -229,6 +238,7 @@ def apply_create_tech_lead_issue(
         action.pr_count,
         milestone,
     )
+    _index_filed_proposal(ops, action, issue_number)
     emit_labels_changed(issue_number, list(action.labels), [])
     events.publish(
         make_trace_event(

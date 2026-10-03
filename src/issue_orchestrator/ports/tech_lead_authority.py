@@ -17,7 +17,12 @@ from __future__ import annotations
 
 from ..domain.scoped_rework import ReworkReceipt
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
-from .approval_evidence import InMemoryOperatorApprovalRecords, OperatorApprovalRecords
+from .approval_evidence import (
+    InMemoryOperatorApprovalRecords,
+    InMemoryProposalIssueIndex,
+    OperatorApprovalRecords,
+    ProposalIssueIndex,
+)
 from .operator_decision_retries import DecisionRetryState
 from .tech_lead_charter_ledger import (
     InMemoryTechLeadCharterLedger,
@@ -549,6 +554,11 @@ class TechLeadAuthorityStore(Protocol):
         """Control Center approvals of gated proposals (#7763)."""
         ...
 
+    @property
+    def proposal_index(self) -> "ProposalIssueIndex":
+        """Every proposal this engine filed or migrated (#7763)."""
+        ...
+
 
 class InMemoryTechLeadAuthorityStore:
     """In-memory store for tests."""
@@ -572,6 +582,7 @@ class InMemoryTechLeadAuthorityStore:
         self._disposition_publication_locks: dict[int, Lock] = {}
         self._charter_ledger = InMemoryTechLeadCharterLedger()
         self._operator_approvals = InMemoryOperatorApprovalRecords()
+        self._proposal_index = InMemoryProposalIssueIndex()
 
     @property
     def charter_ledger(self) -> "InMemoryTechLeadCharterLedger":
@@ -580,6 +591,10 @@ class InMemoryTechLeadAuthorityStore:
     @property
     def operator_approvals(self) -> InMemoryOperatorApprovalRecords:
         return self._operator_approvals
+
+    @property
+    def proposal_index(self) -> InMemoryProposalIssueIndex:
+        return self._proposal_index
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"

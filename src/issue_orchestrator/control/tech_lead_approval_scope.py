@@ -13,11 +13,15 @@ policy about the approval scope, not about gathering facts or reconciling ops.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, TECH_LEAD_PROPOSAL_LABEL
+from ..domain.tech_lead_approval import (
+    AWAITING_APPROVAL_LABEL,
+    TECH_LEAD_PROPOSAL_LABEL,
+    proposal_state,
+)
 from ..domain.tech_lead_session import GatedTechLeadProposal
 from .tech_lead_proposals import (
     TECH_LEAD_PROPOSAL_SCAN_LIMIT,
@@ -61,8 +65,10 @@ def approval_refresh_due(
 
 
 def discover_open_gated_proposals(
-    repository_host: "RepositoryHost", config: "Config"
-) -> list["Issue"]:
+    repository_host: "RepositoryHost",
+    config: "Config",
+    indexed: Collection[int] = frozenset(),
+) -> tuple[list["Issue"], tuple[int, ...]]:
     """AUTHORITATIVE observation of every open proposal, in its own scope.
 
     Proposals are defined by their approval LABELS (#7763), so the only
@@ -91,6 +97,14 @@ def discover_open_gated_proposals(
     ``exhaustive`` for the same reason the anchor scan is (#6779 R17): a
     dropped page must RAISE rather than return a silently partial set a caller
     would read as "fewer approvals pending".
+
+    Labels alone are not the whole scope (#7763 review r6 F2): a bulk edit can
+    strip every approval label from a proposal whose body marker still blocks
+    it. The *indexed* proposals (every one this engine filed or migrated) that
+    neither label query returned are read one by one — normally none, since
+    a proposal carries its labels — and returned with the scope when still an
+    open, in-scope proposal. The second element names the indexed numbers
+    found closed, gone or no longer a proposal, for the index to retire.
     """
     from .health_review_trigger import _scoped_issues
 
@@ -103,7 +117,19 @@ def discover_open_gated_proposals(
             exhaustive=True,
         ):
             found.setdefault(issue.number, issue)
-    return _scoped_issues([found[number] for number in sorted(found)], config.filtering.label)
+    retired: list[int] = []
+    for number in sorted(set(indexed) - set(found)):
+        issue = repository_host.get_issue(number)
+        if (
+            issue is None
+            or issue.state != "open"
+            or not proposal_state(issue.labels, issue.body).is_proposal
+        ):
+            retired.append(number)
+        else:
+            found[number] = issue
+    scoped = _scoped_issues([found[number] for number in sorted(found)], config.filtering.label)
+    return scoped, tuple(retired)
 
 
 @dataclass(frozen=True)
@@ -117,6 +143,7 @@ class ApprovalScopeObservation:
 
     backlog: tuple[GatedTechLeadProposal, ...]
     issues: tuple["Issue", ...]
+    retired: tuple[int, ...] = ()
 
 
 def observe_approval_backlog(
@@ -132,6 +159,7 @@ def observe_approval_scope(
     repository_host: "RepositoryHost",
     config: "Config",
     *partial: Sequence["Issue"],
+    indexed: Collection[int] = frozenset(),
 ) -> ApprovalScopeObservation:
     """The backlog as the board should publish it: complete, and this tick's.
 
@@ -147,7 +175,7 @@ def observe_approval_scope(
     the operator already approved, which is the failure ``_build_view``'s
     docstring warns about and #7014's own symptom.
     """
-    authoritative = discover_open_gated_proposals(repository_host, config)
+    authoritative, retired = discover_open_gated_proposals(repository_host, config, indexed)
     # MEMBERSHIP comes from the authoritative query; the partial sets may only
     # enrich what it already contains.
     #
@@ -166,6 +194,7 @@ def observe_approval_scope(
             proposal for proposal in observed if proposal.issue_number in in_scope
         ),
         issues=tuple(authoritative),
+        retired=retired,
     )
 
 
@@ -174,6 +203,7 @@ def observe_approval_scope_or_none(
     config: "Config",
     *partial: Sequence["Issue"],
     decline_on_failure: bool = True,
+    indexed: Collection[int] = frozenset(),
 ) -> ApprovalScopeObservation | None:
     """The backlog, or None when this tick could not observe its scope.
 
@@ -199,7 +229,7 @@ def observe_approval_scope_or_none(
     from ..ports.repository_host import RepositoryHostError
 
     try:
-        return observe_approval_scope(repository_host, config, *partial)
+        return observe_approval_scope(repository_host, config, *partial, indexed=indexed)
     except RepositoryHostError as error:
         if not decline_on_failure:
             raise

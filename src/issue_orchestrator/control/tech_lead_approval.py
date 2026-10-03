@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from ..ports.approval_evidence import (
         ApprovalEvidenceReader,
         OperatorApprovalRecords,
+        ProposalIssueIndex,
     )
     from ..domain.tech_lead_approval import LabelEvent
     from ..ports import RepositoryHost
@@ -71,6 +72,7 @@ class TechLeadApprovals:
 
     evidence: "ApprovalEvidenceReader"
     records: "OperatorApprovalRecords"
+    index: "ProposalIssueIndex"
     clock: Callable[[], float] = time.monotonic
     _verified: dict[int, ApprovalVerdict] = field(default_factory=dict, init=False)
     _roles: dict[str, tuple[float, str | None]] = field(default_factory=dict, init=False)
@@ -80,15 +82,33 @@ class TechLeadApprovals:
     # -- the last observed scope (read model) --------------------------------
 
     def record_scope(
-        self, issues: Sequence["Issue"], verdicts: dict[int, ApprovalVerdict]
+        self,
+        issues: Sequence["Issue"],
+        verdicts: dict[int, ApprovalVerdict],
+        *,
+        retired: Iterable[int] = (),
     ) -> None:
-        """Remember the last complete approval-scope observation, for the UI.
+        """Remember the last complete approval-scope observation.
 
-        In-memory only: GitHub labels stay the truth, and a restart re-observes
-        the scope on its first tick.
+        The read model for the UI is in-memory only: GitHub labels and body
+        markers stay the truth, and a restart re-observes the scope on its
+        first tick. Every observed proposal also joins the durable proposal
+        index, so a later strip of all its gate labels cannot hide it; the
+        ones the scope read found closed, gone or no longer a proposal leave
+        it (#7763 review r6 F2).
         """
         self._scope = tuple(issues)
         self._scope_verdicts = dict(verdicts)
+        self.index.index_proposals(issue.number for issue in issues)
+        self.index.retire_proposals(retired)
+
+    def remember_proposals(self, numbers: Iterable[int]) -> None:
+        """Index proposals filed or migrated outside a scope observation."""
+        self.index.index_proposals(numbers)
+
+    def indexed_proposals(self) -> frozenset[int]:
+        """Every proposal the approval scope must keep finding."""
+        return self.index.indexed_proposals()
 
     def forget_from_scope(self, issue_number: int) -> None:
         """Drop one item after a decline closed it, so the read model is current."""

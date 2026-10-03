@@ -1,4 +1,7 @@
-"""SQLite adapter for :class:`~..ports.approval_evidence.OperatorApprovalRecords` (#7763).
+"""SQLite adapters for the approval owner's records (#7763).
+
+:class:`~..ports.approval_evidence.OperatorApprovalRecords` and
+:class:`~..ports.approval_evidence.ProposalIssueIndex`.
 
 Lives in the tech-lead authority database beside the proposal-op ledger the
 approvals unlock, and shares that store's connection, write lock and
@@ -9,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import AbstractContextManager
+from collections.abc import Iterable
 from typing import Callable
 
 from ..domain.tech_lead_approval import OperatorApprovalRecord
@@ -56,4 +60,43 @@ class SqliteOperatorApprovalRecords:
             tx.execute(
                 "DELETE FROM tech_lead_operator_approvals WHERE issue_number = ?",
                 (issue_number,),
+            )
+
+
+class SqliteProposalIssueIndex:
+    """One row per proposal issue the approval scope must keep finding."""
+
+    def __init__(
+        self,
+        *,
+        connection: Callable[[], sqlite3.Connection],
+        transaction: Callable[[], AbstractContextManager[sqlite3.Connection]],
+    ) -> None:
+        self._connection = connection
+        self._transaction = transaction
+
+    def index_proposals(self, numbers: Iterable[int]) -> None:
+        rows = [(int(number),) for number in numbers]
+        if not rows:
+            return
+        with self._transaction() as tx:
+            tx.executemany(
+                "INSERT INTO tech_lead_proposal_index (issue_number) VALUES (?)"
+                " ON CONFLICT(issue_number) DO NOTHING",
+                rows,
+            )
+
+    def indexed_proposals(self) -> frozenset[int]:
+        rows = self._connection().execute(
+            "SELECT issue_number FROM tech_lead_proposal_index"
+        ).fetchall()
+        return frozenset(int(row["issue_number"]) for row in rows)
+
+    def retire_proposals(self, numbers: Iterable[int]) -> None:
+        rows = [(int(number),) for number in numbers]
+        if not rows:
+            return
+        with self._transaction() as tx:
+            tx.executemany(
+                "DELETE FROM tech_lead_proposal_index WHERE issue_number = ?", rows
             )

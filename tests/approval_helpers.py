@@ -18,7 +18,7 @@ from issue_orchestrator.domain.tech_lead_approval import (
     TECH_LEAD_PROPOSAL_LABEL,
     LabelEvent,
 )
-from issue_orchestrator.ports.approval_evidence import InMemoryOperatorApprovalRecords
+from issue_orchestrator.ports.approval_evidence import InMemoryOperatorApprovalRecords, InMemoryProposalIssueIndex
 
 #: What a gated proposal is filed with.
 GATED: tuple[str, ...] = GATED_PROPOSAL_LABELS
@@ -89,6 +89,7 @@ def make_approvals(evidence: FakeApprovalEvidence | None = None) -> TechLeadAppr
     return TechLeadApprovals(
         evidence=evidence or FakeApprovalEvidence(),
         records=InMemoryOperatorApprovalRecords(),
+        index=InMemoryProposalIssueIndex(),
     )
 
 

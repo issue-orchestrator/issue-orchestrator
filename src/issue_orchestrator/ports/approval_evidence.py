@@ -13,6 +13,7 @@ approval owner depends on exactly what it uses:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Protocol
 
 from ..domain.tech_lead_approval import LabelEvent, OperatorApprovalRecord
@@ -73,8 +74,42 @@ class InMemoryOperatorApprovalRecords:
         self._records.pop(issue_number, None)
 
 
+class ProposalIssueIndex(Protocol):
+    """Every proposal this engine knows it filed or migrated (#7763 r6 F2).
+
+    Label queries find a proposal only while it carries a gate label; a bulk
+    edit can strip all of them, leaving a proposal whose body marker still
+    blocks it but that no label names. The index is how the approval scope
+    still finds it: numbers in, retired once the item is closed or gone.
+    """
+
+    def index_proposals(self, numbers: Iterable[int]) -> None: ...
+
+    def indexed_proposals(self) -> frozenset[int]: ...
+
+    def retire_proposals(self, numbers: Iterable[int]) -> None: ...
+
+
+class InMemoryProposalIssueIndex:
+    """Process-local :class:`ProposalIssueIndex` for tests and fakes."""
+
+    def __init__(self) -> None:
+        self._numbers: set[int] = set()
+
+    def index_proposals(self, numbers: Iterable[int]) -> None:
+        self._numbers.update(numbers)
+
+    def indexed_proposals(self) -> frozenset[int]:
+        return frozenset(self._numbers)
+
+    def retire_proposals(self, numbers: Iterable[int]) -> None:
+        self._numbers.difference_update(numbers)
+
+
 __all__ = [
     "ApprovalEvidenceReader",
     "InMemoryOperatorApprovalRecords",
+    "InMemoryProposalIssueIndex",
     "OperatorApprovalRecords",
+    "ProposalIssueIndex",
 ]
