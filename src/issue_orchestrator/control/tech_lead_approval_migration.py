@@ -5,16 +5,18 @@ positive, maintainer-applied ``approved`` label. Two kinds of open proposal
 predate it:
 
 1. **Still gated** — open and carrying ``proposed-tech-lead``. They move to the
-   new labels with no behaviour change: provenance and waiting state are
-   added, then the legacy label comes off (in that order, so a crash between
-   the writes leaves the item gated and the next startup finishes the move).
+   new labels with no behaviour change: the proposal body marker is written,
+   provenance and waiting state are added, then the legacy label comes off (in
+   that order, so a crash between the writes leaves the item gated and the next
+   startup finishes the move).
 2. **Approved under the old model but not yet executed** — an open proposal
    with a stored op and none of the approval labels: someone removed the
    legacy gate. The removal is honoured only if a MAINTAINER made it (the
-   latest ``unlabeled`` event's actor): the engine applies ``approved`` and
-   records that exact label event as the maintainer's approval, so the next
-   tick executes it once. Any other remover (a bot, a retry, an agent)
-   re-gates the item and says so.
+   latest ``unlabeled`` event's actor): the engine applies ``approved`` (before
+   provenance, so a crash resumes) and records that exact label event as the
+   maintainer's approval, so the next tick executes it once. Any other remover
+   (a bot, a retry, an agent) re-gates the item and says so.
+3. **Already on the new labels without the body marker** — marked.
 
 Closed proposals — executed or declined under either model — are left alone.
 Plain follow-ups whose gate was removed under the old model are ordinary
@@ -35,6 +37,8 @@ from ..domain.tech_lead_approval import (
     AWAITING_APPROVAL_LABEL,
     TECH_LEAD_PROPOSAL_LABEL,
     OperatorApprovalRecord,
+    carries_proposal_marker,
+    with_proposal_marker,
 )
 from .tech_lead_proposals import TECH_LEAD_PROPOSAL_SCAN_LIMIT
 
@@ -83,38 +87,27 @@ def migrate_legacy_proposals(
     ops: "TechLeadAuthorityStore",
 ) -> ApprovalMigrationReport:
     """Move every open legacy proposal onto the approval model (idempotent)."""
-    regated: list[int] = []
-    approved: list[int] = []
-    unapproved: list[int] = []
     errors: list[str] = []
-    legacy = repository.list_issues(
-        labels=[LEGACY_GATE_LABEL],
-        state="open",
-        limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
-        exhaustive=True,
+    regated = _each(
+        _open_with(repository, LEGACY_GATE_LABEL), errors, "Migrating legacy proposal",
+        lambda issue: _regate(repository, issue) or True,
     )
-    for issue in legacy:
-        try:
-            _regate(repository, issue)
-            regated.append(issue.number)
-        except Exception as exc:  # migrate the rest, then fail the startup
-            logger.exception("[tech_lead] Migrating legacy proposal #%d failed", issue.number)
-            errors.append(f"#{issue.number}: {exc}")
-    for number, _op in ops.list_ops():
-        if number in regated:
-            continue
-        try:
-            outcome = _migrate_legacy_approval(repository, approvals, number)
-        except Exception as exc:
-            logger.exception("[tech_lead] Migrating op-backed proposal #%d failed", number)
-            errors.append(f"#{number}: {exc}")
-            continue
-        if outcome is True:
-            approved.append(number)
-        elif outcome is False:
-            unapproved.append(number)
+    # Proposals already on the new labels but filed before the body marker
+    # existed (or migrated by a run that crashed before marking them).
+    _each(
+        _open_with(repository, TECH_LEAD_PROPOSAL_LABEL), errors, "Marking proposal body",
+        lambda issue: _mark_body(repository, issue) or None,
+    )
+    outcomes = _each(
+        [number for number, _op in ops.list_ops() if number not in regated], errors,
+        "Migrating op-backed proposal",
+        lambda number: _migrate_legacy_approval(repository, approvals, number),
+    )
     report = ApprovalMigrationReport(
-        tuple(regated), tuple(approved), tuple(unapproved), tuple(errors)
+        tuple(regated),
+        tuple(n for n, outcome in outcomes.items() if outcome is True),
+        tuple(n for n, outcome in outcomes.items() if outcome is False),
+        tuple(errors),
     )
     if report.errors:
         # Fail fast: the legacy label no longer blocks anything, so a proposal
@@ -124,16 +117,50 @@ def migrate_legacy_proposals(
     if report.changed:
         logger.info(
             "[tech_lead] Approval label migration: regated=%s legacy_approved=%s"
-            " legacy_unapproved=%s errors=%s",
+            " legacy_unapproved=%s",
             report.regated,
             report.legacy_approved,
             report.legacy_unapproved,
-            report.errors,
         )
     return report
 
 
+def _open_with(repository: "RepositoryHost", label: str) -> list["Issue"]:
+    return repository.list_issues(
+        labels=[label], state="open", limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT, exhaustive=True
+    )
+
+
+def _each(items, errors: list[str], what: str, step) -> dict[int, bool | None]:
+    """Run *step* on every item; one failure never stops the others.
+
+    Returns ``{number: outcome}`` for the items whose step returned a verdict.
+    """
+    outcomes: dict[int, bool | None] = {}
+    for item in items:
+        number = item if isinstance(item, int) else item.number
+        try:
+            outcome = step(item)
+        except Exception as exc:  # migrate the rest, then fail the startup
+            logger.exception("[tech_lead] %s #%d failed", what, number)
+            errors.append(f"#{number}: {exc}")
+            continue
+        if outcome is not None:
+            outcomes[number] = outcome
+    return outcomes
+
+
+def _mark_body(repository: "RepositoryHost", issue: "Issue") -> None:
+    """Write the proposal body marker, so a later full label strip cannot turn
+    the migrated proposal into ordinary work (#7763 review r2 F1)."""
+    if not carries_proposal_marker(issue.body):
+        repository.update_issue_body(issue.number, with_proposal_marker(issue.body or ""))
+
+
 def _regate(repository: "RepositoryHost", issue: "Issue") -> None:
+    # Marker first: until the legacy label is gone it is the legacy label that
+    # gates, so each later write leaves the item gated if the next one fails.
+    _mark_body(repository, issue)
     for label in (TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL):
         if not _carries(issue, label):
             repository.add_label(issue.number, label)
@@ -157,6 +184,7 @@ def _migrate_legacy_approval(
         return None
     if _carries(issue, TECH_LEAD_PROPOSAL_LABEL) or _carries(issue, AWAITING_APPROVAL_LABEL):
         return None
+    _mark_body(repository, issue)  # first, so every outcome below stays a proposal
     removal = approvals.evidence.latest_label_event(number, LEGACY_GATE_LABEL, removed=True)
     if removal is not None and approvals.is_maintainer(removal) and _bind_carried_approval(
         repository, approvals, issue

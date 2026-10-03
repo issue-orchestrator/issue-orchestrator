@@ -227,6 +227,7 @@ def audit_issue(
 ) -> IssueAuditEntry:
     """Determine why an issue is queued or skipped."""
     from ..control.label_manager import LabelManager
+    from ..control.tech_lead_approval import admits_without_evidence
     lm = LabelManager(config)
 
     if issue.state == "closed":
@@ -246,6 +247,11 @@ def audit_issue(
 
     if lm.requires_human_any(list(issue.labels)):
         return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN)
+
+    # The scheduler's approval rule, fail-closed with no evidence (#7763):
+    # labels alone never admit a tech-lead proposal.
+    if not admits_without_evidence(issue):
+        return IssueAuditEntry(issue, SkipReason.BLOCKED, "tech-lead proposal without a verified approval")
 
     if issue.number in history_numbers:
         return IssueAuditEntry(issue, SkipReason.IN_HISTORY, "already processed this run")

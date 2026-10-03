@@ -281,3 +281,30 @@ def test_audit_queue_does_not_hold_an_issue_released_by_a_partial_merge(sample_c
 
     assert statuses[2] == SkipReason.IN_HISTORY
     assert statuses[1] != SkipReason.IN_HISTORY
+
+
+class TestTechLeadProposalAudit:
+    """#7763 review r2 F3: the audit applies the scheduler's approval rule."""
+
+    @pytest.mark.parametrize(
+        "labels",
+        [
+            ["agent:backend", "tech-lead-proposal", "approved"],  # waiting label stripped, bot's approval
+            ["agent:backend"],  # every label stripped; the body still names it
+        ],
+    )
+    def test_an_unverified_proposal_is_blocked_not_queued(self, sample_config, labels):
+        from unittest.mock import Mock
+
+        from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+        sample_config.agents = {"agent:backend": Mock()}
+        issue = Issue(number=7, title="Follow-up", labels=labels, body=with_proposal_marker("b"))
+
+        entry = audit_issue(
+            issue=issue, config=sample_config, history_numbers=set(),
+            active_numbers=set(), issue_branches=None,
+        )
+
+        assert entry.status == SkipReason.BLOCKED
+        assert "proposal" in (entry.detail or "")

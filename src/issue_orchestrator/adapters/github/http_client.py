@@ -1881,6 +1881,16 @@ class GitHubHttpClient:
             caller="update_issue_state",
         )
 
+    def update_issue_body(self, issue_number: int, body: str) -> dict[str, Any] | None:
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/issues/{issue_number}",
+            json_body={"body": body},
+            use_cache=False,
+            caller="update_issue_body",
+        )
+        return payload if isinstance(payload, dict) else None
+
     def update_issue_milestone(
         self, issue_number: int, milestone: int | None
     ) -> dict[str, Any] | None:

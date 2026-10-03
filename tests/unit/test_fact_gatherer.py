@@ -44,9 +44,14 @@ def _host_sees_gated(mock_repository_host, *gated) -> None:
     """
     def _list(**kwargs):
         labels = kwargs.get("labels") or []
-        return list(gated) if "tech-lead-proposal" in labels else []
+        return list(gated) if _is_scope_query(labels) else []
 
     mock_repository_host.list_issues.side_effect = _list
+
+def _is_scope_query(labels) -> bool:
+    """The approval scope queries each gate label (#7763)."""
+    return "tech-lead-proposal" in labels or "awaiting-approval" in labels
+
 
 def _anchor_scan_calls(mock_repository_host) -> list:
     """The ANCHOR scan calls only, ignoring the approval-scope query.
@@ -64,7 +69,7 @@ def _anchor_scan_calls(mock_repository_host) -> list:
     return [
         call
         for call in mock_repository_host.list_issues.call_args_list
-        if "tech-lead-proposal" not in (call.kwargs.get("labels") or [])
+        if not _is_scope_query(call.kwargs.get("labels") or [])
     ]
 
 
@@ -1092,7 +1097,7 @@ class TestFactGathererHealthReviewFacts:
         # The due health review uses the shared exhaustive tech-lead-agent scan,
         # which both finds the anchor beyond the first page and supplies open
         # case files to the health-review snapshot (#6781).
-        assert [call for call in tracker.calls if "tech-lead-proposal" not in call["labels"]] == [
+        assert [call for call in tracker.calls if not _is_scope_query(call["labels"])] == [
             {
                 "labels": ["agent:tech-lead"],
                 "state": "open",
@@ -1103,13 +1108,14 @@ class TestFactGathererHealthReviewFacts:
         # The approval-scope query is a SEPARATE observation, by gate label
         # rather than agent label, because promoted findings carry the target's
         # worker agent label and no agent-scoped scan can see them.
-        assert [call for call in tracker.calls if "tech-lead-proposal" in call["labels"]] == [
+        assert [call for call in tracker.calls if _is_scope_query(call["labels"])] == [
             {
-                "labels": ["tech-lead-proposal"],
+                "labels": [gate_label],
                 "state": "open",
                 "limit": 2000,
                 "exhaustive": True,
             }
+            for gate_label in ("tech-lead-proposal", "awaiting-approval")
         ]
 
 
@@ -2129,7 +2135,7 @@ class _LabelAwareIssueHost:
     def list_issues(self, **kwargs):
         self.calls.append(kwargs)
         labels = kwargs.get("labels") or []
-        return list(self._approval if "tech-lead-proposal" in labels else self._anchor)
+        return list(self._approval if _is_scope_query(labels) else self._anchor)
 
     def get_prs_with_label(self, *_a, **_k):
         return []
@@ -2271,7 +2277,7 @@ class TestAFailedApprovalQueryDoesNotDiscardObservedFacts:
 
         def list_issues(self, **kwargs):
             self.calls.append(kwargs)
-            if "tech-lead-proposal" in (kwargs.get("labels") or []):
+            if _is_scope_query(kwargs.get("labels") or []):
                 from issue_orchestrator.ports.repository_host import (
                     RepositoryHostError,
                 )
@@ -2442,4 +2448,33 @@ def test_a_fully_stripped_proposal_on_the_board_is_restored(mock_config, mock_re
     assert facts is not None
     assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
         (700, ApprovalTransition.RESTORE_WAITING)
+    ]
+
+
+def test_a_proposal_missing_only_its_provenance_label_is_in_the_scope(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r2 F2: the scope queries each gate label, so a proposal
+    whose provenance label was stripped is counted and restored even off-board."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    waiting_only = Issue(number=710, title="t", labels=["agent:backend", "awaiting-approval"])
+    mock_repository_host.list_issues.side_effect = lambda **kw: (
+        [waiting_only] if "awaiting-approval" in (kw.get("labels") or []) else []
+    )
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(),
+    )
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None
+    assert [p.issue_number for p in facts.gated_proposals] == [710]
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (710, ApprovalTransition.RESTORE_WAITING)
     ]

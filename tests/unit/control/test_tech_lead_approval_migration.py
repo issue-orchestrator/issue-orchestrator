@@ -9,7 +9,13 @@ from issue_orchestrator.control.tech_lead_approval_migration import (
     migrate_legacy_proposals,
 )
 from issue_orchestrator.domain.models import Issue
-from issue_orchestrator.domain.tech_lead_approval import ApprovalVerdictKind, proposal_label_state, ProposalLabelState
+from issue_orchestrator.domain.tech_lead_approval import (
+    ApprovalVerdictKind,
+    ProposalLabelState,
+    carries_proposal_marker,
+    proposal_label_state,
+    proposal_state,
+)
 from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from tests.approval_helpers import BOT, CONTRIBUTOR, MAINTAINER, FakeApprovalEvidence, make_approvals
@@ -41,7 +47,9 @@ class _Repo:
 
     def _set(self, number: int, labels: list[str]) -> None:
         old = self.issues[number]
-        self.issues[number] = Issue(number=number, title=old.title, labels=labels, state=old.state, repo="o/r")
+        self.issues[number] = Issue(
+            number=number, title=old.title, labels=labels, state=old.state, repo="o/r", body=old.body
+        )
 
     def list_issues(self, labels=None, state="open", limit=100, required_stable_ids=None, *, exhaustive=False):
         assert exhaustive, "the migration must read the COMPLETE legacy set"
@@ -69,6 +77,13 @@ class _Repo:
         self.comments.append((number, body))
         return "url"
 
+    def update_issue_body(self, number: int, body: str) -> None:
+        self.writes.append(("body", number, "marked" if carries_proposal_marker(body) else "unmarked"))
+        old = self.issues[number]
+        self.issues[number] = Issue(
+            number=number, title=old.title, labels=list(old.labels), state=old.state, repo="o/r", body=body
+        )
+
 
 def _issue(number: int, labels, state: str = "open") -> Issue:
     return Issue(number=number, title=f"#{number}", labels=list(labels), state=state, repo="o/r")
@@ -89,10 +104,14 @@ def test_a_still_gated_legacy_proposal_moves_to_the_new_labels() -> None:
     # New labels go on BEFORE the legacy one comes off: a crash between the
     # writes leaves the item gated.
     assert [w for w in repo.writes] == [
+        ("body", 443, "marked"),
         ("add", 443, "tech-lead-proposal"),
         ("add", 443, "awaiting-approval"),
         ("remove", 443, LEGACY),
     ]
+    # A later bulk edit that strips every approval label leaves it a proposal.
+    stripped = repo.issues[443]
+    assert proposal_state(["agent:tech-lead"], stripped.body) is ProposalLabelState.AWAITING
 
 
 def test_a_legacy_follow_up_without_an_op_moves_too() -> None:
@@ -213,3 +232,25 @@ def test_a_crash_mid_carry_over_resumes_on_the_next_startup() -> None:
 
     assert report.legacy_approved == (444,)
     assert restarted.verify(repo.issues[444], fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
+
+
+def test_proposals_on_the_new_labels_without_a_marker_are_marked() -> None:
+    """#7763 review r2 F1: a partial migration from this version is repaired."""
+    evidence = FakeApprovalEvidence()
+    repo = _Repo(evidence, [_issue(500, ["tech-lead-proposal", "awaiting-approval"])])
+
+    migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore())
+
+    assert carries_proposal_marker(repo.issues[500].body)
+
+
+def test_a_carried_over_approval_marks_the_body_first() -> None:
+    evidence = FakeApprovalEvidence()
+    evidence.label(444, LEGACY, by=MAINTAINER, removed=True)
+    repo = _Repo(evidence, [_issue(444, ["agent:tech-lead"])])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=444, op=_op())
+
+    migrate_legacy_proposals(repo, make_approvals(evidence), ops)
+
+    assert repo.writes[0] == ("body", 444, "marked")

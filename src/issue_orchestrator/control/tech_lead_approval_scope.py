@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..domain.tech_lead_approval import TECH_LEAD_PROPOSAL_LABEL
+from ..domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, TECH_LEAD_PROPOSAL_LABEL
 from ..domain.tech_lead_session import GatedTechLeadProposal
 from .tech_lead_proposals import (
     TECH_LEAD_PROPOSAL_SCAN_LIMIT,
@@ -65,11 +65,13 @@ def discover_open_gated_proposals(
 ) -> list["Issue"]:
     """AUTHORITATIVE observation of every open proposal, in its own scope.
 
-    Proposals are defined by their provenance LABEL (#7763), so the only
-    complete observation of them is a query for that label. It returns the
-    unapproved backlog AND the approved items the approval owner must verify
-    (a claimed approval, or an admitted follow-up still in the work queue). Everything the tick already holds is a query
-    for something else that merely overlaps:
+    Proposals are defined by their approval LABELS (#7763), so the only
+    complete observation of them is a query for each: the provenance label
+    (the unapproved backlog AND the approved items the approval owner must
+    verify — a claimed approval, or an admitted follow-up still being worked)
+    and the waiting label (a proposal whose provenance label was stripped).
+    The two answers are unioned by issue number. Everything the tick already
+    holds is a query for something else that merely overlaps:
 
     - the worker board is narrowed by configured agents, milestones, exclusion
       filters and a fetch limit — it fetches runnable work, not approvals;
@@ -92,17 +94,16 @@ def discover_open_gated_proposals(
     """
     from .health_review_trigger import _scoped_issues
 
-    issues = repository_host.list_issues(
-        labels=[
-            value
-            for value in (TECH_LEAD_PROPOSAL_LABEL, config.filtering.label)
-            if value
-        ],
-        state="open",
-        limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
-        exhaustive=True,
-    )
-    return _scoped_issues(issues, config.filtering.label)
+    found: dict[int, "Issue"] = {}
+    for gate_label in (TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL):
+        for issue in repository_host.list_issues(
+            labels=[value for value in (gate_label, config.filtering.label) if value],
+            state="open",
+            limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
+            exhaustive=True,
+        ):
+            found.setdefault(issue.number, issue)
+    return _scoped_issues([found[number] for number in sorted(found)], config.filtering.label)
 
 
 @dataclass(frozen=True)

@@ -1944,6 +1944,21 @@ class GitHubAdapter:
         """
         return self._client.list_milestones(state=state)
 
+    def update_issue_body(self, issue_number: int, body: str) -> None:
+        """Replace an issue's body and verify GitHub kept it (#7763)."""
+        self._client.update_issue_body(issue_number, body)
+
+        def _check() -> bool:
+            issue = self.get_issue(issue_number)
+            return issue is not None and (issue.body or "") == body
+
+        self._verify_write(
+            f"issue body #{issue_number}",
+            _check,
+            detail_fn=lambda: {"body_chars": len(body)},
+            issue_number=issue_number,
+        )
+
     def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
         """Assign or clear a milestone on an issue."""
         result = self._client.update_issue_milestone(
