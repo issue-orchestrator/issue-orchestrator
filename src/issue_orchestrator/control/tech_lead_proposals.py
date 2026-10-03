@@ -66,7 +66,6 @@ from ..domain.tech_lead_approval import (
     HOW_TO_APPROVE,
     ApprovalVerdict,
     known_proposal_state,
-    proposal_state,
     with_proposal_marker,
 )
 from ..domain.tech_lead_session import (
@@ -503,6 +502,7 @@ def reconcile_tech_lead_proposals(
 
 def observe_gated_tech_lead_proposals(
     *observed: Sequence["Issue"],
+    known: Collection[int] = frozenset(),
 ) -> tuple[GatedTechLeadProposal, ...]:
     """The approval backlog as LABEL truth: every open, unapproved proposal (#7014).
 
@@ -544,7 +544,7 @@ def observe_gated_tech_lead_proposals(
     backlog: dict[int, GatedTechLeadProposal] = {
         number: _gated_proposal_summary(issue)
         for number, issue in latest.items()
-        if _awaits_approval(issue)
+        if _awaits_approval(issue, known)
     }
     return tuple(backlog[number] for number in sorted(backlog))
 
@@ -558,9 +558,12 @@ def _gated_proposal_summary(issue: "Issue") -> GatedTechLeadProposal:
     )
 
 
-def _awaits_approval(issue: "Issue") -> bool:
-    """True iff *issue* is an open proposal no one has approved (#7763)."""
-    return issue.state == "open" and proposal_state(issue.labels, issue.body).gate_closed
+def _awaits_approval(issue: "Issue", known: Collection[int]) -> bool:
+    """True iff *issue* is an open proposal no one has approved (#7763): one
+    the approval owner's index names counts even when an edit stripped its
+    labels and marker (#7763 review r16 F1)."""
+    state = known_proposal_state(issue.labels, issue.body, known=issue.number in known)
+    return issue.state == "open" and state.gate_closed
 
 
 def _proposal_issue_is_open(tracker: "RepositoryHost", issue_number: int) -> bool:

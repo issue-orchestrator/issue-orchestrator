@@ -286,3 +286,30 @@ def test_approving_a_declined_reopened_proposal_is_refused(client) -> None:
     assert host.writes == []
     assert approvals.records.load_operator_approval(505) is None
     assert approvals.verify(host.issue, fresh=True).kind is ApprovalVerdictKind.DECLINED
+
+
+
+def test_a_known_proposal_stripped_of_everything_still_waits_on_the_page() -> None:
+    """#7763 review r16 F1: the page counts a proposal by the owner's index."""
+    approvals = make_approvals()
+    approvals.remember_proposals([730])
+    edited = GitHubIssue(number=730, repo=REPO, title="p", labels=("agent:backend",), body="edited")
+    approvals.record_scope((edited,), {})
+
+    section = tech_lead_page_section(_page_engine(approvals))
+
+    assert section.waiting_count == 1 and [item.number for item in section.waiting] == [730]
+
+
+def test_a_scope_marked_unavailable_after_a_success_is_unreported(client) -> None:
+    """#7763 review r16 F2: a later failed refresh is 503 again, not 200/zero."""
+    http, engine = client
+    approvals = make_approvals()
+    orchestrator = _page_engine(approvals)
+    engine.tech_lead_page_section.side_effect = lambda: tech_lead_page_section(orchestrator)
+    approvals.record_scope((), {})
+    assert http.get("/api/tech-lead/page").status_code == 200
+
+    approvals.mark_scope_unavailable()  # the next refresh started and failed
+
+    assert http.get("/api/tech-lead/page").status_code == 503

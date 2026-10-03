@@ -39,7 +39,7 @@ from ..contracts.ui_openapi_models import (
     TechLeadWaitingItemPayload,
 )
 from ..domain.human_block import NeedsHumanCause
-from ..domain.tech_lead_approval import ApprovalVerdict, proposal_state
+from ..domain.tech_lead_approval import ApprovalVerdict, known_proposal_state
 from ..domain.tech_lead_charter import CharterOutcome
 from ..domain.tech_lead_charter_decisions import (
     CharterProposalLifecycle,
@@ -129,6 +129,9 @@ class TechLeadPageInputs:
     latest_run: "TechLeadRunActivityEntry | None"
     #: GitHub's view of each merge-held PR (``MergeHoldStatuses``), keyed by PR.
     merge_statuses: Mapping[int, "MergeHoldStatus"]
+    #: Issues the approval owner's index names as proposals, whatever an edit
+    #: left of their labels and marker (#7763 review r16 F1).
+    known_proposals: frozenset[int] = frozenset()
 
 
 def issue_link(repository: str, number: int) -> str:
@@ -175,7 +178,10 @@ def _waiting(inputs: TechLeadPageInputs) -> list[TechLeadWaitingItemPayload]:
     items = [
         _proposal(inputs, issue, verdict)
         for issue, verdict in inputs.proposals
-        if issue.state == "open" and proposal_state(issue.labels, issue.body).gate_closed
+        if issue.state == "open"
+        and known_proposal_state(
+            issue.labels, issue.body, known=issue.number in inputs.known_proposals
+        ).gate_closed
     ]
     proposal_numbers = {item.number for item in items}
     by_number = {issue.number: issue for issue in inputs.issues}

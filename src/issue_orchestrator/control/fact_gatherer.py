@@ -453,7 +453,10 @@ class FactGatherer:
         # LABEL truth about the approval backlog (#7014): only act-level ops
         # leave a ledger row, so ``ops`` cannot say what is pending. Also ARMS
         # fact production.
-        gated_proposals = observe_gated_tech_lead_proposals(board_issues)
+        gated_proposals = observe_gated_tech_lead_proposals(
+            board_issues,
+            known=self.approvals.indexed_proposals() if self.approvals is not None else frozenset(),
+        )
         # A just-EMPTIED backlog must still publish: clearing the last gate is
         # when nothing else arms production.
         backlog_cleared = state.tech_lead_gated_backlog_seen and not gated_proposals
@@ -513,7 +516,11 @@ class FactGatherer:
         prs = self._fetch_tech_lead_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = collect_pr_metadata(self.repository_host, prs)
 
-        # A failed approval query may only cost this tick's OWN trigger.
+        # A failed approval query may only cost this tick's OWN trigger. Until
+        # this attempt succeeds the page answers "not observed", never the
+        # previous read model as current (#7763 review r16 F2).
+        if self.approvals is not None:
+            self.approvals.mark_scope_unavailable()
         scope = observe_approval_scope_or_none(
             self.repository_host, self.config, board_issues, scan_observations,
             decline_on_failure=not other_armed,

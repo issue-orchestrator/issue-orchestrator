@@ -185,7 +185,7 @@ def observe_approval_scope(
     # ungated or closed OBJECT arriving later, which the observer already
     # handles by resolving the latest observation per issue.)
     in_scope = {issue.number for issue in authoritative}
-    observed = observe_gated_tech_lead_proposals(*partial, authoritative)
+    observed = observe_gated_tech_lead_proposals(*partial, authoritative, known=indexed)
     return ApprovalScopeObservation(
         backlog=tuple(
             proposal for proposal in observed if proposal.issue_number in in_scope

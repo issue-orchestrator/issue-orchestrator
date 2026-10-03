@@ -166,6 +166,11 @@ class TechLeadApprovals:
         self._scope = tuple(issue for issue in self._scope if issue.number != issue_number)
         self._scope_verdicts.pop(issue_number, None)
 
+    def mark_scope_unavailable(self) -> None:
+        """A scope refresh is starting: until :meth:`record_scope` completes
+        it, the last read model is not a current answer (#7763 r16 F2)."""
+        self._scope_observed = False
+
     @property
     def scope_observed(self) -> bool:
         """Whether a complete approval-scope observation has succeeded yet.

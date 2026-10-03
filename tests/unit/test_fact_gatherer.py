@@ -2549,3 +2549,36 @@ def test_an_indexed_proposal_stripped_of_labels_and_marker_stays_a_proposal(
         (730, ApprovalTransition.RESTORE_WAITING)
     ]
     assert not approvals.admits(edited)
+    # ...and it waits on the operator in the published backlog (r16 F1).
+    assert [p.issue_number for p in facts.gated_proposals] == [730]
+
+
+def test_a_failed_scope_refresh_leaves_the_scope_unobserved_until_one_succeeds(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r16 F2: after a failed refresh the last read model is not
+    a current answer, so the page reports "not observed" instead of an
+    all-clear; the next successful refresh restores it."""
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = make_approvals()
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+    _host_sees_gated(mock_repository_host)
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert approvals.scope_observed
+
+    mock_repository_host.list_issues.side_effect = RepositoryHostError("GitHub is down")
+    sample_state.tech_lead_approval_scan_at = 0.0
+    assert gatherer.gather_tech_lead_facts(sample_state, board_issues=[]) is None
+    assert not approvals.scope_observed
+
+    _host_sees_gated(mock_repository_host)
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert approvals.scope_observed
