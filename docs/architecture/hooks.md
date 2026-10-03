@@ -104,7 +104,9 @@ own `pre-push.project` still runs. Anything else runs the gate: an update, a
 push that mixes deletions with updates, no ref lines at all (a hook run by
 hand, or the orchestrator's pre-publish rehearsal), or a line that does not
 parse. The rule lives in one shell function, `push_is_delete_only`, in
-`src/issue_orchestrator/infra/hooks/pre_push_refs.py`.
+`src/issue_orchestrator/infra/hooks/pre_push_refs.py`. The generated hooks
+render it; issue-orchestrator's own tracked `hooks/pre-push` carries a verbatim
+copy that a unit test keeps identical.
 
 Existing installs pick up a regenerated wrapper through the usual repair path.
 `doctor` reports **Repo Guardrails** as a warning when the managed

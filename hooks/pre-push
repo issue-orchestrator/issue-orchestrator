@@ -38,16 +38,59 @@ run_post_verify_hook() {
   "$POST_VERIFY_HOOK" "$@"
 }
 
+# A push that only deletes remote refs pushes no code: nothing to validate.
+# The block below is the shared decision from
+# src/issue_orchestrator/infra/hooks/pre_push_refs.py, copied verbatim
+# (tests/unit/test_project_prepush_hook.py keeps the copy identical).
+# --- issue-orchestrator pre-push refs (generated from infra/hooks/pre_push_refs.py) ---
+PUSH_REFS_FILE=""
+
+# Read git's ref lines once so every consumer can be handed the same input.
+capture_push_refs() {
+  PUSH_REFS_FILE="$(mktemp "${TMPDIR:-/tmp}/io-pre-push-refs.XXXXXX")"
+  trap 'rm -f "$PUSH_REFS_FILE"' EXIT
+  if [ -t 0 ]; then
+    return 0
+  fi
+  cat > "$PUSH_REFS_FILE"
+}
+
+# Succeeds only when there is at least one ref line and every line deletes a
+# remote ref. Anything else (no lines, a blank or malformed line, any update)
+# fails, so the caller runs its gate.
+push_is_delete_only() {
+  local refs_file="$1"
+  local ref_lines=0
+  local local_ref="" local_sha="" remote_ref="" remote_sha="" extra=""
+  local zero_sha='^(0{40}|0{64})$'
+  local object_sha='^([0-9a-f]{40}|[0-9a-f]{64})$'
+  while read -r local_ref local_sha remote_ref remote_sha extra || [ -n "$local_ref" ]; do
+    ref_lines=$((ref_lines + 1))
+    [ "$local_ref" = "(delete)" ] || return 1
+    [ -z "$extra" ] || return 1
+    [[ "$local_sha" =~ $zero_sha ]] || return 1
+    [[ "$remote_ref" == refs/* ]] || return 1
+    [[ "$remote_sha" =~ $object_sha ]] || return 1
+  done < "$refs_file"
+  [ "$ref_lines" -gt 0 ]
+}
+# --- end issue-orchestrator pre-push refs ---
+capture_push_refs
+if push_is_delete_only "$PUSH_REFS_FILE"; then
+  echo "pre-push: delete-only push; skipping verify-pr (verify-pr-skipped reason=delete-only)" >&2
+  exit 0
+fi
+
 if [ -x "$VERIFY_SCRIPT" ]; then
   cd "$REPO_ROOT"
   set +e
-  "$VERIFY_SCRIPT"
+  "$VERIFY_SCRIPT" < "$PUSH_REFS_FILE"
   verify_exit=$?
   set -e
   if [ "$verify_exit" -ne 0 ]; then
     exit "$verify_exit"
   fi
-  run_post_verify_hook "$@"
+  run_post_verify_hook "$@" < "$PUSH_REFS_FILE"
   exit $?
 fi
 
@@ -58,5 +101,5 @@ if ! ensure_python; then
   exit 1
 fi
 
-"$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
-run_post_verify_hook "$@"
+"$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v < "$PUSH_REFS_FILE"
+run_post_verify_hook "$@" < "$PUSH_REFS_FILE"
