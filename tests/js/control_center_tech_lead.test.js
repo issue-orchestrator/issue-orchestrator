@@ -4,7 +4,6 @@ const assert = require('node:assert');
 const contractJson = require('../../src/issue_orchestrator/static/js/ui_contract_json.js');
 const createView = require('../../src/issue_orchestrator/static/js/control_center_tech_lead.js');
 
-const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const KEY = 'repo-' + 'a'.repeat(64);
 const item = (number, extra = {}) => ({
     kind: 'proposal', number, operation: 'reset_retry', title: `Proposal ${number}`,
@@ -25,7 +24,7 @@ const page = (repos) => ({
     generated_at: 'now', repos,
 });
 const repo = (sec, extra = {}) => ({ repo_key: KEY, name: 'a', availability: 'available', detail: '', section: sec, ...extra });
-const view = (fetch = async () => { throw new Error('no fetch'); }) => createView({ fetch, contractJson, escapeHtml });
+const view = (fetch = async () => { throw new Error('no fetch'); }) => createView({ fetch, contractJson });
 const response = (status, body) => ({ ok: status < 400, status, url: 'test', text: async () => JSON.stringify(body) });
 
 test('badge text is a label, never a bare number', () => {
@@ -232,7 +231,6 @@ test('a failed or off-contract refresh after an all-clear shows "unable to check
             return response(200, answer.payload);
         },
         contractJson,
-        escapeHtml,
         onBadgeChange: () => badges.push(v.badgeState()),
     });
     contractJson.setViolationReporter(() => {});
@@ -280,7 +278,6 @@ test('an older refresh that resolves last never overwrites a newer answer', asyn
     const v = createView({
         fetch: () => new Promise(resolve => pending.push(resolve)),
         contractJson,
-        escapeHtml,
         onBadgeChange: () => badges.push(v.badgeState()),
     });
     const dom = domHarness();
@@ -298,4 +295,19 @@ test('an older refresh that resolves last never overwrites a newer answer', asyn
     assert.deepEqual(badges.map(b => b.text), ['Unable to check what waits on you']);
     assert.equal(v.badgeState().text, 'Unable to check what waits on you');
     assert.doesNotMatch(dom.nodes['#techLeadWaitingList'].lastHtml, /Nothing/);
+});
+
+
+test('a hostile repository name or title never leaves its attribute', () => {
+    // #7763 review r29 F2: the production encoder, not a test stub.
+    const hostile = 'x" onmouseover="alert(1)';
+    const html = view().renderPage(page([repo(section([item(9, { title: hostile })]), { name: hostile })])).waiting;
+    assert.doesNotMatch(html, /onmouseover="alert/);
+    assert.match(html, /x&quot; onmouseover=&quot;alert\(1\)/);
+    for (const tag of html.match(/<button[^>]*>/g)) {
+        // Tokenize as a browser would: each name="value" pair consumes its
+        // whole quoted value, so text inside a value is never a new attribute.
+        const attributes = [...tag.matchAll(/\s([a-z-]+)(?:="[^"]*")?/g)].map(([, name]) => name);
+        assert.ok(!attributes.includes('onmouseover'), tag);
+    }
 });

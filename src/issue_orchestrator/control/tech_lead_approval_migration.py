@@ -266,6 +266,11 @@ def _regate(repository: "RepositoryHost", issue: "Issue") -> None:
     # Marker first: until the legacy label is gone it is the legacy label that
     # gates, so each later write leaves the item gated if the next one fails.
     _mark_body(repository, issue)
+    # An `approved` already on a still-gated legacy proposal approved nothing
+    # under either model (the legacy gate stood): it goes BEFORE the gate
+    # moves, or the next scan would verify it and execute (#7763 r29 F1).
+    for label in labels_named(issue.labels, APPROVED_LABEL):
+        repository.remove_label(issue.number, label)
     restore_gate_labels(repository, issue)
     for label in labels_named(issue.labels, LEGACY_GATE_LABEL):
         repository.remove_label(issue.number, label)

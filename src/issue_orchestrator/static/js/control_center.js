@@ -48,7 +48,6 @@ function getTechLeadView() {
         techLeadView = createControlCenterTechLeadView({
             fetch: (...args) => fetch(...args),
             contractJson: window.uiContractJson,
-            escapeHtml,
             notify: showToast,
             confirm: (message) => window.confirm(message),
             onBadgeChange: () => updateTechLeadBadges(),

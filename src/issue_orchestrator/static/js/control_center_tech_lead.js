@@ -17,7 +17,12 @@
         root.createControlCenterTechLeadView = factory;
     }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function createControlCenterTechLeadView(deps) {
-    const { fetch, escapeHtml } = deps;
+    const { fetch } = deps;
+    // The page's own encoder, safe in text AND quoted attributes (#7763
+    // review r29 F2): it encodes quotes too, so a repository name or title
+    // can never leave an attribute. Never the host page's text-only helper.
+    const ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ENTITIES[char]);
     const uiContractJson = deps.contractJson;
     const notify = deps.notify || (() => {});
     // Told after every refresh, success or not, so every badge follows the

@@ -394,3 +394,32 @@ def test_startup_never_finishes_another_engines_decline() -> None:
     assert repo.writes == [] and repo.comments == []
     assert repo.issues[900].state == "open"
     assert ops.load_op(issue_number=900) is not None
+
+
+
+def test_an_approved_label_on_a_still_gated_legacy_proposal_never_executes() -> None:
+    """#7763 review r29 F1: the legacy gate still stood, so a maintainer's
+    `approved` on it approved nothing; migration takes it off before moving
+    the gate, and the op executor never runs."""
+    from issue_orchestrator.control.tech_lead_proposal_execution import execute_approved_tech_lead_op
+    from issue_orchestrator.control.tech_lead_proposals import reconcile_tech_lead_proposals
+    from unittest.mock import MagicMock
+
+    evidence = FakeApprovalEvidence()
+    evidence.label(445)  # a maintainer's `approved`, applied for some other reason
+    repo = _Repo(evidence, [_issue(445, [LEGACY, "approved"])])
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=445, op=_op())
+    approvals = make_approvals(evidence)
+
+    migrate_legacy_proposals(repo, approvals, ops, filtering_label=None)
+
+    issue = repo.issues[445]
+    assert "approved" not in issue.labels and LEGACY not in issue.labels
+    verdicts = approvals.verify_claims([issue])
+    assert reconcile_tech_lead_proposals([issue], ops=dict(ops.list_ops()), verdicts=verdicts).approved == ()
+    apply_fn = MagicMock()
+    execute_approved_tech_lead_op(
+        SimpleNamespace(proposal_issue_number=445), apply_fn, repository_host=repo, ops=ops, approvals=approvals,
+    )
+    apply_fn.assert_not_called()
