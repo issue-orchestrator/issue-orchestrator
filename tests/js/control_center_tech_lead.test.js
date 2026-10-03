@@ -120,8 +120,14 @@ function domHarness() {
         const node = {
             controls: [],
             set innerHTML(html) {
-                node.controls = [...html.matchAll(/data-focus-key="([^"]*)"/g)]
-                    .map(([, key]) => ({ ...focusable(`${name} ${key}`), dataset: { focusKey: key } }));
+                // A disabled native control refuses focus, as in a browser.
+                node.controls = [...html.matchAll(/<[^>]*data-focus-key="([^"]*)"[^>]*>/g)]
+                    .map(([tag, key]) => {
+                        const disabled = /\sdisabled[\s>]/.test(tag);
+                        const control = { ...focusable(`${name} ${key}`), dataset: { focusKey: key }, disabled };
+                        if (disabled) control.focus = () => {};
+                        return control;
+                    });
             },
             querySelectorAll: () => node.controls,
             contains: control => node.controls.includes(control),
@@ -165,6 +171,11 @@ test('a refresh keeps keyboard focus on the same control, or moves it to its lan
     dom.lanes.doing.control(`doing:${KEY}:d1`).focus();
     v.paint(render([item(7), withDetails], doing));
     assert.equal(dom.active(), dom.lanes.doing.control(`doing:${KEY}:d1`));
+
+    dom.lanes.waiting.control(`approve:${KEY}:8`).focus();
+    v.paint(render([item(7), { ...withDetails, can_approve: false }], doing));  // approved elsewhere
+    assert.equal(dom.active().name, 'waiting heading');
+    dom.lanes.doing.control(`doing:${KEY}:d1`).focus();
 
     v.paint(render([item(7), withDetails], []));  // the doing row aged out
     assert.equal(dom.active().name, 'doing heading');

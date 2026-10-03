@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
+from ..domain.tech_lead_approval import is_approval_model_label
 from ..domain.models import (
     Session,
     SessionStatus,
@@ -49,7 +50,11 @@ def retrospective_review_completion_actions(
     # existing implementation has now been audited, so the issue must not keep
     # carrying blocking labels. We clear the same blocking set that retry uses
     # to unblock an issue (LabelManager.get_blocking).
-    blocking_labels = label_manager.get_blocking(session.issue.labels)
+    # The approval gate is never cleared here, as retry never clears it (#7763).
+    blocking_labels = [
+        label for label in label_manager.get_blocking(session.issue.labels)
+        if not is_approval_model_label(label)
+    ]
     unblock_actions = _remove_label_actions(
         issue_number,
         blocking_labels,

@@ -745,3 +745,35 @@ def test_a_declined_op_backed_proposal_reopened_is_never_admitted_or_launched() 
     restarted = make_approvals(evidence)
     restarted.index = approvals.index
     assert restarted.is_declined(500) and not restarted.confirm(admitted)
+
+
+# --- review round 9 (#7763) -------------------------------------------------
+
+
+def test_a_retrospective_review_never_clears_the_approval_gate() -> None:
+    """r9 F1 follow-through: unblocking after a retrospective review clears
+    the blocking set retry clears, which never includes the approval gate."""
+    from types import SimpleNamespace
+
+    from issue_orchestrator.control.actions import RemoveLabelAction
+    from issue_orchestrator.control.retrospective_review_completion import (
+        retrospective_review_completion_actions,
+    )
+    from issue_orchestrator.domain.models import SessionStatus
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    config = Config()
+    session = SimpleNamespace(
+        key=SimpleNamespace(kind=SessionKind.RETROSPECTIVE_REVIEW),
+        issue=_issue(500, ["agent:web", "blocked", *GATED]),
+        agent_label="agent:web",
+    )
+
+    actions = retrospective_review_completion_actions(
+        session=session, status=SessionStatus.COMPLETED, detail={"outcome": "review_approved"},
+        config=config, label_manager=LabelManager(config),
+    )
+
+    removed = {a.label for a in actions if isinstance(a, RemoveLabelAction)}
+    assert "blocked" in removed
+    assert not removed & {"tech-lead-proposal", "awaiting-approval", "approved"}

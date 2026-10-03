@@ -229,7 +229,10 @@
         const target = place.key
             ? [...list.querySelectorAll('[data-focus-key]')].find(node => node.dataset.focusKey === place.key)
             : null;
-        (target || rootNode.querySelector(place.headingSelector)).focus();
+        // A disabled replacement (approved elsewhere meanwhile) cannot take
+        // focus, so the lane heading does (#7763 review r9 F2).
+        const usable = target && !target.disabled ? target : null;
+        (usable || rootNode.querySelector(place.headingSelector)).focus();
     }
 
     function paint(payload) {

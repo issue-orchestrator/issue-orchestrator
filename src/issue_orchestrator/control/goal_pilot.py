@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any, cast
 
+from ..domain.host_rate_limit import rate_limit_cause
+from ..domain.tech_lead_approval import is_approval_model_label
 from ..events import EventContext, EventName
 from ..ports import EventSink,  make_trace_event
 from ..ports.goal_pilot_store import GoalPilotStore
@@ -287,6 +289,9 @@ class GoalPilot:
         milestone = action.get("milestone")
         if not title:
             raise ValueError("create_issue requires 'title'")
+        if any(is_approval_model_label(str(label)) for label in labels or ()):
+            # Only the tech lead files proposals (#7763 review r9 F1).
+            raise ValueError("create_issue may not carry tech-lead approval labels")
         created = repository_host.create_issue(
             title=title,
             body=body,
@@ -332,10 +337,15 @@ class GoalPilot:
             raise ValueError("label update requires 'issue_number'")
         if not add_labels and not remove_labels:
             raise ValueError("label update requires labels_add or labels_remove")
-        for label in add_labels:
-            self._action_applier.apply(AddLabelAction(issue_number=issue_number, label=label))
-        for label in remove_labels:
-            self._action_applier.apply(RemoveLabelAction(issue_number=issue_number, label=label))
+        for action_obj in (
+            *(AddLabelAction(issue_number=issue_number, label=label) for label in add_labels),
+            *(RemoveLabelAction(issue_number=issue_number, label=label) for label in remove_labels),
+        ):
+            outcome = self._action_applier.apply(action_obj)
+            if not outcome.success:  # e.g. a refused owned label (#7763 review r9 F1)
+                raise RuntimeError(
+                    outcome.error or f"{action_obj.action_type.value} failed"
+                ) from rate_limit_cause(outcome.host_rate_limit)
         return {"issue_number": issue_number, "labels_add": add_labels, "labels_remove": remove_labels}
 
     def _exec_change_approach(self, run_id: str, action: dict[str, Any]) -> dict[str, Any]:

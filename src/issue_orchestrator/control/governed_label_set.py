@@ -16,6 +16,14 @@ raw capability, which is what makes it the only writer in fact and not merely by
 convention: there is no spelling, no dynamic value and no new call site that can
 route around a capability the caller was never given.
 
+The tech-lead approval model's labels (``tech-lead-proposal``,
+``awaiting-approval``, ``approved``) are withheld the same way (#7763 review
+r9 F1): their only writer is the approval owner
+(``control/tech_lead_approval_writes``), which holds the raw repository. A
+generic label action, a Goal Pilot label update or an agent's ``pr_labels``
+writing ``approved`` through an engine whose token belongs to a maintainer
+would otherwise read as that maintainer's positive approval.
+
 The refusal is an exception rather than a silent skip. A caller that tried to
 apply this label wanted a human to look at the issue; swallowing that would turn
 a mis-routed block into no block at all, which is the failure mode this whole
@@ -27,6 +35,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
+
+from ..domain.tech_lead_approval import is_approval_model_label
 
 
 class LabelWriter(Protocol):
@@ -44,27 +54,36 @@ class LabelWriter(Protocol):
 
 
 class GovernedLabelError(RuntimeError):
-    """A non-owner tried to mutate the shared ``needs-human`` block directly.
+    """A non-owner tried to mutate an owned label directly.
 
     Carries the label and target so the caller can report exactly what it
     refused, rather than failing a whole batch with an opaque message.
     """
 
-    def __init__(self, issue_number: int, label: str, operation: str) -> None:
+    def __init__(self, issue_number: int, label: str, operation: str, owner: str) -> None:
         self.issue_number = issue_number
         self.label = label
         self.operation = operation
+        self.owner = owner
         super().__init__(
-            f"refusing to {operation} the shared block label {label!r} on "
-            f"#{issue_number} directly: it is owned by NeedsHumanBlock, which "
-            "records the lifecycle that requires it. Use its typed "
-            "acquire/release/force_clear commands."
+            f"refusing to {operation} the label {label!r} on #{issue_number}"
+            f" directly: it is owned by {owner}"
         )
+
+
+_BLOCK_OWNER = (
+    "NeedsHumanBlock, which records the lifecycle that requires it. Use its"
+    " typed acquire/release/force_clear commands."
+)
+_APPROVAL_OWNER = (
+    "the tech-lead approval owner: a maintainer applies `approved`, and only the"
+    " engine's approval writes change the proposal labels."
+)
 
 
 @dataclass(frozen=True, slots=True)
 class GovernedLabelSet:
-    """A :class:`LabelSet` that refuses the one label it does not own.
+    """A :class:`LabelSet` that refuses the labels it does not own.
 
     Deliberately a wrapper rather than a check inside each caller: a check is
     something a new caller can forget, and the four bypasses this replaced were
@@ -95,13 +114,15 @@ class GovernedLabelSet:
         return getattr(self.labels, "has_label")(issue_number, label)
 
     def governs(self, label: str) -> bool:
-        return label == self.governed_label
+        return label == self.governed_label or is_approval_model_label(label)
 
     def _refuse_if_governed(
         self, issue_number: int, label: str, operation: str
     ) -> None:
-        if self.governs(label):
-            raise GovernedLabelError(issue_number, label, operation)
+        if label == self.governed_label:
+            raise GovernedLabelError(issue_number, label, operation, _BLOCK_OWNER)
+        if is_approval_model_label(label):
+            raise GovernedLabelError(issue_number, label, operation, _APPROVAL_OWNER)
 
 
 __all__ = ["GovernedLabelError", "GovernedLabelSet", "LabelWriter"]

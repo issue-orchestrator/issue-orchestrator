@@ -61,3 +61,30 @@ def test_the_sqlite_proposal_index_survives_a_restart(tmp_path) -> None:
 
     assert reopened.proposal_index.indexed_proposals() == {7}
     assert reopened.proposal_index.declined_proposals() == {9}
+
+
+def test_a_goal_pilot_label_action_can_never_write_an_approval(orchestrator) -> None:
+    """#7763 review r9 F1: a generic label action through the applier, with an
+    engine token whose account is a maintainer, must not produce an `approved`
+    event (it would read as that maintainer's approval)."""
+    from issue_orchestrator.control.goal_pilot import GoalPilot
+
+    github = orchestrator.deps.repository_host
+    github.add_label.reset_mock()
+    github.remove_label.reset_mock()
+    github.has_label.side_effect = lambda number, label: label == "awaiting-approval"
+    pilot = GoalPilot(store=MagicMock(), events=MagicMock(), action_applier=orchestrator.deps.action_applier)
+
+    for labels in ({"labels_add": ["approved"]}, {"labels_remove": ["awaiting-approval"]}):
+        outcome = pilot.execute_action(
+            "run-1", {"action_type": "dispatch", "issue_number": 500, **labels}, github
+        )
+        assert outcome["status"] == "failed"
+    created = pilot.execute_action(
+        "run-1", {"action_type": "create_issue", "title": "t", "labels": ["tech-lead-proposal"]}, github
+    )
+
+    assert created["status"] == "failed"
+    github.add_label.assert_not_called()
+    github.remove_label.assert_not_called()
+    github.create_issue.assert_not_called()
