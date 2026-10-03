@@ -33,6 +33,8 @@ from ..domain.tech_lead_approval import (
     ApprovalTransition,
     OperatorApprovalRecord,
     ProposalLabelState,
+    labels_named,
+    missing_labels,
     proposal_state,
 )
 from .actions import Action, ActionResult, SettleProposalApprovalAction
@@ -47,8 +49,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _labels_folded(issue: "Issue") -> set[str]:
-    return {str(label).casefold() for label in issue.labels}
+def _add_missing(repository: "RepositoryHost", issue: "Issue", wanted: "tuple[str, ...]") -> list[str]:
+    """Add whichever of *wanted* the issue lacks; returns what was added."""
+    added = missing_labels(issue.labels, wanted)
+    for label in added:
+        repository.add_label(issue.number, label)
+    return added
+
+
+def _remove_present(repository: "RepositoryHost", issue: "Issue", name: str) -> None:
+    """Remove *name* from the issue, in whatever case GitHub holds it."""
+    for label in labels_named(issue.labels, name):
+        repository.remove_label(issue.number, label)
 
 
 def apply_settle_proposal_approval(
@@ -94,15 +106,12 @@ def _admit(
             f"#{issue.number} no longer carries a verified approval"
             f" ({verdict.describe()}); not admitted",
         )
-    folded = _labels_folded(issue)
     # Provenance first (#7763 review r3 F1): an admitted proposal is
     # `tech-lead-proposal` + `approved`; without provenance, taking the waiting
     # label off would leave a marked body with no gate label — still a
     # proposal awaiting approval, never schedulable.
-    if TECH_LEAD_PROPOSAL_LABEL.casefold() not in folded:
-        repository.add_label(issue.number, TECH_LEAD_PROPOSAL_LABEL)
-    if AWAITING_APPROVAL_LABEL.casefold() in folded:
-        repository.remove_label(issue.number, AWAITING_APPROVAL_LABEL)
+    _add_missing(repository, issue, (TECH_LEAD_PROPOSAL_LABEL,))
+    _remove_present(repository, issue, AWAITING_APPROVAL_LABEL)
     repository.add_comment(
         issue.number,
         "## ✅ Approved\n\n"
@@ -126,12 +135,8 @@ def _reject_claim(
     verdict = approvals.verify(issue, fresh=True)
     if verdict.approved or not verdict.rejected_claim:
         return ActionResult.ok(action, settled="unchanged")
-    folded = _labels_folded(issue)
-    if AWAITING_APPROVAL_LABEL.casefold() not in folded:
-        repository.add_label(issue.number, AWAITING_APPROVAL_LABEL)
-    for label in issue.labels:
-        if str(label).casefold() == APPROVED_LABEL.casefold():
-            repository.remove_label(issue.number, label)
+    _add_missing(repository, issue, (AWAITING_APPROVAL_LABEL,))
+    _remove_present(repository, issue, APPROVED_LABEL)
     repository.add_comment(
         issue.number,
         "## ⛔ Approval not accepted\n\n"
@@ -164,11 +169,7 @@ def _restore_waiting(
 def restore_gate_labels(repository: "RepositoryHost", issue: "Issue") -> list[str]:
     """Re-add whichever gate labels *issue* lacks; the ONE gate-restore write
     (settlement, the startup migration and an operator's Approve share it)."""
-    folded = _labels_folded(issue)
-    restored = [label for label in GATED_PROPOSAL_LABELS if label.casefold() not in folded]
-    for label in restored:
-        repository.add_label(issue.number, label)
-    return restored
+    return _add_missing(repository, issue, GATED_PROPOSAL_LABELS)
 
 
 def _utc_now() -> str:
@@ -234,9 +235,7 @@ def _decline(
     )
     # Take any approval off BEFORE closing (#7763 review r7 F2): a reopened
     # proposal must never be admitted on an approval given before its decline.
-    for label in issue.labels:
-        if str(label).casefold() == APPROVED_LABEL.casefold():
-            repository.remove_label(number, label)
+    _remove_present(repository, issue, APPROVED_LABEL)
     repository.update_issue_state(number, "closed")
     op_backed = ops.load_op(issue_number=number) is not None
     approvals.decline(number, op_backed=op_backed)
@@ -264,9 +263,7 @@ def _approve(
     restore_gate_labels(repository, issue)
     # An `approved` label that does not count (a bot's) would make our add a
     # GitHub no-op with no new event to bind to, so take it off first.
-    for label in issue.labels:
-        if str(label).casefold() == APPROVED_LABEL.casefold():
-            repository.remove_label(number, label)
+    _remove_present(repository, issue, APPROVED_LABEL)
     repository.add_label(number, APPROVED_LABEL)
     event = approvals.evidence.latest_label_event(number, APPROVED_LABEL)
     if event is None:

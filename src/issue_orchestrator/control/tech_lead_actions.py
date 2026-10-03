@@ -123,15 +123,11 @@ class CreateTechLeadIssueAction(Action):
                 " issue to check an ExpectedState against; carrying one means"
                 " the reconciliation subject was dropped in composition"
             )
-        from ..domain.tech_lead_approval import carries_proposal_marker, proposal_label_state
+        from ..domain.tech_lead_approval import require_proposal_marker
 
         # A gated filing carries its proposal marker, so stripping every
         # approval label cannot turn it into ordinary work (#7763).
-        if proposal_label_state(self.labels).is_proposal and not carries_proposal_marker(self.body):
-            raise ValueError(
-                f"{type(self).__name__} carries approval labels but not the"
-                " proposal body marker"
-            )
+        require_proposal_marker(self.labels, self.body, what=type(self).__name__)
 
     @property
     def anchor_issue_number(self) -> int:
@@ -161,27 +157,13 @@ class CreateTechLeadProposalIssueAction(CreateTechLeadIssueAction):
     )
 
     def __post_init__(self) -> None:
-        from ..domain.tech_lead_approval import (
-            ProposalLabelState,
-            carries_proposal_marker,
-            proposal_label_state,
-        )
+        from ..domain.tech_lead_approval import require_gated_filing
 
         super().__post_init__()
         # Self-validating type: an ungated proposal issue would be
-        # schedulable before any approval. (Baseline note: this branch is an
-        # accepted control_policy_branch_sites entry — the invariant is
-        # inherently about the gate label, not scattered policy.)
-        if proposal_label_state(self.labels) is not ProposalLabelState.AWAITING:
-            raise ValueError(
-                "CreateTechLeadProposalIssueAction must carry the approval"
-                " model's provenance and waiting labels, and no approval"
-            )
-        if not carries_proposal_marker(self.body):
-            raise ValueError(
-                "CreateTechLeadProposalIssueAction must carry the proposal body"
-                " marker, so a label strip cannot turn it into ordinary work"
-            )
+        # schedulable before any approval; the approval vocabulary's owner
+        # states what a gated filing carries.
+        require_gated_filing(self.labels, self.body, what=type(self).__name__)
         # A gated proposal is always something a session DECIDED; it can never
         # be the anchor. The positive anchor number itself is guaranteed by the
         # origin, so this only rules out the wrong KIND.
@@ -568,11 +550,7 @@ class PromoteTechLeadFindingAction(Action):
         return self.case_file_issue_number
 
     def __post_init__(self) -> None:
-        from ..domain.tech_lead_approval import (
-            ProposalLabelState,
-            carries_proposal_marker,
-            proposal_label_state,
-        )
+        from ..domain.tech_lead_approval import refuse_approval_labels, require_gated_filing
 
         if not self.signature.strip():
             raise ValueError(
@@ -607,22 +585,11 @@ class PromoteTechLeadFindingAction(Action):
         # gate would file schedulable work nobody approved; an auto command
         # CARRYING the gate would file work nobody can start without noticing
         # a label the operator was never told about.
-        state = proposal_label_state(self.labels)
-        if self.gated and (
-            state is not ProposalLabelState.AWAITING or not carries_proposal_marker(self.body)
-        ):
-            raise ValueError(
-                "PromoteTechLeadFindingAction planned as gated must carry the"
-                " approval model's provenance and waiting labels and its body"
-                " marker; filing it without them creates immediately schedulable"
-                " work nobody approved"
-            )
-        if not self.gated and state.is_proposal:
-            raise ValueError(
-                "PromoteTechLeadFindingAction planned as ungated"
-                " (tech_lead.findings.promote: auto) must NOT carry the"
-                " approval model's labels"
-            )
+        what = f"PromoteTechLeadFindingAction planned as {'gated' if self.gated else 'ungated'}"
+        if self.gated:
+            require_gated_filing(self.labels, self.body, what=what)
+        else:  # tech_lead.findings.promote: auto
+            refuse_approval_labels(self.labels, what=what)
 
 
 @dataclass(frozen=True)

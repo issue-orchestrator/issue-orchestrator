@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from ..domain.tech_lead_approval import HOW_TO_APPROVE, proposal_label_state
+from ..domain.tech_lead_approval import HOW_TO_APPROVE, filed_proposal_numbers, proposal_label_state
 from ..domain.tech_lead_session import TechLeadCreationKind
 from ..events import EventName
 from ..ports import make_trace_event
@@ -148,8 +148,8 @@ def _index_filed_proposal(
 ) -> None:
     """Index a filed proposal so the approval scope keeps finding it even if
     every gate label is stripped before its first observation (#7763 r6 F2)."""
-    if ops is not None and proposal_label_state(action.labels).is_proposal:
-        ops.proposal_index.index_proposals([issue_number])
+    if ops is not None:
+        ops.proposal_index.index_proposals(filed_proposal_numbers(action.labels, issue_number))
 
 
 def apply_create_tech_lead_issue(

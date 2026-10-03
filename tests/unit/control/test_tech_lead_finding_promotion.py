@@ -481,7 +481,7 @@ class TestPromotionCommandEncodesItsApprovalMode:
             self._action(labels=("agent:backend",))
 
     def test_an_auto_command_carrying_the_gate_label_fails_closed(self):
-        with pytest.raises(ValueError, match="must NOT carry"):
+        with pytest.raises(ValueError, match="ungated may not carry the tech-lead approval labels"):
             self._action(gated=False)
 
     def test_both_consistent_modes_construct(self):

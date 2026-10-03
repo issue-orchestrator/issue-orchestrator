@@ -10667,6 +10667,34 @@ class TestTechLeadProposalLaunchConsent:
         assert not result.success
         assert launcher_bundle.create_session_calls == []
 
+    def test_an_approval_removed_during_worktree_preparation_never_spawns(
+        self, launcher_bundle, mock_repo_host, mock_worktree_manager
+    ) -> None:
+        """#7763 review r11 F1: consent is re-read after the slow worktree
+        preparation, before anything irreversible; the worktree is cleaned up
+        and the claim released."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        prepare = mock_worktree_manager.create
+
+        def prepare_while_a_maintainer_revokes(*args, **kwargs):
+            # The maintainer removes `approved` while the worktree is prepared.
+            mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])
+            return prepare(*args, **kwargs)
+
+        mock_worktree_manager.create = prepare_while_a_maintainer_revokes
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert result.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+        [prepared] = mock_worktree_manager.create_calls  # it got that far...
+        assert len(mock_worktree_manager.remove_calls) == 1  # ...and was cleaned up
+
     def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
         from tests.approval_helpers import ADMITTED, approving_everything
 

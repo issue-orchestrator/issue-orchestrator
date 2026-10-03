@@ -39,6 +39,8 @@ from ..domain.tech_lead_approval import (
     TECH_LEAD_PROPOSAL_LABEL,
     OperatorApprovalRecord,
     carries_proposal_marker,
+    labels_named,
+    missing_labels,
     with_proposal_marker,
 )
 from .tech_lead_approval_writes import restore_gate_labels
@@ -217,12 +219,9 @@ def _regate(repository: "RepositoryHost", issue: "Issue") -> None:
     # Marker first: until the legacy label is gone it is the legacy label that
     # gates, so each later write leaves the item gated if the next one fails.
     _mark_body(repository, issue)
-    for label in (TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL):
-        if not _carries(issue, label):
-            repository.add_label(issue.number, label)
-    for label in issue.labels:
-        if str(label).casefold() == LEGACY_GATE_LABEL.casefold():
-            repository.remove_label(issue.number, label)
+    restore_gate_labels(repository, issue)
+    for label in labels_named(issue.labels, LEGACY_GATE_LABEL):
+        repository.remove_label(issue.number, label)
 
 
 def _migrate_legacy_approval(
@@ -299,8 +298,8 @@ def _bind_carried_approval(
     resulting event: its OWN write is recorded as the approval; a maintainer's
     own `approved` counts by itself. Anything else is not bound (False).
     """
-    if not _carries(issue, APPROVED_LABEL):
-        repository.add_label(issue.number, APPROVED_LABEL)
+    for label in missing_labels(issue.labels, (APPROVED_LABEL,)):
+        repository.add_label(issue.number, label)
     event = approvals.evidence.latest_label_event(issue.number, APPROVED_LABEL)
     if event is None:
         raise RuntimeError(

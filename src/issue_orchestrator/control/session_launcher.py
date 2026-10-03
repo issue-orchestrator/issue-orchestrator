@@ -890,8 +890,11 @@ class SessionLauncher:
             })
 
         # Durable before anything irreversible: no terminal, no label
-        # transitions, no queue removal (#6999 A2).
-        if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
+        # transitions, no queue removal (#6999 A2). A proposal's consent is
+        # re-read here too, after the slow worktree preparation (#7763 r11 F1).
+        if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(
+            run, issue_number=issue.number
+        ):
             self._cleanup_pre_active_launch_worktree(
                 issue.number,
                 worktree_path,

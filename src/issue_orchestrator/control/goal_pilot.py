@@ -6,7 +6,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, cast
 
 from ..domain.host_rate_limit import rate_limit_cause
-from ..domain.tech_lead_approval import is_approval_model_label
+from ..domain.tech_lead_approval import refuse_approval_labels
 from ..events import EventContext, EventName
 from ..ports import EventSink,  make_trace_event
 from ..ports.goal_pilot_store import GoalPilotStore
@@ -289,9 +289,8 @@ class GoalPilot:
         milestone = action.get("milestone")
         if not title:
             raise ValueError("create_issue requires 'title'")
-        if any(is_approval_model_label(str(label)) for label in labels or ()):
-            # Only the tech lead files proposals (#7763 review r9 F1).
-            raise ValueError("create_issue may not carry tech-lead approval labels")
+        # Only the tech lead files proposals (#7763 review r9 F1).
+        refuse_approval_labels(labels or (), what="create_issue")
         created = repository_host.create_issue(
             title=title,
             body=body,

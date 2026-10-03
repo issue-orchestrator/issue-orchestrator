@@ -18,6 +18,7 @@ from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
     AWAITING_APPROVAL_LABEL,
     TECH_LEAD_PROPOSAL_LABEL,
+    gate_blocking_labels,
     is_approval_model_label,
     proposal_label_state,
 )
@@ -462,10 +463,10 @@ class LabelManager:
         Keeping that distinction here lets scheduling and operator projections use
         the same label owner without conflating their different meanings.
         """
-        if proposal_label_state(labels).gate_closed:
-            return True
         observation = self._resolved["tech_lead_observation"].casefold()
-        return any(self._strip_prefix(label).casefold() == observation for label in labels)
+        return proposal_label_state(labels).gate_closed or any(
+            self._strip_prefix(label).casefold() == observation for label in labels
+        )
 
     def get_blocking(self, labels: Sequence[str]) -> list[str]:
         """The labels that block, consistent with :meth:`is_blocking_any`.
@@ -475,10 +476,7 @@ class LabelManager:
         blocking labels must still leave the approval model's labels alone
         (``is_approval_model_label``): only the approval owner writes them.
         """
-        blocking = [l for l in labels if self.is_blocking(l)]
-        if not blocking and proposal_label_state(labels).gate_closed:
-            blocking = [l for l in labels if is_approval_model_label(l)]
-        return blocking
+        return [l for l in labels if self.is_blocking(l)] or gate_blocking_labels(labels)
 
     # ------------------------------------------------------------------
     # Strip helpers

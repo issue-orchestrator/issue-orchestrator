@@ -169,6 +169,57 @@ def proposal_label_state(labels: Collection[str]) -> ProposalLabelState:
     return ProposalLabelState.ADMITTED
 
 
+def labels_named(labels: Collection[str], name: str) -> list[str]:
+    """Every label in *labels* that is *name* (GitHub folds label case)."""
+    folded = name.casefold()
+    return [label for label in labels if str(label).casefold() == folded]
+
+
+def missing_labels(labels: Collection[str], wanted: Collection[str]) -> list[str]:
+    """The *wanted* labels *labels* lacks (case-insensitively), in order."""
+    present = {str(label).casefold() for label in labels}
+    return [label for label in wanted if label.casefold() not in present]
+
+
+def gate_blocking_labels(labels: Collection[str]) -> list[str]:
+    """The approval labels that keep an unapproved proposal blocked, when its
+    gate is closed (empty otherwise): what names the block once its waiting
+    label was stripped (#7763)."""
+    gate_closed = proposal_label_state(labels).gate_closed
+    return [label for label in labels if gate_closed and is_approval_model_label(label)]
+
+
+def filed_proposal_numbers(labels: Collection[str], issue_number: int) -> list[int]:
+    """``[issue_number]`` when an issue filed with *labels* is a proposal."""
+    return [issue_number] if proposal_label_state(labels).is_proposal else []
+
+
+def require_proposal_marker(labels: Collection[str], body: str, *, what: str) -> None:
+    """A filing that carries approval labels must carry the body marker too, so
+    stripping every approval label cannot turn it into ordinary work."""
+    if proposal_label_state(labels).is_proposal and not carries_proposal_marker(body):
+        raise ValueError(f"{what} carries approval labels but not the proposal body marker")
+
+
+def require_gated_filing(labels: Collection[str], body: str, *, what: str) -> None:
+    """A gated filing: provenance + waiting labels, no approval, and the marker."""
+    if proposal_label_state(labels) is not ProposalLabelState.AWAITING:
+        raise ValueError(
+            f"{what} must carry the approval model's provenance and waiting"
+            " labels, and no approval; filing it without them creates"
+            " immediately schedulable work nobody approved"
+        )
+    if not carries_proposal_marker(body):
+        raise ValueError(f"{what} must carry the proposal body marker")
+
+
+def refuse_approval_labels(labels: Collection[str], *, what: str) -> None:
+    """Only the tech lead's gated filings may carry the approval model's
+    labels; anything else naming one is refused (#7763)."""
+    if any(is_approval_model_label(str(label)) for label in labels):
+        raise ValueError(f"{what} may not carry the tech-lead approval labels")
+
+
 @dataclass(frozen=True, slots=True)
 class LabelEvent:
     """The most recent ``labeled`` event for one label on one issue.
@@ -326,8 +377,15 @@ __all__ = [
     "REJECTED_APPROVAL_KINDS",
     "TECH_LEAD_PROPOSAL_LABEL",
     "carries_proposal_marker",
+    "filed_proposal_numbers",
+    "gate_blocking_labels",
     "is_approval_model_label",
+    "labels_named",
+    "missing_labels",
     "proposal_label_state",
     "proposal_state",
+    "refuse_approval_labels",
+    "require_gated_filing",
+    "require_proposal_marker",
     "with_proposal_marker",
 ]
