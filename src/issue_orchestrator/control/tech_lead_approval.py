@@ -105,7 +105,8 @@ class TechLeadApprovals:
         ones the scope read found closed, gone or no longer a proposal leave
         it (#7763 review r6 F2).
         """
-        self._scope = tuple(issue for issue in issues if not self.is_declined(issue.number))
+        declined = self.declined_numbers()  # the page model; consent reads it fresh
+        self._scope = tuple(issue for issue in issues if issue.number not in declined)
         self._scope_verdicts = dict(verdicts)
         self._scope_observed = True
         self.index.index_proposals(issue.number for issue in issues)
@@ -131,9 +132,9 @@ class TechLeadApprovals:
         self.forget_from_scope(issue_number)
 
     def is_declined(self, issue_number: int) -> bool:
-        if self._declined is None:
-            self._declined = self.index.declined_proposals()
-        return issue_number in self._declined
+        """Read fresh from the durable store, never this process's cache: a
+        second engine sharing the store may have declined it (#7763 r24 F1)."""
+        return self.index.is_declined(issue_number)
 
     def declined_numbers(self) -> frozenset[int]:
         if self._declined is None:

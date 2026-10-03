@@ -136,7 +136,8 @@ def proposal_command(
         if approvals is None or ops is None:
             raise RuntimeError("The tech-lead approval owner is not wired")
         outcome = apply_operator_proposal_command(
-            command, repository=orchestrator.deps.repository_host, ops=ops, approvals=approvals
+            command, repository=orchestrator.deps.repository_host, ops=ops, approvals=approvals,
+            filtering_label=orchestrator.config.filtering.label,
         )
         if outcome.outcome == "approved":
             orchestrator.state.tech_lead_approval_scan_at = 0.0

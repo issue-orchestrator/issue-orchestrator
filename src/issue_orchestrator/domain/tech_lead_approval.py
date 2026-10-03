@@ -178,6 +178,13 @@ def known_proposal_state(labels: Collection[str], body: str | None, *, known: bo
     return ProposalLabelState.AWAITING if known and not state.is_proposal else state
 
 
+def in_engine_scope(labels: Collection[str], filtering_label: str | None) -> bool:
+    """Whether an issue with *labels* belongs to the engine scoped by
+    *filtering_label* (none: every issue). The one rule for every approval
+    write that must not touch another engine's proposals (#7763 r23/r24)."""
+    return not filtering_label or bool(labels_named(labels, filtering_label))
+
+
 def labels_named(labels: Collection[str], name: str) -> list[str]:
     """Every label in *labels* that is *name* (GitHub folds label case)."""
     folded = name.casefold()
@@ -394,6 +401,7 @@ __all__ = [
     "carries_proposal_marker",
     "filed_proposal_numbers",
     "gate_blocking_labels",
+    "in_engine_scope",
     "is_approval_model_label",
     "known_proposal_state",
     "labels_named",

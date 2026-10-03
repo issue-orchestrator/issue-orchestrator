@@ -39,6 +39,7 @@ from ..domain.tech_lead_approval import (
     TECH_LEAD_PROPOSAL_LABEL,
     OperatorApprovalRecord,
     carries_proposal_marker,
+    in_engine_scope,
     labels_named,
     missing_labels,
     with_proposal_marker,
@@ -84,11 +85,6 @@ class ApprovalMigrationError(RuntimeError):
         self.report = report
 
 
-def _in_engine_scope(issue: "Issue", filtering_label: str | None) -> bool:
-    """Whether *issue* belongs to this engine (its scope label, if any)."""
-    return not filtering_label or _carries(issue, filtering_label)
-
-
 def _carries(issue: "Issue", label: str) -> bool:
     folded = label.casefold()
     return any(str(name).casefold() == folded for name in issue.labels)
@@ -124,7 +120,7 @@ def finish_interrupted_declines(
     finished = []
     for number in sorted(approvals.declined_numbers()):
         issue = repository.get_issue(number)
-        mine = issue is not None and _in_engine_scope(issue, filtering_label)
+        mine = issue is not None and in_engine_scope(issue.labels, filtering_label)
         if not mine:
             continue  # unreadable now (a later startup retries), or another engine's (#7763 r23 F1)
         reopened = issue.state == "open"

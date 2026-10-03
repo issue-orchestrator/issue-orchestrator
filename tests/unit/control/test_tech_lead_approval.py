@@ -412,8 +412,7 @@ class TestOperatorCommand:
         ops.record_op(issue_number=500, op=_op())
 
         outcome = apply_operator_proposal_command(
-            TechLeadProposalCommand(500, "approve"), repository=host, ops=ops, approvals=approvals
-        )
+            TechLeadProposalCommand(500, "approve"), repository=host, ops=ops, approvals=approvals, filtering_label=None)
 
         assert outcome.outcome == "approved"
         assert "approved" in host.issue.labels
@@ -429,8 +428,7 @@ class TestOperatorCommand:
 
         outcome = apply_operator_proposal_command(
             TechLeadProposalCommand(500, "approve"), repository=host,
-            ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
-        )
+            ops=InMemoryTechLeadAuthorityStore(), approvals=approvals, filtering_label=None)
 
         assert outcome.outcome == "approved"
         assert approvals.verify(host.issue, fresh=True).approved
@@ -443,8 +441,7 @@ class TestOperatorCommand:
         ops.record_op(issue_number=500, op=_op())
 
         outcome = apply_operator_proposal_command(
-            TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
-        )
+            TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals, filtering_label=None)
 
         assert outcome.outcome == "declined"
         assert host.states == [(500, "closed")]
@@ -458,8 +455,7 @@ class TestOperatorCommand:
 
         outcome = apply_operator_proposal_command(
             TechLeadProposalCommand(500, "approve"), repository=host,
-            ops=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(evidence),
-        )
+            ops=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(evidence), filtering_label=None)
 
         assert outcome.outcome == "unavailable"
         assert "approved" not in host.issue.labels
@@ -470,8 +466,7 @@ class TestOperatorCommand:
 
         outcome = apply_operator_proposal_command(
             TechLeadProposalCommand(7, "approve"), repository=host,
-            ops=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(evidence),
-        )
+            ops=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(evidence), filtering_label=None)
 
         assert outcome.outcome == "unavailable"
         assert host.issue.labels == ["agent:backend"]
@@ -593,8 +588,7 @@ class TestControlCenterApprovalIsAttributed:
 
         outcome = apply_operator_proposal_command(
             TechLeadProposalCommand(500, "approve"), repository=host,
-            ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
-        )
+            ops=InMemoryTechLeadAuthorityStore(), approvals=approvals, filtering_label=None)
 
         assert outcome.outcome == "failed"
         assert approvals.records.load_operator_approval(500) is None
@@ -624,8 +618,7 @@ def test_a_personal_token_engine_approves_as_its_maintainer_user() -> None:
 
     outcome = apply_operator_proposal_command(
         TechLeadProposalCommand(500, "approve"), repository=host,
-        ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
-    )
+        ops=InMemoryTechLeadAuthorityStore(), approvals=approvals, filtering_label=None)
 
     assert outcome.outcome == "approved"
     assert approvals.records.load_operator_approval(500) is None
@@ -681,8 +674,7 @@ def test_approving_a_fully_stripped_proposal_restores_its_gate_first() -> None:
 
     outcome = apply_operator_proposal_command(
         TechLeadProposalCommand(500, "approve"), repository=host,
-        ops=InMemoryTechLeadAuthorityStore(), approvals=approvals,
-    )
+        ops=InMemoryTechLeadAuthorityStore(), approvals=approvals, filtering_label=None)
 
     assert outcome.outcome == "approved"
     assert {"tech-lead-proposal", "awaiting-approval", "approved"} <= set(host.issue.labels)
@@ -691,8 +683,7 @@ def test_approving_a_fully_stripped_proposal_restores_its_gate_first() -> None:
 
 def _decline_then_reopen(host: _Host, approvals, ops) -> Issue:
     outcome = apply_operator_proposal_command(
-        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
-    )
+        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals, filtering_label=None)
     assert outcome.outcome == "declined"
     host.update_issue_state(500, "open")  # someone reopens it on GitHub
     return host.issue
@@ -826,8 +817,7 @@ def test_a_decline_interrupted_after_the_close_stays_declined_and_is_finished_at
 
     host.update_issue_state = close_then_crash
     outcome = apply_operator_proposal_command(
-        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
-    )
+        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals, filtering_label=None)
     assert outcome.outcome == "failed"
     assert ops.load_op(issue_number=500) is not None  # cleanup never ran
     host.update_issue_state = close
@@ -880,8 +870,7 @@ def test_a_decline_interrupted_after_its_first_durable_write_never_executes(op_b
     # Any other write first would crash before the decline is on record.
     approvals.records.discard_operator_approval = crash
     outcome = apply_operator_proposal_command(
-        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
-    )
+        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals, filtering_label=None)
     assert outcome.outcome == "failed" and host.issue.state == "open"
 
     restarted = make_approvals(evidence)

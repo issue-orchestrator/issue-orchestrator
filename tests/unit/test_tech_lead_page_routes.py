@@ -59,13 +59,14 @@ class _Host:
                                  labels=self.issue.labels, state=state)
 
 
-def _engine(issue: GitHubIssue):
+def _engine(issue: GitHubIssue, scope_label: str | None = None):
     evidence = FakeApprovalEvidence()
     approvals = make_approvals(evidence)
     host = _Host(evidence, issue)
     authority = InMemoryTechLeadAuthorityStore()
     orchestrator = SimpleNamespace(
         state_lock=threading.RLock(),
+        config=SimpleNamespace(filtering=SimpleNamespace(label=scope_label)),
         state=SimpleNamespace(tech_lead_approval_scan_at=123.0),
         deps=SimpleNamespace(
             action_applier=SimpleNamespace(tech_lead_approvals=approvals),
@@ -123,7 +124,7 @@ def test_refused_command_maps_to_409_with_the_typed_outcome(client) -> None:
 
     assert response.status_code == 409
     assert response.json() == {"proposal_issue_number": 503, "outcome": "unavailable",
-                               "detail": "This issue is not a tech-lead proposal"}
+                               "detail": "This issue is not a tech-lead proposal of this engine"}
 
 
 def test_route_hands_the_owner_one_typed_command(client) -> None:
@@ -315,3 +316,21 @@ def test_a_scope_marked_unavailable_after_a_success_is_unreported(client) -> Non
     approvals.mark_scope_unavailable()  # the next refresh started and failed
 
     assert http.get("/api/tech-lead/page").status_code == 503
+
+
+
+@pytest.mark.parametrize("decision", ["approve", "decline"])
+def test_a_command_for_another_engines_proposal_writes_nothing(client, decision) -> None:
+    """#7763 review r24 F2: an engine scoped to run-a refuses Approve and
+    Decline for a run-b proposal, before any write."""
+    http, engine = client
+    other = GitHubIssue(number=506, repo=REPO, title="p", labels=("run-b", *GATED))
+    orchestrator, approvals, host = _engine(other, scope_label="run-a")
+    engine.request_tech_lead_proposal.side_effect = lambda command: proposal_command(orchestrator, command)
+
+    response = http.post("/api/tech-lead/proposals", json={"proposal_issue_number": 506, "decision": decision})
+
+    assert response.status_code == 409 and response.json()["outcome"] == "unavailable"
+    assert host.writes == []
+    assert approvals.records.load_operator_approval(506) is None
+    assert not approvals.is_declined(506)

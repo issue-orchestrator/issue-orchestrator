@@ -112,3 +112,45 @@ def test_the_real_engine_serves_its_tech_lead_page_section(orchestrator) -> None
 
     assert section.waiting_count == 0 and section.waiting == []
     assert orchestrator.deps.merge_hold_statuses is orchestrator.deps.merge_hold_statuses
+
+
+def test_a_decline_by_another_engine_sharing_the_store_stops_execution_at_once(tmp_path) -> None:
+    """#7763 review r24 F1: consent reads the declined disposition fresh from
+    the shared store, never one owner's cache."""
+    from issue_orchestrator.control.tech_lead_approval import TechLeadApprovals
+    from issue_orchestrator.control.tech_lead_proposal_execution import execute_approved_tech_lead_op
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+    from tests.approval_helpers import CLAIMED, FakeApprovalEvidence
+    from types import SimpleNamespace
+
+    evidence = FakeApprovalEvidence()
+    evidence.label(5)  # a maintainer's standing approval
+
+    def owner(store):
+        return TechLeadApprovals(evidence, store.operator_approvals, store.proposal_index,
+                                 lambda: (n for n, _op in store.list_ops()))
+
+    store_a = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
+    store_b = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
+    store_a.record_op(issue_number=5, op=StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z"))
+    a, b = owner(store_a), owner(store_b)
+    proposal = Issue(number=5, title="t", labels=list(CLAIMED), state="open", repo="o/r",
+                     body=with_proposal_marker("b"))
+    assert a.verify(proposal).approved and a.declined_numbers() == frozenset()  # A's caches warm
+
+    b.decline(5)  # B's first durable write; B then crashes before closing
+    host = MagicMock()
+    host.get_issue.return_value = proposal  # still open and labelled approved
+    apply_fn = MagicMock()
+
+    result = execute_approved_tech_lead_op(
+        SimpleNamespace(proposal_issue_number=5), apply_fn, repository_host=host, ops=store_a, approvals=a,
+    )
+
+    assert not result.success
+    apply_fn.assert_not_called()
+    assert store_a.load_op(issue_number=5) is not None

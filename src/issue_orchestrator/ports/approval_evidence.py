@@ -108,6 +108,11 @@ class ProposalIssueIndex(Protocol):
 
     def declined_proposals(self) -> frozenset[int]: ...
 
+    def is_declined(self, number: int) -> bool:
+        """A targeted, uncached read: consent asks it every time, since
+        another engine sharing the store may have declined since (#7763 r24)."""
+        ...
+
 
 class InMemoryProposalIssueIndex:
     """Process-local :class:`ProposalIssueIndex` for tests and fakes."""
@@ -136,6 +141,9 @@ class InMemoryProposalIssueIndex:
 
     def declined_proposals(self) -> frozenset[int]:
         return frozenset(self._declined)
+
+    def is_declined(self, number: int) -> bool:
+        return number in self._declined
 
 
 __all__ = [

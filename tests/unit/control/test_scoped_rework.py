@@ -317,8 +317,7 @@ def test_ui_approval_uses_same_stored_op_and_discovery_deduplicates(lane):
     executor, store, host, issue, pr, proposal, request, _, _ = lane
     approvals = ui_approvals(host)
     result = apply_operator_proposal_command(
-        TechLeadProposalCommand(501, "approve"), repository=host, ops=store, approvals=approvals
-    )
+        TechLeadProposalCommand(501, "approve"), repository=host, ops=store, approvals=approvals, filtering_label=None)
     assert result.outcome == "approved"
     assert "approved" in proposal.labels
     actions = plan_approved_tech_lead_op_executions(
@@ -364,8 +363,7 @@ def test_decline_and_stale_operator_affordances(lane):
     assert (
         apply_operator_proposal_command(
             TechLeadProposalCommand(501, "decline"), repository=host, ops=store,
-            approvals=ui_approvals(host),
-        ).outcome
+            approvals=ui_approvals(host), filtering_label=None).outcome
         == "declined"
     )
     assert proposal.state == "closed" and store.load_op(issue_number=501) is None
@@ -634,8 +632,7 @@ def test_execution_receipt_owns_ui_outcome_across_finalization_crash(lane):
     # Control Center can no longer decline the proposal.
     outcome = apply_operator_proposal_command(
         TechLeadProposalCommand(501, "decline"), repository=host, ops=store,
-        approvals=ui_approvals(host),
-    )
+        approvals=ui_approvals(host), filtering_label=None)
     assert outcome.outcome == "unavailable"
     assert store.load_op(issue_number=501) is not None
     assert proposal.state == "open"

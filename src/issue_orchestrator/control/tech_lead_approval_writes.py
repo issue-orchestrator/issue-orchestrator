@@ -33,6 +33,7 @@ from ..domain.tech_lead_approval import (
     ApprovalTransition,
     OperatorApprovalRecord,
     ProposalLabelState,
+    in_engine_scope,
     labels_named,
     missing_labels,
 )
@@ -183,6 +184,7 @@ def apply_operator_proposal_command(
     repository: "RepositoryHost",
     ops: "TechLeadAuthorityStore",
     approvals: "TechLeadApprovals",
+    filtering_label: str | None,
     now: Callable[[], str] = _utc_now,
 ) -> TechLeadProposalCommandOutcome:
     """The Control Center's Approve / Decline for ANY tech-lead proposal.
@@ -197,9 +199,10 @@ def apply_operator_proposal_command(
         issue = repository.get_issue(number)
         if issue is None or issue.state != "open":
             return TechLeadProposalCommandOutcome("unavailable", "Proposal is closed or missing", number)
-        if not approvals.proposal_state_of(issue).is_proposal:
+        mine = in_engine_scope(issue.labels, filtering_label)  # #7763 review r24 F2
+        if not mine or not approvals.proposal_state_of(issue).is_proposal:
             return TechLeadProposalCommandOutcome(
-                "unavailable", "This issue is not a tech-lead proposal", number
+                "unavailable", "This issue is not a tech-lead proposal of this engine", number
             )
         if approvals.is_declined(number):  # final (#7763 review r15 F2)
             return TechLeadProposalCommandOutcome(
