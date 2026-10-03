@@ -161,6 +161,31 @@ def test_an_approved_pr_waits_while_its_issue_awaits_a_human() -> None:
     assert followup == MergeQueueFollowup()
 
 
+def test_an_approved_pr_waits_while_it_carries_a_merge_hold() -> None:
+    """#7678: a person deciding before the PR merges is a hold on the PR
+    itself; review and rework run, the merge queue does not."""
+    coordinator, _ = _coordinator(MagicMock())
+
+    followup = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed", "needs-human"]), issue=_issue(),
+        issue_number=228, pr_number=318, entry=None,
+    )
+
+    assert followup == MergeQueueFollowup()
+
+
+def test_a_merge_held_pr_with_a_conflict_is_still_reworked() -> None:
+    """The hold blocks only the merge: a conflict still gets its rework."""
+    coordinator, _ = _coordinator(MagicMock())
+
+    followup = coordinator.classify(
+        pr=_pr("dirty", labels=["code-reviewed", "needs-human"]), issue=_issue(),
+        issue_number=228, pr_number=318, entry=None,
+    )
+
+    assert followup.rework is not None and followup.enqueue is None
+
+
 def test_pr_without_gate_label_is_not_enqueued() -> None:
     """A PR that has not cleared the enqueue_after gate is never enqueued."""
     repo = MagicMock()

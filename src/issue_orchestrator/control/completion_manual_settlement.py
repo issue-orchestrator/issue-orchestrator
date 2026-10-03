@@ -3,7 +3,7 @@
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..domain.completion_processing import ProcessingResult
 from ..domain.manual_publication import PreparedManualPublication
@@ -16,10 +16,13 @@ from .completion_result_artifacts import build_processing_result, EmitCompletion
 from .completion_types import ERROR_PREFIX_CREATE_PR
 from .review_publish_pipeline import PublishPipelinePlan
 
+if TYPE_CHECKING:
+    from .needs_human_block import SharedNeedsHumanBlock
+
 
 def settle_manual_publication(
     prepared: PreparedManualPublication, publication: PublishValidatedHeadOutcome, *,
-    session_output: SessionOutput, labels: LabelAdapter,
+    session_output: SessionOutput, labels: LabelAdapter, block: "SharedNeedsHumanBlock",
     finalize_review_exchange: Callable[..., None],
     execute_planned_actions: Callable[..., tuple[str | None, str | None, bool]],
     emit_completion_event: EmitCompletionEvent, post_issue_comment: PostIssueComment,
@@ -37,7 +40,7 @@ def settle_manual_publication(
         if publication.pr_number is None or publication.pr_url is None or publication.pr_head_sha != command.target_head_sha or publication.observed_remote_head_sha != command.target_head_sha:
             raise ValueError("manual settlement requires exact validated PR identity")
         actions.append(f"Published validated head {command.target_head_sha}")
-        if apply_pr_labels(pr_number=publication.pr_number, record=prepared.record, labels=labels,
+        if apply_pr_labels(pr_number=publication.pr_number, record=prepared.record, labels=labels, block=block,
                            actions_taken=actions, errors=errors):
             if prepared.exchange_mode in {"via-mcp", "via-local-loop"} and prepared.exchange_result is not None:
                 finalize_review_exchange(

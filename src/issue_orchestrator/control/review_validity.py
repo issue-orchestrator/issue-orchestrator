@@ -11,6 +11,7 @@ from ..domain.blocked_open_pr import BlockedPRSkipReason
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports.pull_request_tracker import PRInfo
+    from .human_gates import HumanGates
     from .label_manager import LabelManager
 
 
@@ -53,14 +54,14 @@ def evaluate_review_validity(
     label_manager: "LabelManager",
     issue: LabelledIssue | None,
     pr: "PRInfo | None" = None,
+    gates: "HumanGates",
     review_label_confirmed: bool = False,
-    review_admitted_blocks: frozenset[str] = frozenset(),
 ) -> ReviewValidity:
     """Return whether a review is still valid for queue/launch processing.
 
-    ``review_admitted_blocks`` are casefolded issue blocks the review may run
-    over, as decided by :mod:`.review_question_hold` (an agent's own open
-    question, #7593). They still hold everything else.
+    Blocks are read through ``gates`` (#7678): a PR's merge-scoped
+    ``needs-human`` (a person decides before it merges) does not hold its
+    review; every work-scoped block on the PR or the issue does.
     """
     issue_labels = tuple(issue.labels) if issue is not None else ()
     pr_labels = tuple(pr.labels) if pr is not None else ()
@@ -93,7 +94,7 @@ def evaluate_review_validity(
                 pr_labels=pr_labels,
             )
 
-        pr_blocking = tuple(label_manager.get_blocking(pr.labels))
+        pr_blocking = gates.work_blocking(pr.number, pr.labels)
         if pr_blocking:
             return ReviewValidity(
                 valid=False,
@@ -118,11 +119,7 @@ def evaluate_review_validity(
             pr_labels=pr_labels,
         )
 
-    issue_blocking = tuple(
-        label
-        for label in label_manager.get_blocking(issue.labels)
-        if label.casefold() not in review_admitted_blocks
-    )
+    issue_blocking = gates.issue_work_blocking(issue.labels)
     if issue_blocking:
         return ReviewValidity(
             valid=False,
@@ -179,7 +176,7 @@ def evaluate_review_withholding(
     issue: LabelledIssue,
     pr: "PRInfo",
     block_label: str,
-    review_admitted_blocks: frozenset[str] = frozenset(),
+    gates: "HumanGates",
 ) -> ReviewWithholding:
     """Whether ``block_label`` on ``issue`` is all that keeps ``pr`` from review.
 
@@ -190,12 +187,10 @@ def evaluate_review_withholding(
     released = _IssueLabels(tuple(name for name in issue.labels if name.casefold() != folded))
     return ReviewWithholding(
         current=evaluate_review_validity(
-            config=config, label_manager=label_manager, issue=issue, pr=pr,
-            review_admitted_blocks=review_admitted_blocks,
+            config=config, label_manager=label_manager, issue=issue, pr=pr, gates=gates,
         ),
         without_block=evaluate_review_validity(
-            config=config, label_manager=label_manager, issue=released, pr=pr,
-            review_admitted_blocks=review_admitted_blocks,
+            config=config, label_manager=label_manager, issue=released, pr=pr, gates=gates,
         ),
         block_label=block_label,
     )

@@ -34,6 +34,7 @@ from issue_orchestrator.testing.exam import render_summary
 from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     BLOCKED_ITEMS_TRIAGED,
+    MERGE_HELD_WORK_PROCEEDS,
     EXAM_CASE_IDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
@@ -52,11 +53,13 @@ from tests.e2e.exam.scenarios import (
     case_b,
     case_c,
     case_d,
+    case_e,
     case_u,
     run_case_a,
     run_case_b,
     run_case_c,
     run_case_d,
+    run_case_e,
     run_case_u,
 )
 from tests.e2e.flows import E2EFlow
@@ -130,6 +133,7 @@ async def test_tech_lead_exam(
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
         UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
         BLOCKED_ITEMS_TRIAGED: case_d,
+        MERGE_HELD_WORK_PROCEEDS: case_e,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -146,6 +150,8 @@ async def test_tech_lead_exam(
             return await run_case_a(run, flows)
         if case_id == STALE_CLAIM_PAUSED_FOR_RECONCILE:
             return await run_case_c(run, flows)
+        if case_id == MERGE_HELD_WORK_PROCEEDS:
+            return await run_case_e(run, flows)
         if case_id == UPGRADE_WITH_WORK_IN_FLIGHT:
             return await run_case_u(
                 run, flows, base_ref=os.environ.get("E2E_EXAM_BASE_REF", "origin/main")

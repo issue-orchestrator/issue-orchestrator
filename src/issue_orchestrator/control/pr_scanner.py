@@ -25,7 +25,7 @@ from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .review_validity import ReviewValidity, evaluate_review_validity
-from .review_question_hold import NO_REVIEW_ADMITTED_BLOCKS, ReviewQuestionHolds
+from .human_gates import HumanGates
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from ..ports import EventSink,  make_trace_event
@@ -135,16 +135,16 @@ class PRScanner:
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._review_scope = ReviewScopeChecker(config, repository, log_prefix="SCANNER")
-        self._review_question_holds: ReviewQuestionHolds = NO_REVIEW_ADMITTED_BLOCKS
+        self._gates = HumanGates.unrecorded(label_manager)
 
-    def attach_review_question_holds(self, holds: ReviewQuestionHolds) -> None:
-        """Attach the owner of which issue blocks a review may run over (#7593).
+    def attach_human_gates(self, gates: HumanGates) -> None:
+        """Attach the owner of what each block holds (#7678).
 
-        The composition root builds that owner from the shared needs-human
-        block, which is wired after this scanner; until attached every block
-        withholds review, as it did before the owner existed.
+        The composition root builds it over the shared needs-human block,
+        which is wired after this scanner; until attached every
+        ``needs-human`` holds the work, the reading with no recorded cause.
         """
-        self._review_question_holds = holds
+        self._gates = gates
 
     def load_issue_branches(self) -> dict[int, str]:
         """Load the current issue->branch map for scan-time scoping."""
@@ -250,7 +250,7 @@ class PRScanner:
                 issue=issue,
                 pr=pr,
                 review_label_confirmed=True,
-                review_admitted_blocks=self._review_question_holds.review_admitted_blocks(issue),
+                gates=self._gates,
             )
             if not validity.valid:
                 logger.info(
@@ -433,21 +433,10 @@ class PRScanner:
         issue = known_issues.get(issue_number)
         if issue is None:
             return None
-        # A review may run over an issue block its owner admits (#7593); a
-        # rework may not.
-        admitted = (
-            self._review_question_holds.review_admitted_blocks(issue)
-            if lane is BlockedPRLane.REVIEW
-            else frozenset()
-        )
-        for reason, labels, exempt in (
-            (BlockedPRSkipReason.PR_BLOCKED, pr.labels, frozenset()),
-            (BlockedPRSkipReason.ISSUE_BLOCKED, issue.labels, admitted),
+        for reason, blocking in (
+            (BlockedPRSkipReason.PR_BLOCKED, self._gates.work_blocking(pr.number, pr.labels)),
+            (BlockedPRSkipReason.ISSUE_BLOCKED, self._gates.issue_work_blocking(issue.labels)),
         ):
-            blocking = [
-                label for label in self._lm.get_blocking(labels)
-                if label.casefold() not in exempt
-            ]
             if blocking:
                 return BlockedOpenPRObservation(
                     lane=lane,
@@ -508,8 +497,10 @@ class PRScanner:
                 reason="active_session",
             )
         rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
-        if self._lm.is_blocking_any(pr.labels):
-            pr_blocking = self._lm.get_blocking(pr.labels)
+        # A PR's merge-scoped hold (a person decides before it merges) is no
+        # bar to its rework (#7678); every work-scoped block is.
+        pr_blocking = list(self._gates.work_blocking(pr.number, pr.labels))
+        if pr_blocking:
             return _ReworkScanDecision(
                 decision="skip",
                 issue_number=issue_number,
@@ -523,8 +514,8 @@ class PRScanner:
         # Also check the linked issue's labels — a publish failure marks the
         # issue as blocked-failed but may leave needs-rework on the PR.
         issue = scope.issue if scope.issue is not None else self.repository.get_issue(issue_number)
-        if issue is not None and self._lm.is_blocking_any(issue.labels):
-            issue_blocking = self._lm.get_blocking(issue.labels)
+        issue_blocking = list(self._gates.issue_work_blocking(issue.labels)) if issue is not None else []
+        if issue_blocking:
             return _ReworkScanDecision(
                 decision="skip",
                 issue_number=issue_number,

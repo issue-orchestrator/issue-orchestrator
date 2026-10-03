@@ -83,6 +83,7 @@ def build_tech_lead_review_release_executor(
         events=deps.events,
         config=orchestrator.config,
         labels=labels,
+        gates=deps.human_gates,
         read_issue=host.get_issue,
         list_open_prs=host.list_open_prs_complete,
         read_pr=host.get_pr,

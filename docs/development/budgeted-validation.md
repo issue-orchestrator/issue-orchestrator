@@ -124,7 +124,7 @@ upgrade with work in flight, run from `HEAD~10`, the span one cadence covers. Ea
 case runs the real engine and tech lead against GitHub and grades the outcome, so a
 regression in how the tech lead handles a known fault is found within ten merges
 and narrowed to the merge that caused it. Run a single case by hand with
-`make test-tech-lead-exam EXAM_CASE=<A|B|C|D|U> EXAM_ENGINE_REF=<ref>`.
+`make test-tech-lead-exam EXAM_CASE=<A|B|C|D|E|U> EXAM_ENGINE_REF=<ref>`.
 Scorecards are written under the repository's common Git directory, in
 `io-tech-lead-exam/` (override with `EXAM_OUT=<dir>`), so they outlive the
 suite's temporary checkout; the tech-lead improver (#7490) stages the latest

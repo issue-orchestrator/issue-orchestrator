@@ -1446,6 +1446,43 @@ def test_post_publish_escalation_is_suppressed_when_pr_already_needs_human() -> 
     assert 228 not in state.awaiting_merge_checks_pending_since
 
 
+def test_a_persons_merge_decision_does_not_suppress_the_engines_escalation(tmp_path) -> None:
+    """#7678 review r1: a PR held only by a person's MERGE decision is not
+    "already escalated". Branch protection blocking it terminally is still
+    escalated, and applying that escalation makes the PR's hold WORK."""
+    from issue_orchestrator.control.human_gates import HumanGates
+    from issue_orchestrator.domain.human_block import (
+        HumanBlockRequest, HumanHoldScope, NeedsHumanCause,
+    )
+    from tests.unit.control.test_retained_completion_preparation import _real_block
+
+    entry = _history_entry()
+    label_manager = _label_manager()
+    live: dict[int, set[str]] = {}
+    block, _claims = _real_block(tmp_path, live, label=label_manager.needs_human)
+    pr_number = _pr("open").number
+    assert block.acquire(HumanBlockRequest(pr_number, NeedsHumanCause.MERGE_DECISION, "asked")).committed
+    gates = HumanGates.over(block, label_manager)
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(repository_host, _pr(
+        "open", mergeable_state="blocked",
+        labels=[label_manager.code_reviewed, label_manager.needs_human],
+        status_check_rollup="SUCCESS",
+    ))
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler(
+        repository_host, label_manager=label_manager, clock=lambda: 1234.5, gates=gates,
+    ).discover(state)
+
+    assert result.escalation_discovered == 1
+    assert result.escalations[0].kind == "branch_protection_blocked"
+    # What the escalation's apply records (EscalateToHumanAction → MERGE_ESCALATION):
+    assert block.acquire(HumanBlockRequest(pr_number, NeedsHumanCause.MERGE_ESCALATION, "x")).committed
+    assert gates.needs_human_scope(pr_number, sorted(live[pr_number])) is HumanHoldScope.WORK
+
+
 def test_needs_human_pr_with_now_readable_failure_recovers_to_rework() -> None:
     entry = _history_entry()
     label_manager = _label_manager()

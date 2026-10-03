@@ -59,6 +59,8 @@ class CaseEngine:
     """Hold work mid-flight until this file exists (``exam_config``)."""
     asking_coders: bool = False
     """Add the coders that end by asking the operator (``exam_config``)."""
+    reviewer_changes_once: Path | None = None
+    """The first post-publish review requests changes (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -85,6 +87,7 @@ class CaseEngine:
             tech_lead_model=tech_lead_model,
             release_file=self.release_file,
             asking_coders=self.asking_coders,
+            reviewer_changes_once=self.reviewer_changes_once,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -182,6 +185,26 @@ def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> Ca
                 "findings": {"promote": "off"},
                 "health_review": {"interval_minutes": 2},
                 "stuck_sweep": {"enabled": False},
+            },
+        },
+    )
+
+
+def case_e_engine(changes_once: Path) -> CaseEngine:
+    """Two people-decisions, typed (#7678): a pre-work question on an issue,
+    and a decision before a published PR merges. No tech lead: the engine
+    alone must keep the first item's work held and let the second PR's review
+    and rework run. The first review requests changes (``changes_once``), so
+    the PR goes through one rework under its merge hold.
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        asking_coders=True,
+        reviewer_changes_once=changes_once,
+        overlay={
+            "review": {
+                "exchange": {"mode": "via-draft-pr"},
+                "tech_lead_follow_up_agent": CODER_LABEL,
             },
         },
     )

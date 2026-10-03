@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.review_scope import extract_issue_number_from_pr
 from issue_orchestrator.control.review_validity import evaluate_review_validity
@@ -133,7 +134,7 @@ def _refusing_gate(config: Config, labels: LabelManager, issue: Any, open_pr: PR
     if open_pr is None:
         return ""
     validity = evaluate_review_validity(
-        config=config, label_manager=labels, issue=issue, pr=open_pr
+        config=config, label_manager=labels, gates=HumanGates.unrecorded(labels), issue=issue, pr=open_pr
     )
     if validity.valid:
         return ""

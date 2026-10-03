@@ -234,6 +234,7 @@ class GitHubWorkflow:
             repo=self.config.repo,
             merge_queue=self._merge_queue_coordinator(),
             dependency_evaluator=self.dependency_evaluator,
+            gates=self.fact_gatherer.human_gates,
         ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
         state.discovered_awaiting_merge_drifts.extend(result.drifts)

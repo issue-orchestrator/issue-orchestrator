@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-
 COMPLETION_RECORD_PATH = ".issue-orchestrator/completion.json"
 
 
@@ -32,6 +31,7 @@ class RequestedAction(str, Enum):
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
     POST_COMMENT = "post_comment"
     PUSH_BRANCH = "push_branch"
+    HOLD_MERGE_FOR_HUMAN = "hold_merge_for_human"
 
 
 @dataclass(frozen=True)

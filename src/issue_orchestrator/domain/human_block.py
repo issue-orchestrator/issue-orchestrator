@@ -1,5 +1,6 @@
 """Typed provenance and outcomes for the shared human-attention block."""
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -41,11 +42,23 @@ class NeedsHumanCause(Enum):
     SESSION_LIFECYCLE = "session_lifecycle"
     #: Independent failed validated-work records, projected by disposition.
     VALIDATED_WORK_DISPOSITION = "validated_work_disposition"
+    #: A person must decide before a PR MERGES (#7678): an agent asked for a
+    #: human beside its published work (``pr_labels: [needs-human]``), so the
+    #: question is about the PR, not the work. Recorded against the PR. It is
+    #: the one MERGE-scoped cause: review, rework and conflict rework proceed,
+    #: and only the merge waits. Released by a person, never by a lifecycle -
+    #: so the post-publish "now reworkable" clear cannot take it off.
+    MERGE_DECISION = "merge_decision"
     #: An action the liveness owner parked (#7350): it failed permanently,
     #: needs a person, or spent its retry budget with unchanged facts. Its own
     #: token because it IS released on its own terms - the parked action
     #: succeeding - and that release must not erase any other lifecycle's block.
     ACTION_LIVENESS = "action_liveness"
+
+    @property
+    def scope(self) -> "HumanHoldScope":
+        """What this cause holds while it stands (#7678); see :class:`HumanHoldScope`."""
+        return HumanHoldScope.MERGE if self is NeedsHumanCause.MERGE_DECISION else HumanHoldScope.WORK
 
     @property
     def releases_only_its_recorded_block(self) -> bool:
@@ -62,6 +75,54 @@ class NeedsHumanCause(Enum):
         if self is NeedsHumanCause.VALIDATED_WORK_DISPOSITION:
             return key.startswith(f"{self.value}:")
         return key == self.value
+
+
+class HumanHoldScope(Enum):
+    """What a ``needs-human`` holds on the number it is on (#7678).
+
+    One label, two meanings, typed by the causes recorded against it:
+
+    * ``WORK``: the item's work waits on a person (an agent's pre-work
+      question, the engine giving up, an escalation). Nothing proceeds: no
+      launch, review or rework, and no merge.
+    * ``MERGE``: only the PR's merge waits on a person. Review, rework and
+      conflict rework proceed.
+
+    A label is MERGE-scoped only when every cause recorded against it is; a
+    label with no recorded cause (put on by hand) or an unreadable record is
+    WORK, the scope that holds the most.
+    """
+
+    WORK = "work"
+    MERGE = "merge"
+
+
+def hold_scope(causes: frozenset[NeedsHumanCause]) -> HumanHoldScope:
+    """The scope of a ``needs-human`` held by ``causes`` (see :class:`HumanHoldScope`)."""
+    if causes and all(cause.scope is HumanHoldScope.MERGE for cause in causes):
+        return HumanHoldScope.MERGE
+    return HumanHoldScope.WORK
+
+
+def needs_human_hold(
+    labels: Iterable[str],
+    *,
+    needs_human: str,
+    handover_marker: str,
+    causes: Callable[[], frozenset[NeedsHumanCause]],
+) -> HumanHoldScope | None:
+    """What the shared label in ``labels`` holds; None when it is absent.
+
+    A tech-lead hand-over marker beside it is WORK (the hand-over holds the
+    item whatever else is recorded); otherwise the recorded ``causes`` decide
+    (:func:`hold_scope`), read only when the label is there.
+    """
+    folded = {label.casefold() for label in labels}
+    if needs_human.casefold() not in folded:
+        return None
+    if handover_marker.casefold() in folded:
+        return HumanHoldScope.WORK
+    return hold_scope(causes())
 
 
 @dataclass(frozen=True, slots=True)

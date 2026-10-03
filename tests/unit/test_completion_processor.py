@@ -1502,6 +1502,54 @@ class TestReviewExchangeExecution:
         mock_label_adapter.add_label.assert_any_call(99, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(99, "needs-code-review")
 
+    def test_a_reused_pr_gets_the_records_merge_hold(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """#7678: a rework whose agent asks a person to decide before the merge
+        reuses its open PR; the hold goes on THAT PR, not the issue."""
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+        from tests.unit.control.test_retained_completion_preparation import _real_block
+
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-draft-pr"
+        config.worktree_remediation_pr_collision = "reuse_open"
+        live: dict[int, set[str]] = {123: set(), 99: set()}
+        block, claims = _real_block(tmp_path, live)
+        processor = make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter, pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter, session_output=FileSystemSessionOutput(),
+            event_bus=event_bus, config=config, needs_human_block=block,
+            label_config={"needs_human": "needs-human"},
+        )
+        mock_git_adapter.get_current_branch.return_value = "123-branch"
+        mock_pr_adapter.get_prs_for_issue.return_value = [PRInfo(
+            number=99, title="#123 Existing PR", url="https://github.com/owner/repo/pull/99",
+            branch="123-branch", body="Body", state="open", labels=[],
+        )]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            pr_labels=["needs-human"],
+        )
+
+        worktree = worktree_with_completion(record)
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue", agent_label="agent:coder",
+        )
+
+        assert result.success is True, result.errors
+        mock_pr_adapter.create_pr.assert_not_called()
+        assert claims.needs_human_causes(99) == frozenset({NeedsHumanCause.MERGE_DECISION.value})
+        assert live[99] == {"needs-human"} and live[123] == set()
+
     def test_existing_pr_reuse_ignores_prior_attempt_branch_and_creates_new_pr(
         self,
         tmp_path,
@@ -6873,7 +6921,7 @@ class TestReservedPrLabelsOnTheReceiptPath:
     built from, or the reserved label reaches the PR and the issue never gets
     the block the agent asked for."""
 
-    def test_a_receipt_publication_routes_the_reserved_label_to_the_issue(
+    def test_a_receipt_publication_types_the_reserved_label_as_the_prs_merge_hold(
         self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus,
     ) -> None:
         from issue_orchestrator.domain.human_block import NeedsHumanCause
@@ -6894,7 +6942,7 @@ class TestReservedPrLabelsOnTheReceiptPath:
             number=77, title="t", url="https://github.com/example/repo/pull/77",
             branch="b", body="", state="open", labels=[],
         )
-        live: dict[int, set[str]] = {42: set()}
+        live: dict[int, set[str]] = {42: set(), 77: set()}
         block, claims = _real_block(tmp_path, live)
         processor = make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
@@ -6913,5 +6961,8 @@ class TestReservedPrLabelsOnTheReceiptPath:
         applied = [(c.args[0], c.args[1]) for c in mock_label_adapter.add_label.call_args_list]
         assert (77, "size:small") in applied
         assert [pair for pair in applied if pair[1] == "needs-human"] == []
-        assert live[42] == {"needs-human"}
-        assert claims.needs_human_causes(42) == frozenset({NeedsHumanCause.AGENT_COMPLETION.value})
+        # #7678: the request holds PR #77's merge, and leaves the issue's work alone.
+        assert live[77] == {"needs-human"}
+        assert claims.needs_human_causes(77) == frozenset({NeedsHumanCause.MERGE_DECISION.value})
+        assert live[42] == set()
+        assert claims.needs_human_causes(42) == frozenset()

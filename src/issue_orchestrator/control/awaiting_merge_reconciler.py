@@ -18,6 +18,8 @@ from ..domain.models import (
 )
 from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
+from ..domain.human_block import HumanHoldScope
+from .human_gates import HumanGates
 from .awaiting_merge_drift_policy import label_drift_finding
 from .close_on_merge import (
     merged_pr_reconciliation,
@@ -111,6 +113,10 @@ class AwaitingMergeReconciler:
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
     rollup_scan_interval_seconds: float = AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS
+    #: What a PR's needs-human holds (#7678). Only a WORK hold means "already
+    #: escalated": a person's merge decision must not suppress the engine's own
+    #: escalation. None reads every needs-human as WORK (no cause record).
+    gates: "HumanGates | None" = None
     # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
     # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
     # in production wire the configured value through.
@@ -545,7 +551,9 @@ class AwaitingMergeReconciler:
         # _post_publish_eligible returns False when label_manager is None.
         assert self.label_manager is not None
         # A stale post-publish human escalation may become reworkable later.
-        already_escalated = self.label_manager.needs_human in pr.labels
+        # Only a WORK hold is an escalation; a merge decision is not (#7678).
+        gates = self.gates or HumanGates.unrecorded(self.label_manager)
+        already_escalated = gates.needs_human_scope(pr_number, pr.labels) is HumanHoldScope.WORK
 
         gate = self._rollup_gate()
         decisive = rollup_is_decisive(pr.mergeable_state)

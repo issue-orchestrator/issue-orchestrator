@@ -1279,9 +1279,10 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         retained, no agent is left to correct it, so recovery met the same
         refusal on every pass (porchpin #364, #7592).
 
-        The door now moves the request where it belongs: the PR is created and
-        keeps the ordinary label, the reserved one never reaches it, and the
-        ISSUE gets the block through the owner with the agent's cause.
+        The door now types the request (#7678): the PR is created and keeps
+        the ordinary label, the raw adapter never writes the reserved one, and
+        the block owner holds the PR's MERGE with the merge-decision cause. The
+        issue's work is not blocked (#7595 put it there, porchpin#364).
 
         Driven with a REAL ``CREATE_PR`` completion that returns a PR, because
         the label-applying code is reachable only on that path: a record that
@@ -1313,13 +1314,14 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         assert (77, "size:small") in applied
         # The reserved label reached neither the raw adapter nor the PR...
         assert [pair for pair in applied if pair[1] == labels.needs_human] == []
-        assert labels.needs_human not in live[77]
-        assert claims.needs_human_causes(77) == frozenset()
-        # ...and the request it expressed is the ISSUE's block, with a cause.
-        assert labels.needs_human in live[903]
-        assert claims.needs_human_causes(903) == frozenset(
-            {NeedsHumanCause.AGENT_COMPLETION.value}
+        # ...the owner holds the PR's merge, with its cause...
+        assert labels.needs_human in live[77]
+        assert claims.needs_human_causes(77) == frozenset(
+            {NeedsHumanCause.MERGE_DECISION.value}
         )
+        # ...and the issue's work is not blocked.
+        assert labels.needs_human not in live[903]
+        assert claims.needs_human_causes(903) == frozenset()
 
     def test_an_ordinary_pr_label_still_lands_on_a_created_pr(
         self, sample_config, tmp_path

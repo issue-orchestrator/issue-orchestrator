@@ -39,6 +39,7 @@ from ..ports.repository_host import RepositoryHostError
 from ..infra.logging_config import issue_log
 from .action_results import ActionResult
 from .actions import AddLabelAction, ReleasePublishedReviewAction, RemoveLabelAction
+from .human_gates import HumanGates
 from .published_review_custody import (
     PublishedReviewHold,
     PublishedReviewHolds,
@@ -63,7 +64,7 @@ _MACHINERY = frozenset(
 def review_releasable(
     issue_labels: Sequence[str],
     holds: Sequence[PublishedReviewHold],
-    label_manager: "LabelManager",
+    gates: "HumanGates",
 ) -> bool:
     """The one eligibility rule for releasing a published PR's review.
 
@@ -75,11 +76,12 @@ def review_releasable(
     """
     blockers = {
         name.casefold()
-        for name in label_manager.get_blocking(issue_labels)
+        for name in gates.issue_work_blocking(issue_labels)
         if name.casefold() not in _MACHINERY
     }
-    unblocked_pr = any(not label_manager.get_blocking(hold.pr_labels) for hold in holds)
-    return unblocked_pr and blockers == {label_manager.blocked_failed.casefold()}
+    # A PR's merge-scoped hold is no bar to its review (#7678).
+    unblocked_pr = any(not gates.holds_work(hold.pr_number, hold.pr_labels) for hold in holds)
+    return unblocked_pr and blockers == {gates.labels.blocked_failed.casefold()}
 
 
 class ReviewReleaseStatus(StrEnum):
@@ -194,6 +196,7 @@ class ReviewReleaseWrites:
 class PublishedReviewRelease:
     custody: PublishedReviewHolds
     labels: "LabelManager"
+    gates: "HumanGates"
     read_labels: Callable[[int], list[str]]
     apply: Callable[["Action"], ActionResult]
     #: The PR label review discovery scans for; empty when none is configured.
@@ -204,7 +207,7 @@ class PublishedReviewRelease:
         if refusal is not None:
             return self._outcome(issue_number, refusal[0], holds, refusal[1])
         described = "; ".join(hold.describe() for hold in holds)
-        target = next(hold for hold in holds if not self.labels.get_blocking(hold.pr_labels))
+        target = next(hold for hold in holds if not self.gates.holds_work(hold.pr_number, hold.pr_labels))
         status, detail = self.writes.release(
             issue_number, target.pr_number, f"published validated work is under review: {described}",
             still_releasable=lambda: self._withdrawn(issue_number, target.pr_number))
@@ -218,7 +221,7 @@ class PublishedReviewRelease:
         if not holds:
             return holds, (ReviewReleaseStatus.NOT_HELD, "no open PR carries published validated work")
         current = self.read_labels(issue_number)
-        releasable = review_releasable(current, holds, self.labels)
+        releasable = review_releasable(current, holds, self.gates)
         if not releasable:
             return holds, (ReviewReleaseStatus.NOT_RELEASABLE,
                            f"issue blocks {self.labels.get_blocking(current)}; a held PR carries "
@@ -229,7 +232,7 @@ class PublishedReviewRelease:
         """Eligibility read again, for the SAME PR the review was routed to."""
         holds, refusal = self._eligibility(issue_number)
         target = [hold for hold in holds if hold.pr_number == pr_number]
-        routable = [hold for hold in target if not self.labels.get_blocking(hold.pr_labels)]
+        routable = [hold for hold in target if not self.gates.holds_work(hold.pr_number, hold.pr_labels)]
         if refusal is not None:
             return refusal[1]
         return None if routable else f"PR #{pr_number} no longer holds the work unblocked"
@@ -253,6 +256,7 @@ def published_review_release_for(applier: "ActionApplier", review_label: str) ->
     return PublishedReviewRelease(
         custody=applier.runtime_lifecycle.published_review,
         labels=applier.label_manager,
+        gates=HumanGates.over(applier.needs_human_block, applier.label_manager),
         read_labels=applier.repository_host.get_issue_labels_fresh,
         apply=applier.apply,
         review_label=review_label,
