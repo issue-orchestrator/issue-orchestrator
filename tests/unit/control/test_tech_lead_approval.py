@@ -698,8 +698,9 @@ def _decline_then_reopen(host: _Host, approvals, ops) -> Issue:
     return host.issue
 
 
-def test_a_declined_follow_up_reopened_needs_a_fresh_approval() -> None:
-    """r7 F2: decline takes `approved` off, so a reopen admits nothing."""
+def test_a_declined_follow_up_reopened_is_never_admitted() -> None:
+    """r7/r14 F2: decline takes `approved` off and is final, so a reopened
+    follow-up is admitted on neither its old nor a fresh approval."""
     evidence = FakeApprovalEvidence()
     evidence.label(500)  # a maintainer approved it...
     approvals = make_approvals(evidence)
@@ -710,10 +711,16 @@ def test_a_declined_follow_up_reopened_needs_a_fresh_approval() -> None:
     reopened = _decline_then_reopen(host, approvals, ops)  # ...then the operator declined
 
     assert "approved" not in reopened.labels
+    host.add_label(500, "approved")
+    evidence.label(500)  # a maintainer approves the reopened issue
+    reopened = host.issue
     verdicts = approvals.verify_claims([reopened])
-    settlements = plan_approval_settlements([reopened], verdicts, op_backed=set())
+    settlements = plan_approval_settlements(
+        [reopened], verdicts, op_backed=set(), declined=approvals.declined_numbers()
+    )
     assert all(s.transition is not ApprovalTransition.ADMIT for s in settlements)
-    assert not approvals.admits(reopened)
+    assert not approvals.admits(_marked(500, ["tech-lead-proposal", "approved"]))
+    assert not approvals.confirm(reopened)
 
 
 def test_a_declined_op_backed_proposal_reopened_is_never_admitted_or_launched() -> None:
@@ -838,3 +845,60 @@ def test_a_decline_interrupted_after_the_close_stays_declined_and_is_finished_at
     assert host.issue.state == "closed"
     assert ops.load_op(issue_number=500) is None
     assert finish_interrupted_declines(host, restarted, ops) == ()  # idempotent
+
+
+
+# --- review round 14 (#7763) ------------------------------------------------
+
+
+@pytest.mark.parametrize("op_backed", [True, False], ids=["op-backed", "follow-up"])
+def test_a_decline_interrupted_after_its_first_durable_write_never_executes(op_backed) -> None:
+    """r14 F1: the declined disposition is the first write of a Decline, for
+    every proposal kind; a crash right after it, with a maintainer's approval
+    standing, leaves nothing executable, and startup finishes the close."""
+    from issue_orchestrator.control.tech_lead_approval_migration import finish_interrupted_declines
+    from issue_orchestrator.control.tech_lead_proposals import reconcile_tech_lead_proposals
+
+    evidence = FakeApprovalEvidence()
+    evidence.label(500)  # a maintainer's standing approval
+    approvals = make_approvals(evidence)
+    host = _Host(evidence, _marked(500, CLAIMED if op_backed else ADMITTED))
+    ops = InMemoryTechLeadAuthorityStore()
+    if op_backed:
+        ops.record_op(issue_number=500, op=_op())
+    record_decline = approvals.index.decline_proposals
+
+    def record_then_crash(numbers) -> None:
+        record_decline(numbers)
+        raise RuntimeError("engine killed right after the durable decline")
+
+    approvals.index.decline_proposals = record_then_crash
+
+    def crash(*_args) -> None:
+        raise RuntimeError("engine killed")
+
+    # Any other write first would crash before the decline is on record.
+    approvals.records.discard_operator_approval = crash
+    outcome = apply_operator_proposal_command(
+        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
+    )
+    assert outcome.outcome == "failed" and host.issue.state == "open"
+
+    restarted = make_approvals(evidence)
+    restarted.index = approvals.index  # the same durable authority store
+    restarted.index.decline_proposals = record_decline
+    issue = host.issue
+    verdicts = restarted.verify_claims([issue])
+    assert not restarted.confirm(issue)
+    if op_backed:
+        reconciled = reconcile_tech_lead_proposals(
+            [issue], ops=dict(ops.list_ops()), verdicts=verdicts, pending_markers=()
+        )
+        assert reconciled.approved == ()  # the restarted scan plans no execution
+    else:
+        restarted.verify(issue)
+        assert not restarted.admits(issue)
+
+    assert finish_interrupted_declines(host, restarted, ops) == (500,)
+    assert host.issue.state == "closed" and "approved" not in host.issue.labels
+    assert ops.load_op(issue_number=500) is None

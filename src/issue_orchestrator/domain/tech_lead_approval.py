@@ -258,6 +258,8 @@ class ApprovalVerdictKind(StrEnum):
     NOT_CLAIMED = "not_claimed"
     #: Closed: a closed proposal is declined or finished, never approvable.
     CLOSED = "closed"
+    #: The operator declined it: final, even if the issue was reopened.
+    DECLINED = "declined"
     #: ``approved`` is on the issue but GitHub has no labeled event for it.
     NO_LABEL_EVENT = "no_label_event"
     #: The latest ``approved`` label came from a bot or GitHub App identity.
@@ -308,6 +310,8 @@ class ApprovalVerdict:
                 return "no approved label"
             case ApprovalVerdictKind.CLOSED:
                 return "closed"
+            case ApprovalVerdictKind.DECLINED:
+                return "declined by the operator"
             case ApprovalVerdictKind.NO_LABEL_EVENT:
                 return "the approved label has no labeled event on record"
             case ApprovalVerdictKind.BOT_ACTOR:

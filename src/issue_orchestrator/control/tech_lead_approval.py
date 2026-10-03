@@ -105,20 +105,22 @@ class TechLeadApprovals:
         self.index.index_proposals(issue.number for issue in issues)
         self.index.retire_proposals(retired)
 
-    def decline(self, issue_number: int, *, op_backed: bool) -> None:
-        """An operator declined (and the caller closed) *issue_number*.
+    def decline(self, issue_number: int) -> None:
+        """An operator declines *issue_number*: final, for every proposal kind.
 
-        Its verified approval and Control Center record go, and it leaves the
-        read model. An op-backed proposal is also marked declined for good
-        (#7763 review r7 F2): its op is discarded, so a reopened issue must
-        never be reinterpreted as follow-up work and admitted.
+        The durable declined disposition is the FIRST write (#7763 review r13
+        F1, r14 F1), so from that moment no consent check, settlement or
+        admission accepts the proposal, whatever a crash leaves undone; the
+        caller then closes it and startup's ``finish_interrupted_declines``
+        completes an interrupted one. Its verified approval and Control Center
+        record go, and it leaves the read model. A reopened declined proposal
+        stays declined: re-proposing is a new proposal.
         """
+        self.index.decline_proposals([issue_number])
+        self._declined = None
         self._verified.pop(issue_number, None)
         self.records.discard_operator_approval(issue_number)
         self.forget_from_scope(issue_number)
-        if op_backed:
-            self.index.decline_proposals([issue_number])
-            self._declined = None
 
     def is_declined(self, issue_number: int) -> bool:
         if self._declined is None:
@@ -168,6 +170,9 @@ class TechLeadApprovals:
         if issue.state != "open":
             self._verified.pop(number, None)
             return ApprovalVerdict(number, ApprovalVerdictKind.CLOSED)
+        if self.is_declined(number):  # final, reopened or not (#7763 r14 F1)
+            self._verified.pop(number, None)
+            return ApprovalVerdict(number, ApprovalVerdictKind.DECLINED)
         if not proposal_label_state(issue.labels).claims_approval:
             self._verified.pop(number, None)
             return ApprovalVerdict(number, ApprovalVerdictKind.NOT_CLAIMED)

@@ -109,17 +109,20 @@ def finish_interrupted_declines(
     repository: "RepositoryHost", approvals: "TechLeadApprovals", ops: "TechLeadAuthorityStore"
 ) -> tuple[int, ...]:
     """Complete every Decline a crash interrupted after its durable record
-    (#7763 review r13 F1): close the proposal and retire its op. Idempotent;
-    a finished decline has no op left, so it is never touched again."""
+    (#7763 review r13/r14 F1): an open declined proposal loses `approved` and
+    is closed again; a declined op is retired. Idempotent. Costs one
+    (ETag-cached) issue read per declined proposal per startup."""
     finished = []
-    for number, _op in ops.list_ops():
-        if not approvals.is_declined(number):
-            continue
+    for number in sorted(approvals.declined_numbers()):
         issue = repository.get_issue(number)
-        if issue is not None and issue.state == "open":
+        reopened = issue is not None and issue.state == "open"
+        if reopened:
+            for label in labels_named(issue.labels, APPROVED_LABEL):
+                repository.remove_label(number, label)
             repository.update_issue_state(number, "closed")
-        finish_decline(ops, number)
-        finished.append(number)
+        if reopened or ops.load_op(issue_number=number) is not None:
+            finish_decline(ops, number)
+            finished.append(number)
     return tuple(finished)
 
 

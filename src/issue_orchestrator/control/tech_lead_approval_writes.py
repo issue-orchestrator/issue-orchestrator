@@ -231,7 +231,7 @@ def _decline(
     # The durable decision FIRST (#7763 review r13 F1): a crash anywhere after
     # it leaves a declined proposal that never executes, and startup
     # (finish_interrupted_declines) completes the close and op cleanup.
-    approvals.decline(number, op_backed=ops.load_op(issue_number=number) is not None)
+    approvals.decline(number)
     repository.add_comment(
         number,
         "## ✖️ Declined\n\nThe operator declined this tech-lead proposal in the"
