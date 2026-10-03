@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
+    from .tech_lead_approval import TechLeadApprovals
 
 # How often the approval scope is re-observed when nothing else arms the tick.
 # One labelled, exhaustive read per interval rather than per tick, while still
@@ -115,7 +116,9 @@ def discover_open_gated_proposals(
             limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
             exhaustive=True,
         ):
-            found.setdefault(issue.number, issue)
+            # The later query's snapshot wins (#7763 review r21 F1): it is
+            # the newer read of the same issue.
+            found[issue.number] = issue
     retired: list[int] = []
     for number in sorted(set(indexed) - set(found)):
         issue = repository_host.get_issue(number)
@@ -141,6 +144,9 @@ class ApprovalScopeObservation:
     backlog: tuple[GatedTechLeadProposal, ...]
     issues: tuple["Issue", ...]
     retired: tuple[int, ...] = ()
+    #: False when this tick reused the owner's last complete observation
+    #: instead of querying GitHub (:func:`approval_scope_for_tick`).
+    refreshed: bool = True
 
 
 def observe_approval_backlog(
@@ -236,3 +242,40 @@ def observe_approval_scope_or_none(
             error,
         )
         return None
+
+
+def approval_scope_for_tick(
+    repository_host: "RepositoryHost",
+    config: "Config",
+    approvals: "TechLeadApprovals | None",
+    *partial: Sequence["Issue"],
+    due: bool,
+    decline_on_failure: bool,
+) -> ApprovalScopeObservation | None:
+    """This tick's approval scope: queried only when the cadence (or an
+    operator's command) says so (#7763 review r21 F2).
+
+    Other triggers (a pending op, say) arm fact production every tick; they
+    reuse the approval owner's last COMPLETE observation, refreshed with the
+    fresher sets this tick holds, instead of re-running the exhaustive gate
+    queries. A refresh marks the scope unavailable first, so a failed one is
+    never served as current (#7763 review r16 F2).
+    """
+    if not due and approvals is not None and approvals.scope_observed:
+        retained = tuple(issue for issue, _verdict in approvals.observed_scope())
+        in_scope = {issue.number for issue in retained}
+        observed = observe_gated_tech_lead_proposals(
+            retained, *partial, known=approvals.indexed_proposals()
+        )
+        return ApprovalScopeObservation(
+            backlog=tuple(item for item in observed if item.issue_number in in_scope),
+            issues=retained,
+            refreshed=False,
+        )
+    if approvals is not None:
+        approvals.mark_scope_unavailable()
+    return observe_approval_scope_or_none(
+        repository_host, config, *partial,
+        decline_on_failure=decline_on_failure,
+        indexed=approvals.indexed_proposals() if approvals is not None else frozenset(),
+    )

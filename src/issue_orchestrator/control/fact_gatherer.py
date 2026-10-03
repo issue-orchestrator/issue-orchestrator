@@ -55,7 +55,7 @@ from .tech_lead_artifact_retention import (
 )
 from .tech_lead_approval_scope import (
     approval_refresh_due,
-    observe_approval_scope_or_none,
+    approval_scope_for_tick,
 )
 from .tech_lead_proposals import observe_gated_tech_lead_proposals
 from .tech_lead_reaction import storm_possible
@@ -516,21 +516,18 @@ class FactGatherer:
         prs = self._fetch_tech_lead_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = collect_pr_metadata(self.repository_host, prs)
 
-        # A failed approval query may only cost this tick's OWN trigger. Until
-        # this attempt succeeds the page answers "not observed", never the
-        # previous read model as current (#7763 review r16 F2).
-        if self.approvals is not None:
-            self.approvals.mark_scope_unavailable()
-        scope = observe_approval_scope_or_none(
-            self.repository_host, self.config, board_issues, scan_observations,
-            decline_on_failure=not other_armed,
-            indexed=self.approvals.indexed_proposals() if self.approvals is not None else frozenset(),
+        # A failed approval query may only cost this tick's OWN trigger; the
+        # gate queries run on the approval cadence only (#7763 review r21 F2).
+        scope = approval_scope_for_tick(
+            self.repository_host, self.config, self.approvals, board_issues, scan_observations,
+            due=approval_due, decline_on_failure=not other_armed,
         )
         if scope is None:
             return None
         gated_proposals = scope.backlog
-        state.tech_lead_approval_scan_at = now_ts
-        if self.approvals is not None:
+        if scope.refreshed:
+            state.tech_lead_approval_scan_at = now_ts
+        if scope.refreshed and self.approvals is not None:
             verdicts = self.approvals.supersede_verdicts(verdicts, scope.issues)
             self.approvals.record_scope(scope.issues, verdicts, retired=scope.retired)
         # The board joins the scope: a proposal stripped of EVERY label is out

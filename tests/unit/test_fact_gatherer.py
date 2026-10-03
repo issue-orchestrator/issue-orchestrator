@@ -2662,3 +2662,74 @@ def test_an_approval_removed_between_the_anchor_scan_and_the_scope_read_waits_ag
     assert section.waiting_count == 1
     [card] = section.waiting
     assert card.status == "awaiting_approval" and card.can_approve
+
+
+def _op_for(number: int):
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+
+    return StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z")
+
+
+def test_the_later_gate_query_snapshot_wins(mock_config, mock_repository_host, sample_state) -> None:
+    """#7763 review r21 F1: the waiting-label query (run second) saw the
+    issue after its `approved` was removed; that newer snapshot is the one
+    verified and shown."""
+    from tests.approval_helpers import CLAIMED, approving_everything
+    from tests.unit.view_models.test_tech_lead_page import _section
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = approving_everything()
+    claimed = Issue(number=770, title="t", labels=["agent:backend", *CLAIMED])
+    unclaimed = Issue(number=770, title="t", labels=["agent:backend", *GATED])
+    approvals.verify(claimed)  # an earlier verified approval, cached
+    mock_repository_host.list_issues.side_effect = lambda **kw: (
+        [claimed] if "tech-lead-proposal" in (kw.get("labels") or [])
+        else [unclaimed] if "awaiting-approval" in (kw.get("labels") or []) else []
+    )
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    [(issue, verdict)] = approvals.observed_scope()
+    assert "approved" not in issue.labels and verdict is None
+    [card] = _section(proposals=approvals.observed_scope()).waiting
+    assert card.status == "awaiting_approval" and card.can_approve
+
+
+def test_a_pending_op_does_not_re_run_the_gate_queries_every_tick(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r21 F2: between approval refreshes the tick reuses the
+    owner's last complete scope; the op is still reconciled every tick."""
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_op(issue_number=780, op=_op_for(780))
+    waiting = Issue(number=780, title="t", labels=["agent:tech-lead", *GATED])
+    _host_sees_gated(mock_repository_host, waiting)
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=authority, approvals=make_approvals(),
+    )
+    first = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert first is not None and [p.issue_number for p in first.gated_proposals] == [780]
+    mock_repository_host.list_issues.reset_mock()
+
+    second = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])  # well within 300s
+
+    gate_queries = [
+        call for call in mock_repository_host.list_issues.call_args_list
+        if _is_scope_query(call.kwargs.get("labels") or [])
+    ]
+    assert gate_queries == []
+    assert second is not None and [p.issue_number for p in second.gated_proposals] == [780]
