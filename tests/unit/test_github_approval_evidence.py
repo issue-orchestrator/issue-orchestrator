@@ -82,7 +82,7 @@ def test_an_approval_removed_after_the_issue_read_never_consents() -> None:
 
     client = _client_with_transport(httpx.MockTransport(github))
     adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
-    approvals = TechLeadApprovals(adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex())
+    approvals = TechLeadApprovals(adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex(), lambda: ())
     snapshot = Issue(number=5, title="t", labels=["tech-lead-proposal", "approved"], state="open",
                      repo="owner/repo", body=with_proposal_marker("b"))
     repository = MagicMock()
@@ -205,7 +205,7 @@ def test_an_approval_closed_after_the_issue_read_never_executes_its_op() -> None
 
     client = _client_with_transport(httpx.MockTransport(github))
     adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
-    approvals = TechLeadApprovals(adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex())
+    approvals = TechLeadApprovals(adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex(), lambda: ())
     snapshot = Issue(number=5, title="t", labels=["tech-lead-proposal", "awaiting-approval", "approved"],
                      state="open", repo="owner/repo", body=with_proposal_marker("b"))
     host = MagicMock()

@@ -328,6 +328,7 @@ def create_tech_lead_fact_gatherer(
             evidence=cast("ApprovalEvidenceReader", repository_host),
             records=authority.operator_approvals,
             index=authority.proposal_index,
+            op_numbers=lambda: (number for number, _op in authority.list_ops()),
         ),
         tech_lead_authority=authority,
         board_publisher=board_publisher,

@@ -257,3 +257,31 @@ test('a failed or off-contract refresh after an all-clear shows "unable to check
     }
     contractJson.setViolationReporter(null);
 });
+
+
+test('an older refresh that resolves last never overwrites a newer answer', async () => {
+    // #7763 review r19 F2: polling and a command refresh overlap.
+    const pending = [];
+    const badges = [];
+    const v = createView({
+        fetch: () => new Promise(resolve => pending.push(resolve)),
+        contractJson,
+        escapeHtml,
+        onBadgeChange: () => badges.push(v.badgeState()),
+    });
+    const dom = domHarness();
+    v.bind(dom.root);
+    contractJson.setViolationReporter(() => {});
+
+    const older = v.refresh();
+    const newer = v.refresh();
+    pending[1](response(200, { not: 'the contract' }));  // the newer read: unavailable
+    await newer;
+    pending[0](response(200, page([repo(section([]))])));  // the older all-clear lands last
+    await older;
+    contractJson.setViolationReporter(null);
+
+    assert.deepEqual(badges.map(b => b.text), ['Unable to check what waits on you']);
+    assert.equal(v.badgeState().text, 'Unable to check what waits on you');
+    assert.doesNotMatch(dom.nodes['#techLeadWaitingList'].lastHtml, /Nothing/);
+});

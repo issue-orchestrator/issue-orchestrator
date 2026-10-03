@@ -211,11 +211,9 @@
         if (!response.ok) {
             throw new Error(await uiContractJson.errorMessage(response, 'Could not read the Tech lead page'));
         }
-        const payload = await uiContractJson.fromResponse(response, 'ControlCenterTechLeadPayload', PAGE_ENDPOINT);
-        if (payload === null) return null;  // the reader already reported why
-        latest = payload;
-        unavailable = false;
-        return payload;
+        // null: the reader already reported why. The caller (refresh) decides
+        // whether this answer is still the newest one before using it.
+        return uiContractJson.fromResponse(response, 'ControlCenterTechLeadPayload', PAGE_ENDPOINT);
     }
 
     // The one command path: typed body, response validated, failure surfaced.
@@ -278,15 +276,27 @@
 
     // The page's refresh: a failed or off-contract read shows "unable to
     // check" rather than leaving the last answer up as if it were current.
+    //
+    // Polling and a command's refresh can overlap: only the NEWEST request
+    // may change the page or the badges, so a slow older all-clear never
+    // lands on top of a newer answer (#7763 review r17 F2, r19 F2).
+    let refreshes = 0;
     async function refresh() {
+        const request = ++refreshes;
         let payload = null;
         try {
             payload = await load();
         } catch (error) {
             console.error('Failed to load the Tech lead page:', error);
         }
-        if (payload === null) showUnavailable();
-        else paint(payload);
+        if (request !== refreshes) return payload;  // superseded while in flight
+        if (payload === null) {
+            showUnavailable();
+        } else {
+            latest = payload;
+            unavailable = false;
+            paint(payload);
+        }
         onBadgeChange();
         return payload;
     }

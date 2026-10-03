@@ -234,12 +234,12 @@ def test_a_crash_mid_carry_over_resumes_on_the_next_startup() -> None:
     repo.add_label = crash_on_provenance
     index = InMemoryProposalIssueIndex()  # durable too
     with pytest.raises(ApprovalMigrationError):
-        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable, index), ops, filtering_label=None)
+        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable, index, lambda: ()), ops, filtering_label=None)
     assert "approved" in repo.issues[444].labels  # half-done
     assert "tech-lead-proposal" not in repo.issues[444].labels  # outside every label query
 
     repo.add_label = original_add
-    restarted = TechLeadApprovals(evidence, durable, index)
+    restarted = TechLeadApprovals(evidence, durable, index, lambda: ())
     migrate_legacy_proposals(repo, restarted, ops, filtering_label=None)
 
     # The restarted migration itself restores the gate (#7763 review r6 F1):

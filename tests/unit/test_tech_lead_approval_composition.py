@@ -46,6 +46,14 @@ def test_operator_approvals_persist_in_the_authority_store(orchestrator) -> None
     # ...and so does the proposal index the approval scope reads (#7763 r6 F2).
     authority = orchestrator.deps.services.tech_lead_authority
     assert approvals.index is authority.proposal_index
+    # ...and the op ledger is part of proposal identity (r19 F1).
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+
+    authority.record_op(issue_number=77, op=StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z"))
+    approvals.remember_proposals([78])  # drops the cached identity
+    assert {77, 78} <= approvals.known_proposals()
 
 
 def test_the_sqlite_proposal_index_survives_a_restart(tmp_path) -> None:

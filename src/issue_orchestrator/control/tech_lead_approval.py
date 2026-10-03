@@ -74,6 +74,9 @@ class TechLeadApprovals:
     evidence: "ApprovalEvidenceReader"
     records: "OperatorApprovalRecords"
     index: "ProposalIssueIndex"
+    #: The durable op ledger's proposal issue numbers: an op-backed proposal
+    #: is known even before (or without) an index row (#7763 review r19 F1).
+    op_numbers: Callable[[], Iterable[int]]
     clock: Callable[[], float] = time.monotonic
     _verified: dict[int, ApprovalVerdict] = field(default_factory=dict, init=False)
     _roles: dict[str, tuple[float, str | None]] = field(default_factory=dict, init=False)
@@ -152,7 +155,7 @@ class TechLeadApprovals:
         what an issue's labels and body say today.
         """
         if self._known is None:
-            self._known = self.index.known_proposals()
+            self._known = self.index.known_proposals() | frozenset(self.op_numbers())
         return self._known
 
     def proposal_state_of(self, issue: "Issue") -> ProposalLabelState:

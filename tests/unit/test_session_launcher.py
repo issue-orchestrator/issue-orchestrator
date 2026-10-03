@@ -10715,6 +10715,26 @@ class TestTechLeadProposalLaunchConsent:
         assert not result.success
         assert launcher_bundle.create_session_calls == []
 
+    def test_an_op_backed_proposal_never_migrated_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        """#7763 review r19 F1: an op in the durable ledger names its issue a
+        proposal even with no index row, labels or marker (e.g. one the
+        migration skipped as out of scope until its scope label came back)."""
+        from tests.approval_helpers import approving_everything
+
+        approvals = approving_everything()
+        approvals.op_numbers = lambda: (123,)  # the authority store's op ledger
+        ordinary_looking = Issue(number=123, title="Reset it", labels=["agent:web"], repo="test/repo", body="b")
+        mock_repo_host.issues[123] = ordinary_looking
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        assert not approvals.admits(ordinary_looking)
+        result = launcher_bundle.launcher.launch_issue_session(ordinary_looking, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        approvals.observe([ordinary_looking])  # seen on the board: back in the scope's reads
+        assert 123 in approvals.indexed_proposals()
+
     def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
         from tests.approval_helpers import ADMITTED, approving_everything
 
