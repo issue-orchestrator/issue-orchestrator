@@ -1497,43 +1497,67 @@ class GitHubHttpClient:
         Transport/HTTP errors propagate as ``RepositoryHostError`` so callers
         can fail loud.
         """
+        return any(
+            marker in body
+            for body in self._scan_issue_comment_bodies(
+                issue_number, caller="issue_comment_marker_present"
+            )
+        )
+
+    def issue_comment_bodies_containing(
+        self, issue_number: int, needle: str
+    ) -> tuple[str, ...]:
+        """Every comment body on the issue/PR that contains ``needle``.
+
+        The same complete, uncached, fail-loud scan as
+        :meth:`issue_comment_marker_present`: a caller that decides from the
+        ABSENCE of a body (a durable marker, #7658) never reads a truncated or
+        stale listing as "none".
+        """
+        return tuple(
+            body
+            for body in self._scan_issue_comment_bodies(
+                issue_number, caller="issue_comment_bodies_containing"
+            )
+            if needle in body
+        )
+
+    def _scan_issue_comment_bodies(
+        self, issue_number: int, *, caller: str
+    ) -> Iterator[str]:
+        """Yield every comment body, page by page, to the true final page.
+
+        Ends only on a short or empty page (the true final page). A non-list
+        page or hitting the page cap raises ``GitHubScanIncompleteError``
+        rather than ending early: a truncated read is not evidence that a body
+        is absent. Not ETag-cached: these reads are correctness-critical.
+        """
         page = 1
         while True:
             payload = self._request_json(
                 "GET",
                 f"/repos/{self._config.repo}/issues/{issue_number}/comments",
                 params={"per_page": 100, "page": page},
-                caller="issue_comment_marker_present",
+                caller=caller,
                 use_cache=False,
             )
             if not isinstance(payload, list):
-                # A non-list 2xx body is a contract violation (proxy/mock drift
-                # or malformed GitHub response), not evidence of "no marker".
-                # Fail loud so a dedupe caller never posts a duplicate from a
-                # response we could not actually scan.
                 raise GitHubScanIncompleteError(
                     f"Comment listing for #{issue_number} page {page} was not "
                     f"a list ({type(payload).__name__}); cannot confirm marker "
                     f"absence",
                     issue_number=issue_number,
                 )
-            if not payload:
-                # Empty page = the true final page with nothing on it: the
-                # marker is genuinely absent.
-                return False
             for comment in payload:
                 if not isinstance(comment, dict):
                     continue
                 body = comment.get("body")
-                if isinstance(body, str) and marker in body:
-                    return True
+                if isinstance(body, str):
+                    yield body
             if len(payload) < 100:
-                return False
+                return
             page += 1
             if page > _MARKER_SCAN_PAGE_CAP:
-                # The cap exists only to bound a pathological loop, not to
-                # define "marker absent". Fail loud so the dedupe caller never
-                # mistakes a truncated scan for a clean one.
                 raise GitHubScanIncompleteError(
                     f"Comment marker scan for #{issue_number} exceeded "
                     f"{_MARKER_SCAN_PAGE_CAP} pages without reaching the final "

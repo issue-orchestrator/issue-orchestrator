@@ -79,8 +79,10 @@ from .actions import (
     ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
+    ResolveBlockAction,
 )
 from .reconciliation import build_expected_for_mutation
+from .block_resolution_proposal import resolution_proposal_section
 from .tech_lead_charter_lifecycle import link_declined_proposal
 from .tech_lead_proposal_execution import (
     execute_approved_tech_lead_op as execute_approved_tech_lead_op,
@@ -88,6 +90,7 @@ from .tech_lead_proposal_execution import (
 )
 
 if TYPE_CHECKING:
+    from ..domain.block_resolution import BlockResolution
     from ..domain.scoped_rework import TechLeadProposalCommand, TechLeadProposalCommandOutcome
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
@@ -121,6 +124,7 @@ _OP_TITLES: dict[str, str] = {
     "recover_validated_work": "recover retained validated work for issue #{target}",
     "release_withheld_review": "release the withheld review of issue #{target}'s PR",
     "propose_decision": "decide for issue #{target}",
+    "resolve_block": "resolve the needs-human block of issue #{target}",
 }
 
 
@@ -184,6 +188,7 @@ def build_stored_tech_lead_op(
         finding_ids=tuple(proposed.finding_ids),
         observed_at=observed_at,
         decision=operator_decision_of(proposed),
+        resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
     )
 
 
@@ -278,7 +283,11 @@ def _proposal_issue_body(
             f"| Approved remote baseline | `{remote_head}`;"
             f" PR `{authority.pr_number if authority.pr_number is not None else 'none'}` |\n"
         )
-    decision = _decision_section(op) if op.decision is not None else ""
+    decision = (
+        _decision_section(op) if op.decision is not None
+        else resolution_proposal_section(op) if op.resolution is not None
+        else ""
+    )
     return f"""{decision}## Gated tech_lead proposal (ADR-0031 §2)
 
 A tech_lead session proposed an act-level operation. It is **inert** until a
@@ -341,9 +350,10 @@ def build_tech_lead_proposal_issue_action(
         now_iso=now_iso,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
-    if op.decision is not None:
+    headline = op.decision.title if op.decision is not None else op.resolution.title if op.resolution is not None else None
+    if headline is not None:
         # GitHub caps a title at 256 characters; the full decision is in the body.
-        title_detail = f"{title_detail}: {op.decision.title}"[:_MAX_DECISION_TITLE_CHARS]
+        title_detail = f"{title_detail}: {headline}"[:_MAX_DECISION_TITLE_CHARS]
     return CreateTechLeadProposalIssueAction(
         title=f"Tech Lead proposal: {title_detail}",
         body=_proposal_issue_body(
@@ -369,6 +379,7 @@ def proposal_ledger_key(
     *,
     rework_request: ReworkRequest | None = None,
     decision: OperatorDecision | None = None,
+    resolution: "BlockResolution | None" = None,
 ) -> tuple[str, int | str]:
     """The identity one open proposal owns: the op and what it would do.
 
@@ -380,10 +391,9 @@ def proposal_ledger_key(
     """
     if rework_request is not None:
         return (op_type, rework_request.key)
-    if decision is not None:
-        digest = hashlib.sha256(
-            json.dumps(decision.to_dict(), sort_keys=True).encode()
-        ).hexdigest()[:16]
+    payload = decision.to_dict() if decision is not None else resolution.to_dict() if resolution is not None else None
+    if payload is not None:
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
         return (op_type, f"{target_issue_number}:{digest}")
     return (op_type, target_issue_number)
 
@@ -401,7 +411,7 @@ def build_op_ledger(
     return {("request_rework", receipt.request.key): receipt.proposal_issue_number for receipt in receipts if receipt.proposal_issue_number} | {
         proposal_ledger_key(
             op.op_type, op.target_issue_number,
-            rework_request=op.rework_request, decision=op.decision,
+            rework_request=op.rework_request, decision=op.decision, resolution=op.resolution,
         ): issue_number
         for issue_number, op in ops
     }
@@ -700,6 +710,16 @@ def plan_approved_tech_lead_op_executions(
                     expected=build_expected_for_mutation(),
                 )
             )
+        elif op.op_type == "resolve_block":
+            assert op.resolution is not None
+            actions.append(ResolveBlockAction(
+                issue_number=op.target_issue_number, resolution=op.resolution,
+                rationale=op.rationale, proposal_id=op.source_action_id,
+                finding_ids=op.finding_ids, anchor_issue_number=item.proposal_issue_number,
+                proposal_issue_number=item.proposal_issue_number, observed_at=op.observed_at,
+                source_session_name=op.source_session_name, source_run_id=op.source_run_id,
+                reason=reason, expected=build_expected_for_mutation(),
+            ))
         elif op.op_type == "kill_hung_session":
             actions.append(
                 KillHungSessionAction(

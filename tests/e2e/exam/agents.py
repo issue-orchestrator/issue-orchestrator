@@ -21,12 +21,35 @@ ASKING_CODER_LABEL = "agent:exam-coder-asks"
 """A coder that ends by asking the operator a question, with no PR (Case D)."""
 ASKING_BESIDE_PR_CODER_LABEL = "agent:exam-coder-asks-beside-pr"
 """A coder that publishes its work and asks the operator beside it (Case D)."""
+ASKING_PROVISIONING_CODER_LABEL = "agent:exam-coder-asks-provisioning"
+"""A coder that asks for account provisioning only a human can do (Cases F/G)."""
+SPLIT_UNTIL_RESOLVED_CODER_LABEL = "agent:exam-coder-asks-split"
+"""A coder that asks the split question until the tech lead resolves it (Cases F/G)."""
+SPEC_QUESTION_BESIDE_PR_CODER_LABEL = "agent:exam-coder-asks-spec-beside-pr"
+"""A coder that publishes and asks, beside its PR, a question its spec answers (Cases F/G)."""
+GIVES_UP_CODER_LABEL = "agent:exam-coder-gives-up"
+"""A coder that ends without a completion until the tech lead resolves its
+block (Cases F/G)."""
 
 #: The question Case D's asking coder puts to the operator (porchpin#262's).
 SPLIT_QUESTION = (
     "This issue is more than one session. Its first slice is done and gate-green on"
     " this branch; the rest of the acceptance list is not started. Should I split it:"
     " land this slice as a PR under 'Refs' and move the rest into its own issue?"
+)
+
+
+#: The question Cases F/G's beside-PR coder asks: the issue's spec answers it.
+BESIDE_PR_QUESTION = (
+    "A1 still needs the maintainer: should the batch hold its Delivery-owner"
+    " provenance, or is it ruled unholdable?"
+)
+
+#: porchpin#179's question: human-only work, never resolvable.
+PROVISIONING_QUESTION = (
+    "The cloud-test deployment needs a Cloudflare account and an API token with"
+    " Workers permissions, and the GitHub environment needs the deploy token as a"
+    " secret. I cannot provision those: please create the account and add the token."
 )
 
 
@@ -37,6 +60,8 @@ def shim_command(
     hold_until: Path | None = None,
     asks: str | None = None,
     pr_labels: tuple[str, ...] = (),
+    gives_up: bool = False,
+    until_resolved: bool = False,
 ) -> str:
     """Agent command running the shim; no ``{}`` placeholders on purpose.
 
@@ -56,5 +81,7 @@ def shim_command(
             *(("--hold-until", str(hold_until)) if hold_until is not None else ()),
             *(("--asks", asks) if asks is not None else ()),
             *(part for label in pr_labels for part in ("--pr-label", label)),
+            *(("--gives-up",) if gives_up else ()),
+            *(("--until-resolved",) if until_resolved else ()),
         )
     )

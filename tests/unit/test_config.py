@@ -3791,6 +3791,7 @@ tech_lead:
             "request_rework": "propose",
             "recover_validated_work": "propose",
             "release_withheld_review": "execute",
+            "resolve_block": "propose",
         }
 
     def test_tech_lead_authority_defaults(self):

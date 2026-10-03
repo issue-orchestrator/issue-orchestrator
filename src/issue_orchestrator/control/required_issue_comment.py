@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         TechLeadValidatedWorkRecoveryExecutor,
     )
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
+    from .tech_lead_block_resolution import TechLeadBlockResolutionExecutor
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ def _same_remedy_generation(
         stored.target_session_type,
         stored.validated_work_authority,
         stored.decision,
+        stored.resolution,
     ) == (
         required.op_type,
         required.target_issue_number,
@@ -71,6 +73,7 @@ def _same_remedy_generation(
         required.target_session_type,
         required.validated_work_authority,
         required.decision,
+        required.resolution,
     )
 
 
@@ -82,7 +85,18 @@ def _proposal_reuse_stale_reason(
     kill: TechLeadKillSessionExecutor | None,
     recovery: TechLeadValidatedWorkRecoveryExecutor | None,
     release: TechLeadReviewReleaseExecutor | None = None,
+    resolution: "TechLeadBlockResolutionExecutor | None" = None,
 ) -> str | None:
+    if stored.op_type == "resolve_block" and resolution is not None:
+        from .actions import ResolveBlockAction
+
+        assert stored.resolution is not None
+        return resolution.stale_reason(ResolveBlockAction(
+            issue_number=stored.target_issue_number, resolution=stored.resolution,
+            rationale=stored.rationale, proposal_id=stored.source_action_id,
+            observed_at=stored.observed_at, source_session_name=stored.source_session_name,
+            source_run_id=stored.source_run_id, proposal_issue_number=proposal_issue_number,
+        ))
     if stored.op_type == "propose_decision":
         # Waiting on the operator is all it does until approved; the target's
         # being open (checked by the caller) is its whole applicability.
@@ -131,7 +145,8 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         kill: TechLeadKillSessionExecutor | None,
         rework: RequestReworkExecutor | None = None,
         recovery: TechLeadValidatedWorkRecoveryExecutor | None = None,
-        release: TechLeadReviewReleaseExecutor | None = None) -> None:
+        release: TechLeadReviewReleaseExecutor | None = None,
+        resolution: "TechLeadBlockResolutionExecutor | None" = None) -> None:
     if authority is None:
         raise ValueError("proposal reuse requires the authority owner")
     required = action.required_op
@@ -154,6 +169,7 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         kill=kill,
         recovery=recovery,
         release=release,
+        resolution=resolution,
     )
     if stale is not None:
         raise ValueError(f"existing proposal is no longer applicable: {stale}")
@@ -213,7 +229,8 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
         kill: TechLeadKillSessionExecutor | None,
         rework: RequestReworkExecutor | None = None,
         recovery: TechLeadValidatedWorkRecoveryExecutor | None = None,
-        release: TechLeadReviewReleaseExecutor | None = None) -> ActionResult:
+        release: TechLeadReviewReleaseExecutor | None = None,
+        resolution: "TechLeadBlockResolutionExecutor | None" = None) -> ActionResult:
     """One publication owner for ordinary and mandatory issue explanations."""
     def guard() -> None:
         require_expected(action, action.number)
@@ -230,6 +247,7 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
                 rework=rework,
                 recovery=recovery,
                 release=release,
+                resolution=resolution,
             )
     if isinstance(action, RequiredIssueCommentAction):
         result = apply_required_issue_comment(

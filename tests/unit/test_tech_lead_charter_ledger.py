@@ -877,3 +877,26 @@ def test_a_decision_retry_is_bracketed_until_its_op_is_discarded(store) -> None:
     assert store.decision_retry_state(proposal_issue_number=951) is None
     store.discard_op(issue_number=950)
     assert store.decision_retry_state(proposal_issue_number=950) is None
+
+
+def test_a_block_resolution_discharge_is_bracketed_per_decision(store) -> None:
+    """#7658: the write-ahead record a resolution's replay reads, keyed by its
+    decision, and naming the item and causes for the reversibility rule."""
+    from issue_orchestrator.ports.operator_decision_retries import DecisionRetryState
+
+    assert store.block_resolution_state(decision_id="run-1/A1") is None
+    store.begin_block_resolution(
+        decision_id="run-1/A1", issue_number=262, causes=frozenset({"agent_completion", "session_lifecycle"}))
+    assert store.block_resolution_state(decision_id="run-1/A1") is DecisionRetryState.BEGUN
+    store.commit_block_resolution(decision_id="run-1/A1")
+    assert store.block_resolution_state(decision_id="run-1/A1") is DecisionRetryState.COMMITTED
+    store.begin_block_resolution(decision_id="run-1/A2", issue_number=262, causes=frozenset({"agent_completion"}))
+    store.begin_block_resolution(decision_id="run-2/A1", issue_number=326, causes=frozenset({"session_lifecycle"}))
+    assert store.resolved_causes(issue_number=262) == {
+        "agent_completion": frozenset({"run-1/A1", "run-1/A2"}),
+        "session_lifecycle": frozenset({"run-1/A1"}),
+    }
+    store.abandon_block_resolution(decision_id="run-1/A2")
+    assert store.block_resolution_state(decision_id="run-1/A2") is None
+    assert store.resolved_causes(issue_number=262)["agent_completion"] == frozenset({"run-1/A1"})
+    assert store.resolved_causes(issue_number=999) == {}

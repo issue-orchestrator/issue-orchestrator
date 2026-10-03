@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from .tech_lead_validated_work_recovery import TechLeadValidatedWorkRecoveryExecutor
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
     from .tech_lead_operator_decision import OperatorDecisionExecutor
+    from .tech_lead_block_resolution import TechLeadBlockResolutionExecutor
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
 from .label_mutation_stats import LabelMutationStatField, LabelMutationStats
@@ -110,6 +111,7 @@ from .actions import (
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
+    ResolveBlockAction,
     RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
@@ -149,6 +151,7 @@ _TechLeadOpAction = TypeVar(
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
+    ResolveBlockAction,
 )
 @dataclass
 class ActionApplier:
@@ -221,6 +224,7 @@ class ActionApplier:
     recover_validated_work: Optional["TechLeadValidatedWorkRecoveryExecutor"] = None
     release_withheld_review: Optional["TechLeadReviewReleaseExecutor"] = None
     apply_operator_decision: Optional["OperatorDecisionExecutor"] = None
+    resolve_block: Optional["TechLeadBlockResolutionExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     pattern_registry: Optional["PatternCaseFileRegistry"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
@@ -324,6 +328,7 @@ class ActionApplier:
                 release_withheld_review=self._tech_lead_op(
                     ReleaseWithheldReviewAction, lambda: self.release_withheld_review),
                 apply_operator_decision=self._tech_lead_op(ApplyOperatorDecisionAction, lambda: self.apply_operator_decision),
+                resolve_block=self._tech_lead_op(ResolveBlockAction, lambda: self.resolve_block),
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
@@ -594,7 +599,7 @@ class ActionApplier:
             events=self.events, authority=self.tech_lead_ops,
             reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session,
             rework=self.request_rework, recovery=self.recover_validated_work,
-            release=self.release_withheld_review)
+            release=self.release_withheld_review, resolution=self.resolve_block)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""

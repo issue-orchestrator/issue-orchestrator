@@ -123,6 +123,7 @@ class CharterDecisionLog:
                 # whose approval and decline link back to this record.
                 tracks_proposal=proposed.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS,
                 proposal_origin_action_id=self._coalesced.get(proposed.id),
+                evidence=proposed.resolution.evidence if proposed.resolution else (),
                 **self._triage(proposed),
             )
             for proposed, verdict in self._verdicts.values()

@@ -887,3 +887,111 @@ class TestCaseDBlockedItemsTriaged:
         del data["triage"]
 
         assert WorkItemFact.from_dict(data).triage is None
+
+
+class TestCasesFAndGResolution:
+    """#7658: porchpin's needs-human blocks, decided by the tech lead itself
+    (case F, ``resolve_block: execute``) or as approvable proposals (case G)."""
+
+    from issue_orchestrator.testing.exam.cases import (
+        BESIDE_PR as _BESIDE,
+        PROVISIONING as _PROVISIONING,
+        SPLIT as _SPLIT,
+        STALE as _STALE,
+    )
+
+    @staticmethod
+    def _case(execute: bool):
+        from issue_orchestrator.testing.exam.cases import (
+            needs_human_block_resolutions_proposed,
+            needs_human_blocks_resolved,
+        )
+
+        build = needs_human_blocks_resolved if execute else needs_human_block_resolutions_proposed
+        return build(needs_human_label="needs-human")
+
+    def _items(self, *, execute: bool, resolve: TriageFact | None, provisioning: TriageFact | None,
+               blocked: bool) -> tuple[WorkItemFact, ...]:
+        labels = ("needs-human",) if blocked else ()
+        progressed = (pr(number=921, state=PullRequestState.READY),) if execute else ()
+        split = replace(item(issue_labels=labels, prs=progressed), role=self._SPLIT, issue_number=920,
+                        triage=resolve)
+        stale = replace(item(issue_labels=labels, prs=tuple(replace(p, number=923) for p in progressed)),
+                        role=self._STALE, issue_number=922, triage=resolve)
+        beside = replace(
+            item(issue_labels=(*labels, "pr-pending"), prs=(pr(number=925, state=PullRequestState.READY),)),
+            role=self._BESIDE, issue_number=924, triage=resolve,
+        )
+        provisioning_item = replace(item(issue_labels=("needs-human",)), role=self._PROVISIONING,
+                                    issue_number=926, triage=provisioning)
+        return split, stale, beside, provisioning_item
+
+    def _grade(self, execute: bool, items: tuple[WorkItemFact, ...]):
+        case = self._case(execute)
+        obs = replace(observation(case.case_id, items[0]), items=items,
+                      owned_numbers=frozenset(range(920, 960)))
+        return grade(case, obs)
+
+    HANDED_OVER = TriageFact("human_hand_over", "escalate_to_human", "applied", None)
+
+    def test_execute_ends_with_the_work_blocks_cleared_and_moving(self) -> None:
+        items = self._items(execute=True, resolve=TriageFact("remedy", "resolve_block", "applied", None),
+                            provisioning=self.HANDED_OVER, blocked=False)
+
+        card = self._grade(True, items)
+
+        assert card.passed, [goal for goal in card.goals if not goal.passed]
+
+    def test_propose_ends_with_approvable_proposals_and_the_blocks_in_place(self) -> None:
+        items = self._items(execute=False,
+                            resolve=TriageFact("remedy", "resolve_block", "awaiting_approval", 951),
+                            provisioning=self.HANDED_OVER, blocked=True)
+
+        card = self._grade(False, items)
+
+        assert card.passed, [goal for goal in card.goals if not goal.passed]
+
+    def test_the_porchpin_shape_fails_both(self) -> None:
+        """What porchpin's engine could do: hand everything to the operator."""
+        for execute in (True, False):
+            items = self._items(execute=execute, resolve=self.HANDED_OVER,
+                                provisioning=self.HANDED_OVER, blocked=True)
+
+            failed = {goal.name for goal in self._grade(execute, items).goals if not goal.passed}
+
+            effect = "applied" if execute else "awaiting_approval"
+            assert {f"{role}.resolved_{effect}" for role in ("split", "stale", "beside_pr")} <= failed
+
+    def test_a_resolved_provisioning_item_fails(self) -> None:
+        items = self._items(execute=True, resolve=TriageFact("remedy", "resolve_block", "applied", None),
+                            provisioning=TriageFact("remedy", "resolve_block", "applied", None),
+                            blocked=False)
+
+        failed = {goal.name for goal in self._grade(True, items).goals if not goal.passed}
+
+        assert failed == {"provisioning.triaged_human_hand_over"}
+
+    def test_a_proposal_that_never_got_filed_is_not_approvable(self) -> None:
+        items = self._items(execute=False,
+                            resolve=TriageFact("remedy", "resolve_block", "awaiting_approval", None),
+                            provisioning=self.HANDED_OVER, blocked=True)
+
+        assert not self._grade(False, items).passed
+
+
+def test_case_d_accepts_a_filed_resolution_put_to_the_operator() -> None:
+    """#7658: under propose, a filed resolve_block proposal puts the split
+    decision to the operator as a propose_decision does; an applied one
+    (decided without the operator) does not answer case D's question."""
+    case = TestCaseDBlockedItemsTriaged.CASE
+    proposed = TriageFact("remedy", "resolve_block", "awaiting_approval", 952)
+    asks, beside = TestCaseDBlockedItemsTriaged._items(asks_triage=proposed, beside_triage=proposed)
+    obs = replace(observation(BLOCKED_ITEMS_TRIAGED, asks), items=(asks, beside),
+                  owned_numbers=frozenset({910, 911, 912, 950, 952}))
+    assert grade(case, obs).passed
+
+    applied = TriageFact("remedy", "resolve_block", "applied", None)
+    asks, beside = TestCaseDBlockedItemsTriaged._items(asks_triage=applied, beside_triage=proposed)
+    obs = replace(obs, items=(asks, beside))
+    failed = {goal.name for goal in grade(case, obs).goals if not goal.passed}
+    assert "asks.triaged_operator_decision" in failed

@@ -34,6 +34,8 @@ from issue_orchestrator.testing.exam import render_summary
 from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     BLOCKED_ITEMS_TRIAGED,
+    BLOCK_RESOLUTIONS_PROPOSED,
+    BLOCKS_RESOLVED_UNDER_EXECUTE,
     EXAM_CASE_IDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
@@ -52,11 +54,14 @@ from tests.e2e.exam.scenarios import (
     case_b,
     case_c,
     case_d,
+    case_f_resolved,
+    case_g_proposed,
     case_u,
     run_case_a,
     run_case_b,
     run_case_c,
     run_case_d,
+    run_case_resolution,
     run_case_u,
 )
 from tests.e2e.flows import E2EFlow
@@ -130,6 +135,8 @@ async def test_tech_lead_exam(
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
         UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
         BLOCKED_ITEMS_TRIAGED: case_d,
+        BLOCKS_RESOLVED_UNDER_EXECUTE: case_f_resolved,
+        BLOCK_RESOLUTIONS_PROPOSED: case_g_proposed,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -153,6 +160,11 @@ async def test_tech_lead_exam(
         model = os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus")
         if case_id == BLOCKED_ITEMS_TRIAGED:
             return await run_case_d(run, flows, tech_lead_model=model)
+        if case_id in (BLOCKS_RESOLVED_UNDER_EXECUTE, BLOCK_RESOLUTIONS_PROPOSED):
+            return await run_case_resolution(
+                run, flows, tech_lead_model=model,
+                resolve_block="execute" if case_id == BLOCKS_RESOLVED_UNDER_EXECUTE else "propose",
+            )
         return await run_case_b(run, flows, tech_lead_model=model)
 
     # The scorecard is written before cleanup, so a GitHub hiccup in cleanup

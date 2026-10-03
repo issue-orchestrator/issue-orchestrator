@@ -91,6 +91,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.RECOVER_VALIDATED_WORK,
             ActionType.RELEASE_WITHHELD_REVIEW,
             ActionType.APPLY_OPERATOR_DECISION,
+            ActionType.RESOLVE_BLOCK,
             ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
             ActionType.APPEND_PATTERN_OBSERVATION,
@@ -165,6 +166,7 @@ def tech_lead_action_handlers(
     recover_validated_work: ActionHandler | None = None,
     release_withheld_review: ActionHandler | None = None,
     apply_operator_decision: ActionHandler | None = None,
+    resolve_block: ActionHandler | None = None,
 ) -> dict[ActionType, ActionHandler]:
     """Map every tech-lead ActionType to the owner that applies it."""
     handlers: dict[ActionType, ActionHandler] = {
@@ -199,6 +201,14 @@ def tech_lead_action_handlers(
             if apply_operator_decision is not None
             else lambda action: ActionResult.fail(
                 action, "operator-decision executor is not wired"
+            )
+        ),
+        # A needs-human work block decided in the operator's stead (#7658).
+        ActionType.RESOLVE_BLOCK: (
+            resolve_block
+            if resolve_block is not None
+            else lambda action: ActionResult.fail(
+                action, "block-resolution executor is not wired"
             )
         ),
         ActionType.RECOVER_TECH_LEAD_PROPOSAL: lambda action: apply_recover_tech_lead_proposal(

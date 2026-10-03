@@ -177,3 +177,13 @@ def test_failures_not_before_an_instant_are_the_ones_it_cannot_place_earlier() -
     owner = SessionHistoryOwner([older, newer, naive_newer, undated, completed, elsewhere])
 
     assert owner.failures_not_before(7, observed) == (newer, naive_newer, undated)
+    # #7658: a resolution is stale once ANY session ran since, whatever its
+    # outcome (an agent asks again beside a PR from a COMPLETED session).
+    assert owner.sessions_not_before(7, observed) == (newer, naive_newer, undated, completed)
+    # The tech lead's own run on a focus issue never raises the block it decides.
+    tech_lead = SessionHistoryEntry(
+        issue_number=7, title="t", agent_type="agent:tech-lead", status="completed",
+        runtime_minutes=1, completed_at=datetime(2026, 9, 27, 15, 0, tzinfo=timezone.utc),
+    )
+    owner = SessionHistoryOwner([older, completed, tech_lead])
+    assert owner.sessions_not_before(7, observed, excluding_agent="agent:tech-lead") == (completed,)

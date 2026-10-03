@@ -179,6 +179,21 @@ class TechLeadAuthorityStore(Protocol):
 
     def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None: ...
 
+    # -- A resolution's discharge, write-ahead (#7658) ---------------------
+    # See ports/block_resolution_discharges.py; keyed by the decision.
+
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None: ...
+
+    def commit_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None: ...
+
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]: ...
+
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
         ...
@@ -551,6 +566,7 @@ class InMemoryTechLeadAuthorityStore:
         self._rows: dict[tuple[str, str], "TechLeadLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTechLeadOp"] = {}
         self._decision_retries: dict[int, DecisionRetryState] = {}
+        self._block_resolutions: dict[str, tuple[DecisionRetryState, int, frozenset[str]]] = {}
         self._pending_proposals: dict[str, PendingTechLeadProposal] = {}
         self._rework_receipts: dict[str, ReworkReceipt] = {}
         self._patterns: dict[str, int] = {}
@@ -655,6 +671,30 @@ class InMemoryTechLeadAuthorityStore:
 
     def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None:
         return self._decision_retries.get(proposal_issue_number)
+
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None:
+        self._block_resolutions[decision_id] = (DecisionRetryState.BEGUN, issue_number, causes)
+
+    def commit_block_resolution(self, *, decision_id: str) -> None:
+        _state, issue_number, causes = self._block_resolutions[decision_id]
+        self._block_resolutions[decision_id] = (DecisionRetryState.COMMITTED, issue_number, causes)
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None:
+        self._block_resolutions.pop(decision_id, None)
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
+        record = self._block_resolutions.get(decision_id)
+        return None if record is None else record[0]
+
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]:
+        found: dict[str, set[str]] = {}
+        for decision_id, (_state, number, causes) in self._block_resolutions.items():
+            if number == issue_number:
+                for cause in causes:
+                    found.setdefault(cause, set()).add(decision_id)
+        return {cause: frozenset(ids) for cause, ids in found.items()}
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))

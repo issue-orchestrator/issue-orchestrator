@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from ..domain.block_resolution import BlockResolution
 from ..domain.scoped_rework import ReworkRequest
 from ..domain.tech_lead_session import OperatorDecision
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
@@ -250,6 +251,64 @@ class ApplyOperatorDecisionAction(Action):
         return self.issue_number
 
 
+@dataclass(frozen=True)
+class ResolveBlockAction(Action):
+    """Decide a ``needs-human`` work block in the operator's stead (#7658).
+
+    Planned directly under ``execute`` authority or from an approved gated
+    proposal. It carries the decision and its provenance only; the applier's
+    owner (``tech_lead_block_resolution``) re-verifies at apply time that the
+    causes it names are still recorded, resolvable and never resolved before,
+    that the item names no human-only work, and that nothing runs or claims
+    it, then posts the decision, files a split's children and discharges only
+    those causes through the shared block's owner.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "resolve_block"
+
+    issue_number: int = 0
+    resolution: BlockResolution = field(kw_only=True)
+    rationale: str = ""
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    #: ISO-8601 instant the proposing tech lead observed the board: a failure
+    #: recorded for the item since then is newer than the block it decided.
+    observed_at: str = ""
+    #: The proposing run: its session (whose own claim does not refuse) and
+    #: its run id (with ``proposal_id``, the decision's durable identity).
+    source_session_name: str = ""
+    source_run_id: str = ""
+    #: A split's children are filed gated (``proposed-tech-lead``) when the
+    #: tech lead may not file issues unattended (``create_issue`` authority):
+    #: the decision is the tech lead's, each new issue is still approvable. An
+    #: approved resolution's children are the operator's own, never gated.
+    children_gated: bool = False
+    requires_effective_disposition: bool = False
+    action_type: ActionType = field(default=ActionType.RESOLVE_BLOCK, init=False)
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("ResolveBlockAction requires a positive issue_number")
+        if not self.proposal_id:
+            raise ValueError("ResolveBlockAction requires the proposal id")
+        for name in ("observed_at", "source_session_name", "source_run_id"):
+            if not getattr(self, name):
+                raise ValueError(f"ResolveBlockAction requires {name}")
+        if self.proposal_issue_number < 0:
+            raise ValueError("proposal_issue_number cannot be negative")
+
+    @property
+    def decision_id(self) -> str:
+        """The decision's durable identity, for its markers on GitHub."""
+        return f"{self.source_run_id}/{self.proposal_id}"
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
 #: Act-level ops that carry ``requires_effective_disposition``: when one is a
 #: failure investigation's terminal remedy, a refused (stale) apply satisfies the
 #: investigation only if its result says the remedy's goal already holds.
@@ -259,4 +318,5 @@ EFFECTIVE_DISPOSITION_OP_ACTIONS = (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ResolveBlockAction,
 )

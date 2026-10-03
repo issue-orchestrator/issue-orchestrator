@@ -63,6 +63,7 @@ TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "request_rework",
     "recover_validated_work",
     "release_withheld_review",
+    "resolve_block",
 )
 
 
@@ -103,6 +104,12 @@ class TechLeadAuthorityConfig:
     # so the per-action ceiling stays open and the charter's flow-role dials
     # decide execute versus propose.
     release_withheld_review: str = "execute"
+    # Decides a needs-human WORK block in the operator's stead (#7658):
+    # answers an agent's question from the spec, decides a split, or lifts a
+    # stale block. ``propose`` (the default) files each decision for the
+    # operator to approve; ``execute`` lets the tech lead clear the block
+    # itself. Human-only work and non-work causes are never resolvable.
+    resolve_block: str = "propose"
 
     @classmethod
     def from_mapping(cls, data: dict) -> "TechLeadAuthorityConfig":

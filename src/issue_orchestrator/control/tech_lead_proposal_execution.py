@@ -14,6 +14,7 @@ from .actions import (
     ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
+    ResolveBlockAction,
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
@@ -29,11 +30,13 @@ logger = logging.getLogger(__name__)
 _TechLeadOpAction = TypeVar(
     "_TechLeadOpAction",
     ResetRetryIssueAction,
+    ResolveBlockAction,
     KillHungSessionAction,
     RequestReworkAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
+    ResolveBlockAction,
 )
 
 
