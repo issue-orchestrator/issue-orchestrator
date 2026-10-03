@@ -531,7 +531,7 @@ class FactGatherer:
         gated_proposals = scope.backlog
         state.tech_lead_approval_scan_at = now_ts
         if self.approvals is not None:
-            verdicts.update(self.approvals.verify_claims(scope.issues))
+            verdicts = self.approvals.supersede_verdicts(verdicts, scope.issues)
             self.approvals.record_scope(scope.issues, verdicts, retired=scope.retired)
         # The board joins the scope: a proposal stripped of EVERY label is out
         # of the labelled scope query, but its body marker still names it (#7763).

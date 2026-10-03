@@ -2622,3 +2622,43 @@ def test_a_closed_proposal_reopened_after_an_edit_is_still_a_proposal(
     assert (750, ApprovalTransition.RESTORE_WAITING) in [
         (s.issue_number, s.transition) for s in facts.approval_settlements
     ]
+
+
+def test_an_approval_removed_between_the_anchor_scan_and_the_scope_read_waits_again(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r20 F1: the scope read supersedes the anchor scan's
+    verdict, so the page shows the proposal waiting, not approved."""
+    from tests.approval_helpers import CLAIMED, FakeApprovalEvidence, make_approvals
+    from tests.unit.view_models.test_tech_lead_page import _section
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    evidence = FakeApprovalEvidence()
+    evidence.label(760)  # a maintainer's approval, seen by the anchor scan
+    approvals = make_approvals(evidence)
+    claimed = Issue(number=760, title="t", labels=["agent:tech-lead", *CLAIMED])
+    unclaimed = Issue(number=760, title="t", labels=["agent:tech-lead", *GATED])
+    mock_repository_host.list_issues.side_effect = lambda **kw: (
+        [unclaimed] if _is_scope_query(kw.get("labels") or []) else [claimed]
+    )
+    authority = InMemoryTechLeadAuthorityStore()  # an op arms the anchor scan
+    authority.record_op(issue_number=760, op=StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z"))
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=authority, approvals=approvals,
+    )
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None and facts.approved_tech_lead_ops  # the scan DID see the approval
+    [(issue, verdict)] = approvals.observed_scope()
+    assert verdict is None
+    section = _section(proposals=approvals.observed_scope())
+    assert section.waiting_count == 1
+    [card] = section.waiting
+    assert card.status == "awaiting_approval" and card.can_approve

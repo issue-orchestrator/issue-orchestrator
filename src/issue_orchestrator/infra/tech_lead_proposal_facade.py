@@ -9,12 +9,10 @@ for presentation; this module only gathers what the engine already holds.
 
 from __future__ import annotations
 
-import weakref
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
-from ..control.merge_hold_status import MergeHoldStatuses
 
 from ..control.health_review_trigger import health_review_interval_minutes
 from ..domain.scoped_rework import (
@@ -39,21 +37,6 @@ if TYPE_CHECKING:
 #: Charter decisions read per page: the doing lane looks back one day, and the
 #: triage lane keeps each item's latest class.
 PAGE_DECISION_LIMIT = 300
-
-
-#: One cached merge-hold reader per engine: the page polls every 30 seconds.
-_MERGE_STATUSES: "weakref.WeakKeyDictionary[Orchestrator, MergeHoldStatuses]" = weakref.WeakKeyDictionary()
-
-
-def _merge_statuses(orchestrator: Orchestrator) -> MergeHoldStatuses:
-    reader = _MERGE_STATUSES.get(orchestrator)
-    if reader is None:
-        reader = MergeHoldStatuses(
-            host=orchestrator.deps.repository_host,
-            needs_human_label=orchestrator.deps.label_manager.needs_human,
-        )
-        _MERGE_STATUSES[orchestrator] = reader
-    return reader
 
 
 def tech_lead_page_section(orchestrator: Orchestrator) -> "TechLeadPageSectionPayload":
@@ -107,7 +90,7 @@ def tech_lead_page_section(orchestrator: Orchestrator) -> "TechLeadPageSectionPa
         )
     held = [row.issue_number for row in inputs.needs_human_causes if row.cause in MERGE_HOLD_CAUSES]
     return build_tech_lead_page_section(
-        replace(inputs, merge_statuses=_merge_statuses(orchestrator).read(held))
+        replace(inputs, merge_statuses=orchestrator.deps.merge_hold_statuses.read(held))
     )
 
 

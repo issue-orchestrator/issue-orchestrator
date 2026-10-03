@@ -100,3 +100,15 @@ def test_a_goal_pilot_label_action_can_never_write_an_approval(orchestrator) -> 
     github.add_label.assert_not_called()
     github.remove_label.assert_not_called()
     github.create_issue.assert_not_called()
+
+
+
+def test_the_real_engine_serves_its_tech_lead_page_section(orchestrator) -> None:
+    """#7763 review r20 F2: the page runs against the real (unhashable)
+    Orchestrator; its merge-hold reader is the engine's own, built once."""
+    orchestrator.deps.action_applier.tech_lead_approvals.record_scope((), {})
+
+    section = orchestrator.tech_lead_page_section()
+
+    assert section.waiting_count == 0 and section.waiting == []
+    assert orchestrator.deps.merge_hold_statuses is orchestrator.deps.merge_hold_statuses

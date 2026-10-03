@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
+from issue_orchestrator.control.merge_hold_status import MergeHoldStatuses
 from issue_orchestrator.domain.scoped_rework import TechLeadProposalCommand
 from issue_orchestrator.domain.tech_lead_approval import APPROVED_LABEL, ApprovalVerdictKind
 from issue_orchestrator.infra.tech_lead_proposal_facade import (
@@ -161,8 +162,7 @@ def test_retired_rework_proposal_routes_are_gone(client) -> None:
 
 
 class _WeakReferenceable:
-    """An engine stand-in the page facade can key its PR-status cache on, as
-    it does the real Orchestrator."""
+    """An engine stand-in (attributes only)."""
 
     def __init__(self, **fields) -> None:
         self.__dict__.update(fields)
@@ -189,6 +189,7 @@ def _page_engine(approvals):
             fact_gatherer=SimpleNamespace(board_publisher=None),
             action_liveness=SimpleNamespace(owner=SimpleNamespace(parked=lambda: ())),
             repository_host=MagicMock(),
+            merge_hold_statuses=MergeHoldStatuses(host=MagicMock(), needs_human_label="needs-human"),
         ),
     )
 
@@ -220,6 +221,7 @@ def test_page_facade_reads_engine_state_only() -> None:
             fact_gatherer=SimpleNamespace(board_publisher=None),
             action_liveness=liveness,
             repository_host=host,
+            merge_hold_statuses=MergeHoldStatuses(host=host, needs_human_label="needs-human"),
         ),
     )
     section = tech_lead_page_section(orchestrator)

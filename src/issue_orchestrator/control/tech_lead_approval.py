@@ -296,6 +296,16 @@ class TechLeadApprovals:
                 verdicts[number] = verdict
         return verdicts
 
+    def supersede_verdicts(
+        self, earlier: dict[int, ApprovalVerdict], issues: Sequence["Issue"]
+    ) -> dict[int, ApprovalVerdict]:
+        """*earlier* verdicts, replaced for every issue a newer read saw: one
+        whose ``approved`` was removed in between has no verdict left, rather
+        than the older approving one (#7763 review r20 F1)."""
+        seen = {issue.number for issue in issues}
+        kept = {number: verdict for number, verdict in earlier.items() if number not in seen}
+        return kept | self.verify_claims(issues)
+
     def observe(self, issues: Iterable["Issue"]) -> None:
         """Drop cached approvals for items now observed without ``approved``.
 
