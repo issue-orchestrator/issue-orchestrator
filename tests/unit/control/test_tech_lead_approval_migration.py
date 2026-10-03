@@ -95,7 +95,7 @@ def test_a_still_gated_legacy_proposal_moves_to_the_new_labels() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=443, op=_op())
 
-    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops)
+    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
 
     assert report.regated == (443,)
     labels = repo.issues[443].labels
@@ -118,7 +118,7 @@ def test_a_legacy_follow_up_without_an_op_moves_too() -> None:
     evidence = FakeApprovalEvidence()
     repo = _Repo(evidence, [_issue(445, ["agent:backend", LEGACY])])
 
-    migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore())
+    migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore(), filtering_label=None)
 
     assert proposal_label_state(repo.issues[445].labels) is ProposalLabelState.AWAITING
 
@@ -129,10 +129,10 @@ def test_the_migration_is_idempotent() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=443, op=_op())
     approvals = make_approvals(evidence)
-    migrate_legacy_proposals(repo, approvals, ops)
+    migrate_legacy_proposals(repo, approvals, ops, filtering_label=None)
     writes = list(repo.writes)
 
-    report = migrate_legacy_proposals(repo, approvals, ops)
+    report = migrate_legacy_proposals(repo, approvals, ops, filtering_label=None)
 
     assert not report.changed
     assert repo.writes == writes
@@ -149,7 +149,7 @@ def test_an_old_model_approval_by_a_maintainer_is_carried_over_as_approved() -> 
     ops.record_op(issue_number=444, op=_op())
     approvals = make_approvals(evidence)
 
-    report = migrate_legacy_proposals(repo, approvals, ops)
+    report = migrate_legacy_proposals(repo, approvals, ops, filtering_label=None)
 
     assert report.legacy_approved == (444,)
     issue = repo.issues[444]
@@ -168,7 +168,7 @@ def test_an_old_model_removal_by_anyone_else_is_regated(remover) -> None:
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=444, op=_op())
 
-    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops)
+    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
 
     assert report.legacy_unapproved == (444,)
     assert proposal_label_state(repo.issues[444].labels) is ProposalLabelState.AWAITING
@@ -182,7 +182,7 @@ def test_closed_proposals_are_left_alone() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=443, op=_op())
 
-    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops)
+    report = migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
 
     assert not report.changed
     assert repo.writes == []
@@ -196,7 +196,7 @@ def test_a_failed_item_fails_the_startup_after_migrating_the_rest() -> None:
     repo.fail_on = {1}
 
     with pytest.raises(ApprovalMigrationError, match="#1"):
-        migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore())
+        migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore(), filtering_label=None)
 
     assert proposal_label_state(repo.issues[2].labels) is ProposalLabelState.AWAITING
 
@@ -223,12 +223,12 @@ def test_a_crash_mid_carry_over_resumes_on_the_next_startup() -> None:
 
     repo.add_label = crash_on_provenance
     with pytest.raises(ApprovalMigrationError):
-        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable), ops)
+        migrate_legacy_proposals(repo, TechLeadApprovals(evidence, durable), ops, filtering_label=None)
     assert "approved" in repo.issues[444].labels  # half-done
 
     repo.add_label = original_add
     restarted = TechLeadApprovals(evidence, durable)
-    report = migrate_legacy_proposals(repo, restarted, ops)
+    report = migrate_legacy_proposals(repo, restarted, ops, filtering_label=None)
 
     assert report.legacy_approved == (444,)
     assert restarted.verify(repo.issues[444], fresh=True).kind is ApprovalVerdictKind.CONTROL_CENTER
@@ -239,7 +239,7 @@ def test_proposals_on_the_new_labels_without_a_marker_are_marked() -> None:
     evidence = FakeApprovalEvidence()
     repo = _Repo(evidence, [_issue(500, ["tech-lead-proposal", "awaiting-approval"])])
 
-    migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore())
+    migrate_legacy_proposals(repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore(), filtering_label=None)
 
     assert carries_proposal_marker(repo.issues[500].body)
 
@@ -251,6 +251,20 @@ def test_a_carried_over_approval_marks_the_body_first() -> None:
     ops = InMemoryTechLeadAuthorityStore()
     ops.record_op(issue_number=444, op=_op())
 
-    migrate_legacy_proposals(repo, make_approvals(evidence), ops)
+    migrate_legacy_proposals(repo, make_approvals(evidence), ops, filtering_label=None)
 
     assert repo.writes[0] == ("body", 444, "marked")
+
+
+def test_an_engine_only_migrates_its_own_scope() -> None:
+    """An engine scoped to a label (an e2e run on a shared repository) never
+    touches another engine's proposals."""
+    evidence = FakeApprovalEvidence()
+    repo = _Repo(evidence, [_issue(1, [LEGACY, "run-a"]), _issue(2, [LEGACY, "run-b"])])
+
+    report = migrate_legacy_proposals(
+        repo, make_approvals(evidence), InMemoryTechLeadAuthorityStore(), filtering_label="run-a"
+    )
+
+    assert report.regated == (1,)
+    assert LEGACY in repo.issues[2].labels

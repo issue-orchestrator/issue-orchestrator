@@ -740,7 +740,8 @@ class StartupManager:
             return
         from .tech_lead_approval_migration import migrate_legacy_proposals
 
-        migrate_legacy_proposals(self.repository_host, approvals, self._tech_lead_authority)
+        migrate_legacy_proposals(self.repository_host, approvals, self._tech_lead_authority,
+                                 filtering_label=self.config.filtering.label)
 
     async def _recover_pending_tech_lead(self, state: OrchestratorState) -> None:
         """Recover pending tech_lead review issues after crash/restart.

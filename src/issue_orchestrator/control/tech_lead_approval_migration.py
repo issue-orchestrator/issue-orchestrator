@@ -85,17 +85,22 @@ def migrate_legacy_proposals(
     repository: "RepositoryHost",
     approvals: "TechLeadApprovals",
     ops: "TechLeadAuthorityStore",
+    *,
+    filtering_label: str | None,
 ) -> ApprovalMigrationReport:
-    """Move every open legacy proposal onto the approval model (idempotent)."""
+    """Move every open legacy proposal IN THIS ENGINE'S SCOPE onto the approval
+    model (idempotent). ``filtering_label`` is the engine's scope label: an
+    engine scoped to one label (an e2e run, a shared repository) never touches
+    another engine's proposals."""
     errors: list[str] = []
     regated = _each(
-        _open_with(repository, LEGACY_GATE_LABEL), errors, "Migrating legacy proposal",
+        _open_with(repository, LEGACY_GATE_LABEL, filtering_label), errors, "Migrating legacy proposal",
         lambda issue: _regate(repository, issue) or True,
     )
     # Proposals already on the new labels but filed before the body marker
     # existed (or migrated by a run that crashed before marking them).
     _each(
-        _open_with(repository, TECH_LEAD_PROPOSAL_LABEL), errors, "Marking proposal body",
+        _open_with(repository, TECH_LEAD_PROPOSAL_LABEL, filtering_label), errors, "Marking proposal body",
         lambda issue: _mark_body(repository, issue) or None,
     )
     outcomes = _each(
@@ -125,10 +130,16 @@ def migrate_legacy_proposals(
     return report
 
 
-def _open_with(repository: "RepositoryHost", label: str) -> list["Issue"]:
-    return repository.list_issues(
-        labels=[label], state="open", limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT, exhaustive=True
+def _open_with(repository: "RepositoryHost", label: str, filtering_label: str | None) -> list["Issue"]:
+    from .health_review_trigger import _scoped_issues
+
+    issues = repository.list_issues(
+        labels=[value for value in (label, filtering_label) if value],
+        state="open",
+        limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
+        exhaustive=True,
     )
+    return _scoped_issues(issues, filtering_label)
 
 
 def _each(items, errors: list[str], what: str, step) -> dict[int, bool | None]:
