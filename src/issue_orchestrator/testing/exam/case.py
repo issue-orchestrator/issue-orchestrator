@@ -523,3 +523,19 @@ def item_resolved(role: str, effects: Iterable[str]) -> Goal:
         )
 
     return Goal(f"{role}.resolved_{names}", role, f"the tech lead resolved the {role} block ({names})", check)
+
+
+def no_tech_lead_decision(role: str, kind: str) -> Goal:
+    """The tech lead never decided ``kind`` about the item, whatever its effect
+    (#7658): a merge hold is the operator's, so even a proposal to resolve it
+    is wrong."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        count = item.decided_kinds.count(kind)
+        return GoalCheck(
+            count == 0,
+            f"#{item.issue_number}: {count} {kind} decision(s) recorded"
+            if count else f"#{item.issue_number}: no {kind} decision recorded",
+        )
+
+    return Goal(f"{role}.no_{kind}", role, f"the tech lead never decides {kind} about the {role} item", check)

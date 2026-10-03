@@ -17,6 +17,7 @@ from .case import (
     issue_keeps_labels,
     issue_lacks_labels,
     item_resolved,
+    no_tech_lead_decision,
     item_triaged,
     no_pull_request,
     pr_checks_green,
@@ -406,6 +407,7 @@ def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[
         single_pull_request(BESIDE_PR),
         pr_in_state(BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
         pr_has_label(BESIDE_PR, needs_human_label),
+        no_tech_lead_decision(BESIDE_PR, "resolve_block"),
         pr_review_approved(BESIDE_PR),
         published_work_survives(BESIDE_PR),
         # Account provisioning is a person's work under every setting.

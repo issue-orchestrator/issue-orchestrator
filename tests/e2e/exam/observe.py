@@ -180,6 +180,29 @@ def observe_triage(state_dir: Path, issue_number: int) -> TriageFact | None:
     return None
 
 
+def observe_decided_kinds(state_dir: Path, issue_number: int) -> tuple[str, ...]:
+    """Every action kind the charter ledger recorded about the item (#7658)."""
+    db = state_dir / "tech_lead_authority.sqlite"
+    if not db.exists():
+        return ()
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+                " ORDER BY decided_at, decision_id",
+                (issue_number,),
+            ).fetchall()
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error):
+                return ()
+            raise
+    finally:
+        conn.close()
+    return tuple(TechLeadCharterDecision.from_dict(json.loads(row["record"])).action_kind for row in rows)
+
+
 def observe_item(
     *,
     repo: str,
@@ -232,6 +255,9 @@ def observe_item(
             if isinstance(number, int) and not isinstance(number, bool)
         ),
         triage=observe_triage(state_dir, item.issue_number) if state_dir is not None else None,
+        decided_kinds=(
+            observe_decided_kinds(state_dir, item.issue_number) if state_dir is not None else ()
+        ),
     )
 
 

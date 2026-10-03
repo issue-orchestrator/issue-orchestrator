@@ -1029,3 +1029,18 @@ def test_cases_f_and_g_fail_a_merge_hold_that_was_cleared() -> None:
         items[2] = replace(items[2], pull_requests=(pr(number=925, state=PullRequestState.READY),))
         failed = {goal.name for goal in cls()._grade(execute, tuple(items)).goals if not goal.passed}
         assert "beside_pr.pr_label.needs-human" in failed
+
+
+def test_cases_f_and_g_fail_any_resolution_of_the_merge_hold() -> None:
+    """r12 F1: even a FILED proposal to resolve the PR's merge hold is wrong,
+    though the PR stays open, reviewed and held."""
+    cls = TestCasesFAndGResolution
+    for execute in (True, False):
+        resolve = TriageFact("remedy", "resolve_block", "applied" if execute else "awaiting_approval",
+                             None if execute else 951)
+        items = list(cls()._items(execute=execute, resolve=resolve,
+                                  provisioning=cls.HANDED_OVER, blocked=not execute))
+        assert cls()._grade(execute, tuple(items)).passed
+        items[2] = replace(items[2], decided_kinds=("resolve_block",))
+        failed = {goal.name for goal in cls()._grade(execute, tuple(items)).goals if not goal.passed}
+        assert failed == {"beside_pr.no_resolve_block"}

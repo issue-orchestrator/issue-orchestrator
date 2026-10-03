@@ -179,6 +179,9 @@ class WorkItemFact:
     unlike a ``code-reviewed`` label, which anyone can add."""
     triage: TriageFact | None = None
     """The latest tech-lead triage of the item, when the engine recorded one."""
+    decided_kinds: tuple[str, ...] = ()
+    """Every tech-lead action kind the engine's charter ledger recorded about
+    the item, oldest first, whatever became of it (#7658)."""
 
     @property
     def open_pull_request(self) -> PullRequestFact | None:
@@ -201,6 +204,7 @@ class WorkItemFact:
             "events": list(self.events),
             "approved_prs": sorted(self.approved_prs),
             "triage": None if self.triage is None else self.triage.to_dict(),
+            "decided_kinds": list(self.decided_kinds),
         }
 
     @classmethod
@@ -216,6 +220,7 @@ class WorkItemFact:
             approved_prs=frozenset(int(n) for n in data["approved_prs"]),
             # Saved before triage existed (#7593): no fact, never an error.
             triage=None if data.get("triage") is None else TriageFact.from_dict(data["triage"]),
+            decided_kinds=tuple(str(kind) for kind in data.get("decided_kinds", ())),
         )
 
 
