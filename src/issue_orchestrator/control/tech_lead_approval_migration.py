@@ -43,7 +43,7 @@ from ..domain.tech_lead_approval import (
     missing_labels,
     with_proposal_marker,
 )
-from .tech_lead_approval_writes import restore_gate_labels
+from .tech_lead_approval_writes import finish_decline, restore_gate_labels
 from .tech_lead_proposals import TECH_LEAD_PROPOSAL_SCAN_LIMIT
 
 if TYPE_CHECKING:
@@ -101,7 +101,26 @@ def migrate_engine_proposals(
     approvals = applier.tech_lead_approvals if applier is not None else None
     if approvals is None or ops is None:
         return None
+    finish_interrupted_declines(repository, approvals, ops)
     return migrate_legacy_proposals(repository, approvals, ops, filtering_label=config.filtering.label)
+
+
+def finish_interrupted_declines(
+    repository: "RepositoryHost", approvals: "TechLeadApprovals", ops: "TechLeadAuthorityStore"
+) -> tuple[int, ...]:
+    """Complete every Decline a crash interrupted after its durable record
+    (#7763 review r13 F1): close the proposal and retire its op. Idempotent;
+    a finished decline has no op left, so it is never touched again."""
+    finished = []
+    for number, _op in ops.list_ops():
+        if not approvals.is_declined(number):
+            continue
+        issue = repository.get_issue(number)
+        if issue is not None and issue.state == "open":
+            repository.update_issue_state(number, "closed")
+        finish_decline(ops, number)
+        finished.append(number)
+    return tuple(finished)
 
 
 def migrate_legacy_proposals(

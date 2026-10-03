@@ -228,6 +228,10 @@ def _decline(
     approvals: "TechLeadApprovals",
 ) -> TechLeadProposalCommandOutcome:
     number = issue.number
+    # The durable decision FIRST (#7763 review r13 F1): a crash anywhere after
+    # it leaves a declined proposal that never executes, and startup
+    # (finish_interrupted_declines) completes the close and op cleanup.
+    approvals.decline(number, op_backed=ops.load_op(issue_number=number) is not None)
     repository.add_comment(
         number,
         "## ✖️ Declined\n\nThe operator declined this tech-lead proposal in the"
@@ -237,12 +241,15 @@ def _decline(
     # proposal must never be admitted on an approval given before its decline.
     _remove_present(repository, issue, APPROVED_LABEL)
     repository.update_issue_state(number, "closed")
-    op_backed = ops.load_op(issue_number=number) is not None
-    approvals.decline(number, op_backed=op_backed)
-    if op_backed:
+    finish_decline(ops, number)
+    return TechLeadProposalCommandOutcome("declined", "Proposal declined and closed", number)
+
+
+def finish_decline(ops: "TechLeadAuthorityStore", number: int) -> None:
+    """Retire a declined proposal's op, if it has one (idempotent)."""
+    if ops.load_op(issue_number=number) is not None:
         link_declined_proposal(ops, number)
         ops.discard_op(issue_number=number)
-    return TechLeadProposalCommandOutcome("declined", "Proposal declined and closed", number)
 
 
 def _approve(

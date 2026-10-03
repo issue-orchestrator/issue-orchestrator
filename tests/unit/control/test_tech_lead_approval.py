@@ -795,3 +795,46 @@ def test_a_gated_filing_needs_both_gate_labels_and_no_approval(labels) -> None:
     with pytest.raises(ValueError, match="provenance and waiting"):
         require_gated_filing(("agent:web", *labels), with_proposal_marker("b"), what="filing")
     require_gated_filing(("agent:web", *GATED), with_proposal_marker("b"), what="filing")
+
+
+# --- review round 13 (#7763) ------------------------------------------------
+
+
+def test_a_decline_interrupted_after_the_close_stays_declined_and_is_finished_at_startup() -> None:
+    """r13 F1: the declined record lands before the close, so a crash right
+    after the close cannot let a reopened, re-approved op execute; startup
+    then finishes the decline (close + op retired)."""
+    from issue_orchestrator.control.tech_lead_approval_migration import finish_interrupted_declines
+
+    evidence = FakeApprovalEvidence(default_approver=MAINTAINER)
+    approvals = make_approvals(evidence)
+    host = _Host(evidence, _marked(500, GATED))
+    ops = InMemoryTechLeadAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    close = host.update_issue_state
+
+    def close_then_crash(number: int, state: str) -> None:
+        close(number, state)
+        raise RuntimeError("engine killed right after the close")
+
+    host.update_issue_state = close_then_crash
+    outcome = apply_operator_proposal_command(
+        TechLeadProposalCommand(500, "decline"), repository=host, ops=ops, approvals=approvals
+    )
+    assert outcome.outcome == "failed"
+    assert ops.load_op(issue_number=500) is not None  # cleanup never ran
+    host.update_issue_state = close
+
+    # Someone reopens it and a maintainer approves it again.
+    host.update_issue_state(500, "open")
+    host.add_label(500, "approved")
+    evidence.label(500)
+    restarted = make_approvals(evidence)
+    restarted.index = approvals.index  # the same durable authority store
+    assert restarted.is_declined(500)
+    assert not restarted.confirm(host.issue)  # the op can never execute
+
+    assert finish_interrupted_declines(host, restarted, ops) == (500,)
+    assert host.issue.state == "closed"
+    assert ops.load_op(issue_number=500) is None
+    assert finish_interrupted_declines(host, restarted, ops) == ()  # idempotent
