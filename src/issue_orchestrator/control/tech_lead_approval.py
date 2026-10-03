@@ -74,9 +74,10 @@ class TechLeadApprovals:
     evidence: "ApprovalEvidenceReader"
     records: "OperatorApprovalRecords"
     index: "ProposalIssueIndex"
-    #: The durable op ledger's proposal issue numbers: an op-backed proposal
-    #: is known even before (or without) an index row (#7763 review r19 F1).
-    op_numbers: Callable[[], Iterable[int]]
+    #: The durable ledgers' proposal issue numbers (stored ops, and promoted
+    #: findings filed in this repository): known even before, or without, an
+    #: index row (#7763 review r19 F1, r25 F2).
+    ledger_numbers: Callable[[], Iterable[int]]
     clock: Callable[[], float] = time.monotonic
     _verified: dict[int, ApprovalVerdict] = field(default_factory=dict, init=False)
     _roles: dict[str, tuple[float, str | None]] = field(default_factory=dict, init=False)
@@ -156,14 +157,20 @@ class TechLeadApprovals:
         what an issue's labels and body say today.
         """
         if self._known is None:
-            self._known = self.index.known_proposals() | frozenset(self.op_numbers())
+            self._known = self.index.known_proposals() | frozenset(self.ledger_numbers())
         return self._known
 
+    def is_known(self, issue_number: int) -> bool:
+        """Fresh, never cached (#7763 review r25 F1): a proposal indexed or
+        ledgered by any write since this owner last looked still counts."""
+        return self.index.is_known(issue_number) or issue_number in frozenset(self.ledger_numbers())
+
     def proposal_state_of(self, issue: "Issue") -> ProposalLabelState:
-        """The issue's approval state, its known proposal identity included."""
-        return known_proposal_state(
-            issue.labels, issue.body, known=issue.number in self.known_proposals()
-        )
+        """The issue's approval state, its known proposal identity included.
+
+        Admission, launch consent, settlement writes and the operator command
+        ask this, so it reads identity fresh."""
+        return known_proposal_state(issue.labels, issue.body, known=self.is_known(issue.number))
 
     def indexed_proposals(self) -> frozenset[int]:
         """Every ACTIVE proposal the approval scope must keep finding."""

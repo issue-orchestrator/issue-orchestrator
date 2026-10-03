@@ -10722,7 +10722,7 @@ class TestTechLeadProposalLaunchConsent:
         from tests.approval_helpers import approving_everything
 
         approvals = approving_everything()
-        approvals.op_numbers = lambda: (123,)  # the authority store's op ledger
+        approvals.ledger_numbers = lambda: (123,)  # the authority store's op ledger
         ordinary_looking = Issue(number=123, title="Reset it", labels=["agent:web"], repo="test/repo", body="b")
         mock_repo_host.issues[123] = ordinary_looking
         launcher_bundle.action_applier.tech_lead_approvals = approvals

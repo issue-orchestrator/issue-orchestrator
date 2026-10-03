@@ -328,7 +328,11 @@ def create_tech_lead_fact_gatherer(
             evidence=cast("ApprovalEvidenceReader", repository_host),
             records=authority.operator_approvals,
             index=authority.proposal_index,
-            op_numbers=lambda: (number for number, _op in authority.list_ops()),
+            ledger_numbers=lambda: (
+                *(number for number, _op in authority.list_ops()),
+                *(row.target_issue_number for row in authority.list_promotions()
+                  if row.target_repo.casefold() == (config.repo or "").casefold()),
+            ),
         ),
         tech_lead_authority=authority,
         board_publisher=board_publisher,

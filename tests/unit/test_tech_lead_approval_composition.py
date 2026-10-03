@@ -154,3 +154,42 @@ def test_a_decline_by_another_engine_sharing_the_store_stops_execution_at_once(t
     assert not result.success
     apply_fn.assert_not_called()
     assert store_a.load_op(issue_number=5) is not None
+
+
+
+def test_a_self_routed_promotion_is_a_proposal_from_its_ledger_row(orchestrator) -> None:
+    """#7763 review r25 F2: the promotion ledger names a promoted finding
+    filed in this repository a proposal before (or without) any index row or
+    labels; one routed to another repository is not this engine's."""
+    from issue_orchestrator.domain.tech_lead_findings import PromotedFinding
+
+    authority = orchestrator.deps.services.tech_lead_authority
+    approvals = orchestrator.deps.fact_gatherer.approvals
+    authority.record_promotion(promotion=PromotedFinding(
+        signature="sig-a", case_file_issue_number=9, target_repo="test/repo", target_issue_number=810))
+    authority.record_promotion(promotion=PromotedFinding(
+        signature="sig-b", case_file_issue_number=9, target_repo="other/repo", target_issue_number=811))
+    stripped = Issue(number=810, title="t", labels=["agent:backend"], body="edited")
+
+    assert approvals.is_known(810) and not approvals.is_known(811)
+    assert orchestrator.deps.planner.scheduler.approval_admission(stripped) is False
+
+
+def test_a_follow_up_filed_after_the_caches_warmed_is_known_at_once(tmp_path) -> None:
+    """#7763 review r25 F1: identity is read fresh, so a proposal the filing
+    boundary indexed after this owner cached its sets still counts."""
+    from issue_orchestrator.control.tech_lead_approval import TechLeadApprovals, unapproved_proposal_launch
+    from issue_orchestrator.infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+    from tests.approval_helpers import FakeApprovalEvidence
+
+    store = SqliteTechLeadAuthorityStore(tmp_path / "authority.db")
+    approvals = TechLeadApprovals(FakeApprovalEvidence(), store.operator_approvals, store.proposal_index, lambda: ())
+    assert approvals.known_proposals() == frozenset() and approvals.indexed_proposals() == frozenset()
+
+    store.proposal_index.index_proposals([820])  # what the creation boundary writes at filing
+    stripped = Issue(number=820, title="t", labels=["agent:backend"], body="edited")
+    host = MagicMock()
+    host.get_issue.return_value = stripped
+
+    assert not approvals.admits(stripped)
+    assert unapproved_proposal_launch(820, host, approvals) is not None

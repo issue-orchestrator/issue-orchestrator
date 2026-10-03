@@ -90,7 +90,7 @@ def make_approvals(evidence: FakeApprovalEvidence | None = None) -> TechLeadAppr
         evidence=evidence or FakeApprovalEvidence(),
         records=InMemoryOperatorApprovalRecords(),
         index=InMemoryProposalIssueIndex(),
-        op_numbers=lambda: (),
+        ledger_numbers=lambda: (),
     )
 
 

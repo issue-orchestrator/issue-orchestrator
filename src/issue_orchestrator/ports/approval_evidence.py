@@ -108,6 +108,11 @@ class ProposalIssueIndex(Protocol):
 
     def declined_proposals(self) -> frozenset[int]: ...
 
+    def is_known(self, number: int) -> bool:
+        """A targeted, uncached read: is *number* any row (active, inactive
+        or declined)? Admission and launch consent ask it (#7763 r25 F1)."""
+        ...
+
     def is_declined(self, number: int) -> bool:
         """A targeted, uncached read: consent asks it every time, since
         another engine sharing the store may have declined since (#7763 r24)."""
@@ -144,6 +149,9 @@ class InMemoryProposalIssueIndex:
 
     def is_declined(self, number: int) -> bool:
         return number in self._declined
+
+    def is_known(self, number: int) -> bool:
+        return number in self._numbers or number in self._declined
 
 
 __all__ = [

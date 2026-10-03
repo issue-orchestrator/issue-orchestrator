@@ -95,6 +95,12 @@ class SqliteProposalIssueIndex:
     def declined_proposals(self) -> frozenset[int]:
         return self._numbers("SELECT issue_number FROM tech_lead_proposal_index WHERE declined = 1")
 
+    def is_known(self, number: int) -> bool:
+        row = self._connection().execute(
+            "SELECT 1 FROM tech_lead_proposal_index WHERE issue_number = ?", (int(number),)
+        ).fetchone()
+        return row is not None
+
     def is_declined(self, number: int) -> bool:
         row = self._connection().execute(
             "SELECT 1 FROM tech_lead_proposal_index WHERE issue_number = ? AND declined = 1",
