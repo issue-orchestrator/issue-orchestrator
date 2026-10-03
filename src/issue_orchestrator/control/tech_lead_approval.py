@@ -50,6 +50,7 @@ from ..domain.tech_lead_approval import (
 )
 
 if TYPE_CHECKING:
+    from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.approval_evidence import (
         ApprovalEvidenceReader,
         OperatorApprovalRecords,
@@ -362,6 +363,22 @@ class TechLeadApprovals:
         return frozenset(self._verified)
 
 
+def ledger_proposal_numbers(authority: "TechLeadAuthorityStore", repo: str | None) -> tuple[int, ...]:
+    """Proposal issue numbers the durable ledgers name: stored ops, and
+    promoted findings filed in *repo* (#7763 review r19 F1, r25 F2)."""
+    here = (repo or "").casefold()
+    return (
+        *(number for number, _op in authority.list_ops()),
+        *(row.target_issue_number for row in authority.list_promotions() if row.target_repo.casefold() == here),
+    )
+
+
+def stored_known_proposals(authority: "TechLeadAuthorityStore", repo: str | None) -> frozenset[int]:
+    """Every proposal the authority store knows: for readers without a live
+    approval owner (the CLI and Control Center audits, #7763 review r27 F1)."""
+    return authority.proposal_index.known_proposals() | frozenset(ledger_proposal_numbers(authority, repo))
+
+
 def admits_without_evidence(issue: "Issue") -> bool:
     """Admission where no approval owner is wired (CLI audits, dry runs).
 
@@ -467,6 +484,8 @@ __all__ = [
     "ROLE_CACHE_SECONDS",
     "TechLeadApprovals",
     "admits_without_evidence",
+    "ledger_proposal_numbers",
+    "stored_known_proposals",
     "plan_approval_settlements",
     "unapproved_proposal_launch",
 ]

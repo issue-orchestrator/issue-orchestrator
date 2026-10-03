@@ -1996,7 +1996,14 @@ class TestCmdAudit:
                                 mock_audit.return_value = []
 
                                 args = argparse.Namespace()
-                                result = cmd_audit(args)
+                                # The audit asks the authority store which issues are
+                                # tech-lead proposals (#7763 review r27 F1).
+                                with patch(
+                                    "issue_orchestrator.entrypoints.cli_queue_commands._stored_known_proposals",
+                                    return_value=frozenset({7}),
+                                ):
+                                    result = cmd_audit(args)
+                                assert mock_audit.call_args.kwargs["known_proposals"] == frozenset({7})
 
                                 assert result == 0
                                 mock_audit.assert_called_once()

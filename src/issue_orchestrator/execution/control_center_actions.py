@@ -331,6 +331,7 @@ class AuditIssuesCommand:
                 state=None,
                 issue_tracker=issue_tracker,
                 issue_branches=issue_branches,
+                known_proposals=_stored_known_proposals(config),
             )
             if request.issue_number is not None:
                 entries = [
@@ -547,3 +548,12 @@ class ControlCenterActions:
         from .control_center_runtime import get_effective_configuration_identity
 
         return get_effective_configuration_identity(repo_root, self.supervisor)
+
+
+def _stored_known_proposals(config) -> frozenset[int]:
+    """The authority store's proposal identity, for an audit run without a
+    live engine (#7763 review r27 F1)."""
+    from ..control.tech_lead_approval import stored_known_proposals
+    from ..infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+
+    return stored_known_proposals(SqliteTechLeadAuthorityStore.for_repo(config.repo_root), config.repo)

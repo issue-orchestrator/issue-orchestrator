@@ -329,6 +329,7 @@ class StartupManager:
                 self.config, state, self.repository_host,
                 issue_branches=issue_branches,
                 preloaded_issues=list(state.cached_queue_issues) if state.cached_queue_issues else None,
+                known_proposals=approvals.known_proposals() if (approvals := self._action_applier.tech_lead_approvals) else frozenset(),
             )
             print_audit(audit_entries)
 

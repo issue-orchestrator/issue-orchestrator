@@ -242,6 +242,20 @@ test('a failed or off-contract refresh after an all-clear shows "unable to check
     await v.refresh();
     assert.equal(badges.at(-1).text, 'Nothing waiting on you');
 
+    const doing = [{ decision_id: 'd1', action_kind: 'kill_hung_session', action_label: 'kill hung session', target_number: 402,
+        link: 'https://github.com/o/a/issues/402', outcome: 'applied', outcome_label: 'Applied', at: 'now', reason: '', in_flight: false }];
+    answer = { payload: page([repo(section([item(8)], { doing }))]) };
+    await v.refresh();
+    assert.match(dom.lanes.doing.lastHtml, /kill hung session/);
+    dom.lanes.doing.control(`doing:${KEY}:d1`).focus();
+    answer = { throws: true };
+    await v.refresh();
+    // r27 F2: every lane and the run strip drop the last good read...
+    assert.doesNotMatch(dom.lanes.doing.lastHtml, /kill hung session/);
+    assert.match(dom.lanes.doing.lastHtml, /Unable to check/);
+    assert.match(dom.lanes.watching.lastHtml, /Unable to check/);
+    assert.match(dom.nodes['#techLeadRunStrip'].innerHTML, /Unable to check/);
+    assert.equal(dom.active().name, 'doing heading');  // ...and focus goes to the lane heading
     answer = { payload: page([repo(section([item(8)]))]) };
     await v.refresh();
     for (const failure of [{ throws: true }, { payload: { not: 'the contract' } }]) {

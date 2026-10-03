@@ -57,9 +57,13 @@
         unavailable = true;
         if (!rootNode) return;
         const place = focusedControl();
+        // Nothing from the last good read stays up as if current (#7763 r27 F2).
+        const unavailableNote = what => `<p class="tl-empty" role="status">Unable to check ${what} right now; it retries shortly.</p>`;
+        rootNode.querySelector('#techLeadRunStrip').innerHTML = 'Unable to check the tech lead\'s latest run.';
         rootNode.querySelector('#techLeadWaitingHeading').textContent = 'Waiting on you';
-        rootNode.querySelector('#techLeadWaitingList').innerHTML =
-            `<p class="tl-empty" role="status">${UNAVAILABLE_TEXT} right now; it retries shortly.</p>`;
+        rootNode.querySelector('#techLeadWaitingList').innerHTML = unavailableNote('what waits on you');
+        rootNode.querySelector('#techLeadDoingList').innerHTML = unavailableNote('what the tech lead is doing');
+        rootNode.querySelector('#techLeadWatchingList').innerHTML = unavailableNote('what the tech lead is watching');
         // The focused card went with the list: focus its lane heading, as
         // paint() does for an item that is gone (#7763 review r18 F2).
         if (place) restoreFocus(place);

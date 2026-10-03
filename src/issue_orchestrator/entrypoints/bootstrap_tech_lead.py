@@ -315,7 +315,7 @@ def create_tech_lead_fact_gatherer(
     if repository_host is None:
         return None
     from ..control.fact_gatherer import FactGatherer
-    from ..control.tech_lead_approval import TechLeadApprovals
+    from ..control.tech_lead_approval import TechLeadApprovals, ledger_proposal_numbers
     from ..infra.e2e_slot_policy import make_e2e_slot_reader
 
     return FactGatherer(
@@ -328,11 +328,7 @@ def create_tech_lead_fact_gatherer(
             evidence=cast("ApprovalEvidenceReader", repository_host),
             records=authority.operator_approvals,
             index=authority.proposal_index,
-            ledger_numbers=lambda: (
-                *(number for number, _op in authority.list_ops()),
-                *(row.target_issue_number for row in authority.list_promotions()
-                  if row.target_repo.casefold() == (config.repo or "").casefold()),
-            ),
+            ledger_numbers=lambda: ledger_proposal_numbers(authority, config.repo),
         ),
         tech_lead_authority=authority,
         board_publisher=board_publisher,

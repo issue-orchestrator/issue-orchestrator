@@ -46,6 +46,7 @@ class TestBlockingLabelFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.BLOCKED
@@ -70,6 +71,7 @@ class TestBlockingLabelFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.BLOCKED
@@ -90,6 +92,7 @@ class TestBlockingLabelFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.NEEDS_HUMAN
@@ -110,6 +113,7 @@ class TestBlockingLabelFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.BLOCKED
@@ -130,6 +134,7 @@ class TestBlockingLabelFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         # Should be caught by either blocking check or direct needs-human check
@@ -150,6 +155,7 @@ class TestBlockingLabelFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.BLOCKED
@@ -174,6 +180,7 @@ class TestActiveSessionFiltering:
             history_numbers=set(),
             active_numbers={1},  # This issue has an active session
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.ACTIVE_SESSION
@@ -197,6 +204,7 @@ class TestHistoryFiltering:
             history_numbers={1},  # This issue was already processed
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.IN_HISTORY
@@ -221,6 +229,7 @@ class TestClosedIssueFiltering:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.CLOSED
@@ -251,6 +260,7 @@ class TestQueuedIssue:
             history_numbers=set(),
             active_numbers=set(),
             issue_branches=None,
+            known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.QUEUED
@@ -276,7 +286,7 @@ def test_audit_queue_does_not_hold_an_issue_released_by_a_partial_merge(sample_c
 
     statuses = {
         audited.issue.number: audited.status
-        for audited in audit_queue(sample_config, state=state, preloaded_issues=issues)
+        for audited in audit_queue(sample_config, state=state, preloaded_issues=issues, known_proposals=frozenset())
     }
 
     assert statuses[2] == SkipReason.IN_HISTORY
@@ -303,8 +313,26 @@ class TestTechLeadProposalAudit:
 
         entry = audit_issue(
             issue=issue, config=sample_config, history_numbers=set(),
-            active_numbers=set(), issue_branches=None,
+            active_numbers=set(), issue_branches=None, known_proposals=frozenset(),
         )
 
         assert entry.status == SkipReason.BLOCKED
         assert "proposal" in (entry.detail or "")
+
+
+
+def test_a_known_proposal_stripped_of_everything_is_blocked_by_the_audit(sample_config) -> None:
+    """#7763 review r27 F1: the audit asks the same durable identity as the
+    live scheduler, through the public audit_queue path."""
+    from unittest.mock import Mock
+
+    from issue_orchestrator.infra.audit import audit_queue
+
+    sample_config.agents = {"agent:backend": Mock()}
+    stripped = Issue(number=8, title="Follow-up", labels=["agent:backend"], body="edited")
+
+    [known] = audit_queue(sample_config, preloaded_issues=[stripped], known_proposals=frozenset({8}))
+    [unknown] = audit_queue(sample_config, preloaded_issues=[stripped], known_proposals=frozenset())
+
+    assert known.status == SkipReason.BLOCKED and "proposal" in (known.detail or "")
+    assert unknown.status == SkipReason.QUEUED
