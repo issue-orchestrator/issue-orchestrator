@@ -61,6 +61,10 @@ def test_the_sqlite_proposal_index_survives_a_restart(tmp_path) -> None:
 
     assert reopened.proposal_index.indexed_proposals() == {7}
     assert reopened.proposal_index.declined_proposals() == {9}
+    # A retired (closed) proposal is inactive, never forgotten (r18 F1)...
+    assert reopened.proposal_index.known_proposals() == {5, 7, 9}
+    reopened.proposal_index.index_proposals([5])  # ...and seen open again
+    assert reopened.proposal_index.indexed_proposals() == {5, 7}
 
 
 def test_a_goal_pilot_label_action_can_never_write_an_approval(orchestrator) -> None:

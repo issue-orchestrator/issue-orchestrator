@@ -56,9 +56,13 @@
         latest = null;
         unavailable = true;
         if (!rootNode) return;
+        const place = focusedControl();
         rootNode.querySelector('#techLeadWaitingHeading').textContent = 'Waiting on you';
         rootNode.querySelector('#techLeadWaitingList').innerHTML =
             `<p class="tl-empty" role="status">${UNAVAILABLE_TEXT} right now; it retries shortly.</p>`;
+        // The focused card went with the list: focus its lane heading, as
+        // paint() does for an item that is gone (#7763 review r18 F2).
+        if (place) restoreFocus(place);
     }
 
     function commandEndpoint(repoKey) {

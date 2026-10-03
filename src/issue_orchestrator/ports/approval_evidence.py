@@ -80,17 +80,25 @@ class ProposalIssueIndex(Protocol):
     Label queries find a proposal only while it carries a gate label; a bulk
     edit can strip all of them, leaving a proposal whose body marker still
     blocks it but that no label names. The index is how the approval scope
-    still finds it: numbers in, retired once the item is closed or gone.
+    still finds it. A row is never deleted (#7763 review r18 F1): a closed
+    proposal turns INACTIVE (out of the scope's reads) but stays known, so
+    one reopened after an edit stripped it is still a proposal.
     """
 
-    def index_proposals(self, numbers: Iterable[int]) -> None: ...
+    def index_proposals(self, numbers: Iterable[int]) -> None:
+        """Add, or reactivate, live proposals (never un-declines one)."""
+        ...
 
     def indexed_proposals(self) -> frozenset[int]:
-        """The live (not declined) proposals."""
+        """The ACTIVE proposals the approval scope reads (not declined)."""
+        ...
+
+    def known_proposals(self) -> frozenset[int]:
+        """Every proposal ever indexed: active, inactive or declined."""
         ...
 
     def retire_proposals(self, numbers: Iterable[int]) -> None:
-        """Drop closed or gone proposals; a DECLINED one is kept for good."""
+        """Mark closed or gone proposals inactive; identity is kept."""
         ...
 
     def decline_proposals(self, numbers: Iterable[int]) -> None:
@@ -106,16 +114,22 @@ class InMemoryProposalIssueIndex:
 
     def __init__(self) -> None:
         self._numbers: set[int] = set()
+        self._inactive: set[int] = set()
         self._declined: set[int] = set()
 
     def index_proposals(self, numbers: Iterable[int]) -> None:
-        self._numbers.update(numbers)
+        added = set(numbers)
+        self._numbers.update(added)
+        self._inactive.difference_update(added)
 
     def indexed_proposals(self) -> frozenset[int]:
-        return frozenset(self._numbers - self._declined)
+        return frozenset(self._numbers - self._declined - self._inactive)
+
+    def known_proposals(self) -> frozenset[int]:
+        return frozenset(self._numbers | self._declined)
 
     def retire_proposals(self, numbers: Iterable[int]) -> None:
-        self._numbers.difference_update(set(numbers) - self._declined)
+        self._inactive.update(set(numbers) & self._numbers)
 
     def decline_proposals(self, numbers: Iterable[int]) -> None:
         self._declined.update(numbers)

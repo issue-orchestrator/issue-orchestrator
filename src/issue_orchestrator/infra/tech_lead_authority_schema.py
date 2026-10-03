@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS tech_lead_operator_approvals (
 -- finds one whose gate labels were all stripped.
 CREATE TABLE IF NOT EXISTS tech_lead_proposal_index (
     issue_number INTEGER PRIMARY KEY,
-    declined INTEGER NOT NULL DEFAULT 0
+    declined INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,

@@ -82,21 +82,21 @@ class SqliteProposalIssueIndex:
         with self._transaction() as tx:
             tx.executemany(
                 "INSERT INTO tech_lead_proposal_index (issue_number) VALUES (?)"
-                " ON CONFLICT(issue_number) DO NOTHING",
+                " ON CONFLICT(issue_number) DO UPDATE SET active = 1",
                 rows,
             )
 
     def indexed_proposals(self) -> frozenset[int]:
-        return self._numbers(declined=False)
+        return self._numbers("SELECT issue_number FROM tech_lead_proposal_index WHERE declined = 0 AND active = 1")
+
+    def known_proposals(self) -> frozenset[int]:
+        return self._numbers("SELECT issue_number FROM tech_lead_proposal_index")
 
     def declined_proposals(self) -> frozenset[int]:
-        return self._numbers(declined=True)
+        return self._numbers("SELECT issue_number FROM tech_lead_proposal_index WHERE declined = 1")
 
-    def _numbers(self, *, declined: bool) -> frozenset[int]:
-        rows = self._connection().execute(
-            "SELECT issue_number FROM tech_lead_proposal_index WHERE declined = ?",
-            (int(declined),),
-        ).fetchall()
+    def _numbers(self, query: str) -> frozenset[int]:
+        rows = self._connection().execute(query).fetchall()
         return frozenset(int(row["issue_number"]) for row in rows)
 
     def decline_proposals(self, numbers: Iterable[int]) -> None:
@@ -116,6 +116,6 @@ class SqliteProposalIssueIndex:
             return
         with self._transaction() as tx:
             tx.executemany(
-                "DELETE FROM tech_lead_proposal_index WHERE issue_number = ? AND declined = 0",
+                "UPDATE tech_lead_proposal_index SET active = 0 WHERE issue_number = ?",
                 rows,
             )

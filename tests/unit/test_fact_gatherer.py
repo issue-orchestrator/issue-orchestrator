@@ -2582,3 +2582,43 @@ def test_a_failed_scope_refresh_leaves_the_scope_unobserved_until_one_succeeds(
     _host_sees_gated(mock_repository_host)
     gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
     assert approvals.scope_observed
+
+
+def test_a_closed_proposal_reopened_after_an_edit_is_still_a_proposal(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r18 F1: closing retires a proposal from the scope's reads
+    but never forgets it. Stripped of labels and marker and reopened, it is
+    never admitted; the board's next observation reactivates it and the
+    scope refresh restores its gate."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = make_approvals()
+    approvals.remember_proposals([750])
+    closed = Issue(number=750, title="t", labels=["agent:backend"], body="b", state="closed")
+    _host_sees_gated(mock_repository_host)
+    mock_repository_host.get_issue.side_effect = lambda number: {750: closed}.get(number)
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert approvals.indexed_proposals() == frozenset()  # retired from the reads...
+    assert 750 in approvals.known_proposals()  # ...never forgotten
+
+    reopened = Issue(number=750, title="t", labels=["agent:backend"], body="edited")
+    assert not approvals.admits(reopened)
+    mock_repository_host.get_issue.side_effect = lambda number: {750: reopened}.get(number)
+    sample_state.tech_lead_approval_scan_at = 0.0
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[reopened])
+
+    assert facts is not None
+    assert approvals.indexed_proposals() == {750}
+    assert (750, ApprovalTransition.RESTORE_WAITING) in [
+        (s.issue_number, s.transition) for s in facts.approval_settlements
+    ]

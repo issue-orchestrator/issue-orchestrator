@@ -242,13 +242,18 @@ test('a failed or off-contract refresh after an all-clear shows "unable to check
     await v.refresh();
     assert.equal(badges.at(-1).text, 'Nothing waiting on you');
 
+    answer = { payload: page([repo(section([item(8)]))]) };
+    await v.refresh();
     for (const failure of [{ throws: true }, { payload: { not: 'the contract' } }]) {
+        const approve = dom.lanes.waiting.control(`approve:${KEY}:8`);
+        if (approve) approve.focus();  // r18 F2: focus on a control the failure removes
         answer = failure;
         await v.refresh();
         assert.equal(v.latest(), null);
         assert.equal(badges.at(-1).text, 'Unable to check what waits on you');
         assert.match(dom.nodes['#techLeadWaitingList'].lastHtml, /Unable to check what waits on you/);
         assert.doesNotMatch(dom.nodes['#techLeadWaitingList'].lastHtml, /Nothing waiting/);
+        if (approve) assert.equal(dom.active().name, 'waiting heading');
     }
     contractJson.setViolationReporter(null);
 });

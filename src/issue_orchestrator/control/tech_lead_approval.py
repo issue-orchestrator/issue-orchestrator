@@ -82,6 +82,7 @@ class TechLeadApprovals:
     _declined: frozenset[int] | None = field(default=None, init=False)
     _scope_observed: bool = field(default=False, init=False)
     _known: frozenset[int] | None = field(default=None, init=False)
+    _active: frozenset[int] | None = field(default=None, init=False)
 
     # -- the last observed scope (read model) --------------------------------
 
@@ -106,7 +107,7 @@ class TechLeadApprovals:
         self._scope_observed = True
         self.index.index_proposals(issue.number for issue in issues)
         self.index.retire_proposals(retired)
-        self._known = None
+        self._known = self._active = None
 
     def decline(self, issue_number: int) -> None:
         """An operator declines *issue_number*: final, for every proposal kind.
@@ -121,7 +122,7 @@ class TechLeadApprovals:
         """
         self.index.decline_proposals([issue_number])
         self._declined = None
-        self._known = None
+        self._known = self._active = None
         self._verified.pop(issue_number, None)
         self.records.discard_operator_approval(issue_number)
         self.forget_from_scope(issue_number)
@@ -137,9 +138,12 @@ class TechLeadApprovals:
         return self._declined
 
     def remember_proposals(self, numbers: Iterable[int]) -> None:
-        """Index proposals filed or migrated outside a scope observation."""
-        self.index.index_proposals(numbers)
-        self._known = None
+        """Index (or reactivate) proposals outside a scope observation."""
+        added = list(numbers)
+        if not added:
+            return  # nothing changed: keep the cached reads
+        self.index.index_proposals(added)
+        self._known = self._active = None
 
     def known_proposals(self) -> frozenset[int]:
         """Every issue the engine knows is a proposal: indexed or declined.
@@ -148,7 +152,7 @@ class TechLeadApprovals:
         what an issue's labels and body say today.
         """
         if self._known is None:
-            self._known = self.index.indexed_proposals() | self.declined_numbers()
+            self._known = self.index.known_proposals()
         return self._known
 
     def proposal_state_of(self, issue: "Issue") -> ProposalLabelState:
@@ -158,8 +162,10 @@ class TechLeadApprovals:
         )
 
     def indexed_proposals(self) -> frozenset[int]:
-        """Every proposal the approval scope must keep finding."""
-        return self.index.indexed_proposals()
+        """Every ACTIVE proposal the approval scope must keep finding."""
+        if self._active is None:
+            self._active = self.index.indexed_proposals()
+        return self._active
 
     def forget_from_scope(self, issue_number: int) -> None:
         """Drop one item after a decline closed it, so the read model is current."""
@@ -290,13 +296,20 @@ class TechLeadApprovals:
     def observe(self, issues: Iterable["Issue"]) -> None:
         """Drop cached approvals for items now observed without ``approved``.
 
-        Free (no reads): every tick feeds it the issues it already holds, so a
-        removed ``approved`` label revokes admission on the next tick rather
-        than at the next approval scan.
+        Free (cached index reads only): every tick feeds it the issues it
+        already holds, so a removed ``approved`` label revokes admission on
+        the next tick rather than at the next approval scan.
         """
+        reopened: list[int] = []
+        inactive = self.known_proposals() - self.indexed_proposals() - self.declined_numbers()
         for issue in issues:
             if issue.state != "open" or not proposal_label_state(issue.labels).claims_approval:
                 self._verified.pop(issue.number, None)
+            if issue.state == "open" and issue.number in inactive:
+                reopened.append(issue.number)
+        # A closed proposal seen open again is back in the scope's reads, so
+        # its gate is restored however it was edited (#7763 review r18 F1).
+        self.remember_proposals(reopened)
 
     def confirm(self, issue: "Issue | None") -> bool:
         """Apply-time consent: open, claimed, approved by a FRESH read, and
