@@ -97,8 +97,10 @@ CASE_FG_BESIDE_PR_EXTERNAL_ID = "M0-769"
 CASE_FG_PROVISIONING_EXTERNAL_ID = "M0-770"
 
 #: How long the stale item gets to reach needs-human before its stale
-#: blocked-cross-milestone is planted beside it.
-CASE_FG_PLANT_S = 15 * 60
+#: blocked-cross-milestone is planted beside it. Four items share two
+#: session slots, and the give-up coder may run twice (interrupted retry)
+#: before its block lands: 15 minutes ran out on a loaded host.
+CASE_FG_PLANT_S = 40 * 60
 
 
 @dataclass(frozen=True)
@@ -635,7 +637,7 @@ async def run_case_resolution(
                 engine,
                 done=goals_met_probe(run, engine, *items),
                 quiet_s=900,
-                timeout_s=90 * 60,
+                timeout_s=55 * 60,  # within the test's 100-minute budget, after planting
             )
             return await _finish(
                 run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by,
