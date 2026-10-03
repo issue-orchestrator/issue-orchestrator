@@ -88,14 +88,17 @@ directory. No agent session survives an engine stop (every agent is a PTY child 
 engine), so the case grades what an upgrade really inherits: run-ledger rows, pending-work
 claims, labels and every sqlite store's schema.
 
-Case D (#7593) plants porchpin's blocked items of 2026-10-02 through the engine's own
-completions: one scripted coder ends by asking the operator whether to split its issue
-(porchpin#262), another publishes its work and asks the maintainer a question beside the
-PR (porchpin#364 / PR #379). A real tech lead's periodic health review must triage both
-(the split question becomes a filed `propose_decision` the operator can approve), and
-the PR beside the question must still be reviewed without being merged. It is graded on
-the triage the engine recorded in its charter ledger, so an engine that only advises
-fails it.
+Case D (#7593) plants porchpin#262's blocked item through the engine's own completion: a
+scripted coder ends by asking the operator whether to split its issue. A real tech lead's
+periodic health review must triage it as a filed `propose_decision` the operator can
+approve. It is graded on the triage the engine recorded in its charter ledger, so an
+engine that only advises fails it.
+
+Case E (#7678) plants the two meanings of `needs-human`, with no tech lead: one coder asks
+a pre-work question (it must hold the issue's work: no PR), another publishes and asks a
+person to decide before its PR merges (`--pr-labels needs-human`, porchpin#364 / PR #379).
+That issue must stay unblocked, and its PR must be reworked (the first review requests
+changes), approved, and still carry the merge hold, open and unmerged.
 
 `EXAM_ENGINE_REF` runs the engine from a fresh standalone clone of that commit, while the
 harness, its fault shims and the grader stay the current tree's, so the same exam can

@@ -31,6 +31,7 @@ from issue_orchestrator.testing.exam.cases import (
     blocked_issue_green_pr_awaiting_review,
     blocked_items_triaged,
     halted_exchange_with_validated_work,
+    merge_held_work_proceeds,
     stale_claim_paused_for_reconcile,
     upgrade_with_work_in_flight,
 )
@@ -49,6 +50,7 @@ from tests.e2e.exam.case_engines import (
     case_b_engine,
     case_c_engine,
     case_d_engine,
+    case_e_engine,
     case_u_engine,
 )
 from tests.e2e.exam.engine import EngineCheckout, ExamEngine
@@ -79,7 +81,8 @@ CASE_C_EXTERNAL_ID = "M0-762"
 CASE_U_CODING_EXTERNAL_ID = "M0-763"
 CASE_U_REVIEW_EXTERNAL_ID = "M0-764"
 CASE_D_ASKS_EXTERNAL_ID = "M0-765"
-CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-766"
+CASE_E_ASKS_EXTERNAL_ID = "M0-767"
+CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-768"
 
 
 @dataclass(frozen=True)
@@ -489,31 +492,76 @@ async def run_case_d(
                     " whether to split this issue (porchpin#262's question)."
                 ),
             )
-            _, beside_number = flow.create_issue(
-                f"[{CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID}] [EXAM-D] An agent asks beside its PR",
-                [ASKING_BESIDE_PR_CODER_LABEL, E2E_DATA_LABEL],
-                body=(
-                    "Tech-lead exam case D: the coding agent publishes its work and asks"
-                    " the maintainer a question beside the PR (porchpin#364 / PR #379)."
-                ),
-            )
             asks = TrackedItem(ASKS, asks_number, external_id=CASE_D_ASKS_EXTERNAL_ID)
-            beside = TrackedItem(
-                ASKS_BESIDE_PR, beside_number, external_id=CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID
-            )
             ended_by = await drive(
                 engine,
-                done=goals_met_probe(run, engine, asks, beside),
+                done=goals_met_probe(run, engine, asks),
                 quiet_s=900,
                 timeout_s=80 * 60,
             )
             return await _finish(
                 run,
                 engine,
-                items=[asks, beside],
+                items=[asks],
                 extra_prs={},
                 started=started,
                 ended_by=ended_by,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Case E
+# ---------------------------------------------------------------------------
+
+
+async def run_case_e(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
+    """A pre-work question and a merge decision, typed (#7678); no tech lead.
+
+    The first post-publish review requests changes, so the merge-held PR
+    goes through one rework before it is approved.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_e_engine(checkout.root.parent / f"{checkout.root.name}-changes-once")
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([_labels(config).needs_human])
+            started = time.monotonic()
+            _, asks_number = flow.create_issue(
+                f"[{CASE_E_ASKS_EXTERNAL_ID}] [EXAM-E] An agent asks whether to split its issue",
+                [ASKING_CODER_LABEL, E2E_DATA_LABEL],
+                body="Tech-lead exam case E: a pre-work question holds the work.",
+            )
+            _, beside_number = flow.create_issue(
+                f"[{CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID}] [EXAM-E] An agent asks before its PR merges",
+                [ASKING_BESIDE_PR_CODER_LABEL, E2E_DATA_LABEL],
+                body=(
+                    "Tech-lead exam case E: the agent publishes its work and asks a person"
+                    " to decide before the PR merges (porchpin#364 / PR #379)."
+                ),
+            )
+            asks = TrackedItem(ASKS, asks_number, external_id=CASE_E_ASKS_EXTERNAL_ID)
+            beside = TrackedItem(
+                ASKS_BESIDE_PR, beside_number, external_id=CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID
+            )
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, asks, beside),
+                quiet_s=600,
+                timeout_s=45 * 60,
+            )
+            return await _finish(
+                run, engine, items=[asks, beside], extra_prs={}, started=started, ended_by=ended_by,
             )
         finally:
             await engine.close()
@@ -708,3 +756,9 @@ def case_b(config: Config) -> ExamCase:
 
 def case_d(config: Config) -> ExamCase:
     return blocked_items_triaged(needs_human_label=_labels(config).needs_human)
+
+
+def case_e(config: Config) -> ExamCase:
+    return merge_held_work_proceeds(
+        needs_human_label=_labels(config).needs_human, rework_label=_labels(config).rework_cycle(1)
+    )
