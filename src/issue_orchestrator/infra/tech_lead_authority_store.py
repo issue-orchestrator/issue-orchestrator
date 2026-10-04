@@ -70,6 +70,7 @@ from ..ports.tech_lead_authority import (
     UnknownTechLeadPatternError,
 )
 from .repo_identity import state_dir
+from . import tech_lead_block_resolutions_sql as block_resolutions
 from . import tech_lead_dispositions_sql as dispositions
 from . import tech_lead_pending_intents as pending_intents
 from . import tech_lead_shipped_fixes_sql as shipped_fixes
@@ -353,42 +354,21 @@ class SqliteTechLeadAuthorityStore:
         self, *, decision_id: str, issue_number: int, causes: frozenset[str]
     ) -> None:
         with self._transaction() as tx:
-            tx.execute(
-                "INSERT OR REPLACE INTO tech_lead_block_resolutions"
-                " (decision_id, issue_number, causes, state, recorded_at) VALUES (?, ?, ?, ?, ?)",
-                (decision_id, issue_number, json.dumps(sorted(causes)), DecisionRetryState.BEGUN.value,
-                 datetime.now(timezone.utc).isoformat()),
-            )
+            block_resolutions.begin(tx, decision_id=decision_id, issue_number=issue_number, causes=causes)
 
     def commit_block_resolution(self, *, decision_id: str) -> None:
         with self._transaction() as tx:
-            updated = tx.execute(
-                "UPDATE tech_lead_block_resolutions SET state = ?, recorded_at = ? WHERE decision_id = ?",
-                (DecisionRetryState.COMMITTED.value, datetime.now(timezone.utc).isoformat(), decision_id),
-            ).rowcount
-        if updated != 1:
-            raise ValueError(f"no begun discharge for {decision_id} to commit")
+            block_resolutions.commit(tx, decision_id=decision_id)
 
     def abandon_block_resolution(self, *, decision_id: str) -> None:
         with self._transaction() as tx:
-            tx.execute("DELETE FROM tech_lead_block_resolutions WHERE decision_id = ?", (decision_id,))
+            block_resolutions.abandon(tx, decision_id=decision_id)
 
     def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
-        row = self._get_connection().execute(
-            "SELECT state FROM tech_lead_block_resolutions WHERE decision_id = ?", (decision_id,),
-        ).fetchone()
-        return None if row is None else DecisionRetryState(str(row[0]))
+        return block_resolutions.state(self._get_connection(), decision_id=decision_id)
 
     def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]:
-        rows = self._get_connection().execute(
-            "SELECT decision_id, causes FROM tech_lead_block_resolutions WHERE issue_number = ?",
-            (issue_number,),
-        ).fetchall()
-        found: dict[str, set[str]] = {}
-        for row in rows:
-            for cause in json.loads(row["causes"]):
-                found.setdefault(str(cause), set()).add(str(row["decision_id"]))
-        return {cause: frozenset(ids) for cause, ids in found.items()}
+        return block_resolutions.resolved_causes(self._get_connection(), issue_number=issue_number)
 
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""
