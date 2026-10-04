@@ -1358,10 +1358,10 @@ class SessionHistoryEntry:
     # Set when this entry's PR merged as a partial delivery ("Refs #N", #7288).
     # The issue still has work, so this entry does not hold it out of the run.
     partial_pr_merged: bool = False
-    # False for a run that was not the issue's own work: a tech lead's run on a
-    # FOCUS work item (a failure investigation). Its entry never holds the item
-    # out of the run, or an item the run itself unblocked (a resolve_block,
-    # #7658) would never launch again until a restart.
+    # False for a run that was not the issue's own work: a tech lead's failure
+    # investigation of a FOCUS item (its scratch worktree, #6823). Its entry
+    # never holds the item out of the run, or an item unblocked meanwhile (a
+    # resolve_block, #7658) would never launch again until a restart.
     holds_issue: bool = True
 
 

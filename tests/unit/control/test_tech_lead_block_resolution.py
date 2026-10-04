@@ -83,6 +83,9 @@ class GitHub:
     next_number: int = 900
     #: GitHub keeps a body the dependency parser cannot read (a mangled line).
     mangle: bool = False
+    #: GitHub's search index has not caught up with issues created just now.
+    search_lags: bool = False
+    unindexed: set[int] = field(default_factory=set)
 
     def read(self, number: int) -> list[str]:
         return sorted(self.labels.get(number, set()))
@@ -108,13 +111,17 @@ class GitHub:
         self.labels[number] = set(labels)
         self.bodies[number] = body.replace("Depends-on: #", "Depends on #") if self.mangle else body
         self.titles[number] = title
+        if self.search_lags:
+            self.unindexed.add(number)
         self.created.append({"number": number, "title": title, "body": body, "labels": list(labels),
                              "milestone": milestone})
         return {"number": number}
 
     def find_by_marker(self, *, title: str, marker: str, authoritative: bool) -> int | None:
         assert authoritative
-        return next((n for n, body in self.bodies.items() if marker in body), None)
+        return next(
+            (n for n, body in self.bodies.items() if marker in body and n not in self.unindexed), None
+        )
 
 
 @dataclass
@@ -986,3 +993,17 @@ def test_a_merge_hold_is_never_resolved(tmp_path: Path) -> None:
     assert result.details["refusal"] == BlockResolutionRefusal.MERGE_HOLD.value
     assert "needs-human" in world.github.labels[ITEM]
     assert world.applier.applied == []
+
+
+def test_a_split_child_just_filed_is_activated_though_search_has_not_indexed_it(tmp_path: Path) -> None:
+    """Exam F at 4a8011c: the marker search could not see the child filed a
+    moment earlier, so the split failed. The apply that filed it uses its number."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP)
+    world.github.search_lags = True
+
+    result = world.executor().apply(_action(_split()))
+
+    assert result.success, result.error
+    [child] = world.github.created
+    assert AGENT in world.github.labels[child["number"]]

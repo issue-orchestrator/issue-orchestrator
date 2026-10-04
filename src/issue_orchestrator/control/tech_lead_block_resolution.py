@@ -308,7 +308,7 @@ class TechLeadBlockResolutionExecutor:
             return self._refuse(action, verdict)
         issue = verdict.issue
         try:
-            self._file_children(action, issue)
+            filed = self._file_children(action, issue)
         except (ReconciliationRequired, ClaimLostError):
             raise
         except Exception as error:  # the item stays blocked; a replay resumes by marker
@@ -344,7 +344,7 @@ class TechLeadBlockResolutionExecutor:
                 action, f"needs-human on #{action.issue_number} did not settle ({outcome.value})",
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
         self.discharges.commit_block_resolution(decision_id=action.decision_id)
-        return self._settle(action, issue, outcome)
+        return self._settle(action, issue, outcome, filed=filed)
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
         """The discharge committed before: never discharge again, only settle."""
@@ -353,15 +353,18 @@ class TechLeadBlockResolutionExecutor:
             raise RuntimeError(f"issue #{action.issue_number} could not be read to finish its resolution")
         held = any(label.casefold() == self.labels.needs_human.casefold() for label in issue.labels)
         outcome = BlockOutcome.HELD_BY_ANOTHER_CAUSE if held else BlockOutcome.CLEARED
-        return self._settle(action, issue, outcome)
+        return self._settle(action, issue, outcome, filed=None)
 
-    def _settle(self, action: ResolveBlockAction, parent: "Issue", outcome: BlockOutcome) -> ActionResult:
+    def _settle(
+        self, action: ResolveBlockAction, parent: "Issue", outcome: BlockOutcome,
+        *, filed: tuple[int, ...] | None,
+    ) -> ActionResult:
         """What follows a COMMITTED discharge, each step create-once so a
         replay finishes it: the split's children become runnable, the
         discharge markers go on the item, then the item is closed (a full
         split) or requeued."""
         try:
-            children = self._activate_children(action, parent)
+            children = self._activate_children(action, parent, filed)
         except (ReconciliationRequired, ClaimLostError):
             raise
         except Exception as error:
@@ -494,7 +497,9 @@ class TechLeadBlockResolutionExecutor:
         self._verify_edge(number, child, predecessor)
         return number
 
-    def _activate_children(self, action: ResolveBlockAction, parent: "Issue") -> tuple[int, ...]:
+    def _activate_children(
+        self, action: ResolveBlockAction, parent: "Issue", filed: tuple[int, ...] | None
+    ) -> tuple[int, ...]:
         """After the discharge committed: label each filed child for pickup.
 
         Children are found by their markers (a replay never refiles one); a
@@ -502,7 +507,9 @@ class TechLeadBlockResolutionExecutor:
         """
         children: list[int] = []
         for index, child in enumerate(action.resolution.children, start=1):
-            number = self.find_issue_by_marker(
+            # The numbers this apply just filed; a replay finds them by marker
+            # (GitHub's search index lags a fresh issue, so never right away).
+            number = filed[index - 1] if filed is not None else self.find_issue_by_marker(
                 title=child.title, marker=child_marker(action.decision_id, index), authoritative=True,
             )
             if number is None:
