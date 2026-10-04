@@ -18,6 +18,7 @@ import os
 import shlex
 import shutil
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -51,6 +52,35 @@ __all__ = [
 ]
 
 _GRACEFUL_KILL_TIMEOUT = 5
+
+
+def _live_process_groups_in_session(session_id: int) -> set[int]:
+    """Find every live process group in a PTY agent's POSIX session.
+
+    Agent tools can create a new process group without leaving the session.
+    Killing only the original agent group would leave those tools running.
+    ``sess`` is supported by both Linux and macOS ps.
+    """
+    result = subprocess.run(
+        ["/bin/ps", "-axo", "pgid=,sess=,state="],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    groups = set()
+    for line in result.stdout.splitlines():
+        pgid, sid, state = line.split()
+        if int(sid) == session_id and not state.startswith("Z"):
+            groups.add(int(pgid))
+    return groups
+
+
+def _signal_process_groups(groups: set[int], sig: signal.Signals) -> None:
+    for pgid in groups:
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            continue
 
 
 class AgentSession:
@@ -143,32 +173,28 @@ class AgentSession:
         return self._close(timed_out=timed_out)
 
     def kill(self) -> None:
-        """Terminate the agent's process group (SIGTERM → grace → SIGKILL)."""
+        """Terminate all process groups in this PTY session."""
         if self._closed:
             return
         pid = self._child.pid
         if pid is None:
             return
-        try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            return
-
-        # Wait briefly for graceful termination
+        groups = _live_process_groups_in_session(pid)
+        _signal_process_groups(groups, signal.SIGTERM)
         deadline = time.monotonic() + _GRACEFUL_KILL_TIMEOUT
         while time.monotonic() < deadline:
-            if not self.is_alive():
+            groups = _live_process_groups_in_session(pid)
+            if not groups:
                 return
             time.sleep(0.1)
-
-        # Force kill
         logger.warning("Agent did not terminate gracefully, using SIGKILL")
-        try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
+        _signal_process_groups(groups, signal.SIGKILL)
+        deadline = time.monotonic() + _GRACEFUL_KILL_TIMEOUT
+        while time.monotonic() < deadline:
+            if not _live_process_groups_in_session(pid):
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"agent session {pid} still has live processes after SIGKILL")
 
     def _close(self, *, timed_out: bool) -> AgentResult:
         """Close the PTY, flush the log, return the result."""

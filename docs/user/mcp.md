@@ -231,6 +231,12 @@ server is bound to.
 | `orchestrator.session.kill` | `issue_number` | `{"status": "terminated", "issue_number", "title", "killed_sessions", "hold_label", "errors"}`. Terminates the session **and applies a hold label** so the orchestrator does not immediately relaunch it. |
 | `orchestrator.session.focus` | `issue_number` | `{"status": "focused", "issue_number"}`. Brings the agent's terminal to the foreground. Only meaningful for terminal backends that support focus (not the `subprocess` backend). |
 
+### Issues
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `orchestrator.issue.retry` | `issue_number` | `{"success": true, "removed_labels": [...]}` when the operator retry command commits; `{"success": false, "error": ...}` when the issue remains held. The command releases the issue's retry hold and may allow a new session to launch. |
+
 ### Repositories
 
 These tools are **not** scoped to `--repo-root` — see

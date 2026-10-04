@@ -303,7 +303,23 @@ def test_register_omits_session_send_tool() -> None:
     app.register(fake)  # type: ignore[arg-type]
 
     assert "orchestrator.session.kill" in fake.registered
+    assert "orchestrator.issue.retry" in fake.registered
     assert "orchestrator.session.send" not in fake.registered
+
+
+def test_issue_retry_tool_preserves_operator_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = McpApp(_settings())
+
+    async def refused(issue_number: int) -> dict:
+        assert issue_number == 42
+        return {"success": False, "error": "issue remains held"}
+
+    monkeypatch.setattr(app, "issue_retry", refused)
+
+    assert asyncio.run(app.tool_issue_retry(42)) == {
+        "success": False,
+        "error": "issue remains held",
+    }
 
 
 def test_shutdown_force_requires_confirm() -> None:

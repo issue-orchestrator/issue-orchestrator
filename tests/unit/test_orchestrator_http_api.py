@@ -128,6 +128,28 @@ async def test_async_request_refreshes_base_url_on_request_error():
 
 
 @pytest.mark.asyncio
+async def test_async_issue_retry_targets_one_issue() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class RecordingClient:
+        async def request(self, method, url, json=None, headers=None):
+            calls.append((method, url))
+            return DummyResponse({"success": True, "removed_labels": ["blocked-failed"]})
+
+    api = OrchestratorAsyncHttpApi(
+        base_url_provider=lambda: "http://test",
+        client=RecordingClient(),
+        pause_actor=PauseActor.MCP,
+    )
+
+    assert await api.issue_retry(42) == {
+        "success": True,
+        "removed_labels": ["blocked-failed"],
+    }
+    assert calls == [("POST", "http://test/api/issues/42/retry")]
+
+
+@pytest.mark.asyncio
 async def test_async_client_allows_concurrent_requests():
     class AsyncConcurrencyClient:
         def __init__(self):

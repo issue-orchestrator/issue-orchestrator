@@ -256,6 +256,7 @@ MCP_TOOLS: tuple[tuple[str, str], ...] = (
     # Any MCP client holding the transport could inject arbitrary text into a
     # running agent's prompt via that tool.
     ("orchestrator.session.kill", "tool_session_kill"),
+    ("orchestrator.issue.retry", "tool_issue_retry"),
     ("orchestrator.session.focus", "tool_session_focus"),
     ("orchestrator.urls", "tool_urls"),
     ("orchestrator.doctor", "tool_doctor"),
@@ -437,6 +438,12 @@ class McpApp:
         return await self._safe(
             "orchestrator.session.kill",
             lambda: self.session_kill(issue_number),
+        )
+
+    async def tool_issue_retry(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.issue.retry",
+            lambda: self.issue_retry(issue_number),
         )
 
     async def tool_session_focus(self, issue_number: int) -> dict[str, Any]:
@@ -638,6 +645,9 @@ class McpApp:
 
     async def session_kill(self, issue_number: int) -> dict[str, Any]:
         return await self._api.kill(issue_number)
+
+    async def issue_retry(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.issue_retry(issue_number)
 
     async def session_focus(self, issue_number: int) -> dict[str, Any]:
         return await self._api.focus(issue_number)
