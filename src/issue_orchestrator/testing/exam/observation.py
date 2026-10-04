@@ -119,6 +119,52 @@ class StallFacts:
         )
 
 
+def decision_in_force(effect: str, proposal_issue_number: int | None) -> bool:
+    """A tech-lead decision took effect, the operator answered it, or its
+    proposal is filed and waiting on the operator."""
+    if effect == "awaiting_approval":
+        return proposal_issue_number is not None
+    return effect in {"applied", "approved_applied", "declined"}
+
+
+@dataclass(frozen=True)
+class DecisionFact:
+    """One tech-lead decision the charter ledger recorded about an item (#7658).
+
+    Any action kind, triage or not. A later decision does not undo an earlier
+    one that took effect: a ``resolve_block`` that cleared a block stays done
+    when a later review only explains the item.
+    """
+
+    action_kind: str
+    effect: str
+    triage_class: str | None
+    proposal_issue_number: int | None
+
+    @property
+    def in_force(self) -> bool:
+        return decision_in_force(self.effect, self.proposal_issue_number)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_kind": self.action_kind,
+            "effect": self.effect,
+            "triage_class": self.triage_class,
+            "proposal_issue_number": self.proposal_issue_number,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DecisionFact":
+        triage_class = data["triage_class"]
+        proposal = data["proposal_issue_number"]
+        return cls(
+            action_kind=str(data["action_kind"]),
+            effect=str(data["effect"]),
+            triage_class=None if triage_class is None else str(triage_class),
+            proposal_issue_number=None if proposal is None else int(proposal),
+        )
+
+
 @dataclass(frozen=True)
 class TriageFact:
     """The latest blocked-item triage the engine recorded for an item (#7593).
@@ -137,9 +183,7 @@ class TriageFact:
     def in_force(self) -> bool:
         """It disposed of the item: took effect, the operator answered it, or
         its proposal is filed and waiting on the operator."""
-        if self.effect == "awaiting_approval":
-            return self.proposal_issue_number is not None
-        return self.effect in {"applied", "approved_applied", "declined"}
+        return decision_in_force(self.effect, self.proposal_issue_number)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -179,9 +223,13 @@ class WorkItemFact:
     unlike a ``code-reviewed`` label, which anyone can add."""
     triage: TriageFact | None = None
     """The latest tech-lead triage of the item, when the engine recorded one."""
-    decided_kinds: tuple[str, ...] = ()
-    """Every tech-lead action kind the engine's charter ledger recorded about
-    the item, oldest first, whatever became of it (#7658)."""
+    decisions: tuple[DecisionFact, ...] = ()
+    """Every tech-lead decision the engine's charter ledger recorded about the
+    item, oldest first, whatever became of it (#7658)."""
+
+    @property
+    def decided_kinds(self) -> tuple[str, ...]:
+        return tuple(decision.action_kind for decision in self.decisions)
 
     @property
     def open_pull_request(self) -> PullRequestFact | None:
@@ -204,7 +252,7 @@ class WorkItemFact:
             "events": list(self.events),
             "approved_prs": sorted(self.approved_prs),
             "triage": None if self.triage is None else self.triage.to_dict(),
-            "decided_kinds": list(self.decided_kinds),
+            "decisions": [decision.to_dict() for decision in self.decisions],
         }
 
     @classmethod
@@ -220,7 +268,7 @@ class WorkItemFact:
             approved_prs=frozenset(int(n) for n in data["approved_prs"]),
             # Saved before triage existed (#7593): no fact, never an error.
             triage=None if data.get("triage") is None else TriageFact.from_dict(data["triage"]),
-            decided_kinds=tuple(str(kind) for kind in data.get("decided_kinds", ())),
+            decisions=tuple(DecisionFact.from_dict(d) for d in data.get("decisions", ())),
         )
 
 

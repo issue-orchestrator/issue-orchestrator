@@ -39,6 +39,7 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 from issue_orchestrator.testing.exam import (
+    DecisionFact,
     ExamObservation,
     GitHubCallCounts,
     PullRequestFact,
@@ -180,8 +181,8 @@ def observe_triage(state_dir: Path, issue_number: int) -> TriageFact | None:
     return None
 
 
-def observe_decided_kinds(state_dir: Path, issue_number: int) -> tuple[str, ...]:
-    """Every action kind the charter ledger recorded about the item (#7658)."""
+def observe_decisions(state_dir: Path, issue_number: int) -> tuple[DecisionFact, ...]:
+    """Every decision the charter ledger recorded about the item, oldest first (#7658)."""
     db = state_dir / "tech_lead_authority.sqlite"
     if not db.exists():
         return ()
@@ -200,7 +201,16 @@ def observe_decided_kinds(state_dir: Path, issue_number: int) -> tuple[str, ...]
             raise
     finally:
         conn.close()
-    return tuple(TechLeadCharterDecision.from_dict(json.loads(row["record"])).action_kind for row in rows)
+    decisions = (TechLeadCharterDecision.from_dict(json.loads(row["record"])) for row in rows)
+    return tuple(
+        DecisionFact(
+            action_kind=decision.action_kind,
+            effect=decision.effect,
+            triage_class=None if decision.triage_class is None else decision.triage_class.value,
+            proposal_issue_number=decision.proposal_issue_number,
+        )
+        for decision in decisions
+    )
 
 
 def observe_item(
@@ -255,8 +265,8 @@ def observe_item(
             if isinstance(number, int) and not isinstance(number, bool)
         ),
         triage=observe_triage(state_dir, item.issue_number) if state_dir is not None else None,
-        decided_kinds=(
-            observe_decided_kinds(state_dir, item.issue_number) if state_dir is not None else ()
+        decisions=(
+            observe_decisions(state_dir, item.issue_number) if state_dir is not None else ()
         ),
     )
 

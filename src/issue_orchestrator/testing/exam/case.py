@@ -522,30 +522,62 @@ def item_triaged(role: str, classes: Iterable[str], *, or_resolution_proposed: b
 def item_resolved(role: str, effects: Iterable[str]) -> Goal:
     """The tech lead decided the item's block itself with ``resolve_block`` (#7658).
 
-    Graded on the engine's own triage record of the item: its latest triage
-    is a ``resolve_block`` whose effect is one of ``effects`` and in force
-    (``applied`` when the operator let it execute; ``awaiting_approval`` with
-    its proposal FILED when it must be approved).
+    Graded on the engine's own charter record of the item: some ``resolve_block``
+    decision whose effect is one of ``effects`` and in force (``applied`` when the
+    operator let it execute; ``awaiting_approval`` with its proposal FILED when it
+    must be approved). Any session's decision counts, a failure investigation's
+    included, and a later explanation of the item does not undo it. That is
+    unlike :func:`item_triaged`'s latest-triage rule, because a resolve that
+    took effect has already cleared the block.
     """
     wanted = frozenset(effects)
     names = "/".join(sorted(wanted))
 
     def check(item: WorkItemFact) -> GoalCheck:
-        triage = item.triage
-        if triage is None:
-            return GoalCheck(False, f"no tech-lead triage was recorded for #{item.issue_number}")
-        described = (
-            f"#{item.issue_number} triaged {triage.triage_class} by {triage.action_kind}"
-            f" ({triage.effect}"
-            + (f", proposal #{triage.proposal_issue_number}" if triage.proposal_issue_number else "")
-            + ")"
-        )
+        for decision in item.decisions:
+            if (
+                decision.action_kind == "resolve_block"
+                and decision.effect in wanted
+                and decision.in_force
+            ):
+                return GoalCheck(True, f"#{item.issue_number} resolve_block ({decision.effect})")
+        recorded = ", ".join(f"{d.action_kind} ({d.effect})" for d in item.decisions) or "none"
         return GoalCheck(
-            triage.action_kind == "resolve_block" and triage.effect in wanted and triage.in_force,
-            described,
+            False, f"#{item.issue_number}: no {names} resolve_block; decisions: {recorded}"
         )
 
     return Goal(f"{role}.resolved_{names}", role, f"the tech lead resolved the {role} block ({names})", check)
+
+
+def item_handed_over(role: str) -> Goal:
+    """The tech lead handed the item to a person, and the hand-over stands (#7658).
+
+    The item's latest in-force triage that DISPOSED of it is ``human_hand_over``.
+    A later ``explained`` triage disposes of nothing new: it says why the item
+    still waits, so it leaves the hand-over standing. A later remedy or operator
+    decision replaces it. (A hand-over currently re-grants its own item to the
+    next health review, #8112, which then explains it.)
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        disposing = [
+            decision
+            for decision in item.decisions
+            if decision.triage_class not in (None, "explained") and decision.in_force
+        ]
+        recorded = ", ".join(
+            f"{d.triage_class or '-'}/{d.action_kind} ({d.effect})" for d in item.decisions
+        ) or "none"
+        if not disposing:
+            return GoalCheck(False, f"#{item.issue_number}: no disposing triage; decisions: {recorded}")
+        latest = disposing[-1]
+        return GoalCheck(
+            latest.triage_class == "human_hand_over",
+            f"#{item.issue_number} last disposed {latest.triage_class} by {latest.action_kind}"
+            f" ({latest.effect}); decisions: {recorded}",
+        )
+
+    return Goal(f"{role}.handed_over", role, f"the {role} item is handed to a person", check)
 
 
 def no_tech_lead_decision(role: str, kind: str) -> Goal:

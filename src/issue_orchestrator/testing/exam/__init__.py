@@ -27,6 +27,7 @@ from .case import (
 from .github_calls import EndpointClass, GitHubCallCounts, classify_command
 from .grading import grade
 from .observation import (
+    DecisionFact,
     ExamObservation,
     PullRequestFact,
     PullRequestState,
@@ -43,6 +44,7 @@ from .scorecard import Scorecard, render_summary
 from .upgrade import LabelChange, UpgradeFacts, UpgradeGrade, UpgradeSpec, WriteKind
 
 __all__ = [
+    "DecisionFact",
     "EndpointClass",
     "ExamCase",
     "ExamObservation",

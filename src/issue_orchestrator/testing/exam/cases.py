@@ -16,6 +16,7 @@ from .case import (
     issue_is_open,
     issue_keeps_labels,
     issue_lacks_labels,
+    item_handed_over,
     item_resolved,
     no_tech_lead_decision,
     item_triaged,
@@ -420,7 +421,8 @@ def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[
         pr_review_approved(BESIDE_PR),
         published_work_survives(BESIDE_PR),
         # Account provisioning is a person's work under every setting.
-        item_triaged(PROVISIONING, ("human_hand_over",)),
+        item_handed_over(PROVISIONING),
+        no_tech_lead_decision(PROVISIONING, "resolve_block"),
         issue_keeps_labels(PROVISIONING, (needs_human_label,)),
     )
 

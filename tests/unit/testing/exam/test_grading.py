@@ -13,6 +13,7 @@ from issue_orchestrator.testing.exam import (
     TechLeadReceipt,
     RunEnd,
     TechLeadActionDisposition,
+    DecisionFact,
     TriageFact,
     WorkItemFact,
     grade,
@@ -1028,14 +1029,14 @@ class TestCasesFAndGResolution:
         build = needs_human_blocks_resolved if execute else needs_human_block_resolutions_proposed
         return build(needs_human_label="needs-human")
 
-    def _items(self, *, execute: bool, resolve: TriageFact | None, provisioning: TriageFact | None,
-               blocked: bool) -> tuple[WorkItemFact, ...]:
+    def _items(self, *, execute: bool, resolve: tuple[DecisionFact, ...],
+               provisioning: tuple[DecisionFact, ...], blocked: bool) -> tuple[WorkItemFact, ...]:
         labels = ("needs-human",) if blocked else ()
         progressed = (pr(number=921, state=PullRequestState.READY),) if execute else ()
         split = replace(item(issue_labels=labels, prs=progressed), role=self._SPLIT, issue_number=920,
-                        triage=resolve)
+                        decisions=resolve)
         stale = replace(item(issue_labels=labels, prs=tuple(replace(p, number=923) for p in progressed)),
-                        role=self._STALE, issue_number=922, triage=resolve)
+                        role=self._STALE, issue_number=922, decisions=resolve)
         beside = replace(
             item(issue_labels=("pr-pending",),
                  prs=(pr(number=925, state=PullRequestState.READY,
@@ -1043,7 +1044,7 @@ class TestCasesFAndGResolution:
             role=self._BESIDE, issue_number=924, triage=None,
         )
         provisioning_item = replace(item(issue_labels=("needs-human",)), role=self._PROVISIONING,
-                                    issue_number=926, triage=provisioning)
+                                    issue_number=926, decisions=provisioning)
         return split, stale, beside, provisioning_item
 
     def _grade(self, execute: bool, items: tuple[WorkItemFact, ...]):
@@ -1052,20 +1053,25 @@ class TestCasesFAndGResolution:
                       owned_numbers=frozenset(range(920, 960)))
         return grade(case, obs)
 
-    HANDED_OVER = TriageFact("human_hand_over", "escalate_to_human", "applied", None)
+    def _failed(self, execute: bool, items: tuple[WorkItemFact, ...]) -> set[str]:
+        return {goal.name for goal in self._grade(execute, items).goals if not goal.passed}
+
+    HANDED_OVER = (DecisionFact("escalate_to_human", "applied", "human_hand_over", None),)
+    EXPLAINED = DecisionFact("post_comment", "applied", "explained", None)
+    APPLIED = (DecisionFact("resolve_block", "applied", "remedy", None),)
+    PROPOSED = (DecisionFact("resolve_block", "awaiting_approval", "remedy", 951),)
 
     def test_execute_ends_with_the_work_blocks_cleared_and_moving(self) -> None:
-        items = self._items(execute=True, resolve=TriageFact("remedy", "resolve_block", "applied", None),
-                            provisioning=self.HANDED_OVER, blocked=False)
+        items = self._items(execute=True, resolve=self.APPLIED, provisioning=self.HANDED_OVER,
+                            blocked=False)
 
         card = self._grade(True, items)
 
         assert card.passed, [goal for goal in card.goals if not goal.passed]
 
     def test_propose_ends_with_approvable_proposals_and_the_blocks_in_place(self) -> None:
-        items = self._items(execute=False,
-                            resolve=TriageFact("remedy", "resolve_block", "awaiting_approval", 951),
-                            provisioning=self.HANDED_OVER, blocked=True)
+        items = self._items(execute=False, resolve=self.PROPOSED, provisioning=self.HANDED_OVER,
+                            blocked=True)
 
         card = self._grade(False, items)
 
@@ -1077,24 +1083,64 @@ class TestCasesFAndGResolution:
             items = self._items(execute=execute, resolve=self.HANDED_OVER,
                                 provisioning=self.HANDED_OVER, blocked=True)
 
-            failed = {goal.name for goal in self._grade(execute, items).goals if not goal.passed}
-
             effect = "applied" if execute else "awaiting_approval"
-            assert {f"{role}.resolved_{effect}" for role in ("split", "stale")} <= failed
+            assert {f"{role}.resolved_{effect}" for role in ("split", "stale")} <= self._failed(
+                execute, items
+            )
+
+    def test_a_resolve_stands_when_a_later_review_only_explains_the_item(self) -> None:
+        """Exam F at fd8ad07: a failure investigation resolved the stale block, and
+        a later health review, handed a stale grant (#8113), explained it. The
+        resolve took effect and still counts; an explanation alone does not."""
+        explained_after = (self.EXPLAINED, *self.APPLIED, self.EXPLAINED)
+        items = self._items(execute=True, resolve=explained_after, provisioning=self.HANDED_OVER,
+                            blocked=False)
+        assert self._grade(True, items).passed
+
+        only_explained = self._items(execute=True, resolve=(self.EXPLAINED,),
+                                     provisioning=self.HANDED_OVER, blocked=False)
+        assert {"split.resolved_applied", "stale.resolved_applied"} <= self._failed(True, only_explained)
+
+    def test_a_resolve_that_did_not_take_effect_does_not_count(self) -> None:
+        refused = (DecisionFact("resolve_block", "refused", "remedy", None),)
+        items = self._items(execute=True, resolve=refused, provisioning=self.HANDED_OVER,
+                            blocked=False)
+        assert "stale.resolved_applied" in self._failed(True, items)
+
+    def test_the_decision_history_round_trips_through_the_saved_observation(self) -> None:
+        [split, *_] = self._items(execute=True, resolve=(self.EXPLAINED, *self.PROPOSED),
+                                  provisioning=self.HANDED_OVER, blocked=False)
+
+        restored = WorkItemFact.from_dict(json.loads(json.dumps(split.to_dict())))
+
+        assert restored.decisions == split.decisions
+        assert restored.decided_kinds == ("post_comment", "resolve_block")
+
+    def test_a_hand_over_stands_when_a_later_review_only_explains_it(self) -> None:
+        """Exam F at fd8ad07: the hand-over re-granted its own item (#8112), and
+        the next review explained that the hand-over still stands."""
+        items = self._items(execute=True, resolve=self.APPLIED,
+                            provisioning=(*self.HANDED_OVER, self.EXPLAINED), blocked=False)
+        assert self._grade(True, items).passed
+
+        never_handed = self._items(execute=True, resolve=self.APPLIED,
+                                   provisioning=(self.EXPLAINED,), blocked=False)
+        assert self._failed(True, never_handed) == {"provisioning.handed_over"}
 
     def test_a_resolved_provisioning_item_fails(self) -> None:
-        items = self._items(execute=True, resolve=TriageFact("remedy", "resolve_block", "applied", None),
-                            provisioning=TriageFact("remedy", "resolve_block", "applied", None),
-                            blocked=False)
+        for provisioning in (self.APPLIED, (*self.HANDED_OVER, *self.APPLIED)):
+            items = self._items(execute=True, resolve=self.APPLIED, provisioning=provisioning,
+                                blocked=False)
 
-        failed = {goal.name for goal in self._grade(True, items).goals if not goal.passed}
-
-        assert failed == {"provisioning.triaged_human_hand_over"}
+            assert self._failed(True, items) == {
+                "provisioning.handed_over",
+                "provisioning.no_resolve_block",
+            }
 
     def test_a_proposal_that_never_got_filed_is_not_approvable(self) -> None:
-        items = self._items(execute=False,
-                            resolve=TriageFact("remedy", "resolve_block", "awaiting_approval", None),
-                            provisioning=self.HANDED_OVER, blocked=True)
+        unfiled = (DecisionFact("resolve_block", "awaiting_approval", "remedy", None),)
+        items = self._items(execute=False, resolve=unfiled, provisioning=self.HANDED_OVER,
+                            blocked=True)
 
         assert not self._grade(False, items).passed
 
@@ -1117,13 +1163,11 @@ def test_cases_f_and_g_fail_a_merge_hold_that_was_cleared() -> None:
     (or merging) fails both cases, whatever the dial."""
     cls = TestCasesFAndGResolution
     for execute in (True, False):
-        resolve = TriageFact("remedy", "resolve_block", "applied" if execute else "awaiting_approval",
-                             None if execute else 951)
+        resolve = cls.APPLIED if execute else cls.PROPOSED
         items = list(cls()._items(execute=execute, resolve=resolve,
                                   provisioning=cls.HANDED_OVER, blocked=not execute))
         items[2] = replace(items[2], pull_requests=(pr(number=925, state=PullRequestState.READY),))
-        failed = {goal.name for goal in cls()._grade(execute, tuple(items)).goals if not goal.passed}
-        assert "beside_pr.pr_label.needs-human" in failed
+        assert "beside_pr.pr_label.needs-human" in cls()._failed(execute, tuple(items))
 
 
 def test_cases_f_and_g_fail_any_resolution_of_the_merge_hold() -> None:
@@ -1131,11 +1175,9 @@ def test_cases_f_and_g_fail_any_resolution_of_the_merge_hold() -> None:
     though the PR stays open, reviewed and held."""
     cls = TestCasesFAndGResolution
     for execute in (True, False):
-        resolve = TriageFact("remedy", "resolve_block", "applied" if execute else "awaiting_approval",
-                             None if execute else 951)
+        resolve = cls.APPLIED if execute else cls.PROPOSED
         items = list(cls()._items(execute=execute, resolve=resolve,
                                   provisioning=cls.HANDED_OVER, blocked=not execute))
         assert cls()._grade(execute, tuple(items)).passed
-        items[2] = replace(items[2], decided_kinds=("resolve_block",))
-        failed = {goal.name for goal in cls()._grade(execute, tuple(items)).goals if not goal.passed}
-        assert failed == {"beside_pr.no_resolve_block"}
+        items[2] = replace(items[2], decisions=cls.PROPOSED)
+        assert cls()._failed(execute, tuple(items)) == {"beside_pr.no_resolve_block"}
