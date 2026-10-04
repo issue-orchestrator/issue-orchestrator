@@ -274,6 +274,19 @@ class SessionKind(Enum):
             return False
         return self is not SessionKind.for_issue_launch(agent_label, tech_lead_agent)
 
+    def runs_other_work_on(self, issue_agent_label: str | None, tech_lead_agent: str | None) -> bool:
+        """Whether a run of this kind on an issue is NOT the issue's own work.
+
+        A tech lead's run on a FOCUS work item (a failure investigation) is
+        the engine examining the item, not working it. Its session history
+        must not hold the item out of the run, or an item the run itself
+        unblocked never launches again (#7658). The tech lead's own anchor is
+        its work.
+        """
+        return self is SessionKind.TECH_LEAD and SessionKind.issue_is_work_item(
+            issue_agent_label, tech_lead_agent
+        )
+
     @classmethod
     def issue_is_work_item(
         cls, agent_label: str | None, tech_lead_agent: str | None

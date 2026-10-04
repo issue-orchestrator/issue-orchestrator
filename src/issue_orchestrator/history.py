@@ -44,7 +44,8 @@ def issues_held_by_session_history(
     """
     latest: dict[int, "SessionHistoryEntry"] = {}
     for entry in session_history:
-        latest[int(entry.issue_number)] = entry
+        if entry.holds_issue:  # a tech lead's run on a focus item is not its work
+            latest[int(entry.issue_number)] = entry
     return frozenset(
         number for number, entry in latest.items() if not entry.partial_pr_merged
     )

@@ -560,6 +560,9 @@ class CompletionHandler:
             worktree_path=session.worktree_path,
             completed_at=datetime.now(timezone.utc),
             issue_labels=tuple(session.issue.labels),
+            holds_issue=not session.key.kind.runs_other_work_on(
+                session.issue.agent_type, self.config.tech_lead_review_agent
+            ),
         )
 
     def finalize_terminal_outcome(
