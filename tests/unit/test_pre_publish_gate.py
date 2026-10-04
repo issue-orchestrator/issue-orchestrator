@@ -25,7 +25,14 @@ def test_pre_publish_gate_runs_worktree_pre_push_hook(tmp_path: Path) -> None:
     assert result.ran is True
     assert result.command == str(hook_path)
     hook_call = runner.run.call_args_list[1]
-    assert hook_call.args[0] == [str(hook_path), "origin", "origin"]
+    assert hook_call.args[0] == [
+        "/bin/sh",
+        "-c",
+        'exec "$0" "$@" < /dev/null',
+        str(hook_path),
+        "origin",
+        "origin",
+    ]
     assert hook_call.kwargs["cwd"] == tmp_path
 
 

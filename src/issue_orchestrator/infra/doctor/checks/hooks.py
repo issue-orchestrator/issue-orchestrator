@@ -371,6 +371,20 @@ def check_repo_guardrails(config: Config) -> list[Check]:
         ]
 
     hooks_path = status.hooks_path_config or ".git/hooks"
+    if status.pre_push_managed and not status.pre_push_current:
+        # A warning, not an error: the old wrapper still gates pushes, so the
+        # engine may start. The repair (setup-guardrails) regenerates it.
+        setup_command = _setup_command(config, "setup-guardrails")
+        return [
+            Check(
+                name="Repo Guardrails",
+                status="warning",
+                detail=(
+                    f"{hooks_path}/pre-push is an older managed wrapper. "
+                    f"Run '{setup_command}' to regenerate it."
+                ),
+            )
+        ]
     detail = f"{hooks_path}/pre-push -> scripts/verify-pr.sh"
     if status.helper_exists:
         detail += " with repo-local hook helper"
