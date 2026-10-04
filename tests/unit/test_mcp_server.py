@@ -310,15 +310,27 @@ def test_register_omits_session_send_tool() -> None:
 def test_issue_retry_tool_preserves_operator_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     app = McpApp(_settings())
 
-    async def refused(issue_number: int) -> dict:
+    async def refused(_api, issue_number: int) -> dict:
         assert issue_number == 42
-        return {"success": False, "error": "issue remains held"}
+        return {
+            "success": False,
+            "error": "issue remains held",
+            "removed_labels": [],
+            "failed_labels": ["blocked-failed"],
+            "held_by": ["needs-human"],
+        }
 
-    monkeypatch.setattr(app, "issue_retry", refused)
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.orchestrator_http_api.OrchestratorAsyncHttpApi.issue_retry",
+        refused,
+    )
 
     assert asyncio.run(app.tool_issue_retry(42)) == {
         "success": False,
         "error": "issue remains held",
+        "removed_labels": [],
+        "failed_labels": ["blocked-failed"],
+        "held_by": ["needs-human"],
     }
 
 

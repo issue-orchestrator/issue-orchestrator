@@ -337,7 +337,14 @@ class OrchestratorAsyncHttpApi:
         return await self._request("POST", f"/api/kill/{issue_number}")
 
     async def issue_retry(self, issue_number: int) -> dict[str, Any]:
-        return await self._request("POST", f"/api/issues/{issue_number}/retry")
+        try:
+            return await self._request("POST", f"/api/issues/{issue_number}/retry")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                payload = exc.response.json()
+                if isinstance(payload, dict):
+                    return payload
+            raise
 
     async def focus(self, issue_number: int) -> dict[str, Any]:
         return await self._request("POST", f"/api/focus/{issue_number}")

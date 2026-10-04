@@ -150,6 +150,29 @@ async def test_async_issue_retry_targets_one_issue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_issue_retry_preserves_operator_refusal() -> None:
+    refusal = {
+        "success": False,
+        "error": "issue remains held",
+        "removed_labels": [],
+        "failed_labels": ["blocked-failed"],
+        "held_by": ["needs-human"],
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/issues/42/retry"
+        return httpx.Response(409, json=refusal)
+
+    api = OrchestratorAsyncHttpApi(
+        base_url_provider=lambda: "http://test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        pause_actor=PauseActor.MCP,
+    )
+
+    assert await api.issue_retry(42) == refusal
+
+
+@pytest.mark.asyncio
 async def test_async_client_allows_concurrent_requests():
     class AsyncConcurrencyClient:
         def __init__(self):

@@ -14,6 +14,7 @@ use the same code path. No subprocess.run, no raw pexpect.spawn elsewhere.
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 import os
 import shlex
 import shutil
@@ -211,17 +212,13 @@ class AgentSession:
         duration = time.monotonic() - self._start_time
 
         # Close pexpect child to collect exit status
-        try:
+        with suppress(Exception):
             self._child.close(force=True)
-        except Exception:  # noqa: BLE001
-            pass
 
         # Flush remaining log output
         if self._log_writer is not None:
-            try:
+            with suppress(Exception):
                 self._log_writer.close()
-            except Exception:  # noqa: BLE001
-                pass
 
         exit_code = self._child.exitstatus
         stderr = ""

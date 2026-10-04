@@ -38,7 +38,13 @@ import inspect
 from mcp.server.fastmcp import FastMCP
 
 from ..domain.pause_state import PauseActor
-from ..contracts.mcp import McpUiHintPayload
+from ..contracts.mcp import (
+    McpIssueRetryCommitted,
+    McpIssueRetryHeld,
+    McpIssueRetryOutcome,
+    McpIssueRetryResult,
+    McpUiHintPayload,
+)
 from ..contracts.repository_engine import RepositoryEngineStartPayload
 from ..infra import supervisor
 from ..domain.repository_launch_selection import RepositoryLaunchSelection
@@ -440,10 +446,13 @@ class McpApp:
             lambda: self.session_kill(issue_number),
         )
 
-    async def tool_issue_retry(self, issue_number: int) -> dict[str, Any]:
-        return await self._safe(
-            "orchestrator.issue.retry",
-            lambda: self.issue_retry(issue_number),
+    async def tool_issue_retry(self, issue_number: int) -> McpIssueRetryResult:
+        return cast(
+            McpIssueRetryResult,
+            await self._safe(
+                "orchestrator.issue.retry",
+                lambda: cast(Awaitable[dict[str, Any]], self.issue_retry(issue_number)),
+            ),
         )
 
     async def tool_session_focus(self, issue_number: int) -> dict[str, Any]:
@@ -646,8 +655,32 @@ class McpApp:
     async def session_kill(self, issue_number: int) -> dict[str, Any]:
         return await self._api.kill(issue_number)
 
-    async def issue_retry(self, issue_number: int) -> dict[str, Any]:
-        return await self._api.issue_retry(issue_number)
+    async def issue_retry(self, issue_number: int) -> McpIssueRetryOutcome:
+        payload = await self._api.issue_retry(issue_number)
+        removed = payload.get("removed_labels")
+        if not isinstance(removed, list) or any(not isinstance(label, str) for label in removed):
+            raise ValueError("issue retry response missing removed_labels")
+        if payload.get("success") is True:
+            message = payload.get("message")
+            if not isinstance(message, str):
+                raise ValueError("issue retry response missing message")
+            return McpIssueRetryCommitted(success=True, message=message, removed_labels=removed)
+        if payload.get("success") is False:
+            error = payload.get("error")
+            failed = payload.get("failed_labels")
+            held_by = payload.get("held_by")
+            if (not isinstance(error, str) or not isinstance(failed, list) or
+                    any(not isinstance(label, str) for label in failed) or
+                    (held_by is not None and (not isinstance(held_by, list) or
+                     any(not isinstance(label, str) for label in held_by)))):
+                raise ValueError("issue retry refusal response drifted")
+            result = McpIssueRetryHeld(
+                success=False, error=error, removed_labels=removed, failed_labels=failed,
+            )
+            if held_by is not None:
+                result["held_by"] = held_by
+            return result
+        raise ValueError("issue retry response missing success")
 
     async def session_focus(self, issue_number: int) -> dict[str, Any]:
         return await self._api.focus(issue_number)
