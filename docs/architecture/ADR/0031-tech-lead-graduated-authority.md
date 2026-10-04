@@ -326,6 +326,26 @@ own anchor and nothing asked it to dispose of each item. Now:
   retries the item through the operator's own retry, files the follow-ups
   create-once, and posts the decision on the item for the session that resumes
   it; a cause the retry may not override closes it stale with no writes.
+- **`resolve_block`** (#7658) lets the tech lead decide a `needs-human` WORK
+  block itself, so an operator can hand it these decisions through config
+  alone: `tech_lead.authority.resolve_block` is `propose` by default (an
+  approvable proposal carrying the exact decision) and may be `execute`. Its
+  charter row is FLOW / `fix` / `approvable`: it removes the block's cause
+  rather than routing around it, files a split's children at `create_issue`'s
+  depth, and destroys nothing. Three kinds: answer the agent's question from
+  the issue's own spec, ADRs and CUJs; decide a split (children filed with
+  `Depends-on:`/`Stack-after:` edges, verified by the engine's own parser
+  before they get their agent label, and the parent narrowed or closed); lift a
+  block shown stale or false. The rules are typed, not prompt prose
+  (`domain/block_resolution.py`): only `agent_completion` and
+  `session_lifecycle` are resolvable, and the shared block's owner refuses any
+  other cause; the tech lead's own hand-over marker, a cause not on record (an
+  operator's own label) and human-only work (credentials, external accounts,
+  provisioning, money, legal, screened in the item, the agent's question and
+  the decision) are refused at apply time. Each decision is a charter record
+  carrying its evidence and effect, and is posted on the item with one durable
+  marker per cause it discharged. A cause that comes back after a resolve is
+  the operator's: the tech lead never clears it on that item again.
 - The health-review trigger counts label-blocked items as board content, so a
   board of only parked items is still reviewed.
 

@@ -29,6 +29,7 @@ from .session_kind import SessionKind
 from .session_run import SessionRunIdentity, canonical_run_dir_name
 from .blocked_item_triage import TriageGrant
 from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, DecisionFollowUp
+from .block_resolution import RESOLVE_BLOCK_ACTION, BlockResolution
 from .scoped_rework import ReworkRequest, ReworkTarget
 
 if TYPE_CHECKING:
@@ -887,6 +888,9 @@ class StoredTechLeadOp:
     # What the operator approves for a ``propose_decision`` op (#7593): the
     # decision as written for them, and the follow-up issues it files.
     decision: OperatorDecision | None = None
+    # What a ``resolve_block`` op decides (#7658), recorded with the op so an
+    # approval runs exactly the decision the operator read.
+    resolution: BlockResolution | None = None
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -963,6 +967,7 @@ class StoredTechLeadOp:
                 else None
             ),
             "decision": self.decision.to_dict() if self.decision is not None else None,
+            "resolution": self.resolution.to_dict() if self.resolution is not None else None,
         }
 
     @classmethod
@@ -1008,6 +1013,11 @@ class StoredTechLeadOp:
             decision=(
                 OperatorDecision.from_dict(cast(dict[str, Any], data["decision"]))
                 if data.get("decision") is not None
+                else None
+            ),
+            resolution=(
+                BlockResolution.from_mapping(data["resolution"], context="stored op")
+                if data.get("resolution") is not None
                 else None
             ),
             schema_version=raw_schema,
@@ -1064,6 +1074,8 @@ class OperatorDecision:
 def _validate_stored_op_decision(op: StoredTechLeadOp) -> None:
     if (op.op_type == "propose_decision") != isinstance(op.decision, OperatorDecision):
         raise ValueError("Only propose_decision carries, and requires, an OperatorDecision")
+    if (op.op_type == RESOLVE_BLOCK_ACTION) != isinstance(op.resolution, BlockResolution):
+        raise ValueError("Only resolve_block carries, and requires, a BlockResolution")
 
 
 def _validate_stored_op_recovery_authority(op: StoredTechLeadOp) -> None:
@@ -1088,13 +1100,13 @@ def _validate_stored_op_observation(op: StoredTechLeadOp) -> None:
     observed = cast(object, op.observed_at)
     if not isinstance(observed, str):
         raise ValueError(f"StoredTechLeadOp observed_at must be a string, got {observed!r}")
-    if op.op_type != "release_withheld_review":
+    if op.op_type not in ("release_withheld_review", RESOLVE_BLOCK_ACTION):
         return
     try:
         datetime.fromisoformat(observed)
     except ValueError as exc:
         raise ValueError(
-            "release_withheld_review requires the ISO-8601 instant its proposer"
+            f"{op.op_type} requires the ISO-8601 instant its proposer"
             f" observed the board, got {observed!r}"
         ) from exc
 

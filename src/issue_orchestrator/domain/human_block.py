@@ -4,7 +4,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
-from .validated_work import require_text
 
 
 class NeedsHumanCause(Enum):
@@ -38,7 +37,9 @@ class NeedsHumanCause(Enum):
     #: because none of them is ever released on its own terms: each ends when a
     #: human clears the label, or when an operator/terminal force-clear ends
     #: every cause at once. A lifecycle that gains a targeted release must take
-    #: its own cause rather than joining this one.
+    #: its own cause rather than joining this one. A tech lead's
+    #: ``resolve_block`` (#7658) is not such a lifecycle: it decides the whole
+    #: token in the human's stead, as the operator's own clear would.
     SESSION_LIFECYCLE = "session_lifecycle"
     #: Independent failed validated-work records, projected by disposition.
     VALIDATED_WORK_DISPOSITION = "validated_work_disposition"
@@ -132,6 +133,10 @@ class ValidatedWorkBlockSource:
     record_id: str
 
     def __post_init__(self) -> None:
+        # Imported here: the decision artifact types this module's causes
+        # (block_resolution), and validated_work reaches back to it via models.
+        from .validated_work import require_text
+
         require_text(self.record_id, "record_id")
 
 
@@ -184,3 +189,14 @@ class BlockOutcome(Enum):
     @property
     def committed(self) -> bool:
         return self in {BlockOutcome.HELD, BlockOutcome.CLEARED}
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionOutcome:
+    """What a resolution's discharge did (#7658): its outcome, and whether
+    any write was attempted. Only the owner knows the second: a FAILED outcome
+    after an attempted removal may have taken the label off anyway, and the
+    write-ahead record of the discharge must then stay begun."""
+
+    outcome: BlockOutcome
+    mutation_attempted: bool

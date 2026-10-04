@@ -64,6 +64,7 @@ from .tech_lead_actions import (
     RequestReworkAction as RequestReworkAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction as ReleaseWithheldReviewAction,
+    ResolveBlockAction as ResolveBlockAction,
     EFFECTIVE_DISPOSITION_OP_ACTIONS as EFFECTIVE_DISPOSITION_OP_ACTIONS,
     PromoteTechLeadFindingAction as PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction as RecordTechLeadDispositionAction,

@@ -938,8 +938,12 @@ HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human"})
 
 #: A decision put to the operator hands the item over as well (#7593): a
 #: ``propose_decision`` whose proposal issue is FILED and awaiting approval is
-#: the item waiting on the operator's yes or no, by design.
-OPERATOR_DECISION_ACTION_KINDS = frozenset({"propose_decision"})
+#: the item waiting on the operator's yes or no, by design. So is a
+#: ``resolve_block`` under ``propose`` (#7658): the decision is made and filed,
+#: and only the operator's approval stands between it and the item. Once
+#: APPLIED, a ``resolve_block`` is an approvable remedy like any other, and
+#: :meth:`_Checker._applied_remedy` reads it as the tech lead acting.
+OPERATOR_DECISION_ACTION_KINDS = frozenset({"propose_decision", "resolve_block"})
 
 
 def hands_over(d: StagedDecision, *, since: datetime, cutoff: datetime) -> bool:

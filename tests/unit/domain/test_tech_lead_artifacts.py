@@ -322,6 +322,12 @@ class TestProposedActionParsing:
         action = _action(action_type=act_type, target_is_pr=act_type == "request_rework")
         if act_type == "propose_decision":
             action["title"] = "Split the issue"
+        if act_type == "resolve_block":
+            action["resolution"] = {
+                "kind": "lift", "causes": ["session_lifecycle"], "title": "Stale block",
+                "body": "The engine gave up on a label that no longer holds.",
+                "evidence": ["board-snapshot.json"],
+            }
         parsed = TechLeadDecision.from_agent_payload(_payload(proposed_actions=[action]))
         assert parsed.proposed_actions[0].is_act_level
         broken = dict(action)

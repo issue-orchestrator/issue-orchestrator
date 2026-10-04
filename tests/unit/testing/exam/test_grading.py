@@ -13,6 +13,7 @@ from issue_orchestrator.testing.exam import (
     TechLeadReceipt,
     RunEnd,
     TechLeadActionDisposition,
+    DecisionFact,
     TriageFact,
     WorkItemFact,
     grade,
@@ -1005,3 +1006,178 @@ class TestCaseEMergeHeldWorkProceeds:
         failed = self._failed(*self._items(asks_labels=(), asks_prs=(pr(number=923),)))
 
         assert {"asks.keeps_labels", "asks.no_pull_request"} <= failed
+
+
+class TestCasesFAndGResolution:
+    """#7658: porchpin's needs-human blocks, decided by the tech lead itself
+    (case F, ``resolve_block: execute``) or as approvable proposals (case G)."""
+
+    from issue_orchestrator.testing.exam.cases import (
+        BESIDE_PR as _BESIDE,
+        PROVISIONING as _PROVISIONING,
+        SPLIT as _SPLIT,
+        STALE as _STALE,
+    )
+
+    @staticmethod
+    def _case(execute: bool):
+        from issue_orchestrator.testing.exam.cases import (
+            needs_human_block_resolutions_proposed,
+            needs_human_blocks_resolved,
+        )
+
+        build = needs_human_blocks_resolved if execute else needs_human_block_resolutions_proposed
+        return build(needs_human_label="needs-human")
+
+    def _items(self, *, execute: bool, resolve: tuple[DecisionFact, ...],
+               provisioning: tuple[DecisionFact, ...], blocked: bool) -> tuple[WorkItemFact, ...]:
+        labels = ("needs-human",) if blocked else ()
+        progressed = (pr(number=921, state=PullRequestState.READY),) if execute else ()
+        split = replace(item(issue_labels=labels, prs=progressed), role=self._SPLIT, issue_number=920,
+                        decisions=resolve)
+        stale = replace(item(issue_labels=labels, prs=tuple(replace(p, number=923) for p in progressed)),
+                        role=self._STALE, issue_number=922, decisions=resolve)
+        beside = replace(
+            item(issue_labels=("pr-pending",),
+                 prs=(pr(number=925, state=PullRequestState.READY,
+                         labels=("needs-code-review", "needs-human")),)),
+            role=self._BESIDE, issue_number=924, triage=None,
+        )
+        provisioning_item = replace(item(issue_labels=("needs-human",)), role=self._PROVISIONING,
+                                    issue_number=926, decisions=provisioning)
+        return split, stale, beside, provisioning_item
+
+    def _grade(self, execute: bool, items: tuple[WorkItemFact, ...]):
+        case = self._case(execute)
+        obs = replace(observation(case.case_id, items[0]), items=items,
+                      owned_numbers=frozenset(range(920, 960)))
+        return grade(case, obs)
+
+    def _failed(self, execute: bool, items: tuple[WorkItemFact, ...]) -> set[str]:
+        return {goal.name for goal in self._grade(execute, items).goals if not goal.passed}
+
+    HANDED_OVER = (DecisionFact("escalate_to_human", "applied", "human_hand_over", None),)
+    EXPLAINED = DecisionFact("post_comment", "applied", "explained", None)
+    APPLIED = (DecisionFact("resolve_block", "applied", "remedy", None),)
+    PROPOSED = (DecisionFact("resolve_block", "awaiting_approval", "remedy", 951),)
+
+    def test_execute_ends_with_the_work_blocks_cleared_and_moving(self) -> None:
+        items = self._items(execute=True, resolve=self.APPLIED, provisioning=self.HANDED_OVER,
+                            blocked=False)
+
+        card = self._grade(True, items)
+
+        assert card.passed, [goal for goal in card.goals if not goal.passed]
+
+    def test_propose_ends_with_approvable_proposals_and_the_blocks_in_place(self) -> None:
+        items = self._items(execute=False, resolve=self.PROPOSED, provisioning=self.HANDED_OVER,
+                            blocked=True)
+
+        card = self._grade(False, items)
+
+        assert card.passed, [goal for goal in card.goals if not goal.passed]
+
+    def test_the_porchpin_shape_fails_both(self) -> None:
+        """What porchpin's engine could do: hand everything to the operator."""
+        for execute in (True, False):
+            items = self._items(execute=execute, resolve=self.HANDED_OVER,
+                                provisioning=self.HANDED_OVER, blocked=True)
+
+            effect = "applied" if execute else "awaiting_approval"
+            assert {f"{role}.resolved_{effect}" for role in ("split", "stale")} <= self._failed(
+                execute, items
+            )
+
+    def test_a_resolve_stands_when_a_later_review_only_explains_the_item(self) -> None:
+        """Exam F at fd8ad07: a failure investigation resolved the stale block, and
+        a later health review, handed a stale grant (#8113), explained it. The
+        resolve took effect and still counts; an explanation alone does not."""
+        explained_after = (self.EXPLAINED, *self.APPLIED, self.EXPLAINED)
+        items = self._items(execute=True, resolve=explained_after, provisioning=self.HANDED_OVER,
+                            blocked=False)
+        assert self._grade(True, items).passed
+
+        only_explained = self._items(execute=True, resolve=(self.EXPLAINED,),
+                                     provisioning=self.HANDED_OVER, blocked=False)
+        assert {"split.resolved_applied", "stale.resolved_applied"} <= self._failed(True, only_explained)
+
+    def test_a_resolve_that_did_not_take_effect_does_not_count(self) -> None:
+        refused = (DecisionFact("resolve_block", "refused", "remedy", None),)
+        items = self._items(execute=True, resolve=refused, provisioning=self.HANDED_OVER,
+                            blocked=False)
+        assert "stale.resolved_applied" in self._failed(True, items)
+
+    def test_the_decision_history_round_trips_through_the_saved_observation(self) -> None:
+        [split, *_] = self._items(execute=True, resolve=(self.EXPLAINED, *self.PROPOSED),
+                                  provisioning=self.HANDED_OVER, blocked=False)
+
+        restored = WorkItemFact.from_dict(json.loads(json.dumps(split.to_dict())))
+
+        assert restored.decisions == split.decisions
+        assert restored.decided_kinds == ("post_comment", "resolve_block")
+
+    def test_a_hand_over_stands_when_a_later_review_only_explains_it(self) -> None:
+        """Exam F at fd8ad07: the hand-over re-granted its own item (#8112), and
+        the next review explained that the hand-over still stands."""
+        items = self._items(execute=True, resolve=self.APPLIED,
+                            provisioning=(*self.HANDED_OVER, self.EXPLAINED), blocked=False)
+        assert self._grade(True, items).passed
+
+        never_handed = self._items(execute=True, resolve=self.APPLIED,
+                                   provisioning=(self.EXPLAINED,), blocked=False)
+        assert self._failed(True, never_handed) == {"provisioning.handed_over"}
+
+    def test_a_resolved_provisioning_item_fails(self) -> None:
+        for provisioning in (self.APPLIED, (*self.HANDED_OVER, *self.APPLIED)):
+            items = self._items(execute=True, resolve=self.APPLIED, provisioning=provisioning,
+                                blocked=False)
+
+            assert self._failed(True, items) == {
+                "provisioning.handed_over",
+                "provisioning.no_resolve_block",
+            }
+
+    def test_a_proposal_that_never_got_filed_is_not_approvable(self) -> None:
+        unfiled = (DecisionFact("resolve_block", "awaiting_approval", "remedy", None),)
+        items = self._items(execute=False, resolve=unfiled, provisioning=self.HANDED_OVER,
+                            blocked=True)
+
+        assert not self._grade(False, items).passed
+
+
+def test_case_d_accepts_a_filed_resolution_put_to_the_operator() -> None:
+    """#7658: under propose, a filed resolve_block proposal puts the split
+    decision to the operator as a propose_decision does; an applied one
+    (decided without the operator) does not answer case D's question."""
+    case = TestCaseDBlockedItemsTriaged()
+    proposed = case._asks(TriageFact("remedy", "resolve_block", "awaiting_approval", 950))
+    assert case._grade(proposed).passed
+
+    applied = case._asks(TriageFact("remedy", "resolve_block", "applied", None))
+    failed = {goal.name for goal in case._grade(applied).goals if not goal.passed}
+    assert "asks.triaged_operator_decision" in failed
+
+
+def test_cases_f_and_g_fail_a_merge_hold_that_was_cleared() -> None:
+    """#7678: the question beside a published PR is a merge hold; clearing it
+    (or merging) fails both cases, whatever the dial."""
+    cls = TestCasesFAndGResolution
+    for execute in (True, False):
+        resolve = cls.APPLIED if execute else cls.PROPOSED
+        items = list(cls()._items(execute=execute, resolve=resolve,
+                                  provisioning=cls.HANDED_OVER, blocked=not execute))
+        items[2] = replace(items[2], pull_requests=(pr(number=925, state=PullRequestState.READY),))
+        assert "beside_pr.pr_label.needs-human" in cls()._failed(execute, tuple(items))
+
+
+def test_cases_f_and_g_fail_any_resolution_of_the_merge_hold() -> None:
+    """r12 F1: even a FILED proposal to resolve the PR's merge hold is wrong,
+    though the PR stays open, reviewed and held."""
+    cls = TestCasesFAndGResolution
+    for execute in (True, False):
+        resolve = cls.APPLIED if execute else cls.PROPOSED
+        items = list(cls()._items(execute=execute, resolve=resolve,
+                                  provisioning=cls.HANDED_OVER, blocked=not execute))
+        assert cls()._grade(execute, tuple(items)).passed
+        items[2] = replace(items[2], decisions=cls.PROPOSED)
+        assert cls()._failed(execute, tuple(items)) == {"beside_pr.no_resolve_block"}

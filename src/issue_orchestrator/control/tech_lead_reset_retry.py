@@ -74,6 +74,7 @@ from .actions import (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ResolveBlockAction,
     ApplyOperatorDecisionAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
@@ -576,6 +577,12 @@ def _failure_surface_identity(
             action.issue_number,
             "propose_decision",
             f"the approved decision on issue #{action.issue_number}",
+        )
+    if isinstance(action, ResolveBlockAction):
+        return (
+            action.issue_number,
+            "resolve_block",
+            f"the needs-human block of issue #{action.issue_number}",
         )
     return (
         fallback_issue_number,

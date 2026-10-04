@@ -70,6 +70,7 @@ from ..ports.tech_lead_authority import (
     UnknownTechLeadPatternError,
 )
 from .repo_identity import state_dir
+from . import tech_lead_block_resolutions_sql as block_resolutions
 from . import tech_lead_dispositions_sql as dispositions
 from . import tech_lead_pending_intents as pending_intents
 from . import tech_lead_shipped_fixes_sql as shipped_fixes
@@ -348,6 +349,26 @@ class SqliteTechLeadAuthorityStore:
                 " (proposal_issue_number, state, recorded_at) VALUES (?, ?, ?)",
                 (proposal_issue_number, state.value, datetime.now(timezone.utc).isoformat()),
             )
+
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None:
+        with self._transaction() as tx:
+            block_resolutions.begin(tx, decision_id=decision_id, issue_number=issue_number, causes=causes)
+
+    def commit_block_resolution(self, *, decision_id: str) -> None:
+        with self._transaction() as tx:
+            block_resolutions.commit(tx, decision_id=decision_id)
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None:
+        with self._transaction() as tx:
+            block_resolutions.abandon(tx, decision_id=decision_id)
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
+        return block_resolutions.state(self._get_connection(), decision_id=decision_id)
+
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]:
+        return block_resolutions.resolved_causes(self._get_connection(), issue_number=issue_number)
 
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""

@@ -35,6 +35,7 @@ from .tech_lead_op_actions import (
     KillHungSessionAction as KillHungSessionAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction as ReleaseWithheldReviewAction,
+    ResolveBlockAction as ResolveBlockAction,
     RequestReworkAction as RequestReworkAction,
     ResetRetryIssueAction as ResetRetryIssueAction,
 )

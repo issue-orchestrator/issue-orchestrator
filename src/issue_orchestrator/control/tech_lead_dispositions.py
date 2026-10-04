@@ -50,6 +50,8 @@ TERMINAL_INVESTIGATION_ACTIONS = frozenset(
         "release_withheld_review",
         # The investigation found the remedy is the operator's call (#7593).
         "propose_decision",
+        # The investigation decided the block itself (#7658).
+        "resolve_block",
     }
 )
 

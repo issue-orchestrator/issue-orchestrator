@@ -28,6 +28,9 @@ from ..control.session_history import SessionHistoryOwner
 from ..infra.repo_scope import require_repo
 from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
 from ..control.tech_lead_operator_decision import OperatorDecisionExecutor
+from ..control.tech_lead_block_resolution import TechLeadBlockResolutionExecutor
+from ..control.blocked_item_triage import agent_questions_in
+from ..domain.block_resolution import RESOLUTION_MARKER_PREFIX
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
     KillSessionRunOutcome,
@@ -128,6 +131,49 @@ def build_tech_lead_operator_decision_executor(
         apply_action=deps.action_applier.apply,
         require_authority=deps.action_applier.require_mutation_authority,
         retries=deps.tech_lead_authority,
+    )
+
+
+def build_tech_lead_block_resolution_executor(
+    orchestrator: "Orchestrator", host: "RepositoryHost"
+) -> TechLeadBlockResolutionExecutor:
+    """Bind ``resolve_block`` (#7658) to the owner of each precondition and write.
+
+    The shared block's owner discharges the causes; the runtime probe, claim
+    ledger and session history answer whether anything runs or failed since;
+    the item's comments carry the durable resolution markers; the timeline
+    holds the agent's question the human-only screen reads; and the operator
+    commands' requeue makes the item eligible again without a label sweep.
+    """
+    deps = orchestrator.deps
+    history = SessionHistoryOwner(lambda: orchestrator.state.session_history)
+    return TechLeadBlockResolutionExecutor(
+        events=deps.events,
+        labels=deps.label_manager,
+        block=deps.needs_human_block,
+        gates=deps.human_gates,
+        read_issue=host.get_issue,
+        read_comment_bodies=lambda number: host.issue_comment_bodies_containing(
+            number, RESOLUTION_MARKER_PREFIX
+        ),
+        # The WHOLE timeline: a person's task asked once is never screened out
+        # by later events (the triage agenda's bounded read is for display).
+        agent_questions=lambda number: agent_questions_in(deps.timeline_store.read(number)),
+        runtime_activity=deps.runtime_lifecycle.probe,
+        claims_on_issue=lambda number: claims_on_issue(deps.pending_work_claims, number),
+        # The tech lead's own run on a focus issue proposed the decision; it
+        # never raises the block the decision is about.
+        sessions_not_before=lambda number, instant: history.sessions_not_before(
+            number, instant, excluding_agent=orchestrator.config.tech_lead_review_agent
+        ),
+        published_review=deps.runtime_lifecycle.published_review,
+        find_issue_by_marker=host.find_issue_by_marker,
+        create_issue=host.create_issue,
+        apply_action=deps.action_applier.apply,
+        require_authority=deps.action_applier.require_mutation_authority,
+        requeue=orchestrator.operator_issue_commands.requeue_resolved,
+        discharges=deps.tech_lead_authority,
+        index_proposals=deps.tech_lead_authority.proposal_index.index_proposals,
     )
 
 

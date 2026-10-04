@@ -126,20 +126,43 @@ class StateBlockedItemTriage:
         )
 
     def _agent_question(self, issue_number: int) -> str | None:
-        """The last question an agent put to a human about the item (best-effort)."""
-        try:
-            records = self._timeline(issue_number, _TIMELINE_RECORDS_PER_ITEM)
-        except Exception:
-            logger.warning(
-                "[TRIAGE] timeline of #%d unreadable; its agenda item carries no question",
-                issue_number, exc_info=True,
-            )
-            return None
-        for record in reversed(tuple(records)):
-            question = record.data.get("question") if record.event == EventName.ISSUE_NEEDS_HUMAN.value else None
-            if isinstance(question, str) and question.strip():
-                return question.strip()
+        return latest_agent_question(self._timeline, issue_number)
+
+
+def latest_agent_question(
+    timeline: Callable[[int, int], Sequence["TimelineRecord"]], issue_number: int
+) -> str | None:
+    """The last question an agent put to a human about the item (best-effort).
+
+    The agenda tolerates an unreadable timeline; a resolution's human-only
+    screen reads EVERY question of the whole timeline through
+    :func:`agent_questions_in` and fails instead (#7658).
+    """
+    try:
+        records = timeline(issue_number, _TIMELINE_RECORDS_PER_ITEM)
+    except Exception:
+        logger.warning(
+            "[TRIAGE] timeline of #%d unreadable; no agent question is read for it",
+            issue_number, exc_info=True,
+        )
         return None
+    return agent_question_in(records)
+
+
+def agent_questions_in(records: Sequence["TimelineRecord"]) -> tuple[str, ...]:
+    """Every agent question among *records*, oldest first."""
+    found = (
+        record.data.get("question")
+        for record in records
+        if record.event == EventName.ISSUE_NEEDS_HUMAN.value
+    )
+    return tuple(question.strip() for question in found if isinstance(question, str) and question.strip())
+
+
+def agent_question_in(records: Sequence["TimelineRecord"]) -> str | None:
+    """The latest agent question among *records* (oldest first), else None."""
+    questions = agent_questions_in(records)
+    return questions[-1] if questions else None
 
 
 @dataclass(frozen=True)

@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS tech_lead_decision_retries (
     state TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+-- #7658: the write-ahead state of a resolve_block's discharge, keyed by the
+-- decision (see ports/block_resolution_discharges.py).
+CREATE TABLE IF NOT EXISTS tech_lead_block_resolutions (
+    decision_id TEXT PRIMARY KEY,
+    issue_number INTEGER NOT NULL,
+    causes TEXT NOT NULL,
+    state TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tech_lead_block_resolutions_issue
+    ON tech_lead_block_resolutions (issue_number);
 -- #7763: approvals an operator gave in the Control Center, each bound to the
 -- exact `approved` label event the engine's write produced.
 CREATE TABLE IF NOT EXISTS tech_lead_operator_approvals (

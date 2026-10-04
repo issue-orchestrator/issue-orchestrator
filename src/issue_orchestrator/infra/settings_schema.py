@@ -1518,6 +1518,32 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.release_withheld_review",
         },
     )
+    tech_lead_authority_resolve_block: str = Field(
+        "propose",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Resolve Block",
+        description=(
+            "Let the tech lead clear a needs-human work block by deciding it:"
+            " answer the agent's question, decide a split, or lift a stale block"
+        ),
+        json_schema_extra={
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
+            "doc_examples": ["propose", "execute"],
+            "doc_notes": (
+                "propose (default) files each decision as a gated proposal the"
+                " operator approves; execute lets the tech lead clear the block"
+                " itself. Only work blocks are resolvable (an agent's question,"
+                " the engine giving up); a merge escalation, a tech-lead"
+                " hand-over, a quarantine or an operator's own label never is,"
+                " and human-only work (credentials, accounts, provisioning,"
+                " money, legal) always escalates. Each decision is posted on the"
+                " item and recorded; if the block comes back after a resolve,"
+                " the tech lead never clears that cause again."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.resolve_block",
+            "yaml_path": "tech_lead.authority.resolve_block",
+        },
+    )
     # Per-role charter dials (#7330): one enabled/depth/authority triple per role.
     tech_lead_charter_flow_enabled: bool = _charter_field(CharterRole.FLOW, "enabled")
     tech_lead_charter_flow_depth: str = _charter_field(CharterRole.FLOW, "depth")
@@ -1851,6 +1877,7 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_request_rework",
         "tech_lead_authority_recover_validated_work",
         "tech_lead_authority_release_withheld_review",
+        "tech_lead_authority_resolve_block",
     )
     @classmethod
     def _validate_tech_lead_authority_mode(cls, value: str, info: ValidationInfo) -> str:

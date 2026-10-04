@@ -987,12 +987,12 @@ class TestRestoredTechLeadScope:
             config,
         )
 
-    def _restore(self, tmp_path, issue, *, authority=None):
-        worktree = tmp_path / f"repo-{issue.number}"
+    def _restore(self, tmp_path, issue, *, authority=None, worktree_name=None, branch="main"):
+        worktree = tmp_path / (worktree_name or f"repo-{issue.number}")
         worktree.mkdir()
         restorer, config = self._restorer(tmp_path, issue, authority=authority)
         working_copy = restorer.working_copy
-        working_copy.branches[worktree] = "main"
+        working_copy.branches[worktree] = branch
         discovered = [
             make_discovered_session(
                 issue.number,
@@ -1044,6 +1044,64 @@ class TestRestoredTechLeadScope:
         assert scope is not None
         assert scope.flavor is TechLeadSessionFlavor.BATCH_REVIEW
         assert has_active_global_run(restored) is True
+
+    @pytest.mark.parametrize(
+        ("worktree_name", "branch", "scratch"),
+        [
+            ("repo-tech-lead-42-a1b2c3d4e5f6", "tech-lead-investigation-42-a1b2c3d4e5f6", True),
+            ("repo-42", "tech-lead-investigation-42-a1b2c3d4e5f6", False),
+            ("repo-tech-lead-42-a1b2c3d4e5f6/repo-42", "42-broken-thing", False),
+            ("repo-tech-lead-7-a1b2c3d4e5f6", "main", False),
+            ("repo-42", "42-broken-thing", False),
+        ],
+        ids=[
+            "scratch-checkout",
+            "scratch-branch-only",
+            "under-scratch-shaped-ancestor",
+            "another-focus-issue",
+            "item-checkout",
+        ],
+    )
+    def test_a_restored_session_is_disposable_only_in_its_own_scratch_checkout(
+        self, tmp_path, worktree_name, branch, scratch
+    ):
+        """#7658: the launch flag is not persisted, so a restore recovers it.
+        Without it, completing a restored failure investigation writes a history
+        entry that holds its focus item out of the run, even after a
+        resolve_block cleared that item. The flag also authorises a forced
+        checkout-and-branch removal, so only the checkout's OWN scratch name for
+        this focus issue recovers it, never an ancestor or a branch alone."""
+        from tests.unit.test_completion_handler import make_handler
+
+        from issue_orchestrator.control.completion_cleanup_state import (
+            CompletionCleanupStateOwner,
+        )
+        from issue_orchestrator.control.completion_handler import (
+            CleanupDecision,
+            CleanupDisposition,
+        )
+        from issue_orchestrator.domain.models import OrchestratorState, SessionStatus
+        from issue_orchestrator.history import issues_held_by_session_history
+
+        (tmp_path / worktree_name).parent.mkdir(parents=True, exist_ok=True)
+        issue = Issue(number=42, title="Broken thing", labels=["agent:tech-lead"])
+        [session], config = self._restore(
+            tmp_path, issue, worktree_name=worktree_name, branch=branch
+        )
+
+        entry = make_handler(config)._create_history_entry(
+            session, SessionStatus.COMPLETED, None
+        )
+        state = OrchestratorState()
+        CompletionCleanupStateOwner(state).record(
+            CleanupDecision(CleanupDisposition.IMMEDIATE), session, SessionStatus.COMPLETED
+        )
+
+        assert issues_held_by_session_history([entry]) == (
+            frozenset() if scratch else frozenset({42})
+        )
+        [cleanup] = state.immediate_cleanups
+        assert cleanup.scratch_worktree is scratch
 
     def test_a_restored_investigation_is_not_a_global_barrier(self, tmp_path):
         """The conservative default must not swallow targeted runs.

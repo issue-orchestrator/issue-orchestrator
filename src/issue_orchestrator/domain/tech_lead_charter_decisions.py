@@ -126,6 +126,10 @@ class TechLeadCharterDecision:
     #: watermark: an unchanged item whose triage is in force is not triaged again.
     triage_class: TriageClass | None = None
     triage_fingerprint: str | None = None
+    #: What the decided action rests on, as the tech lead cited it: a
+    #: ``resolve_block``'s spec, ADR and CUJ references (#7658). Empty for
+    #: kinds that cite none.
+    evidence: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.triage_class is None) != (self.triage_fingerprint is None):
@@ -160,6 +164,7 @@ class TechLeadCharterDecision:
         proposal_origin_action_id: str | None = None,
         triage_class: TriageClass | None = None,
         triage_fingerprint: str | None = None,
+        evidence: tuple[str, ...] = (),
     ) -> "TechLeadCharterDecision":
         """Freeze *verdict* into a record.
 
@@ -199,6 +204,7 @@ class TechLeadCharterDecision:
             proposal_origin_action_id=proposal_origin_action_id,
             triage_class=triage_class,
             triage_fingerprint=triage_fingerprint,
+            evidence=evidence,
         )
 
     def is_about_issue(self, issue_number: int) -> bool:
@@ -308,6 +314,7 @@ class TechLeadCharterDecision:
             "execution_at": self.execution_at,
             "triage_class": self.triage_class.value if self.triage_class else None,
             "triage_fingerprint": self.triage_fingerprint,
+            "evidence": list(self.evidence),
         }
 
     @classmethod
@@ -347,6 +354,7 @@ class TechLeadCharterDecision:
             execution_at=data.get("execution_at"),
             triage_class=TriageClass(triage) if (triage := data.get("triage_class")) else None,
             triage_fingerprint=data.get("triage_fingerprint"),
+            evidence=tuple(str(item) for item in data.get("evidence") or ()),
         )
 
 

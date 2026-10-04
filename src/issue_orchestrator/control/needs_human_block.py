@@ -55,8 +55,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
+from .needs_human_resolution import BlockResolutionCommand
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.human_block import (
+    ResolutionOutcome as ResolutionOutcome,
     BlockOutcome as BlockOutcome,
     HumanBlockRequest as HumanBlockRequest,
     NeedsHumanCause as NeedsHumanCause,
@@ -139,6 +141,10 @@ class SharedNeedsHumanBlock(Protocol):
         """Clear an approved operator block, preserving every recorded cause."""
         ...
 
+    def resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> ResolutionOutcome:
+        """Discharge exactly the named work-block causes (#7658; see ``needs_human_resolution``)."""
+        ...
+
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
         """Override the causes this owner records and take the label off.
 
@@ -213,7 +219,7 @@ class _ScopedLabels:
 
 
 @dataclass(frozen=True, slots=True)
-class NeedsHumanBlock:
+class NeedsHumanBlock(BlockResolutionCommand):
     """The bounded owner of the shared block: its label AND its provenance.
 
     Owning both is the point. While provenance was recorded beside a mutation
@@ -745,6 +751,10 @@ class _NoOtherCauses:
         del target, reason
         return BlockOutcome.UNGOVERNED
 
+    def resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> ResolutionOutcome:
+        del target, causes, reason
+        return ResolutionOutcome(BlockOutcome.UNGOVERNED, mutation_attempted=False)
+
     def force_clear(self, target: int, reason: str) -> BlockOutcome:
         del target, reason
         return BlockOutcome.UNGOVERNED
@@ -767,6 +777,7 @@ NO_OTHER_NEEDS_HUMAN_CAUSES: SharedNeedsHumanBlock = _NoOtherCauses()
 
 
 __all__ = [
+    "ResolutionOutcome",
     "NO_OTHER_NEEDS_HUMAN_CAUSES",
     "UNCAUSED_BLOCK_MUTATION",
     "BlockLabelWriter",

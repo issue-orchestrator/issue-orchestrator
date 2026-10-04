@@ -130,6 +130,20 @@ def path_is_under_scratch_worktree(path: str) -> bool:
     return scratch_worktree_focus_issue(path) is not None
 
 
+def is_scratch_checkout_of(worktree_path: str, issue_number: int) -> bool:
+    """True when ``worktree_path`` IS a scratch investigation checkout of ``issue_number``.
+
+    The launch flag ``scratch_worktree`` is not persisted, and a restored
+    session recovers it here. The flag is authority for disposable cleanup (a
+    forced checkout-and-branch removal), so this is deliberately narrower than
+    timeline attribution: the checkout's own basename must be a scratch name
+    for this focus issue. A scratch-shaped ancestor directory or a branch name
+    alone never makes an ordinary checkout disposable.
+    """
+    parts = parse_scratch_worktree_name(PurePath(worktree_path).name)
+    return parts is not None and parts.issue_number == issue_number
+
+
 def scratch_worktree_name_pattern(repo_root_name: str) -> str:
     """The regex SOURCE for a scratch worktree basename of one repository.
 

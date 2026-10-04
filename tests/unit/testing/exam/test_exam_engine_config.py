@@ -35,6 +35,7 @@ from tests.e2e.exam.case_engines import (
     case_d_engine,
     case_h_engine,
     case_e_engine,
+    case_resolution_engine,
     case_u_engine,
 )
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
@@ -103,8 +104,10 @@ def _load_case_config(
         case_d_engine(),
         case_h_engine(),
         case_e_engine(Path("/tmp/exam-e-changes-once")),
+        case_resolution_engine(resolve_block="execute"),
+        case_resolution_engine(resolve_block="propose"),
     ],
-    ids=["A", "B", "C", "U", "D", "H", "E"],
+    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -257,3 +260,36 @@ def test_case_e_reviews_with_one_round_of_changes_and_no_tech_lead(
     assert reviewer is not None and f"--changes-once {marker}" in reviewer
     assert {ASKING_CODER_LABEL, ASKING_BESIDE_PR_CODER_LABEL} <= set(loaded.agents)
     assert loaded.tech_lead_review_agent is None
+
+
+@pytest.mark.parametrize("mode", ["execute", "propose"])
+def test_cases_f_and_g_differ_only_in_the_resolve_block_dial(
+    mode: str, tmp_path: Path, written: list[Path]
+) -> None:
+    """#7658: the operator hands the tech lead these decisions through config
+    alone, so the two cases' engines differ in that one dial."""
+    from tests.e2e.exam.agents import (
+        ASKING_PROVISIONING_CODER_LABEL,
+        GIVES_UP_CODER_LABEL,
+        SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
+        SPLIT_UNTIL_RESOLVED_CODER_LABEL,
+    )
+
+    loaded = _load_case_config(case_resolution_engine(resolve_block=mode), tmp_path, written)
+
+    assert loaded.tech_lead.authority.resolve_block == mode
+    for action_type, ceiling in EXAM_TECH_LEAD_AUTHORITY.items():
+        assert loaded.tech_lead.authority.mode_for(action_type) == ceiling
+    commands = {label: loaded.agents[label].command or "" for label in (
+        SPLIT_UNTIL_RESOLVED_CODER_LABEL, GIVES_UP_CODER_LABEL,
+        SPEC_QUESTION_BESIDE_PR_CODER_LABEL, ASKING_PROVISIONING_CODER_LABEL,
+    )}
+    assert "--until-resolved" in commands[SPLIT_UNTIL_RESOLVED_CODER_LABEL]
+    assert "--gives-up" in commands[GIVES_UP_CODER_LABEL]
+    assert "--pr-label needs-human" in commands[SPEC_QUESTION_BESIDE_PR_CODER_LABEL]
+    # The provisioning coder asks every time: nothing may resolve it.
+    assert "--until-resolved" not in commands[ASKING_PROVISIONING_CODER_LABEL]
+    assert loaded.tech_lead.health_review.interval_minutes > 0
+    assert loaded.tech_lead.stuck_sweep.enabled is False
+    # The give-up coder's exit lands as needs-human (session_lifecycle) at once.
+    assert loaded.retry.interrupted_sessions.retry_coding is False

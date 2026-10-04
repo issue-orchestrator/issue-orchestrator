@@ -84,6 +84,8 @@ class ActionType(Enum):
     # Carry out a decision the operator approved: file its follow-ups, post
     # it on the item, and retry the item as the operator would (#7593)
     APPLY_OPERATOR_DECISION = "apply_operator_decision"
+    # Decide a needs-human work block in the operator's stead (#7658)
+    RESOLVE_BLOCK = "resolve_block"
 
     # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10):
     # the single mutating boundary for proposal-op cleanup, applied off the

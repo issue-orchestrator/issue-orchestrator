@@ -158,6 +158,7 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     terminal handling) and the create-issue boundary can record them.
     """
     from .tech_lead_reset_retry_wiring import (
+        build_tech_lead_block_resolution_executor,
         build_tech_lead_kill_session_executor,
         build_tech_lead_operator_decision_executor,
         build_tech_lead_reset_retry_executor,
@@ -180,6 +181,8 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
         applier.release_withheld_review = build_tech_lead_review_release_executor(
             orchestrator, orchestrator.deps.repository_host)
         applier.apply_operator_decision = build_tech_lead_operator_decision_executor(
+            orchestrator, orchestrator.deps.repository_host)
+        applier.resolve_block = build_tech_lead_block_resolution_executor(
             orchestrator, orchestrator.deps.repository_host)
         applier.request_rework = RequestReworkExecutor(
             repository=orchestrator.deps.repository_host,

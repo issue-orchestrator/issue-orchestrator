@@ -964,3 +964,42 @@ def test_a_downstream_claim_is_typed_and_stated(tmp_path: Path, change: dict, ru
     doc["blocked_items"][0]["downstream"] = [{**_DOWNSTREAM, **change}]
 
     assert rule in _rules(doc, evidence)
+
+
+# -- resolve_block (#7658) ------------------------------------------------------
+
+
+def _resolution(effect: str, *, proposal: int | None, applied_at: str | None) -> Callable[[dict], None]:
+    """#353's D3 is a resolve_block instead: the tech lead decided the block."""
+    def mutate(d: dict) -> None:
+        d["items"][0]["decisions"][0].update(
+            action_kind="resolve_block", binding="approvable",
+            outcome="proposed" if effect == "awaiting_approval" else "executed",
+            reason_code="action_authority_propose" if effect == "awaiting_approval" else "within_charter_execute",
+            effect=effect, applied_at=applied_at, proposal_issue_number=proposal,
+        )
+
+    return mutate
+
+
+def test_a_filed_resolution_awaiting_approval_hands_the_item_to_the_operator(tmp_path: Path) -> None:
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "blocked-items.json",
+        _resolution("awaiting_approval", proposal=951, applied_at=None),
+    )
+
+    assert validate_findings(json.dumps(example("exam_case")), evidence).blocked_items[0].disposition == (
+        "awaiting_operator"
+    )
+
+
+def test_an_applied_resolution_is_the_tech_lead_acting_on_the_item(tmp_path: Path) -> None:
+    """An applied resolve_block about the item refuses a noticed_not_acted grade."""
+    evidence = _with_notice(
+        build_improver_data(tmp_path), "charter-decisions.json",
+        lambda d: d["decisions"][0].update(
+            action_kind="resolve_block", binding="approvable", applied_at="2026-09-28T14:00:00Z",
+        ),
+    )
+
+    assert Rule.NOTICED_NOT_ACTED_WITHOUT_AN_APPLIED_REMEDY in _rules(example("exam_case"), evidence)

@@ -937,3 +937,35 @@ class TestAnOwedPauseNeverLandsBehindAPerson:
         assert runner.dismiss(ISSUE).committed
 
         assert store.pauses == {}
+
+
+class TestARequeueAfterAResolution:
+    """A tech lead's resolution settled the block itself (#7658): only the
+    local half of a retry runs, and no label is touched."""
+
+    def test_the_gates_settle_and_the_cache_takes_the_fresh_labels(self, sample_config, state):
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {"agent:web"}}
+        state.cached_scope_issues = [Issue(
+            number=ISSUE, title="Resolved", labels=["agent:web", labels.needs_human],
+        )]
+        _labels, runner = _runner(sample_config, state, live)
+
+        still_blocked = runner.requeue_resolved(ISSUE)
+
+        assert still_blocked == ()
+        assert state.session_history == []
+        assert state.failed_this_cycle == set()
+        assert [issue.labels for issue in state.cached_scope_issues] == [("agent:web",)]
+        assert live[ISSUE] == {"agent:web"}
+
+    def test_another_owners_block_stays_and_is_named(self, sample_config, state):
+        """The planner sees the item again, so the stale label's own owner
+        reconciles it; the scheduler still refuses it until then."""
+        labels = LabelManager(sample_config)
+        live = {ISSUE: {"agent:web", labels.blocked_cross_milestone}}
+        _labels, runner = _runner(sample_config, state, live)
+
+        assert runner.requeue_resolved(ISSUE) == (labels.blocked_cross_milestone,)
+        assert state.session_history == []
+        assert live[ISSUE] == {"agent:web", labels.blocked_cross_milestone}

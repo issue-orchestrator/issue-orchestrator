@@ -560,6 +560,9 @@ class CompletionHandler:
             worktree_path=session.worktree_path,
             completed_at=datetime.now(timezone.utc),
             issue_labels=tuple(session.issue.labels),
+            # A failure investigation reads its focus item as evidence in a
+            # scratch worktree (#6823): it is not the item's work (#7658).
+            holds_issue=not session.scratch_worktree,
         )
 
     def finalize_terminal_outcome(

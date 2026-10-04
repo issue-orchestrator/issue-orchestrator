@@ -23,6 +23,17 @@ before the PR merges (#7678): porchpin#364's question asked beside its PR.
 time (creating PATH) and approve every later time, so the PR goes through one
 rework (Case E: rework runs under a merge hold).
 
+With ``--until-resolved``, ``--asks`` is asked only until the tech lead
+resolves the block (#7658): a coder that finds the tech lead's resolution
+posted on its issue works to it and publishes instead, as a real agent
+reading its issue would. With
+``--pr-label needs-human`` the question rides beside the published work, in
+its completion's problems.
+
+``--gives-up`` makes a coding session end WITHOUT a completion (the engine
+gives up on the item: ``session_lifecycle``, porchpin#326's shape) until the
+tech lead's resolution is posted on the issue, after which it codes normally.
+
 ``--hold-until PATH`` makes a session wait, before doing anything, until
 PATH exists. The upgrade case (Case U) uses it to keep work mid-flight across
 an engine stop: the harness creates PATH only after the candidate engine has
@@ -55,11 +66,33 @@ def run(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
+#: The marker the engine's ``resolve_block`` posts with its decision.
+RESOLUTION_MARKER = "<!-- io:resolve-block:comment:decision="
+
+
 def ask_the_operator(question: str) -> None:
     run(["coding-done", "needs_human", "--question", question])
 
 
-def initial_coding_session(extra_pr_labels: list[str]) -> None:
+def issue_number() -> int:
+    raw = os.environ.get("ISSUE_ORCHESTRATOR_ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+    if not raw:
+        raise SystemExit("exam coder: the engine set no issue number")
+    return int(raw)
+
+
+def resolved_by_the_tech_lead() -> bool:
+    """Whether the tech lead's resolution is posted on this issue (fail loud)."""
+    out = subprocess.run(
+        ["gh", "issue", "view", str(issue_number()), "--json", "comments", "--jq", ".comments[].body"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    resolved = RESOLUTION_MARKER in out
+    log(f"tech lead's resolution on the issue: {resolved}")
+    return resolved
+
+
+def initial_coding_session(extra_pr_labels: list[str], problems: str = "None") -> None:
     marker = Path("exam-output.txt")
     marker.write_text(f"tech-lead exam work item, written {time.ctime()}\n", encoding="utf-8")
     run(["git", "add", str(marker)])
@@ -84,7 +117,7 @@ def initial_coding_session(extra_pr_labels: list[str]) -> None:
         "--implementation",
         "Exam work item committed",
         "--problems",
-        "None",
+        problems,
     ]
     labels = [label for label in os.environ.get("E2E_PR_LABELS", "").split(",") if label]
     labels += extra_pr_labels
@@ -147,6 +180,8 @@ def main() -> int:
     parser.add_argument("--asks", default=None)
     parser.add_argument("--pr-label", action="append", default=[])
     parser.add_argument("--changes-once", type=Path, default=None)
+    parser.add_argument("--gives-up", action="store_true")
+    parser.add_argument("--until-resolved", action="store_true")
     args = parser.parse_args()
     in_exchange = bool(os.environ.get(RESPONSE_FILE_ENV))
     log(f"role={args.role} in_exchange={in_exchange} fault={args.exchange_fault}")
@@ -156,7 +191,11 @@ def main() -> int:
     if args.role == "coder":
         if in_exchange:
             idle_on_prompts()
-        elif args.asks:
+        elif args.gives_up and not resolved_by_the_tech_lead():
+            log("planted fault: ending the session without a completion")
+        elif args.asks and args.pr_label:
+            initial_coding_session(args.pr_label, problems=f"Question for the maintainer: {args.asks}")
+        elif args.asks and not (args.until_resolved and resolved_by_the_tech_lead()):
             ask_the_operator(args.asks)
         else:
             initial_coding_session(args.pr_label)

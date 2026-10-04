@@ -16,6 +16,9 @@ from .case import (
     issue_is_open,
     issue_keeps_labels,
     issue_lacks_labels,
+    item_handed_over,
+    item_resolved,
+    no_tech_lead_decision,
     item_triaged,
     never_worked,
     no_pull_request,
@@ -27,6 +30,7 @@ from .case import (
     published_work_survives,
     single_pull_request,
 )
+from .case import Goal
 from .observation import PullRequestState
 from .upgrade import UpgradeSpec
 
@@ -39,6 +43,8 @@ UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
 BLOCKED_ITEMS_TRIAGED = "D-blocked-items-triaged"
 POSITIVE_APPROVAL_EXECUTES_ONCE = "H-positive-approval-executes-once"
 MERGE_HELD_WORK_PROCEEDS = "E-merge-held-work-proceeds"
+BLOCKS_RESOLVED_UNDER_EXECUTE = "F-needs-human-blocks-resolved"
+BLOCK_RESOLUTIONS_PROPOSED = "G-needs-human-block-resolutions-proposed"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -50,6 +56,8 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     BLOCKED_ITEMS_TRIAGED,
     POSITIVE_APPROVAL_EXECUTES_ONCE,
     MERGE_HELD_WORK_PROCEEDS,
+    BLOCKS_RESOLVED_UNDER_EXECUTE,
+    BLOCK_RESOLUTIONS_PROPOSED,
 )
 
 #: Case U's two in-flight items.
@@ -60,6 +68,16 @@ REVIEW = "review"
 ASKS = "asks"
 #: A decision a person makes before a published PR merges (#364/#379): Case E.
 ASKS_BESIDE_PR = "asks_beside_pr"
+
+#: Cases F and G's four needs-human blocks, each a porchpin item on 2026-10-02:
+#: an agent's split question (porchpin#262), a block the engine gave up on
+#: beside a stale blocked-cross-milestone (#326), an agent question beside its
+#: published PR that the issue's own spec answers (#364/#379), and account
+#: provisioning only a human can do (#179).
+SPLIT = "split"
+STALE = "stale"
+BESIDE_PR = "beside_pr"
+PROVISIONING = "provisioning"
 
 #: Case H's three gated tech-lead proposals (#7763): one a maintainer
 #: approves, one whose waiting label is stripped, one a bot "approves".
@@ -308,7 +326,9 @@ def blocked_items_triaged(*, needs_human_label: str) -> ExamCase:
         title="A blocked item a coding agent asked the operator about",
         fault=f"a coding agent ends by asking the operator a pre-work question ({needs_human_label})",
         goals=(
-            item_triaged(ASKS, ("operator_decision",)),
+            # A filed resolve_block proposal (#7658) puts the same decision
+            # to the operator, so it answers the split question too.
+            item_triaged(ASKS, ("operator_decision",), or_resolution_proposed=True),
             issue_keeps_labels(ASKS, (needs_human_label,)),
             no_pull_request(ASKS),
         ),
@@ -353,6 +373,103 @@ def merge_held_work_proceeds(*, needs_human_label: str, rework_label: str) -> Ex
         known_blockers=(
             "porchpin#379 an agent's question about its PR's merge blocked the issue's work",
         ),
+    )
+
+
+def _resolution_case_goals(*, needs_human_label: str, proposals: bool) -> tuple[Goal, ...]:
+    """What cases F (``proposals=False``) and G (``proposals=True``) demand."""
+    if proposals:
+        # The decision waits for the operator: a filed, approvable proposal
+        # carrying it, and the block stays until the operator approves.
+        decided = tuple(
+            goal
+            for role in (SPLIT, STALE)
+            for goal in (
+                item_resolved(role, ("awaiting_approval",)),
+                issue_keeps_labels(role, (needs_human_label,)),
+            )
+        )
+        progress: tuple[Goal, ...] = ()
+    else:
+        # Decided, cleared and moving: each item's next session published
+        # its work (a narrowed split, a lifted block).
+        decided = tuple(
+            goal
+            for role in (SPLIT, STALE)
+            for goal in (
+                item_resolved(role, ("applied",)),
+                issue_lacks_labels(role, (needs_human_label,)),
+            )
+        )
+        progress = tuple(
+            goal
+            for role in (SPLIT, STALE)
+            for goal in (single_pull_request(role), published_work_survives(role))
+        )
+    return (
+        *decided,
+        *progress,
+        # porchpin#364: a question beside published work is a MERGE hold on
+        # its PR (#7678), not a work block. Its work proceeds under either
+        # setting (the issue is never held, the PR is reviewed) and no
+        # resolution touches the merge: the operator merges, by design.
+        issue_lacks_labels(BESIDE_PR, (needs_human_label,)),
+        single_pull_request(BESIDE_PR),
+        pr_in_state(BESIDE_PR, PullRequestState.DRAFT, PullRequestState.READY),
+        pr_has_label(BESIDE_PR, needs_human_label),
+        no_tech_lead_decision(BESIDE_PR, "resolve_block"),
+        pr_review_approved(BESIDE_PR),
+        published_work_survives(BESIDE_PR),
+        # Account provisioning is a person's work under every setting.
+        item_handed_over(PROVISIONING),
+        no_tech_lead_decision(PROVISIONING, "resolve_block"),
+        issue_keeps_labels(PROVISIONING, (needs_human_label,)),
+    )
+
+
+def needs_human_blocks_resolved(*, needs_human_label: str) -> ExamCase:
+    """Case F — porchpin's needs-human blocks, with ``resolve_block: execute`` (#7658).
+
+    The operator wants to do less: ``tech_lead.authority.resolve_block`` is
+    ``execute``. Right answer: a health review decides the three work blocks
+    itself and they end cleared and moving (the split question is decided and
+    the item requeued, the stale block lifted); the question beside a
+    published PR is a merge hold (#7678) its review proceeds under and no
+    resolution touches; the provisioning item is still handed over, because
+    human-only work is never resolvable.
+    """
+    return ExamCase(
+        case_id=BLOCKS_RESOLVED_UNDER_EXECUTE,
+        title="Needs-human work blocks the tech lead may decide itself",
+        fault=(
+            f"four items carry {needs_human_label}: a split question, a block the engine"
+            " gave up on beside a stale blocked-cross-milestone, a question beside a"
+            " published PR, and account provisioning"
+        ),
+        goals=_resolution_case_goals(needs_human_label=needs_human_label, proposals=False),
+        known_blockers=(
+            "#7658 no tech-lead action could clear a needs-human block",
+            "porchpin#262/#326/#364 stayed blocked whatever the config said",
+        ),
+    )
+
+
+def needs_human_block_resolutions_proposed(*, needs_human_label: str) -> ExamCase:
+    """Case G — the same blocks under the default ``resolve_block: propose`` (#7658).
+
+    Right answer: each work block ends with an approvable ``resolve_block``
+    proposal carrying the decision, the block still in place until the
+    operator approves it, and the provisioning item handed over.
+    """
+    return ExamCase(
+        case_id=BLOCK_RESOLUTIONS_PROPOSED,
+        title="Needs-human work blocks resolved as approvable proposals",
+        fault=(
+            f"the same four {needs_human_label} items as case F, with the default"
+            " resolve_block authority (propose)"
+        ),
+        goals=_resolution_case_goals(needs_human_label=needs_human_label, proposals=True),
+        known_blockers=("#7658 no tech-lead action could clear a needs-human block",),
     )
 
 

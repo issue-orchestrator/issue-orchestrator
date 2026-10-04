@@ -19,6 +19,8 @@ import pytest
 from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.domain.tech_lead_session import OperatorDecision
+from issue_orchestrator.domain.block_resolution import BlockResolution, ResolutionKind
+from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
 from issue_orchestrator.control.actions import (
     Action,
@@ -35,6 +37,7 @@ from issue_orchestrator.control.actions import (
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
+    ResolveBlockAction,
     EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
@@ -187,6 +190,24 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 proposal_id="A1",
                 anchor_issue_number=ANCHOR,
                 proposal_issue_number=800,
+                expected=expected,
+            ),
+            TARGET,
+        ),
+        ActionType.RESOLVE_BLOCK: (
+            ResolveBlockAction(
+                issue_number=TARGET,
+                resolution=BlockResolution(
+                    kind=ResolutionKind.LIFT,
+                    causes=frozenset({NeedsHumanCause.SESSION_LIFECYCLE}),
+                    title="Stale", body="The engine gave up on a label that is gone.",
+                    evidence=("board-snapshot.json",),
+                ),
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                observed_at="2026-09-27T14:12:09+00:00",
+                source_session_name="tech-lead-12",
+                source_run_id="run-12",
                 expected=expected,
             ),
             TARGET,
@@ -374,6 +395,7 @@ class _Registry:
             recover_validated_work=inert,
             release_withheld_review=inert,
             apply_operator_decision=inert,
+            resolve_block=inert,
             events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
             apply_action=inert,
             verify_claim=lambda action, number: None,
