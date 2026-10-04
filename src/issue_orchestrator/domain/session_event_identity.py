@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .session_key import SessionKey
-from .tech_lead_scratch_identity import names_scratch_investigation
+from .tech_lead_scratch_identity import (
+    is_scratch_branch_name,
+    path_is_under_scratch_worktree,
+)
 from .timeline_actor import TIMELINE_ACTOR_FIELD, TimelineActor
 
 
@@ -73,7 +76,9 @@ def timeline_actor_for_session(session: SessionIdentityFacts) -> TimelineActor:
     # after a restart carries the worktree and branch but not the launch flag.
     if getattr(session, "scratch_worktree", False):
         return TimelineActor.TECH_LEAD_INVESTIGATION
-    if names_scratch_investigation(str(session.worktree_path), session.branch_name):
+    if path_is_under_scratch_worktree(str(session.worktree_path)):
+        return TimelineActor.TECH_LEAD_INVESTIGATION
+    if is_scratch_branch_name(session.branch_name):
         return TimelineActor.TECH_LEAD_INVESTIGATION
     return TimelineActor.ISSUE_SESSION
 

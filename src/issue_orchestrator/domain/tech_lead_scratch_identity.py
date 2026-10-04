@@ -130,13 +130,18 @@ def path_is_under_scratch_worktree(path: str) -> bool:
     return scratch_worktree_focus_issue(path) is not None
 
 
-def names_scratch_investigation(worktree_path: str, branch_name: str) -> bool:
-    """True when a session's durable worktree path or branch is a scratch investigation's.
+def is_scratch_checkout_of(worktree_path: str, issue_number: int) -> bool:
+    """True when ``worktree_path`` IS a scratch investigation checkout of ``issue_number``.
 
-    The launch flag ``scratch_worktree`` is not persisted. A session rebuilt
-    after a restart recovers it from these two durable names.
+    The launch flag ``scratch_worktree`` is not persisted, and a restored
+    session recovers it here. The flag is authority for disposable cleanup (a
+    forced checkout-and-branch removal), so this is deliberately narrower than
+    timeline attribution: the checkout's own basename must be a scratch name
+    for this focus issue. A scratch-shaped ancestor directory or a branch name
+    alone never makes an ordinary checkout disposable.
     """
-    return path_is_under_scratch_worktree(worktree_path) or is_scratch_branch_name(branch_name)
+    parts = parse_scratch_worktree_name(PurePath(worktree_path).name)
+    return parts is not None and parts.issue_number == issue_number
 
 
 def scratch_worktree_name_pattern(repo_root_name: str) -> str:

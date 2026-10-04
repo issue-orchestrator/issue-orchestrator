@@ -30,7 +30,7 @@ from ..domain.models import Issue, RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
 from ..domain.session_run import SessionRunAssets
 from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
-from ..domain.tech_lead_scratch_identity import names_scratch_investigation
+from ..domain.tech_lead_scratch_identity import is_scratch_checkout_of
 from .tech_lead_scope_recovery import recover_tech_lead_launch_scope
 
 logger = logging.getLogger(__name__)
@@ -359,10 +359,10 @@ class SessionRestorer:
             tech_lead_scope=recover_tech_lead_launch_scope(
                 kind, self.config, issue_obj, self.tech_lead_authority, run_assets.identity
             ),
-            # The launch flag is not persisted; the durable scratch path and
-            # branch recover it, so a restored investigation stays disposable
-            # and never holds its focus issue (#7658).
-            scratch_worktree=names_scratch_investigation(str(worktree_path), branch_name),
+            # The launch flag is not persisted; the checkout's own scratch name
+            # recovers it, so a restored investigation stays disposable and
+            # never holds its focus issue (#7658).
+            scratch_worktree=is_scratch_checkout_of(str(worktree_path), issue_number),
         )
 
     def _recorded_role(
