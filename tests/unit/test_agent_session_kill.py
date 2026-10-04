@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 
 
@@ -22,14 +24,19 @@ def _live(pid: int) -> bool:
     return bool(result.stdout.strip()) and not result.stdout.lstrip().startswith("Z")
 
 
-def test_kill_stops_worker_in_another_group_of_the_agent_session(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_kill_stops_worker_in_another_group_of_the_agent_session(
+    tmp_path: Path, ignore_term: bool,
+) -> None:
     """A shell/tool child may setpgrp while retaining the agent's session."""
     worker_pid_file = tmp_path / "worker.pid"
     agent_script = tmp_path / "agent.py"
     agent_script.write_text(
-        "import subprocess, time\n"
+        "import signal, subprocess, time\n"
         "from pathlib import Path\n"
+        f"signal.signal(signal.SIGTERM, signal.SIG_IGN if {ignore_term!r} else signal.SIG_DFL)\n"
         "worker = subprocess.Popen(['/bin/sleep', '300'], process_group=0)\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_DFL)\n"
         f"Path({str(worker_pid_file)!r}).write_text(str(worker.pid))\n"
         "time.sleep(300)\n"
     )

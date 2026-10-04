@@ -60,18 +60,24 @@ def _live_process_groups_in_session(session_id: int) -> set[int]:
 
     Agent tools can create a new process group without leaving the session.
     Killing only the original agent group would leave those tools running.
-    ``sess`` is supported by both Linux and macOS ps.
+    Read session IDs through getsid: macOS ps's ``sess`` is a pointer, not a SID.
     """
     result = subprocess.run(
-        ["/bin/ps", "-axo", "pgid=,sess=,state="],
+        ["/bin/ps", "-axo", "pid=,pgid=,state="],
         capture_output=True,
         text=True,
         check=True,
     )
     groups = set()
     for line in result.stdout.splitlines():
-        pgid, sid, state = line.split()
-        if int(sid) == session_id and not state.startswith("Z"):
+        pid, pgid, state = line.split()
+        if state.startswith("Z"):
+            continue
+        try:
+            sid = os.getsid(int(pid))
+        except ProcessLookupError:
+            continue  # The process exited since ps took its snapshot.
+        if sid == session_id:
             groups.add(int(pgid))
     return groups
 

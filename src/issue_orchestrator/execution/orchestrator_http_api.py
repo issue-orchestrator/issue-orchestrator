@@ -340,7 +340,9 @@ class OrchestratorAsyncHttpApi:
         try:
             return await self._request("POST", f"/api/issues/{issue_number}/retry")
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 409:
+            # The command's refusal payload is a valid operator outcome.
+            http_code = exc.response.status_code
+            if http_code == 409:
                 payload = exc.response.json()
                 if isinstance(payload, dict):
                     return payload
