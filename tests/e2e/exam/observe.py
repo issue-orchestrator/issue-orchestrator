@@ -22,7 +22,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.label_manager import LabelManager
@@ -143,46 +143,13 @@ def _refusing_gate(config: Config, labels: LabelManager, issue: Any, open_pr: PR
     return f"review_validity:{validity.reason}{blocking}"
 
 
-def observe_triage(state_dir: Path, issue_number: int) -> TriageFact | None:
-    """The latest triage the engine recorded for the item (#7593), if any.
+def _charter_records(state_dir: Path, issue_number: int) -> tuple[TechLeadCharterDecision, ...]:
+    """The charter decisions the engine recorded about the item, oldest first.
 
     Read from the charter decision ledger in the engine's authority store, the
-    record the engine itself keeps. An engine that predates triage records
-    none (no column to read, no field in its records): no fact, not an error.
+    record the engine itself keeps. An engine that predates the ledger records
+    none (no table to read): no decisions, not an error.
     """
-    db = state_dir / "tech_lead_authority.sqlite"
-    if not db.exists():
-        return None
-    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        try:
-            rows = conn.execute(
-                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
-                " ORDER BY decided_at DESC, decision_id DESC",
-                (issue_number,),
-            ).fetchall()
-        except sqlite3.OperationalError as error:
-            if "no such table" in str(error):
-                return None
-            raise
-    finally:
-        conn.close()
-    for row in rows:
-        decision = TechLeadCharterDecision.from_dict(json.loads(row["record"]))
-        if decision.triage_class is None:
-            continue
-        return TriageFact(
-            triage_class=decision.triage_class.value,
-            action_kind=decision.action_kind,
-            effect=decision.effect,
-            proposal_issue_number=decision.proposal_issue_number,
-        )
-    return None
-
-
-def observe_decisions(state_dir: Path, issue_number: int) -> tuple[DecisionFact, ...]:
-    """Every decision the charter ledger recorded about the item, oldest first (#7658)."""
     db = state_dir / "tech_lead_authority.sqlite"
     if not db.exists():
         return ()
@@ -201,15 +168,57 @@ def observe_decisions(state_dir: Path, issue_number: int) -> tuple[DecisionFact,
             raise
     finally:
         conn.close()
-    decisions = (TechLeadCharterDecision.from_dict(json.loads(row["record"])) for row in rows)
+    return tuple(TechLeadCharterDecision.from_dict(json.loads(row["record"])) for row in rows)
+
+
+def _available_proposal(
+    decision: TechLeadCharterDecision, proposal_open: Callable[[int], bool]
+) -> int | None:
+    """The decision's proposal while the operator can still act on it.
+
+    A decision awaiting approval is in force only while its proposal is open.
+    The engine may not have reconciled a proposal closed since, so the
+    observer reads the proposal's live state rather than the ledger's last
+    word: a closed proposal is no proposal.
+    """
+    number = decision.proposal_issue_number
+    if number is None or decision.effect != "awaiting_approval":
+        return number
+    return number if proposal_open(number) else None
+
+
+def observe_triage(
+    state_dir: Path, issue_number: int, *, proposal_open: Callable[[int], bool]
+) -> TriageFact | None:
+    """The latest triage the engine recorded for the item (#7593), if any.
+
+    An engine that predates triage records none (no field in its records): no
+    fact, not an error.
+    """
+    for decision in reversed(_charter_records(state_dir, issue_number)):
+        if decision.triage_class is None:
+            continue
+        return TriageFact(
+            triage_class=decision.triage_class.value,
+            action_kind=decision.action_kind,
+            effect=decision.effect,
+            proposal_issue_number=_available_proposal(decision, proposal_open),
+        )
+    return None
+
+
+def observe_decisions(
+    state_dir: Path, issue_number: int, *, proposal_open: Callable[[int], bool]
+) -> tuple[DecisionFact, ...]:
+    """Every decision the charter ledger recorded about the item, oldest first (#7658)."""
     return tuple(
         DecisionFact(
             action_kind=decision.action_kind,
             effect=decision.effect,
             triage_class=None if decision.triage_class is None else decision.triage_class.value,
-            proposal_issue_number=decision.proposal_issue_number,
+            proposal_issue_number=_available_proposal(decision, proposal_open),
         )
-        for decision in decisions
+        for decision in _charter_records(state_dir, issue_number)
     )
 
 
@@ -230,6 +239,11 @@ def observe_item(
     issue = adapter.get_issue(item.issue_number)
     if issue is None:
         raise RuntimeError(f"issue #{item.issue_number} vanished while observing")
+
+    def proposal_open(number: int) -> bool:
+        proposal = adapter.get_issue(number)
+        return proposal is not None and proposal.state == "open"
+
     linked = {pr.number: pr for pr in linked_pull_requests(repo, item.issue_number, state="all")}
     for number in extra_pr_numbers:
         if number not in linked:
@@ -264,9 +278,13 @@ def observe_item(
             for number in (event.payload.get("pr_number"),)
             if isinstance(number, int) and not isinstance(number, bool)
         ),
-        triage=observe_triage(state_dir, item.issue_number) if state_dir is not None else None,
+        triage=(
+            observe_triage(state_dir, item.issue_number, proposal_open=proposal_open)
+            if state_dir is not None else None
+        ),
         decisions=(
-            observe_decisions(state_dir, item.issue_number) if state_dir is not None else ()
+            observe_decisions(state_dir, item.issue_number, proposal_open=proposal_open)
+            if state_dir is not None else ()
         ),
     )
 
