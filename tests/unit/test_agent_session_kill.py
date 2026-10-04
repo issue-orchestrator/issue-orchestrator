@@ -12,14 +12,16 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
+from issue_orchestrator.infra.process_table import ps_command, ps_env
 
 
 def _live(pid: int) -> bool:
     result = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "state="],
+        ps_command("-p", str(pid), "-o", "state="),
         capture_output=True,
         text=True,
         check=False,
+        env=ps_env(),
     )
     return bool(result.stdout.strip()) and not result.stdout.lstrip().startswith("Z")
 

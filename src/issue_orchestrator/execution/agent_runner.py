@@ -38,6 +38,7 @@ from issue_orchestrator.execution.agent_runner_types import (
     _format_command_for_log,
 )
 from issue_orchestrator.infra.terminal_recording import MirroredTerminalRecordingWriter
+from issue_orchestrator.infra.process_table import ps_command, ps_env
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PTY_COLS = 120
@@ -63,10 +64,11 @@ def _live_process_groups_in_session(session_id: int) -> set[int]:
     Read session IDs through getsid: macOS ps's ``sess`` is a pointer, not a SID.
     """
     result = subprocess.run(
-        ["/bin/ps", "-axo", "pid=,pgid=,state="],
+        ps_command("-A", "-o", "pid=,pgid=,state="),
         capture_output=True,
         text=True,
         check=True,
+        env=ps_env(),
     )
     groups = set()
     for line in result.stdout.splitlines():
