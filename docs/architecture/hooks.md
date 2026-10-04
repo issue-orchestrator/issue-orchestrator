@@ -82,10 +82,38 @@ Managed pre-push guardrails also support an optional
 `repo-specific/hooks/post-verify` extension point. When that hook exists during
 `setup-guardrails` or guardrail repair, the rendered wrapper runs it after
 `scripts/verify-pr.sh` succeeds and before the push is allowed. The hook receives
-the normal pre-push remote arguments (`remote-name` and `remote-url`), but not
-the refs stdin stream because the verify step may already consume it. Re-run
-guardrail setup or repair after adding the hook so the managed wrapper includes
-the dispatch.
+the normal pre-push remote arguments (`remote-name` and `remote-url`) and the
+same ref lines on stdin that git gave the wrapper. Re-run guardrail setup or
+repair after adding the hook so the managed wrapper includes the dispatch.
+
+### Delete-only pushes
+
+Git gives a pre-push hook one line per ref on stdin
+(`<local ref> <local sha> <remote ref> <remote sha>`). Every generated pre-push
+hook (the managed repo wrapper, the worktree chained wrapper and the bundled
+orchestrator hook) reads those lines once into a temporary file and hands that
+file to each consumer: `pre-push.project`, `scripts/verify-pr.sh`, the
+post-verify hook and `pre-push.orchestrator`.
+
+A push that only deletes remote refs pushes no code. When every ref line is a
+deletion (`(delete)` with an all-zero local sha), the managed wrapper skips
+`scripts/verify-pr.sh` and the post-verify hook and logs
+`verify-pr-skipped reason=delete-only` to `pre-push.log`. The bundled
+orchestrator hook skips its dirty-tree guard in the same case. The project's
+own `pre-push.project` still runs. Anything else runs the gate: an update, a
+push that mixes deletions with updates, no ref lines at all (a hook run by
+hand, or the orchestrator's pre-publish rehearsal), or a line that does not
+parse. The rule lives in one shell function, `push_is_delete_only`, in
+`src/issue_orchestrator/infra/hooks/pre_push_refs.py`. The generated hooks
+render it; issue-orchestrator's own tracked `hooks/pre-push` carries a verbatim
+copy that a unit test keeps identical.
+
+Existing installs pick up a regenerated wrapper through the usual repair path.
+`doctor` reports **Repo Guardrails** as a warning when the managed
+`pre-push` differs from the current template. Re-running
+`issue-orchestrator setup-guardrails` (or the Control Center repair action)
+rewrites it. Worktree hooks are rewritten each time the orchestrator installs
+hooks into a worktree.
 
 ## AI Agent Support Matrix
 

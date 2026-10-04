@@ -1954,6 +1954,8 @@ class TestInstallHooks:
         )
         result = subprocess.run(
             ["bash", str(probe)],
+            # The excerpt reads pre-push ref lines; give it none.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=True,

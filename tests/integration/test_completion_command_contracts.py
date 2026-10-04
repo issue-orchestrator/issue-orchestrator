@@ -936,11 +936,13 @@ def _repo_with_real_hook(tmp_path: Path) -> Path:
     hooks_dir = repo / ".git" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook = hooks_dir / "pre-push"
-    hook.write_text(
-        source.read_text().replace(
-            "@@ORCHESTRATOR_PYTHON@@", shlex.quote(sys.executable)
-        )
+    # The production renderer, so every install-time placeholder is filled in
+    # exactly as a worktree install would.
+    from issue_orchestrator.adapters.worktree._worktree_hooks import (
+        _render_orchestrator_pre_push,
     )
+
+    hook.write_text(_render_orchestrator_pre_push(source))
     hook.chmod(0o755)
     return repo
 

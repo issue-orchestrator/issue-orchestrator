@@ -17,6 +17,7 @@ from .hooks._python_path import (
     ORCHESTRATOR_PYTHON_ENV,
     shell_quote_issue_orchestrator_python,
 )
+from .hooks.pre_push_refs import DELETE_ONLY_SKIP_REASON, pre_push_refs_shell
 from .hooks.hooks import (
     UnsupportedAiAgentError,
     detect_agents_from_config,
@@ -61,6 +62,9 @@ class RepoGuardrailsStatus:
     pre_push_executable: bool
     pre_push_managed: bool
     pre_push_calls_verify: bool
+    # False when a managed wrapper predates the current template, so a repair
+    # (setup-guardrails) is what delivers a regenerated hook to the install.
+    pre_push_current: bool
     verify_exists: bool
     verify_executable: bool
     verify_managed: bool
@@ -142,6 +146,8 @@ def inspect_repo_guardrails(
             pre_push_content, MANAGED_PRE_PUSH_MARKERS
         ),
         pre_push_calls_verify="scripts/verify-pr.sh" in pre_push_content,
+        pre_push_current=pre_push_content
+        == _render_repo_pre_push_hook(verify_script, repo_root),
         verify_exists=verify_script.exists(),
         verify_executable=_is_executable(verify_script),
         verify_managed=_contains_managed_marker(verify_content, MANAGED_VERIFY_MARKERS),
@@ -608,7 +614,7 @@ run_post_verify_hook() {
   fi
 
   log "post-verify-starting"
-  if "$POST_VERIFY_HOOK" "$@"; then
+  if "$POST_VERIFY_HOOK" "$@" < "$PUSH_REFS_FILE"; then
     log "post-verify exit=0"
   else
     local post_verify_exit=$?
@@ -617,8 +623,9 @@ run_post_verify_hook() {
   fi
 }
 """
-        post_verify_call = '\nrun_post_verify_hook "$@"\n'
+        post_verify_call = '  run_post_verify_hook "$@"\n'
 
+    refs_shell = pre_push_refs_shell().rstrip()
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -637,6 +644,8 @@ log() {{
   printf "%s %s\\n" "$(date -Iseconds)" "$1" >> "$LOG_FILE"
 }}
 
+{refs_shell}
+capture_push_refs
 log "repo-pre-push-started"
 
 is_managed_wrapper() {{
@@ -659,7 +668,7 @@ if [ -x "$PROJECT_HOOK" ] && is_managed_wrapper "$PROJECT_HOOK"; then
   echo "pre-push: refusing to exec managed wrapper as project hook: $PROJECT_HOOK" >&2
 elif [ -x "$PROJECT_HOOK" ]; then
   log "project-hook-starting"
-  if "$PROJECT_HOOK" "$@"; then
+  if "$PROJECT_HOOK" "$@" < "$PUSH_REFS_FILE"; then
     log "project-hook exit=0"
   else
     project_exit=$?
@@ -676,15 +685,27 @@ if [ ! -x "$VERIFY_SCRIPT" ]; then
   exit 1
 fi
 
-log "verify-pr-starting"
-if "$VERIFY_SCRIPT"; then
-  log "verify-pr exit=0"
-else
-  verify_exit=$?
-  log "verify-pr exit=$verify_exit"
-  exit "$verify_exit"
-fi
+run_verify_pr() {{
+  log "verify-pr-starting"
+  if "$VERIFY_SCRIPT" < "$PUSH_REFS_FILE"; then
+    log "verify-pr exit=0"
+  else
+    verify_exit=$?
+    log "verify-pr exit=$verify_exit"
+    exit "$verify_exit"
+  fi
 {post_verify_call.rstrip()}
+}}
+
+# A push that only deletes remote refs pushes no code: there is nothing for
+# verify-pr to validate. push_is_delete_only fails closed (see
+# infra/hooks/pre_push_refs.py), so any update, or no ref lines at all, runs it.
+if push_is_delete_only "$PUSH_REFS_FILE"; then
+  log "verify-pr-skipped reason={DELETE_ONLY_SKIP_REASON}"
+  echo "pre-push: delete-only push; skipping verify-pr" >&2
+else
+  run_verify_pr "$@"
+fi
 
 log "repo-pre-push-completed"
 """
