@@ -987,12 +987,12 @@ class TestRestoredTechLeadScope:
             config,
         )
 
-    def _restore(self, tmp_path, issue, *, authority=None):
-        worktree = tmp_path / f"repo-{issue.number}"
+    def _restore(self, tmp_path, issue, *, authority=None, worktree_name=None, branch="main"):
+        worktree = tmp_path / (worktree_name or f"repo-{issue.number}")
         worktree.mkdir()
         restorer, config = self._restorer(tmp_path, issue, authority=authority)
         working_copy = restorer.working_copy
-        working_copy.branches[worktree] = "main"
+        working_copy.branches[worktree] = branch
         discovered = [
             make_discovered_session(
                 issue.number,
@@ -1044,6 +1044,39 @@ class TestRestoredTechLeadScope:
         assert scope is not None
         assert scope.flavor is TechLeadSessionFlavor.BATCH_REVIEW
         assert has_active_global_run(restored) is True
+
+    @pytest.mark.parametrize(
+        ("worktree_name", "branch", "scratch"),
+        [
+            ("repo-tech-lead-42-a1b2c3d4e5f6", "main", True),
+            ("repo-42", "tech-lead-investigation-42-a1b2c3d4e5f6", True),
+            ("repo-42", "42-broken-thing", False),
+        ],
+        ids=["scratch-worktree", "scratch-branch", "item-worktree"],
+    )
+    def test_a_restored_investigation_keeps_its_scratch_identity(
+        self, tmp_path, worktree_name, branch, scratch
+    ):
+        """#7658: the launch flag is not persisted, so a restore recovers it from
+        the durable scratch path or branch. Without it, completing a restored
+        failure investigation writes a history entry that holds its focus item
+        out of the run, even after a resolve_block has cleared that item."""
+        from tests.unit.test_completion_handler import make_handler
+
+        from issue_orchestrator.domain.models import SessionStatus
+        from issue_orchestrator.history import issues_held_by_session_history
+
+        issue = Issue(number=42, title="Broken thing", labels=["agent:tech-lead"])
+        restored, config = self._restore(
+            tmp_path, issue, worktree_name=worktree_name, branch=branch
+        )
+
+        assert restored[0].scratch_worktree is scratch
+        entry = make_handler(config)._create_history_entry(
+            restored[0], SessionStatus.COMPLETED, None
+        )
+        held = frozenset() if scratch else frozenset({42})
+        assert issues_held_by_session_history([entry]) == held
 
     def test_a_restored_investigation_is_not_a_global_barrier(self, tmp_path):
         """The conservative default must not swallow targeted runs.

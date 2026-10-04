@@ -130,6 +130,15 @@ def path_is_under_scratch_worktree(path: str) -> bool:
     return scratch_worktree_focus_issue(path) is not None
 
 
+def names_scratch_investigation(worktree_path: str, branch_name: str) -> bool:
+    """True when a session's durable worktree path or branch is a scratch investigation's.
+
+    The launch flag ``scratch_worktree`` is not persisted. A session rebuilt
+    after a restart recovers it from these two durable names.
+    """
+    return path_is_under_scratch_worktree(worktree_path) or is_scratch_branch_name(branch_name)
+
+
 def scratch_worktree_name_pattern(repo_root_name: str) -> str:
     """The regex SOURCE for a scratch worktree basename of one repository.
 
