@@ -35,11 +35,4 @@ class McpIssueRetryHeld(TypedDict):
     held_by: NotRequired[list[str]]
 
 
-class McpToolErrorResult(TypedDict):
-    """Transport or unexpected error converted by the MCP error boundary."""
-
-    error: McpErrorPayload
-
-
 McpIssueRetryOutcome: TypeAlias = McpIssueRetryCommitted | McpIssueRetryHeld
-McpIssueRetryResult: TypeAlias = McpIssueRetryOutcome | McpToolErrorResult

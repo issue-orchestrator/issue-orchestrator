@@ -29,6 +29,7 @@ Security posture (see issue #5987, F4):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -36,13 +37,13 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 import inspect
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 
 from ..domain.pause_state import PauseActor
 from ..contracts.mcp import (
     McpIssueRetryCommitted,
     McpIssueRetryHeld,
     McpIssueRetryOutcome,
-    McpIssueRetryResult,
     McpUiHintPayload,
 )
 from ..contracts.repository_engine import RepositoryEngineStartPayload
@@ -446,13 +447,16 @@ class McpApp:
             lambda: self.session_kill(issue_number),
         )
 
-    async def tool_issue_retry(self, issue_number: int) -> McpIssueRetryResult:
-        return cast(
-            McpIssueRetryResult,
-            await self._safe(
-                "orchestrator.issue.retry",
-                lambda: cast(Awaitable[dict[str, Any]], self.issue_retry(issue_number)),
-            ),
+    async def tool_issue_retry(self, issue_number: int) -> CallToolResult:
+        result = await self._safe(
+            "orchestrator.issue.retry",
+            lambda: cast(Awaitable[dict[str, Any]], self.issue_retry(issue_number)),
+        )
+        # Preserve the outcome's flat shape in both MCP representations. The
+        # SDK otherwise wraps unions or adds nulls for absent TypedDict fields.
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(result))],
+            structuredContent=result,
         )
 
     async def tool_session_focus(self, issue_number: int) -> dict[str, Any]:
