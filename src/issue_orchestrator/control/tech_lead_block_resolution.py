@@ -26,8 +26,8 @@ keeps the item blocked until everything its next session needs is on GitHub:
 * a split's children are filed create-once (by body marker), WITHOUT their
   agent label, and each must show the dependency parser exactly its decided
   edge (the issue-dependency-stacking contract). Filing is ``create_issue``'s
-  call: when the tech lead may not file unattended, each child is filed
-  behind the ``proposed-tech-lead`` gate;
+  call: when the tech lead may not file unattended, each child is filed as a
+  proposal awaiting a maintainer's approval (#7763);
 * the pr-pending gate goes on when an open PR carries the item's published
   validated work, so no coder relaunches over that PR;
 * the decision is posted on the item, create-once;
@@ -69,7 +69,11 @@ from ..domain.dependencies import DependencyMode, parse_dependency_edges
 from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.human_block import BlockOutcome, HumanHoldScope, NeedsHumanCause
 from ..domain.operator_decision_retry import DecisionRetryState
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.tech_lead_approval import (
+    GATED_PROPOSAL_LABELS,
+    filed_proposal_numbers,
+    with_proposal_marker,
+)
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import EventSink, make_trace_event
@@ -186,6 +190,9 @@ class TechLeadBlockResolutionExecutor:
     requeue: Callable[[int], tuple[str, ...]]
     #: The write-ahead record of each decision's discharge.
     discharges: "BlockResolutionDischarges"
+    #: The approval owner's durable proposal index (#7763): a gated child
+    #: joins it the moment it is filed, as every tech-lead proposal does.
+    index_proposals: Callable[[list[int]], None]
 
     # -- preconditions --------------------------------------------------------
 
@@ -481,19 +488,23 @@ class TechLeadBlockResolutionExecutor:
                 if child.edge is not None and predecessor is not None
                 else "\n"
             )
-            gate = (PROPOSED_TECH_LEAD_LABEL,) if action.children_gated else ()
+            labels = [*self._inherited_labels(parent), *(GATED_PROPOSAL_LABELS if action.children_gated else ())]
+            body = (
+                f"{child.body}{edge}\nRefs #{parent.number} — split out by the tech lead's"
+                f" resolution {action.decision_id}.\n{marker}"
+            )
             created = self.create_issue(
                 title=child.title,
-                body=(
-                    f"{child.body}{edge}\nRefs #{parent.number} — split out by the tech lead's"
-                    f" resolution {action.decision_id}.\n{marker}"
-                ),
-                labels=[*self._inherited_labels(parent), *gate],
+                # A gated child is a proposal (#7763): its body marker keeps it
+                # one even if every approval label is stripped.
+                body=with_proposal_marker(body) if action.children_gated else body,
+                labels=labels,
                 milestone=parent.milestone_number,
             )
             if not created or not isinstance(created.get("number"), int):
                 raise RuntimeError(f"child {index} of #{parent.number}'s split was not created")
             number = int(created["number"])
+            self.index_proposals(filed_proposal_numbers(labels, number))
         self._verify_edge(number, child, predecessor)
         return number
 

@@ -5,24 +5,28 @@
     "version": "1.0.0"
   },
   "paths": {
-    "/api/tech-lead/rework-proposals": {
+    "/api/tech-lead/page": {
       "get": {
-        "operationId": "getReworkProposals",
+        "operationId": "getTechLeadPageSection",
+        "summary": "This engine's section of the Control Center Tech lead page",
         "responses": {
           "200": {
-            "description": "Stored scoped rework proposals and outcomes",
+            "description": "What waits on the operator, what the tech lead does on its own, and what it watches",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReworkProposalsPayload"
+                  "$ref": "#/components/schemas/TechLeadPageSectionPayload"
                 }
               }
             }
           }
         }
-      },
+      }
+    },
+    "/api/tech-lead/proposals": {
       "post": {
-        "operationId": "commandReworkProposal",
+        "operationId": "commandTechLeadProposal",
+        "summary": "Approve or decline one tech-lead proposal",
         "requestBody": {
           "required": true,
           "content": {
@@ -35,7 +39,105 @@
         },
         "responses": {
           "200": {
-            "description": "Stored proposal approval outcome",
+            "description": "Recorded approval or decline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechLeadProposalOutcomePayload"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The proposal is unavailable or the command failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechLeadProposalOutcomePayload"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/control-center/tech-lead": {
+      "get": {
+        "operationId": "getControlCenterTechLead",
+        "summary": "The cross-repository Tech lead page",
+        "responses": {
+          "200": {
+            "description": "Every configured repository's tech-lead section",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlCenterTechLeadPayload"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/control-center/repositories/{repo_key}/tech-lead/proposals": {
+      "post": {
+        "operationId": "commandControlCenterTechLeadProposal",
+        "summary": "Approve or decline one repository's tech-lead proposal",
+        "parameters": [
+          {
+            "name": "repo_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^repo-[0-9a-f]{64}$"
+            },
+            "description": "Opaque key issued by the configured repository registry"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TechLeadProposalCommandPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded approval or decline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechLeadProposalOutcomePayload"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Configured repository was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechLeadProposalOutcomePayload"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The proposal is unavailable or the command failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechLeadProposalOutcomePayload"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The repository's engine is not running",
             "content": {
               "application/json": {
                 "schema": {
@@ -1175,43 +1277,83 @@
   },
   "components": {
     "schemas": {
-      "ReworkProposalPayload": {
+      "TechLeadDetailRowPayload": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "value"
+        ],
         "properties": {
-          "proposal_issue_number": {
-            "type": "integer"
-          },
-          "pr_number": {
-            "type": "integer"
-          },
-          "issue_number": {
-            "type": "integer"
-          },
-          "forward_issue_number": {
-            "type": "integer"
-          },
-          "repository": {
+          "label": {
             "type": "string"
           },
-          "expected_head": {
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "TechLeadWaitingItemPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "number",
+          "operation",
+          "title",
+          "recommendation",
+          "approval_effect",
+          "link",
+          "waiting_since",
+          "status",
+          "status_label",
+          "can_approve",
+          "can_decline",
+          "details"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "proposal",
+              "merge_ready_pr",
+              "hand_over"
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "operation": {
             "type": "string"
           },
-          "evidence_identity": {
+          "title": {
             "type": "string"
           },
-          "feedback": {
+          "recommendation": {
             "type": "string"
           },
-          "report": {
+          "approval_effect": {
+            "type": "string"
+          },
+          "link": {
+            "type": "string"
+          },
+          "waiting_since": {
             "type": "string"
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "awaiting_approval",
+              "approved",
+              "approval_not_accepted",
+              "executing",
+              "merge_held",
+              "handed_over"
+            ]
           },
-          "detail": {
-            "type": "string"
-          },
-          "mutations": {
+          "status_label": {
             "type": "string"
           },
           "can_approve": {
@@ -1219,40 +1361,455 @@
           },
           "can_decline": {
             "type": "boolean"
-          }
-        },
-        "required": [
-          "proposal_issue_number",
-          "pr_number",
-          "issue_number",
-          "forward_issue_number",
-          "repository",
-          "expected_head",
-          "evidence_identity",
-          "feedback",
-          "report",
-          "status",
-          "detail",
-          "mutations",
-          "can_approve",
-          "can_decline"
-        ],
-        "additionalProperties": false
-      },
-      "ReworkProposalsPayload": {
-        "type": "object",
-        "properties": {
-          "proposals": {
+          },
+          "details": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ReworkProposalPayload"
+              "$ref": "#/components/schemas/TechLeadDetailRowPayload"
             }
           }
-        },
+        }
+      },
+      "TechLeadDoingItemPayload": {
+        "type": "object",
+        "additionalProperties": false,
         "required": [
-          "proposals"
+          "decision_id",
+          "action_kind",
+          "action_label",
+          "target_number",
+          "link",
+          "outcome",
+          "outcome_label",
+          "at",
+          "reason",
+          "in_flight"
         ],
-        "additionalProperties": false
+        "properties": {
+          "decision_id": {
+            "type": "string"
+          },
+          "action_kind": {
+            "type": "string"
+          },
+          "action_label": {
+            "type": "string"
+          },
+          "target_number": {
+            "type": "integer"
+          },
+          "link": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "outcome_label": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "in_flight": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TechLeadParkedActionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "subject",
+          "issue_number",
+          "outcome",
+          "reason",
+          "parked_since",
+          "escalated",
+          "link"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "issue_number": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "parked_since": {
+            "type": "string"
+          },
+          "escalated": {
+            "type": "boolean"
+          },
+          "link": {
+            "type": "string"
+          }
+        }
+      },
+      "TechLeadTriagedItemPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "triage_class",
+          "triage_label",
+          "decided_at",
+          "reason",
+          "link"
+        ],
+        "properties": {
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "triage_class": {
+            "type": "string"
+          },
+          "triage_label": {
+            "type": "string"
+          },
+          "decided_at": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "link": {
+            "type": "string"
+          }
+        }
+      },
+      "TechLeadCaseFilePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "title",
+          "area",
+          "comment_count",
+          "updated_at",
+          "link"
+        ],
+        "properties": {
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "area": {
+            "type": "string"
+          },
+          "comment_count": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "link": {
+            "type": "string"
+          }
+        }
+      },
+      "TechLeadHealthReviewPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "interval_minutes",
+          "last_at",
+          "next_due_at",
+          "label"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "interval_minutes": {
+            "type": "integer"
+          },
+          "last_at": {
+            "type": "string"
+          },
+          "next_due_at": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "TechLeadRunStripPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "has_run",
+          "label",
+          "phase",
+          "phase_label",
+          "started_at",
+          "ended_at",
+          "detail"
+        ],
+        "properties": {
+          "has_run": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "phase_label": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "ended_at": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "TechLeadPageSectionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repository",
+          "generated_at",
+          "waiting_count",
+          "run",
+          "waiting",
+          "doing",
+          "parked",
+          "triaged",
+          "case_files",
+          "health_review"
+        ],
+        "properties": {
+          "repository": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "waiting_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "run": {
+            "$ref": "#/components/schemas/TechLeadRunStripPayload"
+          },
+          "waiting": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TechLeadWaitingItemPayload"
+            }
+          },
+          "doing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TechLeadDoingItemPayload"
+            }
+          },
+          "parked": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TechLeadParkedActionPayload"
+            }
+          },
+          "triaged": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TechLeadTriagedItemPayload"
+            }
+          },
+          "case_files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TechLeadCaseFilePayload"
+            }
+          },
+          "health_review": {
+            "$ref": "#/components/schemas/TechLeadHealthReviewPayload"
+          }
+        }
+      },
+      "ControlCenterTechLeadRepoPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repo_key",
+          "name",
+          "availability",
+          "detail",
+          "section"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "pattern": "^repo-[0-9a-f]{64}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "engine_not_running",
+              "unavailable"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "section": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ControlCenterTechLeadPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "waiting_count",
+          "unreported_count",
+          "generated_at",
+          "repos"
+        ],
+        "properties": {
+          "waiting_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unreported_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Configured repositories whose engine did not report: waiting_count is then a lower bound, never an all-clear."
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ControlCenterTechLeadRepoPayload"
+            }
+          }
+        }
+      },
+      "TechLeadFrameMessage": {
+        "description": "Every message the Control Center and its embedded repo dashboard exchange about the Tech lead page (#7763).",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TechLeadWaitingMessage"
+          },
+          {
+            "$ref": "#/components/schemas/TechLeadOpenMessage"
+          },
+          {
+            "$ref": "#/components/schemas/TechLeadWaitingRequestMessage"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "TechLeadWaitingMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Control Center -> embedded repo dashboard: the waiting count and its wording (#7763).",
+        "required": [
+          "type",
+          "count",
+          "text"
+        ],
+        "properties": {
+          "type": {
+            "const": "cc-tech-lead-waiting"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "TechLeadOpenMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Embedded repo dashboard -> Control Center: open the Tech lead page, optionally at one proposal (#7763).",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "cc-open-tech-lead"
+          },
+          "repository": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TechLeadWaitingRequestMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Embedded repo dashboard -> Control Center: ask for the current waiting count (#7763).",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "cc-tech-lead-waiting-request"
+          }
+        }
       },
       "TechLeadProposalCommandPayload": {
         "type": "object",

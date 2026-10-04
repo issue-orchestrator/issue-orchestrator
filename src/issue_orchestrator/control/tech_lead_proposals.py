@@ -1,9 +1,11 @@
 """Gated tech_lead proposal issues (#6778, amends ADR-0031 §2).
 
-Consequential tech_lead proposals become **gated GitHub issues** carrying
-:data:`~..domain.tech_lead_session.PROPOSED_TECH_LEAD_LABEL`. Removing the label is
-per-instance operator approval. This module is the single policy owner for
-the whole gated lifecycle:
+Consequential tech_lead proposals become **gated GitHub issues** carrying the
+approval model's provenance and waiting labels
+(:data:`~..domain.tech_lead_approval.GATED_PROPOSAL_LABELS`). A maintainer's
+``approved`` label, verified by :mod:`~.tech_lead_approval`, is per-instance
+approval (#7763). This module is the single policy owner for the whole gated
+lifecycle:
 
 * **Composition** — :func:`build_tech_lead_proposal_issue_action` turns an
   act-level decision proposal under ``propose`` authority into a
@@ -25,8 +27,9 @@ the whole gated lifecycle:
   (#7014). It is the visibility counterpart to reconciliation below.
 * **Reconciliation** — :func:`reconcile_tech_lead_proposals` is the lifecycle
   owner that partitions the fact gatherer's EXHAUSTIVE open-issue scan (#6779
-  R2/R4) against the durable ledger in one pass: a gate-labeled issue is an
-  open proposal; an op-backed issue WITHOUT the gate label was approved; a
+  R2/R4) against the durable ledger in one pass: an op-backed issue whose
+  approval the approval owner verified is approved; any other proposal is
+  inert; a
   ledger row whose issue is absent from the scan is only a CANDIDATE for
   terminal cleanup (#6779 R7) — the scan can be truncated, so absence alone
   never proves terminality. Reconciliation stays READ-ONLY: it classifies but
@@ -54,19 +57,24 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Collection, Iterable, Mapping, Sequence
 
 from ..domain.scoped_rework import ReworkRequest, ReworkReceipt
 from ..domain.validated_work import RemoteBaselineStatus
+from ..domain.tech_lead_approval import (
+    GATED_PROPOSAL_LABELS,
+    HOW_TO_APPROVE,
+    ApprovalVerdict,
+    known_proposal_state,
+    with_proposal_marker,
+)
 from ..domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     ApprovedTechLeadOp,
     GatedTechLeadProposal,
     OperatorDecision,
     StoredTechLeadOp,
     TechLeadCreationOrigin,
     TechLeadSessionGeneration,
-    is_proposed_tech_lead_gate,
 )
 from .actions import (
     Action,
@@ -91,7 +99,6 @@ from .tech_lead_proposal_execution import (
 
 if TYPE_CHECKING:
     from ..domain.block_resolution import BlockResolution
-    from ..domain.scoped_rework import TechLeadProposalCommand, TechLeadProposalCommandOutcome
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
     from ..infra.config import Config
@@ -137,16 +144,17 @@ def proposal_issue_labels(config: "Config") -> tuple[str, ...]:
 
     The tech lead agent label keeps the proposal inside the fact gatherer's ONE
     anchor scan; the filtering label keeps it inside the active scope (the
-    anchor classifier ignores out-of-scope issues); the gate label blocks
-    pickup and is the approval affordance. Orchestrator-attached: the gate
-    label is exempt here and ONLY here — the agent-label allowlist rejects it.
+    anchor classifier ignores out-of-scope issues); the approval model's
+    provenance and waiting labels block pickup until a maintainer approves.
+    Orchestrator-attached: those labels are exempt here and ONLY here — the
+    agent-label allowlist rejects them.
     """
     return tuple(
         value
         for value in (
             config.tech_lead_review_agent,
             config.filtering.label,
-            PROPOSED_TECH_LEAD_LABEL,
+            *GATED_PROPOSAL_LABELS,
         )
         if value
     )
@@ -307,12 +315,10 @@ human approves it.
 
 ### How to approve
 
-**Remove the `{PROPOSED_TECH_LEAD_LABEL}` label.** The orchestrator re-validates
-the operation's preconditions against current state and executes it exactly
-once, then closes this issue with the outcome. If the preconditions no longer
-hold, it comments and closes without acting.
-
-To reject, close this issue.
+{HOW_TO_APPROVE} Once approved, the orchestrator re-validates the operation's
+preconditions against current state and executes it exactly once, then closes
+this issue with the outcome. If the preconditions no longer hold, it comments
+and closes without acting.
 
 > This body is documentation only. The executable payload was recorded
 > orchestrator-side when this issue was created; editing this issue has no
@@ -356,11 +362,11 @@ def build_tech_lead_proposal_issue_action(
         title_detail = f"{title_detail}: {headline}"[:_MAX_DECISION_TITLE_CHARS]
     return CreateTechLeadProposalIssueAction(
         title=f"Tech Lead proposal: {title_detail}",
-        body=_proposal_issue_body(
+        body=with_proposal_marker(_proposal_issue_body(
             op,
             anchor_issue_number=anchor_issue_number,
             finding_ids=proposed.finding_ids,
-        ),
+        )),
         labels=proposal_issue_labels(config),
         pr_count=0,
         op=op,
@@ -426,7 +432,7 @@ def build_duplicate_proposal_comment(
         f"A tech_lead session (anchor #{anchor_issue_number}, action"
         f" {proposed.id}) proposed `{proposed.action_type}` for"
         f" #{proposed.target_number} again. This open proposal already covers"
-        f" it — remove the `{PROPOSED_TECH_LEAD_LABEL}` label to approve.\n\n"
+        f" it. {HOW_TO_APPROVE}\n\n"
         f"### Latest rationale\n\n{proposed.body or ''}"
     )
 
@@ -436,10 +442,10 @@ class ReconciledTechLeadProposals:
     """Live partition of the EXHAUSTIVE open tech-lead-agent scan vs the ledger.
 
     The single lifecycle-owner view every caller reads instead of re-deriving
-    proposal state from an open-only scan (#6779 R2). A live proposal (gated or
-    approved) always carries the tech-lead-agent label and is open, so its
-    presence in the scan is authoritative: gate-labeled -> open proposal,
-    op-backed-without-gate -> approved.
+    proposal state from an open-only scan (#6779 R2). A live proposal always
+    carries the tech-lead-agent label and is open, so its presence in the scan
+    is authoritative: op-backed with a VERIFIED approval -> approved; any other
+    proposal -> inert (#7763).
 
     Absence is NOT authoritative, though (#6779 R7): the exhaustive scan can be
     truncated by a later-page API failure or a >2000-issue repo, dropping a
@@ -450,52 +456,50 @@ class ReconciledTechLeadProposals:
     """
 
     anchor_candidate_issues: list["Issue"]  # -> batch/health anchor classifier
-    approved: tuple[ApprovedTechLeadOp, ...]  # gate removed -> execute
+    approved: tuple[ApprovedTechLeadOp, ...]  # verified approval -> execute
     # Ledger rows whose proposal issue was absent from the exhaustive scan:
     # candidates for cleanup, confirmed terminal (deleted/closed) before discard.
     absent_op_issue_numbers: tuple[int, ...]
-
-
-def _issue_carries_gate(issue: "Issue") -> bool:
-    """True iff *issue* carries the owned proposal gate, case-insensitively.
-
-    The ONE gate predicate shared by reconciliation classification and the
-    apply-time consent re-check (#6779 R15/R16), delegating the case fold to
-    :func:`is_proposed_tech_lead_gate`. GitHub folds label names, so a repo whose
-    canonical spelling is ``Proposed-Tech-Lead`` still gates: classification and
-    blocking cannot diverge on case.
-    """
-    return any(is_proposed_tech_lead_gate(name) for name in issue.labels)
 
 
 def reconcile_tech_lead_proposals(
     issues: Sequence["Issue"],
     *,
     ops: Mapping[int, StoredTechLeadOp],
+    verdicts: Mapping[int, ApprovalVerdict],
     pending_markers: tuple[str, ...] = (),
+    known: Collection[int] = frozenset(),
 ) -> ReconciledTechLeadProposals:
     """Classify the exhaustive open scan against the durable ledger.
 
-    Gated issues are inert; ungated stored ops are approved for execution.
-    Missing op-backed issues are cleanup CANDIDATES, since a truncated scan
-    can omit live issues. The confirm-and-discard owner re-reads them (#6779 R7).
+    ``verdicts`` are the approval owner's answers for the scanned items that
+    carry ``approved``. An op is approved only when its verdict approves: a
+    stripped label, a retry, or a bot's ``approved`` never executes anything
+    (#7763). An op-backed issue is never an anchor, approved or not. Missing
+    op-backed issues are cleanup CANDIDATES, since a truncated scan can omit
+    live issues; the confirm-and-discard owner re-reads them (#6779 R7).
     Issues attributed to pending creations stay out of anchor classification
-    until the creation owner restores their op. Everything else can be an anchor.
+    until the creation owner restores their op. Proposals are never anchors.
     """
     open_numbers = {issue.number for issue in issues}
     remaining: list["Issue"] = []
     approved: list[ApprovedTechLeadOp] = []
     for issue in issues:
-        if _issue_carries_gate(issue):
-            continue  # open proposal (or foreign gate-labeled issue): inert
         op = ops.get(issue.number)
         if op is not None:
-            approved.append(
-                ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
-            )
+            verdict = verdicts.get(issue.number)
+            if verdict is not None and verdict.approved:
+                approved.append(
+                    ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
+                )
+            continue
+        if known_proposal_state(issue.labels, issue.body, known=issue.number in known).is_proposal:
+            # A proposal without an op (follow-up, promotion): inert, and its
+            # body marker keeps it one even with every gate label stripped
+            # (#7763 review r10 F2).
             continue
         # Accepted creates awaiting ledger recovery are never review anchors,
-        # even if the operator already removed their gate.
+        # even if their labels were edited.
         if not any(marker in (issue.body or "") for marker in pending_markers):
             remaining.append(issue)
     absent = tuple(sorted(number for number in ops if number not in open_numbers))
@@ -508,8 +512,9 @@ def reconcile_tech_lead_proposals(
 
 def observe_gated_tech_lead_proposals(
     *observed: Sequence["Issue"],
+    known: Collection[int] = frozenset(),
 ) -> tuple[GatedTechLeadProposal, ...]:
-    """The approval backlog as LABEL truth: every open gate-labeled issue (#7014).
+    """The approval backlog as LABEL truth: every open, unapproved proposal (#7014).
 
     The lifecycle owner's answer to "what is waiting on the operator?", and the
     counterpart to :func:`reconcile_tech_lead_proposals`, which classifies the
@@ -549,7 +554,7 @@ def observe_gated_tech_lead_proposals(
     backlog: dict[int, GatedTechLeadProposal] = {
         number: _gated_proposal_summary(issue)
         for number, issue in latest.items()
-        if _awaits_approval(issue)
+        if _awaits_approval(issue, known)
     }
     return tuple(backlog[number] for number in sorted(backlog))
 
@@ -563,9 +568,12 @@ def _gated_proposal_summary(issue: "Issue") -> GatedTechLeadProposal:
     )
 
 
-def _awaits_approval(issue: "Issue") -> bool:
-    """True iff *issue* is open and still carries the operator-approval gate."""
-    return issue.state == "open" and _issue_carries_gate(issue)
+def _awaits_approval(issue: "Issue", known: Collection[int]) -> bool:
+    """True iff *issue* is an open proposal no one has approved (#7763): one
+    the approval owner's index names counts even when an edit stripped its
+    labels and marker (#7763 review r16 F1)."""
+    state = known_proposal_state(issue.labels, issue.body, known=issue.number in known)
+    return issue.state == "open" and state.gate_closed
 
 
 def _proposal_issue_is_open(tracker: "RepositoryHost", issue_number: int) -> bool:
@@ -756,37 +764,3 @@ def plan_approved_tech_lead_op_executions(
             op.target_issue_number,
         )
     return actions
-
-
-def apply_tech_lead_proposal_command(
-    command: "TechLeadProposalCommand", *, repository: "RepositoryHost", ops: "TechLeadAuthorityStore"
-) -> "TechLeadProposalCommandOutcome":
-    """The UI gesture for the EXISTING gate, with no second execution path.
-
-    Approval removes the same label GitHub operators remove. The existing
-    reconciliation/planner/consent-checked dispatcher performs execution on
-    the next tick, under its normal pause and mutation guards.
-    """
-    from ..domain.scoped_rework import TechLeadProposalCommandOutcome
-
-    number = command.proposal_issue_number
-    op = ops.load_op(issue_number=number)
-    if op is None or op.op_type != "request_rework":
-        return TechLeadProposalCommandOutcome("unavailable", "No stored scoped-rework proposal exists", number)
-    assert op.rework_request is not None
-    if ops.load_rework_receipt(op.rework_request.key) is not None:
-        return TechLeadProposalCommandOutcome("unavailable", "Execution has started; the recorded outcome is authoritative", number)
-    try:
-        issue = repository.get_issue(number)
-        if issue is None or issue.state != "open":
-            return TechLeadProposalCommandOutcome("unavailable", "Proposal is closed or missing", number)
-        if command.decision == "decline":
-            repository.update_issue_state(number, "closed")
-            ops.discard_op(issue_number=number)
-            return TechLeadProposalCommandOutcome("declined", "Proposal declined", number)
-        for label in issue.labels:
-            if is_proposed_tech_lead_gate(label):
-                repository.remove_label(number, label)
-        return TechLeadProposalCommandOutcome("approved", "Approval recorded; the engine will revalidate and execute the stored operation", number)
-    except Exception as exc:
-        return TechLeadProposalCommandOutcome("failed", str(exc), number)

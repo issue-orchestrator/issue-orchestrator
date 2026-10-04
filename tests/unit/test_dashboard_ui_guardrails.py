@@ -4289,6 +4289,7 @@ UI_OPENAPI_JSON = ROOT / "docs" / "api" / "ui-openapi.json"
 # regression.
 CONTRACT_READER_BINDINGS = frozenset(
     {
+        ("control_center_tech_lead.js", "/api/control-center/tech-lead"),
         ("dashboard/core.js", "/api/issue-rows"),
         ("dashboard/core.js", "/api/view-model"),
         ("dashboard/core.js", "/api/view-model-snapshot"),

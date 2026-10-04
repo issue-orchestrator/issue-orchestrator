@@ -156,6 +156,7 @@ class World:
     holds: tuple[PublishedReviewHold, ...] = ()
     history: list[SessionHistoryEntry] = field(default_factory=list)
     requeued: list[int] = field(default_factory=list)
+    indexed: list[int] = field(default_factory=list)
     events: list[TraceEvent] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -200,6 +201,7 @@ class World:
             require_authority=lambda action, number: None,
             requeue=requeue,
             discharges=self.discharges,
+            index_proposals=self.indexed.extend,
         )
 
 
@@ -691,7 +693,11 @@ def test_children_are_filed_behind_the_gate_when_filing_needs_approval(tmp_path:
 
     assert result.success, result.error
     [child] = world.github.created
-    assert "proposed-tech-lead" in child["labels"]
+    # Filed as a proposal awaiting a maintainer's approval (#7763): its
+    # labels, its body marker, and the approval owner's durable index.
+    assert {"tech-lead-proposal", "awaiting-approval"} <= set(child["labels"])
+    assert "<!-- issue-orchestrator:tech-lead-proposal -->" in child["body"]
+    assert world.indexed == [child["number"]]
     assert "needs-human" not in world.github.labels[ITEM]
 
 

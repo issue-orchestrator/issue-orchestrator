@@ -12,7 +12,7 @@
     'verify': '✓',
 } -%}
 {%- macro custody_charter(charter) -%}
-<dl class="custody-charter"><dt>Charter role</dt><dd>{{ charter.role | e }}</dd><dt>Action</dt><dd>{{ charter.action | e }} (needs depth {{ charter.required_depth | e }})</dd><dt>Outcome</dt><dd>{{ charter.outcome_label | e }}{% if charter.lifecycle_label %} ({{ charter.lifecycle_label | e }}){% endif %}</dd><dt>Dials</dt><dd>depth {{ charter.role_depth | e }}, authority {{ charter.role_authority | e }}{% if not charter.role_enabled %}, role disabled{% endif %}; ceiling {{ charter.action_ceiling | e }} from <code>{{ charter.ceiling_source | e }}</code></dd><dt>Charter reason</dt><dd>{{ charter.reason | e }}</dd>{% if charter.proposal_issue_number > 0 %}<dt>Proposal</dt><dd>#{{ charter.proposal_issue_number }}</dd>{% endif %}</dl>
+<dl class="custody-charter"><dt>Charter role</dt><dd>{{ charter.role | e }}</dd><dt>Action</dt><dd>{{ charter.action | e }} (needs depth {{ charter.required_depth | e }})</dd><dt>Outcome</dt><dd>{{ charter.outcome_label | e }}{% if charter.lifecycle_label %} ({{ charter.lifecycle_label | e }}){% endif %}</dd><dt>Dials</dt><dd>depth {{ charter.role_depth | e }}, authority {{ charter.role_authority | e }}{% if not charter.role_enabled %}, role disabled{% endif %}; ceiling {{ charter.action_ceiling | e }} from <code>{{ charter.ceiling_source | e }}</code></dd><dt>Charter reason</dt><dd>{{ charter.reason | e }}</dd>{% if charter.proposal_issue_number > 0 %}<dt>Proposal</dt><dd>#{{ charter.proposal_issue_number }} <button type="button" class="custody-open-tech-lead" data-tech-lead-proposal="{{ charter.proposal_issue_number }}">Open in the Tech lead page</button></dd>{% endif %}</dl>
 {%- endmacro -%}
 {%- macro custody_block(custody) -%}
 {%- if custody -%}

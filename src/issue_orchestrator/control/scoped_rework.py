@@ -12,15 +12,9 @@ from dataclasses import dataclass, replace
 from collections.abc import Sequence
 from ..ports.issue import Issue
 from ..ports.pull_request_tracker import PRInfo
-from typing import Callable, TYPE_CHECKING
+from typing import Callable
 
-if TYPE_CHECKING:
-    from .scoped_rework_proposals import ReworkProposalView
 from ..domain.host_rate_limit import rate_limit_cause
-from ..domain.scoped_rework import (
-    TechLeadProposalCommand,
-    TechLeadProposalCommandOutcome,
-)
 
 from ..domain.scoped_rework import ReworkReceipt, ReworkRequest
 from ..domain.session_run import SessionRunIdentity
@@ -52,20 +46,6 @@ class RequestReworkExecutor:
     pending_successors: PendingWorkSuccessors
     filtering_label: str = ""
     is_attempt_active: Callable[[int, SessionRunIdentity], bool] | None = None
-
-    def proposal_views(self) -> tuple["ReworkProposalView", ...]:
-        from .scoped_rework_proposals import project_rework_proposals
-
-        return project_rework_proposals(self)
-
-    def proposal_command(
-        self, command: TechLeadProposalCommand
-    ) -> TechLeadProposalCommandOutcome:
-        from .tech_lead_proposals import apply_tech_lead_proposal_command
-
-        return apply_tech_lead_proposal_command(
-            command, repository=self.repository, ops=self.receipts
-        )
 
     def validate_proposal_reuse(self, number: int, required: ReworkRequest) -> None:
         """Prove the exact immutable proposal or its current durable successor."""

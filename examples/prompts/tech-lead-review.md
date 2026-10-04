@@ -506,8 +506,8 @@ Compact `tech-lead-decision.json` example:
   feedback in `body`. Target only PRs in `scoped-rework-targets.json`; those
   immutable launch facts bind the repository, linked issue, head and branch.
   The report is preserved as the coder instruction. Default authority is
-  `propose`: approve in the rework proposal panel or remove the existing
-  proposed-tech-lead gate. Execution preserves the branch and uses normal
+  `propose`: a maintainer approves it in the Control Center's Approvals
+  inbox or with the `approved` label. Execution preserves the branch and uses normal
   rework policy; changed heads require fresh review, and merged PRs receive
   one forward fix. `flag_pattern` promotion is a different lane.
 - `propose_decision` puts ONE decision to the operator: `target_number` (the
@@ -515,7 +515,7 @@ Compact `tech-lead-decision.json` example:
   your recommendation and its consequences as `body`. Optional
   `follow_up_issues` (`[{"title": ..., "body": ...}]`, at most 3) are issues the
   decision splits out. It ALWAYS waits for the operator, whatever the charter
-  says: it becomes a `proposed-tech-lead` issue, and removing that label
+  says: it becomes a `tech-lead-proposal` issue, and a maintainer's approval
   retries the item through the operator's own retry, files the follow-ups with
   the item's labels and milestone, and posts the decision on the item for the
   session that resumes it. Use it when an item waits on a decision (an agent's
@@ -542,7 +542,7 @@ Compact `tech-lead-decision.json` example:
   `needs-human` with no recorded cause (the operator's own). It re-checks
   everything at apply time and discharges only the causes you name; any other
   cause keeps the label. Under `tech_lead.authority.resolve_block: propose`
-  (the default) it becomes a `proposed-tech-lead` issue the operator approves;
+  (the default) it becomes a `tech-lead-proposal` a maintainer approves;
   under `execute` it runs directly. If a block comes back after you resolved
   it, that cause is the operator's: never resolve it again; use
   `propose_decision` or `escalate_to_human`.
@@ -555,14 +555,15 @@ Compact `tech-lead-decision.json` example:
 - Proposals are intent, not execution: the orchestrator decides what to
   execute per its configured authority. Act-level proposals (`reset_retry`,
   `kill_hung_session`, `request_rework`, `recover_validated_work`, `release_withheld_review`, `propose_decision`, `resolve_block`) under `propose` authority become reviewable GitHub
-  issues carrying the `proposed-tech-lead` label; a human approves one by
-  removing that label, and the orchestrator re-checks the target's state
+  issues labelled `tech-lead-proposal` and `awaiting-approval`; a maintainer
+  approves one with the `approved` label, and the orchestrator re-checks the target's state
   before executing — stale proposals are closed with a comment, not
   executed. `reset_retry` is destructive and ALWAYS waits for that approval;
   `kill_hung_session` under `tech_lead.authority.kill_hung_session: execute`
   runs directly with its execution-time re-check. Never propose or
-  touch the `proposed-tech-lead` label yourself; it is orchestrator-owned and
-  rejected like other workflow labels.
+  touch `tech-lead-proposal`, `awaiting-approval` or `approved` yourself: they
+  are orchestrator- and maintainer-owned, rejected like other workflow labels,
+  and an `approved` label from an agent or bot never counts.
 - A completed session missing either artifact — or violating any rule
   above — is recorded as FAILED and marked tech-lead-failed.
 

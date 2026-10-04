@@ -173,6 +173,7 @@ def build_tech_lead_block_resolution_executor(
         require_authority=deps.action_applier.require_mutation_authority,
         requeue=orchestrator.operator_issue_commands.requeue_resolved,
         discharges=deps.tech_lead_authority,
+        index_proposals=deps.tech_lead_authority.proposal_index.index_proposals,
     )
 
 

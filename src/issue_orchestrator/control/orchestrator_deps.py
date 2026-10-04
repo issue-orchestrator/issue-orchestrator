@@ -11,6 +11,7 @@ Principle: "No Nulls in Orchestrator"
 """
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from .tech_lead_run_ownership import TechLeadRunOwnership
     from .infra_services import InfraServices
     from .label_manager import LabelManager
+    from .merge_hold_status import MergeHoldStatuses
     from .planner import Planner
     from .session_manager import SessionManager
     from .label_sync import LabelSync
@@ -240,6 +242,14 @@ class OrchestratorDeps:
     @property
     def timeline_reader(self) -> "TimelineReader":
         return self.services.timeline_reader
+
+    @cached_property
+    def merge_hold_statuses(self) -> "MergeHoldStatuses":
+        """This engine's ONE cached reader of merge-held PRs (#7763 r20 F2):
+        the Tech lead page polls every 30 seconds."""
+        from .merge_hold_status import MergeHoldStatuses
+
+        return MergeHoldStatuses(host=self.repository_host, needs_human_label=self.label_manager.needs_human)
 
     @property
     def timeline_store(self) -> "TimelineStore":

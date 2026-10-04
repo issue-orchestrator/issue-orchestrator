@@ -56,11 +56,11 @@ logger = logging.getLogger(__name__)
 # Workflow label families that no agent-proposed label may match. These are
 # families, not concrete names: concrete orchestrator-owned names (including
 # any configured prefix) come from LabelManager/config at call time.
-# ``proposed-tech-lead`` (#6778) and ``tech-lead-observation`` (#6781) are doubly
-# covered: they are registered LabelManager labels (workflow-reserved) AND
-# matched here, so both can only ever be orchestrator-attached — an agent
-# proposing either is a contract violation regardless of which owner checks
-# first.
+# The approval model's labels (#7763) and ``tech-lead-observation`` (#6781) are
+# doubly covered: they are registered LabelManager labels (workflow-reserved)
+# AND matched here, so all can only ever be orchestrator-attached — an agent
+# proposing any of them (an agent's ``approved`` above all) is a contract
+# violation regardless of which owner checks first.
 _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"needs-", re.IGNORECASE),
     re.compile(r".*-reviewed\Z", re.IGNORECASE),
@@ -69,7 +69,9 @@ _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"blocked", re.IGNORECASE),
     re.compile(r"agent:", re.IGNORECASE),
     re.compile(r"tech_lead:", re.IGNORECASE),
-    re.compile(r"proposed-tech-lead\Z", re.IGNORECASE),
+    re.compile(r"tech-lead-proposal\Z", re.IGNORECASE),
+    re.compile(r"awaiting-approval\Z", re.IGNORECASE),
+    re.compile(r"approved\Z", re.IGNORECASE),
     re.compile(r"tech-lead-observation\Z", re.IGNORECASE),
 )
 
@@ -341,9 +343,10 @@ def decision_issue_labels(
     be a configured worker agent, else the issue would still be unschedulable.
 
     ``gate=True`` (propose-authority ``create_issue``, #6778) appends the
-    orchestrator-attached ``proposed-tech-lead`` gate AFTER the protection
-    check: the gate is exempt from the agent-label allowlist here and ONLY
-    here — an agent proposing it is still a contract violation.
+    orchestrator-attached approval model labels (provenance + waiting state,
+    #7763) AFTER the protection check: they are exempt from the agent-label
+    allowlist here and ONLY here — an agent proposing one is still a contract
+    violation.
     """
     violations = protected_tech_lead_label_violations(
         agent_labels, config=config, labels=labels
@@ -364,7 +367,7 @@ def decision_issue_labels(
         base.append(config.filtering.label)
     composed = _with_configured_labels(config, base, source_labels=anchor_labels)
     area_labels = (f"{TECH_LEAD_AREA_LABEL_PREFIX}{area}",) if area else ()
-    gate_labels = (labels.proposed_tech_lead,) if gate else ()
+    gate_labels = labels.gated_proposal_labels if gate else ()
     return _deduped((*composed, *agent_labels, *area_labels, destination_agent, *gate_labels))
 
 

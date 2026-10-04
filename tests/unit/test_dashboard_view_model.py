@@ -427,7 +427,7 @@ def test_non_executable_issues_are_not_projected_as_blocked_work():
     proposal = Issue(
         number=40,
         title="Gated recovery proposal",
-        labels=["agent:tech-lead", "BOT:Proposed-Tech-Lead"],
+        labels=["agent:tech-lead", "Tech-Lead-Proposal", "Awaiting-Approval"],
     )
     genuine_failure = Issue(
         number=41,

@@ -110,6 +110,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
+from .tech_lead_approval import unapproved_proposal_launch
 from .session_launch_types import (
     ClaimAcquisitionResult,
     LaunchDisposition,
@@ -435,6 +436,12 @@ class SessionLauncher:
     # the launch process. See .claude/skills/refactoring/SKILL.md
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _refuse_unapproved(self, issue_number: int) -> LaunchResult | None:
+        refused = unapproved_proposal_launch(
+            issue_number, self.repository_host, self._action_applier.tech_lead_approvals
+        )
+        return LaunchResult(None, False, refused, disposition=LaunchDisposition.WITHDRAWN) if refused else None
+
     def _check_launch_preconditions(
         self,
         issue: "IssueProtocol",
@@ -739,8 +746,9 @@ class SessionLauncher:
         if freshness.failure:
             return freshness.failure
 
-        # Provider circuit breaker check
-        if result := self._check_provider_ready(agent_config, issue.number):
+        # Provider circuit breaker check; a tech-lead proposal launches only on a
+        # STANDING maintainer approval (#7763).
+        if result := self._check_provider_ready(agent_config, issue.number) or self._refuse_unapproved(issue.number):
             return result
         # An open PR carrying published validated work owns the issue (#7293).
         if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
@@ -882,8 +890,11 @@ class SessionLauncher:
             })
 
         # Durable before anything irreversible: no terminal, no label
-        # transitions, no queue removal (#6999 A2).
-        if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
+        # transitions, no queue removal (#6999 A2). A proposal's consent is
+        # re-read here too, after the slow worktree preparation (#7763 r11 F1).
+        if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(
+            run, issue_number=issue.number
+        ):
             self._cleanup_pre_active_launch_worktree(
                 issue.number,
                 worktree_path,
@@ -1050,7 +1061,8 @@ class SessionLauncher:
 
             # Create terminal session
             step_start = time.time()
-            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            # Consent once more at the terminal boundary (#7763 r26 F1); a refusal takes the spawn-failure cleanup.
+            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1304,8 +1316,8 @@ class SessionLauncher:
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, carried)
 
-        # Durable before anything irreversible (#6999 A2).
-        if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
+        # Durable before anything irreversible (#6999 A2); a proposal's consent too (#7763 r22).
+        if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(run, issue_number=issue.number):
             self._release_claim_if_held(issue.number, claim)
             return failure
 
@@ -1399,7 +1411,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._retry_in_progress(
@@ -2159,6 +2171,7 @@ class SessionLauncher:
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             coder_prompt_addendum=self._coder_prompt_addendum,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
+            refuse_unapproved=self._refuse_unapproved,
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim

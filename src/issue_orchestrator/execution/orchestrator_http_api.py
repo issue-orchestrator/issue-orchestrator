@@ -71,6 +71,28 @@ def probe_orchestrator_json(
     return data if isinstance(data, dict) else None
 
 
+def post_orchestrator_json(
+    url: str,
+    body: dict[str, Any],
+    *,
+    timeout_seconds: float,
+    token_provider: Callable[[], str | None] = _default_token_provider,
+) -> tuple[int, dict[str, Any]] | None:
+    """POST JSON to an engine endpoint; ``(status, object body)`` or ``None``.
+
+    ``None`` means the engine could not be reached or answered with something
+    other than a JSON object; any HTTP status is returned as-is so the caller
+    maps refusals itself.
+    """
+    headers = _auth_headers(token_provider)
+    try:
+        response = httpx.post(url, json=body, timeout=timeout_seconds, headers=headers)
+        data = response.json()
+    except Exception:
+        return None
+    return (response.status_code, data) if isinstance(data, dict) else None
+
+
 class OrchestratorHttpApi(OrchestratorApi):
     def __init__(
         self,

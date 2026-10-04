@@ -76,6 +76,10 @@ from . import tech_lead_shipped_fixes_sql as shipped_fixes
 from .sqlite_connection import open_sqlite
 from .tech_lead_authority_schema import initialize_tech_lead_authority_schema
 from .tech_lead_charter_ledger_store import SqliteTechLeadCharterLedger
+from .tech_lead_operator_approvals_store import (
+    SqliteOperatorApprovalRecords,
+    SqliteProposalIssueIndex,
+)
 from .tech_lead_publication_lock import disposition_publication
 
 logger = logging.getLogger(__name__)
@@ -130,11 +134,27 @@ class SqliteTechLeadAuthorityStore:
         self._charter_ledger = SqliteTechLeadCharterLedger(
             connection=self._get_connection, transaction=self._transaction
         )
+        self._operator_approvals = SqliteOperatorApprovalRecords(
+            connection=self._get_connection, transaction=self._transaction
+        )
+        self._proposal_index = SqliteProposalIssueIndex(
+            connection=self._get_connection, transaction=self._transaction
+        )
 
     @property
     def charter_ledger(self) -> SqliteTechLeadCharterLedger:
         """Charter decisions (#7330), sharing this store's file, lock and transactions."""
         return self._charter_ledger
+
+    @property
+    def operator_approvals(self) -> SqliteOperatorApprovalRecords:
+        """Control Center approvals (#7763), sharing this store's file and lock."""
+        return self._operator_approvals
+
+    @property
+    def proposal_index(self) -> SqliteProposalIssueIndex:
+        """The approval scope's proposal index (#7763), sharing this store's file and lock."""
+        return self._proposal_index
 
     @classmethod
     def for_repo(cls, repo_root: Path) -> "SqliteTechLeadAuthorityStore":

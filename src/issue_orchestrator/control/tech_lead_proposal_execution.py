@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable, TypeVar
 
-from ..domain.tech_lead_session import is_proposed_tech_lead_gate
 from .actions import (
     ActionResult,
     ApplyOperatorDecisionAction,
@@ -24,6 +23,7 @@ from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 if TYPE_CHECKING:
     from ..ports import RepositoryHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .tech_lead_approval import TechLeadApprovals
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +118,16 @@ def finalize_tech_lead_op_execution(
 
 
 def _approval_confirmed(
-    repository_host: RepositoryHost, proposal_issue: int
+    repository_host: RepositoryHost, approvals: "TechLeadApprovals", proposal_issue: int
 ) -> bool:
-    """True only when a fresh read shows the proposal open and ungated."""
+    """True only when a FRESH read shows the proposal open and maintainer-approved.
+
+    The approval owner re-reads the latest ``approved`` label event here,
+    bypassing its cache (#7763): an approval removed, re-applied by a bot, or
+    stripped since the tick planned the execution withholds it.
+    """
     try:
-        issue = repository_host.get_issue(proposal_issue)
+        return approvals.confirm(repository_host.get_issue(proposal_issue))
     except Exception:
         logger.exception(
             "[tech_lead] Fresh consent read for proposal #%d failed; treating"
@@ -130,29 +135,27 @@ def _approval_confirmed(
             proposal_issue,
         )
         return False
-    if issue is None or issue.state != "open":
-        return False
-    return not any(is_proposed_tech_lead_gate(label) for label in issue.labels)
 
 
 def _withheld_for_withdrawn_approval(
     action: _TechLeadOpAction,
     repository_host: RepositoryHost | None,
+    approvals: "TechLeadApprovals | None",
 ) -> ActionResult | None:
     proposal_issue = action.proposal_issue_number
     if not proposal_issue:
         return None
-    if repository_host is None:
+    if repository_host is None or approvals is None:
         return ActionResult.fail(
             action,
             "approved tech_lead op consent re-check requires repository_host"
-            " wired into this applier",
+            " and the approval owner wired into this applier",
         )
-    if _approval_confirmed(repository_host, proposal_issue):
+    if _approval_confirmed(repository_host, approvals, proposal_issue):
         return None
     logger.info(
         "[tech_lead] Proposal #%d no longer confirms operator approval before"
-        " apply (re-gated, closed, or unreadable): preserving its op inert"
+        " apply (unapproved, closed, or unreadable): preserving its op inert"
         " (#6779 R16)",
         proposal_issue,
     )
@@ -170,10 +173,11 @@ def execute_approved_tech_lead_op(
     *,
     repository_host: RepositoryHost | None,
     ops: TechLeadAuthorityStore | None,
+    approvals: "TechLeadApprovals | None",
     before_finalize_write: Callable[[], None] | None = None,
 ) -> ActionResult:
     """Reconfirm per-instance consent immediately before executing and finalizing."""
-    inert = _withheld_for_withdrawn_approval(action, repository_host)
+    inert = _withheld_for_withdrawn_approval(action, repository_host, approvals)
     if inert is not None:
         return inert
     return finalize_tech_lead_op_execution(

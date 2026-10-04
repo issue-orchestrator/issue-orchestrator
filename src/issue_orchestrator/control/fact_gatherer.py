@@ -22,7 +22,7 @@ Usage:
 
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -40,11 +40,11 @@ from .published_review_release import held_investigation_subjects
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds, recovery_held_reviews
 from .blocked_item_triage import triage_owed
 from .health_review_trigger import (
-    classify_tech_lead_anchor_issues,
-    discover_open_tech_lead_anchor_issues,
     health_review_decision,
     health_review_interval_minutes,
 )
+from .tech_lead_anchor_scan import classify_tech_lead_anchor_scan
+from .tech_lead_approval import TechLeadApprovals, plan_approval_settlements
 from .tech_lead_finding_promotion import (
     PromotionReadBudget,
     gather_finding_promotion_facts,
@@ -55,7 +55,7 @@ from .tech_lead_artifact_retention import (
 )
 from .tech_lead_approval_scope import (
     approval_refresh_due,
-    observe_approval_backlog_or_none,
+    approval_scope_for_tick,
 )
 from .tech_lead_proposals import observe_gated_tech_lead_proposals
 from .tech_lead_reaction import storm_possible
@@ -76,9 +76,9 @@ if TYPE_CHECKING:
         TechLeadFacts,
         CleanupFacts,
     )
+    from ..domain.tech_lead_approval import ApprovalVerdict
     from ..domain.tech_lead_session import (
         ApprovedTechLeadOp,
-        StoredTechLeadOp,
         TechLeadCaseFileSummary,
     )
     from .planner_types import E2ESlotSignals
@@ -103,6 +103,9 @@ class FactGatherer:
     config: Config
     repository_host: RepositoryHost
     events: Optional[EventSink] = None
+    # The approval owner (#7763): verifies maintainer approvals. Without it no
+    # proposal is ever approved or admitted (fail closed).
+    approvals: Optional[TechLeadApprovals] = None
     # Orchestrator-owned gated-proposal ledger (#6778). Optional so unrelated
     # tests need not wire it; without it the anchor scan classifies no
     # approved ops (gate-labeled proposals are still excluded from anchors).
@@ -415,6 +418,9 @@ class FactGatherer:
             return None
 
         now_ts = time.time() if now is None else now
+        if self.approvals is not None:
+            # Free revocation: a removed `approved` un-admits on this tick (#7763).
+            self.approvals.observe(board_issues)
         # Timer-gated recovery runs independently of the anchor triggers.
         self._run_stuck_sweep_if_due(state, now_ts)
 
@@ -447,7 +453,10 @@ class FactGatherer:
         # LABEL truth about the approval backlog (#7014): only act-level ops
         # leave a ledger row, so ``ops`` cannot say what is pending. Also ARMS
         # fact production.
-        gated_proposals = observe_gated_tech_lead_proposals(board_issues)
+        gated_proposals = observe_gated_tech_lead_proposals(
+            board_issues,
+            known=self.approvals.indexed_proposals() if self.approvals is not None else frozenset(),
+        )
         # A just-EMPTIED backlog must still publish: clearing the last gate is
         # when nothing else arms production.
         backlog_cleared = state.tech_lead_gated_backlog_seen and not gated_proposals
@@ -478,6 +487,7 @@ class FactGatherer:
         approved_ops: tuple["ApprovedTechLeadOp", ...] = ()
         absent_op_candidates: tuple[int, ...] = ()
         case_files: tuple["TechLeadCaseFileSummary", ...] = ()
+        verdicts: dict[int, "ApprovalVerdict"] = {}
         # Distinguishes "scan ran and observed no case files" from "scan was
         # skipped this tick" so the board projection is only replaced when the
         # anchor scan actually observed the ledger (#6781 R2). A frugal tick
@@ -490,31 +500,45 @@ class FactGatherer:
             # cleanup candidates in a single reconcile (#6778/#6779). It also
             # feeds the health snapshot's case files (#6781) and the storm
             # anchor dedup (#6780).
-            (
-                batch_anchor,
-                existing_health_review_issue,
-                approved_ops,
-                absent_op_candidates,
-                case_files,
-                scanned_issues,
-            ) = self._classify_tech_lead_anchor_scan(ops, tuple(item.marker for item in pending_creations))
+            scan = classify_tech_lead_anchor_scan(
+                self.repository_host, self.config, ops=ops, approvals=self.approvals,
+                pending_markers=tuple(item.marker for item in pending_creations),
+            )
+            existing_health_review_issue, approved_ops = scan.health_anchor, scan.approved_ops
+            absent_op_candidates, case_files = scan.absent_op_candidates, scan.case_files
+            verdicts.update(scan.verdicts)
             case_files_scanned = True
-            scan_observations = scanned_issues
+            scan_observations = scan.issues
             # Batch anchor classification stays gated on batch_armed: a batch
             # anchor is meaningless while the batch trigger is off.
             if batch_armed:
-                existing_tech_lead_issue = batch_anchor
+                existing_tech_lead_issue = scan.batch_anchor
         prs = self._fetch_tech_lead_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = collect_pr_metadata(self.repository_host, prs)
 
-        # A failed approval query may only cost this tick's OWN trigger.
-        gated_proposals = observe_approval_backlog_or_none(
-            self.repository_host, self.config, board_issues, scan_observations,
-            decline_on_failure=not other_armed,
+        # A failed approval query may only cost this tick's OWN trigger; the
+        # gate queries run on the approval cadence only (#7763 review r21 F2).
+        scope = approval_scope_for_tick(
+            self.repository_host, self.config, self.approvals, board_issues, scan_observations,
+            due=approval_due, decline_on_failure=not other_armed,
         )
-        if gated_proposals is None:
+        if scope is None:
             return None
-        state.tech_lead_approval_scan_at = now_ts
+        gated_proposals = scope.backlog
+        if scope.refreshed:
+            state.tech_lead_approval_scan_at = now_ts
+        if self.approvals is not None:
+            # A reused scope still takes this tick's newer snapshots and
+            # verdicts into the page model (#7763 review r22 F2).
+            verdicts = self.approvals.supersede_verdicts(verdicts, scope.issues)
+            self.approvals.record_scope(scope.issues, verdicts, retired=scope.retired)
+        # The board joins the scope: a proposal stripped of EVERY label is out
+        # of the labelled scope query, but its body marker still names it (#7763).
+        settlements = plan_approval_settlements(
+            (*board_issues, *scope.issues), verdicts, op_backed=ops.keys(),
+            declined=self.approvals.declined_numbers() if self.approvals is not None else frozenset(),
+            known=self.approvals.known_proposals() if self.approvals is not None else frozenset(),
+        )
 
         # Lets the next tick tell "still empty" from "just emptied".
         state.tech_lead_gated_backlog_seen = bool(gated_proposals)
@@ -535,6 +559,7 @@ class FactGatherer:
             approved_tech_lead_ops=approved_ops,
             absent_proposal_op_candidates=absent_op_candidates,
             gated_proposals=gated_proposals,
+            approval_settlements=settlements,
             open_case_files=case_files,
             case_files_scanned=case_files_scanned,
             promotable_findings=promotable,
@@ -657,66 +682,6 @@ class FactGatherer:
         policy = TechLeadCandidatePolicy.from_config(self.config)
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
         return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
-
-    def _classify_tech_lead_anchor_scan(
-        self,
-        ops: Mapping[int, "StoredTechLeadOp"],
-        pending_markers: tuple[str, ...] = (),
-    ) -> tuple[
-        int | None,
-        int | None,
-        tuple["ApprovedTechLeadOp", ...],
-        tuple[int, ...],
-        tuple["TechLeadCaseFileSummary", ...],
-        tuple["Issue", ...],
-    ]:
-        """Classify the ONE shared, exhaustive open tech-lead-agent scan.
-
-        The scoped/exhaustive anchor-discovery owner backs both this path and
-        startup recovery, so both apply ONE eligibility rule (#6763 finding 7)
-        over the COMPLETE open set (#6779 R4). Gated proposal issues carry the
-        tech lead agent label, so the SAME scan that finds batch/health anchors
-        classifies them (#6778): gate-labeled issues are open proposals
-        (excluded from anchor classification), and op-backed issues WITHOUT
-        the gate label were approved by the operator. A backlog of proposals
-        can never hide an older approved op or an anchor.
-
-        ``ops`` is the caller-provided local authority-store ledger (the caller
-        already read it to decide whether a scan is worthwhile — #6779 R12), so
-        no extra GitHub call is made here beyond the single anchor scan.
-
-        Fact gathering is READ-ONLY (#6779 R10): reconciliation only
-        CLASSIFIES ledger rows absent from the scan as terminal-cleanup
-        CANDIDATES; the numbers are returned as a fact for the planner to turn
-        into a confirm-and-discard action, never mutated here.
-        Observation-labeled issues are pattern case files (#6781), summarized
-        for the board snapshot and excluded before anchor classification.
-        """
-        from .tech_lead_case_files import split_tech_lead_case_file_issues
-        from .tech_lead_proposals import reconcile_tech_lead_proposals
-
-        if not self.config.tech_lead_enabled:
-            return None, None, (), (), (), ()
-        existing = discover_open_tech_lead_anchor_issues(
-            self.repository_host, self.config
-        )
-        reconciled = reconcile_tech_lead_proposals(existing, ops=ops, pending_markers=pending_markers)
-        remaining, case_files = split_tech_lead_case_file_issues(
-            reconciled.anchor_candidate_issues
-        )
-        batch, health = classify_tech_lead_anchor_issues(
-            remaining, self.config.filtering.label
-        )
-        # `existing` is returned UNFILTERED: reconciliation drops gate-labeled
-        # issues from anchor candidates.
-        return (
-            batch,
-            health,
-            reconciled.approved,
-            reconciled.absent_op_issue_numbers,
-            case_files,
-            tuple(existing),
-        )
 
     def gather_cleanup_facts(
         self,

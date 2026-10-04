@@ -103,31 +103,8 @@ def health_review_flavor_if_anchored(
         return TechLeadSessionFlavor.HEALTH_REVIEW
     return None
 
-# Gate label carried by gated tech_lead proposal issues (#6778, ADR-0031 §2
-# amendment). Orchestrator-attached at creation; REMOVING it is per-instance
-# operator approval. The scheduler's blocking-label classification excludes
-# gate-labeled issues from pickup, and the agent-label allowlist rejects it
-# as a protected workflow label. Raw (never prefixed), like the marker label:
-# the tech_lead subsystem manages its labels without the orchestrator prefix.
-PROPOSED_TECH_LEAD_LABEL = "proposed-tech-lead"
-
-
-def is_proposed_tech_lead_gate(name: str) -> bool:
-    """True iff *name* is the owned proposal gate, case-insensitively (#6779 R15).
-
-    GitHub folds label names, so a repository whose canonical spelling is
-    ``Proposed-Tech-Lead`` still carries the gate. This is the SINGLE owner of the
-    gate comparison: reconciliation classification, scheduler blocking, and the
-    apply-time consent re-check all fold case through here so they can never
-    diverge — e.g. classify a canonical-cased gate as "approved" while blocking
-    treats it as absent (or vice versa).
-    """
-    return name.casefold() == PROPOSED_TECH_LEAD_LABEL.casefold()
-
-
-# Observation label carried by pattern case-file issues (#6781). Mirrors
-# PROPOSED_TECH_LEAD_LABEL's treatment exactly: orchestrator-attached at
-# creation, blocking-class (excluded from agent pickup by the scheduler),
+# Observation label carried by pattern case-file issues (#6781).
+# Orchestrator-attached at creation, blocking-class (excluded from agent pickup by the scheduler),
 # rejected as a protected workflow label when agent-proposed, and raw
 # (never prefixed). Case files are durable flag_pattern evidence ledgers —
 # never work items and never tech_lead anchors.
@@ -1303,13 +1280,13 @@ class TechLeadDisposition:
 
 @dataclass(frozen=True)
 class ApprovedTechLeadOp:
-    """A stored op whose proposal issue no longer carries the gate label.
+    """A stored op whose proposal issue a maintainer approved (#7763).
 
     Classified by the fact gatherer from the SAME open-issue scan that finds
-    tech_lead anchors (#6778): an open issue with a stored op but without
-    ``PROPOSED_TECH_LEAD_LABEL`` was approved by the operator. The planner turns
-    each into the op's execution action; the applier re-validates
-    preconditions and finalizes the proposal issue.
+    tech_lead anchors (#6778): an open issue with a stored op whose ``approved``
+    label the approval owner VERIFIED came from a maintainer. The planner turns
+    each into the op's execution action; the applier re-checks consent fresh,
+    re-validates preconditions and finalizes the proposal issue.
     """
 
     proposal_issue_number: int
@@ -1345,15 +1322,14 @@ class TechLeadCaseFileSummary:
 
 @dataclass(frozen=True)
 class GatedTechLeadProposal:
-    """One OPEN issue observed carrying the operator-approval gate (#7014).
+    """One OPEN tech-lead proposal still awaiting approval (#7014, #7763).
 
     LABEL truth about the approval backlog, as opposed to ledger truth. Every
-    gated-proposal producer attaches ``PROPOSED_TECH_LEAD_LABEL`` — act-level op
-    proposals (#6778), promoted findings (#6957), and plain follow-up issues
-    (ADR-0031 §2) — but only act-level op proposals leave a
-    ``tech_lead_proposal_ops`` row. So the ledger alone can never answer "what
-    is waiting on the operator?", and a projection that trusts only the ledger
-    renders an empty approval backlog while gated issues pile up on GitHub.
+    gated-proposal producer attaches the approval model's provenance and
+    waiting labels — act-level op proposals (#6778), promoted findings
+    (#6957), and plain follow-up issues (ADR-0031 §2) — but only act-level op
+    proposals leave a ``tech_lead_proposal_ops`` row. So the ledger alone can
+    never answer "what is waiting on the operator?".
 
     Carries what the tick's ALREADY-observed issues can say about one gated
     issue (zero extra GitHub calls): its number, its title, and when it was

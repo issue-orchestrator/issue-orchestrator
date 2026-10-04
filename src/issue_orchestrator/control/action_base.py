@@ -92,6 +92,10 @@ class ActionType(Enum):
     # read-only fact path so fact gathering stays side-effect free.
     RECOVER_TECH_LEAD_PROPOSAL = "recover_tech_lead_proposal"
     DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS = "discard_terminal_tech_lead_proposal_ops"
+    # Approval-label transitions of a tech-lead proposal (#7763): admit a
+    # verified approval, reject an approval that does not count, restore the
+    # waiting state. Only the approval owner writes these labels.
+    SETTLE_PROPOSAL_APPROVAL = "settle_proposal_approval"
 
     # Repeat pattern observation: evidence comment + durable count (#6781/#6957)
     APPEND_PATTERN_OBSERVATION = "append_pattern_observation"

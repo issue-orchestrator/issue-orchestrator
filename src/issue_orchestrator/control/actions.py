@@ -59,6 +59,7 @@ from .tech_lead_actions import (
     CreateTechLeadIssueAction as CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction as CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction as DiscardTerminalTechLeadProposalOpsAction,
+    SettleProposalApprovalAction as SettleProposalApprovalAction,
     KillHungSessionAction as KillHungSessionAction,
     RequestReworkAction as RequestReworkAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,

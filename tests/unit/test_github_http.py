@@ -1354,11 +1354,11 @@ def test_invalidate_labels_etag_clears_cache() -> None:
 
 def test_list_labels_paginates_beyond_the_first_full_page() -> None:
     """R8: list_labels() promises ALL labels, so a full first page continues
-    paging. A gate label sorted onto a later page (e.g. proposed-tech-lead in a
+    paging. A gate label sorted onto a later page (e.g. awaiting-approval in a
     repo with 100+ labels) must be returned, else valid proposal creation is
     falsely refused."""
     page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
-    page2 = [{"name": "proposed-tech-lead"}]  # gate label lives on page 2 (short page)
+    page2 = [{"name": "awaiting-approval"}]  # gate label lives on page 2 (short page)
 
     requested_pages: list[int] = []
 
@@ -1371,7 +1371,7 @@ def test_list_labels_paginates_beyond_the_first_full_page() -> None:
     labels = client.list_labels()
 
     names = {entry["name"] for entry in labels}
-    assert "proposed-tech-lead" in names  # later-page gate label is not missed
+    assert "awaiting-approval" in names  # later-page gate label is not missed
     assert len(labels) == 101
     assert requested_pages == [1, 2]  # walked both pages, stopped on the short one
 
@@ -1383,20 +1383,20 @@ def test_list_labels_single_page_makes_no_extra_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         requested_pages.append(int(request.url.params.get("page", "1")))
         return httpx.Response(
-            200, json=[{"name": "bug"}, {"name": "proposed-tech-lead"}]
+            200, json=[{"name": "bug"}, {"name": "awaiting-approval"}]
         )
 
     client = _client_with_transport(httpx.MockTransport(handler))
     labels = client.list_labels()
 
-    assert {e["name"] for e in labels} == {"bug", "proposed-tech-lead"}
+    assert {e["name"] for e in labels} == {"bug", "awaiting-approval"}
     assert requested_pages == [1]
 
 
 def test_list_labels_later_page_non_200_fails_loud() -> None:
     """R8: a later-page non-200 must RAISE, not silently return the labels
     gathered so far. control/tech_lead_proposals.py makes a gate-ABSENT decision
-    from this list; a truncated scan that misses proposed-tech-lead would falsely
+    from this list; a truncated scan that misses awaiting-approval would falsely
     refuse valid proposals, so completeness cannot be assumed."""
     page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
 
@@ -2597,7 +2597,7 @@ def test_list_labels_first_page_non_list_fails_loud() -> None:
 
     ``list_labels`` promises the COMPLETE set and its callers make
     negative-existence decisions on it — notably refusing gated tech-lead
-    proposal creation when ``proposed-tech-lead`` is missing. Returning [] for a
+    proposal creation when ``awaiting-approval`` is missing. Returning [] for a
     malformed first page is the same page-1 hole closed for exhaustive issue
     scans, and it silently answers "no such label" for every label at once.
     """

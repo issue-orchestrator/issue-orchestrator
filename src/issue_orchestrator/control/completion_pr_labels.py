@@ -128,11 +128,11 @@ def apply_pr_labels(
     for label in record.pr_labels:
         try:
             labels.add_label(pr_number, label)
-        except GovernedLabelError:
+        except GovernedLabelError as exc:
             refused = (
-                f"{ERROR_PREFIX_GOVERNED_LABEL}: pr_labels entry {label!r} is the "
-                f"shared needs-human block, which is not the agent's to apply on "
-                f"PR #{pr_number}; use the needs_human completion outcome"
+                f"{ERROR_PREFIX_GOVERNED_LABEL}: pr_labels entry {label!r} is not"
+                f" the agent's to apply on PR #{pr_number}; it is owned by"
+                f" {exc.owner} (for a human, use the needs_human completion outcome)"
             )
             logger.error("[COMPLETION] %s", refused)
             errors.append(refused)

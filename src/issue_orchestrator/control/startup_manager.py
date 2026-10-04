@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Callable, Generator, Optional, Sequence
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
+from .tech_lead_approval_migration import migrate_engine_proposals
 from ..ports.issue import Issue
 
 if TYPE_CHECKING:
@@ -291,6 +292,10 @@ class StartupManager:
         with self._phase("recover_pr_pending_history", timings):
             self._recover_pr_pending_history(state, issue_branches)
 
+        # Step 9a: the legacy proposal gate moves to the approval model (#7763).
+        with self._phase("migrate_proposal_approvals", timings):
+            migrate_engine_proposals(self.repository_host, self._action_applier, self._tech_lead_authority, self.config)
+
         # Step 9: Recover pending tech_lead reviews
         if self.config.tech_lead_enabled:
             with self._phase("recover_pending_tech_lead", timings):
@@ -324,6 +329,7 @@ class StartupManager:
                 self.config, state, self.repository_host,
                 issue_branches=issue_branches,
                 preloaded_issues=list(state.cached_queue_issues) if state.cached_queue_issues else None,
+                known_proposals=approvals.known_proposals() if (approvals := self._action_applier.tech_lead_approvals) else frozenset(),
             )
             print_audit(audit_entries)
 

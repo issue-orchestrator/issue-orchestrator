@@ -36,6 +36,7 @@ from .rate_limit import github_http_failure, graphql_rate_limit
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
+    GitHubAppIdentity,
     GitHubTokenProvider,
     StaticGitHubTokenProvider,
     TokenValidationResult,
@@ -1167,7 +1168,7 @@ class GitHubHttpClient:
             # Same page-1 hole just closed for exhaustive issue scans. This
             # method promises the COMPLETE label set, and its callers make
             # negative-existence decisions on it — notably refusing gated
-            # tech-lead proposal creation when `proposed-tech-lead` is absent.
+            # tech-lead proposal creation when an approval label is absent.
             # An empty list is not valid exhaustion for a 2xx carrying a
             # non-list body; it is a contract violation that would prove every
             # label absent.
@@ -1181,7 +1182,7 @@ class GitHubHttpClient:
         # The port promises ALL labels (#6779 R8): page 1 keeps its ETag cache
         # for the common (<=100 labels) case, but a FULL first page means more
         # may exist, so continue paging. Without this a gate label sorted onto a
-        # later page (e.g. proposed-tech-lead in a repo with 100+ labels) is missed
+        # later page (e.g. awaiting-approval in a repo with 100+ labels) is missed
         # and valid proposal creation is falsely refused. Mirrors list_issues.
         if len(labels) >= 100:
             labels = list(labels) + self._paginate_all_labels(start_page=2)
@@ -1283,7 +1284,7 @@ class GitHubHttpClient:
 
         The port promises ALL labels, and control/tech_lead_proposals.py makes a
         gate-ABSENT decision from this list — a truncated scan that misses the
-        ``proposed-tech-lead`` gate would falsely refuse valid proposals. So this
+        approval labels would falsely re-provision them. So this
         never returns a silently partial result: it drains the shared fail-loud
         pager (:meth:`_paginate_fresh`), which raises on a transport failure, a
         later-page non-200, or a cap-exhausted scan. Uncached: later pages are
@@ -1614,6 +1615,89 @@ class GitHubHttpClient:
                     issue_number=issue_number,
                 )
 
+    def latest_label_event(
+        self, issue_number: int, label: str, *, removed: bool = False
+    ) -> dict[str, Any] | None:
+        """The newest ``labeled`` (or, with ``removed``, ``unlabeled``) event for
+        ``label`` (case-insensitive).
+
+        Approval evidence (#7763): the approval owner reads who applied an
+        ``approved`` label. Fail-loud like ``issue_closed_on_or_after``: every
+        page is read fresh, a malformed or truncated listing raises, and
+        ``None`` is answered only after the true final page. GitHub lists
+        events oldest first, so the last match wins.
+
+        Only a STANDING transition is returned (#7763 review r8 F1): a later
+        opposite transition for the label voids an earlier match, so an
+        ``approved`` removed after the caller read the issue is no approval,
+        whatever the issue snapshot said. A ``closed`` or ``reopened`` event
+        voids every earlier match too (#7763 review r7 F2, r17 F1): closing a
+        proposal declines it, so an approval given before the close never
+        counts — not for a reopened issue, and not for a caller whose issue
+        snapshot predates the close.
+        """
+        folded = label.casefold()
+        kind = "unlabeled" if removed else "labeled"
+        latest: dict[str, Any] | None = None
+        for batch in self._paginate_fresh(
+            f"/repos/{self._config.repo}/issues/{issue_number}/events",
+            params={"per_page": 100},
+            start_page=1,
+            page_cap=_MARKER_SCAN_PAGE_CAP,
+            what=f"issue #{issue_number} events",
+        ):
+            for event in batch:
+                if not isinstance(event, dict) or not str(event.get("event") or ""):
+                    # A row we cannot read could be this label's removal: no
+                    # standing answer exists (#7763 review r26 F2).
+                    raise GitHubScanIncompleteError(f"issue #{issue_number} events: a malformed event row")
+                if event.get("event") in ("closed", "reopened"):
+                    latest = None
+                    continue
+                if event.get("event") not in ("labeled", "unlabeled"):
+                    continue
+                named = event.get("label")
+                if not isinstance(named, dict) or not str(named.get("name") or ""):
+                    # A label transition we cannot attribute to a label could
+                    # be the removal of this one: no standing answer exists
+                    # (#7763 review r23 F2).
+                    raise GitHubScanIncompleteError(
+                        f"issue #{issue_number} events: a {event.get('event')} event names no label"
+                    )
+                if str(named["name"]).casefold() == folded:
+                    latest = event if event.get("event") == kind else None
+        return latest
+
+    def app_identity(self) -> GitHubAppIdentity | None:
+        """This client's effective GitHub App identity, or None for a token."""
+        return self._auth.comment_app_identity()
+
+    def repository_role(self, login: str) -> str | None:
+        """``login``'s repository role, or None when GitHub knows no such user.
+
+        ``role_name`` is GitHub's fine-grained answer (``admin``, ``maintain``,
+        ``write``, ``triage``, ``read``); the legacy ``permission`` field folds
+        ``maintain`` into ``write``, so it is used only when ``role_name`` is
+        absent. Uncached: an approval decision must not ride a stale role.
+        """
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/collaborators/{quote(login, safe='')}/permission",
+                use_cache=False,
+                caller="repository_role",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise GitHubHttpError(
+                f"GitHub permission payload for {login!r} was not an object"
+            )
+        role = payload.get("role_name") or payload.get("permission")
+        return str(role) if role else None
+
     # -------------------- Git refs / commits --------------------
 
     def get_repository(self) -> dict[str, Any]:
@@ -1843,6 +1927,16 @@ class GitHubHttpClient:
             use_cache=False,
             caller="update_issue_state",
         )
+
+    def update_issue_body(self, issue_number: int, body: str) -> dict[str, Any] | None:
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/issues/{issue_number}",
+            json_body={"body": body},
+            use_cache=False,
+            caller="update_issue_body",
+        )
+        return payload if isinstance(payload, dict) else None
 
     def update_issue_milestone(
         self, issue_number: int, milestone: int | None

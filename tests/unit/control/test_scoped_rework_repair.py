@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.control.actions import AddCommentAction, RequestReworkAction
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.reconciliation import (
@@ -19,6 +20,8 @@ from issue_orchestrator.infra.tech_lead_authority_store import (
 )
 from tests.unit.control.test_scoped_rework import lane as lane, approved_action
 from tests.runtime_lifecycle_helpers import make_action_applier
+from tests.approval_helpers import GATED, approving_everything
+from issue_orchestrator.control.scoped_rework_receipt_status import rework_receipt_status
 
 
 def dispatcher(executor, host, store):
@@ -45,6 +48,7 @@ def dispatcher(executor, host, store):
         fresh_issue_reader=fresh,
         reconcile=True,
     )
+    applier.tech_lead_approvals = approving_everything()
     executor.mutate = applier.apply_scoped_rework_mutation
     executor.before_write = applier.require_scoped_rework_authority
     return applier
@@ -143,7 +147,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
     executor, store, host, issue, pr, proposal, request, db, _ = lane
     op = store.load_op(issue_number=501)
     store.discard_op(issue_number=501)
-    host.list_labels.return_value = [{"name": "proposed-tech-lead"}]
+    host.list_labels.return_value = [{"name": label} for label in GATED]
     host.list_milestones.return_value = []
     applier = dispatcher(executor, host, store)
 
@@ -154,8 +158,8 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
     host.create_issue.side_effect = accepted
     create = CreateTechLeadProposalIssueAction(
         title="Original",
-        body="Original report",
-        labels=("proposed-tech-lead",),
+        body=with_proposal_marker("Original report"),
+        labels=GATED,
         op=op,
         origin=TechLeadCreationOrigin.derived_from_anchor(5),
         expected=build_expected_for_mutation(),
@@ -166,7 +170,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
     executor.receipts = store
     applier.tech_lead_ops = store
     if ungated:
-        proposal.labels.clear()
+        proposal.labels.append("approved")  # a maintainer approves (#7763)
     host.find_issue_by_marker.side_effect = lambda **kw: (
         501 if kw["marker"] in proposal.body else None
     )
@@ -189,7 +193,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
         claims=MagicMock(),
     )
     assert not startup.pending_tech_lead_reviews
-    gatherer = FactGatherer(config, host, tech_lead_authority=store)
+    gatherer = FactGatherer(config, host, tech_lead_authority=store, approvals=approving_everything())
     facts = gatherer.gather_tech_lead_facts(
         OrchestratorState(), board_issues=[], now=1000
     )
@@ -204,7 +208,7 @@ def test_normal_tick_recovers_accepted_creation_after_sqlite_reopen_without_sour
     assert all(result.success for result in applier.apply_all(actions))
     assert store.load_op(issue_number=501) == op
     assert not store.list_pending_proposals()
-    assert executor.proposal_views()[0].feedback == request.feedback
+    assert store.load_op(issue_number=501).rework_request.feedback == request.feedback
     facts = gatherer.gather_tech_lead_facts(
         OrchestratorState(), board_issues=[], now=1001
     )
@@ -341,8 +345,8 @@ def test_completion_settlement_relaunches_exact_deferred_instruction_after_resta
     executor.receipts = store
     executor.pending_successors = PendingWorkSuccessors(claims)
     executor.validate_proposal_reuse(501, request)
-    view = executor.proposal_views()[0]
-    assert view.status == "queued" and "exact durable request" in view.detail
+    status, detail = rework_receipt_status(executor, store.load_rework_receipt(request.key))
+    assert status == "queued" and "exact durable request" in detail
     assert (
         request.feedback in instruction.feedback
         and request.report in instruction.feedback

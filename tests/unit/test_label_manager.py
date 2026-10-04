@@ -575,8 +575,9 @@ class TestToLabelConfigDict:
         assert d["code_reviewed"] == "bot:reviewed-ok"
 
 
-class TestProposedTechLeadLabel:
-    """Gated tech_lead proposal label (#6778): blocking-class, raw, reserved."""
+class TestProposalApprovalLabels:
+    """The proposal approval model (#7763): raw, reserved, and only an
+    ``approved`` label lifts the block — never a strip."""
 
     @pytest.fixture
     def lm(self) -> LabelManager:
@@ -586,53 +587,57 @@ class TestProposedTechLeadLabel:
     def plm(self) -> LabelManager:
         return LabelManager(_StubConfig(label_prefix="bot"))  # type: ignore[arg-type]
 
-    def test_is_blocking(self, lm: LabelManager) -> None:
-        assert lm.is_blocking("proposed-tech-lead") is True
-        assert lm.is_blocking_any(["agent:backend", "proposed-tech-lead"]) is True
-
-    def test_is_blocking_gate_is_case_insensitive(self, lm: LabelManager) -> None:
-        """R15 (normal create-issue gate): GitHub folds label names, so a repo
-        whose canonical spelling is ``Proposed-Tech-Lead`` still keeps the proposal
-        out of pickup. Blocking classification must match the case-insensitive
-        reconciliation predicate — otherwise a canonical-cased gate would be
-        schedulable as ordinary work while reconciliation treats it as approved."""
-        for spelling in ("proposed-tech-lead", "Proposed-Tech-Lead", "PROPOSED-TECH-LEAD"):
+    def test_waiting_state_is_blocking_case_insensitively(self, lm: LabelManager) -> None:
+        for spelling in ("awaiting-approval", "Awaiting-Approval", "AWAITING-APPROVAL"):
             assert lm.is_blocking(spelling) is True, spelling
-        assert lm.is_blocking_any(["agent:backend", "Proposed-Tech-Lead"]) is True
+        assert lm.is_blocking_any(["agent:backend", "Awaiting-Approval"]) is True
 
-    def test_is_blocking_gate_case_insensitive_with_prefix(
-        self, plm: LabelManager
-    ) -> None:
-        """The raw (never-prefixed) gate still folds case under a configured
-        prefix — the gate is matched on its own name, not the prefix path."""
-        assert plm.is_blocking("Proposed-Tech-Lead") is True
+    def test_provenance_and_approval_are_not_blocking_on_their_own(self, lm: LabelManager) -> None:
+        assert lm.is_blocking("tech-lead-proposal") is False
+        assert lm.is_blocking("approved") is False
+
+    def test_a_stripped_waiting_label_does_not_unblock(self, lm: LabelManager) -> None:
+        """Escape vector: a retry or bulk edit strips ``awaiting-approval``.
+        The provenance label alone keeps the proposal blocked, and it is named
+        as the blocking label so callers stay consistent with is_blocking_any."""
+        labels = ["agent:backend", "tech-lead-proposal"]
+        assert lm.is_blocking_any(labels) is True
+        assert lm.get_blocking(labels) == ["tech-lead-proposal"]
+
+    def test_only_approved_without_waiting_state_unblocks_by_label(self, lm: LabelManager) -> None:
+        assert lm.is_blocking_any(["tech-lead-proposal", "awaiting-approval", "approved"]) is True
+        assert lm.is_blocking_any(["tech-lead-proposal", "approved"]) is False
 
     def test_raw_even_with_prefix(self, plm: LabelManager) -> None:
-        """Tech-Lead-subsystem labels never take the orchestrator prefix."""
-        assert plm.proposed_tech_lead == "proposed-tech-lead"
-        assert plm.is_blocking("proposed-tech-lead") is True
-        assert plm.is_ours("proposed-tech-lead") is True
+        assert plm.gated_proposal_labels == ("tech-lead-proposal", "awaiting-approval")
+        assert plm.is_blocking("awaiting-approval") is True
+        assert plm.is_blocking("Awaiting-Approval") is True
+        for label in ("tech-lead-proposal", "awaiting-approval", "approved"):
+            assert plm.is_ours(label) is True
 
     def test_describe(self, lm: LabelManager) -> None:
-        assert lm.describe("proposed-tech-lead") == (
-            "Tech Lead proposal awaiting operator approval"
+        assert lm.describe("awaiting-approval") == (
+            "Tech Lead proposal awaiting a maintainer's approval"
         )
 
     def test_workflow_reserved_case_insensitively(self, lm: LabelManager) -> None:
-        """Agent-proposed labels must not bypass the gate by case-flipping."""
-        assert lm.is_workflow_reserved("proposed-tech-lead") is True
-        assert lm.is_workflow_reserved("Proposed-Tech-Lead") is True
+        """Agents must not propose any approval label, whatever its case."""
+        for label in ("tech-lead-proposal", "Awaiting-Approval", "APPROVED"):
+            assert lm.is_workflow_reserved(label) is True, label
+
+    def test_recovery_never_sheds_approval_state(self, lm: LabelManager) -> None:
+        assert lm.recovered_workflow_labels(
+            ["awaiting-approval", "tech-lead-proposal", "approved", "blocked"]
+        ) == ["blocked"]
 
     def test_identifies_tech_lead_artifact_without_reclassifying_failures(
         self, lm: LabelManager
     ) -> None:
-        assert lm.is_tech_lead_artifact_any(["Proposed-Tech-Lead"]) is True
+        assert lm.is_tech_lead_artifact_any(["tech-lead-proposal", "awaiting-approval"]) is True
+        assert lm.is_tech_lead_artifact_any(["tech-lead-proposal"]) is True
         assert lm.is_tech_lead_artifact_any(["blocked-failed"]) is False
-
-    def test_identifies_prefixed_tech_lead_artifact_case_insensitively(
-        self, plm: LabelManager
-    ) -> None:
-        assert plm.is_tech_lead_artifact_any(["BOT:Proposed-Tech-Lead"]) is True
+        # An admitted follow-up is real work, not tech-lead evidence.
+        assert lm.is_tech_lead_artifact_any(["tech-lead-proposal", "approved"]) is False
 
 
 class TestTechLeadObservationLabel:

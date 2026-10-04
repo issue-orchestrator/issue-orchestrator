@@ -10,10 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
-    from ..domain.completion_intake import (
-        SubmitCompletionEvidence,
-        CompletionIntakeReceipt,
-    )
+    from ..contracts.ui_openapi_models import TechLeadPageSectionPayload
+    from ..domain.completion_intake import SubmitCompletionEvidence, CompletionIntakeReceipt
     from ..domain.historical_intake import (
         HistoricalIntakeCommand,
         HistoricalIntakeOutcome,
@@ -43,7 +41,7 @@ from ..control.worktree_manager import get_worktree_path, get_session_name, extr
 logger = logging.getLogger(__name__)
 
 
-from .tech_lead_proposal_facade import rework_proposal_views, rework_proposal_command, ReworkProposalView, TechLeadProposalCommand, TechLeadProposalCommandOutcome
+from .tech_lead_proposal_facade import proposal_command, tech_lead_page_section, TechLeadProposalCommand, TechLeadProposalCommandOutcome
 from .config import Config
 from ..ports.issue import Issue
 from ..domain.models import (
@@ -829,8 +827,8 @@ class Orchestrator:
         with self.state_lock:
             refresh_to_process = self.state.queue_refresh_requested
             self.state.queue_refresh_requested = False
-        # Promote any gated expedite follow-ups whose proposed-tech-lead gate an
-        # operator has removed onto the worker lane before this tick plans (#6870).
+        # Promote gated expedite follow-ups a verified approval admitted (#7763)
+        # onto the worker lane before this tick plans (#6870).
         if (applier := self.deps.action_applier) and applier.expedite_lane:
             applier.expedite_lane.promote_ungated()
         self._last_network_sync, _ = _run_planning_cycle_impl(
@@ -1100,11 +1098,11 @@ class Orchestrator:
     def ensure_health_review_anchor(self) -> Optional[PendingTechLeadReview]:
         return _ensure_health_review_anchor(self)
 
-    def tech_lead_rework_proposals(self) -> tuple["ReworkProposalView", ...]:
-        return rework_proposal_views(self)
+    def tech_lead_page_section(self) -> "TechLeadPageSectionPayload":
+        return tech_lead_page_section(self)
 
     def request_tech_lead_proposal(self, command: "TechLeadProposalCommand") -> "TechLeadProposalCommandOutcome":
-        return rework_proposal_command(self, command)
+        return proposal_command(self, command)
 
     def request_tech_lead_run(self, request: TechLeadRunRequest) -> TechLeadRunAdmission:
         with self.state_lock:

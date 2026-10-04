@@ -359,6 +359,13 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         """
         ...
 
+    def update_issue_body(self, issue_number: int, body: str) -> None:
+        """Replace an issue's body, verifying the write landed.
+
+        Used to mark a migrated tech-lead proposal's body (#7763).
+        """
+        ...
+
     def list_labels(self) -> list[dict[str, Any]]:
         """List all labels in the repository.
 

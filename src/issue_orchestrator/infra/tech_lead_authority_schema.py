@@ -55,6 +55,20 @@ CREATE TABLE IF NOT EXISTS tech_lead_block_resolutions (
 );
 CREATE INDEX IF NOT EXISTS idx_tech_lead_block_resolutions_issue
     ON tech_lead_block_resolutions (issue_number);
+-- #7763: approvals an operator gave in the Control Center, each bound to the
+-- exact `approved` label event the engine's write produced.
+CREATE TABLE IF NOT EXISTS tech_lead_operator_approvals (
+    issue_number INTEGER PRIMARY KEY,
+    label_event_id INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+-- #7763: every proposal this engine filed or migrated, so the approval scope
+-- finds one whose gate labels were all stripped.
+CREATE TABLE IF NOT EXISTS tech_lead_proposal_index (
+    issue_number INTEGER PRIMARY KEY,
+    declined INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS tech_lead_patterns (
     signature TEXT PRIMARY KEY,
     issue_number INTEGER NOT NULL,

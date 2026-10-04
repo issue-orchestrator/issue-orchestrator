@@ -157,7 +157,7 @@ def test_the_engines_blocked_lane_decides_and_the_tech_leads_own_artefacts_are_n
         OpenIssueLabels(number=10, title="held", labels=("recovery-pending",)),
         OpenIssueLabels(number=11, title="legacy", labels=("publish-failed",)),
         OpenIssueLabels(number=12, title="marker", labels=("tech-lead-needs-human",)),
-        OpenIssueLabels(number=13, title="proposal", labels=("proposed-tech-lead",)),
+        OpenIssueLabels(number=13, title="proposal", labels=("awaiting-approval",)),
         OpenIssueLabels(number=14, title="case file", labels=("tech-lead-observation",)),
     ]
 

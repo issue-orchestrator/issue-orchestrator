@@ -75,8 +75,8 @@ class TechLeadAuthorityConfig:
     ``propose`` — for ``post_comment``/``flag_pattern``: shadow mode (the
     proposal is surfaced as would-have-done). For ``create_issue`` and
     act-level actions: a GATED ISSUE (#6778) — the proposal is created as a
-    GitHub issue carrying ``proposed-tech-lead``; removing that label is
-    per-instance operator approval. Per-instance approval and config-level
+    GitHub issue labelled ``tech-lead-proposal`` + ``awaiting-approval``; a
+    maintainer's ``approved`` label is per-instance operator approval (#7763). Per-instance approval and config-level
     trust coexist.
 
     ``escalate_to_human`` and ``defer_to_tracker`` are intentionally not
@@ -404,8 +404,8 @@ class TechLeadFindingsConfig:
 
     ``promote`` is the master switch. ``off`` disables the whole lane (no
     promotion issues, no loop-closure reads); ``gated`` (the default) files the
-    promotion carrying the ``proposed-tech-lead`` gate, so the operator's
-    approval is exactly one action — removing the label; ``auto`` files it
+    promotion carrying the approval model's labels, so the operator's
+    approval is exactly one action — a maintainer's ``approved``; ``auto`` files it
     ungated, i.e. immediately runnable in the target repo's own pipeline.
 
     ``min_evidence`` is how many observations a signature must accrue before it

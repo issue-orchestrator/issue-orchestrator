@@ -1015,7 +1015,7 @@ def test_the_attention_labels_are_the_prototype_set_without_in_progress() -> Non
     assert "in-progress" not in observed.ATTENTION_LABELS
     assert set(observed.ATTENTION_LABELS) == {
         "needs-human", "tech-lead-needs-human", "blocked-failed", "recovery-pending",
-        "io:needs-reconcile", "proposed-tech-lead",
+        "io:needs-reconcile", "awaiting-approval",
     }
 
 

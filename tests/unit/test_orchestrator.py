@@ -1091,6 +1091,7 @@ class TestLaunchSession:
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
@@ -1110,6 +1111,7 @@ class TestLaunchSession:
 
         issue = create_issue(1, labels=["agent:web"])
         # Proper DI: inject mock adapter instead of patching functions
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
@@ -1129,6 +1131,7 @@ class TestLaunchSession:
 
         issue = create_issue(1, title="Test Issue", labels=["agent:web"])
         sample_config.ui_mode = "tmux"  # Explicitly test tmux mode
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
@@ -1151,6 +1154,7 @@ class TestLaunchSession:
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         assert len(orchestrator.state.active_sessions) == 0
@@ -1171,6 +1175,7 @@ class TestLaunchSession:
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)

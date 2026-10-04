@@ -839,10 +839,10 @@ class TestSetupWizardSharedHelpers:
         assert "code-reviewed" in label_names
         assert "tech-lead-reviewed" in label_names
         assert "tech-lead-failed" in label_names
-        # R3: a tech-lead-enabled config provisions the act-level proposal gate
-        # (raw, never prefixed), health-review marker, and the static blocking
-        # observation marker. Dynamic area:* labels are provisioned at apply.
-        assert "proposed-tech-lead" in label_names
+        # R3/#7763: a tech-lead-enabled config provisions the approval model's
+        # labels (raw, never prefixed), health-review marker, and the static
+        # blocking observation marker. Dynamic area:* labels are provisioned at apply.
+        assert {"tech-lead-proposal", "awaiting-approval", "approved"} <= label_names
         assert "tech_lead:health-review" in label_names
         assert "tech-lead-observation" in label_names
         assert next(label for label in labels if label[0] == "code-reviewed") == (
@@ -860,7 +860,7 @@ class TestSetupWizardSharedHelpers:
             }
         )
         label_names = {name for name, _, _ in labels}
-        assert "proposed-tech-lead" not in label_names
+        assert not {"tech-lead-proposal", "awaiting-approval", "approved"} & label_names
         assert "tech-lead-observation" not in label_names
 
     def test_required_repo_labels_includes_tech_lead_gate(self):
@@ -881,7 +881,7 @@ class TestSetupWizardSharedHelpers:
 
         labels = required_repo_labels(config)
 
-        assert "proposed-tech-lead" in labels
+        assert {"tech-lead-proposal", "awaiting-approval", "approved"} <= set(labels)
         assert "agent:tech-lead" in labels
         assert "needs-tech-lead-review" in labels
         assert "tech-lead-reviewed" in labels
@@ -905,7 +905,7 @@ class TestSetupWizardSharedHelpers:
 
         labels = required_repo_labels(config)
 
-        assert "proposed-tech-lead" not in labels
+        assert not {"tech-lead-proposal", "awaiting-approval", "approved"} & set(labels)
         assert "tech-lead-observation" not in labels
         assert "agent:backend" in labels
 

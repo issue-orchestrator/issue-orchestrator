@@ -137,6 +137,14 @@ deny_attr_calls:
       - src/issue_orchestrator/control/tech_lead_case_files.py
       - src/issue_orchestrator/control/tech_lead_case_file_owner.py
       - src/issue_orchestrator/control/tech_lead_promotion_appliers.py
+      # The tech-lead approval labels' one owner (#7763), like the shared
+      # needs-human block's above: every other label writer holds the
+      # GovernedLabelSet, which refuses `tech-lead-proposal`,
+      # `awaiting-approval` and `approved` by value. Its writes run only inside
+      # the SETTLE_PROPOSAL_APPROVAL applier handler, the operator's
+      # Approve/Decline command and the one-time startup migration.
+      - src/issue_orchestrator/control/tech_lead_approval_writes.py
+      - src/issue_orchestrator/control/tech_lead_approval_migration.py
   - name: entrypoints_no_direct_label_mutations
     description: "Entrypoint handlers must apply label/comment mutations via ActionApplier"
     deny_in:

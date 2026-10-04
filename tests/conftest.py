@@ -643,6 +643,12 @@ class MockGitHubAdapter:
         self.milestones = milestones
         return milestone
 
+    def update_issue_body(self, issue_number: int, body: str) -> None:
+        issue = self.get_issue(issue_number)
+        if issue is None:
+            return
+        issue.body = body
+
     def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
         issue = self.get_issue(issue_number)
         if issue is None:

@@ -11,6 +11,8 @@ import hashlib
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.control.actions import (
     PromoteTechLeadFindingAction,
     ReportPromotedFindingEvidenceAction,
@@ -55,7 +57,6 @@ from issue_orchestrator.domain.tech_lead_findings import (
     promotion_issue_marker,
     promotion_issue_title,
 )
-from issue_orchestrator.domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 from issue_orchestrator.adapters.github.errors import GitHubHttpError
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import PromotionRouteTarget
@@ -423,7 +424,7 @@ class TestFilingContracts:
 
         assert contract.repo == UPSTREAM
         assert contract.labels == promotion_issue_labels(config, area="ui")
-        assert PROPOSED_TECH_LEAD_LABEL in contract.labels
+        assert AWAITING_APPROVAL_LABEL in contract.labels
         assert not contract.provisions_unknown_labels
 
     def test_a_foreign_catch_all_route_declares_unknowable_labels(self):
@@ -452,7 +453,7 @@ class TestFilingContracts:
 
         [contract] = promotion_filing_contracts(config)
 
-        assert PROPOSED_TECH_LEAD_LABEL not in contract.labels
+        assert AWAITING_APPROVAL_LABEL not in contract.labels
 
 
 class TestPromotionCommandEncodesItsApprovalMode:
@@ -466,8 +467,8 @@ class TestPromotionCommandEncodesItsApprovalMode:
             case_file_issue_number=65,
             target_repo=UPSTREAM,
             title="[tech-lead:porchpin/porchpin] sig",
-            body=f"body\n\n{self.MARKER}",
-            labels=("agent:backend", PROPOSED_TECH_LEAD_LABEL),
+            body=with_proposal_marker(f"body\n\n{self.MARKER}"),
+            labels=("agent:backend", "tech-lead-proposal", AWAITING_APPROVAL_LABEL),
             observation_count=2,
             idempotency_marker=self.MARKER,
             gated=True,
@@ -480,7 +481,7 @@ class TestPromotionCommandEncodesItsApprovalMode:
             self._action(labels=("agent:backend",))
 
     def test_an_auto_command_carrying_the_gate_label_fails_closed(self):
-        with pytest.raises(ValueError, match="must NOT carry"):
+        with pytest.raises(ValueError, match="ungated may not carry the tech-lead approval labels"):
             self._action(gated=False)
 
     def test_both_consistent_modes_construct(self):
@@ -505,19 +506,21 @@ class TestPromotionIssueComposition:
     def test_gated_promotion_carries_the_gate_and_agent_labels(self):
         config = _config()
         labels = promotion_issue_labels(config, area="completion-pipeline")
-        assert PROPOSED_TECH_LEAD_LABEL in labels
+        assert AWAITING_APPROVAL_LABEL in labels
         assert "agent:backend" in labels
         assert "area:completion-pipeline" in labels
 
     def test_auto_promotion_is_ungated(self):
         config = _config(promote="auto")
         labels = promotion_issue_labels(config, area="")
-        assert PROPOSED_TECH_LEAD_LABEL not in labels
+        assert AWAITING_APPROVAL_LABEL not in labels
         assert "agent:backend" in labels
 
     def test_gated_promotion_is_never_runnable_in_the_target_planner(self):
         """The gate must actually block pickup, not just be present: a promoted
-        issue is inert until an operator removes exactly that one label."""
+        issue is inert until a maintainer approves it (#7763). Stripping the
+        waiting label approves nothing; once the engine admits a maintainer's
+        `approved`, the issue is ordinary work with its agent and area labels."""
         from issue_orchestrator.control.label_manager import LabelManager
 
         config = _config()
@@ -525,11 +528,11 @@ class TestPromotionIssueComposition:
         gated = promotion_issue_labels(config, area="completion-pipeline")
 
         assert labels.is_blocking_any(list(gated))
-        # Removing the gate — the operator's single action — leaves an ordinary,
-        # schedulable issue carrying its agent and area labels.
-        ungated = [name for name in gated if name != PROPOSED_TECH_LEAD_LABEL]
-        assert not labels.is_blocking_any(ungated)
-        assert "agent:backend" in ungated
+        stripped = [name for name in gated if name != AWAITING_APPROVAL_LABEL]
+        assert labels.is_blocking_any(stripped)
+        admitted = [*stripped, "approved"]
+        assert not labels.is_blocking_any(admitted)
+        assert "agent:backend" in admitted
 
     def test_auto_promotion_is_runnable_immediately(self):
         from issue_orchestrator.control.label_manager import LabelManager
@@ -560,7 +563,8 @@ class TestPromotionIssueComposition:
 
         assert promotion_issue_labels(config, area="") == (
             "agent:backend",
-            PROPOSED_TECH_LEAD_LABEL,
+            "tech-lead-proposal",
+            AWAITING_APPROVAL_LABEL,
         )
 
     def test_foreign_route_carries_the_targets_declared_contract(self):
@@ -626,7 +630,7 @@ class TestPromotionIssueComposition:
         assert action.target_repo == UPSTREAM
         assert action.case_file_issue_number == 65
         assert "porchpin/porchpin#65" in action.body
-        assert PROPOSED_TECH_LEAD_LABEL in action.labels
+        assert AWAITING_APPROVAL_LABEL in action.labels
 
     def test_planned_action_carries_the_original_diagnosis_and_suggested_fix(self):
         finding = PromotableFinding(
@@ -2087,7 +2091,7 @@ class TestPromotedIssueIsDiscoverableByTheScheduler:
         )
         return [issue.number for issue in workflow.fetch_all_issues(None)]
 
-    def test_gate_removal_alone_makes_a_gated_self_route_discoverable(self):
+    def test_admission_alone_makes_a_gated_self_route_discoverable(self):
         config = _config()
         config.filtering.label = "io-scope"
         gated = promotion_issue_labels(config, area="completion-pipeline")
@@ -2098,13 +2102,12 @@ class TestPromotedIssueIsDiscoverableByTheScheduler:
 
         assert LabelManager(config).is_blocking_any(list(gated))
 
-        ungated = tuple(
-            name for name in gated if name != PROPOSED_TECH_LEAD_LABEL
-        )
-        assert not LabelManager(config).is_blocking_any(list(ungated))
-        # Removing the gate is the operator's WHOLE approval: nothing else is
-        # missing for the scheduler's own discovery query to return it.
-        assert self._discover(config, ungated) == [501]
+        # A maintainer's approval, admitted by the engine (#7763): `approved`
+        # on, `awaiting-approval` off. Nothing else is missing for the
+        # scheduler's own discovery query to return it.
+        admitted = (*(name for name in gated if name != AWAITING_APPROVAL_LABEL), "approved")
+        assert not LabelManager(config).is_blocking_any(list(admitted))
+        assert self._discover(config, admitted) == [501]
 
     def test_auto_self_route_is_discoverable_immediately(self):
         config = _config(promote="auto")

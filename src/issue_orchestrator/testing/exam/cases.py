@@ -19,6 +19,7 @@ from .case import (
     item_resolved,
     no_tech_lead_decision,
     item_triaged,
+    never_worked,
     no_pull_request,
     pr_checks_green,
     pr_has_label,
@@ -39,6 +40,7 @@ STALE_CLAIM_PAUSED_FOR_RECONCILE = "C-stale-claim-paused-for-reconcile"
 BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW = "B-blocked-issue-green-pr-awaiting-review"
 UPGRADE_WITH_WORK_IN_FLIGHT = "U-upgrade-with-work-in-flight"
 BLOCKED_ITEMS_TRIAGED = "D-blocked-items-triaged"
+POSITIVE_APPROVAL_EXECUTES_ONCE = "H-positive-approval-executes-once"
 MERGE_HELD_WORK_PROCEEDS = "E-merge-held-work-proceeds"
 BLOCKS_RESOLVED_UNDER_EXECUTE = "F-needs-human-blocks-resolved"
 BLOCK_RESOLUTIONS_PROPOSED = "G-needs-human-block-resolutions-proposed"
@@ -51,6 +53,7 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
     UPGRADE_WITH_WORK_IN_FLIGHT,
     BLOCKED_ITEMS_TRIAGED,
+    POSITIVE_APPROVAL_EXECUTES_ONCE,
     MERGE_HELD_WORK_PROCEEDS,
     BLOCKS_RESOLVED_UNDER_EXECUTE,
     BLOCK_RESOLUTIONS_PROPOSED,
@@ -74,6 +77,12 @@ SPLIT = "split"
 STALE = "stale"
 BESIDE_PR = "beside_pr"
 PROVISIONING = "provisioning"
+
+#: Case H's three gated tech-lead proposals (#7763): one a maintainer
+#: approves, one whose waiting label is stripped, one a bot "approves".
+MAINTAINER_APPROVED = "maintainer_approved"
+STRIPPED = "stripped"
+BOT_APPROVED = "bot_approved"
 
 #: Candidate ticks Case U's quiet window covers after the restart.
 UPGRADE_EARLY_TICKS = 5
@@ -459,4 +468,48 @@ def needs_human_block_resolutions_proposed(*, needs_human_label: str) -> ExamCas
         ),
         goals=_resolution_case_goals(needs_human_label=needs_human_label, proposals=True),
         known_blockers=("#7658 no tech-lead action could clear a needs-human block",),
+    )
+
+
+def positive_approval_executes_once(
+    *,
+    proposal_label: str,
+    awaiting_label: str,
+    approved_label: str,
+) -> ExamCase:
+    """Case H — approval is a positive, maintainer-applied act (#7763).
+
+    Three gated tech-lead follow-ups (the ``create_issue`` proposals a
+    ``propose``-authority tech lead files) are planted before the engine
+    starts. A maintainer adds ``approved`` to the first. The second loses its
+    ``awaiting-approval`` label the way an engine retry used to strip "every
+    blocking label" (porchpin#444) — under the old model that removal WAS the
+    approval. The third gets ``approved`` from a GitHub App (bot) identity.
+
+    Right answer: the maintainer's proposal is admitted and worked exactly
+    once; the stripped one is never worked and gets its waiting label back;
+    the bot's ``approved`` is removed and that proposal is never worked.
+    """
+    gated = (proposal_label, awaiting_label)
+    return ExamCase(
+        case_id=POSITIVE_APPROVAL_EXECUTES_ONCE,
+        title="Only a maintainer's positive approval executes a tech-lead proposal",
+        fault=(
+            "three gated tech-lead proposals: one approved by a maintainer, one"
+            " with its waiting label stripped, one 'approved' by a bot"
+        ),
+        goals=(
+            single_pull_request(MAINTAINER_APPROVED),
+            issue_lacks_labels(MAINTAINER_APPROVED, (awaiting_label,)),
+            issue_keeps_labels(MAINTAINER_APPROVED, (proposal_label, approved_label)),
+            never_worked(STRIPPED),
+            issue_keeps_labels(STRIPPED, gated),
+            issue_lacks_labels(STRIPPED, (approved_label,)),
+            never_worked(BOT_APPROVED),
+            issue_keeps_labels(BOT_APPROVED, gated),
+            issue_lacks_labels(BOT_APPROVED, (approved_label,)),
+        ),
+        known_blockers=(
+            "#7763 approval was the REMOVAL of proposed-tech-lead: any strip approved",
+        ),
     )

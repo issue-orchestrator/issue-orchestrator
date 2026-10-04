@@ -358,8 +358,8 @@ class ProposedTechLeadAction:
     # action. Only meaningful for ``create_issue`` — ``validate()`` rejects it
     # on any other action type. It composes with the ADR-0031 authority gate:
     # under ``execute`` the created issue jumps the worker lane immediately;
-    # under ``propose`` it jumps only once the ``proposed-tech-lead`` gate is
-    # removed. The orchestrator (never the agent) performs the queue write.
+    # under ``propose`` it jumps only once a verified approval admits it
+    # (#7763). The orchestrator (never the agent) performs the queue write.
     expedite: bool = False
     # Dedup intent (#6878): when the tech lead recognizes that its proposed
     # ``create_issue`` follow-up already exists as an open issue, it sets
