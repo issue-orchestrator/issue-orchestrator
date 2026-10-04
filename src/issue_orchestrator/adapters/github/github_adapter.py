@@ -42,6 +42,7 @@ from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
     from ...domain.issue_key import IssueKey, GitHubIssueKey
+    from ...domain.tech_lead_approval import LabelEvent
     from ...ports.issue import Issue
 
 logger = logging.getLogger(__name__)
@@ -1854,6 +1855,57 @@ class GitHubAdapter:
         """
         return self._client.issue_closed_on_or_after(issue_number, timestamp)
 
+    def latest_label_event(
+        self, issue_number: int, label: str, *, removed: bool = False
+    ) -> "LabelEvent | None":
+        """Approval evidence (#7763): who last applied (or removed) ``label``.
+
+        Automation is anything GitHub marks as such: a ``Bot`` account, a
+        ``[bot]`` login, or an event performed through a GitHub App. A labeled
+        event without an id or actor is malformed and raises.
+        """
+        from ...domain.tech_lead_approval import LabelEvent
+
+        payload = self._client.latest_label_event(issue_number, label, removed=removed)
+        if payload is None:
+            return None
+        actor = payload.get("actor")
+        if not isinstance(actor, dict):
+            raise GitHubHttpError(
+                f"label event on #{issue_number} carries no actor; cannot attribute it"
+            )
+        login = str(actor.get("login") or "")
+        app = payload.get("performed_via_github_app")
+        app = app if isinstance(app, dict) else {}
+        return LabelEvent(
+            event_id=int(payload.get("id") or 0),
+            actor_login=login,
+            actor_is_bot=(
+                actor.get("type") == "Bot"
+                or login.casefold().endswith("[bot]")
+                or bool(app)
+            ),
+            created_at=str(payload.get("created_at") or ""),
+            app_id=str(app.get("id") or ""),
+            app_client_id=str(app.get("client_id") or ""),
+        )
+
+    def repository_role(self, login: str) -> str | None:
+        """``login``'s role in this repository, or None for an unknown user."""
+        return self._client.repository_role(login)
+
+    def is_own_write(self, event: "LabelEvent") -> bool:
+        """Whether *event* was performed through this engine's own GitHub App.
+
+        Uses the same effective App identity that verifies server-authored
+        comment provenance. A personal-token engine has none: False.
+        """
+        identity = self._client.app_identity()
+        if identity is None:
+            return False
+        observed = event.app_id if identity.field == "id" else event.app_client_id
+        return bool(observed) and observed == identity.value
+
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.
 
@@ -1891,6 +1943,21 @@ class GitHubAdapter:
             List of milestone dictionaries with 'number', 'title', 'description', etc.
         """
         return self._client.list_milestones(state=state)
+
+    def update_issue_body(self, issue_number: int, body: str) -> None:
+        """Replace an issue's body and verify GitHub kept it (#7763)."""
+        self._client.update_issue_body(issue_number, body)
+
+        def _check() -> bool:
+            issue = self.get_issue(issue_number)
+            return issue is not None and (issue.body or "") == body
+
+        self._verify_write(
+            f"issue body #{issue_number}",
+            _check,
+            detail_fn=lambda: {"body_chars": len(body)},
+            issue_number=issue_number,
+        )
 
     def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
         """Assign or clear a milestone on an issue."""

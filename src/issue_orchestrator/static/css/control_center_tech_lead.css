@@ -1,0 +1,169 @@
+/* Tech lead page and the "N waiting on you" badge (#7763).
+   Count and status are always TEXT; colour only reinforces them. Every
+   interactive element keeps the global :focus-visible outline. */
+
+.waiting-count {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: normal;
+    text-align: right;
+}
+
+/* The header wraps so the badge never pushes the page wider than a narrow
+   window; the main column may shrink below its content's longest word. */
+.header {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.main-content {
+    min-width: 0;
+}
+
+.waiting-badge {
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.waiting-badge[data-waiting]:not([data-waiting="0"]) {
+    border-color: var(--accent-yellow);
+}
+
+.waiting-badge:hover {
+    background: var(--bg-card-hover);
+}
+
+.waiting-badge:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+#techLeadView {
+    min-width: 0;
+    padding: 16px 16px 48px;
+    max-width: 1100px;
+}
+
+.tl-run-strip {
+    margin: 0 0 8px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.tl-command-status:empty {
+    display: none;
+}
+
+.tl-lane {
+    margin-top: 24px;
+}
+
+.tl-lane h2 {
+    font-size: 18px;
+    margin: 0 0 12px;
+}
+
+.tl-lane-waiting h2 {
+    font-size: 20px;
+}
+
+.tl-cards,
+.tl-list,
+.tl-unavailable {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.tl-card {
+    margin-bottom: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--border-color);
+    border-left-width: 4px;
+    border-radius: 6px;
+    background: var(--bg-card);
+    overflow-wrap: anywhere;
+}
+
+.tl-card:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+}
+
+.tl-kind-proposal { border-left-color: var(--accent-purple); }
+.tl-kind-merge_ready_pr { border-left-color: var(--accent-yellow); }
+.tl-kind-hand_over { border-left-color: var(--accent-red); }
+
+.tl-card h3 {
+    margin: 4px 0 8px;
+    font-size: 15px;
+}
+
+.tl-card h3 a {
+    color: var(--text-primary);
+}
+
+.tl-lane a {
+    color: var(--accent-blue);
+}
+
+.tl-card p {
+    margin: 4px 0;
+}
+
+.tl-card-meta,
+.tl-when,
+.tl-reason,
+.tl-empty {
+    color: var(--text-secondary);
+}
+
+.tl-details dl {
+    display: grid;
+    grid-template-columns: minmax(7rem, max-content) 1fr;
+    gap: 4px 12px;
+    margin: 8px 0;
+}
+
+.tl-details dd {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.tl-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.tl-list li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.tl-outcome,
+.tl-triage,
+.tl-area {
+    font-weight: 600;
+}
+
+.tl-watch-repo h4 {
+    margin: 12px 0 4px;
+    font-size: 14px;
+}
+
+.tl-unavailable {
+    margin-bottom: 12px;
+    color: var(--text-secondary);
+}

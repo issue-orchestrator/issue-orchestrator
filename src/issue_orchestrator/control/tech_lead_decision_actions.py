@@ -9,8 +9,8 @@ emits the orchestrator's action vocabulary:
   ``post_comment``/``escalate_to_human``/``flag_pattern`` (the
   immediate/report tier).
 - ``create_issue`` with ``propose`` authority -> the issue is CREATED, gated
-  with ``proposed-tech-lead`` (#6778): removing the label flows it into normal
-  scheduling. The gate label is orchestrator-attached by the
+  with the approval model's labels (#6778, #7763): a verified maintainer
+  approval admits it to normal scheduling. The labels are orchestrator-attached by the
   ``tech_lead_issue_policy`` owner and rejected by the agent-label allowlist.
 - ``create_issue`` that the agent itself CITED as a duplicate, where the dedup
   gate cannot route the observation onto the candidate as a comment -> the
@@ -35,8 +35,8 @@ emits the orchestrator's action vocabulary:
   GATED PROPOSAL ISSUES (#6778): a
   :class:`~.actions.CreateTechLeadProposalIssueAction` whose applier creates
   the issue AND records the executable :class:`StoredTechLeadOp` create-once.
-  Removing the gate label is per-instance approval; the fact gatherer's
-  label scan then triggers execution of the STORED op. Dedup is
+  A maintainer's verified ``approved`` is per-instance approval; the fact
+  gatherer's scan then triggers execution of the STORED op. Dedup is
   ledger-based: one open proposal per (op, target) — a re-proposal plans an
   ``AddCommentAction`` on the existing proposal issue instead.
 
@@ -735,9 +735,9 @@ class _DecisionActionPlanner:
 
     def _plan_decision_tier(self, proposed: ProposedTechLeadAction) -> None:
         # Execute authority -> the concrete action(s). Propose-authority
-        # create_issue -> the issue is CREATED, gated with proposed-tech-lead
-        # (#6778): per-instance approval is removing the label, after which the
-        # issue flows into normal scheduling. Everything else propose -> shadow
+        # create_issue -> the issue is CREATED, gated by the approval model
+        # (#6778, #7763): a verified maintainer approval admits the issue to
+        # normal scheduling. Everything else propose -> shadow
         # record. create_issue additionally routes through the dedup gate.
         execute = self.charter_log.verdict_for(proposed.id).executes
         if proposed.action_type == "create_issue":

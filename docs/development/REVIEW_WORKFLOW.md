@@ -396,11 +396,12 @@ Editing the proposal issue body cannot change the approved instruction. A durabl
 creation intent and an opaque marker recover an accepted GitHub create before
 its response or local stored-op write completes.
 
-`tech_lead.authority.request_rework` defaults to `propose`. In Control Center's
-repository dashboard, open **Tech-lead rework proposals** to inspect the evidence,
-head, eligibility and predicted changes. **Approve rework** removes the same
-`proposed-tech-lead` gate that an operator can remove on GitHub; **Decline** closes
-the proposal. The engine executes approved operations through the existing
+`tech_lead.authority.request_rework` defaults to `propose`. The Control Center's
+**Tech lead** page lists it under *Waiting on you* with the evidence, head and
+predicted changes. **Approve** applies the same positive `approved` label a
+maintainer can add on GitHub (#7763); the engine only acts on an `approved` it
+verified came from a maintainer or from that Approve. **Decline** closes the
+proposal. The engine executes approved operations through the existing
 proposal lifecycle. Pausing the engine preserves inspection and consent while
 execution waits for resume.
 

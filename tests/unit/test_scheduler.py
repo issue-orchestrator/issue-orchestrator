@@ -939,14 +939,13 @@ class TestSchedulerDependencyGating:
         )
 
     def test_gated_tech_lead_proposal_issue_is_never_picked_up(self, sample_config):
-        """proposed-tech-lead joins the blocking classification (#6778): a gated
-        issue is excluded with a reason detail until an operator removes the
-        gate label (per-instance approval)."""
+        """A tech-lead proposal awaiting approval is blocked with a reason
+        detail (#6778, #7763); stripping the waiting label approves nothing."""
         scheduler = Scheduler(config=sample_config)
         issue = Issue(
             number=3,
             title="Fix flaky CI runner",
-            labels=["proposed-tech-lead", "agent:backend"],
+            labels=["tech-lead-proposal", "awaiting-approval", "agent:backend"],
             body="",
         )
 
@@ -955,19 +954,15 @@ class TestSchedulerDependencyGating:
         assert decision.available is False
         assert decision.reason == "blocked_label"
         assert decision.detail == (
-            "blocking labels: proposed-tech-lead"
-            " (Tech Lead proposal awaiting operator approval)"
+            "blocking labels: awaiting-approval"
+            " (Tech Lead proposal awaiting a maintainer's approval)"
         )
 
-        # Approval = removing the gate label: the issue flows into normal
-        # scheduling with nothing else changed.
-        approved = Issue(
-            number=3,
-            title="Fix flaky CI runner",
-            labels=["agent:backend"],
-            body="",
+        stripped = Issue(
+            number=3, title="Fix flaky CI runner",
+            labels=["tech-lead-proposal", "agent:backend"], body="",
         )
-        assert scheduler.evaluate_issues([approved])[0].available is True
+        assert scheduler.evaluate_issues([stripped])[0].available is False
 
     def test_get_available_allows_satisfied_dependencies(
         self, sample_config, checker, events

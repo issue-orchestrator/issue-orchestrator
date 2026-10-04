@@ -14,6 +14,7 @@ _REPO_DEPENDENCIES_STATE_KEY = "control_api_repo_dependencies"
 if TYPE_CHECKING:
     from ..control.control_center_recovery_queries import ControlCenterRecoveryQueries
     from ..execution.control_center_actions import ControlCenterActions
+    from ..execution.control_center_tech_lead import ControlCenterTechLead
     from ..ports.control_center_recovery_stops import ControlCenterRecoveryStopPort
     from ..ports.repository_engine_supervisor import SupervisorOps
 
@@ -29,6 +30,7 @@ class ControlApiRepoDependencies:
     get_expected_engine_identity_raw: Callable[[], str | None]
     get_recovery_queries: Callable[[], ControlCenterRecoveryQueries]
     get_recovery_stops: Callable[[], ControlCenterRecoveryStopPort]
+    get_tech_lead: Callable[[], ControlCenterTechLead]
 
 
 def preferred_repo_root() -> Path | None:

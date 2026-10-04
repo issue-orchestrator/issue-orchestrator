@@ -190,6 +190,28 @@ def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> Ca
     )
 
 
+def case_h_engine() -> CaseEngine:
+    """Approval labels on planted proposals (#7763): the tech lead is ENABLED
+    (approval verification is tech-lead work) but no trigger ever runs it —
+    no batch threshold, no health review, no stuck sweep, no promotion — so
+    its model is configured and never spent. The coder works whatever a
+    verified approval admits."""
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        tech_lead=True,
+        overlay={
+            "review": {"tech_lead_follow_up_agent": CODER_LABEL},
+            "tech_lead": {
+                "max_concurrent": 1,
+                "authority": dict(EXAM_TECH_LEAD_AUTHORITY),
+                "findings": {"promote": "off"},
+                "health_review": {"interval_minutes": 0},
+                "stuck_sweep": {"enabled": False},
+            },
+        },
+    )
+
+
 def case_e_engine(changes_once: Path) -> CaseEngine:
     """Two people-decisions, typed (#7678): a pre-work question on an issue,
     and a decision before a published PR merges. No tech lead: the engine

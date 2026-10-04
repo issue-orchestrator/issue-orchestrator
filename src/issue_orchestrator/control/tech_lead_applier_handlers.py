@@ -63,6 +63,7 @@ from .tech_lead_finding_promotion import (
     apply_settle_tech_lead_promotion,
 )
 from .tech_lead_proposals import apply_discard_terminal_tech_lead_proposal_ops
+from .tech_lead_approval_writes import apply_settle_proposal_approval
 from .tech_lead_proposal_creation import apply_recover_tech_lead_proposal
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .tech_lead_approval import TechLeadApprovals
     from ..ports.pattern_registry import PatternCaseFileRegistry
 
 ActionHandler = Callable[[Action], ActionResult]
@@ -93,6 +95,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.APPLY_OPERATOR_DECISION,
             ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+            ActionType.SETTLE_PROPOSAL_APPROVAL,
             ActionType.APPEND_PATTERN_OBSERVATION,
             ActionType.RECORD_TECH_LEAD_DISPOSITION,
             ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
@@ -165,6 +168,7 @@ def tech_lead_action_handlers(
     recover_validated_work: ActionHandler | None = None,
     release_withheld_review: ActionHandler | None = None,
     apply_operator_decision: ActionHandler | None = None,
+    approvals: "TechLeadApprovals | None" = None,
 ) -> dict[ActionType, ActionHandler]:
     """Map every tech-lead ActionType to the owner that applies it."""
     handlers: dict[ActionType, ActionHandler] = {
@@ -210,6 +214,12 @@ def tech_lead_action_handlers(
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: (
             lambda action: apply_discard_terminal_tech_lead_proposal_ops(
                 action, tracker=repository_host, authority=authority
+            )
+        ),
+        # Approval-label transitions, re-verified fresh before writing (#7763).
+        ActionType.SETTLE_PROPOSAL_APPROVAL: lambda action: (
+            apply_settle_proposal_approval(
+                action, approvals=approvals, repository=repository_host
             )
         ),
         # Repeat pattern observation: evidence comment + durable count (#6957).

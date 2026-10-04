@@ -26,6 +26,7 @@ from .sandbox_scope import (
 )
 from .pause_state import PauseState
 from .session_run import SessionRunAssets, SessionRunIdentity
+from .tech_lead_approval import ApprovalSettlement
 from .tech_lead_findings import PromotionUpdate, PromotableFinding, SettledPromotion
 from .tech_lead_session import (
     ApprovedTechLeadOp,
@@ -1540,8 +1541,8 @@ class TechLeadFacts:
     health_review_fingerprint: str = ""
     existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
     # Approved gated tech_lead proposals (#6778): open issues that carry a
-    # StoredTechLeadOp but no longer carry the proposed-tech-lead gate label,
-    # classified from the SAME anchor scan. The planner turns each into the
+    # StoredTechLeadOp and a maintainer-applied ``approved`` label the approval
+    # owner verified (#7763), classified from the SAME anchor scan. The planner turns each into the
     # stored op's execution action.
     approved_tech_lead_ops: tuple["ApprovedTechLeadOp", ...] = field(default_factory=tuple)
     # Ledger rows whose proposal issue was ABSENT from the exhaustive scan
@@ -1552,12 +1553,16 @@ class TechLeadFacts:
     # fact gathering read-only (#6779 R10).
     absent_proposal_op_candidates: tuple[int, ...] = field(default_factory=tuple)
     # The operator-approval backlog as LABEL truth (#7014): every OPEN issue the
-    # tick observed carrying the proposed-tech-lead gate, whether or not an op
+    # tick observed as an unapproved tech-lead proposal, whether or not an op
     # ledger row backs it. Promoted findings and plain follow-up proposals carry
     # the same gate with no ledger row, so this is the only fact that can say
     # how many approvals are actually pending. Projected onto the operator board
     # beside the ledger rows; no planning reads it (approval is a human act).
     gated_proposals: tuple["GatedTechLeadProposal", ...] = field(default_factory=tuple)
+    # Approval-label transitions the approval owner's verdicts call for (#7763):
+    # admit a verified approval, reject one that does not count, restore a
+    # stripped waiting label. Planned into SettleProposalApprovalAction.
+    approval_settlements: tuple["ApprovalSettlement", ...] = field(default_factory=tuple)
     # Open pattern case files (#6781): observation-labeled issues classified
     # from the SAME anchor scan. Projected into the board snapshot so health
     # reviews mine accumulated evidence, and into the tech_lead board file.
@@ -2085,8 +2090,8 @@ class OrchestratorState:
     # silently-wrong). ``tech_lead_expedited`` records which priority_queue
     # entries the tech lead placed, so the cap counts only tech-lead-expedited
     # issues (not operator/retry ones). ``tech_lead_expedite_pending`` holds
-    # gated (propose-authority) create_issue follow-ups awaiting the
-    # proposed-tech-lead gate removal, promoted to the front once un-gated.
+    # gated (propose-authority) create_issue follow-ups awaiting a verified
+    # approval, promoted to the front once admitted (#7763).
     # #7014 F1: did the LAST tick observe a gated approval backlog? A board
     # showing pending approvals must be refreshed when the last one clears,
     # and clearing it is precisely the moment nothing else arms fact

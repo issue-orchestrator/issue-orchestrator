@@ -12,7 +12,7 @@ TECH_LEAD_DECISION_TRIAGE_RULES = """- `propose_decision` puts ONE decision to t
   your recommendation and its consequences as `body`. Optional
   `follow_up_issues` (`[{"title": ..., "body": ...}]`, at most 3) are issues the
   decision splits out. It ALWAYS waits for the operator, whatever the charter
-  says: it becomes a `proposed-tech-lead` issue, and removing that label
+  says: it becomes a `tech-lead-proposal` issue, and a maintainer's approval
   retries the item through the operator's own retry, files the follow-ups with
   the item's labels and milestone, and posts the decision on the item for the
   session that resumes it. Use it when an item waits on a decision (an agent's

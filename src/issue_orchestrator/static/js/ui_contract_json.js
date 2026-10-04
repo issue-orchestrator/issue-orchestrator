@@ -85,6 +85,33 @@
         });
     }
 
+    // Reads one message off a channel several message families share (a
+    // window's postMessage stream). ``undefined``: the value names none of
+    // the discriminated union's members, so it is not this reader's message
+    // and nothing is reported. Otherwise the payload validated against the
+    // union, or ``null`` after one diagnostic. The member tags come from the
+    // generated contract, so callers never hand-write them.
+    function fromUnionMember(value, unionSchemaName, source) {
+        const union = validators.SCHEMAS[unionSchemaName];
+        if (!union || !union.discriminator || !Array.isArray(union.oneOf)) {
+            return _reject({
+                schemaName: unionSchemaName,
+                source: source || 'value',
+                detail: 'schema is not a discriminated union',
+                errors: [],
+            });
+        }
+        const tag = union.discriminator.propertyName;
+        const tags = union.oneOf.map(member => {
+            const name = String(member.$ref || '').split('/').pop();
+            const property = ((validators.SCHEMAS[name] || {}).properties || {})[tag] || {};
+            return property.const;
+        });
+        const candidate = value !== null && typeof value === 'object' ? value[tag] : undefined;
+        if (!tags.includes(candidate)) return undefined;
+        return fromValue(value, unionSchemaName, source);
+    }
+
     // Parses raw JSON text and validates it. Returns the payload, or null.
     function parse(rawText, schemaName, source) {
         const label = source || 'json text';
@@ -222,6 +249,7 @@
         fromEventData,
         fromInlineScript,
         fromResponse,
+        fromUnionMember,
         fromValue,
         parse,
         setViolationReporter,

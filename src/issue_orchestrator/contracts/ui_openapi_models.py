@@ -202,6 +202,28 @@ class ConfigDialogPayload(BaseModel):
     config_text: str
     title: str
 
+class ControlCenterTechLeadPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    generated_at: str
+    repos: list[ControlCenterTechLeadRepoPayload]
+    unreported_count: int = Field(..., ge=0, strict=True)
+    waiting_count: int = Field(..., ge=0, strict=True)
+
+class ControlCenterTechLeadRepoPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    availability: Literal['available', 'engine_not_running', 'unavailable']
+    detail: str
+    name: str
+    repo_key: str
+    section: TechLeadPageSectionPayload | None
+
+    @field_validator('repo_key')
+    @classmethod
+    def _validate_repo_key_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^repo-[0-9a-f]{64}$', value) is None:
+            raise ValueError("repo_key must match '^repo-[0-9a-f]{64}$'")
+        return value
+
 class CopySessionRecordingCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     issue_number: int
@@ -1573,27 +1595,6 @@ class ReviewTranscriptUnavailablePayload(BaseModel):
     kind: Literal['unavailable']
     reason: str
 
-class ReworkProposalPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    can_approve: bool = Field(..., strict=True)
-    can_decline: bool = Field(..., strict=True)
-    detail: str
-    evidence_identity: str
-    expected_head: str
-    feedback: str
-    forward_issue_number: int
-    issue_number: int
-    mutations: str
-    pr_number: int
-    proposal_issue_number: int
-    report: str
-    repository: str
-    status: str
-
-class ReworkProposalsPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    proposals: list[ReworkProposalPayload]
-
 class RunningCodingAttemptPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent: AgentIdentityPayload
@@ -1788,14 +1789,79 @@ class TechLeadActivityPayload(BaseModel):
     emptyMessage: str
     entries: list[TechLeadRunActivityEntryPayload]
 
+class TechLeadCaseFilePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    area: str
+    comment_count: int
+    issue_number: int = Field(..., ge=1, strict=True)
+    link: str
+    title: str
+    updated_at: str
+
+class TechLeadDetailRowPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    value: str
+
+class TechLeadDoingItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_kind: str
+    action_label: str
+    at: str
+    decision_id: str
+    in_flight: bool = Field(..., strict=True)
+    link: str
+    outcome: str
+    outcome_label: str
+    reason: str
+    target_number: int
+
 class TechLeadGlobalHealthReviewScopePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['global_health_review']
+
+class TechLeadHealthReviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = Field(..., strict=True)
+    interval_minutes: int
+    label: str
+    last_at: str
+    next_due_at: str
 
 class TechLeadIssueScopePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     issue_number: int = Field(..., ge=1, strict=True)
     kind: Literal['issue']
+
+class TechLeadOpenMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    number: int | None = None
+    repository: str | None = None
+    type: Literal['cc-open-tech-lead']
+
+class TechLeadPageSectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_files: list[TechLeadCaseFilePayload]
+    doing: list[TechLeadDoingItemPayload]
+    generated_at: str
+    health_review: TechLeadHealthReviewPayload
+    parked: list[TechLeadParkedActionPayload]
+    repository: str
+    run: TechLeadRunStripPayload
+    triaged: list[TechLeadTriagedItemPayload]
+    waiting: list[TechLeadWaitingItemPayload]
+    waiting_count: int = Field(..., ge=0, strict=True)
+
+class TechLeadParkedActionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    escalated: bool = Field(..., strict=True)
+    issue_number: int
+    link: str
+    outcome: str
+    parked_since: str
+    reason: str
+    subject: str
 
 class TechLeadProposalCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1844,6 +1910,51 @@ class TechLeadRunAdmissionPayload(BaseModel):
 class TechLeadRunRequestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scope: TechLeadRunScopePayload
+
+class TechLeadRunStripPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    detail: str
+    ended_at: str
+    has_run: bool = Field(..., strict=True)
+    label: str
+    phase: str
+    phase_label: str
+    started_at: str
+
+class TechLeadTriagedItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decided_at: str
+    issue_number: int = Field(..., ge=1, strict=True)
+    link: str
+    reason: str
+    triage_class: str
+    triage_label: str
+
+class TechLeadWaitingItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_effect: str
+    can_approve: bool = Field(..., strict=True)
+    can_decline: bool = Field(..., strict=True)
+    details: list[TechLeadDetailRowPayload]
+    kind: Literal['proposal', 'merge_ready_pr', 'hand_over']
+    link: str
+    number: int = Field(..., ge=1, strict=True)
+    operation: str
+    recommendation: str
+    status: Literal['awaiting_approval', 'approved', 'approval_not_accepted', 'executing', 'merge_held', 'handed_over']
+    status_label: str
+    title: str
+    waiting_since: str
+
+class TechLeadWaitingMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int = Field(..., ge=0, strict=True)
+    text: str = Field(..., min_length=1)
+    type: Literal['cc-tech-lead-waiting']
+
+class TechLeadWaitingRequestMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal['cc-tech-lead-waiting-request']
 
 class TestCaseHistoryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -2023,6 +2134,8 @@ ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 
 StopValidatedWorkOwnerOutcomePayload: TypeAlias = StopOwnerObservedOutcomePayload | StopOwnerAbsentOutcomePayload | StopOwnerOptionalOutcomePayload
+
+TechLeadFrameMessage: TypeAlias = TechLeadWaitingMessage | TechLeadOpenMessage | TechLeadWaitingRequestMessage
 
 TechLeadRunArtifactCommandPayload: TypeAlias = OpenSessionRecordingCommandPayload | OpenReviewArtifactCommandPayload
 

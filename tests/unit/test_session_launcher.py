@@ -971,6 +971,8 @@ class TestLaunchIssueSession:
 
         ledger = MagicMock(spec=IssueRunLedger)
         ledger.record_run.side_effect = IssueRunEvidenceUnavailable("ledger unavailable")
+        # The launch boundary reads the issue fresh (#7763); it exists on GitHub.
+        mock_repository_host.issues.append(sample_issue)
         bundle = _build_launcher_bundle(
             sample_config, mock_event_sink, mock_repository_host,
             mock_worktree_manager, mock_working_copy, mock_command_runner,
@@ -10621,3 +10623,280 @@ class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
         status = self._observer(sample_config, runner, host).check_session(session)
 
         assert (status is SessionStatus.COMPLETED) is completed
+
+
+class TestTechLeadProposalLaunchConsent:
+    """#7763 review r4 F1: the ONE launch boundary — planned launches and
+    startup's resumption of partial work alike — re-checks a proposal's
+    approval fresh and refuses without a standing maintainer approval."""
+
+    @staticmethod
+    def _proposal(labels) -> Issue:
+        from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+        return Issue(number=123, title="Follow-up", labels=["agent:web", *labels],
+                     repo="test/repo", body=with_proposal_marker("b"))
+
+    def test_an_unapproved_proposal_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import GATED, make_approvals
+
+        proposal = self._proposal([*GATED, "in-progress"])
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = make_approvals()
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert "tech-lead proposal" in result.reason
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_bot_reapproval_since_the_last_tick_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import ADMITTED, BOT, FakeApprovalEvidence, make_approvals
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(123)  # a maintainer approved; the scan verified it
+        approvals = make_approvals(evidence)
+        proposal = self._proposal(ADMITTED)
+        approvals.verify(proposal)
+        evidence.label(123, by=BOT)  # removed and re-applied by a bot, unobserved
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_an_approval_removed_during_worktree_preparation_never_spawns(
+        self, launcher_bundle, mock_repo_host, mock_worktree_manager
+    ) -> None:
+        """#7763 review r11 F1: consent is re-read after the slow worktree
+        preparation, before anything irreversible; the worktree is cleaned up
+        and the claim released."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        prepare = mock_worktree_manager.create
+
+        def prepare_while_a_maintainer_revokes(*args, **kwargs):
+            # The maintainer removes `approved` while the worktree is prepared.
+            mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])
+            return prepare(*args, **kwargs)
+
+        mock_worktree_manager.create = prepare_while_a_maintainer_revokes
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert result.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+        [prepared] = mock_worktree_manager.create_calls  # it got that far...
+        assert len(mock_worktree_manager.remove_calls) == 1  # ...and was cleaned up
+
+    def test_a_known_proposal_stripped_of_labels_and_marker_never_spawns(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r15 F1: proposal identity is the owner's index, not
+        what the issue's labels and body say after an edit."""
+        from tests.approval_helpers import approving_everything
+
+        approvals = approving_everything()
+        approvals.remember_proposals([123])  # filed by the tech lead, indexed
+        approvals.record_scope((), {}, retired=[123])  # closed once: retired (r18 F1)
+        ordinary_looking = Issue(number=123, title="Follow-up", labels=["agent:web"], repo="test/repo", body="b")
+        mock_repo_host.issues[123] = ordinary_looking
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        assert not approvals.admits(ordinary_looking)
+        result = launcher_bundle.launcher.launch_issue_session(ordinary_looking, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_an_op_backed_proposal_never_migrated_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        """#7763 review r19 F1: an op in the durable ledger names its issue a
+        proposal even with no index row, labels or marker (e.g. one the
+        migration skipped as out of scope until its scope label came back)."""
+        from tests.approval_helpers import approving_everything
+
+        approvals = approving_everything()
+        approvals.ledger_numbers = lambda: (123,)  # the authority store's op ledger
+        ordinary_looking = Issue(number=123, title="Reset it", labels=["agent:web"], repo="test/repo", body="b")
+        mock_repo_host.issues[123] = ordinary_looking
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        assert not approvals.admits(ordinary_looking)
+        result = launcher_bundle.launcher.launch_issue_session(ordinary_looking, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        approvals.observe([ordinary_looking])  # seen on the board: back in the scope's reads
+        assert 123 in approvals.indexed_proposals()
+
+    def test_a_validation_retry_and_a_rework_of_a_revoked_proposal_never_spawn(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r22 F1: every coding launch path asks the same consent
+        check: an admitted proposal whose `approved` was removed gets no
+        validation retry and no rework session."""
+        from tests.approval_helpers import make_approvals
+
+        revoked = self._proposal(["tech-lead-proposal"])  # admitted, then `approved` removed
+        mock_repo_host.issues[123] = revoked
+        launcher_bundle.action_applier.tech_lead_approvals = make_approvals()
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Follow-up", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-follow-up",
+            original_prompt="Work on issue #123", validation_error="tests failed",
+            validation_error_file="/tmp/validation-errors.txt", retry_count=1,
+            source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        retried = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert not retried.success and retried.disposition is LaunchDisposition.WITHDRAWN
+        mock_repo_host.prs[123] = [
+            PRInfo(456, "Fix #123", "url", "123-follow-up", "Fixes #123", "open", [], head_sha="a" * 40)
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Address the review",
+        )
+
+        reworked = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert not reworked.success and reworked.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_revocation_after_the_hold_is_caught_at_terminal_creation(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1: consent is read once more right before the
+        terminal is created; a revocation after the durable hold (here, while
+        the launch moves the issue to in-progress) spawns nothing and undoes
+        the in-progress move."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        moves = []
+
+        def apply(action, *_args, **_kwargs):
+            moves.append(action)
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])  # revoked now
+            return MagicMock(success=True)
+
+        launcher_bundle.action_applier.apply.side_effect = apply
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        labels = [(type(m).__name__, m.label) for m in moves if isinstance(m, (AddLabelAction, RemoveLabelAction))]
+        assert ("AddLabelAction", "in-progress") in labels and ("RemoveLabelAction", "in-progress") in labels
+
+    def test_a_revocation_after_a_retrys_hold_is_caught_at_terminal_creation(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1, the validation-retry path."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        mock_repo_host.issues[123] = self._proposal(ADMITTED)
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+
+        def apply(action, *_args, **_kwargs):
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])  # revoked now
+            return MagicMock(success=True)
+
+        launcher_bundle.action_applier.apply.side_effect = apply
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Follow-up", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-follow-up",
+            original_prompt="Work on issue #123", validation_error="tests failed",
+            validation_error_file="/tmp/validation-errors.txt", retry_count=1,
+            source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_revocation_during_the_rework_feedback_fetch_spawns_nothing(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1, the rework path."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        mock_repo_host.issues[123] = self._proposal(ADMITTED)
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        mock_repo_host.prs[123] = [
+            PRInfo(456, "Fix #123", "url", "123-follow-up", "Fixes #123", "open", [], head_sha="a" * 40)
+        ]
+        reviews = mock_repo_host.get_pr_reviews
+
+        def fetch_while_revoked(pr_number):
+            mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])
+            return reviews(pr_number)
+
+        mock_repo_host.get_pr_reviews = fetch_while_revoked
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Address the review",
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert not result.success and result.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert result.success
+
+
+def test_startup_never_queues_a_fully_stripped_proposal_as_an_anchor(
+    sample_config, mock_repo_host, tmp_path
+) -> None:
+    """#7763 review r10 F2: a non-op follow-up whose gate labels were all
+    stripped is still a proposal by its body marker, so a batch-anchor title
+    and the tech-lead agent label never make it an anchor."""
+    from issue_orchestrator.control.health_review_trigger import (
+        recover_pending_tech_lead_anchors,
+    )
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+    TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+    mock_repo_host.issues = {
+        906: Issue(
+            number=906,
+            title="Tech Lead Batch Review follow-up",
+            labels=["agent:tech-lead"],
+            repo="test/repo",
+            body=with_proposal_marker("Proposed follow-up."),
+        )
+    }
+    state = OrchestratorState()
+
+    recover_pending_tech_lead_anchors(
+        state,
+        repository_host=mock_repo_host,
+        config=sample_config,
+        session_exists=lambda name: False,
+        tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+        claims=_claims_store(),
+    )
+
+    assert state.pending_tech_lead_reviews == []

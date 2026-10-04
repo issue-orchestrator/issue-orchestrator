@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.domain.tech_lead_approval import (
+    APPROVED_LABEL,
+    AWAITING_APPROVAL_LABEL,
+    TECH_LEAD_PROPOSAL_LABEL,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
 from issue_orchestrator.testing.exam.case import REVIEW_STARTED_EVENT
@@ -30,7 +35,11 @@ from issue_orchestrator.testing.exam.cases import (
     UPGRADE_EARLY_TICKS,
     blocked_issue_green_pr_awaiting_review,
     blocked_items_triaged,
+    BOT_APPROVED,
+    MAINTAINER_APPROVED,
+    STRIPPED,
     halted_exchange_with_validated_work,
+    positive_approval_executes_once,
     merge_held_work_proceeds,
     stale_claim_paused_for_reconcile,
     upgrade_with_work_in_flight,
@@ -50,6 +59,7 @@ from tests.e2e.exam.case_engines import (
     case_b_engine,
     case_c_engine,
     case_d_engine,
+    case_h_engine,
     case_e_engine,
     case_u_engine,
 )
@@ -67,7 +77,7 @@ from tests.e2e.exam.observe import (
     terminal_tech_lead_runs,
 )
 from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
-from tests.e2e.fixtures import fetch_gh_audit_report
+from tests.e2e.fixtures import _github_adapter, fetch_gh_audit_report
 from tests.e2e.flows import E2EFlow
 
 logger = logging.getLogger(__name__)
@@ -81,6 +91,14 @@ CASE_C_EXTERNAL_ID = "M0-762"
 CASE_U_CODING_EXTERNAL_ID = "M0-763"
 CASE_U_REVIEW_EXTERNAL_ID = "M0-764"
 CASE_D_ASKS_EXTERNAL_ID = "M0-765"
+CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-766"
+CASE_H_MAINTAINER_EXTERNAL_ID = "M0-769"
+CASE_H_STRIPPED_EXTERNAL_ID = "M0-770"
+CASE_H_BOT_EXTERNAL_ID = "M0-771"
+
+#: Case H keeps watching this long after its goals first hold, so a proposal
+#: the engine wrongly admits LATER still fails the case.
+CASE_H_SETTLE_S = 240.0
 CASE_E_ASKS_EXTERNAL_ID = "M0-767"
 CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-768"
 
@@ -452,6 +470,92 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
 
 
 # ---------------------------------------------------------------------------
+# Case H
+# ---------------------------------------------------------------------------
+
+
+def _bot_repository_host(run: ExamRun):
+    """A host that writes as a GitHub App (bot) identity, for Case H's bot
+    "approval". It is the harness repo's own App (its default mode config);
+    without one the case cannot plant its fault and says so."""
+    from issue_orchestrator.execution.providers import create_repository_host
+
+    path = run.harness_root / ".issue-orchestrator" / "config" / "modes" / "default" / "main.yaml"
+    app_config = Config.load(path)
+    if not app_config.github_app_auth_configured():
+        raise RuntimeError(
+            f"Case H plants an `approved` label from a bot identity and needs a GitHub"
+            f" App configured in {path}; none is."
+        )
+    return create_repository_host(repo=run.repo, config=app_config)
+
+
+async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
+    """Three gated tech-lead proposals; only the maintainer's approval runs (#7763).
+
+    The labels are planted BEFORE the engine starts, so its first tick (whose
+    approval scan is always due) judges all three at once: the maintainer's
+    `approved` (the harness's own token — a repository admin), a stripped
+    `awaiting-approval` (what an engine retry used to do), and a bot's
+    `approved` (the harness repo's GitHub App).
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_h_engine()
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model
+        )
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        flow.ensure_labels([TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, APPROVED_LABEL])
+        gated = [CODER_LABEL, E2E_DATA_LABEL, TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL]
+        items: list[TrackedItem] = []
+        for role, external_id, what in (
+            (MAINTAINER_APPROVED, CASE_H_MAINTAINER_EXTERNAL_ID, "approved by a maintainer"),
+            (STRIPPED, CASE_H_STRIPPED_EXTERNAL_ID, "waiting label stripped"),
+            (BOT_APPROVED, CASE_H_BOT_EXTERNAL_ID, "'approved' by a bot"),
+        ):
+            _, number = flow.create_issue(
+                f"[{external_id}] [EXAM-H] Tech-lead proposal {what}",
+                gated,
+                body=(
+                    "Tech-lead exam case H: a gated create_issue proposal the tech lead"
+                    f" filed under propose authority, then {what}."
+                ),
+            )
+            items.append(TrackedItem(role, number, external_id=external_id))
+        maintainer, stripped, bot = items
+        operator = _github_adapter(run.repo)
+        operator.add_label(maintainer.issue_number, APPROVED_LABEL)
+        operator.remove_label(stripped.issue_number, AWAITING_APPROVAL_LABEL)
+        _bot_repository_host(run).add_label(bot.issue_number, APPROVED_LABEL)
+        run.notes.append(
+            f"planted: #{maintainer.issue_number} approved by the harness token,"
+            f" #{stripped.issue_number} waiting label stripped,"
+            f" #{bot.issue_number} approved by the harness App"
+        )
+        engine = spec.engine(config, checkout)
+        await engine.start()
+        try:
+            started = time.monotonic()
+            goals_met = goals_met_probe(run, engine, *items)
+
+            async def settled() -> bool:
+                return time.monotonic() - started >= CASE_H_SETTLE_S and await goals_met()
+
+            ended_by = await drive(engine, done=settled, quiet_s=900, timeout_s=25 * 60)
+            return await _finish(
+                run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
 # Case D
 # ---------------------------------------------------------------------------
 
@@ -756,6 +860,16 @@ def case_b(config: Config) -> ExamCase:
 
 def case_d(config: Config) -> ExamCase:
     return blocked_items_triaged(needs_human_label=_labels(config).needs_human)
+
+
+def case_h(config: Config) -> ExamCase:
+    del config  # the approval labels are raw: the same in every engine config
+    return positive_approval_executes_once(
+        proposal_label=TECH_LEAD_PROPOSAL_LABEL,
+        awaiting_label=AWAITING_APPROVAL_LABEL,
+        approved_label=APPROVED_LABEL,
+    )
+
 
 
 def case_e(config: Config) -> ExamCase:

@@ -3,9 +3,8 @@
 Three tech-lead lanes are ledger-driven rather than scan-driven, and all three
 were being assembled inline in the planner's main loop:
 
-* **Approved gated proposals** (#6778) — the operator removed the
-  ``proposed-tech-lead`` label, so the fact scan classified the stored op as
-  approved; the appliers re-validate preconditions and finalize the proposal.
+* **Approved gated proposals** (#6778, #7763) — a maintainer's ``approved``
+  label was verified, so the fact scan classified the stored op as approved; the appliers re-validate preconditions and finalize the proposal.
 * **Terminal-op cleanup candidates** (#6779 R7/R10) — fact gathering only
   CLASSIFIED ledger rows absent from the exhaustive scan (it stays read-only),
   so the applier must re-read each proposal issue before discarding: absence
@@ -24,7 +23,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .actions import Action, DiscardTerminalTechLeadProposalOpsAction, RecordTechLeadDispositionAction
+from .actions import (
+    Action,
+    DiscardTerminalTechLeadProposalOpsAction,
+    RecordTechLeadDispositionAction,
+    SettleProposalApprovalAction,
+)
 from .tech_lead_finding_promotion import plan_finding_promotion_actions
 from .reconciliation import build_expected_for_mutation
 from .tech_lead_proposals import plan_approved_tech_lead_op_executions
@@ -58,6 +62,17 @@ def plan_tech_lead_ledger_actions(
                 candidate_issue_numbers=facts.absent_proposal_op_candidates
             )
         )
+    actions.extend(
+        SettleProposalApprovalAction(
+            issue_number=item.issue_number,
+            transition=item.transition,
+            verdict_kind=item.verdict.kind.value,
+            actor=item.verdict.actor,
+            reason=f"proposal #{item.issue_number} approval: {item.transition.value} ({item.verdict.describe()})",
+            expected=build_expected_for_mutation(),
+        )
+        for item in facts.approval_settlements
+    )
     actions.extend(RecordTechLeadDispositionAction(disposition=row,
         reason="resume admitted tech-lead disposition", expected=build_expected_for_mutation()) for row in facts.pending_dispositions)
     actions.extend(plan_finding_promotion_actions(config, facts))

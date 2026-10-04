@@ -13,7 +13,7 @@ Two rules make a receipt trustworthy, and both are here rather than at each
 call site, because a rule enforced at four call sites is four rules:
 
 * **Applied, not merely filed.** A gated proposal is created on GitHub and is
-  deliberately INERT until an operator removes its ``proposed-tech-lead`` label.
+  deliberately INERT until a maintainer approves it (#7763).
   Reporting it as an executed decision would say "the tech lead is writing" for
   precisely the state #7080 is about -- decisions piling up unapproved (#7262
   review F2).

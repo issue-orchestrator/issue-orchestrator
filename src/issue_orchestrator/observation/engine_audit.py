@@ -50,7 +50,7 @@ from ..contracts.engine_audit import (
 from ..contracts.engine_start import LabelPolicy
 from ..control.label_manager import TECH_LEAD_NEEDS_HUMAN_LABEL, LabelManager
 from ..control.reconciliation import RECONCILE_PAUSE_LABEL
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
 from ..infra.config import Config
 from ..infra.engine_log_reader import EngineLogEntry, EngineLogExcerpt
@@ -88,7 +88,7 @@ ATTENTION_LABELS: tuple[str, ...] = (
     "blocked-failed",
     "recovery-pending",
     RECONCILE_PAUSE_LABEL,
-    PROPOSED_TECH_LEAD_LABEL,
+    AWAITING_APPROVAL_LABEL,
 )
 
 

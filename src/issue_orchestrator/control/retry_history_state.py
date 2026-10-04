@@ -294,9 +294,9 @@ class RetryHistoryState:
     def record_expedite_pending(self, issue_number: int) -> None:
         """Remember a gated (propose-authority) expedite follow-up (#6870).
 
-        The issue is created behind the ``proposed-tech-lead`` gate, so it must
-        NOT jump the lane yet. :meth:`promote_expedite_pending` moves it to the
-        front once an operator removes the gate.
+        The issue is created awaiting approval, so it must NOT jump the lane
+        yet. :meth:`promote_expedite_pending` moves it to the front once a
+        verified approval admits it (#7763).
         """
         if issue_number not in self._state.tech_lead_expedite_pending:
             self._state.tech_lead_expedite_pending.append(issue_number)

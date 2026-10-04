@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, with_proposal_marker
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCreationKind,
     TechLeadCreationOrigin,
@@ -52,7 +53,6 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
-    PROPOSED_TECH_LEAD_LABEL,
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.events import EventName
@@ -1600,8 +1600,8 @@ class TestCreateTechLeadIssueAction:
         """A gated proposal is created, and is deliberately INERT (#7262 F2).
 
         Under `propose` authority a follow-up is filed carrying
-        `proposed-tech-lead` and does nothing until an operator removes that
-        label. Counting it as executed would make the write-health alarm report
+        `awaiting-approval` and does nothing until a maintainer labels it
+        `approved`. Counting it as executed would make the write-health alarm report
         `writing` for precisely the state #7080 is about -- decisions piling up
         unapproved -- so the one signal that would have caught it says the
         opposite.
@@ -1611,8 +1611,8 @@ class TestCreateTechLeadIssueAction:
         mock_repository_host.create_issue.return_value = {"number": 100}
         action = CreateTechLeadIssueAction(
             title="Gated follow-up the review decided on",
-            body="Body",
-            labels=("agent:backend", PROPOSED_TECH_LEAD_LABEL),
+            body=with_proposal_marker("Body"),
+            labels=("agent:backend", AWAITING_APPROVAL_LABEL),
             reason="tech_lead decision action A4: create follow-up issue (gated)",
             flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
             origin=TechLeadCreationOrigin.derived_from_anchor(7255),
@@ -1626,6 +1626,28 @@ class TestCreateTechLeadIssueAction:
             for call in mock_events.publish.call_args_list
             if call.args[0].name == EventName.TECH_LEAD_ACTION_EXECUTED.value
         ]
+
+    def test_a_filed_proposal_joins_the_approval_index(self, applier, mock_repository_host):
+        """#7763 review r6 F2: a strip of every gate label before the approval
+        scope first observes it must not hide the proposal from the inbox."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+        from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+        applier.tech_lead_ops = InMemoryTechLeadAuthorityStore()
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTechLeadIssueAction(
+            title="Gated follow-up",
+            body=with_proposal_marker("Body"),
+            labels=("agent:backend", AWAITING_APPROVAL_LABEL),
+            reason="tech_lead decision action A4: create follow-up issue (gated)",
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            origin=TechLeadCreationOrigin.derived_from_anchor(7255),
+            expected=ExpectedState.with_labels(required={"agent:tech-lead"}),
+        )
+
+        assert applier.apply(action).success
+
+        assert applier.tech_lead_ops.proposal_index.indexed_proposals() == {100}
 
     def test_a_decided_follow_up_is_reported_as_an_executed_decision(
         self, applier, mock_repository_host, mock_events
@@ -3366,6 +3388,9 @@ class TestClaimGateAudit:
     #   precondition with read-only owners, then performs its only writes
     #   (pr-pending, review label, blocked-failed) as AddLabel/RemoveLabel
     #   actions dispatched back through this applier's claim-verified handlers.
+    # - SETTLE_PROPOSAL_APPROVAL: guarded by the reconciliation gate on its
+    #   proposal issue; it writes only approval labels/comments on an unclaimed
+    #   tech-lead proposal (never a claimed work item), re-verified fresh (#7763)
     # - DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: orchestrator-owned ledger cleanup
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
@@ -3435,6 +3460,7 @@ class TestClaimGateAudit:
         ActionType.APPLY_OPERATOR_DECISION,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+        ActionType.SETTLE_PROPOSAL_APPROVAL,
         # Writes only the local charter decision ledger (#7330); no GitHub call.
         ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS,
         # Records its decision locally, then dispatches its effect back through
@@ -3675,11 +3701,15 @@ class TestActLevelOpsCrossTheGateExactlyOnce:
         # The kill path re-confirms consent through the repository host (a
         # different port), so it never contributes to the fresh-read count.
         mock_repository_host.get_issue.return_value = Issue(
-            number=self.PROPOSAL, title="Tech Lead proposal", labels=["agent:tech-lead"]
+            number=self.PROPOSAL, title="Tech Lead proposal",
+            labels=["agent:tech-lead", "tech-lead-proposal", "awaiting-approval", "approved"],
         )
         executor = MagicMock()
         executor.apply.side_effect = lambda action: ActionResult.ok(action)
+        from tests.approval_helpers import approving_everything
+
         applier = make_action_applier(
+            tech_lead_approvals=approving_everything(),
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3819,8 +3849,8 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
             ),
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal: reset_retry #12",
-                body="documentation only",
-                labels=("agent:tech-lead", "proposed-tech-lead"),
+                body=with_proposal_marker("documentation only"),
+                labels=("agent:tech-lead", "tech-lead-proposal", "awaiting-approval"),
                 origin=origin,
                 op=StoredTechLeadOp(
                     op_type="reset_retry",

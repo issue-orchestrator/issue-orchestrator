@@ -16,7 +16,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.domain.tech_lead_session import OperatorDecision
+from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
 from issue_orchestrator.control.actions import (
     Action,
     ActionResult,
@@ -36,6 +39,7 @@ from issue_orchestrator.control.actions import (
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
     RequestReworkAction,
+    SettleProposalApprovalAction,
     SettleTechLeadPromotionAction,
     SurfaceTechLeadProposalAction,
 )
@@ -48,7 +52,6 @@ from issue_orchestrator.control.tech_lead_applier_handlers import (
 from issue_orchestrator.domain.tech_lead_findings import PatternObservation
 from issue_orchestrator.domain.scoped_rework import ReworkRequest, ReworkTarget
 from issue_orchestrator.domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     StoredTechLeadOp,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadCreationOrigin,
@@ -65,6 +68,7 @@ from issue_orchestrator.domain.validated_work_commands import (
 ANCHOR = 77
 CASE_FILE = 65
 TARGET = 12
+PROPOSAL_ISSUE = 512
 UPSTREAM = "owner/upstream"
 PROMOTION_MARKER = "<!-- issue-orchestrator:tech-lead-promotion:v1:abc -->"
 CASE_FILE_MARKER = "<!-- issue-orchestrator:tech-lead-case-file:v1:abc -->"
@@ -115,8 +119,8 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
         ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE: (
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal",
-                body="b",
-                labels=("agent:tech-lead", PROPOSED_TECH_LEAD_LABEL),
+                body=with_proposal_marker("b"),
+                labels=("agent:tech-lead", "tech-lead-proposal", AWAITING_APPROVAL_LABEL),
                 origin=TechLeadCreationOrigin.derived_from_anchor(ANCHOR),
                 op=_op(),
                 expected=expected,
@@ -263,6 +267,15 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
             ),
             CASE_FILE,
         ),
+        # The proposal issue whose approval labels it writes (#7763).
+        ActionType.SETTLE_PROPOSAL_APPROVAL: (
+            SettleProposalApprovalAction(
+                issue_number=PROPOSAL_ISSUE,
+                transition=ApprovalTransition.ADMIT,
+                expected=expected,
+            ),
+            PROPOSAL_ISSUE,
+        ),
         # No managed-repo subject: this writes only orchestrator-owned ledger
         # rows, and its candidates are issues that are already gone or closed.
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: (
@@ -369,6 +382,7 @@ class _Registry:
             authority=self.authority,
             pattern_registry=self.pattern_registry,
             promotion_target=self.promotion_target,
+            approvals=MagicMock(),
         )
 
     def _inert(self, action: Action) -> ActionResult:

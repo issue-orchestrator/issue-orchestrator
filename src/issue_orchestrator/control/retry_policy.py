@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, Sequence
 
+from ..domain.tech_lead_approval import is_approval_model_label
 from .label_manager import LabelManager
 from .review_scope import issues_with_open_prs
 
@@ -44,7 +45,8 @@ def labels_to_remove_for_retry(
     """Return labels that must be removed before an issue can be retried.
 
     Retry should clear:
-    - all blocking labels
+    - all blocking labels, except the approval model's (#7763): a retry never
+      approves a tech-lead proposal
     - tech_lead needs-human provenance paired with a cleared needs-human label
     - pr-pending (scheduler-gating lifecycle label), unless the issue still has
       an open PR (#7293). pr-pending is what keeps the scheduler from starting
@@ -52,7 +54,9 @@ def labels_to_remove_for_retry(
       its review", and stripping the label would launch a duplicate coder
       while the PR waits.
     """
-    labels_to_remove = set(lm.get_blocking(labels)) | (
+    labels_to_remove = {
+        label for label in lm.get_blocking(labels) if not is_approval_model_label(label)
+    } | (
         {lm.tech_lead_needs_human} & set(labels)
     )
     if lm.is_pr_pending(labels) and not has_open_pr:

@@ -1,5 +1,6 @@
 """Unit tests for FactGatherer."""
 
+from tests.approval_helpers import CLAIMED, GATED, approving_everything
 import pytest
 
 from issue_orchestrator.domain.pause_state import PauseState
@@ -43,9 +44,14 @@ def _host_sees_gated(mock_repository_host, *gated) -> None:
     """
     def _list(**kwargs):
         labels = kwargs.get("labels") or []
-        return list(gated) if "proposed-tech-lead" in labels else []
+        return list(gated) if _is_scope_query(labels) else []
 
     mock_repository_host.list_issues.side_effect = _list
+
+def _is_scope_query(labels) -> bool:
+    """The approval scope queries each gate label (#7763)."""
+    return "tech-lead-proposal" in labels or "awaiting-approval" in labels
+
 
 def _anchor_scan_calls(mock_repository_host) -> list:
     """The ANCHOR scan calls only, ignoring the approval-scope query.
@@ -63,7 +69,7 @@ def _anchor_scan_calls(mock_repository_host) -> list:
     return [
         call
         for call in mock_repository_host.list_issues.call_args_list
-        if "proposed-tech-lead" not in (call.kwargs.get("labels") or [])
+        if not _is_scope_query(call.kwargs.get("labels") or [])
     ]
 
 
@@ -1091,7 +1097,7 @@ class TestFactGathererHealthReviewFacts:
         # The due health review uses the shared exhaustive tech-lead-agent scan,
         # which both finds the anchor beyond the first page and supplies open
         # case files to the health-review snapshot (#6781).
-        assert [call for call in tracker.calls if "proposed-tech-lead" not in call["labels"]] == [
+        assert [call for call in tracker.calls if not _is_scope_query(call["labels"])] == [
             {
                 "labels": ["agent:tech-lead"],
                 "state": "open",
@@ -1102,13 +1108,14 @@ class TestFactGathererHealthReviewFacts:
         # The approval-scope query is a SEPARATE observation, by gate label
         # rather than agent label, because promoted findings carry the target's
         # worker agent label and no agent-scoped scan can see them.
-        assert [call for call in tracker.calls if "proposed-tech-lead" in call["labels"]] == [
+        assert [call for call in tracker.calls if _is_scope_query(call["labels"])] == [
             {
-                "labels": ["proposed-tech-lead"],
+                "labels": [gate_label],
                 "state": "open",
                 "limit": 2000,
                 "exhaustive": True,
             }
+            for gate_label in ("tech-lead-proposal", "awaiting-approval")
         ]
 
 
@@ -1404,7 +1411,7 @@ class TestGatedProposalScanClassification:
             created_at="2026-07-11T00:00:00+00:00",
         )
 
-    def _gatherer(self, mock_config, mock_repository_host, ops):
+    def _gatherer(self, mock_config, mock_repository_host, ops, approvals=None):
         from issue_orchestrator.ports.tech_lead_authority import (
             InMemoryTechLeadAuthorityStore,
         )
@@ -1419,16 +1426,17 @@ class TestGatedProposalScanClassification:
             config=mock_config,
             repository_host=mock_repository_host,
             tech_lead_authority=store,
+            approvals=approvals or approving_everything(),
         )
 
     def test_approved_op_classified_from_same_scan(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        """An op-backed issue WITHOUT the gate label is approved; the anchor
+        """An op-backed issue a maintainer approved is approved; the anchor
         classification still works on the remaining issues — all from one
-        list_issues call."""
+        anchor list_issues call."""
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Tech Lead proposal: reset & retry issue #13 from scratch", labels=["tech-lead-agent"]),
+            Issue(number=500, title="Tech Lead proposal: reset & retry issue #13 from scratch", labels=["tech-lead-agent", *CLAIMED]),
             Issue(number=7, title="Tech Lead Batch Review: 3 PRs pending", labels=["tech-lead-agent"]),
         ]
         gatherer = self._gatherer(
@@ -1452,7 +1460,7 @@ class TestGatedProposalScanClassification:
             Issue(
                 number=500,
                 title="Tech Lead proposal: kill hung session for issue #14",
-                labels=["tech-lead-agent", "proposed-tech-lead"],
+                labels=["tech-lead-agent", "tech-lead-proposal"],
             ),
         ]
         gatherer = self._gatherer(
@@ -1496,7 +1504,7 @@ class TestGatedProposalScanClassification:
         delete a live op)."""
         # #500 is still an open proposal; #501's issue is absent from the scan.
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Tech Lead proposal", labels=["tech-lead-agent", "proposed-tech-lead"]),
+            Issue(number=500, title="Tech Lead proposal", labels=["tech-lead-agent", "tech-lead-proposal"]),
         ]
         gatherer = self._gatherer(
             mock_config,
@@ -1525,7 +1533,7 @@ class TestGatedProposalScanClassification:
             Issue(
                 number=500,
                 title="Tech Lead proposal: reset & retry issue #13 from scratch",
-                labels=["tech-lead-agent", "proposed-tech-lead"],
+                labels=["tech-lead-agent", "tech-lead-proposal"],
             ),
         ]
         gatherer = FactGatherer(
@@ -1557,6 +1565,7 @@ class TestGatedProposalScanClassification:
             config=mock_config,
             repository_host=mock_repository_host,
             tech_lead_authority=store,
+            approvals=approving_everything(),
         )
 
     def test_batch_disabled_proposals_still_execute_and_clean_up(
@@ -1568,10 +1577,10 @@ class TestGatedProposalScanClassification:
         reconcile is decoupled from the batch review threshold — otherwise
         manual-approval / default-threshold proposals never advance or
         self-heal."""
-        # #500 is approved (op-backed issue WITHOUT the gate label); #501's
-        # issue is absent from the scan (terminal cleanup candidate).
+        # #500 is approved (a maintainer's `approved`); #501's issue is absent
+        # from the scan (terminal cleanup candidate).
         mock_repository_host.list_issues.return_value = [
-            Issue(number=500, title="Tech Lead proposal for issue #13", labels=["tech-lead-agent"]),
+            Issue(number=500, title="Tech Lead proposal for issue #13", labels=["tech-lead-agent", *CLAIMED]),
         ]
         gatherer = self._gatherer_batch_disabled(
             mock_config,
@@ -1781,14 +1790,10 @@ class TestApprovalBacklogFacts:
 
     @staticmethod
     def _gated(number: int, title: str = "gated") -> Issue:
-        from issue_orchestrator.domain.tech_lead_session import (
-            PROPOSED_TECH_LEAD_LABEL,
-        )
-
         return Issue(
             number=number,
             title=title,
-            labels=["agent:backend", PROPOSED_TECH_LEAD_LABEL],
+            labels=["agent:backend", *GATED],
             created_at="2026-07-28T00:00:00+00:00",
         )
 
@@ -2042,7 +2047,7 @@ class TestTheApprovalBacklogIsObservedCompletelyAndCleared:
         return Issue(
             number=number,
             title=title,
-            labels=["tech-lead-agent", "proposed-tech-lead"],
+            labels=["tech-lead-agent", "tech-lead-proposal"],
         )
 
     def test_clearing_the_last_approval_still_publishes_an_empty_backlog(
@@ -2130,7 +2135,7 @@ class _LabelAwareIssueHost:
     def list_issues(self, **kwargs):
         self.calls.append(kwargs)
         labels = kwargs.get("labels") or []
-        return list(self._approval if "proposed-tech-lead" in labels else self._anchor)
+        return list(self._approval if _is_scope_query(labels) else self._anchor)
 
     def get_prs_with_label(self, *_a, **_k):
         return []
@@ -2163,7 +2168,7 @@ class TestTheBacklogSeesWhatOnlyItsOwnScopeCanSee:
         promoted = Issue(
             number=8100,
             title="Promoted finding: condor lane forks a shell",
-            labels=["agent:backend", "proposed-tech-lead"],
+            labels=["agent:backend", "tech-lead-proposal"],
         )
         host = _LabelAwareIssueHost(anchor=[], approval=[promoted])
         gatherer = FactGatherer(
@@ -2205,7 +2210,7 @@ class TestApprovalDiscoveryDoesNotDependOnTheBoard:
         hidden = Issue(
             number=8100,
             title="Promoted finding: condor lane forks a shell",
-            labels=["agent:backend", "proposed-tech-lead"],
+            labels=["agent:backend", "tech-lead-proposal"],
         )
         host = _LabelAwareIssueHost(anchor=[], approval=[hidden])
         gatherer = FactGatherer(
@@ -2272,7 +2277,7 @@ class TestAFailedApprovalQueryDoesNotDiscardObservedFacts:
 
         def list_issues(self, **kwargs):
             self.calls.append(kwargs)
-            if "proposed-tech-lead" in (kwargs.get("labels") or []):
+            if _is_scope_query(kwargs.get("labels") or []):
                 from issue_orchestrator.ports.repository_host import (
                     RepositoryHostError,
                 )
@@ -2354,3 +2359,415 @@ class TestAFailedApprovalQueryDoesNotDiscardObservedFacts:
         )
         # ...and the retry is not deferred: the cadence timestamp is untouched.
         assert sample_state.tech_lead_approval_scan_at == 0.0
+
+
+class TestApprovalSettlementFacts:
+    """#7763: the approval scope's verdicts become planned label transitions,
+    with event reads only for items that carry `approved`."""
+
+    @staticmethod
+    def _gatherer(mock_config, mock_repository_host, approvals) -> FactGatherer:
+        from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+        mock_config.tech_lead_review_agent = "agent:tech-lead"
+        mock_config.tech_lead_review_threshold = 0
+        mock_config.tech_lead.health_review.interval_minutes = 0
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            tech_lead_authority=InMemoryTechLeadAuthorityStore(),
+            approvals=approvals,
+        )
+
+    def test_scope_verdicts_plan_admit_reject_and_restore(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+        from tests.approval_helpers import BOT, FakeApprovalEvidence, make_approvals
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(601)  # a maintainer
+        evidence.label(602, by=BOT)
+        _host_sees_gated(
+            mock_repository_host,
+            Issue(number=600, title="waiting", labels=["agent:backend", *GATED]),
+            Issue(number=601, title="maintainer", labels=["agent:backend", *CLAIMED]),
+            Issue(number=602, title="bot", labels=["agent:backend", *CLAIMED]),
+            Issue(number=603, title="stripped", labels=["agent:backend", "tech-lead-proposal"]),
+        )
+        approvals = make_approvals(evidence)
+        gatherer = self._gatherer(mock_config, mock_repository_host, approvals)
+
+        facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+        assert facts is not None
+        assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+            (601, ApprovalTransition.ADMIT),
+            (602, ApprovalTransition.REJECT_CLAIM),
+            (603, ApprovalTransition.RESTORE_WAITING),
+        ]
+        # Evidence was read for the two items carrying `approved`, nothing else.
+        assert sorted({number for number, _, _ in evidence.event_reads}) == [601, 602]
+        # Until the engine admits it, a claimed approval is still in the backlog.
+        assert [p.issue_number for p in facts.gated_proposals] == [600, 601, 602, 603]
+
+    def test_a_removed_approval_un_admits_on_the_next_tick_without_a_scan(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        approvals = approving_everything()
+        admitted = Issue(number=601, title="worked", labels=["agent:backend", *ADMITTED])
+        approvals.verify(admitted)
+        assert approvals.admits(admitted)
+        gatherer = self._gatherer(mock_config, mock_repository_host, approvals)
+        stripped = Issue(number=601, title="worked", labels=["agent:backend", "tech-lead-proposal"])
+
+        gatherer.gather_tech_lead_facts(sample_state, board_issues=[stripped])
+
+        assert not approvals.admits(admitted)
+
+
+def test_a_fully_stripped_proposal_on_the_board_is_restored(mock_config, mock_repository_host, sample_state) -> None:
+    """#7763 review F1: out of the labelled scope, still named by its marker."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition, with_proposal_marker
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    _host_sees_gated(mock_repository_host)  # the labelled scope query finds nothing
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(),
+    )
+    stripped = Issue(number=700, title="t", labels=["agent:backend"], body=with_proposal_marker("b"))
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[stripped])
+
+    assert facts is not None
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (700, ApprovalTransition.RESTORE_WAITING)
+    ]
+
+
+def test_a_proposal_missing_only_its_provenance_label_is_in_the_scope(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r2 F2: the scope queries each gate label, so a proposal
+    whose provenance label was stripped is counted and restored even off-board."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    waiting_only = Issue(number=710, title="t", labels=["agent:backend", "awaiting-approval"])
+    mock_repository_host.list_issues.side_effect = lambda **kw: (
+        [waiting_only] if "awaiting-approval" in (kw.get("labels") or []) else []
+    )
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=make_approvals(),
+    )
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None
+    assert [p.issue_number for p in facts.gated_proposals] == [710]
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (710, ApprovalTransition.RESTORE_WAITING)
+    ]
+
+
+def test_an_indexed_proposal_stripped_of_every_label_stays_in_the_scope(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r6 F2: a non-op proposal off the worker board, stripped of
+    every approval label, is found through the index, restored and shown; a
+    closed one leaves the index."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition, with_proposal_marker
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    body = with_proposal_marker("b")
+    filed = Issue(number=720, title="t", labels=["agent:backend", *GATED], body=body)
+    closed = Issue(number=721, title="t", labels=["agent:backend", *GATED], body=body)
+    _host_sees_gated(mock_repository_host, filed, closed)
+    approvals = make_approvals()
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])  # first observation
+    assert approvals.indexed_proposals() == {720, 721}
+
+    stripped = Issue(number=720, title="t", labels=["agent:backend"], body=body)
+    gone = Issue(number=721, title="t", labels=["agent:backend", *GATED], body=body, state="closed")
+    _host_sees_gated(mock_repository_host)  # no label query names either any more
+    mock_repository_host.get_issue.side_effect = {720: stripped, 721: gone}.get
+    sample_state.tech_lead_approval_scan_at = 0.0  # the next approval refresh
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None
+    assert [p.issue_number for p in facts.gated_proposals] == [720]
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (720, ApprovalTransition.RESTORE_WAITING)
+    ]
+    assert approvals.indexed_proposals() == {720}
+
+
+def test_an_indexed_proposal_stripped_of_labels_and_marker_stays_a_proposal(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r15 F1: discovery keeps an open indexed issue whatever its
+    labels and body say, and the settlement restores its gate."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = make_approvals()
+    approvals.remember_proposals([730])
+    edited = Issue(number=730, title="t", labels=["agent:backend"], body="no marker any more")
+    _host_sees_gated(mock_repository_host)
+    mock_repository_host.get_issue.side_effect = {730: edited}.get
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None
+    assert approvals.indexed_proposals() == {730}  # never retired while open
+    assert [(s.issue_number, s.transition) for s in facts.approval_settlements] == [
+        (730, ApprovalTransition.RESTORE_WAITING)
+    ]
+    assert not approvals.admits(edited)
+    # ...and it waits on the operator in the published backlog (r16 F1).
+    assert [p.issue_number for p in facts.gated_proposals] == [730]
+
+
+def test_a_failed_scope_refresh_leaves_the_scope_unobserved_until_one_succeeds(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r16 F2: after a failed refresh the last read model is not
+    a current answer, so the page reports "not observed" instead of an
+    all-clear; the next successful refresh restores it."""
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = make_approvals()
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+    _host_sees_gated(mock_repository_host)
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert approvals.scope_observed
+
+    mock_repository_host.list_issues.side_effect = RepositoryHostError("GitHub is down")
+    sample_state.tech_lead_approval_scan_at = 0.0
+    assert gatherer.gather_tech_lead_facts(sample_state, board_issues=[]) is None
+    assert not approvals.scope_observed
+
+    _host_sees_gated(mock_repository_host)
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert approvals.scope_observed
+
+
+def test_a_closed_proposal_reopened_after_an_edit_is_still_a_proposal(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r18 F1: closing retires a proposal from the scope's reads
+    but never forgets it. Stripped of labels and marker and reopened, it is
+    never admitted; the board's next observation reactivates it and the
+    scope refresh restores its gate."""
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = make_approvals()
+    approvals.remember_proposals([750])
+    closed = Issue(number=750, title="t", labels=["agent:backend"], body="b", state="closed")
+    _host_sees_gated(mock_repository_host)
+    mock_repository_host.get_issue.side_effect = lambda number: {750: closed}.get(number)
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert approvals.indexed_proposals() == frozenset()  # retired from the reads...
+    assert 750 in approvals.known_proposals()  # ...never forgotten
+
+    reopened = Issue(number=750, title="t", labels=["agent:backend"], body="edited")
+    assert not approvals.admits(reopened)
+    mock_repository_host.get_issue.side_effect = lambda number: {750: reopened}.get(number)
+    sample_state.tech_lead_approval_scan_at = 0.0
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[reopened])
+
+    assert facts is not None
+    assert approvals.indexed_proposals() == {750}
+    assert (750, ApprovalTransition.RESTORE_WAITING) in [
+        (s.issue_number, s.transition) for s in facts.approval_settlements
+    ]
+
+
+def test_an_approval_removed_between_the_anchor_scan_and_the_scope_read_waits_again(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r20 F1: the scope read supersedes the anchor scan's
+    verdict, so the page shows the proposal waiting, not approved."""
+    from tests.approval_helpers import CLAIMED, FakeApprovalEvidence, make_approvals
+    from tests.unit.view_models.test_tech_lead_page import _section
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    evidence = FakeApprovalEvidence()
+    evidence.label(760)  # a maintainer's approval, seen by the anchor scan
+    approvals = make_approvals(evidence)
+    claimed = Issue(number=760, title="t", labels=["agent:tech-lead", *CLAIMED])
+    unclaimed = Issue(number=760, title="t", labels=["agent:tech-lead", *GATED])
+    mock_repository_host.list_issues.side_effect = lambda **kw: (
+        [unclaimed] if _is_scope_query(kw.get("labels") or []) else [claimed]
+    )
+    authority = InMemoryTechLeadAuthorityStore()  # an op arms the anchor scan
+    authority.record_op(issue_number=760, op=StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z"))
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=authority, approvals=approvals,
+    )
+
+    facts = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    assert facts is not None and facts.approved_tech_lead_ops  # the scan DID see the approval
+    [(issue, verdict)] = approvals.observed_scope()
+    assert verdict is None
+    section = _section(proposals=approvals.observed_scope())
+    assert section.waiting_count == 1
+    [card] = section.waiting
+    assert card.status == "awaiting_approval" and card.can_approve
+
+
+def _op_for(number: int):
+    from issue_orchestrator.domain.tech_lead_session import StoredTechLeadOp
+
+    return StoredTechLeadOp(
+        op_type="reset_retry", target_issue_number=13, rationale="r", source_run_id="run",
+        source_session_name="s", source_action_id="A1", created_at="2026-10-03T00:00:00Z")
+
+
+def test_the_later_gate_query_snapshot_wins(mock_config, mock_repository_host, sample_state) -> None:
+    """#7763 review r21 F1: the waiting-label query (run second) saw the
+    issue after its `approved` was removed; that newer snapshot is the one
+    verified and shown."""
+    from tests.approval_helpers import CLAIMED, approving_everything
+    from tests.unit.view_models.test_tech_lead_page import _section
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    approvals = approving_everything()
+    claimed = Issue(number=770, title="t", labels=["agent:backend", *CLAIMED])
+    unclaimed = Issue(number=770, title="t", labels=["agent:backend", *GATED])
+    approvals.verify(claimed)  # an earlier verified approval, cached
+    mock_repository_host.list_issues.side_effect = lambda **kw: (
+        [claimed] if "tech-lead-proposal" in (kw.get("labels") or [])
+        else [unclaimed] if "awaiting-approval" in (kw.get("labels") or []) else []
+    )
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=InMemoryTechLeadAuthorityStore(), approvals=approvals,
+    )
+
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+
+    [(issue, verdict)] = approvals.observed_scope()
+    assert "approved" not in issue.labels and verdict is None
+    [card] = _section(proposals=approvals.observed_scope()).waiting
+    assert card.status == "awaiting_approval" and card.can_approve
+
+
+def test_a_pending_op_does_not_re_run_the_gate_queries_every_tick(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r21 F2: between approval refreshes the tick reuses the
+    owner's last complete scope; the op is still reconciled every tick."""
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import make_approvals
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_op(issue_number=780, op=_op_for(780))
+    waiting = Issue(number=780, title="t", labels=["agent:tech-lead", *GATED])
+    _host_sees_gated(mock_repository_host, waiting)
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=authority, approvals=make_approvals(),
+    )
+    first = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    assert first is not None and [p.issue_number for p in first.gated_proposals] == [780]
+    mock_repository_host.list_issues.reset_mock()
+
+    second = gatherer.gather_tech_lead_facts(sample_state, board_issues=[])  # well within 300s
+
+    gate_queries = [
+        call for call in mock_repository_host.list_issues.call_args_list
+        if _is_scope_query(call.kwargs.get("labels") or [])
+    ]
+    assert gate_queries == []
+    assert second is not None and [p.issue_number for p in second.gated_proposals] == [780]
+
+
+def test_a_reused_scope_takes_this_ticks_newer_snapshot(
+    mock_config, mock_repository_host, sample_state
+) -> None:
+    """#7763 review r22 F2: between gate refreshes, the anchor scan's newer
+    read of a proposal (its `approved` removed) replaces the reused snapshot,
+    so the page shows it waiting, with no gate query."""
+    from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+    from tests.approval_helpers import CLAIMED, approving_everything
+    from tests.unit.view_models.test_tech_lead_page import _section
+
+    mock_config.tech_lead_review_agent = "agent:tech-lead"
+    mock_config.tech_lead.health_review.interval_minutes = 0
+    authority = InMemoryTechLeadAuthorityStore()
+    authority.record_op(issue_number=790, op=_op_for(790))
+    approved = Issue(number=790, title="t", labels=["agent:tech-lead", *CLAIMED])
+    revoked = Issue(number=790, title="t", labels=["agent:tech-lead", *GATED])
+    mock_repository_host.list_issues.side_effect = lambda **kw: [approved]
+    approvals = approving_everything()
+    gatherer = FactGatherer(
+        config=mock_config, repository_host=mock_repository_host,
+        tech_lead_authority=authority, approvals=approvals,
+    )
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])
+    [(_, verdict)] = approvals.observed_scope()
+    assert verdict is not None and verdict.approved
+    mock_repository_host.list_issues.reset_mock()
+    mock_repository_host.list_issues.side_effect = lambda **kw: [revoked]
+
+    gatherer.gather_tech_lead_facts(sample_state, board_issues=[])  # within the cadence
+
+    assert not [
+        call for call in mock_repository_host.list_issues.call_args_list
+        if _is_scope_query(call.kwargs.get("labels") or [])
+    ]
+    [card] = _section(proposals=approvals.observed_scope()).waiting
+    assert card.status == "awaiting_approval" and card.can_approve

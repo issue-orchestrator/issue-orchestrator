@@ -451,9 +451,17 @@ class TestBuildOrchestratorForTesting:
             prompt_path=prompt, model="sonnet", timeout_minutes=45,
         )
         minimal_config.tech_lead_review_agent = "agent:tech-lead"
-        # Bounded GitHub seams: no PRs to audit, no fresh issue to re-read.
+        anchor = Issue(
+            number=41,
+            title="Tech Lead Batch Review",
+            labels=["agent:tech-lead"],
+            repo="test/repo",
+            body="No dependencies.",
+        )
+        # Bounded GitHub seams: no PRs to audit; the launch boundary's fresh
+        # read (#7763) sees the anchor as it is.
         mock_github.get_prs_with_label.return_value = []
-        mock_github.get_issue.return_value = None
+        mock_github.get_issue.side_effect = lambda number: anchor if number == 41 else None
 
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             orch = build_orchestrator_for_testing(
@@ -461,15 +469,7 @@ class TestBuildOrchestratorForTesting:
                 github=mock_github,
             )
 
-        session = orch.launch_session(
-            Issue(
-                number=41,
-                title="Tech Lead Batch Review",
-                labels=["agent:tech-lead"],
-                repo="test/repo",
-                body="No dependencies.",
-            )
-        )
+        session = orch.launch_session(anchor)
 
         assert session is not None, "tech_lead launch must succeed end-to-end"
         snapshot_path = (

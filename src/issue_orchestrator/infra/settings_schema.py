@@ -1382,9 +1382,11 @@ class ReviewSettings(BaseModel):
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
                 "execute files the proposed follow-up issue directly; propose "
-                "files it as a gated proposal issue carrying the proposed-tech-lead "
-                "label, inert until an operator removes that label (per-instance "
-                "approval, #6778). Allowed values: execute, propose."
+                "files it as a gated proposal issue (labels tech-lead-proposal and "
+                "awaiting-approval), inert until a maintainer approves it with the "
+                "approved label or the Control Center's Approvals inbox; approval "
+                "admits it to the work queue (per-instance approval, #6778, #7763). "
+                "Allowed values: execute, propose."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.authority.create_issue",
@@ -1425,7 +1427,8 @@ class ReviewSettings(BaseModel):
             "doc_notes": (
                 "Reset from scratch is destructive, so it always needs operator "
                 "approval (#7330): each proposal is filed as a gated GitHub issue "
-                "carrying the proposed-tech-lead label, and removing the label is "
+                "labelled tech-lead-proposal and awaiting-approval, and a "
+                "maintainer's approved label (or Approve in the Control Center) is "
                 "per-instance approval that runs the reset+retry-from-scratch "
                 "owner after re-validating the proposal's preconditions; stale "
                 "proposals downgrade to a surfaced record (#6764, #6778). "
@@ -1445,8 +1448,8 @@ class ReviewSettings(BaseModel):
             "doc_examples": ["propose", "execute"],
             "doc_notes": (
                 "propose (default) files each proposal as a gated GitHub issue "
-                "carrying the proposed-tech-lead label; removing the label is "
-                "per-instance approval and executes the stored op after "
+                "labelled tech-lead-proposal and awaiting-approval; a maintainer's "
+                "approved label is per-instance approval and executes the stored op after "
                 "re-validating the target session is still active (#6778). "
                 "execute terminates the exact session generation that was active "
                 "when the decision was planned, after re-validating that it is "
@@ -1548,8 +1551,9 @@ class ReviewSettings(BaseModel):
                 "The finding-promotion lane (#6957) turns a pattern case file "
                 "that crossed its evidence threshold into a runnable issue in "
                 "the repo that owns the fix. gated (default) files it carrying "
-                "the proposed-tech-lead label, so operator approval is exactly "
-                "one action — removing the label; auto files it ungated, "
+                "the tech-lead-proposal and awaiting-approval labels, so operator "
+                "approval is exactly one action — a maintainer's approved label "
+                "in the target repo (#7763); auto files it ungated, "
                 "immediately runnable in the target repo's own pipeline; off "
                 "disables the lane entirely (no promotion issues and no "
                 "loop-closure reads); the lane is also inert without "
@@ -1799,7 +1803,7 @@ class ReviewSettings(BaseModel):
                 "expedite requests past the cap are logged and fall back to "
                 "normal priority. 0 disables expediting entirely. Under "
                 "'propose' authority an expedited follow-up jumps the lane only "
-                "after its proposed-tech-lead gate is removed."
+                "after a maintainer's approval admits it (#7763)."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.max_expedited",
