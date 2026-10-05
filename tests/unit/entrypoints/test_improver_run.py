@@ -380,3 +380,19 @@ def test_every_run_records_the_provider_and_model_it_ran_on(tmp_path: Path, choi
     assert [r.outcome for r in records] == [RunOutcome.ACCEPTED, RunOutcome.AGENT_FAILED]
     assert [r.agent for r in store.runs()] == [choice, choice]
     assert f"agent {choice.describe()}" in render_run(records[0])
+
+
+def test_a_change_of_agent_starts_a_new_stall_point_baseline(tmp_path: Path) -> None:
+    """r1 F3: a Codex run's grades are no baseline for a Claude run's; a
+    change of provider or model is not a change in the engine."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    codex = FakeAgent(_findings("exam_case"))
+    codex.choice = ImproverAgentChoice(provider=ImproverProvider.CODEX, model="gpt-5.6-sol")
+    _improver(store, host, codex).run(_request(), apply=False)
+    claude = FakeAgent(_findings("exam_case"))
+
+    first_claude = _improver(store, host, claude).run(_request(), apply=False)
+    second_claude = _improver(store, host, claude).run(_request(), apply=False)
+
+    assert {m.previous for m in first_claude.stall_points} == {None}
+    assert [(m.stall_point, m.previous) for m in second_claude.stall_points] == [("noticed_not_acted", 1)]

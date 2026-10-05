@@ -97,6 +97,9 @@ class CodexImproverAgent:
         ]
 
     def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+        # Absolute: Codex runs IN the run dir, so a relative final-message
+        # path or sandbox root would resolve beneath it.
+        run_dir = run_dir.resolve()
         workspace = run_dir / AGENT_WORKSPACE
         workspace.mkdir()
         initialized = self._runner.run(["git", "init", "-q", str(workspace)], timeout_seconds=60)

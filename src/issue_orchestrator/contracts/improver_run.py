@@ -61,8 +61,9 @@ class ImproverAgentChoice(_Closed):
 
     @classmethod
     def for_provider(cls, provider: ImproverProvider, model: str | None = None) -> ImproverAgentChoice:
-        """``provider`` on ``model``, or on the provider's default model."""
-        return cls(provider=provider, model=model or DEFAULT_IMPROVER_MODELS[provider])
+        """``provider`` on ``model``, or on the provider's default model when
+        none is named (an empty name is refused, never defaulted)."""
+        return cls(provider=provider, model=DEFAULT_IMPROVER_MODELS[provider] if model is None else model)
 
     def describe(self) -> str:
         return f"{self.provider.value}:{self.model}"

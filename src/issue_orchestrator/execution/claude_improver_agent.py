@@ -82,6 +82,9 @@ class ClaudeImproverAgent:
         ]
 
     def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+        # Absolute: the launch runs IN the run dir, so a relative prompt path
+        # would resolve beneath it.
+        run_dir = run_dir.resolve()
         (run_dir / PROMPT_FILE).write_text(prompt, encoding="utf-8")
         result = self._runner.run(
             self.argv(run_dir=run_dir),

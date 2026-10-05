@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from issue_orchestrator.contracts.improver_run import (
     DEFAULT_IMPROVER_AGENT,
@@ -119,3 +120,31 @@ def test_the_default_agent_is_the_tournament_winner_claude_opus() -> None:
     assert DEFAULT_IMPROVER_AGENT == ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="opus")
     assert ImproverAgentChoice.for_provider(ImproverProvider.CODEX).model == "gpt-5.6-sol"
     assert ImproverAgentChoice.for_provider(ImproverProvider.CLAUDE, "sonnet").model == "sonnet"
+
+
+def test_an_empty_model_is_refused_not_defaulted() -> None:
+    """r1 F2: ``--model ""`` must not silently run (and record) the default."""
+    with pytest.raises(ValidationError):
+        ImproverAgentChoice.for_provider(ImproverProvider.CLAUDE, "")
+
+
+def test_a_relative_run_dir_still_feeds_the_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """r1 F1: the launch runs IN the run dir, so a relative prompt path would
+    resolve beneath it and Claude would never start. The adapter's real shell
+    runs, with ``cat`` standing in for ``claude``."""
+    (tmp_path / "out" / "run").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    class ShellRunner(FakeRunner):
+        def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False, newlines=None):  # type: ignore[no-untyped-def]
+            super().run(command, cwd=cwd, env=env, timeout_seconds=timeout_seconds)
+            argv = [*command[: command.index("claude")], "cat"]
+            done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+            return CommandResult(done.returncode, done.stdout, done.stderr)
+
+    runner = ShellRunner(CommandResult(0, "", ""))
+
+    answer = _agent(runner).run(prompt="the prompt", run_dir=Path("out/run"))
+
+    assert answer.final_message == "the prompt", answer.detail
+    assert runner.calls[0]["env"]["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(tmp_path.resolve() / "out" / "run")

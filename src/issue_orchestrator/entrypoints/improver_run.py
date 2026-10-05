@@ -38,6 +38,7 @@ from ..contracts.improver_inputs import (
 from ..contracts.improver_run import (
     ExamScore,
     FindingGrade,
+    ImproverAgentChoice,
     ImproverRunRecord,
     RunOutcome,
     StallPointMove,
@@ -193,7 +194,7 @@ class ImproverRun:
             f"{len(findings.findings)} finding(s) accepted"
             + ("; blind run: nothing is filed" if request.blind else ""),
             grades=_grades(findings),
-            stall_points=self._stall_point_moves(findings, request.engine.engine_id),
+            stall_points=self._stall_point_moves(findings, request.engine.engine_id, self._agent.choice),
             trend=findings.trend,
             # A blind run's findings may duplicate the issues it was not shown.
             effects=() if request.blind else planned_effects(findings, request.engine),
@@ -243,14 +244,17 @@ class ImproverRun:
         return None
 
     def _stall_point_moves(
-        self, findings: ImproverFindings, engine_id: str
+        self, findings: ImproverFindings, engine_id: str, agent: ImproverAgentChoice
     ) -> tuple[StallPointMove, ...]:
+        """How the grades moved since the previous audit of the engine BY THE
+        SAME AGENT: a change of provider or model is not a change in the
+        engine, so it starts a new baseline (#8001)."""
         current = Counter(f.stall_point for f in findings.findings)
         previous_run = next(
             (
                 r
                 for r in self._store.runs()
-                if r.is_engine_audit and r.engine_id == engine_id
+                if r.is_engine_audit and r.engine_id == engine_id and r.agent == agent
             ),
             None,
         )
