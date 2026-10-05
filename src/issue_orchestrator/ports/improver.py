@@ -5,6 +5,8 @@
 * :class:`ImproverRunStore` — the run owner's write side.
 * :class:`ImproverAgent` — the untrusted agent: given the prompt and a run
   directory it can only read, it returns its final message, never a write.
+  Each provider (Claude, Codex) is one adapter; ``choice`` says which, and
+  on what model, so the run records it.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..contracts.improver_findings import ImproverFindings
-from ..contracts.improver_run import ImproverRunRecord
+from ..contracts.improver_run import ImproverAgentChoice, ImproverRunRecord
 
 
 class ImproverRunReader(Protocol):
@@ -60,6 +62,11 @@ class ImproverAgentResult:
 
 
 class ImproverAgent(Protocol):
+    @property
+    def choice(self) -> ImproverAgentChoice:
+        """The provider and model this agent runs on."""
+        ...
+
     def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult: ...
 
 

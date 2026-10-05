@@ -178,7 +178,7 @@ validation:
     tech-lead-improver:
       # The tech-lead improver (#7490, #7567): audits every engine Control
       # Center runs (or ran within the window), runs the improver prompt
-      # read-only on Codex per engine, validates its findings strictly and
+      # read-only per engine (Claude Opus by default, #8001), validates its findings strictly and
       # files what they ask for (exam cases, capability issues, proposals the
       # operator decides). Off until the operator enables it.
       # It grades engine BEHAVIOUR, so it is due on engine activity (new

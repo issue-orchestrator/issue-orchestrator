@@ -147,6 +147,7 @@ class ImproverRun:
             outputs_repo=request.outputs_repo,
             run_dir=str(run_dir),
             blind_excluded_issues=tuple(sorted(request.excluded_open_issues)),
+            agent=self._agent.choice,
         )
         try:
             staged = self._stager.stage(
@@ -271,6 +272,7 @@ def render_run(record: ImproverRunRecord) -> str:
         f"{record.run_id} {record.outcome.value}: {record.detail}",
         f"  audited {record.audited_repo} (engine {record.engine_id} at {record.engine_commit});"
         f" outputs to {record.outputs_repo}",
+        f"  agent {record.agent.describe() if record.agent else 'codex (recorded before #8001)'}",
         f"  run dir {record.run_dir}",
     ]
     if record.blind_excluded_issues:

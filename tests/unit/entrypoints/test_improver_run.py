@@ -6,8 +6,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE
-from issue_orchestrator.contracts.improver_run import EffectStatus, RunOutcome
+from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverAgentChoice, ImproverProvider, RunOutcome
 from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.entrypoints.improver_run import ImproverRun, ImproverRunRequest, findings_text, render_run
@@ -49,7 +51,9 @@ class FakeStager:
 
 
 class FakeAgent:
-    def __init__(self, message: str | None, detail: str = "codex finished") -> None:
+    choice = ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="opus")
+
+    def __init__(self, message: str | None, detail: str = "claude finished") -> None:
         self.message = message
         self.detail = detail
         self.prompts: list[str] = []
@@ -298,6 +302,8 @@ def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path
     """3b r6 F1: e.g. the permission profile refuses a Codex config."""
 
     class Refused:
+        choice = FakeAgent.choice
+
         def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
             raise RuntimeError("legacy sandbox_mode disables the permission profile")
 
@@ -350,3 +356,27 @@ def test_a_blind_runs_grades_are_not_the_next_runs_baseline(tmp_path: Path) -> N
     record = _improver(store, host, FakeAgent(_findings("exam_case"))).run(_request())
 
     assert [(m.stall_point, m.previous) for m in record.stall_points] == [("noticed_not_acted", None)]
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="opus"),
+        ImproverAgentChoice(provider=ImproverProvider.CODEX, model="gpt-5.6-sol"),
+    ],
+    ids=lambda c: c.describe(),
+)
+def test_every_run_records_the_provider_and_model_it_ran_on(tmp_path: Path, choice: ImproverAgentChoice) -> None:
+    """Grades and trends compare like with like only if each run says which
+    agent produced it (#8001), whatever its outcome."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    accepted = FakeAgent(_findings("exam_case"))
+    accepted.choice = choice
+    failed = FakeAgent(None, "timed out")
+    failed.choice = choice
+
+    records = [_improver(store, host, agent).run(_request()) for agent in (accepted, failed)]
+
+    assert [r.outcome for r in records] == [RunOutcome.ACCEPTED, RunOutcome.AGENT_FAILED]
+    assert [r.agent for r in store.runs()] == [choice, choice]
+    assert f"agent {choice.describe()}" in render_run(records[0])

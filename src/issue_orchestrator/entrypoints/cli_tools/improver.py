@@ -2,10 +2,10 @@
 """The tech-lead improver's orchestrator side (#7490).
 
     improver run --outputs-repo issue-orchestrator/issue-orchestrator \
-        --model gpt-5.6-sol [--exam-dir D] [--engine-source-repo .] [--recent-hours 24]
+        [--provider claude|codex] [--model M] [--exam-dir D] [--engine-source-repo .] [--recent-hours 24]
     improver run --state-dir ~/dev/porchpin/.issue-orchestrator/state \
         --audited-repo porchpin/porchpin --outputs-repo issue-orchestrator/issue-orchestrator \
-        --model gpt-5.6-sol [--no-apply --exclude-open-issue N ...]
+        [--no-apply --exclude-open-issue N ...]
     improver status
     improver apply --outputs-repo issue-orchestrator/issue-orchestrator
     improver stage ... --run-dir RUN [--previous-audit A]
@@ -14,8 +14,10 @@
 (each ``python -m issue_orchestrator.entrypoints.cli_tools.improver ...``)
 
 ``run`` is the whole daily run (:mod:`..improver_run`): stage the inputs, run
-the improver read-only on Codex, validate its findings strictly, record the
-run and apply the accepted findings' GitHub effects. Without ``--state-dir``
+the improver read-only, validate its findings strictly, record the
+run and apply the accepted findings' GitHub effects. The agent runs on
+``--provider`` (default: the latest improver tournament's winner, Claude) and
+``--model`` (default: that provider's default model). Without ``--state-dir``
 it sweeps every engine Control Center runs or ran within ``--recent-hours``
 (:mod:`..improver_sweep`), one improver run per engine; with it, it audits
 that one engine. ``status`` prints the
@@ -53,7 +55,8 @@ from ...execution.command_runner import LocalCommandRunner
 from ...execution.providers import create_repository_host
 from ...observation.engine_audit import Unavailable
 from ...execution.improver_effect_applier import ImproverEffects
-from ...execution.codex_improver_agent import CodexImproverAgent
+from ...contracts.improver_run import DEFAULT_IMPROVER_AGENT, ImproverAgentChoice, ImproverProvider
+from ...execution.improver_agents import improver_agent
 from ...execution.improver_run_store import FileImproverRunStore
 from ...ports.improver import ImproverStoreBusy
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
@@ -107,13 +110,18 @@ def build_parser() -> argparse.ArgumentParser:
     stage.add_argument("--previous-audit", type=Path, help="The previous run's audit.json")
     validate = sub.add_parser("validate", help="Validate improver-findings.json")
     validate.add_argument("--run-dir", required=True, type=Path)
-    run = sub.add_parser("run", help="Stage, run the improver on Codex, validate, record and apply")
+    run = sub.add_parser("run", help="Stage, run the improver agent, validate, record and apply")
     _engine_arguments(run, one_engine=False)
     run.add_argument(
         "--recent-hours", type=float, default=24.0,
         help="Sweep: an engine never audited before that stopped longer ago than this is not audited",
     )
-    run.add_argument("--model", required=True, help="The Codex model the improver runs on")
+    run.add_argument(
+        "--provider", type=ImproverProvider, choices=list(ImproverProvider),
+        default=DEFAULT_IMPROVER_AGENT.provider,
+        help="The agent CLI the improver runs on (default: %(default)s, the latest tournament's winner)",
+    )
+    run.add_argument("--model", help="The model the improver runs on (default: the provider's default)")
     run.add_argument("--agent-timeout-minutes", type=int, default=90)
     run.add_argument("--prompt", type=Path, default=DEFAULT_PROMPT)
     run.add_argument(
@@ -194,6 +202,11 @@ def _effects(outputs_repo: str, store: FileImproverRunStore) -> ImproverEffects:
     )
 
 
+def agent_choice(args: argparse.Namespace) -> ImproverAgentChoice:
+    """The provider and model ``run`` launches the improver on."""
+    return ImproverAgentChoice.for_provider(args.provider, args.model)
+
+
 def run(args: argparse.Namespace) -> int:
     if (args.state_dir is None) != (args.audited_repo is None):
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
@@ -206,9 +219,9 @@ def run(args: argparse.Namespace) -> int:
         return ImproverRun(
             store=store,
             stager=_stager(args, engine.repo),
-            agent=CodexImproverAgent(
+            agent=improver_agent(
+                agent_choice(args),
                 runner=ProcessGroupCommandRunner(),
-                model=args.model,
                 timeout_seconds=args.agent_timeout_minutes * 60,
             ),
             effects=_effects(args.outputs_repo, store),
