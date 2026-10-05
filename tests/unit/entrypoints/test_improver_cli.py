@@ -55,3 +55,24 @@ def test_staging_an_engine_without_a_start_record_exits_unavailable(
     ])
 
     assert code == improver.EXIT_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        # Unset: the latest improver tournament's winner (#8001).
+        ([], "claude:opus"),
+        (["--provider", "codex"], "codex:gpt-5.6-sol"),
+        (["--provider", "claude", "--model", "sonnet"], "claude:sonnet"),
+        (["--model", "fable"], "claude:fable"),
+    ],
+)
+def test_run_launches_the_chosen_provider_and_model(argv: list[str], expected: str) -> None:
+    args = improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", *argv])
+
+    assert improver.agent_choice(args).describe() == expected
+
+
+def test_an_unknown_provider_is_refused() -> None:
+    with pytest.raises(SystemExit):
+        improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", "--provider", "gemini"])

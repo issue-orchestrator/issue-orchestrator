@@ -752,23 +752,27 @@ test-tech-lead-exam: sync-deps
 # validator-level halves run in the gate.
 IMPROVER_EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-improver-exam
 test-improver-exam: sync-deps
-	E2E_IMPROVER_EXAM=1 E2E_IMPROVER_EXAM_OUT=$(IMPROVER_EXAM_OUT) E2E_IMPROVER_EXAM_MODEL=$(IMPROVER_MODEL) $(PYTEST) tests/unit/testing/exam/test_improver_exam_live.py -m improver_exam -v -s --tb=short $(PYTEST_TIMINGS)
+	E2E_IMPROVER_EXAM=1 E2E_IMPROVER_EXAM_OUT=$(IMPROVER_EXAM_OUT) $(if $(IMPROVER_PROVIDER),E2E_IMPROVER_EXAM_PROVIDER=$(IMPROVER_PROVIDER),) $(if $(IMPROVER_MODEL),E2E_IMPROVER_EXAM_MODEL=$(IMPROVER_MODEL),) $(PYTEST) tests/unit/testing/exam/test_improver_exam_live.py -m improver_exam -v -s --tb=short $(PYTEST_TIMINGS)
 
 # The tech-lead improver (#7490, #7567): audit every engine Control Center
 # runs (or ran within IMPROVER_RECENT_HOURS), run the improver prompt read-only
-# on Codex once per engine, validate its findings strictly, record each run
-# and file what the accepted findings ask for, into this repository. Set
+# once per engine, validate its findings strictly, record each run and file
+# what the accepted findings ask for, into this repository. Set
 # IMPROVER_STATE_DIR and IMPROVER_AUDITED_REPO to audit one engine instead.
+# IMPROVER_PROVIDER (claude|codex) and IMPROVER_MODEL pick the agent; unset,
+# the CLI's default applies (the latest improver tournament's winner, #8001).
 # Runs are recorded under <git common dir>/io-improver (improver status).
 IMPROVER_REPO ?= issue-orchestrator/issue-orchestrator
-IMPROVER_MODEL ?= gpt-5.6-sol
+IMPROVER_PROVIDER ?=
+IMPROVER_MODEL ?=
 IMPROVER_AGENT_TIMEOUT_MINUTES ?= 90
 IMPROVER_RECENT_HOURS ?= 24
 tech-lead-improver: sync-deps
 	$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.improver run \
 		$(if $(IMPROVER_STATE_DIR),--state-dir "$(IMPROVER_STATE_DIR)" --audited-repo $(IMPROVER_AUDITED_REPO),--recent-hours $(IMPROVER_RECENT_HOURS)) \
 		--outputs-repo $(IMPROVER_REPO) --exam-dir "$(EXAM_OUT)" \
-		--model $(IMPROVER_MODEL) --agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
+		$(if $(IMPROVER_PROVIDER),--provider $(IMPROVER_PROVIDER),) $(if $(IMPROVER_MODEL),--model $(IMPROVER_MODEL),) \
+		--agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 
 test-e2e-onboarding-live: sync-deps
 	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)

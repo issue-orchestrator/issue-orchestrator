@@ -1,10 +1,11 @@
 """Improver exam cases IM1 and IM2, live: the real improver model on each planted fixture (#7490 step 4).
 
-Not part of ``make validate-pr``: it spends a real Codex run (tens of
-minutes). Run it with ``make test-improver-exam``. Knobs:
+Not part of ``make validate-pr``: it spends a real improver model run (tens
+of minutes). Run it with ``make test-improver-exam``. Knobs:
 
-* ``E2E_IMPROVER_EXAM_MODEL`` — the improver's model (default ``gpt-5.6-sol``,
-  as ``make tech-lead-improver`` runs it);
+* ``E2E_IMPROVER_EXAM_PROVIDER`` / ``E2E_IMPROVER_EXAM_MODEL`` — the
+  improver's provider (``claude`` or ``codex``) and model (default: the
+  improver's default agent, as ``make tech-lead-improver`` runs it, #8001);
 * ``E2E_IMPROVER_EXAM_ENGINE_REF`` — the io commit staged as the engine's
   source (default ``HEAD``); the prompt is always this tree's;
 * ``E2E_IMPROVER_EXAM_OUT`` — where each run's directory (the staged inputs,
@@ -35,7 +36,12 @@ from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterP
 from issue_orchestrator.domain.improver_findings_validation import validate_findings
 from issue_orchestrator.entrypoints.improver_run import findings_text
 from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
-from issue_orchestrator.execution.codex_improver_agent import CodexImproverAgent
+from issue_orchestrator.contracts.improver_run import (
+    DEFAULT_IMPROVER_AGENT,
+    ImproverAgentChoice,
+    ImproverProvider,
+)
+from issue_orchestrator.execution.improver_agents import improver_agent
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.engine_source_archive import GitEngineSourceArchive
 from issue_orchestrator.execution.process_group_command_runner import ProcessGroupCommandRunner
@@ -74,9 +80,10 @@ def test_improver_exam(case) -> None:
             commit, destination
         ),
     )
-    agent = CodexImproverAgent(
+    provider = ImproverProvider(os.environ.get("E2E_IMPROVER_EXAM_PROVIDER", DEFAULT_IMPROVER_AGENT.provider))
+    agent = improver_agent(
+        ImproverAgentChoice.for_provider(provider, os.environ.get("E2E_IMPROVER_EXAM_MODEL")),
         runner=ProcessGroupCommandRunner(),
-        model=os.environ.get("E2E_IMPROVER_EXAM_MODEL", "gpt-5.6-sol"),
         timeout_seconds=90 * 60,
     )
 

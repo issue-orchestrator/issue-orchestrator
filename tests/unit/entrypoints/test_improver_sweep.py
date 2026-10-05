@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.adapters.registered_engine_inventory import engine_at
-from issue_orchestrator.contracts.improver_run import RunOutcome
+from issue_orchestrator.contracts.improver_run import ImproverAgentChoice, ImproverProvider, RunOutcome
 from issue_orchestrator.domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
 from issue_orchestrator.entrypoints.engine_activity_probe import SnapshotEngineActivityProbe
 from issue_orchestrator.entrypoints.improver_run import ImproverRun
@@ -64,6 +64,8 @@ class Inventory:
 
 class EmptyFindingsAgent:
     """Writes no finding, after reading which engine it was given."""
+
+    choice = ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="opus")
 
     def __init__(self) -> None:
         self.engines: list[tuple[str, str]] = []

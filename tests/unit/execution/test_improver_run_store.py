@@ -68,3 +68,19 @@ def test_one_run_or_apply_holds_the_store_at_a_time(tmp_path: Path) -> None:
                 pass
     with second.exclusive():
         pass
+
+
+def test_a_run_recorded_before_the_agent_choice_still_reads_back(tmp_path: Path) -> None:
+    """Runs recorded before #8001 carry no ``agent``; ``improver status`` and
+    the next run still read them, as the Codex runs they were."""
+    store = FileImproverRunStore(tmp_path)
+    store.new_run_dir("legacy")
+    store.record(_record("legacy", NOW))
+    [path] = tmp_path.rglob("run.json")
+    doc = path.read_text()
+    assert '"agent": null' in doc
+    path.write_text(doc.replace('  "agent": null,\n', ""))
+
+    [legacy] = store.runs()
+
+    assert legacy.agent is None

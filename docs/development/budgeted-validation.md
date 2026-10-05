@@ -133,9 +133,13 @@ two of each case from there.
 The **tech-lead improver** (`tech-lead-improver`, #7490) is a budgeted suite in
 every mode, `enabled: false` until the operator turns it on. Daily (and after
 50 merges at most), `make tech-lead-improver` audits the engine, stages the
-improver's inputs, runs `examples/prompts/tech-lead-improver.md` read-only on
-Codex, validates the findings strictly and records the run under
-`<git common dir>/io-improver`. A rejected findings file exits 1 with every
+improver's inputs, runs `examples/prompts/tech-lead-improver.md` read-only,
+validates the findings strictly and records the run under
+`<git common dir>/io-improver`. The agent's provider and model are pluggable
+(#8001): `IMPROVER_PROVIDER=claude|codex` and `IMPROVER_MODEL=<model>` (the
+CLI's `--provider` and `--model`). Unset, the improver runs on the latest
+improver tournament's winner, Claude Opus (`claude -p --restricted` with only
+the read tools, the prompt on stdin); each run records which it used. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits
 75. The accepted findings' effects (an issue per finding, deduplicated against
 open issues by the `[improver:<key>]` title token, or an evidence comment on a

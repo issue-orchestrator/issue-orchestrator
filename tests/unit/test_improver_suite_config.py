@@ -34,12 +34,16 @@ def test_the_improver_suite_runs_daily_and_is_off_by_default(config: Path) -> No
     assert "tech-lead-exam" in suites
 
 
-def test_the_make_target_runs_the_improver_on_codex() -> None:
+def test_the_make_target_runs_the_improver_on_the_cli_default_agent() -> None:
     makefile = (ROOT / "Makefile").read_text()
 
     target = makefile.split("tech-lead-improver: sync-deps", 1)[1].split("\n\n", 1)[0]
     assert "cli_tools.improver run" in target
     # By default every engine Control Center runs is audited (#7567).
     assert "--recent-hours $(IMPROVER_RECENT_HOURS)" in target
-    assert "--model $(IMPROVER_MODEL)" in target
+    # The provider and model are passed only when set, so the CLI's default
+    # (the latest improver tournament's winner, #8001) is the one default.
+    assert "$(if $(IMPROVER_PROVIDER),--provider $(IMPROVER_PROVIDER),)" in target
+    assert "$(if $(IMPROVER_MODEL),--model $(IMPROVER_MODEL),)" in target
+    assert "\nIMPROVER_PROVIDER ?=\n" in makefile and "\nIMPROVER_MODEL ?=\n" in makefile
     assert '--exam-dir "$(EXAM_OUT)"' in target

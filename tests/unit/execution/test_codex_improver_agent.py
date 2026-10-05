@@ -96,3 +96,19 @@ def test_no_repository_host_credential_reaches_the_agent(tmp_path: Path, monkeyp
     env = runner.calls[0]["env"]
     assert "secret" not in env.values()
     assert env["CODEX_HOME"] == "/codex" and "PATH" in env
+
+
+def test_a_relative_run_dir_is_made_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """r1 F1: Codex runs IN the run dir, so a relative final-message path or
+    sandbox root would resolve beneath it."""
+    (tmp_path / "out" / "run").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+
+    answer = _agent(runner).run(prompt="P", run_dir=Path("out/run"))
+
+    run_dir = tmp_path.resolve() / "out" / "run"
+    codex = runner.calls[0]["command"]
+    assert codex[codex.index("--output-last-message") + 1] == str(run_dir / FINAL_MESSAGE_FILE)
+    assert runner.calls[0]["cwd"] == run_dir
+    assert answer.final_message == "{}"

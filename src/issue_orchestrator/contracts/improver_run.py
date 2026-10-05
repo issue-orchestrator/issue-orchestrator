@@ -39,6 +39,52 @@ class RunOutcome(StrEnum):
         return {RunOutcome.ACCEPTED: 0, RunOutcome.REJECTED: 1}.get(self, 75)
 
 
+class ImproverProvider(StrEnum):
+    """The agent CLI an improver run is launched on."""
+
+    #: ``claude -p``, the prompt on stdin.
+    CLAUDE = "claude"
+    #: ``codex exec``.
+    CODEX = "codex"
+
+
+class ImproverAgentChoice(_Closed):
+    """Which provider and model an improver run used (#8001).
+
+    The default is the latest improver tournament's winner
+    (:data:`DEFAULT_IMPROVER_AGENT`), so the choice is recorded on each run:
+    grades and trends compare like with like.
+    """
+
+    provider: ImproverProvider
+    model: str = Field(min_length=1)
+
+    @classmethod
+    def for_provider(cls, provider: ImproverProvider, model: str | None = None) -> ImproverAgentChoice:
+        """``provider`` on ``model``, or on the provider's default model when
+        none is named (an empty name is refused, never defaulted)."""
+        return cls(provider=provider, model=DEFAULT_IMPROVER_MODELS[provider] if model is None else model)
+
+    def describe(self) -> str:
+        return f"{self.provider.value}:{self.model}"
+
+
+#: Each provider's default model. Claude's is the ``opus`` alias (its latest
+#: Opus); Codex's is pinned, because Codex's own default is not the model the
+#: improver was tuned on.
+DEFAULT_IMPROVER_MODELS: dict[ImproverProvider, str] = {
+    ImproverProvider.CLAUDE: "opus",
+    ImproverProvider.CODEX: "gpt-5.6-sol",
+}
+
+#: The improver tournament's winner (2026-10-04, #8001: Claude Opus 3.8 of
+#: 24 against Codex's 0.2, on both graders). Change it only on a new
+#: tournament's result.
+DEFAULT_IMPROVER_AGENT = ImproverAgentChoice(
+    provider=ImproverProvider.CLAUDE, model=DEFAULT_IMPROVER_MODELS[ImproverProvider.CLAUDE]
+)
+
+
 class EffectStatus(StrEnum):
     #: Not applied yet (never tried, or stopped by a rate limit).
     PENDING = "pending"
@@ -107,6 +153,10 @@ class ImproverRunRecord(_Closed):
     #: The run's working directory (``improver-data/``, the findings, the
     #: agent's final message), so an operator can read what it saw.
     run_dir: str
+    #: The provider and model the agent ran on. ``None`` only on a run
+    #: recorded before the improver's model was pluggable (#8001), which ran
+    #: on Codex.
+    agent: ImproverAgentChoice | None = None
     #: Set once staging read the engine's start record.
     engine_commit: str | None = None
     #: Whether ``run_dir`` holds a staged ``audit.json`` the next run can diff against.
@@ -150,11 +200,15 @@ class ImproverRunRecord(_Closed):
 
 
 __all__ = [
+    "DEFAULT_IMPROVER_AGENT",
+    "DEFAULT_IMPROVER_MODELS",
     "IMPROVER_RUN_SCHEMA_VERSION",
     "EffectReceipt",
     "EffectStatus",
     "ExamScore",
     "FindingGrade",
+    "ImproverAgentChoice",
+    "ImproverProvider",
     "ImproverRunRecord",
     "RunOutcome",
     "StallPointMove",

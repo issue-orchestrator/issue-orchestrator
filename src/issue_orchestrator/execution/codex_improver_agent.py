@@ -27,6 +27,7 @@ from ..domain.sandbox_scope import (
     DEFAULT_SANDBOX_DENY_READ_FILES,
     SandboxScope,
 )
+from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
 from ..ports.improver import ImproverAgentResult
 from .agent_runner_providers.sandbox import build_codex_sandbox_argv
@@ -61,8 +62,12 @@ class CodexImproverAgent:
         if timeout_seconds <= 0:
             raise ValueError("the improver agent needs a positive timeout")
         self._runner = runner
-        self._model = model
+        self._choice = ImproverAgentChoice(provider=ImproverProvider.CODEX, model=model)
         self._timeout = timeout_seconds
+
+    @property
+    def choice(self) -> ImproverAgentChoice:
+        return self._choice
 
     @staticmethod
     def scope(run_dir: Path) -> SandboxScope:
@@ -86,12 +91,15 @@ class CodexImproverAgent:
             "--skip-git-repo-check",
             "--ephemeral",
             "--color", "never",
-            "--model", self._model,
+            "--model", self._choice.model,
             "--output-last-message", str(run_dir / FINAL_MESSAGE_FILE),
             prompt,
         ]
 
     def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+        # Absolute: Codex runs IN the run dir, so a relative final-message
+        # path or sandbox root would resolve beneath it.
+        run_dir = run_dir.resolve()
         workspace = run_dir / AGENT_WORKSPACE
         workspace.mkdir()
         initialized = self._runner.run(["git", "init", "-q", str(workspace)], timeout_seconds=60)
