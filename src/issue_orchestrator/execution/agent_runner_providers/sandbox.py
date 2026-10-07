@@ -343,6 +343,11 @@ def build_claude_sandbox_settings(
     Extracted as a pure function so the mapping is unit-testable without
     building a full command.
     """
+    if scope.reads_confined:
+        raise SandboxUnsupportedError(
+            "the claude-code sandbox cannot confine native reads to read_roots"
+            " (its OS layer covers Bash only)"
+        )
     self_config_paths = _self_config_paths(scope.write_roots)
     git_rules = (
         _git_worktree_filesystem_rules(git_access) if git_access is not None else []
@@ -532,6 +537,12 @@ def _codex_permission_profile(
     # scratch worktree (#6824 R5). Denies below still override any read.
     for root in _codex_read_only_roots(scope):
         filesystem_entries.append((str(root), _toml_string("read")))
+    if scope.reads_confined:
+        # Deny the whole disk; the more specific grants above (and Codex's
+        # ``:minimal``, the platform files every process needs to start)
+        # remain readable. Verified with codex-cli 0.157.
+        filesystem_entries.append((":minimal", _toml_string("read")))
+        filesystem_entries.append(("/", _toml_string("deny")))
     seen_denies: set[str] = set()
     for raw in (*scope.deny_read_files, *_codex_credential_files()):
         if not _is_absolute_or_home_path(raw):

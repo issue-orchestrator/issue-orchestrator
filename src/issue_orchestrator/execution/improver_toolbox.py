@@ -165,9 +165,10 @@ def _bounded_rows(cursor: sqlite3.Cursor) -> tuple[list[list[object]], bool]:
     rows: list[list[object]] = []
     fetched = 0
     for row in cursor:
-        if len(rows) == MAX_SQL_ROWS or fetched > MAX_SQL_FETCH_BYTES:
+        size = sum(len(v) if isinstance(v, (str, bytes)) else 8 for v in row)
+        if len(rows) == MAX_SQL_ROWS or fetched + size > MAX_SQL_FETCH_BYTES:
             return rows, True
-        fetched += sum(len(v) if isinstance(v, (str, bytes)) else 8 for v in row)
+        fetched += size
         rows.append([_cell(v) for v in row])
     return rows, False
 

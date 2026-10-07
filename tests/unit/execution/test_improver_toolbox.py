@@ -264,4 +264,5 @@ def test_an_answer_stops_at_its_byte_budget(run_dir: Path) -> None:
     answer = json.loads(_toolbox(run_dir).sql_query("timeline.sqlite", sql))
 
     assert answer["truncated"] is True
-    assert len(answer["rows"]) <= 6
+    # Never past the budget: four 900 kB rows fit in 4 MB, a fifth would not.
+    assert len(answer["rows"]) == 4

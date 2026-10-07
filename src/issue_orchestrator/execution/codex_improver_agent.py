@@ -53,15 +53,18 @@ _PASSED_PREFIXES = ("LC_", "CODEX_")
 
 
 def _beyond_the_run_dir() -> tuple[str, ...]:
-    """Reads the agent's shell is denied beyond its run dir (#8001 r3 F1).
+    """Denies on top of the read boundary (``reads_confined``, #8001 r3/r4).
 
-    The shared profile reads the whole disk, home and temp directories
-    included: the operator's ``~/.claude``, the coordinator's directories, a
-    sibling temp file. Denying the home directory and every temp root keeps
-    them out; the run dir (and its workspace) stays readable through its own,
-    more specific, grant even when it lies beneath one of them.
+    The boundary denies everything outside the run dir except the platform's
+    runtime files. The shared profile still grants the temp directories, and
+    the platform set reaches the world-writable ``/var/tmp``, where another
+    process's file could sit: those are denied explicitly. The run dir keeps
+    its own, more specific, grant even when it lies beneath one of them.
     """
-    temp_roots = {"/tmp", os.path.realpath("/tmp"), os.path.realpath(tempfile.gettempdir())}
+    temp_roots = {
+        "/tmp", "/var/tmp",
+        *(os.path.realpath(p) for p in ("/tmp", "/var/tmp", tempfile.gettempdir())),
+    }
     return ("~", *sorted(temp_roots))
 
 
@@ -95,6 +98,7 @@ class CodexImproverAgent:
             egress="model-only",
             deny_env=DEFAULT_SANDBOX_DENY_ENV,
             deny_read_files=(*DEFAULT_SANDBOX_DENY_READ_FILES, *_beyond_the_run_dir()),
+            reads_confined=True,
         )
 
     def argv(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> list[str]:

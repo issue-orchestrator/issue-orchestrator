@@ -149,21 +149,26 @@ def test_the_operators_codex_config_never_reaches_the_agent(tmp_path: Path, empo
     assert "--ignore-user-config" in argv[argv.index("exec"):]
 
 
-def test_the_shell_is_denied_the_home_and_temp_roots_beyond_the_run_dir(tmp_path: Path) -> None:
-    """r3 F1: the shared profile reads the whole disk; the improver's shell
-    must not read ~/.claude, the coordinator's dirs or a sibling temp file.
-    The run dir keeps its own, more specific, read grant (verified live: a
-    run dir under the temp root or under home stays readable)."""
+def test_the_shell_reads_only_its_run_dir(tmp_path: Path) -> None:
+    """r3 F1 / r4 F1: the shared profile reads the whole disk, and a denylist
+    cannot bound a shell. The improver's scope is a read BOUNDARY (the disk
+    denied, the run dir and the platform's runtime files granted), plus
+    explicit denies for the temp areas the shared profile grants. Verified
+    live with the run dir under the temp root and under home: the run dir
+    reads; a sibling, /var/tmp, /Users/Shared, ~/.claude, /Library and
+    /private/var/log do not."""
     import os
     import tempfile
 
     scope = CodexImproverAgent.scope(tmp_path)
 
-    assert "~" in scope.deny_read_files
+    assert scope.reads_confined is True
+    assert "~" in scope.deny_read_files and "/var/tmp" in scope.deny_read_files
     assert os.path.realpath(tempfile.gettempdir()) in scope.deny_read_files
     assert "/tmp" in scope.deny_read_files and os.path.realpath("/tmp") in scope.deny_read_files
     assert tmp_path in scope.read_roots
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
     _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
     profile = " ".join(runner.calls[0]["command"])
+    assert '"/" = "deny"' in profile and '":minimal" = "read"' in profile
     assert '"~" = "deny"' in profile and f'"{tmp_path.resolve()}" = "read"' in profile
