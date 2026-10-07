@@ -123,9 +123,19 @@ def _one_json_object(answer: str) -> object:
             raise GradesRejected(f"not one JSON object: {len(blocks)} fenced block(s) beside prose")
         candidates = blocks
     try:
-        return json.loads(candidates[0])
+        return json.loads(candidates[0], object_pairs_hook=_no_repeated_keys)
     except json.JSONDecodeError as error:
         raise GradesRejected(f"not one JSON object: {error}") from error
+
+
+def _no_repeated_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """A JSON object, refused if it names one key twice (``json`` would keep
+    the last silently: two grades for one output, or for one item)."""
+    keys = [k for k, _ in pairs]
+    repeated = sorted({k for k in keys if keys.count(k) > 1})
+    if repeated:
+        raise GradesRejected(f"names {repeated} more than once")
+    return dict(pairs)
 
 
 def score(grades: OutputGrades, key: AnswerKey) -> float:

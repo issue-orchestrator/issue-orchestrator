@@ -211,7 +211,8 @@ data lives under `<git common dir>/io-improver/`:
 
 - `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
   `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
-  A snapshot is imported once and never changed (`snapshot import`), and an old
+  A snapshot is imported once, never changed, and links to nothing outside
+  itself (a clone borrowing objects is repacked to own them) (`snapshot import`), and an old
   bundle is upgraded to today's contracts with each change named.
 - `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
   written before results (`key seed`), then problems found later that the
@@ -224,7 +225,8 @@ data lives under `<git common dir>/io-improver/`:
   `grade-recorded` grades answers an earlier tournament recorded. Either way
   the outputs are anonymized (`anon/`, mapping sealed in `sealed/`), graded by
   cross-model graders (default one Claude, one Codex) that read only `anon/`
-  and `key/`, and ranked: weight × (full 1, half ½, miss 0), less 1 per
+  and `key/` (every grader must grade every output, or there is no result),
+  and ranked: weight × (full 1, half ½, miss 0), less 1 per
   unsupported finding, averaged over heats and graders; ties within 0.5.
 
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's

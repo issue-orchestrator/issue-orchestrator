@@ -12,11 +12,19 @@ still does not load refuses the import (an arm could not be judged on it).
 
 Copies on macOS use APFS clones (``cp -c``): a snapshot's gigabyte of logs
 costs no space until something changes it, and nothing does.
+
+A snapshot holds nothing that reaches outside it, or later evidence would
+leak into it: a symlink in a copied tree must be relative and stay inside
+that tree (a bundle's ``CLAUDE.md -> AGENTS.md`` is fine; ``.git ->
+/live/repo/.git`` is refused), the clone's ``.git`` must be its own
+directory, and a clone that borrows objects (``--shared``: Git alternates)
+is repacked to own them and the borrowing is removed.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -88,6 +96,7 @@ class FrozenSnapshotStore:
         try:
             data = target / IMPROVER_DATA_DIRNAME
             self._copy(improver_data, data)
+            require_self_contained(data)
             upgrades = upgrade_staged_inputs(data)
             manifest = InputsManifest.model_validate_json((data / INPUTS_FILE).read_text(encoding="utf-8"))
             _require_loadable(data)
@@ -129,7 +138,7 @@ class FrozenSnapshotStore:
         return ToolboxManifest.model_validate_json((toolbox / TOOLBOX_MANIFEST).read_text(encoding="utf-8"))
 
     def _freeze_toolbox(self, toolbox: Path, state_dir: Path, clone: Path, repo: str, taken_at: datetime) -> None:
-        if not (clone / ".git").exists():
+        if not (clone / ".git").is_dir():
             raise SnapshotUnavailable(f"{clone} is not a Git clone")
         state, logs = toolbox / TOOLBOX_STATE_DIRNAME, toolbox / TOOLBOX_LOGS_DIRNAME
         state.mkdir(parents=True)
@@ -147,10 +156,30 @@ class FrozenSnapshotStore:
         for log in sorted(p for p in (state_dir / "logs").glob("*") if p.is_file() and not p.is_symlink()):
             self._copy(log, logs / log.name)
             sources.append(ToolboxSource(path=f"{TOOLBOX_LOGS_DIRNAME}/{log.name}", staged=True, detail="byte copy"))
-        self._copy(clone, toolbox / TOOLBOX_REPO_DIRNAME)
+        self._freeze_clone(clone, toolbox / TOOLBOX_REPO_DIRNAME)
         sources.append(ToolboxSource(path=TOOLBOX_REPO_DIRNAME, staged=True, detail=f"clone, as of {taken_at.isoformat()}"))
         manifest = ToolboxManifest(audited_repo=repo, staged_at=taken_at, sources=tuple(sources))
         (toolbox / TOOLBOX_MANIFEST).write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    def _freeze_clone(self, clone: Path, target: Path) -> None:
+        """A copy of ``clone`` that owns everything it shows."""
+        self._copy(clone, target)
+        git = target / ".git"
+        if git.is_symlink() or not git.is_dir():
+            raise SnapshotUnavailable(f"{clone}: .git is not the clone's own directory")
+        if (git / "commondir").exists():
+            raise SnapshotUnavailable(f"{clone} is a linked worktree; freeze a clone")
+        require_self_contained(target)
+        alternates = git / "objects" / "info" / "alternates"
+        if alternates.exists():
+            self._git(target, "repack", "-a", "-d", "-q")
+            alternates.unlink()
+        self._git(target, "fsck", "--connectivity-only", "--no-progress")
+
+    def _git(self, repo: Path, *args: str) -> None:
+        done = self._runner.run(["git", "-C", str(repo), *args], timeout_seconds=1800)
+        if done.returncode:
+            raise SnapshotUnavailable(f"git {args[0]} in the frozen clone failed: {done.stderr.strip()}")
 
     def _copy(self, source: Path, target: Path) -> None:
         """An independent copy: an APFS clone on macOS, a plain copy elsewhere."""
@@ -194,6 +223,22 @@ def upgrade_staged_inputs(data: Path) -> tuple[str, ...]:
     return tuple(upgrades)
 
 
+def require_self_contained(tree: Path) -> None:
+    """Refuse a symlink in ``tree`` that is absolute or leaves ``tree``."""
+    root = os.path.normpath(tree)
+    for directory, dirnames, filenames in os.walk(tree):
+        for name in (*dirnames, *filenames):
+            path = os.path.join(directory, name)
+            if not os.path.islink(path):
+                continue
+            target = os.readlink(path)
+            resolved = os.path.normpath(os.path.join(directory, target))
+            if os.path.isabs(target) or os.path.commonpath([root, resolved]) != root:
+                raise SnapshotUnavailable(
+                    f"{os.path.relpath(path, root)} links outside the snapshot ({target}); a snapshot is self-contained"
+                )
+
+
 def _require_loadable(data: Path) -> None:
     from ..entrypoints.improver_staging import load_staged_evidence
 
@@ -216,5 +261,6 @@ __all__ = [
     "FrozenSnapshotStore",
     "SnapshotUnavailable",
     "audit_of",
+    "require_self_contained",
     "upgrade_staged_inputs",
 ]

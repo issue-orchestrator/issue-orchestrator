@@ -106,6 +106,22 @@ class ArmOutput:
 
 
 @dataclass(frozen=True)
+class ArmSpec:
+    """One arm as it runs: who answers, and with what prompt, heats and budget.
+
+    A challenger differs from its champion in any of these (#8001 6b), and
+    both run in one tournament on one snapshot.
+    """
+
+    arm: TournamentArm
+    prompt: str
+    #: The empowered mode's addendum (its toolbox and budget); unused by a scripted arm.
+    empowered_addendum: str
+    heats: HeatPlan
+    budget_minutes: int
+
+
+@dataclass(frozen=True)
 class Grader:
     name: str
     choice: ImproverAgentChoice
@@ -125,8 +141,6 @@ class TournamentHarness:
         snapshots: FrozenSnapshotStore,
         keys: FileAnswerKeyStore,
         agent_for: Callable[[ImproverAgentChoice], ImproverAgent],
-        prompt: str,
-        empowered_addendum: Callable[[], str],
         grader_prompt: str,
         clock: Callable[[], datetime],
     ) -> None:
@@ -134,29 +148,29 @@ class TournamentHarness:
         self._snapshots = snapshots
         self._keys = keys
         self._agent_for = agent_for
-        self._prompt = prompt
-        self._addendum = empowered_addendum
         self._grader_prompt = grader_prompt
         self._clock = clock
 
     def directory(self, tournament_id: str) -> Path:
         return self._root / tournament_id
 
-    def run_arms(
-        self, tournament_id: str, snapshot_id: str, arms: Sequence[TournamentArm], heats: HeatPlan, budget_minutes: int
-    ) -> list[ArmOutput]:
+    def run_arms(self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec]) -> list[ArmOutput]:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none)."""
+        names = [spec.arm.name for spec in specs]
+        if len(set(names)) != len(names):
+            raise ValueError(f"arm names repeat: {names}")
         outputs: list[ArmOutput] = []
         engine = self._snapshots.engine(snapshot_id)
-        for arm in arms:
+        for spec in specs:
+            arm, heats = spec.arm, spec.heats
             store = FileImproverRunStore(self.directory(tournament_id) / "arms" / arm.name)
             run = ImproverRun(
                 store=store,
                 stager=FrozenInputs(self._snapshots, snapshot_id),
                 agent=self._agent_for(ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model)),
-                investigation=self._investigation(arm, snapshot_id, budget_minutes),
+                investigation=self._investigation(spec, snapshot_id),
                 effects=ImproverEffects(store=store, host=_NoGitHub(), outputs_repo=NO_OUTPUTS_REPO, clock=self._clock),  # type: ignore[arg-type]
-                prompt=self._prompt,
+                prompt=spec.prompt,
                 heats=heats,
                 clock=self._clock,
             )
@@ -175,15 +189,15 @@ class TournamentHarness:
                 outputs.append(ArmOutput(arm.name, heat, answer.read_text(encoding="utf-8") if has_answer else None))
         return outputs
 
-    def _investigation(self, arm: TournamentArm, snapshot_id: str, budget_minutes: int) -> Any:
-        if arm.mode == "scripted":
+    def _investigation(self, spec: ArmSpec, snapshot_id: str) -> Any:
+        if spec.arm.mode == "scripted":
             return ScriptedInvestigation()
         return EmpoweredInvestigation(
             stager=FrozenToolbox(self._snapshots, snapshot_id),
             # Live GitHub would show what was found after the snapshot.
             github=lambda repo: None,
-            addendum=self._addendum(),
-            budget_minutes=budget_minutes,
+            addendum=spec.empowered_addendum,
+            budget_minutes=spec.budget_minutes,
         )
 
     def grade(
@@ -195,7 +209,11 @@ class TournamentHarness:
         graders: Sequence[Grader] = DEFAULT_GRADERS,
         seed: int,
     ) -> TournamentResult:
-        """Anonymize the outputs, grade them with every grader, rank the arms."""
+        """Anonymize the outputs, grade them with every grader, rank the arms.
+
+        Cross-model means every grader: a tournament one grader failed to
+        grade completely has no result (one model's judgment could rank it).
+        """
         key = self._keys.get(snapshot_id)
         root = self.directory(tournament_id).resolve()
         anon, sealed, key_dir = root / "anon", root / "sealed", root / "key"
@@ -226,8 +244,12 @@ class TournamentHarness:
                     # A heat with no answer scores 0 for every grader.
                     **{f"(none){o.output_id}": 0.0 for o in outputs if o.text is None},
                 }
-        if not per_grader:
-            raise RuntimeError("no grader produced a complete grading: " + "; ".join(r.detail for r in runs))
+        refused = [run for run in runs if not run.accepted]
+        if refused:
+            raise RuntimeError(
+                "not every grader produced a complete grading; no result: "
+                + "; ".join(f"{run.name}: {run.detail}" for run in refused)
+            )
         arm_of = {**{label: by_id[oid].arm for label, oid in labels.items()},
                   **{f"(none){o.output_id}": o.arm for o in outputs if o.text is None}}
         result = _result(tournament_id, snapshot_id, key, runs, per_grader, arm_of, outputs)
@@ -284,6 +306,8 @@ def _result(
 ) -> TournamentResult:
     """Each arm's scores (per grader, over its outputs) and the ranking."""
     pooled = arm_means(per_grader, arm_of)
+    # Ranked on the exact means; only what is shown is rounded.
+    means = {arm: sum(values) / len(values) for arm, values in pooled.items()}
     scores: list[ArmScore] = []
     for arm in sorted({o.arm for o in outputs}):
         values = pooled[arm]
@@ -293,14 +317,14 @@ def _result(
                 grader: tuple(sorted(v for label, v in by_label.items() if arm_of[label] == arm))
                 for grader, by_label in per_grader.items()
             },
-            mean=round(sum(values) / len(values), 3),
+            mean=round(means[arm], 3),
             low=min(values),
             high=max(values),
         ))
     return TournamentResult(
         tournament_id=tournament_id, snapshot_id=snapshot_id, key_items=len(key.scored),
         max_score=key.max_score, graders=tuple(runs), arms=tuple(scores),
-        ranking=rank({s.arm: s.mean for s in scores}, tie_margin=TIE_MARGIN), tie_margin=TIE_MARGIN,
+        ranking=rank(means, tie_margin=TIE_MARGIN), tie_margin=TIE_MARGIN,
     )
 
 
@@ -309,6 +333,7 @@ __all__ = [
     "NO_OUTPUTS_REPO",
     "TOURNAMENTS_DIRNAME",
     "ArmOutput",
+    "ArmSpec",
     "FrozenInputs",
     "FrozenToolbox",
     "Grader",

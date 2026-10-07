@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -18,7 +19,7 @@ from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
 from issue_orchestrator.execution.improver_snapshots import FrozenSnapshotStore, SnapshotUnavailable
-from issue_orchestrator.execution.improver_tournament import ArmOutput, Grader, TournamentHarness
+from issue_orchestrator.execution.improver_tournament import ArmOutput, ArmSpec, Grader, TournamentHarness
 from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.domain.test_improver_tournament import SEALED
 from tests.unit.improver_support import build_improver_data, example
@@ -100,6 +101,63 @@ def test_a_snapshot_is_never_changed_or_half_made(stores, tmp_path: Path) -> Non
     with pytest.raises(SnapshotUnavailable, match="do not load"):
         snapshots.import_("broken", improver_data=broken, taken_at=T0, origin="x")
     assert snapshots.ids() == ("20261004",) and not (root / "snapshots" / "broken").exists()
+
+
+def test_a_snapshot_never_links_outside_itself(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A link out of a snapshot would show later evidence: a clone whose
+    .git is a live repository's, or a staged file pointing at a live one."""
+    snapshots, _, root = stores
+    live = tmp_path / "live"
+    live.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=live, check=True)
+    state, _ = _engine_files(tmp_path / "e")
+    linked = tmp_path / "linked-clone"
+    linked.mkdir()
+    (linked / ".git").symlink_to(live / ".git")
+    with pytest.raises(SnapshotUnavailable, match="not the clone's own directory|not a Git clone"):
+        snapshots.import_("linked", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                          state_dir=state, clone=linked)
+    data = _legacy_inputs(tmp_path / "b")
+    (data / "later.md").symlink_to(live / "README")
+    with pytest.raises(SnapshotUnavailable, match="later.md links outside the snapshot"):
+        snapshots.import_("leaky", improver_data=data, taken_at=T0, origin="x")
+    escaping = _legacy_inputs(tmp_path / "c")
+    (escaping / "up.md").symlink_to("../../outside.md")
+    with pytest.raises(SnapshotUnavailable, match="up.md links outside"):
+        snapshots.import_("escaping", improver_data=escaping, taken_at=T0, origin="x")
+    assert snapshots.ids() == ("20261004",)
+    assert not any((root / "snapshots" / name).exists() for name in ("linked", "leaky", "escaping"))
+    # A link that stays inside (a bundle's CLAUDE.md -> AGENTS.md) is fine.
+    inside = _legacy_inputs(tmp_path / "d")
+    (inside / "AGENTS.md").write_text("agents")
+    (inside / "CLAUDE.md").symlink_to("AGENTS.md")
+    snapshots.import_("inside", improver_data=inside, taken_at=T0, origin="x")
+
+
+def test_a_clone_that_borrows_objects_is_frozen_owning_them(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """``git clone --shared`` borrows the live repository's objects; a
+    snapshot must own them, so it keeps working whatever the live one does."""
+    snapshots, _, root = stores
+    live = tmp_path / "live"
+    live.mkdir()
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q"], cwd=live, check=True)
+    (live / "f").write_text("one")
+    subprocess.run([*git, "add", "f"], cwd=live, check=True)
+    subprocess.run([*git, "commit", "-qm", "one"], cwd=live, check=True)
+    shared = tmp_path / "shared"
+    subprocess.run(["git", "clone", "-q", "--shared", str(live), str(shared)], check=True)
+    assert (shared / ".git" / "objects" / "info" / "alternates").exists()
+    state, _ = _engine_files(tmp_path / "e")
+
+    snapshots.import_("shared", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                      state_dir=state, clone=shared)
+
+    frozen = root / "snapshots" / "shared" / "toolbox" / "repo"
+    assert not (frozen / ".git" / "objects" / "info" / "alternates").exists()
+    shutil.rmtree(live)
+    shown = subprocess.run(["git", "-C", str(frozen), "show", "HEAD:f"], capture_output=True, text=True, check=True)
+    assert shown.stdout == "one"
 
 
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -200,11 +258,18 @@ class Agents:
         return Agent()
 
 
+ADDENDUM = "<<AUDITED_REPO>> budget <<BUDGET_MINUTES>> minutes <<STAGED_AT>>"
+
+
+def _spec(arm: TournamentArm, *, prompt: str = "THE IMPROVER PROMPT", heats: HeatPlan = HeatPlan(2, 2),
+          budget: int = 30) -> ArmSpec:
+    return ArmSpec(arm=arm, prompt=prompt, empowered_addendum=ADDENDUM, heats=heats, budget_minutes=budget)
+
+
 def _harness(root: Path, stores, agents: Agents) -> TournamentHarness:  # type: ignore[no-untyped-def]
     snapshots, keys, _ = stores
     return TournamentHarness(
         root=root, snapshots=snapshots, keys=keys, agent_for=agents.agent_for,
-        prompt="THE IMPROVER PROMPT", empowered_addendum=lambda: "<<AUDITED_REPO>> <<BUDGET_MINUTES>> <<STAGED_AT>>",
         grader_prompt=(Path(__file__).resolve().parents[3] / "examples" / "prompts" / "improver-grader.md").read_text(),
         clock=lambda: T0 + timedelta(days=3),
     )
@@ -233,7 +298,7 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
         TournamentArm(name="X", provider="codex", model="dead-model", mode="scripted"),
     ]
 
-    outputs = harness.run_arms("t1", "20261004", arms, HeatPlan(2, 2), budget_minutes=30)
+    outputs = harness.run_arms("t1", "20261004", [_spec(arm) for arm in arms])
     result = harness.grade("t1", "20261004", outputs, seed=11)
 
     assert {(o.arm, o.heat, o.text is not None) for o in outputs} == {
@@ -257,31 +322,61 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
     assert json.loads((directory / "result.json").read_text())["ranking"] == [["G"], ["P", "X"]]
 
 
-def test_a_grader_that_does_not_grade_everything_is_not_counted(stores) -> None:  # type: ignore[no-untyped-def]
+def _complete(labels: list[str]) -> str:
+    return json.dumps({label: {"items": {i: {"grade": "half", "why": "q"} for i in ("1", "2", "9")},
+                               "unsupported": 0} for label in labels})
+
+
+def test_a_tournament_one_grader_could_not_grade_has_no_result(stores) -> None:  # type: ignore[no-untyped-def]
+    """Cross-model means every grader: one model's judgment never ranks the arms alone."""
     _, _, root = stores
-    def complete(labels: list[str]) -> str:
-        return json.dumps({label: {"items": {i: {"grade": "half", "why": "q"} for i in ("1", "2", "9")},
-                                   "unsupported": 0} for label in labels})
 
     def partial(labels: list[str]) -> str:
         return json.dumps({labels[0]: {}})
 
-    agents = Agents({}, {"claude": complete, "codex": partial})
-    harness = _harness(root, stores, agents)
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": partial}))
 
-    result = harness.grade("t2", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")], seed=1)
+    with pytest.raises(RuntimeError, match=r"not every grader.*codex: rejected"):
+        harness.grade("t2", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")], seed=1)
+    assert not (harness.directory("t2") / "result.json").exists()
+    # What each grader answered stays for a person to read.
+    assert (harness.directory("t2") / "graders" / "codex" / "grades.json").is_file()
 
-    assert [(g.name, g.accepted) for g in result.graders] == [("claude", True), ("codex", False)]
-    assert "rejected" in result.graders[1].detail
-    assert {a.arm: a.scores for a in result.arms} == {"A": {"claude": (4.0,)}, "B": {"claude": (4.0,)}}
+
+def test_arms_are_ranked_on_their_exact_means_not_the_rounded_ones(stores) -> None:  # type: ignore[no-untyped-def]
+    """1.0004 and 0.4996 differ by more than the 0.5 margin; rounded to
+    1.0 and 0.5, they would tie."""
+    from issue_orchestrator.execution.improver_tournament import _result
+
+    key = stores[1].get("20261004")
+    per_grader = {"g": {"S10": 1.0004, "S11": 0.4996}}
+    result = _result("t", "20261004", key, [], per_grader, {"S10": "A", "S11": "B"},
+                     [ArmOutput("A", 1, "x"), ArmOutput("B", 1, "y")])
+
+    assert result.ranking == (("A",), ("B",))
+    assert [a.mean for a in result.arms] == [1.0, 0.5]
 
 
-def test_no_complete_grading_is_no_result(stores) -> None:  # type: ignore[no-untyped-def]
+def test_a_challenger_and_its_champion_run_together_each_as_specified(stores) -> None:  # type: ignore[no-untyped-def]
     _, _, root = stores
-    harness = _harness(root, stores, Agents({}, {"claude": "nope", "codex": "nope"}))
+    agents = Agents({"m": json.dumps(example("exam_case"))}, {})
+    harness = _harness(root, stores, agents)
+    arm = TournamentArm(name="champion", provider="claude", model="m", mode="empowered")
 
-    with pytest.raises(RuntimeError, match="no grader produced a complete grading"):
-        harness.grade("t3", "20261004", [ArmOutput("A", 1, "{}")], seed=1)
+    outputs = harness.run_arms("t5", "20261004", [
+        _spec(arm, prompt="CHAMPION PROMPT", heats=HeatPlan(1, 1), budget=30),
+        _spec(arm.model_copy(update={"name": "challenger"}), prompt="CHALLENGER PROMPT", heats=HeatPlan(3, 2), budget=45),
+    ])
+
+    seen = sorted(
+        ("CHALLENGER" if "CHALLENGER PROMPT" in p else "CHAMPION" if "CHAMPION PROMPT" in p else "?", space.heat,
+         "budget 45 minutes" in p)
+        for p, space, _ in agents.spaces
+    )
+    assert seen == [("CHALLENGER", 1, True), ("CHALLENGER", 2, True), ("CHALLENGER", 3, True), ("CHAMPION", 1, False)]
+    assert [(o.arm, o.heat) for o in outputs] == [("champion", 1), ("challenger", 1), ("challenger", 2), ("challenger", 3)]
+    with pytest.raises(ValueError, match="arm names repeat"):
+        harness.run_arms("t6", "20261004", [_spec(arm), _spec(arm)])
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

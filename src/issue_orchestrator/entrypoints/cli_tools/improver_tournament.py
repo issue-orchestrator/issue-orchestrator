@@ -42,7 +42,7 @@ from ...execution.improver_answer_keys import FileAnswerKeyStore
 from ...execution.improver_investigation import EMPOWERED_ADDENDUM
 from ...execution.improver_run_store import improver_root
 from ...execution.improver_snapshots import FrozenSnapshotStore
-from ...execution.improver_tournament import DEFAULT_GRADERS, ArmOutput, Grader, TournamentHarness
+from ...execution.improver_tournament import DEFAULT_GRADERS, ArmOutput, ArmSpec, Grader, TournamentHarness
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
 from ..improver_run import HeatPlan
 
@@ -138,8 +138,6 @@ def main(argv: list[str]) -> int:
         agent_for=lambda choice: improver_agent(
             choice, runner=ProcessGroupCommandRunner(), timeout_seconds=args.agent_timeout_minutes * 60
         ),
-        prompt=PROMPT.read_text(encoding="utf-8"),
-        empowered_addendum=lambda: EMPOWERED_ADDENDUM.read_text(encoding="utf-8"),
         grader_prompt=GRADER_PROMPT.read_text(encoding="utf-8"),
         clock=_now,
     )
@@ -148,7 +146,9 @@ def main(argv: list[str]) -> int:
     graders = tuple(args.grader or DEFAULT_GRADERS)
     if args.command == "run":
         plan = HeatPlan(count=args.heats, parallel=args.parallel_heats)
-        outputs = harness.run_arms(tournament_id, args.snapshot, args.arm, plan, args.budget_minutes)
+        prompt, addendum = PROMPT.read_text(encoding="utf-8"), EMPOWERED_ADDENDUM.read_text(encoding="utf-8")
+        specs = [ArmSpec(arm, prompt, addendum, plan, args.budget_minutes) for arm in args.arm]
+        outputs = harness.run_arms(tournament_id, args.snapshot, specs)
     else:
         outputs = _recorded(args.recorded)
     result = harness.grade(tournament_id, args.snapshot, outputs, graders=graders, seed=seed)

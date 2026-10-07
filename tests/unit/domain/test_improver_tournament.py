@@ -167,3 +167,19 @@ def test_one_fenced_block_after_a_sentence_is_read_and_two_are_ambiguous() -> No
         read_grades(f"first\n```json\n{body}\n```\nsecond\n```json\n{body}\n```", ["S10"], key)
     with pytest.raises(GradesRejected, match="0 fenced block"):
         read_grades("no grades today", ["S10"], key)
+
+
+def test_a_grading_that_names_an_output_or_an_item_twice_is_refused() -> None:
+    """``json`` keeps a repeated key's last value silently: a grader could
+    grade one output twice and only the second would count."""
+    key = _key()
+    one = json.dumps(_grades({"1": "full", "2": "miss", "9": "miss"}))
+    other = json.dumps(_grades({"1": "miss", "2": "miss", "9": "miss"}))
+    twice_label = f'{{"S10": {one}, "S10": {other}}}'
+    twice_item = ('{"S10": {"items": {"1": {"grade": "full", "why": "q"}, "1": {"grade": "miss", "why": "q"},'
+                  ' "2": {"grade": "miss", "why": "q"}, "9": {"grade": "miss", "why": "q"}}, "unsupported": 0}}')
+
+    with pytest.raises(GradesRejected, match=r"\['S10'\] more than once"):
+        read_grades(twice_label, ["S10"], key)
+    with pytest.raises(GradesRejected, match=r"\['1'\] more than once"):
+        read_grades(twice_item, ["S10"], key)
