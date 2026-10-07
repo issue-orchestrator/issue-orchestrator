@@ -115,6 +115,7 @@ def test_body_edits_reviews_merges_and_hand_opened_items() -> None:
 
     assert sorted((i.kind, i.subject) for i in hand) == [
         ("body_edited", "PR #511"), ("merged", "PR #511"), ("opened", "#520"), ("review_approved", "PR #511"),
+        ("review_since_dismissed", "PR #511"),
     ]
     assert excluded == 3  # the bot-opened PR, the bot's later edit, the bot's review
 
@@ -138,3 +139,29 @@ def test_a_comment_edited_after_the_cutoff_keeps_its_act_but_not_its_later_text(
     assert "Edited later" not in hand.detail and "withheld" in hand.detail
     # Nor is the later text's signature trusted.
     assert hand.attribution == "person"
+
+
+def test_a_comment_edited_in_the_window_keeps_its_text_but_not_its_signature() -> None:
+    """r3 F1: the coordinator may edit a person's comment under the same
+    identity; the signature added by the edit says nothing about who wrote it."""
+    edited = RepoComment(at=T0, updated_at=T0 + timedelta(hours=1), number=379, actor=PERSON,
+                         body="Ruling: rework. 🤖 Generated with [Claude Code](x)", ref="c4")
+
+    [hand], _ = github_interventions(_read(comments=[edited]), since=SINCE, until=UNTIL)
+
+    assert hand.attribution == "person"
+    assert hand.detail.startswith("(edited at ") and "Ruling: rework." in hand.detail
+
+
+def test_a_review_dismissed_since_is_kept_with_its_verdict_unknown() -> None:
+    """r3 F2: GitHub reports a dismissed review's current state only."""
+    pr = ItemActivity(
+        number=379, is_pr=True, created_at=SINCE, author=ENGINE, edits=(),
+        reviews=(Review(T0, "DISMISSED", PERSON),), merged_at=None, merged_by=None, ref="pr379",
+    )
+
+    hand, _ = github_interventions(_read(items=[pr]), since=SINCE, until=UNTIL)
+
+    assert [(i.kind, i.detail) for i in hand if i.kind.startswith("review")] == [
+        ("review_since_dismissed", "dismissed since; its verdict at submission is not reported"),
+    ]

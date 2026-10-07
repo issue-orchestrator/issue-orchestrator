@@ -174,6 +174,9 @@ InterventionKind = Literal[
     "review_approved",
     "review_changes_requested",
     "review_commented",
+    # A review submitted in the window and dismissed since: GitHub reports
+    # only its current state, so its verdict at submission is unknown.
+    "review_since_dismissed",
     "commented",
 ]
 

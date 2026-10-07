@@ -51,7 +51,9 @@ _REVIEW_KINDS: dict[str, InterventionKind] = {
     "APPROVED": "review_approved",
     "CHANGES_REQUESTED": "review_changes_requested",
     "COMMENTED": "review_commented",
+    "DISMISSED": "review_since_dismissed",
 }
+_REVIEW_DETAIL = {"DISMISSED": "dismissed since; its verdict at submission is not reported"}
 #: An edit this close to an item's creation is its creation, not an edit.
 _CREATION_EDIT = timedelta(seconds=2)
 _COMMENT_EXCERPT = 300
@@ -139,6 +141,17 @@ def _comments(comments: Iterable[RepoComment], until: datetime) -> Iterator[tupl
             )
             continue
         excerpt = " ".join(c.body.split())[:_COMMENT_EXCERPT]
+        if c.updated_at > c.at:
+            # Edited in the window: the text is as of the edit, not the act,
+            # and whoever edited it may not be who wrote it, so its signature
+            # attributes nothing (r3 F1).
+            yield c.actor, Intervention(
+                at=c.at, kind="commented", subject=f"#{c.number}",
+                detail=f"(edited at {c.updated_at.isoformat()}; the text as of then) {excerpt}",
+                source="github_comments", attribution=attribution(), actor=c.actor.login, ref=c.ref,
+                app_provenance=_provenance(c.actor),
+            )
+            continue
         yield c.actor, Intervention(
             at=c.at, kind="commented", subject=f"#{c.number}", detail=excerpt,
             source="github_comments", attribution=attribution(c.body), actor=c.actor.login, ref=c.ref, app_provenance=_provenance(c.actor),
@@ -162,7 +175,7 @@ def _item(item: ItemActivity) -> Iterator[tuple[Actor, Intervention]]:
     for review in item.reviews:
         kind = _REVIEW_KINDS.get(review.state)
         if kind is not None:
-            yield made(review.at, kind, review.author, review.state.lower())
+            yield made(review.at, kind, review.author, _REVIEW_DETAIL.get(review.state, review.state.lower()))
     if item.merged_at is not None and item.merged_by is not None:
         yield made(item.merged_at, "merged", item.merged_by, "merged")
 
