@@ -130,3 +130,18 @@ def test_an_empowered_run_gets_the_toolbox_by_url_and_its_token_by_env(tmp_path:
     assert f'mcp_servers.improver_toolbox.bearer_token_env_var="{TOOLBOX_TOKEN_ENV}"' in codex
     assert not any("run-token-xyz" in a for a in argv)
     assert call["env"][TOOLBOX_TOKEN_ENV] == "run-token-xyz"
+
+
+@pytest.mark.parametrize("empowered", [False, True])
+def test_the_operators_codex_config_never_reaches_the_agent(tmp_path: Path, empowered: bool) -> None:
+    """r2 F1: an MCP server (or profile) in the operator's config.toml would
+    hand the agent tools beyond its boundary, scripted or empowered."""
+    from issue_orchestrator.ports.improver_toolbox import ToolboxEndpoint
+
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+    toolbox = ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="t") if empowered else None
+
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=toolbox)
+
+    argv = runner.calls[0]["command"]
+    assert "--ignore-user-config" in argv[argv.index("exec"):]

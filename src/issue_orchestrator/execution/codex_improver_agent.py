@@ -90,6 +90,10 @@ class CodexImproverAgent:
         return [
             "/bin/sh", "-c", 'exec "$@" </dev/null', "sh",
             "codex", *build_codex_sandbox_argv(self.scope(run_dir)), *_toolbox_overrides(toolbox), "exec",
+            # The operator's config.toml is not the agent's: its MCP servers,
+            # profiles and tools would reach past the run's boundary (#8001
+            # r2 F1). Authentication still comes from CODEX_HOME.
+            "--ignore-user-config",
             "--skip-git-repo-check",
             "--ephemeral",
             "--color", "never",
