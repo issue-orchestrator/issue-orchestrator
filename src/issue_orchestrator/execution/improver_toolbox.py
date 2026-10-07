@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -53,11 +54,14 @@ MAX_CELL_CHARS = 4000
 #: SQLite's own limits for a toolbox query, set before it runs: no value it
 #: computes or returns may exceed MAX_SQL_VALUE_BYTES (``randomblob(1e9)``
 #: fails instead of allocating), nor a row more than MAX_SQL_COLUMNS values.
-MAX_SQL_VALUE_BYTES = 1_000_000
+#: The engine's widest table has 35 columns and its largest stored value is
+#: about 13 kB (porchpin, 2026-10-04).
+MAX_SQL_VALUE_BYTES = 64 * 1024
 MAX_SQL_COLUMNS = 64
 MAX_SQL_TEXT = 100_000
 #: Rows are fetched one by one until their cells add up to this many bytes.
-MAX_SQL_FETCH_BYTES = 4_000_000
+#: No single row can exceed it: the limits above bound a row to exactly this.
+MAX_SQL_FETCH_BYTES = MAX_SQL_VALUE_BYTES * MAX_SQL_COLUMNS
 SQL_SECONDS = 20.0
 GIT_SECONDS = 60
 CALL_LOG = "toolbox-calls.jsonl"
@@ -189,9 +193,16 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
     return sqlite3.SQLITE_OK if sqlite_action_allowed(action, arg1, arg2) else sqlite3.SQLITE_DENY
 
 
+#: An issue or pull request URL's number (API ``.../issues/7592``, web
+#: ``.../pull/7592#discussion_r1``, ``.../issues/7592/comments``).
+_ISSUE_URL = re.compile(r"/(?:issues|pulls?)/(\d+)(?:[/#?]|$)")
+
+
 def _mentions_issue(value: Any, numbers: frozenset[int]) -> bool:
     """Whether ``value`` holds, at any depth, an issue or pull request
-    (an object with a ``number`` and a ``title``) numbered in ``numbers``."""
+    numbered in ``numbers``: an object with that ``number`` and a ``title``,
+    or a URL naming it (a repository-wide comment carries only its
+    ``issue_url``)."""
     if isinstance(value, dict):
         number = value.get("number")
         if isinstance(number, int) and number in numbers and "title" in value:
@@ -199,6 +210,8 @@ def _mentions_issue(value: Any, numbers: frozenset[int]) -> bool:
         return any(_mentions_issue(v, numbers) for v in value.values())
     if isinstance(value, list):
         return any(_mentions_issue(v, numbers) for v in value)
+    if isinstance(value, str) and "/" in value:
+        return any(int(n) in numbers for n in _ISSUE_URL.findall(value))
     return False
 
 

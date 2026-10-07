@@ -259,13 +259,14 @@ def test_a_query_producing_an_oversized_value_is_refused_before_it_is_built(run_
 
 
 def test_an_answer_stops_at_its_byte_budget(run_dir: Path) -> None:
-    sql = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 900) SELECT randomblob(900000) FROM n"
+    import issue_orchestrator.execution.improver_toolbox as toolbox_module
+
+    sql = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 900) SELECT randomblob(60000) FROM n"
 
     answer = json.loads(_toolbox(run_dir).sql_query("timeline.sqlite", sql))
 
     assert answer["truncated"] is True
-    # Never past the budget: four 900 kB rows fit in 4 MB, a fifth would not.
-    assert len(answer["rows"]) == 4
+    assert len(answer["rows"]) * 60_000 <= toolbox_module.MAX_SQL_FETCH_BYTES
 
 
 class AnswerReads:
@@ -288,6 +289,11 @@ class AnswerReads:
          {"items": [{"number": 7592, "title": "hidden", "repository_url": "https://api.github.com/repos/porchpin/porchpin"}]}),
         ("repos/porchpin/porchpin/issues/1/timeline", None,
          [{"event": "cross-referenced", "source": {"issue": {"number": 7592, "title": "hidden"}}}]),
+        # r6 F1: a repository-wide comment names its issue only by URL.
+        ("repos/porchpin/porchpin/issues/comments", None,
+         [{"id": 1, "issue_url": "https://api.github.com/repos/porchpin/porchpin/issues/7592", "body": "canary"}]),
+        ("repos/porchpin/porchpin/pulls/comments", None,
+         [{"id": 2, "html_url": "https://github.com/porchpin/porchpin/pull/7592#discussion_r9", "body": "canary"}]),
     ],
 )
 def test_a_blind_runs_hidden_issue_is_never_shown(run_dir: Path, path: str, params: dict | None, answer: Any) -> None:
@@ -327,3 +333,17 @@ def test_git_output_is_bounded_while_it_streams(run_dir: Path, monkeypatch: pyte
 
     assert captured == [10_000]
     assert answer.endswith("narrow the request>")
+
+
+def test_no_single_row_can_exceed_the_fetch_budget(run_dir: Path) -> None:
+    """r6 F2: the limits bound a row to the budget, so a wide row of large
+    values is refused by SQLite before it is built."""
+    import issue_orchestrator.execution.improver_toolbox as toolbox_module
+
+    assert toolbox_module.MAX_SQL_VALUE_BYTES * toolbox_module.MAX_SQL_COLUMNS <= toolbox_module.MAX_SQL_FETCH_BYTES
+    wide = ", ".join(["zeroblob(900000)"] * 16)
+    with pytest.raises(ToolboxRefusal, match="too big"):
+        _toolbox(run_dir).sql_query("timeline.sqlite", f"SELECT {wide}")
+    too_many = ", ".join(["1"] * (toolbox_module.MAX_SQL_COLUMNS + 1))
+    with pytest.raises(ToolboxRefusal):
+        _toolbox(run_dir).sql_query("timeline.sqlite", f"SELECT {too_many}")
