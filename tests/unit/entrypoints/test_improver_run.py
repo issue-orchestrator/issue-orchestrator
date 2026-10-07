@@ -624,3 +624,30 @@ def test_a_heat_plan_is_bounded() -> None:
     for count, parallel in ((0, 1), (MAX_HEATS + 1, 1), (2, 3), (2, 0)):
         with pytest.raises(ValueError):
             HeatPlan(count, parallel)
+
+
+def test_a_comment_on_an_existing_issue_carries_the_same_support_and_conflicts(tmp_path: Path) -> None:
+    """r2 F1: one rule for new issues and comments on existing ones."""
+    from issue_orchestrator.contracts.improver_findings import ImproverFindings
+    from issue_orchestrator.control.improver_effects import finding_key, title_token
+    from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+
+    other = json.loads(_findings("capability_issue"))
+    finding = other["findings"][0]
+    finding["id"] = "same-case-other-anomaly"
+    finding["output"] = "exam_case"
+    finding["reproduction"] = example("exam_case")["findings"][0]["reproduction"]
+    finding["proposal"] = "Plant the other anomaly instead."
+    kept = ImproverFindings.model_validate_json(_findings("exam_case")).findings[0]
+    token = title_token(finding_key(kept, _request().engine))
+    store = MemoryRunStore(tmp_path)
+    host = FakeIssueHost([OpenIssueLabels(number=901, title=f"{token} Exam case: earlier", labels=())])
+    agent = HeatAgent({1: _findings("exam_case"), 2: json.dumps(other)}, hold=0)
+
+    _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request())
+
+    assert host.created == []
+    [(number, body)] = host.comments
+    assert number == 901
+    assert "**Found by 1 of 2 independent heat(s)** (1)." in body
+    assert "**Not merged, to resolve:**" in body and "Plant the other anomaly instead." in body

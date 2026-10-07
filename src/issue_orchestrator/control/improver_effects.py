@@ -198,7 +198,7 @@ def plan_effect(
             marker=marker,
             body=f"{marker}\n**Improver run `{run.run_id}`** saw this again on `{run.audited_repo}`"
             f" (engine `{run.engine_id}` at `{run.engine_commit}`): stalled at"
-            f" `{finding.stall_point}`.\n\n"
+            f" `{finding.stall_point}`." + support_note(run, finding.id) + "\n\n"
             f"{_finding_json(finding)}",
         )
     marker = finding_marker(key)
@@ -223,7 +223,8 @@ def _plan_design_effect(
             issue_number=filed,
             marker=marker,
             body=f"{marker}\n**Improver run `{run.run_id}`** found this again on `{run.audited_repo}`"
-            f" (engine `{run.engine_id}` at `{run.engine_commit}`).\n\n{_design_json(design)}",
+            f" (engine `{run.engine_id}` at `{run.engine_commit}`)." + support_note(run, design.id)
+            + f"\n\n{_design_json(design)}",
         )
     marker = finding_marker(key)
     return FileImproverIssue(
