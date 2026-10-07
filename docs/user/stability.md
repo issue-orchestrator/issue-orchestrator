@@ -185,6 +185,7 @@ tools. **Names, arguments, and return shapes may change in any `0.x` release.**
 | `orchestrator.session.claude_log` | Agent log tail |
 | `orchestrator.session.orchestrator_log` | Orchestrator log for the session |
 | `orchestrator.session.kill` | Kill an issue's session |
+| `orchestrator.issue.retry` | Release an issue's retry hold through the operator command |
 | `orchestrator.session.focus` | Focus the session terminal |
 | `orchestrator.repos` | List registered repos |
 | `orchestrator.repos.start` | Start the orchestrator for a repo path |

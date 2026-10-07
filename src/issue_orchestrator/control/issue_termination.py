@@ -17,9 +17,12 @@ from ..events import EventName
 from ..ports.event_sink import EventSink, make_trace_event
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
+from .in_flight_work import SettlementOutcome
 
 if TYPE_CHECKING:
     from ..domain.models import Session
+    from ..ports.claim_manager import ClaimManager
+    from .in_flight_work import InFlightWorkLedger
     from .review_exchange_lifecycle import (
         IssueRuntimeLifecycleOwners,
         IssueRuntimeTermination,
@@ -141,6 +144,7 @@ def terminate_every_session(
     *,
     capture: Callable[[], ValidatedWorkDispositionBatch],
     observe: Callable[[ValidatedWorkDispositionBatch], None],
+    prepare_stop: Callable[[], None] | None = None,
 ) -> IssueTerminationOutcome:
     """Terminate every terminal this issue is KNOWN to own, whatever its type.
 
@@ -173,6 +177,9 @@ def terminate_every_session(
             f"validated-work custody could not be established for issue "
             f"#{issue_number}: {exc}"
         ) from exc
+
+    if prepare_stop is not None:
+        prepare_stop()
 
     termination = owners.core.release_preserved(issue_number, reason, batch)
     observe(batch)
@@ -228,6 +235,33 @@ def _remaining_sessions(
     return tuple(seen.values())
 
 
+def end_session_records(
+    active_sessions: list["Session"] | None,
+    ended: Callable[["Session"], bool],
+    work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
+) -> None:
+    """Retire each ended run's CAS lease and work claim, THEN drop its record.
+
+    The one settle-before-drop step every issue-runtime termination shares. The
+    record retains its lease if CAS release fails, and tells the recovery sweep
+    the run is live, so a record dropped
+    beside a claim left HELD -- or before a settlement that then raised -- let
+    the next tick re-admit the work this boundary just ended.
+    """
+    if active_sessions is None:
+        return
+    for session in tuple(active_sessions):
+        if ended(session):
+            if session.lease_id:
+                claim_manager.release_claim(session.issue.number, session.lease_id)
+                current = claim_manager.get_current_claim(session.issue.number)
+                if current is not None and current.lease_id == session.lease_id:
+                    raise RuntimeError(f"issue #{session.issue.number} claim release was not acknowledged")
+            work.settle(session, SettlementOutcome.CONSUMED)
+    active_sessions[:] = [session for session in active_sessions if not ended(session)]
+
+
 def _stop_session(
     owners: "IssueRuntimeLifecycleOwners", session: "Session", reason: str
 ) -> bool:
@@ -245,6 +279,7 @@ def _stop_session(
     # `SessionManager | None`, while `CoreIssueRuntimeOwners.session_manager` is
     # non-optional, so pyright proves the branch dead.
     if not owners.core.session_manager.exists(ref):
+        owners.core.end_session_records(frozenset({session.terminal_id}))
         return False
     # Exact-run preserve, the contract `Orchestrator._kill_session` used: passing
     # `run` scopes the read to this one issue instead of sweeping the ledger.
@@ -252,4 +287,5 @@ def _stop_session(
         session.issue.number, session.terminal_id, reason, run=session.run_assets
     )
     owners.core.session_manager.stop(ref)
+    owners.core.end_session_records(frozenset({session.terminal_id}))
     return True

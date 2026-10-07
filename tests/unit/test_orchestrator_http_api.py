@@ -128,6 +128,51 @@ async def test_async_request_refreshes_base_url_on_request_error():
 
 
 @pytest.mark.asyncio
+async def test_async_issue_retry_targets_one_issue() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class RecordingClient:
+        async def request(self, method, url, json=None, headers=None):
+            calls.append((method, url))
+            return DummyResponse({"success": True, "removed_labels": ["blocked-failed"]})
+
+    api = OrchestratorAsyncHttpApi(
+        base_url_provider=lambda: "http://test",
+        client=RecordingClient(),
+        pause_actor=PauseActor.MCP,
+    )
+
+    assert await api.issue_retry(42) == {
+        "success": True,
+        "removed_labels": ["blocked-failed"],
+    }
+    assert calls == [("POST", "http://test/api/issues/42/retry")]
+
+
+@pytest.mark.asyncio
+async def test_async_issue_retry_preserves_operator_refusal() -> None:
+    refusal = {
+        "success": False,
+        "error": "issue remains held",
+        "removed_labels": [],
+        "failed_labels": ["blocked-failed"],
+        "held_by": ["needs-human"],
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/issues/42/retry"
+        return httpx.Response(409, json=refusal)
+
+    api = OrchestratorAsyncHttpApi(
+        base_url_provider=lambda: "http://test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        pause_actor=PauseActor.MCP,
+    )
+
+    assert await api.issue_retry(42) == refusal
+
+
+@pytest.mark.asyncio
 async def test_async_client_allows_concurrent_requests():
     class AsyncConcurrencyClient:
         def __init__(self):

@@ -231,6 +231,27 @@ server is bound to.
 | `orchestrator.session.kill` | `issue_number` | `{"status": "terminated", "issue_number", "title", "killed_sessions", "hold_label", "errors"}`. Terminates the session **and applies a hold label** so the orchestrator does not immediately relaunch it. |
 | `orchestrator.session.focus` | `issue_number` | `{"status": "focused", "issue_number"}`. Brings the agent's terminal to the foreground. Only meaningful for terminal backends that support focus (not the `subprocess` backend). |
 
+The subprocess backend drains the agent's POSIX session and descendant groups
+observed before signalling, including descendants that start another session.
+The required issue hold is acknowledged after work custody is established and
+before stopping processes. Ended sessions release their owned Git-ref CAS lease
+before their records are dropped; a surviving lease or unavailable release
+verification remains an incomplete termination, with its session evidence kept.
+The same drain runs for recovered sessions without an in-memory PTY handle.
+Remaining live workers or unavailable process evidence make termination fail.
+Already detached and reparented processes cannot be attributed by this process
+snapshot; this is not OS containment against arbitrary daemonization.
+
+### Issues
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `orchestrator.issue.retry` | `issue_number` | `{"success": true, "removed_labels": [...]}` when the operator retry command commits; `{"success": false, "error": ...}` when the issue remains held. The command releases the issue's retry hold and may allow a new session to launch. |
+
+Retry preserves operator refusals. It does not archive unfinished work: ordinary
+worktree reuse may reset tracked changes and remove untracked files. Preserve
+unfinished materials before releasing a hold that allows destructive reuse.
+
 ### Repositories
 
 These tools are **not** scoped to `--repo-root` — see

@@ -54,7 +54,7 @@ def _recorded_kind(terminal_id: str) -> SessionKind:
 
 def _active_session(terminal_id: str):
     return SimpleNamespace(
-        terminal_id=terminal_id, key=SimpleNamespace(kind=_recorded_kind(terminal_id))
+        terminal_id=terminal_id, key=SimpleNamespace(kind=_recorded_kind(terminal_id)), lease_id=None
     )
 
 
@@ -121,6 +121,7 @@ def _recorded(terminal_id: str, kind: SessionKind, issue_number: int = 230):
         terminal_id=terminal_id,
         issue=SimpleNamespace(number=issue_number),
         key=SimpleNamespace(kind=kind),
+        lease_id=None,
         run_assets=None,
     )
 
@@ -309,6 +310,7 @@ def _session(terminal_id: str, issue_number: int):
         issue=SimpleNamespace(number=issue_number),
         key=SimpleNamespace(kind=_recorded_kind(terminal_id)),
         run_assets=None,
+        lease_id=None,
     )
 
 

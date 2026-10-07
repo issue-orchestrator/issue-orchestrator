@@ -314,16 +314,19 @@ class TestHistoryEndpoints:
         )
         mock_orch.state.active_sessions = [
             SimpleNamespace(
+                lease_id=None,
                 terminal_id="issue-4057",
                 key=SimpleNamespace(kind=SessionKind.CODE),
                 issue=SimpleNamespace(number=4057),
             ),
             SimpleNamespace(
+                lease_id=None,
                 terminal_id="rework-4057",
                 key=SimpleNamespace(kind=SessionKind.REWORK),
                 issue=SimpleNamespace(number=4057),
             ),
             SimpleNamespace(
+                lease_id=None,
                 terminal_id="issue-999",
                 key=SimpleNamespace(kind=SessionKind.CODE),
                 issue=SimpleNamespace(number=999),

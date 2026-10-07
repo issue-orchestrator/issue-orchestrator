@@ -92,116 +92,123 @@ def terminate_issue_and_hold(
     orchestrator: Any, issue_number: int, sessions: list[Any], *, lm: LabelManager
 ) -> OperatorTermination:
     """Terminate running sessions and apply a hold guard to prevent auto-requeue."""
-    from ..domain.models import SessionHistoryEntry
+    with orchestrator.state_lock:
+        from ..domain.models import SessionHistoryEntry
 
-    state = orchestrator.state
-    repo = orchestrator.repository_host
+        state = orchestrator.state
+        repo = orchestrator.repository_host
 
-    killed_sessions: list[str] = []
-    pr_numbers = sorted(
-        {
-            int(s.pr_number)
-            for s in sessions
-            if getattr(s, "pr_number", None) is not None
-        }
-    )
-
-    # ONE owner call. Which terminals an issue owns, the order they come down
-    # in, and whether anything survived are all policy, and policy does not
-    # belong in an HTTP handler -- that is how this route came to miss review
-    # terminals entirely (#7255). Custody is established inside, before
-    # anything is destroyed, and a fault raises with nothing torn down.
-    try:
-        outcome = orchestrator.terminate_every_session_for_issue(
-            issue_number, reason="operator-terminated"
+        killed_sessions: list[str] = []
+        pr_numbers = sorted(
+            {
+                int(s.pr_number)
+                for s in sessions
+                if getattr(s, "pr_number", None) is not None
+            }
         )
-    except ValidatedWorkCustodyUnproven as refusal:
-        logger.error(
-            "[terminate] refused for issue #%d: validated-work custody could not "
-            "be established; nothing was torn down", issue_number, exc_info=True,
-        )
-        raise TerminationRefused(str(refusal) or type(refusal).__name__) from refusal
-    except (ReconciliationRequired, ClaimLostError) as exc:
-        # Real conditions with a real answer, not something to escape an HTTP
-        # handler as a bodyless 500: there is no tick loop above this frame.
-        logger.warning(
-            "[terminate] issue #%d must reconcile before it can be terminated: %s",
-            issue_number, exc,
-        )
-        raise TerminationDeferred(str(exc) or type(exc).__name__) from exc
-    except Exception as exc:
-        logger.error(
-            "[terminate] issue #%d: teardown faulted after custody was "
-            "established; the issue may be partially terminated",
-            issue_number, exc_info=True,
-        )
-        raise TerminationIncomplete(str(exc) or type(exc).__name__) from exc
 
-    killed_sessions.extend(outcome.stopped_session_ids)
-    errors = list(outcome.failure_details)
+        def prepare_stop() -> None:
+            held = orchestrator.deps.label_sync.sync_add(issue_number, lm.blocked_failed)
+            if not held.success:
+                raise TerminationRefused(f"issue hold could not be established: {held.errors}")
 
-    # Keep tracking anything the owner reported as STILL RUNNING. Wiping its
-    # active-session row would tell the operator "may still be running" in the
-    # same breath as deleting the only record of it -- the agent goes invisible
-    # to the dashboard and a retry 404s on the session lookup (#7255 review).
-    retire_abandoned_queued_work(
-        state=state,
-        claims=orchestrator.deps.pending_work_claims,
-        tech_lead_authority=orchestrator.deps.tech_lead_authority,
-        issue_number=issue_number,
-        # Every terminal this command ended -- stopped or already dead and
-        # cleared. One it could not stop keeps its claim, exactly as it keeps
-        # its active-session row below.
-        ended_sessions=tuple(
-            session for session in sessions
-            if session.terminal_id not in {terminal_id for terminal_id, _ in outcome.failures}
-        ),
-    )
-    state.release_issue(
-        issue_number,
-        keep_terminals=frozenset(terminal_id for terminal_id, _ in outcome.failures),
-    )
-    _append_operator_termination_history(
-        state=state,
-        issue_number=issue_number,
-        primary_session=sessions[0],
-        session_entry_cls=SessionHistoryEntry,
-        now=datetime.now(timezone.utc),
-    )
+        # ONE owner call. Which terminals an issue owns, the order they come down
+        # in, and whether anything survived are all policy, and policy does not
+        # belong in an HTTP handler -- that is how this route came to miss review
+        # terminals entirely (#7255). Custody is established inside, before
+        # anything is destroyed, and a fault raises with nothing torn down.
+        try:
+            outcome = orchestrator.terminate_every_session_for_issue(
+                issue_number, reason="operator-terminated", prepare_stop=prepare_stop
+            )
+        except TerminationRefused:
+            raise
+        except ValidatedWorkCustodyUnproven as refusal:
+            logger.error(
+                "[terminate] refused for issue #%d: validated-work custody could not "
+                "be established; nothing was torn down", issue_number, exc_info=True,
+            )
+            raise TerminationRefused(str(refusal) or type(refusal).__name__) from refusal
+        except (ReconciliationRequired, ClaimLostError) as exc:
+            # Real conditions with a real answer, not something to escape an HTTP
+            # handler as a bodyless 500: there is no tick loop above this frame.
+            logger.warning(
+                "[terminate] issue #%d must reconcile before it can be terminated: %s",
+                issue_number, exc,
+            )
+            raise TerminationDeferred(str(exc) or type(exc).__name__) from exc
+        except Exception as exc:
+            logger.error(
+                "[terminate] issue #%d: teardown faulted after custody was "
+                "established; the issue may be partially terminated",
+                issue_number, exc_info=True,
+            )
+            raise TerminationIncomplete(str(exc) or type(exc).__name__) from exc
 
-    # Label policy:
-    # - issue: add blocked-failed guard, remove in-progress/pr-pending
-    # - linked PR(s): add blocked-failed and remove needs-rework (scanner trigger)
-    label_ops: list[LabelOperation] = [
-        LabelOperation("add", issue_number, lm.blocked_failed),
-        LabelOperation("remove", issue_number, lm.in_progress),
-        LabelOperation("remove", issue_number, lm.pr_pending),
-    ]
-    for pr_number in pr_numbers:
-        label_ops.extend(
-            [
-                LabelOperation("add", pr_number, lm.blocked_failed),
-                LabelOperation("remove", pr_number, lm.needs_rework),
-            ]
+        killed_sessions.extend(outcome.stopped_session_ids)
+        errors = list(outcome.failure_details)
+
+        # Keep tracking anything the owner reported as STILL RUNNING. Wiping its
+        # active-session row would tell the operator "may still be running" in the
+        # same breath as deleting the only record of it -- the agent goes invisible
+        # to the dashboard and a retry 404s on the session lookup (#7255 review).
+        retire_abandoned_queued_work(
+            state=state,
+            claims=orchestrator.deps.pending_work_claims,
+            tech_lead_authority=orchestrator.deps.tech_lead_authority,
+            issue_number=issue_number,
+            # Every terminal this command ended -- stopped or already dead and
+            # cleared. One it could not stop keeps its claim, exactly as it keeps
+            # its active-session row below.
+            ended_sessions=tuple(
+                session for session in sessions
+                if session.terminal_id not in {terminal_id for terminal_id, _ in outcome.failures}
+            ),
         )
-    apply_label_operations(
-        repo,
-        label_ops,
-        logger=logger,
-        log_prefix="[terminate]",
-    )
+        state.release_issue(
+            issue_number,
+            keep_terminals=frozenset(terminal_id for terminal_id, _ in outcome.failures),
+        )
+        _append_operator_termination_history(
+            state=state,
+            issue_number=issue_number,
+            primary_session=sessions[0],
+            session_entry_cls=SessionHistoryEntry,
+            now=datetime.now(timezone.utc),
+        )
 
-    return OperatorTermination(
-        killed_sessions=tuple(killed_sessions),
-        # Stopped PLUS already-dead: the success signal. A terminal whose process
-        # had already exited is reconciled as `cleared`, never `stopped`, so
-        # judging on `killed_sessions` alone 500s the most ordinary terminate
-        # there is (#7255 review, BLOCKER 1).
-        settled_sessions=outcome.settled_session_ids,
-        errors=tuple(errors),
-        complete=outcome.complete,
-        hold_label=lm.blocked_failed,
-    )
+        # Label policy:
+        # - issue: add blocked-failed guard, remove in-progress/pr-pending
+        # - linked PR(s): add blocked-failed and remove needs-rework (scanner trigger)
+        label_ops: list[LabelOperation] = [
+            LabelOperation("remove", issue_number, lm.in_progress),
+            LabelOperation("remove", issue_number, lm.pr_pending),
+        ]
+        for pr_number in pr_numbers:
+            label_ops.extend(
+                [
+                    LabelOperation("add", pr_number, lm.blocked_failed),
+                    LabelOperation("remove", pr_number, lm.needs_rework),
+                ]
+            )
+        apply_label_operations(
+            repo,
+            label_ops,
+            logger=logger,
+            log_prefix="[terminate]",
+        )
+
+        return OperatorTermination(
+            killed_sessions=tuple(killed_sessions),
+            # Stopped PLUS already-dead: the success signal. A terminal whose process
+            # had already exited is reconciled as `cleared`, never `stopped`, so
+            # judging on `killed_sessions` alone 500s the most ordinary terminate
+            # there is (#7255 review, BLOCKER 1).
+            settled_sessions=outcome.settled_session_ids,
+            errors=tuple(errors),
+            complete=outcome.complete,
+            hold_label=lm.blocked_failed,
+        )
 
 
 def _resolve_agent_label(primary_session: Any) -> str:
@@ -236,5 +243,4 @@ def _append_operator_termination_history(
             issue_labels=tuple(primary_session.issue.labels),
         ),
     )
-
 

@@ -5,6 +5,7 @@ import re
 from unittest.mock import MagicMock
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 import asyncio
 
@@ -303,7 +304,59 @@ def test_register_omits_session_send_tool() -> None:
     app.register(fake)  # type: ignore[arg-type]
 
     assert "orchestrator.session.kill" in fake.registered
+    assert "orchestrator.issue.retry" in fake.registered
     assert "orchestrator.session.send" not in fake.registered
+
+
+def test_issue_retry_tool_preserves_operator_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = McpApp(_settings())
+
+    async def refused(_api, issue_number: int) -> dict:
+        assert issue_number == 42
+        return {
+            "success": False,
+            "error": "issue remains held",
+            "removed_labels": [],
+            "failed_labels": ["blocked-failed"],
+            "held_by": ["needs-human"],
+        }
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.orchestrator_http_api.OrchestratorAsyncHttpApi.issue_retry",
+        refused,
+    )
+
+    assert asyncio.run(app.tool_issue_retry(42)).structuredContent == {
+        "success": False,
+        "error": "issue remains held",
+        "removed_labels": [],
+        "failed_labels": ["blocked-failed"],
+        "held_by": ["needs-human"],
+    }
+
+
+def test_issue_retry_sdk_preserves_flat_structured_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"success": True, "message": "retried", "removed_labels": ["blocked-failed"]}
+
+    async def committed(_api, issue_number: int) -> dict:
+        assert issue_number == 42
+        return payload
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.orchestrator_http_api.OrchestratorAsyncHttpApi.issue_retry",
+        committed,
+    )
+    app = McpApp(_settings())
+    server = FastMCP("fixture")
+    app.register(server)
+
+    result = asyncio.run(
+        server.call_tool("orchestrator.issue.retry", {"issue_number": 42})
+    )
+
+    assert result.structuredContent == payload
 
 
 def test_shutdown_force_requires_confirm() -> None:

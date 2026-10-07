@@ -382,16 +382,19 @@ def test_terminate_issue_runtime_for_issue_delegates_to_canonical_services(sampl
     )
     orchestrator.state.active_sessions = [
         SimpleNamespace(
+            lease_id=None,
             terminal_id="issue-77",
             key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
+            lease_id=None,
             terminal_id="rework-77",
             key=SimpleNamespace(kind=SessionKind.REWORK),
             issue=SimpleNamespace(number=77),
         ),
         SimpleNamespace(
+            lease_id=None,
             terminal_id="issue-88",
             key=SimpleNamespace(kind=SessionKind.CODE),
             issue=SimpleNamespace(number=88),

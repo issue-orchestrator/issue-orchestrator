@@ -60,7 +60,7 @@ def _custody(pr_state: str = "open"):
 
 def _live_session():
     return SimpleNamespace(
-        terminal_id=f"issue-{ISSUE}", issue=SimpleNamespace(number=ISSUE),
+        terminal_id=f"issue-{ISSUE}", issue=SimpleNamespace(number=ISSUE), lease_id=None,
         key=SimpleNamespace(kind=SessionKind.CODE),
     )
 

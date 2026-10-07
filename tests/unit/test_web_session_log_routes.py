@@ -3,6 +3,7 @@
 # ruff: noqa: F403,F405,SLF001
 
 from tests.unit import test_web as _support
+from unittest.mock import ANY
 from tests.unit.test_web import *  # noqa: F403
 from issue_orchestrator.control.review_exchange_lifecycle import (
     IssueRuntimeTermination,
@@ -40,11 +41,14 @@ def _arm_terminate(
     Which terminals an issue owns and whether they all stopped is the owner's
     policy now, so the route has exactly one seam to stub.
     """
-    mock_orch.terminate_every_session_for_issue = MagicMock(
-        return_value=IssueTerminationOutcome(
-            _termination(issue_number, stopped), stopped, cleared, failures
-        )
-    )
+    outcome = IssueTerminationOutcome(_termination(issue_number, stopped), stopped, cleared, failures)
+    def terminate(_number, *, reason, prepare_stop):
+        del reason
+        prepare_stop()
+        return outcome
+    from types import SimpleNamespace
+    mock_orch.deps.label_sync.sync_add.return_value = SimpleNamespace(success=True, errors=[])
+    mock_orch.terminate_every_session_for_issue = MagicMock(side_effect=terminate)
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
@@ -52,6 +56,48 @@ globals().update(
 
 class TestKillSessionEndpoint:
     """Test the POST /api/kill/{issue_number} endpoint."""
+
+    def test_hold_write_refusal_keeps_the_running_session(self):
+        from types import SimpleNamespace
+        mock_orch = create_mock_orchestrator()
+        _arm_terminate(mock_orch, 1, ("issue-1",))
+        session = create_session(create_issue(1, "Hold failure"))
+        mock_orch.state.active_sessions = [session]
+        mock_orch.deps.label_sync.sync_add.return_value = SimpleNamespace(success=False, errors=["host refused hold"])
+        set_orchestrator(mock_orch)
+        try:
+            response = TestClient(app).post("/api/kill/1")
+            assert response.status_code == 409
+            assert "hold could not be established" in str(response.json())
+            assert mock_orch.state.active_sessions == [session]
+        finally:
+            set_orchestrator(None)
+
+    def test_operator_settlement_is_serialized_with_tick_and_retry(self):
+        import threading
+        mock_orch = create_mock_orchestrator()
+        _arm_terminate(mock_orch, 1, ("issue-1",))
+        mock_orch.state.active_sessions = [create_session(create_issue(1, "Lock boundary"))]
+        mock_orch.state_lock = threading.RLock()
+        record = mock_orch.state.record_operator_termination
+        def observe_record(*args):
+            acquired = []
+            def probe():
+                held = mock_orch.state_lock.acquire(blocking=False)
+                acquired.append(held)
+                if held:
+                    mock_orch.state_lock.release()
+            thread = threading.Thread(target=probe)
+            thread.start()
+            thread.join(timeout=2)
+            assert acquired == [False]
+            record(*args)
+        mock_orch.state.record_operator_termination = observe_record
+        set_orchestrator(mock_orch)
+        try:
+            assert TestClient(app).post("/api/kill/1").status_code == 200
+        finally:
+            set_orchestrator(None)
 
     def test_kill_session_success(self):
         """Terminate-on-kill should stop and hold issue from automatic rerun."""
@@ -119,7 +165,7 @@ class TestKillSessionEndpoint:
             # per-session kills, which is what used to omit the publish-retry
             # teardown that `terminate` performs.
             mock_orch.terminate_every_session_for_issue.assert_called_once_with(
-                1, reason="operator-terminated"
+                1, reason="operator-terminated", prepare_stop=ANY
             )
             assert data["killed_sessions"] == ["issue-1"]
             # Session should be removed from active sessions
@@ -139,7 +185,7 @@ class TestKillSessionEndpoint:
             assert history_entry.status == "blocked"
             assert history_entry.status_reason == "Terminated by operator"
             # Hold labels: issue + linked PR.
-            mock_orch.repository_host.add_label.assert_any_call(1, "blocked-failed")
+            mock_orch.deps.label_sync.sync_add.assert_called_once_with(1, "blocked-failed")
             mock_orch.repository_host.remove_label.assert_any_call(1, "in-progress")
             mock_orch.repository_host.remove_label.assert_any_call(1, "pr-pending")
             mock_orch.repository_host.add_label.assert_any_call(4124, "blocked-failed")
@@ -224,7 +270,7 @@ class TestKillSessionEndpoint:
             assert payload["terminated"] == [1]
             assert payload["failed"] == [{"issue_number": 999, "error": "Session not found"}]
             mock_orch.terminate_every_session_for_issue.assert_called_once_with(
-                1, reason="operator-terminated"
+                1, reason="operator-terminated", prepare_stop=ANY
             )
         finally:
             set_orchestrator(None)

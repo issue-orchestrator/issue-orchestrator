@@ -15,6 +15,7 @@ from issue_orchestrator.domain.tech_lead_session import TechLeadSessionGeneratio
 def _session(*, task: SessionKind, terminal_id: str, run_id: str):
     return SimpleNamespace(
         issue=SimpleNamespace(number=14),
+        lease_id=None,
         key=SimpleNamespace(kind=task),
         terminal_id=terminal_id,
         run_assets=SimpleNamespace(run_id=run_id),
