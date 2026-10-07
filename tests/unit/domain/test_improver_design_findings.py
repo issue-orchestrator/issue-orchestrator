@@ -261,3 +261,37 @@ def test_a_deleted_rows_leftover_bytes_are_not_a_stored_value(run_dir: Path) -> 
     rejections = _rejections(run_dir, _doc(_design({"kind": "tool", "call": 8, "quote": claim})))
 
     assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        # r3 F1: the dump's own SQL is not a stored value...
+        'INSERT INTO "facts" VALUES(',
+        # ...nor is text assembled across two values of a row (a guard: the
+        # dump's ',' separator already kept this from matching).
+        "kept harmless value','second",
+    ],
+)
+def test_a_sql_quote_must_lie_inside_one_stored_value(run_dir: Path, planted: str) -> None:
+    import sqlite3
+
+    state = run_dir / "toolbox" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(state / "facts.sqlite") as conn:
+        conn.execute("CREATE TABLE facts (a TEXT, b TEXT)")
+        conn.execute("INSERT INTO facts VALUES ('a kept harmless value', 'second value here')")
+    _tool_call(run_dir, 11, "sql_query", {"database": "facts.sqlite", "sql": "SELECT 1"},
+               json.dumps({"columns": ["x"], "rows": [[planted]], "truncated": False}))
+    _tool_call(run_dir, 12, "sql_query", {"database": "facts.sqlite", "sql": "SELECT a FROM facts"},
+               json.dumps({"columns": ["a"], "rows": [["a kept harmless value"]], "truncated": False}))
+
+    # Quoted as the answer shows it (JSON-escaped), as an agent would.
+    shown = json.dumps(planted)[1:-1]
+    assert shown in (run_dir / "toolbox-answers" / "11.txt").read_text()
+
+    rejections = _rejections(run_dir, _doc(_design({"kind": "tool", "call": 11, "quote": shown})))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+    # The stored value itself is still evidence.
+    _validate(run_dir, _doc(_design({"kind": "tool", "call": 12, "quote": "a kept harmless value"})))

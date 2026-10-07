@@ -82,12 +82,13 @@ class RunDirCitations:
         needles = {quote}
         with contextlib.suppress(json.JSONDecodeError):
             needles.add(json.loads(f'"{quote}"'))
-        # The dump holds every LIVE row, one INSERT per row, each text value an
-        # SQL literal; a deleted row's leftover bytes are not dumped.
-        literals = {needle.replace("'", "''") for needle in needles}
+        # The dump holds every LIVE row, one INSERT per row; a deleted row's
+        # leftover bytes are not dumped. The quote must lie inside ONE text
+        # value of a row, never across values or the dump's own SQL (r3 F1).
         with closing(sqlite3.connect(f"{store.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
             for statement in conn.iterdump():
-                if statement.startswith("INSERT INTO ") and any(lit in statement for lit in literals):
+                values = _text_values(statement)
+                if values and any(needle in value for value in values for needle in needles):
                     return CitationCheck.FOUND
         return CitationCheck.NOT_EVIDENCE
 
@@ -101,6 +102,53 @@ class RunDirCitations:
             entry = json.loads(line)
             calls[int(entry["call"])] = (str(entry["tool"]), dict(entry.get("arguments") or {}))
         return calls
+
+
+def _text_values(statement: str) -> list[str] | None:
+    """The text values of one ``iterdump`` row, ``INSERT INTO "t" VALUES(...);``,
+    each unescaped; None if the line is not such a row. Only string literals
+    are values here: SQL syntax, numbers, NULL and X'..' blobs are not."""
+    prefix = 'INSERT INTO "'
+    if not statement.startswith(prefix):
+        return None
+    i = len(prefix)
+    while True:  # the table name: a quoted identifier, "" escaping a quote
+        end = statement.find('"', i)
+        if end < 0:
+            return None
+        if statement.startswith('""', end):
+            i = end + 2
+            continue
+        break
+    i = end + 1
+    if not statement.startswith(" VALUES(", i):
+        return None
+    i += len(" VALUES(")
+    values: list[str] = []
+    while i < len(statement):
+        char = statement[i]
+        if char == "'" and statement[i - 1] != "X":
+            text, i = _literal(statement, i + 1)
+            values.append(text)
+            continue
+        if char == "'":  # X'..' blob: skip its hex
+            i = statement.index("'", i + 1) + 1
+            continue
+        i += 1
+    return values
+
+
+def _literal(statement: str, i: int) -> tuple[str, int]:
+    """The SQL string literal starting after its opening quote at ``i``."""
+    parts: list[str] = []
+    while True:
+        end = statement.index("'", i)
+        parts.append(statement[i:end])
+        if statement.startswith("''", end):
+            parts.append("'")
+            i = end + 2
+            continue
+        return "".join(parts), end + 1
 
 
 def _lines_around(path: Path, line: int) -> list[str] | None:
