@@ -675,3 +675,23 @@ def test_each_heat_has_its_own_workdir_and_reads_only_the_shared_evidence(tmp_pa
         others = [o.workdir for o in spaces if o is not space]
         assert not any(o.is_relative_to(root) for o in others for root in space.evidence)
         assert run_dir not in space.evidence
+
+
+def test_a_heat_naming_one_effect_twice_is_rejected_before_the_merge(tmp_path: Path) -> None:
+    """r4 F1: two findings of one answer with one effect key would split the
+    merge's support and plan two effects for one issue."""
+    twice = json.loads(_findings("capability_issue"))
+    copy = dict(twice["findings"][0])
+    copy["id"] = "same-effect-other-name"
+    twice["findings"].append(copy)
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: json.dumps(twice), 2: _findings("capability_issue")}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request(), apply=False)
+
+    heat1 = next(h for h in record.heats if h.heat == 1)
+    assert heat1.outcome is RunOutcome.REJECTED
+    assert any("[unique_effect_keys] finding same-effect-other-name" in r for r in heat1.rejections)
+    capability = example("capability_issue")["findings"][0]["id"]
+    assert {s.finding_id: s.heats for s in record.finding_support} == {capability: (2,)}
+    assert len(record.effects) == 1

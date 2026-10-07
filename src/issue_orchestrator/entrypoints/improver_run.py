@@ -226,7 +226,7 @@ class ImproverRun:
         answers = self._investigate(request, run_dir, base)
         if isinstance(answers, ImproverRunRecord):
             return answers
-        heats = [self._judge(heat, answer, run_dir, evidence) for heat, answer in answers]
+        heats = [self._judge(heat, answer, run_dir, evidence, request.engine) for heat, answer in answers]
         records = tuple(record for record, _ in heats)
         base = base.model_copy(update={"heats": records})
         accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
@@ -318,7 +318,7 @@ class ImproverRun:
                 return list(pool.map(heat_answer, range(1, self._heats.count + 1)))
 
     def _judge(
-        self, heat: int, answer: ImproverAgentResult, run_dir: Path, evidence: StagedEvidence
+        self, heat: int, answer: ImproverAgentResult, run_dir: Path, evidence: StagedEvidence, engine: EngineRef
     ) -> tuple[HeatRecord, ImproverFindings | None]:
         """One heat's answer, validated alone; its findings if accepted."""
         if answer.final_message is None:
@@ -334,6 +334,14 @@ class ImproverRun:
                 detail=f"{len(rejection.violations)} rule violation(s)",
                 rejections=tuple(v.describe() for v in rejection.violations),
             ), None
+        duplicates = self._duplicate_effect_keys(findings, engine)
+        if duplicates:
+            return HeatRecord(
+                heat=heat,
+                outcome=RunOutcome.REJECTED,
+                detail=f"{len(duplicates)} effect key(s) claimed by two findings",
+                rejections=duplicates,
+            ), None
         return HeatRecord(
             heat=heat,
             outcome=RunOutcome.ACCEPTED,
@@ -341,6 +349,25 @@ class ImproverRun:
             findings=len(findings.findings),
             design_findings=len(findings.design_findings),
         ), findings
+
+    @staticmethod
+    def _duplicate_effect_keys(findings: ImproverFindings, engine: EngineRef) -> tuple[str, ...]:
+        """Two findings of one answer with the same effect key ask for the
+        same GitHub effect: they are one finding named twice, and the one
+        identity the merge and the effects share would not hold."""
+        seen: dict[str, str] = {}
+        duplicates: list[str] = []
+        keyed = [(finding_key(f, engine), f.id) for f in findings.findings] + [
+            (design_finding_key(d, engine), d.id) for d in findings.design_findings
+        ]
+        for key, finding_id in keyed:
+            if key in seen:
+                duplicates.append(
+                    f"[unique_effect_keys] finding {finding_id}: asks for the same effect as {seen[key]}"
+                    f" (key {key}); report it once"
+                )
+            seen.setdefault(key, finding_id)
+        return tuple(duplicates)
 
     def _finish_unaccepted(self, base: ImproverRunRecord, heats: tuple[HeatRecord, ...]) -> ImproverRunRecord:
         """No heat was accepted: rejected if any answered and broke a rule
