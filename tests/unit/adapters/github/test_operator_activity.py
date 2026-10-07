@@ -125,6 +125,10 @@ def _pr_node(**overrides: object) -> dict:
            "actor": {"login": "BruceBGordon", "type": "User"}}], [], []),
         ([_event(2, UNTIL, event="renamed")], [], []),
         ([_event(3, UNTIL, label=None)], [], []),
+        # r2 F2: the nested fields themselves.
+        ([_event(4, UNTIL, label={})], [], []),
+        ([_event(5, UNTIL, event="renamed", rename={})], [], []),
+        ([_event(6, UNTIL, event="renamed", rename={"from": "a"})], [], []),
         # A comment whose issue_url names no issue.
         ([], [{"created_at": _iso(UNTIL), "updated_at": _iso(UNTIL), "issue_url": "https://x/issues/",
                "html_url": "h", "user": {"login": "a", "type": "User"}, "body": "b"}], []),
@@ -154,3 +158,30 @@ def test_a_comment_from_before_the_window_edited_in_it_is_counted_not_staged() -
 
     assert read.comments == ()
     assert "1 comment(s) created before the window and edited in it are not staged" in read.sources[1].detail
+
+
+def test_app_provenance_is_carried_where_github_reports_it_and_marked_unreported_where_not() -> None:
+    """r2 F1: an App acting with a user's token is attributed to the user.
+    Where GitHub reports provenance the action is `checked`; GraphQL actors
+    and a comment row without the field are `unreported`, never presented as
+    proven hand work."""
+    from issue_orchestrator.domain.operator_interventions import ATTRIBUTION_LIMITS, github_interventions
+
+    with_key = {"created_at": _iso(UNTIL), "updated_at": _iso(UNTIL), "performed_via_github_app": None,
+                "issue_url": "https://api.github.com/repos/porchpin/porchpin/issues/1", "html_url": "c-with",
+                "user": {"login": "BruceBGordon", "type": "User"}, "body": "a person's comment"}
+    without_key = {k: v for k, v in with_key.items() if k != "performed_via_github_app"} | {"html_url": "c-without"}
+    search = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [{
+        "__typename": "Issue", "number": 520, "url": "i520", "createdAt": _iso(UNTIL),
+        "author": {"login": "BruceBGordon", "__typename": "User"}, "userContentEdits": {"totalCount": 0, "nodes": []},
+    }]}
+
+    read = _source([[_event(1, UNTIL)]], [with_key, without_key], search, []).read(since=SINCE, until=UNTIL)
+    hand, _ = github_interventions(read, since=SINCE, until=UNTIL)
+
+    by_ref = {i.ref: i.app_provenance for i in hand}
+    assert by_ref["https://github.com/porchpin/porchpin/issues/364#event-1"] == "checked"
+    assert by_ref["c-with"] == "checked"
+    assert by_ref["c-without"] == "unreported"
+    assert by_ref["i520"] == "unreported"
+    assert any("not proven hand work" in limit for limit in ATTRIBUTION_LIMITS)

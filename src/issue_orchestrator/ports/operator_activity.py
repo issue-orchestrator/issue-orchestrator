@@ -21,11 +21,15 @@ from typing import Protocol
 @dataclass(frozen=True)
 class Actor:
     """Who did it: a GitHub login and its account type (``User``, ``Bot``),
-    and whether a GitHub App acted on its behalf."""
+    and whether a GitHub App acted on its behalf, when the source says:
+    ``app_reported`` is False where GitHub does not report it (GraphQL
+    authors, editors, reviewers and mergers), so an App acting with a user
+    token cannot be ruled out there."""
 
     login: str | None
     account_type: str | None
     via_app: bool = False
+    app_reported: bool = True
 
 
 @dataclass(frozen=True)

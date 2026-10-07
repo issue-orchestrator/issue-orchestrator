@@ -201,6 +201,11 @@ class Intervention(_Closed):
     actor: str | None = None
     #: Where to read it: a GitHub URL, or the engine record's id.
     ref: str = ""
+    #: For a GitHub action: whether GitHub reported that no App acted for
+    #: the person (``checked``), or does not say (``unreported``: an App
+    #: using that person's token cannot be ruled out). None for the engine's
+    #: own records.
+    app_provenance: Literal["checked", "unreported"] | None = None
 
 
 class GitHubSourceCoverage(_Closed):

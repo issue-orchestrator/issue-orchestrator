@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
+from typing import Literal
 
 from ..contracts.improver_inputs import Intervention, InterventionAttribution, InterventionKind
 from ..ports.operator_activity import Actor, ItemActivity, RepoActivityRead, RepoComment, RepoEvent
@@ -32,7 +33,10 @@ ATTRIBUTION_LIMITS: tuple[str, ...] = (
     "The coordinator acts under the operator's GitHub identity: a label change, edit, close,"
     " merge or review by that identity is attributed `person`, and may be the operator's or the"
     " coordinator's. Only text carrying the coordinator's signature is attributed `coordinator`.",
-    "Automation is excluded: a Bot account (the engine's App, Dependabot) or an App acting for a user.",
+    "Automation is excluded: a Bot account (the engine's App, Dependabot) or an App acting for a user"
+    " where GitHub reports it. Body edits, reviews, merges and opened items come from a source that"
+    " does not report App provenance (`app_provenance: unreported`): there an App acting with a"
+    " person's token cannot be ruled out, so they are a person's identity at work, not proven hand work.",
 )
 
 #: Issue events that are hand actions when a person does them.
@@ -53,6 +57,10 @@ _CREATION_EDIT = timedelta(seconds=2)
 _COMMENT_EXCERPT = 300
 #: A merge's own close lands within seconds of it.
 _MERGE_CLOSE = timedelta(seconds=30)
+
+
+def _provenance(actor: Actor) -> Literal["checked", "unreported"]:
+    return "checked" if actor.app_reported else "unreported"
 
 
 def is_automation(actor: Actor) -> bool:
@@ -115,7 +123,7 @@ def _events(events: Iterable[RepoEvent]) -> Iterator[tuple[Actor, Intervention]]
         )
         yield e.actor, Intervention(
             at=e.at, kind=kind, subject=f"#{e.number}", detail=detail or e.event,
-            source="github_events", attribution=attribution(), actor=e.actor.login, ref=e.ref,
+            source="github_events", attribution=attribution(), actor=e.actor.login, ref=e.ref, app_provenance=_provenance(e.actor),
         )
 
 
@@ -127,13 +135,13 @@ def _comments(comments: Iterable[RepoComment], until: datetime) -> Iterator[tupl
             yield c.actor, Intervention(
                 at=c.at, kind="commented", subject=f"#{c.number}",
                 detail="(edited after the cutoff; its text as of the window is unknown and is withheld)",
-                source="github_comments", attribution=attribution(), actor=c.actor.login, ref=c.ref,
+                source="github_comments", attribution=attribution(), actor=c.actor.login, ref=c.ref, app_provenance=_provenance(c.actor),
             )
             continue
         excerpt = " ".join(c.body.split())[:_COMMENT_EXCERPT]
         yield c.actor, Intervention(
             at=c.at, kind="commented", subject=f"#{c.number}", detail=excerpt,
-            source="github_comments", attribution=attribution(c.body), actor=c.actor.login, ref=c.ref,
+            source="github_comments", attribution=attribution(c.body), actor=c.actor.login, ref=c.ref, app_provenance=_provenance(c.actor),
         )
 
 
@@ -144,6 +152,7 @@ def _item(item: ItemActivity) -> Iterator[tuple[Actor, Intervention]]:
         return actor, Intervention(
             at=at, kind=kind, subject=subject, detail=detail,
             source="github_items", attribution=attribution(), actor=actor.login, ref=item.ref,
+            app_provenance=_provenance(actor),
         )
 
     yield made(item.created_at, "opened", item.author, "opened")

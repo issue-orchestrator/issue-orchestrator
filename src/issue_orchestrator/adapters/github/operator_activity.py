@@ -143,16 +143,24 @@ def _at(text: str) -> datetime:
     return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
-def _rest_actor(user: dict[str, Any] | None, app: object) -> Actor:
-    if not user:
-        return Actor(None, None, via_app=bool(app))
-    return Actor(user.get("login"), user.get("type"), via_app=bool(app))
+def _rest_actor(row: dict[str, Any], field: str) -> Actor:
+    """The row's ``field`` actor. GitHub reports App provenance as the row's
+    ``performed_via_github_app`` (``null`` for none); a row without the key
+    does not say."""
+    user = row.get(field) or {}
+    return Actor(
+        user.get("login"),
+        user.get("type"),
+        via_app=bool(row.get("performed_via_github_app")),
+        app_reported="performed_via_github_app" in row,
+    )
 
 
 def _graph_actor(node: dict[str, Any] | None) -> Actor:
+    """GraphQL reports no App provenance for these actors."""
     if not node:
-        return Actor(None, None)
-    return Actor(node.get("login"), node.get("__typename"))
+        return Actor(None, None, app_reported=False)
+    return Actor(node.get("login"), node.get("__typename"), app_reported=False)
 
 
 def _required(row: dict[str, Any], *fields: str) -> None:
@@ -166,15 +174,18 @@ def _event(e: dict[str, Any], repo: str) -> RepoEvent:
     _required(e["issue"], "number")
     if e["event"] == "renamed":
         _required(e, "rename")
+        if not isinstance(e["rename"], dict) or "from" not in e["rename"] or "to" not in e["rename"]:
+            raise MalformedActivity(f"a renamed event without its titles: {str(e)[:200]}")
     if e["event"] in ("labeled", "unlabeled"):
         _required(e, "label")
+        _required(e["label"], "name")
     number = int(e["issue"]["number"])
     rename = e.get("rename")
     return RepoEvent(
         at=_at(e["created_at"]),
         event=str(e["event"]),
         number=number,
-        actor=_rest_actor(e.get("actor"), e.get("performed_via_github_app")),
+        actor=_rest_actor(e, "actor"),
         label=(e.get("label") or {}).get("name"),
         rename=(str(rename.get("from", "")), str(rename.get("to", ""))) if rename else None,
         ref=f"https://github.com/{repo}/issues/{number}#event-{e['id']}",
@@ -190,7 +201,7 @@ def _comment(c: dict[str, Any]) -> RepoComment:
         at=_at(c["created_at"]),
         updated_at=_at(c["updated_at"]),
         number=int(tail),
-        actor=_rest_actor(c.get("user"), c.get("performed_via_github_app")),
+        actor=_rest_actor(c, "user"),
         body=str(c.get("body") or ""),
         ref=str(c["html_url"]),
     )
