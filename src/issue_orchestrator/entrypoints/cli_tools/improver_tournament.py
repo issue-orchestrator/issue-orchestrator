@@ -308,8 +308,13 @@ def render_result(result: TournamentResult, directory: Path) -> str:
     lines = [f"tournament {result.tournament_id} on {result.snapshot_id}: key {result.key_items} item(s), max {result.max_score}"]
     lines += [f"  grading {g.grading} ({g.provider}:{g.model}, {g.seconds:.0f}s): "
               f"{'accepted' if g.accepted else 'NOT accepted'}: {g.detail}" for g in result.graders]
-    sd = "unmeasured" if result.pass_sd is None else f"{result.pass_sd:.2f}"
-    lines.append(f"  {len(result.graders)} grading(s) ({result.passes} pass(es) per grader); pass-to-pass sd: {sd}")
+    n = result.noise
+
+    def var(v: float | None) -> str:
+        return "unmeasured" if v is None else f"{v:.3f}"
+
+    lines.append(f"  {len(result.graders)} grading(s) ({result.passes} pass(es) per grader); noise (variances):"
+                 f" heat {var(n.heat)}, grader {var(n.grader)}, pass {var(n.pass_)}; resolution {n.resolution:g}")
     lines += [f"  arm {a.arm}: mean {a.mean:.2f} ± {a.se:.2f} se (outputs {list(a.output_means)}) "
               + " ".join(f"{grading}={list(v)}" for grading, v in a.scores.items()) for a in result.arms]
     lines.append(

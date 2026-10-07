@@ -176,6 +176,19 @@ class TournamentCost(_Closed):
     grader_seconds: dict[str, float]
 
 
+class TournamentNoise(_Closed):
+    """Variances pooled over the tournament's arms (None: not measurable)."""
+
+    #: One heat's mean score about its arm's mean (needs an arm with two heats).
+    heat: float | None
+    #: One grader's arm mean about the graders' consensus.
+    grader: float | None
+    #: One pass's arm mean about its grader's mean.
+    pass_: float | None
+    #: The smallest score step a grading expresses.
+    resolution: float
+
+
 class TournamentResult(_Closed):
     tournament_id: str
     snapshot_id: str
@@ -184,8 +197,8 @@ class TournamentResult(_Closed):
     #: Every grading: each grader's pass over every output.
     graders: tuple[GraderRun, ...]
     passes: Annotated[int, Field(ge=1)]
-    #: One pass's spread about its grader's mean for an output (None: one pass).
-    pass_sd: float | None
+    #: The tournament's measured noise, pooled over every arm.
+    noise: TournamentNoise
     #: How many standard errors of a difference tell two arms apart.
     band_ses: float
     arms: tuple[ArmScore, ...]
@@ -212,5 +225,6 @@ __all__ = [
     "OutputGrades",
     "TournamentArm",
     "TournamentCost",
+    "TournamentNoise",
     "TournamentResult",
 ]

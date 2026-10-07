@@ -72,7 +72,7 @@ def test_the_2026_10_04_tournament_ranking_is_reproduced(tmp_path: Path, monkeyp
     result = TournamentResult.model_validate_json(path.read_text())
     means = {a.arm: a.mean for a in result.arms}
     print(f"\n[IMPROVER TOURNAMENT] {datetime.now(UTC).isoformat()} ranking {result.ranking_text()} means {means}"
-          f" se { {a.arm: a.se for a in result.arms} } pass sd {result.pass_sd}"
+          f" se { {a.arm: a.se for a in result.arms} } noise {result.noise}"
           f" distinguishable {result.distinguishable} cost {result.cost}", flush=True)
     assert result.passes == 3 and len(result.graders) == 6
     assert result.ranking[0] == ("C",)

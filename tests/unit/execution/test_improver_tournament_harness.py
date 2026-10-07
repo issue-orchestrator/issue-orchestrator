@@ -573,7 +573,9 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
     assert all(g.accepted for g in result.graders) and result.passes == 3
     assert {a.arm: a.mean for a in result.arms} == {"G": 8.0, "P": 0.0, "X": 0.0}
     # The fake graders agree exactly: no noise, so G is told apart and P and X (both 0) are not.
-    assert result.pass_sd == 0.0 and result.ranking == (("G",), ("P", "X"))
+    assert (result.noise.heat, result.noise.grader, result.noise.pass_) == (0.0, 0.0, 0.0)
+    assert result.noise.resolution == 1.0  # half credit on the key's lightest item (weight 2)
+    assert result.ranking == (("G",), ("P", "X"))
     assert result.distinguishable == (("G", "P"), ("G", "X"))
     assert result.cost.arm_heats == {"claude": 2, "codex": 4}
     assert result.cost.grader_calls == {"claude": 3, "codex": 3}
@@ -614,17 +616,18 @@ def test_a_tournament_one_grader_could_not_grade_has_no_result(stores) -> None: 
 
 
 def test_arms_are_ranked_on_their_exact_means_not_the_rounded_ones(stores) -> None:  # type: ignore[no-untyped-def]
-    """Noise-free, 1.0004 and 0.9996 are told apart; rounded, both show 1.0."""
+    """1.0004 and 0.9996 both show as 1.0, but A is ranked first on its exact mean."""
     from issue_orchestrator.domain.improver_tournament import pool
     from issue_orchestrator.execution.improver_tournament import _result
 
     key = stores[1].get("20261004")
-    gradings = {"g": [{"S10": 1.0004, "S11": 0.9996}]}
-    arm_of = {"S10": "A", "S11": "B"}
+    gradings = {"g": [{"S10": 0.9996, "S11": 0.9996, "S12": 1.0004, "S13": 1.0004}]}
+    arm_of = {"S10": "B", "S11": "B", "S12": "A", "S13": "A"}
     cost = TournamentCost(arm_heats={}, grader_calls={}, grader_seconds={})
-    result = _result("t", "20261004", key, (), 1, pool(gradings, arm_of, ungraded={}), gradings, arm_of, {}, cost)
+    pooled = pool(gradings, arm_of, ungraded={}, resolution=1.0)
+    result = _result("t", "20261004", key, (), 1, pooled, gradings, arm_of, {}, cost)
 
-    assert result.ranking == (("A",), ("B",))
+    assert result.ranking == (("A", "B"),)
     assert [a.mean for a in result.arms] == [1.0, 1.0]
 
 
@@ -857,18 +860,20 @@ def test_arms_within_the_measured_grading_noise_are_reported_indistinguishable(s
 
     means = {a.arm: a.mean for a in result.arms}
     assert (means["S"], means["W"], means["N"]) == (3.0, 0.25, 0.0)
-    assert result.pass_sd is not None and result.pass_sd > 0
+    assert result.noise.pass_ is not None and result.noise.pass_ > 0
     # W differs from N, but by less than the noise its gradings showed.
     assert result.ranking == (("S",), ("W", "N"))
     assert ("W", "N") not in result.distinguishable and ("S", "W") in result.distinguishable
 
 
 def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> None:  # type: ignore[no-untyped-def]
-    """Codex's first pass waits until Claude has finished all three of its
-    passes: that proves the graders run side by side, and a queued Codex
-    pass 2 starting meanwhile would be a grader running two passes at once."""
+    """Claude's first pass waits for Codex's first to start, and Codex's
+    first waits until Claude has finished all three: both prove the graders
+    run side by side, and a queued Codex pass 2 starting meanwhile would be
+    a grader running two passes at once."""
     _, _, root = stores
     claude_done = threading.Event()
+    codex_started = threading.Event()
     active: dict[str, int] = {}
     overlaps: list[str] = []
     order: list[str] = []
@@ -888,7 +893,10 @@ def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> N
                 order.append(f"{self.provider}:{pass_dir}:start")
             try:
                 if self.provider == "codex" and pass_dir == "p1":
+                    codex_started.set()
                     side_by_side.append(claude_done.wait(timeout=10))
+                if self.provider == "claude" and pass_dir == "p1":
+                    side_by_side.append(codex_started.wait(timeout=10))
                 labels = sorted(p.stem for p in (space.run_dir / "anon").glob("*.json"))
                 return ImproverAgentResult(_complete(labels), "graded")
             finally:
@@ -907,7 +915,7 @@ def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> N
 
     result = harness.grade("t16", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")], seed=3)
 
-    assert side_by_side == [True] and overlaps == []
+    assert side_by_side == [True, True] and overlaps == []
     for provider in ("claude", "codex"):
         mine = [e for e in order if e.startswith(provider)]
         assert mine == [f"{provider}:p{n}:{edge}" for n in (1, 2, 3) for edge in ("start", "end")]
@@ -953,6 +961,33 @@ def test_a_grader_call_that_raises_is_still_counted(stores) -> None:  # type: ig
     # Codex: the call that raised, then three; Claude: whatever ran beside it, then three.
     assert result.cost.grader_calls["codex"] == 4
     assert 4 <= result.cost.grader_calls["claude"] <= 6
+
+
+def test_a_grading_that_fails_after_its_call_returns_is_still_counted(stores, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    import issue_orchestrator.execution.improver_tournament as module
+
+    _, _, root = stores
+    real = module.read_grades
+    failed = {"once": False}
+
+    def read_once_badly(*args, **kwargs):  # type: ignore[no-untyped-def]
+        if not failed["once"]:
+            failed["once"] = True
+            raise TypeError("post-call processing broke")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "read_grades", read_once_badly)
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": _complete}))
+    outputs = [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")]
+    with pytest.raises(TypeError, match="post-call processing broke"):
+        harness.grade("t19", "20261004", outputs, seed=4)
+
+    result = harness.grade("t19", "20261004", outputs, seed=4)
+
+    # The broken grading's call counts, beside the six that completed and whatever ran with it.
+    assert sum(result.cost.grader_calls.values()) >= 7
+    kept = list((harness.directory("t19") / "graders-attempt-1").glob("*/p*/grading.json"))
+    assert any("post-call processing broke" in p.read_text() for p in kept)
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -46,11 +45,13 @@ from ..contracts.improver_inputs import INPUTS_FILE, InputsManifest
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider, RunOutcome
 from ..contracts.improver_toolbox import ToolboxManifest
 from ..contracts.improver_tournament import (
+    GRADE_CREDIT,
     AnswerKey,
     ArmScore,
     GraderRun,
     TournamentArm,
     TournamentCost,
+    TournamentNoise,
     TournamentResult,
     require_slug,
 )
@@ -331,7 +332,7 @@ class TournamentHarness:
         arm_of = {label: by_id[oid].arm for label, oid in labels.items()}
         ungraded = {o.output_id: o.arm for o in outputs if o.text is None}
         result = _result(
-            tournament_id, snapshot_id, key, runs, passes, pool(gradings, arm_of, ungraded=ungraded),
+            tournament_id, snapshot_id, key, runs, passes, pool(gradings, arm_of, ungraded=ungraded, resolution=grade_step(key)),
             gradings, arm_of, ungraded, _cost(root),
         )
         _write_atomic(root / "result.json", result.model_dump_json(indent=2) + "\n")
@@ -354,8 +355,32 @@ class TournamentHarness:
     def _grade_with(
         self, grader: Grader, pass_number: int, root: Path, labels: Mapping[str, str], key: AnswerKey
     ) -> tuple[GraderRun, dict[str, float] | None]:
+        """One grading, recorded (who, which pass, outcome, seconds) beside its
+        answer whatever happens once the call starts, so a retried
+        tournament still counts every call it made."""
         workdir = root / "graders" / grader.name / f"p{pass_number}"
         workdir.mkdir(parents=True)
+        started = time.monotonic()
+
+        def record(accepted: bool, detail: str) -> GraderRun:
+            graded = GraderRun(
+                name=grader.name, provider=grader.choice.provider.value, model=grader.choice.model,
+                pass_number=pass_number, accepted=accepted, detail=detail[:500],
+                seconds=round(time.monotonic() - started, 1),
+            )
+            _write_atomic(workdir / _GRADING_RECORD, graded.model_dump_json(indent=2) + "\n")
+            return graded
+
+        try:
+            accepted, detail, scores = self._grade_once(grader, root, workdir, labels, key)
+        except BaseException as error:
+            record(False, f"raised: {error!r}")
+            raise
+        return record(accepted, detail), scores
+
+    def _grade_once(
+        self, grader: Grader, root: Path, workdir: Path, labels: Mapping[str, str], key: AnswerKey
+    ) -> tuple[bool, str, dict[str, float] | None]:
         prompt = (
             self._grader_prompt.replace("<<COUNT>>", str(len(labels)))
             .replace("<<OUTPUTS_DIR>>", str(root / "anon"))
@@ -364,38 +389,17 @@ class TournamentHarness:
             .replace("<<ITEM_IDS>>", ", ".join(i.id for i in key.scored))
         )
         space = HeatSpace(heat=1, run_dir=root, workdir=workdir, evidence=(root / "anon", root / "key"))
-        started = time.monotonic()
-        try:
-            answer = self._agent_for(grader.choice, grader.timeout_minutes).run(prompt=prompt, space=space, toolbox=None)
-        except BaseException as error:
-            # The call was made (and spent) even though it raised: it is counted.
-            _write_atomic(workdir / _GRADING_RECORD, GraderRun(
-                name=grader.name, provider=grader.choice.provider.value, model=grader.choice.model,
-                pass_number=pass_number, accepted=False, detail=f"raised: {error!r}"[:500],
-                seconds=round(time.monotonic() - started, 1),
-            ).model_dump_json(indent=2) + "\n")
-            raise
-        seconds = round(time.monotonic() - started, 1)
-
-        def run(accepted: bool, detail: str) -> GraderRun:
-            # Kept beside the answer, so a retried tournament still counts this call's cost.
-            graded = GraderRun(
-                name=grader.name, provider=grader.choice.provider.value, model=grader.choice.model,
-                pass_number=pass_number, accepted=accepted, detail=detail, seconds=seconds,
-            )
-            _write_atomic(workdir / _GRADING_RECORD, graded.model_dump_json(indent=2) + "\n")
-            return graded
-
+        answer = self._agent_for(grader.choice, grader.timeout_minutes).run(prompt=prompt, space=space, toolbox=None)
         if answer.final_message is None:
-            return run(False, f"no answer: {answer.detail}"), None
+            return False, f"no answer: {answer.detail}", None
         (workdir / "grades.json").write_text(answer.final_message, encoding="utf-8")
         try:
             grades = read_grades(answer.final_message, {
                 label: finding_ids((root / "anon" / f"{label}.json").read_text(encoding="utf-8")) for label in labels
             }, key)
         except GradesRejected as rejected:
-            return run(False, f"rejected: {rejected}"), None
-        return run(True, f"graded {len(grades)} output(s)"), {label: score(g, key) for label, g in grades.items()}
+            return False, f"rejected: {rejected}", None
+        return True, f"graded {len(grades)} output(s)", {label: score(g, key) for label, g in grades.items()}
 
 
 def render_key(key: AnswerKey) -> str:
@@ -562,7 +566,10 @@ def _result(
     return TournamentResult(
         tournament_id=tournament_id, snapshot_id=snapshot_id, key_items=len(key.scored),
         max_score=key.max_score, graders=runs, passes=passes,
-        pass_sd=_pass_sd(gradings),
+        noise=TournamentNoise(
+            heat=_rounded(pooled.noise.heat), grader=_rounded(pooled.noise.grader),
+            pass_=_rounded(pooled.noise.pass_), resolution=pooled.noise.resolution,
+        ),
         band_ses=NOISE_BAND_SES, arms=tuple(arms),
         ranking=rank(means, distinguishable=pooled.distinguishable),
         distinguishable=tuple(
@@ -572,20 +579,13 @@ def _result(
     )
 
 
-def _pass_sd(gradings: Mapping[str, Sequence[Mapping[str, float]]]) -> float | None:
-    """For the record: one pass's spread about its grader's mean score of an
-    output (None: one pass). The noise band uses the arms' differences."""
-    passes = {len(runs) for runs in gradings.values()}.pop()
-    if passes < 2:
-        return None
-    squares, dof = 0.0, 0
-    for runs in gradings.values():
-        for label in runs[0]:
-            values = [r[label] for r in runs]
-            m = sum(values) / passes
-            squares += sum((v - m) ** 2 for v in values)
-            dof += passes - 1
-    return round(math.sqrt(squares / dof), 3) if dof else None
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value, 4)
+
+
+def grade_step(key: AnswerKey) -> float:
+    """The smallest score step a grading expresses: half credit on the key's lightest scored item."""
+    return GRADE_CREDIT["half"] * min(item.weight for item in key.scored)
 
 
 def _cost(root: Path) -> TournamentCost:

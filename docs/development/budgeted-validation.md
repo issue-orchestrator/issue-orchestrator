@@ -232,13 +232,16 @@ data lives under `<git common dir>/io-improver/`:
   unsupported finding. Each grader grades every output `--passes` times
   (default 3; graders side by side, a grader's passes in turn); a grader's
   passes are averaged first, since repeating one grader's opinion is not more
-  evidence. An arm's score is the mean over its outputs and graders. Two arms
-  are told apart only when their means differ by more than twice the standard
-  error of the difference: the larger of the graders' disagreement on that
-  difference and its pass-to-pass noise (measured on the difference itself,
-  pass by pass), plus the heats' spread. Arms within
-  that band are reported indistinguishable (`≈`, grouped only when pairwise
-  so), which is a result, not a failure. `result.json` records each grading,
+  evidence. An arm's score is the mean over its outputs and graders. The
+  tournament's noise is measured once, pooled over every arm (so one pair
+  agreeing by chance cannot zero it): the heats' spread, the graders'
+  disagreement and the passes' noise. An arm's mean varies by heat noise / its
+  heats plus the larger of grader and pass noise / graders, never less than a
+  grading's resolution allows (half credit on the lightest key item). Two arms
+  are told apart only when some arm ran two heats (else heat luck is unmeasured) and
+  their means differ by more than twice the standard error of the difference;
+  arms within that band are reported indistinguishable (`≈`, grouped only
+  when pairwise so), which is a result, not a failure. `result.json` records each grading,
   the pass noise, the distinguishable pairs and the cost (arm heats and every
   grader call, retries included, per provider; Claude's count against the operator's subscription).
 
