@@ -10,9 +10,10 @@
 * a TOOL citation names a toolbox call whose answer the orchestrator
   recorded in ``toolbox-answers/<call>.txt`` (:mod:`.improver_toolbox`), and
   only an answer that is DATA counts (r1 F1): a ``github_get`` answer is
-  GitHub's; a ``sql_query`` value counts only if its bytes are in the
-  queried store copy (``SELECT 'any claim'`` or ``char(...)`` produce text
-  that is not); a ``git`` answer never counts, since ``--format`` and its
+  GitHub's; a ``sql_query`` value counts only if it is inside a LIVE text
+  value of the queried store copy (``SELECT 'any claim'`` or ``char(...)``
+  produce text that is not, and a deleted row's leftover bytes are not a
+  value); a ``git`` answer never counts, since ``--format`` and its
   escapes let the request write it (the clone's files are cited instead).
 
 A file is read as a stream up to the cited line (engine logs run to hundreds
@@ -23,8 +24,9 @@ from __future__ import annotations
 
 import contextlib
 import json
-import mmap
+import sqlite3
 from collections import deque
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -70,19 +72,24 @@ class RunDirCitations:
 
     def _stored(self, database: str, quote: str) -> CitationCheck:
         """Whether ``quote`` (as quoted, or JSON-unescaped as the answer
-        showed it) is byte for byte in the staged store copy."""
-        store = (self._run_dir / TOOLBOX_DIRNAME / TOOLBOX_STATE_DIRNAME / database).resolve()
-        if (
-            store.parent != (self._run_dir / TOOLBOX_DIRNAME / TOOLBOX_STATE_DIRNAME).resolve()
-            or not store.is_file()
-            or store.stat().st_size == 0
-        ):
+        showed it) is inside one LIVE text value of the staged store copy:
+        a value a query can return from a row, never bytes a deleted row
+        left in a free page (r2 F1)."""
+        state = (self._run_dir / TOOLBOX_DIRNAME / TOOLBOX_STATE_DIRNAME).resolve()
+        store = (state / database).resolve()
+        if store.parent != state or not store.is_file() or store.stat().st_size == 0:
             return CitationCheck.NOT_EVIDENCE
-        needles = {quote.encode("utf-8")}
+        needles = {quote}
         with contextlib.suppress(json.JSONDecodeError):
-            needles.add(json.loads(f'"{quote}"').encode("utf-8"))
-        with store.open("rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            return CitationCheck.FOUND if any(data.find(n) >= 0 for n in needles) else CitationCheck.NOT_EVIDENCE
+            needles.add(json.loads(f'"{quote}"'))
+        # The dump holds every LIVE row, one INSERT per row, each text value an
+        # SQL literal; a deleted row's leftover bytes are not dumped.
+        literals = {needle.replace("'", "''") for needle in needles}
+        with closing(sqlite3.connect(f"{store.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
+            for statement in conn.iterdump():
+                if statement.startswith("INSERT INTO ") and any(lit in statement for lit in literals):
+                    return CitationCheck.FOUND
+        return CitationCheck.NOT_EVIDENCE
 
     def _calls(self) -> dict[int, tuple[str, dict[str, Any]]]:
         """Each logged call's tool and arguments, by id (toolbox-calls.jsonl)."""

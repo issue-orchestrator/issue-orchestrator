@@ -238,3 +238,26 @@ def test_an_answer_with_no_logged_call_is_not_evidence(run_dir: Path) -> None:
     rejections = _rejections(run_dir, _doc(_design({**TOOL_CITATION, "call": 9})))
 
     assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+def test_a_deleted_rows_leftover_bytes_are_not_a_stored_value(run_dir: Path) -> None:
+    """r2 F1: with secure_delete off, a deleted row's text stays in a free
+    page; a SELECT of that text as a literal must not pass as evidence."""
+    import sqlite3
+
+    claim = "operator approval is the removal of a label"
+    state = run_dir / "toolbox" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(state / "timeline.sqlite") as conn:
+        conn.execute("PRAGMA secure_delete = OFF")
+        conn.execute("CREATE TABLE timeline (event TEXT)")
+        conn.execute("INSERT INTO timeline VALUES ('review.skipped: kept')")
+        conn.execute("INSERT INTO timeline VALUES (?)", (claim,))
+        conn.execute("DELETE FROM timeline WHERE event = ?", (claim,))
+    assert claim.encode() in (state / "timeline.sqlite").read_bytes()
+    _tool_call(run_dir, 8, "sql_query", {"database": "timeline.sqlite", "sql": f"SELECT '{claim}'"},
+               json.dumps({"columns": ["x"], "rows": [[claim]], "truncated": False}))
+
+    rejections = _rejections(run_dir, _doc(_design({"kind": "tool", "call": 8, "quote": claim})))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
