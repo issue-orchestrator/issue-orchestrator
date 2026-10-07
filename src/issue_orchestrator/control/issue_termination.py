@@ -17,9 +17,12 @@ from ..events import EventName
 from ..ports.event_sink import EventSink, make_trace_event
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
+from .in_flight_work import SettlementOutcome
 
 if TYPE_CHECKING:
     from ..domain.models import Session
+    from ..ports.claim_manager import ClaimManager
+    from .in_flight_work import InFlightWorkLedger
     from .review_exchange_lifecycle import (
         IssueRuntimeLifecycleOwners,
         IssueRuntimeTermination,
@@ -230,6 +233,33 @@ def _remaining_sessions(
             continue
         seen.setdefault(session.terminal_id, session)
     return tuple(seen.values())
+
+
+def end_session_records(
+    active_sessions: list["Session"] | None,
+    ended: Callable[["Session"], bool],
+    work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
+) -> None:
+    """Retire each ended run's CAS lease and work claim, THEN drop its record.
+
+    The one settle-before-drop step every issue-runtime termination shares. The
+    record retains its lease if CAS release fails, and tells the recovery sweep
+    the run is live, so a record dropped
+    beside a claim left HELD -- or before a settlement that then raised -- let
+    the next tick re-admit the work this boundary just ended.
+    """
+    if active_sessions is None:
+        return
+    for session in tuple(active_sessions):
+        if ended(session):
+            if session.lease_id:
+                claim_manager.release_claim(session.issue.number, session.lease_id)
+                current = claim_manager.get_current_claim(session.issue.number)
+                if current is not None and current.lease_id == session.lease_id:
+                    raise RuntimeError(f"issue #{session.issue.number} claim release was not acknowledged")
+            work.settle(session, SettlementOutcome.CONSUMED)
+    active_sessions[:] = [session for session in active_sessions if not ended(session)]
 
 
 def _stop_session(

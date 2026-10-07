@@ -34,6 +34,7 @@ from .issue_termination import (
     IssueTerminationOutcome as IssueTerminationOutcome,
     ValidatedWorkCustodyUnproven as ValidatedWorkCustodyUnproven,
     capture_or_report,
+    end_session_records,
     terminate_every_session,
 )
 
@@ -71,7 +72,7 @@ class IssuePublishRetryRuntime(PublishRetryAbandoner, Protocol):
 
 
 from .session_manager import SessionType
-from .in_flight_work import InFlightWorkLedger, SettlementOutcome
+from .in_flight_work import InFlightWorkLedger
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,7 @@ def _release_issue_runtime(
                     # stays HELD beside no live run (#7380 review r2) -- the
                     # same post-stop rule `_stop_exact_generation` applies.
                     if not session_manager.exists(ref):
-                        _end_session_records(
+                        end_session_records(
                             active_sessions, lambda session: session.terminal_id == ref.name, work, claim_manager
                         )
                     raise
@@ -262,7 +263,7 @@ def _release_issue_runtime(
         set(stopped).union(stale),
     )
     ended = set(terminal_ids_to_clear)
-    _end_session_records(active_sessions, lambda session: session.terminal_id in ended, work, claim_manager)
+    end_session_records(active_sessions, lambda session: session.terminal_id in ended, work, claim_manager)
     if stopped or terminal_ids_to_clear:
         logger.info(
             "[ISSUE_RUNTIME] terminated issue=%d reason=%s stopped=%s cleared=%s",
@@ -405,40 +406,13 @@ def _raise_lifecycle_errors(message: str, errors: list[Exception]) -> None:
     raise ExceptionGroup(message, errors)
 
 
-def _end_session_records(
-    active_sessions: list["Session"] | None,
-    ended: Callable[["Session"], bool],
-    work: "InFlightWorkLedger",
-    claim_manager: ClaimManager,
-) -> None:
-    """Retire each ended run's CAS lease and work claim, THEN drop its record.
-
-    The one settle-before-drop step every issue-runtime termination shares. The
-    record retains its lease if CAS release fails, and tells the recovery sweep
-    the run is live, so a record dropped
-    beside a claim left HELD -- or before a settlement that then raised -- let
-    the next tick re-admit the work this boundary just ended.
-    """
-    if active_sessions is None:
-        return
-    for session in tuple(active_sessions):
-        if ended(session):
-            if session.lease_id:
-                claim_manager.release_claim(session.issue.number, session.lease_id)
-                current = claim_manager.get_current_claim(session.issue.number)
-                if current is not None and current.lease_id == session.lease_id:
-                    raise RuntimeError(f"issue #{session.issue.number} claim release was not acknowledged")
-            work.settle(session, SettlementOutcome.CONSUMED)
-    active_sessions[:] = [session for session in active_sessions if not ended(session)]
-
-
 def _drop_exact_generation(
     active_sessions: list["Session"], target: TechLeadSessionGeneration,
     work: "InFlightWorkLedger",
     claim_manager: ClaimManager,
 ) -> None:
     """Reconcile only the active row proven to represent the stopped generation."""
-    _end_session_records(
+    end_session_records(
         active_sessions,
         lambda session: (
             session.issue.number == target.issue_number
@@ -627,7 +601,7 @@ class CoreIssueRuntimeOwners:
         })
 
     def end_session_records(self, terminal_ids: frozenset[str]) -> None:
-        _end_session_records(self.active_sessions, lambda session: session.terminal_id in terminal_ids,
+        end_session_records(self.active_sessions, lambda session: session.terminal_id in terminal_ids,
                              self.work, self.claim_manager)
 
     def cancel_preserved_exchange(self, issue_number: int, reason: str, validated_work: ValidatedWorkDispositionBatch) -> ReviewExchangeCancellation:
