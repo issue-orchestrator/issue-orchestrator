@@ -843,9 +843,16 @@ class CompletionHandler:
                     issue_key=session.key.issue.stable_id(),
                     issue_number=session.issue.number,
                 )
+                if review_machine.can_transition("reopen_review"):
+                    # A re-review of a PR approved before (it went back for a
+                    # post-publish rework): this verdict decides afresh.
+                    review_machine.reopen_review()
+                before = review_machine.last_transition
                 self._process_review_outcome(pr_info, pr_number_review, review_machine)
-                # Publish review outcome events from state machine transitions
-                self._publish_review_outcome(review_machine, session, pr_number_review)
+                # Publish only an outcome THIS review produced: a stale earlier
+                # approval must never be reported as this review's verdict.
+                if review_machine.last_transition is not before:
+                    self._publish_review_outcome(review_machine, session, pr_number_review)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
             self.events.publish(

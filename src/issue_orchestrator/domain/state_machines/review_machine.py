@@ -197,6 +197,16 @@ class ReviewStateMachine:
                 'dest': ReviewState.CLOSED.value,
                 'after': self._on_closed
             },
+            # A new review of an approved PR: the PR went back for rework after
+            # its approval (a conflict, a failing check; post-publish), so this
+            # review decides afresh (#8141: its verdict must not read as the
+            # earlier approval).
+            {
+                'trigger': 'reopen_review',
+                'source': ReviewState.APPROVED.value,
+                'dest': ReviewState.IN_REVIEW.value,
+                'after': self._on_review_reopened
+            },
             # Reopen from in_review (if more changes requested after tech_lead review)
             {
                 'trigger': 'request_changes_after_tech_lead',
@@ -253,6 +263,19 @@ class ReviewStateMachine:
             data={**data, 'issue_number': self.issue_number},
         )
         logger.info(f"Review started for PR {self.pr_number}")
+
+    def _on_review_reopened(self, event: EventData) -> None:
+        """Callback for reopen_review: a re-review of an approved PR has begun."""
+        data = event.kwargs.get('data', {})
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.APPROVED.value,
+            to_state=ReviewState.IN_REVIEW.value,
+            event_name="review.started",
+            entity_id=self.pr_number,
+            data={**data, 'issue_number': self.issue_number},
+        )
+        logger.info(f"PR {self.pr_number} re-review after its approval")
 
     def _on_approved(self, event: EventData) -> None:
         """Callback for approve transition."""
@@ -498,6 +521,10 @@ class ReviewStateMachine:
     def close(self, **kwargs: Any) -> None:
         """Close the PR."""
         self._invoke('close', **kwargs)
+
+    def reopen_review(self, **kwargs: Any) -> None:
+        """Begin a re-review of a PR approved before."""
+        self._invoke('reopen_review', **kwargs)
 
     def request_changes_after_tech_lead(self, **kwargs: Any) -> None:
         """Request changes after tech_lead."""
