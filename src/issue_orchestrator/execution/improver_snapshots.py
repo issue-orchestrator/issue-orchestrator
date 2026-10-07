@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -107,10 +108,14 @@ class FrozenSnapshotStore:
                 engine_id=manifest.engine_id, engine_commit=_engine_commit(data), origin=origin,
                 upgrades=upgrades, has_toolbox=state_dir is not None,
             )
-        except Exception:
+            # Published last, whole or not at all: a snapshot exists once its manifest does.
+            handle, temporary = tempfile.mkstemp(dir=target, prefix=".snapshot-")
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                out.write(snapshot.model_dump_json(indent=2) + "\n")
+            os.replace(temporary, target / SNAPSHOT_MANIFEST)
+        except BaseException:
             shutil.rmtree(target, ignore_errors=True)
             raise
-        (target / SNAPSHOT_MANIFEST).write_text(snapshot.model_dump_json(indent=2) + "\n", encoding="utf-8")
         return snapshot
 
     def engine(self, snapshot_id: str) -> EngineRef:

@@ -267,6 +267,25 @@ def test_no_arm_runs_before_its_snapshot_has_a_key(tmp_path: Path) -> None:
     assert not harness.directory("t8").exists()
 
 
+def test_a_snapshot_is_published_whole_or_not_at_all(stores, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    import issue_orchestrator.execution.improver_snapshots as module
+
+    snapshots, _, root = stores
+    real_replace = module.os.replace
+
+    def failing(source: str, target: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module.os, "replace", failing)
+    with pytest.raises(OSError, match="disk full"):
+        snapshots.import_("torn", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x")
+    assert not (root / "snapshots" / "torn").exists() and "torn" not in snapshots.ids()
+
+    monkeypatch.setattr(module.os, "replace", real_replace)
+    snapshots.import_("torn", improver_data=_legacy_inputs(tmp_path / "b"), taken_at=T0, origin="x")
+    assert snapshots.get("torn").id == "torn"
+
+
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     snapshots, _, _ = stores
     snapshots.import_("bundle-only", improver_data=_legacy_inputs(tmp_path / "b"), taken_at=T0, origin="x")
@@ -423,7 +442,8 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
     result = harness.grade("t1", "20261004", outputs, seed=11)
 
     assert {(o.arm, o.heat, o.text is not None) for o in outputs} == {
-        ("G", 1, True), ("G", 2, True), ("P", 1, True), ("P", 2, True), ("X", 1, False), ("X", 2, False),
+        # P's answers broke io's rules (rejected): like X's none, they are not graded.
+        ("G", 1, True), ("G", 2, True), ("P", 1, False), ("P", 2, False), ("X", 1, False), ("X", 2, False),
     }
     assert [g.accepted for g in result.graders] == [True, True]
     assert {a.arm: a.mean for a in result.arms} == {"G": 8.0, "P": 0.0, "X": 0.0}
@@ -434,7 +454,7 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
     grader_spaces = [s for p, s, _ in agents.spaces if "Improver tournament grader" in p]
     assert {s.evidence for s in grader_spaces} == {(directory / "anon", directory / "key")}
     mapping = json.loads((directory / "sealed" / "mapping.json").read_text())
-    assert mapping["seed"] == 11 and {v["arm"] for v in mapping["labels"].values()} == {"G", "P"}
+    assert mapping["seed"] == 11 and {v["arm"] for v in mapping["labels"].values()} == {"G"}
     assert not any(str(directory) in p.read_text() for p in (directory / "anon").glob("*.json"))
     # Arms read their frozen inputs (and the empowered one its toolbox), never the key.
     arm_spaces = [(s, t) for p, s, t in agents.spaces if "THE IMPROVER PROMPT" in p]
@@ -547,6 +567,81 @@ def test_no_name_reaches_outside_its_directory(stores, name: str) -> None:  # ty
     with pytest.raises(ValueError, match="one path component"):
         snapshots.import_(name, improver_data=root, taken_at=T0, origin="x")
     assert sorted(str(p) for p in (root / "snapshots").rglob("*")) == before
+
+
+def _full_credit(labels: list[str]) -> str:
+    return json.dumps({label: {"items": {i: {"grade": "full", "why": "q"} for i in ("1", "2", "9")},
+                               "unsupported": 0} for label in labels})
+
+
+def test_an_answer_io_rejected_scores_nothing_however_it_reads(stores) -> None:  # type: ignore[no-untyped-def]
+    """A rejected answer files nothing, so it is worth nothing: graders that
+    would give anything full credit never see it."""
+    _, _, root = stores
+    agents = Agents({"valid": json.dumps(example("exam_case")), "invalid": "item 1: the ruling never reaches review"},
+                    {"claude": _full_credit, "codex": _full_credit})
+    harness = _harness(root, stores, agents)
+    arms = [TournamentArm(name="V", provider="claude", model="valid", mode="scripted"),
+            TournamentArm(name="R", provider="codex", model="invalid", mode="scripted")]
+
+    result = harness.grade("t9", "20261004", harness.run_arms("t9", "20261004", [_spec(a) for a in arms]), seed=3)
+
+    assert {a.arm: a.mean for a in result.arms} == {"V": 8.0, "R": 0.0}
+    assert result.ranking == (("V",), ("R",))
+
+
+def test_a_failed_grading_is_retried_on_the_same_anonymized_outputs(stores) -> None:  # type: ignore[no-untyped-def]
+    _, _, root = stores
+
+    def partial(labels: list[str]) -> str:
+        return json.dumps({labels[0]: {}})
+
+    agents = Agents({}, {"claude": _complete, "codex": partial})
+    harness = _harness(root, stores, agents)
+    outputs = [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")]
+    with pytest.raises(RuntimeError, match="grade it again to retry"):
+        harness.grade("t10", "20261004", outputs, seed=4)
+    first = {p.name: p.read_text() for p in (harness.directory("t10") / "anon").iterdir()}
+
+    with pytest.raises(RuntimeError, match=r"same outputs with the same seed.*sealed/mapping.json"):
+        harness.grade("t10", "20261004", outputs, seed=5)
+    with pytest.raises(RuntimeError, match=r"changed: \['anon/"):
+        harness.grade("t10", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, '{"other": 1}')], seed=4)
+    agents.grader_answers["codex"] = _complete
+    result = harness.grade("t10", "20261004", outputs, seed=4)
+
+    directory = harness.directory("t10")
+    assert [g.accepted for g in result.graders] == [True, True]
+    assert {a.arm: a.scores for a in result.arms} == {"A": {"claude": (4.0,), "codex": (4.0,)},
+                                                      "B": {"claude": (4.0,), "codex": (4.0,)}}
+    assert {p.name: p.read_text() for p in (directory / "anon").iterdir()} == first
+    # The failed attempt's answers are kept for a person to read.
+    kept = directory / "graders-attempt-1" / "codex" / "grades.json"
+    assert kept.read_text() == partial(sorted(Path(name).stem for name in first))
+    assert (directory / "graders" / "codex" / "grades.json").is_file()
+    with pytest.raises(RuntimeError, match="already has a result"):
+        harness.grade("t10", "20261004", outputs, seed=4)
+
+
+def test_a_path_that_names_where_an_answer_was_written_is_hidden_from_graders(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    from issue_orchestrator.entrypoints.cli_tools.improver_tournament import read_recorded
+
+    _, _, root = stores
+    recorded = tmp_path / "recorded"
+    recorded.mkdir()
+    old_run = "/Users/x/repo/.git/io-improver/tournaments/old/arms/A/runs/r1/heats/h1/improver-findings-h1.json"
+    engine = "/Users/x/dev/worktree/porchpin/porchpin-7/.issue-orchestrator/sessions/s1"
+    (recorded / "A1.txt").write_text(json.dumps({"note": f"see {old_run} and {recorded.resolve()}/A1.txt; {engine}"}))
+    (recorded / "B1.txt").write_text("{}")
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": _complete}))
+
+    harness.grade("t11", "20261004", read_recorded(recorded), seed=6)
+
+    texts = " ".join(p.read_text() for p in (harness.directory("t11") / "anon").iterdir())
+    assert "io-improver" not in texts and "arms/A" not in texts and str(recorded.resolve()) not in texts
+    assert texts.count("<RUN>") == 2
+    # The audited engine's paths are evidence, the same for every arm.
+    assert engine in texts
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

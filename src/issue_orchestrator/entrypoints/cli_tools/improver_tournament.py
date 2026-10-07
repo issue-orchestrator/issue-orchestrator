@@ -258,7 +258,9 @@ def read_recorded(directory: Path) -> list[ArmOutput]:
         if match is None:
             raise SystemExit(f"improver_tournament: {path.name} is not <arm><heat>.txt")
         text = path.read_text(encoding="utf-8")
-        outputs.append(ArmOutput(match["arm"], int(match["heat"]), text if text.strip() else None))
+        outputs.append(ArmOutput(
+            match["arm"], int(match["heat"]), text if text.strip() else None, hide=(str(directory.resolve()),)
+        ))
     if not outputs:
         raise SystemExit(f"improver_tournament: no <arm><heat>.txt answer in {directory}")
     return outputs

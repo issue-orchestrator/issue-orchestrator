@@ -27,7 +27,10 @@ Everything a tournament writes stays in its own directory under
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -47,8 +50,20 @@ from ..contracts.improver_tournament import (
     require_slug,
 )
 from ..domain.engine_activity import EngineRef
-from ..domain.improver_tournament import GradesRejected, anonymize, arm_means, rank, read_grades, score
-from ..entrypoints.improver_run import HeatPlan, ImproverRun, ImproverRunRequest, findings_text
+from ..domain.improver_tournament import (
+    GradesRejected,
+    anonymize,
+    arm_means,
+    rank,
+    read_grades,
+    score,
+)
+from ..entrypoints.improver_run import (
+    HeatPlan,
+    ImproverRun,
+    ImproverRunRequest,
+    findings_text,
+)
 from ..entrypoints.improver_staging import ImproverStagingRequest, StagedImproverInputs
 from ..ports.improver import HeatSpace, ImproverAgent, heat_file
 from .improver_answer_keys import FileAnswerKeyStore
@@ -98,8 +113,10 @@ class _NoGitHub:
 class ArmOutput:
     arm: str
     heat: int
-    #: The heat's answer, or None if it produced none.
+    #: The heat's accepted answer, or None if it produced none io accepted.
     text: str | None
+    #: Paths that would name the arm to a grader (where the answer was written).
+    hide: tuple[str, ...] = ()
 
     @property
     def output_id(self) -> str:
@@ -220,8 +237,11 @@ class TournamentHarness:
             for heat in range(1, heats.count + 1):
                 answer = run_dir / heat_file(FINDINGS_FILE, heat)
                 heat_record = next((h for h in record.heats if h.heat == heat), None)
-                has_answer = heat_record is not None and heat_record.outcome is not RunOutcome.AGENT_FAILED
-                outputs.append(ArmOutput(arm.name, heat, answer.read_text(encoding="utf-8") if has_answer else None))
+                # Only an answer io accepted is graded: one it rejected would
+                # file nothing, so it is worth nothing (it scores 0).
+                accepted = heat_record is not None and heat_record.outcome is RunOutcome.ACCEPTED
+                text = answer.read_text(encoding="utf-8") if accepted else None
+                outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
         return outputs
 
     def _investigation(self, spec: ArmSpec, snapshot_id: str) -> Any:
@@ -248,23 +268,18 @@ class TournamentHarness:
 
         Cross-model means every grader: a tournament one grader failed to
         grade completely has no result (one model's judgment could rank it).
+        Grading it again with the same outputs, seed and key reruns every
+        grader on the same anonymized files (the earlier attempt is kept).
         """
         require_cross_model(graders)
         key = self._keys.get(snapshot_id)
         root = self.directory(tournament_id).resolve()
-        anon, sealed, key_dir = root / "anon", root / "sealed", root / "key"
-        for d in (anon, sealed, key_dir):
-            d.mkdir(parents=True, exist_ok=False)
+        if (root / "result.json").exists():
+            raise RuntimeError(f"tournament {tournament_id} already has a result")
         answered = [o for o in outputs if o.text is not None]
         labels = anonymize([o.output_id for o in answered], seed=seed)
         by_id = {o.output_id: o for o in answered}
-        for label, output_id in labels.items():
-            (anon / f"{label}.json").write_text(_scrubbed(by_id[output_id].text or "", root), encoding="utf-8")
-        (sealed / "mapping.json").write_text(json.dumps(
-            {"seed": seed, "labels": {label: {"output": oid, "arm": by_id[oid].arm} for label, oid in labels.items()}},
-            indent=2,
-        ) + "\n", encoding="utf-8")
-        (key_dir / "KEY.md").write_text(render_key(key), encoding="utf-8")
+        _prepare(root, _grading_inputs(root, labels, by_id, seed, key))
 
         runs: list[GraderRun] = []
         per_grader: dict[str, dict[str, float]] = {}
@@ -277,19 +292,19 @@ class TournamentHarness:
             if scores is not None:
                 per_grader[grader.name] = {
                     **scores,
-                    # A heat with no answer scores 0 for every grader.
+                    # A heat with no (accepted) answer scores 0 for every grader.
                     **{f"(none){o.output_id}": 0.0 for o in outputs if o.text is None},
                 }
         refused = [run for run in runs if not run.accepted]
         if refused:
             raise RuntimeError(
-                "not every grader produced a complete grading; no result: "
+                "not every grader produced a complete grading; no result (grade it again to retry): "
                 + "; ".join(f"{run.name}: {run.detail}" for run in refused)
             )
         arm_of = {**{label: by_id[oid].arm for label, oid in labels.items()},
                   **{f"(none){o.output_id}": o.arm for o in outputs if o.text is None}}
         result = _result(tournament_id, snapshot_id, key, runs, per_grader, arm_of, outputs)
-        (root / "result.json").write_text(result.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        _write_atomic(root / "result.json", result.model_dump_json(indent=2) + "\n")
         return result
 
     def _grade_with(
@@ -326,9 +341,67 @@ def render_key(key: AnswerKey) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _scrubbed(text: str, root: Path) -> str:
-    """The answer as a grader reads it: no path that names its arm."""
-    return findings_text(re.sub(re.escape(str(root)) + r"[^\s\"']*", "<RUN>", text))
+#: Any path through io's improver store (every io improver run is written there).
+_IMPROVER_STORE_PATH = re.compile(r"/[^\s\"']*/io-improver/[^\s\"']*")
+
+
+def _scrubbed(text: str, hide: Sequence[str]) -> str:
+    """The answer as a grader reads it: no path that names where (so by
+    which arm) it was written. The audited engine's own paths stay: they
+    are evidence, and the same for every arm."""
+    for path in sorted(hide, key=len, reverse=True):
+        text = re.sub(re.escape(path) + r"[^\s\"']*", "<RUN>", text)
+    return findings_text(_IMPROVER_STORE_PATH.sub("<RUN>", text))
+
+
+def _grading_inputs(
+    root: Path, labels: Mapping[str, str], by_id: Mapping[str, ArmOutput], seed: int, key: AnswerKey
+) -> dict[str, str]:
+    """What the graders read (``anon/``, ``key/``) and the sealed mapping, by relative path."""
+    files = {
+        f"anon/{label}.json": _scrubbed(by_id[oid].text or "", (str(root), *by_id[oid].hide))
+        for label, oid in labels.items()
+    }
+    files["sealed/mapping.json"] = json.dumps(
+        {"seed": seed, "labels": {label: {"output": oid, "arm": by_id[oid].arm} for label, oid in labels.items()}},
+        indent=2,
+    ) + "\n"
+    files["key/KEY.md"] = render_key(key)
+    return files
+
+
+def _prepare(root: Path, files: Mapping[str, str]) -> None:
+    """Write the grading inputs, or, on a retry, require they are unchanged.
+
+    The mapping is written last: without it, nothing was prepared (a
+    half-written attempt is cleared). With it, every file must match, and
+    the earlier graders' answers are kept beside the new attempt's.
+    """
+    mapping = root / "sealed" / "mapping.json"
+    if mapping.exists():
+        present = {str(p.relative_to(root)) for d in ("anon", "sealed", "key") for p in (root / d).iterdir()}
+        changed = sorted(
+            name for name in present | set(files)
+            if name not in files or name not in present or (root / name).read_text(encoding="utf-8") != files[name]
+        )
+        if changed:
+            raise RuntimeError(f"a retry must grade the same outputs with the same seed and key; changed: {changed}")
+        graders = root / "graders"
+        if graders.exists():
+            graders.rename(root / f"graders-attempt-{len(list(root.glob('graders-attempt-*'))) + 1}")
+        return
+    for directory in ("anon", "sealed", "key"):
+        shutil.rmtree(root / directory, ignore_errors=True)
+        (root / directory).mkdir(parents=True)
+    for name, text in sorted(files.items(), key=lambda item: item[0] == "sealed/mapping.json"):
+        _write_atomic(root / name, text)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        out.write(text)
+    os.replace(temporary, path)
 
 
 def _result(
