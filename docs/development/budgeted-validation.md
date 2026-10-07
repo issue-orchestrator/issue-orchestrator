@@ -212,15 +212,16 @@ data lives under `<git common dir>/io-improver/`:
 - `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
   `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
   A snapshot is imported once, never changed, and links to nothing outside
-  itself (a clone borrowing objects is repacked to own them) (`snapshot import`), and an old
+  itself (a clone borrowing objects is repacked to own them), and keeps no
+  commit made after it (`snapshot import`), and an old
   bundle is upgraded to today's contracts with each change named.
 - `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
   written before results (`key seed`), then problems found later that the
   snapshot's evidence already showed (`key add`, a `candidate` until
   `key confirm`). Only these commands write keys. No improver run can reach
   the key store, and no agent can read it.
-- `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats on
-  the snapshot as ordinary improver runs, which never apply or touch GitHub,
+- `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats (an arm may set its own prompt, heats, budget
+  and timeout: a challenger beside its champion) on the snapshot as ordinary improver runs, which never apply or touch GitHub,
   and read no live GitHub, since that would show what was found later.
   `grade-recorded` grades answers an earlier tournament recorded. Either way
   the outputs are anonymized (`anon/`, mapping sealed in `sealed/`), graded by

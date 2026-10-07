@@ -13,12 +13,24 @@ already showed at snapshot time. Only ``confirmed`` items score.
 
 from __future__ import annotations
 
+import re
+
 from datetime import date
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 
-Slug = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+SLUG_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+#: A name that is also one path component (a snapshot, key, tournament, arm, grader).
+Slug = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+
+
+def require_slug(value: str, what: str) -> str:
+    """``value``, if it is one safe path component; a name like
+    ``../../snapshots/x`` would write outside its directory."""
+    if re.fullmatch(SLUG_PATTERN, value) is None:
+        raise ValueError(f"{what} is letters, digits, '.', '_' or '-' (one path component), not {value!r}")
+    return value
 Grade = Literal["full", "half", "miss"]
 #: What one grade earns of an item's weight.
 GRADE_CREDIT: dict[str, float] = {"full": 1.0, "half": 0.5, "miss": 0.0}
@@ -112,7 +124,7 @@ class TournamentArm(_Closed):
 
 
 class GraderRun(_Closed):
-    name: str
+    name: Slug
     provider: Literal["claude", "codex"]
     model: str
     accepted: bool

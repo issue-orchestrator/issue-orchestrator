@@ -44,6 +44,7 @@ from ..contracts.improver_tournament import (
     GraderRun,
     TournamentArm,
     TournamentResult,
+    require_slug,
 )
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_tournament import GradesRejected, anonymize, arm_means, rank, read_grades, score
@@ -118,13 +119,38 @@ class ArmSpec:
     #: The empowered mode's addendum (its toolbox and budget); unused by a scripted arm.
     empowered_addendum: str
     heats: HeatPlan
+    #: The investigation budget the empowered agent is given.
     budget_minutes: int
+    #: When one heat's agent is stopped.
+    agent_timeout_minutes: int
+
+    def __post_init__(self) -> None:
+        if self.arm.mode == "empowered" and not 0 < self.budget_minutes < self.agent_timeout_minutes:
+            raise ValueError(
+                f"arm {self.arm.name}: its {self.budget_minutes}-minute budget must be below its"
+                f" {self.agent_timeout_minutes}-minute agent timeout, or the agent is stopped mid-budget"
+            )
 
 
 @dataclass(frozen=True)
 class Grader:
     name: str
     choice: ImproverAgentChoice
+    timeout_minutes: int = 40
+
+    def __post_init__(self) -> None:
+        require_slug(self.name, "a grader name")
+
+
+def require_cross_model(graders: Sequence[Grader]) -> None:
+    """Graders are cross-model: distinct names, at least two providers."""
+    names = [g.name for g in graders]
+    if len(set(names)) != len(names):
+        raise ValueError(f"grader names repeat: {names}")
+    if len({g.choice.provider for g in graders}) < 2:
+        raise ValueError(
+            f"a tournament is graded by at least two providers, not {sorted({g.choice.provider.value for g in graders})}"
+        )
 
 
 DEFAULT_GRADERS = (
@@ -140,7 +166,8 @@ class TournamentHarness:
         root: Path,
         snapshots: FrozenSnapshotStore,
         keys: FileAnswerKeyStore,
-        agent_for: Callable[[ImproverAgentChoice], ImproverAgent],
+        #: An agent for a choice, stopped after the given minutes.
+        agent_for: Callable[[ImproverAgentChoice, int], ImproverAgent],
         grader_prompt: str,
         clock: Callable[[], datetime],
     ) -> None:
@@ -152,7 +179,7 @@ class TournamentHarness:
         self._clock = clock
 
     def directory(self, tournament_id: str) -> Path:
-        return self._root / tournament_id
+        return self._root / require_slug(tournament_id, "a tournament id")
 
     def run_arms(self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec]) -> list[ArmOutput]:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none)."""
@@ -167,7 +194,10 @@ class TournamentHarness:
             run = ImproverRun(
                 store=store,
                 stager=FrozenInputs(self._snapshots, snapshot_id),
-                agent=self._agent_for(ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model)),
+                agent=self._agent_for(
+                    ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model),
+                    spec.agent_timeout_minutes,
+                ),
                 investigation=self._investigation(spec, snapshot_id),
                 effects=ImproverEffects(store=store, host=_NoGitHub(), outputs_repo=NO_OUTPUTS_REPO, clock=self._clock),  # type: ignore[arg-type]
                 prompt=spec.prompt,
@@ -214,6 +244,7 @@ class TournamentHarness:
         Cross-model means every grader: a tournament one grader failed to
         grade completely has no result (one model's judgment could rank it).
         """
+        require_cross_model(graders)
         key = self._keys.get(snapshot_id)
         root = self.directory(tournament_id).resolve()
         anon, sealed, key_dir = root / "anon", root / "sealed", root / "key"
@@ -269,7 +300,7 @@ class TournamentHarness:
             .replace("<<ITEM_IDS>>", ", ".join(i.id for i in key.scored))
         )
         space = HeatSpace(heat=1, run_dir=root, workdir=workdir, evidence=(root / "anon", root / "key"))
-        answer = self._agent_for(grader.choice).run(prompt=prompt, space=space, toolbox=None)
+        answer = self._agent_for(grader.choice, grader.timeout_minutes).run(prompt=prompt, space=space, toolbox=None)
         if answer.final_message is None:
             return False, f"no answer: {answer.detail}", None
         (workdir / "grades.json").write_text(answer.final_message, encoding="utf-8")
@@ -339,4 +370,5 @@ __all__ = [
     "Grader",
     "TournamentHarness",
     "render_key",
+    "require_cross_model",
 ]

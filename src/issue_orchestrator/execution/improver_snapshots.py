@@ -41,7 +41,7 @@ from ..contracts.improver_toolbox import (
     ToolboxManifest,
     ToolboxSource,
 )
-from ..contracts.improver_tournament import SNAPSHOT_MANIFEST, FrozenSnapshot
+from ..contracts.improver_tournament import SNAPSHOT_MANIFEST, FrozenSnapshot, require_slug
 from ..domain.engine_activity import EngineRef
 from ..ports.command_runner import CommandRunner
 
@@ -70,7 +70,7 @@ class FrozenSnapshotStore:
         return tuple(sorted(p.parent.name for p in self._root.glob(f"*/{SNAPSHOT_MANIFEST}")))
 
     def get(self, snapshot_id: str) -> FrozenSnapshot:
-        manifest = self._root / snapshot_id / SNAPSHOT_MANIFEST
+        manifest = self._root / require_slug(snapshot_id, "a snapshot id") / SNAPSHOT_MANIFEST
         if not manifest.is_file():
             raise SnapshotUnavailable(f"no frozen snapshot {snapshot_id!r}; have {', '.join(self.ids()) or 'none'}")
         return FrozenSnapshot.model_validate_json(manifest.read_text(encoding="utf-8"))
@@ -87,7 +87,7 @@ class FrozenSnapshotStore:
     ) -> FrozenSnapshot:
         """Freeze ``improver_data`` (and, for empowered arms, the engine's
         store copies and logs in ``state_dir`` and a repository ``clone``)."""
-        target = self._root / snapshot_id
+        target = self._root / require_slug(snapshot_id, "a snapshot id")
         if target.exists():
             raise SnapshotUnavailable(f"snapshot {snapshot_id!r} exists; a snapshot is never changed")
         if (state_dir is None) != (clone is None):
@@ -156,13 +156,17 @@ class FrozenSnapshotStore:
         for log in sorted(p for p in (state_dir / "logs").glob("*") if p.is_file() and not p.is_symlink()):
             self._copy(log, logs / log.name)
             sources.append(ToolboxSource(path=f"{TOOLBOX_LOGS_DIRNAME}/{log.name}", staged=True, detail="byte copy"))
-        self._freeze_clone(clone, toolbox / TOOLBOX_REPO_DIRNAME)
+        self._freeze_clone(clone, toolbox / TOOLBOX_REPO_DIRNAME, taken_at)
         sources.append(ToolboxSource(path=TOOLBOX_REPO_DIRNAME, staged=True, detail=f"clone, as of {taken_at.isoformat()}"))
         manifest = ToolboxManifest(audited_repo=repo, staged_at=taken_at, sources=tuple(sources))
         (toolbox / TOOLBOX_MANIFEST).write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    def _freeze_clone(self, clone: Path, target: Path) -> None:
-        """A copy of ``clone`` that owns everything it shows."""
+    def _freeze_clone(self, clone: Path, target: Path, taken_at: datetime) -> None:
+        """A copy of ``clone`` that owns everything it shows, and shows
+        nothing after ``taken_at``: only objects its refs reach are kept
+        (reflogs expired, repacked, pruned), and a ref reaching a commit
+        made after the snapshot refuses it (a clone taken later than the
+        staged inputs would show the arms what was done since)."""
         self._copy(clone, target)
         git = target / ".git"
         if git.is_symlink() or not git.is_dir():
@@ -170,16 +174,23 @@ class FrozenSnapshotStore:
         if (git / "commondir").exists():
             raise SnapshotUnavailable(f"{clone} is a linked worktree; freeze a clone")
         require_self_contained(target)
-        alternates = git / "objects" / "info" / "alternates"
-        if alternates.exists():
-            self._git(target, "repack", "-a", "-d", "-q")
-            alternates.unlink()
+        self._git(target, "reflog", "expire", "--expire=now", "--all")
+        self._git(target, "repack", "-a", "-d", "-q")
+        (git / "objects" / "info" / "alternates").unlink(missing_ok=True)
+        self._git(target, "prune", "--expire=now")
         self._git(target, "fsck", "--connectivity-only", "--no-progress")
+        later = self._git(target, "rev-list", "--all", f"--since={taken_at.isoformat()}").split()
+        if later:
+            raise SnapshotUnavailable(
+                f"{clone} reaches {len(later)} commit(s) made after the snapshot ({taken_at.isoformat()}),"
+                f" e.g. {later[0][:12]}; freeze a clone taken with the inputs"
+            )
 
-    def _git(self, repo: Path, *args: str) -> None:
+    def _git(self, repo: Path, *args: str) -> str:
         done = self._runner.run(["git", "-C", str(repo), *args], timeout_seconds=1800)
         if done.returncode:
             raise SnapshotUnavailable(f"git {args[0]} in the frozen clone failed: {done.stderr.strip()}")
+        return done.stdout
 
     def _copy(self, source: Path, target: Path) -> None:
         """An independent copy: an APFS clone on macOS, a plain copy elsewhere."""

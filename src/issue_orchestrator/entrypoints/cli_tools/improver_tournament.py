@@ -10,8 +10,12 @@
     improver_tournament key confirm --snapshot ID --id H-7999 --by NAME
     improver_tournament key show --snapshot ID
     improver_tournament run --snapshot ID --arm C=claude:opus:empowered --arm A=codex:gpt-5.6-sol:scripted \\
-        [--heats 3 --parallel-heats 3] [--seed N]
+        [--heats 3 --parallel-heats 3 --budget-minutes 60 --agent-timeout-minutes 80] [--seed N]
     improver_tournament grade-recorded --snapshot ID --recorded DIR [--seed N]
+
+An arm may set its own prompt, heats and minutes after its mode:
+``--arm 'X=claude:opus:empowered,prompt=challenger.md,heats=2,parallel=1,budget=45,timeout=70'``
+(the rest default to the flags): a challenger beside its champion.
 
 (each ``python -m issue_orchestrator.entrypoints.cli_tools.improver_tournament ...``)
 
@@ -28,6 +32,7 @@ This is the composition root of the tournament.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import random
 import re
 import sys
@@ -42,14 +47,50 @@ from ...execution.improver_answer_keys import FileAnswerKeyStore
 from ...execution.improver_investigation import EMPOWERED_ADDENDUM
 from ...execution.improver_run_store import improver_root
 from ...execution.improver_snapshots import FrozenSnapshotStore
-from ...execution.improver_tournament import DEFAULT_GRADERS, ArmOutput, ArmSpec, Grader, TournamentHarness
+from ...execution.improver_tournament import (
+    DEFAULT_GRADERS,
+    ArmOutput,
+    ArmSpec,
+    Grader,
+    TournamentHarness,
+    require_cross_model,
+)
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
 from ..improver_run import HeatPlan
 
 PROMPT = Path("examples/prompts/tech-lead-improver.md")
 GRADER_PROMPT = Path("examples/prompts/improver-grader.md")
-_ARM = re.compile(r"^(?P<name>[A-Za-z0-9_-]+)=(?P<provider>claude|codex):(?P<model>[^:]+):(?P<mode>scripted|empowered)$")
+_ARM = re.compile(
+    r"^(?P<name>[A-Za-z0-9_-]+)=(?P<provider>claude|codex):(?P<model>[^:,]+):(?P<mode>scripted|empowered)"
+    r"(?:,(?P<options>.+))?$"
+)
+_ARM_OPTIONS = {"prompt": Path, "heats": int, "parallel": int, "budget": int, "timeout": int}
 _RECORDED = re.compile(r"^(?P<arm>[A-Za-z]+)(?P<heat>\d+)\.txt$")
+
+
+@dataclasses.dataclass(frozen=True)
+class ArmRequest:
+    """An arm as asked on the command line: what it runs, and any setting of
+    its own (the rest are the command's flags)."""
+
+    arm: TournamentArm
+    prompt: Path | None = None
+    heats: int | None = None
+    parallel: int | None = None
+    budget: int | None = None
+    timeout: int | None = None
+
+    def spec(self, args: argparse.Namespace, *, prompt: Path, addendum: str) -> ArmSpec:
+        heats = self.heats if self.heats is not None else args.heats
+        parallel = self.parallel if self.parallel is not None else min(args.parallel_heats, heats)
+        return ArmSpec(
+            arm=self.arm,
+            prompt=(self.prompt or prompt).read_text(encoding="utf-8"),
+            empowered_addendum=addendum,
+            heats=HeatPlan(count=heats, parallel=parallel),
+            budget_minutes=self.budget if self.budget is not None else args.budget_minutes,
+            agent_timeout_minutes=self.timeout if self.timeout is not None else args.agent_timeout_minutes,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,35 +130,52 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--snapshot", required=True)
     run = sub.add_parser("run")
     run.add_argument("--snapshot", required=True)
-    run.add_argument("--arm", action="append", required=True, type=_arm, help="NAME=provider:model:scripted|empowered")
+    run.add_argument(
+        "--arm", action="append", required=True, type=parse_arm,
+        help="NAME=provider:model:scripted|empowered[,prompt=P,heats=N,parallel=N,budget=MIN,timeout=MIN]",
+    )
     run.add_argument("--heats", type=int, default=3)
     run.add_argument("--parallel-heats", type=int, default=3)
     run.add_argument("--budget-minutes", type=int, default=60)
     run.add_argument("--agent-timeout-minutes", type=int, default=80)
-    run.add_argument("--grader", action="append", type=_grader, help="NAME=provider:model (default: Claude and Codex)")
+    run.add_argument("--grader", action="append", type=parse_grader, help="NAME=provider:model (default: Claude and Codex)")
+    run.add_argument("--grader-timeout-minutes", type=int, default=40)
     run.add_argument("--seed", type=int)
     graded = sub.add_parser("grade-recorded")
     graded.add_argument("--snapshot", required=True)
     graded.add_argument("--recorded", required=True, type=Path, help="DIR of <arm><heat>.txt answers")
-    graded.add_argument("--grader", action="append", type=_grader)
+    graded.add_argument("--grader", action="append", type=parse_grader)
     graded.add_argument("--seed", type=int)
-    graded.add_argument("--agent-timeout-minutes", type=int, default=30)
+    graded.add_argument("--grader-timeout-minutes", type=int, default=40)
     return parser
 
 
-def _arm(text: str) -> TournamentArm:
+def parse_arm(text: str) -> ArmRequest:
     match = _ARM.match(text)
     if match is None:
-        raise argparse.ArgumentTypeError(f"an arm is NAME=claude|codex:MODEL:scripted|empowered, not {text!r}")
-    return TournamentArm(**match.groupdict())  # type: ignore[arg-type]
+        raise argparse.ArgumentTypeError(f"an arm is NAME=claude|codex:MODEL:scripted|empowered[,k=v...], not {text!r}")
+    options: dict[str, object] = {}
+    for option in (match["options"] or "").split(",") if match["options"] else ():
+        name, _, value = option.partition("=")
+        if name not in _ARM_OPTIONS or not value or name in options:
+            raise argparse.ArgumentTypeError(f"an arm's option is one of {sorted(_ARM_OPTIONS)} once, =value; not {option!r}")
+        try:
+            options[name] = _ARM_OPTIONS[name](value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(f"{name}={value!r}: {error}") from error
+    fields = {k: match[k] for k in ("name", "provider", "model", "mode")}
+    return ArmRequest(TournamentArm.model_validate(fields), **options)  # type: ignore[arg-type]
 
 
-def _grader(text: str) -> Grader:
+def parse_grader(text: str) -> Grader:
     name, _, rest = text.partition("=")
     provider, _, model = rest.partition(":")
     if not name or provider not in ("claude", "codex") or not model:
         raise argparse.ArgumentTypeError(f"a grader is NAME=claude|codex:MODEL, not {text!r}")
-    return Grader(name, ImproverAgentChoice(provider=ImproverProvider(provider), model=model))
+    try:
+        return Grader(name, ImproverAgentChoice(provider=ImproverProvider(provider), model=model))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
 
 
 def _now() -> datetime:
@@ -135,22 +193,25 @@ def main(argv: list[str]) -> int:
         return _key(args, keys)
     harness = TournamentHarness(
         root=root, snapshots=snapshots, keys=keys,
-        agent_for=lambda choice: improver_agent(
-            choice, runner=ProcessGroupCommandRunner(), timeout_seconds=args.agent_timeout_minutes * 60
+        agent_for=lambda choice, minutes: improver_agent(
+            choice, runner=ProcessGroupCommandRunner(), timeout_seconds=minutes * 60
         ),
         grader_prompt=GRADER_PROMPT.read_text(encoding="utf-8"),
         clock=_now,
     )
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
     tournament_id = f"{_now().strftime('%Y%m%dT%H%M%SZ')}-{args.snapshot}"
-    graders = tuple(args.grader or DEFAULT_GRADERS)
+    graders = tuple(
+        dataclasses.replace(g, timeout_minutes=args.grader_timeout_minutes) for g in (args.grader or DEFAULT_GRADERS)
+    )
+    require_cross_model(graders)
     if args.command == "run":
-        plan = HeatPlan(count=args.heats, parallel=args.parallel_heats)
-        prompt, addendum = PROMPT.read_text(encoding="utf-8"), EMPOWERED_ADDENDUM.read_text(encoding="utf-8")
-        specs = [ArmSpec(arm, prompt, addendum, plan, args.budget_minutes) for arm in args.arm]
+        addendum = EMPOWERED_ADDENDUM.read_text(encoding="utf-8")
+        # Every arm's settings are checked before any arm runs.
+        specs = [request.spec(args, prompt=PROMPT, addendum=addendum) for request in args.arm]
         outputs = harness.run_arms(tournament_id, args.snapshot, specs)
     else:
-        outputs = _recorded(args.recorded)
+        outputs = read_recorded(args.recorded)
     result = harness.grade(tournament_id, args.snapshot, outputs, graders=graders, seed=seed)
     print(render_result(result, harness.directory(tournament_id)))
     return 0
@@ -190,7 +251,7 @@ def _key(args: argparse.Namespace, keys: FileAnswerKeyStore) -> int:
     return 0
 
 
-def _recorded(directory: Path) -> list[ArmOutput]:
+def read_recorded(directory: Path) -> list[ArmOutput]:
     outputs: list[ArmOutput] = []
     for path in sorted(directory.glob("*.txt")):
         match = _RECORDED.match(path.name)

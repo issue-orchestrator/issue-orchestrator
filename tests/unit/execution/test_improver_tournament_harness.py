@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.contracts.improver_run import ImproverAgentChoice
+from issue_orchestrator.contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from issue_orchestrator.contracts.improver_tournament import AnswerKeyItem, TournamentArm
 from issue_orchestrator.entrypoints.improver_run import HeatPlan
 from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
@@ -141,10 +141,12 @@ def test_a_clone_that_borrows_objects_is_frozen_owning_them(stores, tmp_path: Pa
     live = tmp_path / "live"
     live.mkdir()
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    before = {"GIT_AUTHOR_DATE": (T0 - timedelta(hours=1)).isoformat(),
+              "GIT_COMMITTER_DATE": (T0 - timedelta(hours=1)).isoformat(), "PATH": "/usr/bin:/bin"}
     subprocess.run(["git", "init", "-q"], cwd=live, check=True)
     (live / "f").write_text("one")
     subprocess.run([*git, "add", "f"], cwd=live, check=True)
-    subprocess.run([*git, "commit", "-qm", "one"], cwd=live, check=True)
+    subprocess.run([*git, "commit", "-qm", "one"], cwd=live, check=True, env=before)
     shared = tmp_path / "shared"
     subprocess.run(["git", "clone", "-q", "--shared", str(live), str(shared)], check=True)
     assert (shared / ".git" / "objects" / "info" / "alternates").exists()
@@ -158,6 +160,40 @@ def test_a_clone_that_borrows_objects_is_frozen_owning_them(stores, tmp_path: Pa
     shutil.rmtree(live)
     shown = subprocess.run(["git", "-C", str(frozen), "show", "HEAD:f"], capture_output=True, text=True, check=True)
     assert shown.stdout == "one"
+
+
+def test_a_clone_showing_commits_after_the_snapshot_is_refused(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A clone taken later than the staged inputs would show the arms what
+    was done since; and what no ref reaches (a dropped commit) is not kept."""
+    snapshots, _, root = stores
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    def commit(message: str, when: datetime, *, ref: str | None = None) -> str:
+        env = {"GIT_AUTHOR_DATE": when.isoformat(), "GIT_COMMITTER_DATE": when.isoformat(), "PATH": "/usr/bin:/bin"}
+        (repo / "f").write_text(message)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "add", "f"], cwd=repo, check=True, env=env)
+        subprocess.run([*git, "commit", "-qm", message], cwd=repo, check=True, env=env)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+    commit("before", T0 - timedelta(hours=1))
+    dropped = commit("after, then dropped", T0 + timedelta(days=2))
+    subprocess.run(["git", "reset", "-q", "--hard", "HEAD~1"], cwd=repo, check=True)
+    state, _ = _engine_files(tmp_path / "e")
+
+    snapshots.import_("in-time", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                      state_dir=state, clone=repo)
+    frozen = root / "snapshots" / "in-time" / "toolbox" / "repo"
+    shown = subprocess.run(["git", "-C", str(frozen), "cat-file", "-e", dropped], capture_output=True)
+    assert shown.returncode != 0, "a commit no ref reaches was kept in the snapshot"
+
+    later = commit("after", T0 + timedelta(days=3))
+    with pytest.raises(SnapshotUnavailable, match=r"reaches 1 commit\(s\) made after the snapshot.*" + later[:12]):
+        snapshots.import_("late", improver_data=_legacy_inputs(tmp_path / "b"), taken_at=T0, origin="x",
+                          state_dir=state, clone=repo)
+    assert "late" not in snapshots.ids()
 
 
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -235,10 +271,12 @@ class Agents:
         self.arm_answers = arm_answers
         self.grader_answers = grader_answers
         self.spaces: list[tuple[str, HeatSpace, object]] = []
+        self.timeouts: dict[str, list[int]] = {}
         self._lock = threading.Lock()
 
-    def agent_for(self, choice: ImproverAgentChoice):  # type: ignore[no-untyped-def]
+    def agent_for(self, choice: ImproverAgentChoice, minutes: int):  # type: ignore[no-untyped-def]
         agents = self
+        self.timeouts.setdefault(choice.model, []).append(minutes)
 
         class Agent:
             def __init__(self) -> None:
@@ -262,8 +300,9 @@ ADDENDUM = "<<AUDITED_REPO>> budget <<BUDGET_MINUTES>> minutes <<STAGED_AT>>"
 
 
 def _spec(arm: TournamentArm, *, prompt: str = "THE IMPROVER PROMPT", heats: HeatPlan = HeatPlan(2, 2),
-          budget: int = 30) -> ArmSpec:
-    return ArmSpec(arm=arm, prompt=prompt, empowered_addendum=ADDENDUM, heats=heats, budget_minutes=budget)
+          budget: int = 30, timeout: int = 40) -> ArmSpec:
+    return ArmSpec(arm=arm, prompt=prompt, empowered_addendum=ADDENDUM, heats=heats, budget_minutes=budget,
+                   agent_timeout_minutes=timeout)
 
 
 def _harness(root: Path, stores, agents: Agents) -> TournamentHarness:  # type: ignore[no-untyped-def]
@@ -364,8 +403,9 @@ def test_a_challenger_and_its_champion_run_together_each_as_specified(stores) ->
     arm = TournamentArm(name="champion", provider="claude", model="m", mode="empowered")
 
     outputs = harness.run_arms("t5", "20261004", [
-        _spec(arm, prompt="CHAMPION PROMPT", heats=HeatPlan(1, 1), budget=30),
-        _spec(arm.model_copy(update={"name": "challenger"}), prompt="CHALLENGER PROMPT", heats=HeatPlan(3, 2), budget=45),
+        _spec(arm, prompt="CHAMPION PROMPT", heats=HeatPlan(1, 1), budget=30, timeout=40),
+        _spec(arm.model_copy(update={"name": "challenger"}), prompt="CHALLENGER PROMPT", heats=HeatPlan(3, 2),
+              budget=45, timeout=55),
     ])
 
     seen = sorted(
@@ -375,8 +415,56 @@ def test_a_challenger_and_its_champion_run_together_each_as_specified(stores) ->
     )
     assert seen == [("CHALLENGER", 1, True), ("CHALLENGER", 2, True), ("CHALLENGER", 3, True), ("CHAMPION", 1, False)]
     assert [(o.arm, o.heat) for o in outputs] == [("champion", 1), ("challenger", 1), ("challenger", 2), ("challenger", 3)]
+    assert agents.timeouts["m"] == [40, 55]
     with pytest.raises(ValueError, match="arm names repeat"):
         harness.run_arms("t6", "20261004", [_spec(arm), _spec(arm)])
+
+
+def test_an_empowered_arm_is_stopped_only_after_its_budget() -> None:
+    arm = TournamentArm(name="e", provider="claude", model="m", mode="empowered")
+    with pytest.raises(ValueError, match="60-minute budget must be below its 60-minute agent timeout"):
+        _spec(arm, budget=60, timeout=60)
+    _spec(arm.model_copy(update={"mode": "scripted"}), budget=60, timeout=60)
+
+
+@pytest.mark.parametrize(
+    ("graders", "why"),
+    [
+        ([Grader("only", ImproverAgentChoice.for_provider(ImproverProvider.CLAUDE))], "at least two providers"),
+        ([Grader("a", ImproverAgentChoice.for_provider(ImproverProvider.CLAUDE)),
+          Grader("b", ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="sonnet"))], "at least two providers"),
+        ([Grader("g", ImproverAgentChoice.for_provider(ImproverProvider.CLAUDE)),
+          Grader("g", ImproverAgentChoice.for_provider(ImproverProvider.CODEX))], "grader names repeat"),
+    ],
+)
+def test_a_tournament_is_graded_by_at_least_two_providers_under_distinct_names(stores, graders, why) -> None:  # type: ignore[no-untyped-def]
+    _, _, root = stores
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": _complete}))
+
+    with pytest.raises(ValueError, match=why):
+        harness.grade("t7", "20261004", [ArmOutput("A", 1, "{}")], graders=graders, seed=1)
+    assert not harness.directory("t7").exists()
+
+
+@pytest.mark.parametrize("name", ["../../../snapshots/20261004/improver-data", "a/b", "..", ""])
+def test_no_name_reaches_outside_its_directory(stores, name: str) -> None:  # type: ignore[no-untyped-def]
+    """A grader, snapshot or tournament name is one path component: a name
+    like ../../snapshots/x would write into a frozen snapshot."""
+    snapshots, keys, root = stores
+    before = sorted(str(p) for p in (root / "snapshots").rglob("*"))
+    harness = _harness(root, stores, Agents({}, {}))
+
+    with pytest.raises(ValueError, match="one path component"):
+        Grader(name, ImproverAgentChoice.for_provider(ImproverProvider.CLAUDE))
+    with pytest.raises(ValueError, match="one path component"):
+        harness.directory(name)
+    with pytest.raises(ValueError, match="one path component"):
+        keys.path(name)
+    with pytest.raises(ValueError, match="one path component"):
+        snapshots.get(name)
+    with pytest.raises(ValueError, match="one path component"):
+        snapshots.import_(name, improver_data=root, taken_at=T0, origin="x")
+    assert sorted(str(p) for p in (root / "snapshots").rglob("*")) == before
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

@@ -19,7 +19,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from ..contracts.improver_tournament import AnswerKey, AnswerKeyItem
+from ..contracts.improver_tournament import AnswerKey, AnswerKeyItem, require_slug
 from ..domain.improver_tournament import parse_sealed_key
 
 KEYS_DIRNAME = "keys"
@@ -36,7 +36,7 @@ class FileAnswerKeyStore:
         self._root = root / KEYS_DIRNAME
 
     def path(self, snapshot_id: str) -> Path:
-        return self._root / f"{snapshot_id}.json"
+        return self._root / f"{require_slug(snapshot_id, 'a snapshot id')}.json"
 
     def get(self, snapshot_id: str) -> AnswerKey:
         path = self.path(snapshot_id)
