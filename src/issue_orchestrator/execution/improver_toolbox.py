@@ -25,7 +25,7 @@ import socket
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -168,21 +168,15 @@ def build_mcp_app(toolbox: ImproverToolbox, token: str) -> Any:
     """The toolbox's MCP server as an ASGI app that refuses any request
     without the run's bearer token."""
     from mcp.server.fastmcp import FastMCP
-    from mcp.server.fastmcp.exceptions import ToolError
 
     mcp = FastMCP(TOOLBOX_SERVER_NAME, stateless_http=True, json_response=True, log_level="WARNING")
+    for tool in _tools(toolbox):
+        mcp.add_tool(tool)
+    return _bearer_guarded(mcp.streamable_http_app(), token)
 
-    def call(tool: str, arguments: dict[str, Any], run: Any) -> str:
-        try:
-            answer: str = run()
-        except ToolboxRefusal as refusal:
-            toolbox.record(tool, arguments, f"refused: {refusal}")
-            raise ToolError(str(refusal)) from refusal
-        except Exception as error:  # a failed read is the agent's to know about
-            toolbox.record(tool, arguments, f"failed: {type(error).__name__}: {error}")
-            raise ToolError(f"{type(error).__name__}: {error}") from error
-        toolbox.record(tool, arguments, f"ok: {len(answer)} chars")
-        return answer
+
+def _tools(toolbox: ImproverToolbox) -> tuple[Callable[..., str], ...]:
+    """The tools as the agent sees them: their names, signatures and docs."""
 
     def github_get(path: str, params: dict[str, str | int | bool] | None = None) -> str:
         """GET one GitHub REST API path of the AUDITED repository, e.g.
@@ -190,24 +184,42 @@ def build_mcp_app(toolbox: ImproverToolbox, token: str) -> Any:
         repos/OWNER/REPO/pulls/479/reviews, repos/OWNER/REPO/actions/runs, or
         search/issues with params q="repo:OWNER/REPO ...". Query parameters
         (per_page, page, state, since, ...) go in params. Read-only."""
-        return call("github_get", {"path": path, "params": params}, lambda: toolbox.github_get(path, params))
+        return _call(toolbox, "github_get", {"path": path, "params": params}, lambda: toolbox.github_get(path, params))
 
     def sql_query(database: str, sql: str) -> str:
         """Run one read-only SQL query on a byte copy of an engine store in
         toolbox/state/ (e.g. database="timeline.sqlite"). SELECT and schema
         pragmas only; at most 1000 rows. List tables with
         SELECT name, sql FROM sqlite_master."""
-        return call("sql_query", {"database": database, "sql": sql}, lambda: toolbox.sql_query(database, sql))
+        return _call(toolbox, "sql_query", {"database": database, "sql": sql}, lambda: toolbox.sql_query(database, sql))
 
     def git(args: list[str]) -> str:
         """Run a read-only git command in the clone of the audited repository
         (toolbox/repo), e.g. ["log", "--oneline", "-20", "--", "src"] or
         ["show", "abc123", "--stat"]. Read subcommands only."""
-        return call("git", {"args": args}, lambda: toolbox.git(args))
+        return _call(toolbox, "git", {"args": args}, lambda: toolbox.git(args))
 
-    for tool in (github_get, sql_query, git):
-        mcp.add_tool(tool)
-    app = mcp.streamable_http_app()
+    return (github_get, sql_query, git)
+
+
+def _call(toolbox: ImproverToolbox, tool: str, arguments: dict[str, Any], run: Callable[[], str]) -> str:
+    """Run one tool call, log it, and turn a refusal or failure into the
+    agent's tool error."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    try:
+        answer = run()
+    except ToolboxRefusal as refusal:
+        toolbox.record(tool, arguments, f"refused: {refusal}")
+        raise ToolError(str(refusal)) from refusal
+    except Exception as error:  # a failed read is the agent's to know about
+        toolbox.record(tool, arguments, f"failed: {type(error).__name__}: {error}")
+        raise ToolError(f"{type(error).__name__}: {error}") from error
+    toolbox.record(tool, arguments, f"ok: {len(answer)} chars")
+    return answer
+
+
+def _bearer_guarded(app: Any, token: str) -> Any:
     expected = f"Bearer {token}".encode()
 
     async def guarded(scope: dict[str, Any], receive: Any, send: Any) -> None:

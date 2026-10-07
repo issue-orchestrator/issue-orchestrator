@@ -57,11 +57,10 @@ from ...domain.improver_findings_validation import (
     validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
-from ...execution.providers import create_repository_host
+from ...execution.providers import create_audited_repo_reads, create_repository_host
 from ...observation.engine_audit import Unavailable
 from ...execution.improver_effect_applier import ImproverEffects
 from ...contracts.improver_run import DEFAULT_IMPROVER_AGENT, ImproverAgentChoice, ImproverProvider
-from ...adapters.github.audited_repo_reader import GitHubAuditedRepoReader
 from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...execution.improver_agents import improver_agent
 from ...execution.improver_investigation import EMPOWERED_ADDENDUM, EmpoweredInvestigation, ScriptedInvestigation
@@ -227,7 +226,7 @@ def _investigation(args: argparse.Namespace) -> ImproverInvestigation:
         return ScriptedInvestigation()
     return EmpoweredInvestigation(
         stager=ImproverToolboxStager(runner=LocalCommandRunner(), clock=_now),
-        github=lambda repo: None if args.no_github else GitHubAuditedRepoReader(repo),
+        github=lambda repo: None if args.no_github else create_audited_repo_reads(repo),
         runner=LocalCommandRunner(),
         addendum=args.empowered_addendum.read_text(encoding="utf-8"),
         budget_minutes=args.budget_minutes,
