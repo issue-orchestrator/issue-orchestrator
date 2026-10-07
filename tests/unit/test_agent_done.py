@@ -544,6 +544,39 @@ class TestBuildCompletionRecord:
         assert RequestedAction.PUSH_BRANCH in record.requested_actions
         assert RequestedAction.CREATE_PR in record.requested_actions
 
+    def test_an_approval_attests_its_standing_rulings_through_the_record(self):
+        """#8141: ``reviewer-done approved --upholds-ruling ID`` reaches the
+        orchestrator, which validates the record as untrusted input."""
+        from issue_orchestrator.domain.models import CompletionRecord as DomainRecord
+        from issue_orchestrator.entrypoints.cli_tools.reviewer_done import build_parser
+
+        args = build_parser().parse_args([
+            "approved", "--summary", "Implements the ruling", "--risk", "low",
+            "--upholds-ruling", "m-0123456789ab", "--upholds-ruling", "pd-456", "--upholds-ruling", "pd-456",
+        ])
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="s"):
+            record = build_completion_record(AgentStatus.APPROVED, args)
+
+        assert record.upheld_rulings == ["m-0123456789ab", "pd-456"]
+        assert "**Upholds standing rulings:** `m-0123456789ab`, `pd-456`" in (record.comment_body or "")
+        assert DomainRecord.from_dict(record.to_dict()).upheld_rulings == ["m-0123456789ab", "pd-456"]
+
+    def test_only_an_approval_may_attest_rulings(self):
+        from issue_orchestrator.domain.models import CompletionRecord as DomainRecord
+        from issue_orchestrator.entrypoints.cli_tools.reviewer_done import build_parser
+
+        args = build_parser().parse_args([
+            "changes_requested", "--issues", "x", "--risk", "low", "--upholds-ruling", "m-0123456789ab",
+        ])
+        with pytest.raises(SystemExit):
+            validate_fields(AgentStatus.CHANGES_REQUESTED, args)
+        forged = {"session_id": "s", "timestamp": "t", "outcome": "review_changes_requested",
+                  "summary": "x", "upheld_rulings": ["m-0123456789ab"]}
+        with pytest.raises(ValueError, match="only valid for an approval"):
+            DomainRecord.from_dict(forged)
+        with pytest.raises(ValueError):
+            DomainRecord.from_dict({**forged, "outcome": "review_approved", "upheld_rulings": ["Bad Id"]})
+
     def test_build_completed_record_with_follow_up_file(self, tmp_path: Path):
         follow_up_path = tmp_path / "followups.jsonl"
         follow_up_path.write_text(

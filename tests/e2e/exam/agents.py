@@ -31,6 +31,18 @@ SPEC_QUESTION_BESIDE_PR_CODER_LABEL = "agent:exam-coder-asks-spec-beside-pr"
 GIVES_UP_CODER_LABEL = "agent:exam-coder-gives-up"
 """A coder that ends without a completion until the tech lead resolves its
 block (Cases F/G)."""
+RULED_CODER_LABEL = "agent:exam-coder-ruled"
+"""Case I's coder on the ruled item: it codes as ``CODER_LABEL`` does (so its
+rework extends what the ruling retires) and captures every prompt it gets."""
+ANSWERABLE_CODER_LABEL = "agent:exam-coder-asks-answerable"
+"""Case I's coder that asks, before any work, a question its issue's spec
+answers, until the tech lead resolves it (porchpin#327)."""
+
+#: The question Case I's answerable coder asks (porchpin#327's shape).
+ANSWERABLE_QUESTION = (
+    "Before I start: should the buyer contact index be its own table with a deletion"
+    " fence, or should I widen the seller index to carry buyers too?"
+)
 
 #: The question Case D's asking coder puts to the operator (porchpin#262's).
 SPLIT_QUESTION = (
@@ -64,6 +76,7 @@ def shim_command(
     changes_once: Path | None = None,
     gives_up: bool = False,
     until_resolved: bool = False,
+    capture_prompts: Path | None = None,
 ) -> str:
     """Agent command running the shim; no ``{}`` placeholders on purpose.
 
@@ -86,5 +99,6 @@ def shim_command(
             *(("--changes-once", str(changes_once)) if changes_once is not None else ()),
             *(("--gives-up",) if gives_up else ()),
             *(("--until-resolved",) if until_resolved else ()),
+            *(("--capture-prompts", str(capture_prompts)) if capture_prompts is not None else ()),
         )
     )

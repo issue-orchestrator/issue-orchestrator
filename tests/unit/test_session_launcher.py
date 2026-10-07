@@ -165,7 +165,9 @@ from issue_orchestrator.ports import (
     NullManifestDownloader,
     InMemoryProviderCircuitStore,
 )
-from issue_orchestrator.ports.coder_prompt import CoderPromptAddendumProvider
+from issue_orchestrator.ports.coder_prompt import CoderPromptAddendumProvider, NO_CODER_PROMPT_ADDENDUM
+from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS, StandingRulings
 from issue_orchestrator.domain.coder_prompt import (
     CoderPromptAddendumUnavailable,
     PreparedCoderPromptAddendum,
@@ -611,6 +613,7 @@ def _build_launcher_bundle(
     *,
     board_snapshot_provider: BoardSnapshotProvider | None = None,
     coder_prompt_addendum: CoderPromptAddendumProvider | None = None,
+    standing_rulings: StandingRulings | None = None,
     claim_manager: MagicMock | None = None,
     provider_resilience: ProviderResilienceManager | None = None,
     provider_readiness_probe: ProviderReadinessProbe | None = None,
@@ -679,8 +682,10 @@ def _build_launcher_bundle(
 
     mock_action_applier = MagicMock()
     launcher_kwargs = {}
-    if coder_prompt_addendum is not None:
-        launcher_kwargs["coder_prompt_addendum"] = coder_prompt_addendum
+    if coder_prompt_addendum is not None or standing_rulings is not None:
+        launcher_kwargs["launch_prompt"] = IssueLaunchPrompt(
+            coder_prompt_addendum or NO_CODER_PROMPT_ADDENDUM, standing_rulings or NO_STANDING_RULINGS,
+        )
     if provider_resilience is not None:
         launcher_kwargs["provider_resilience"] = provider_resilience
     if provider_readiness_probe is not None:
@@ -10900,3 +10905,134 @@ def test_startup_never_queues_a_fully_stripped_proposal_as_an_anchor(
     )
 
     assert state.pending_tech_lead_reviews == []
+
+
+# -- standing rulings (#8141) ---------------------------------------------------
+
+
+@pytest.fixture
+def ruled_bodies():
+    """Issue 123's body carries one maintainer ruling; 365's too."""
+    from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with
+
+    ruling = a_ruling("m-0123456789ab", files=("exam-output.txt",))
+    return IssueBodies({123: body_with(ruling), 365: body_with(ruling)}), ruling
+
+
+@pytest.fixture
+def rulings_bundle(
+    sample_config,
+    mock_events,
+    mock_repo_host,
+    mock_worktree_manager,
+    mock_working_copy,
+    mock_command_runner,
+    ruled_bodies,
+):
+    from tests.standing_ruling_helpers import rulings_owner
+
+    bodies, ruling = ruled_bodies
+    owner = rulings_owner(bodies)
+    bundle = _build_launcher_bundle(
+        sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+        mock_command_runner, standing_rulings=owner,
+    )
+    return bundle, owner, bodies, ruling
+
+
+class TestStandingRulingsReachEveryLaunch:
+    """#8141: porchpin#379's conflict rework and its reviewer never saw the
+    maintainer's ruling. Every launch path binds its session to the issue's
+    standing rulings, framed for what the session does."""
+
+    def test_a_coding_session_is_told_to_build_to_the_ruling(self, rulings_bundle, sample_issue) -> None:
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+
+        bundle, _owner, _bodies, ruling = rulings_bundle
+
+        result = bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        prompt = result.session.original_prompt
+        assert prompt.startswith(f"{RULINGS_PROMPT_HEADING}123")  # binding, before the task
+        assert f"`{ruling.ruling_id}`" in prompt and ruling.text in prompt and "Build to these rulings" in prompt
+        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+
+    def test_a_conflict_rework_carries_the_ruling_as_its_brief(self, rulings_bundle) -> None:
+        from issue_orchestrator.domain.standing_ruling import REWORK_BRIEF_OPENING
+
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+            feedback="Merge conflict against base branch: rebase and resolve the conflicts.",
+        )
+
+        result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = bundle.create_session_calls[0]["cmd"]
+        assert REWORK_BRIEF_OPENING in command and ruling.ruling_id in command
+        assert command.index(REWORK_BRIEF_OPENING) < command.index("Merge conflict against base branch")
+
+    def test_a_validation_retry_is_bound_too(self, rulings_bundle) -> None:
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Fix checkout", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123", validation_error="dirty worktree",
+            validation_error_file=None, retry_count=1, source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        assert bundle.launcher.launch_validation_retry_session(retry, active_sessions=[]).success is True
+        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+
+    def test_a_review_must_check_the_diff_against_each_ruling_and_attest_it(self, rulings_bundle) -> None:
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456", branch_name="123-feature", _issue_number=123,
+        )
+
+        result = bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        command = bundle.create_session_calls[0]["cmd"]
+        assert f"`{ruling.ruling_id}`" in command
+        assert "--upholds-ruling <id>" in command and "implementation-required" in command
+
+    def test_a_retrospective_review_is_bound_too(self, rulings_bundle) -> None:
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"), issue_number=365,
+            issue_title="Review old implementation", agent_label="agent:web", trigger_label="lack-of-review-redo",
+            prior_pr_number=512, prior_pr_url="https://github.com/test/repo/pull/512",
+        )
+
+        result = bundle.launcher.launch_retrospective_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        assert f"`{ruling.ruling_id}`" in result.session.original_prompt
+        assert "--upholds-ruling" in result.session.original_prompt
+
+    def test_unreadable_rulings_refuse_the_launch_before_anything_is_touched(
+        self, rulings_bundle, sample_issue, mock_worktree_manager,
+    ) -> None:
+        bundle, owner, bodies, _ruling = rulings_bundle
+        owner.index.rows.clear()  # a fresh state directory: the body must be read
+        bodies.unreadable.add(123)
+
+        result = bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE  # the work stays queued
+        assert "could not be read for its standing rulings" in result.reason
+        assert bundle.create_session_calls == [] and mock_worktree_manager.create_calls == []
+
+    def test_an_issue_with_no_rulings_launches_unchanged(self, launcher_bundle, sample_issue) -> None:
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True and RULINGS_PROMPT_HEADING not in result.session.original_prompt

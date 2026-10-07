@@ -131,7 +131,7 @@ from ..ports.provider_readiness import (
 )
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
-from ..execution.internal_review_prompt import build_coder_prompt_addendum_provider
+from .bootstrap_standing_rulings import build_issue_prompt_owners
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
 from ..control.completion_dispatcher import (
     BackgroundCompletionDispatcher,
@@ -527,7 +527,6 @@ def build_orchestrator(
         build_budgeted_validation_services(config, command_runner, github)
         if github else (DisabledBudgetedValidation(), DisabledBudgetedValidationReports())
     )
-    coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     provider_readiness_probe = build_provider_readiness_probe(command_runner)
     provider_launch_sampler = build_provider_launch_sampler(
@@ -628,6 +627,7 @@ def build_orchestrator(
     # the shared-block owner: the agent's typed needs_human outcome routes
     # through it (#6999 F2 round 4).
     repository_host = require_repository_host(github)
+    launch_prompt, standing_rulings = build_issue_prompt_owners(config, repository_host)  # #8141
     pending_work = build_pending_work_wiring(
         repo_root=config.repo_root,
         repository_host=repository_host,
@@ -685,7 +685,7 @@ def build_orchestrator(
             open_issue_corpus=tech_lead.open_issue_corpus,
             repository_host=github,
             needs_human_block=pending_work.needs_human_block,
-            coder_prompt_addendum=coder_prompt_addendum,
+            launch_prompt=launch_prompt, standing_rulings=standing_rulings,
         )
     )
     stack_gate = _wire_stack_publish_gate(
@@ -802,7 +802,7 @@ def build_orchestrator(
         provider_readiness_probe=provider_readiness_probe,
         provider_credentials=build_provider_credentials(),
         needs_human_block=pending_work.needs_human_block,
-        coder_prompt_addendum=coder_prompt_addendum,
+        launch_prompt=launch_prompt,
         recovery_holds=validated_work.blocks,
     )
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
@@ -849,6 +849,7 @@ def build_orchestrator(
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
+        standing_rulings=standing_rulings, launch_prompt=launch_prompt,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
@@ -965,7 +966,7 @@ def build_orchestrator_for_testing(
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
-    coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
+    launch_prompt, standing_rulings = build_issue_prompt_owners(config, github)  # #8141
 
     # A test composition must never shell out to a real provider CLI: readiness
     # defaults to the explicit "no probe wired" reader (UNKNOWN => launchable,
@@ -1097,7 +1098,7 @@ def build_orchestrator_for_testing(
             pair_registry_for_testing,
             completion_intake=completion_intake,
             turn_mailbox=turn_mailbox,
-            coder_prompt_addendum=coder_prompt_addendum,
+            launch_prompt=launch_prompt,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
@@ -1112,6 +1113,7 @@ def build_orchestrator_for_testing(
         runtime_identity=runtime_identity.resolve_runtime_identity(),
         tech_lead_authority=tech_lead_authority_for_testing,
         needs_human_block=pending_work.needs_human_block,
+        standing_rulings=standing_rulings,
     )
     stack_gate = _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -1229,7 +1231,7 @@ def build_orchestrator_for_testing(
         agent_callback_endpoint=agent_callback_endpoint,
         provider_readiness_probe=provider_readiness_probe,
         needs_human_block=pending_work.needs_human_block,
-        coder_prompt_addendum=coder_prompt_addendum,
+        launch_prompt=launch_prompt,
     )
     completion_handler_factory = build_completion_handler_factory(
         config,
@@ -1279,6 +1281,7 @@ def build_orchestrator_for_testing(
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
+        standing_rulings=standing_rulings, launch_prompt=launch_prompt,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,

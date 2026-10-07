@@ -30,7 +30,11 @@ keeps the item blocked until everything its next session needs is on GitHub:
   proposal awaiting a maintainer's approval (#7763);
 * the pr-pending gate goes on when an open PR carries the item's published
   validated work, so no coder relaunches over that PR;
-* the decision is posted on the item, create-once;
+* the decision is posted on the item, create-once, and an answer (or the
+  slice a narrowing split leaves) is recorded as a STANDING RULING in the
+  item's body (#8141), create-once by the decision: the resumed session, its
+  reviews and every later rework read the body, never the comments
+  (porchpin#327's approved answer stayed in a comment);
 * the named causes are discharged through
   :meth:`~.needs_human_block.SharedNeedsHumanBlock.resolve`, bracketed
   write-ahead (``ports/block_resolution_discharges``): other causes keep the
@@ -58,6 +62,7 @@ from ..domain.block_resolution import (
     PARENT,
     ParentDisposition,
     ResolutionChild,
+    ResolutionKind,
     child_marker,
     cause_marker,
     decision_marker,
@@ -66,6 +71,7 @@ from ..domain.block_resolution import (
     prior_resolutions,
 )
 from ..domain.dependencies import DependencyMode, parse_dependency_edges
+from ..domain.standing_ruling import RulingAuthority, RulingScope, resolution_ruling_id
 from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.human_block import BlockOutcome, HumanHoldScope, NeedsHumanCause
 from ..domain.operator_decision_retry import DecisionRetryState
@@ -100,6 +106,7 @@ if TYPE_CHECKING:
     from .needs_human_block import SharedNeedsHumanBlock
     from .published_review_custody import PublishedReviewHolds
     from .review_exchange_lifecycle import IssueRuntimeActivity
+    from .standing_rulings import StandingRulingsOwner
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +200,8 @@ class TechLeadBlockResolutionExecutor:
     #: The approval owner's durable proposal index (#7763): a gated child
     #: joins it the moment it is filed, as every tech-lead proposal does.
     index_proposals: Callable[[list[int]], None]
+    #: The owner the decided answer is recorded through as a standing ruling (#8141).
+    rulings: "StandingRulingsOwner"
 
     # -- preconditions --------------------------------------------------------
 
@@ -325,6 +334,7 @@ class TechLeadBlockResolutionExecutor:
         for what, step in (
             (f"{self.labels.pr_pending} not put on", lambda: self._gate_published_review(action, issue)),
             ("decision not posted", lambda: self._post_decision(action)),
+            ("standing ruling not recorded on", lambda: self._record_ruling(action)),
         ):
             failed = step()
             if failed is not None:
@@ -581,6 +591,33 @@ class TechLeadBlockResolutionExecutor:
             action, decision_marker(action.decision_id), _decision_comment(action),
             f"tech lead {action.decision_id}: the resolution of #{action.issue_number}'s block",
         )
+
+    def _record_ruling(self, action: ResolveBlockAction) -> ActionResult | None:
+        """The decision as a standing ruling in the item's body (create-once), before
+        the discharge: the item is never unblocked without it. A lift decides no
+        design and a closing split leaves nothing to build, so neither records one."""
+        resolution = action.resolution
+        binds = resolution.kind is ResolutionKind.ANSWER or (
+            resolution.kind is ResolutionKind.SPLIT and resolution.parent is ParentDisposition.NARROW
+        )
+        if not binds:
+            return None
+        approved = (f", approved on proposal #{action.proposal_issue_number}"
+                    if action.proposal_issue_number else ", under the operator's resolve_block: execute")
+        try:
+            self.rulings.record(action.issue_number, self.rulings.ruling(
+                ruling_id=resolution_ruling_id(action.decision_id),
+                text=f"## {resolution.title}\n\n{resolution.body}",
+                authority=RulingAuthority.APPROVED_RESOLUTION,
+                source=f"tech-lead resolve_block {resolution.kind.value} {action.decision_id}{approved}",
+                scope=RulingScope(),
+            ))
+        except (ReconciliationRequired, ClaimLostError):
+            raise
+        except Exception as error:  # the item stays blocked; a replay records it
+            return ActionResult.fail_limited(action, str(error), host_rate_limit_of(error),
+                                             issue_number=action.issue_number, proposal_id=action.proposal_id)
+        return None
 
     def _post_discharge(self, action: ResolveBlockAction) -> ActionResult | None:
         """The durable record of what was discharged, once it COMMITTED."""

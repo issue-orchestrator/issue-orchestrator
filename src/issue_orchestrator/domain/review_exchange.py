@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .coder_prompt import append_coder_prompt_addendum
+from .launch_prompt import RULINGS_SEPARATOR
 from .dirty_remediation import remediation_prompt_steps
 from .review_exchange_run import ReviewExchangeRunAssets
 from .review_exchange_summary import (
@@ -155,7 +156,7 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         prior += f"\nCoder response:\n{packet.last_coder_text}\n"
     if packet.last_reviewer_text:
         prior += f"\nPrevious review feedback:\n{packet.last_reviewer_text}\n"
-    return (
+    return _bound_by_rulings(packet, (
         f"You are the reviewer in a coder↔reviewer exchange for issue #{packet.issue_number}: {packet.issue_title}.\n"
         f"Round {packet.round_index}.\n"
         f"{validation_note}\n"
@@ -173,7 +174,14 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "  exchange-respond ok --getting-closer --text \"Looks good.\"\n"
         "  exchange-respond changes_requested --getting-closer --text \"Fix X.\"\n"
         "  exchange-respond disagree --not-getting-closer --text \"Wrong approach.\"\n"
-    )
+    ))
+
+
+def _bound_by_rulings(packet: "ReviewExchangeTurnPacket", prompt: str) -> str:
+    """The turn prompt with the issue's binding rulings first, when it has any (#8141)."""
+    if packet.standing_rulings is None:
+        return prompt
+    return f"{packet.standing_rulings}{RULINGS_SEPARATOR}{prompt}"
 
 
 def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
@@ -217,7 +225,7 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "  exchange-respond ok --text \"Applied fixes...\"\n"
         "  exchange-respond disagree --text \"This is wrong because...\"\n"
     )
-    return append_coder_prompt_addendum(prompt, packet.coder_prompt_addendum)
+    return append_coder_prompt_addendum(_bound_by_rulings(packet, prompt), packet.coder_prompt_addendum)
 
 
 def parse_exchange_response(stdout: str) -> ReviewExchangeResponse | None:

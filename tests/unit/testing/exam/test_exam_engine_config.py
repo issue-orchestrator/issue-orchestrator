@@ -35,9 +35,11 @@ from tests.e2e.exam.case_engines import (
     case_d_engine,
     case_h_engine,
     case_e_engine,
+    case_i_engine,
     case_resolution_engine,
     case_u_engine,
 )
+from tests.e2e.exam.engine import RulingAgents
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
 from tests.e2e.exam.engine import HELD_SESSION_TIMEOUT_MINUTES
 from tests.e2e.exam.engine_checkout import EngineCheckout
@@ -106,8 +108,9 @@ def _load_case_config(
         case_e_engine(Path("/tmp/exam-e-changes-once")),
         case_resolution_engine(resolve_block="execute"),
         case_resolution_engine(resolve_block="propose"),
+        case_i_engine(RulingAgents(Path("/tmp/exam-i-prompts"))),
     ],
-    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G"],
+    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G", "I"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -293,3 +296,21 @@ def test_cases_f_and_g_differ_only_in_the_resolve_block_dial(
     assert loaded.tech_lead.stuck_sweep.enabled is False
     # The give-up coder's exit lands as needs-human (session_lifecycle) at once.
     assert loaded.retry.interrupted_sessions.retry_coding is False
+
+
+def test_case_i_captures_every_ruled_prompt(tmp_path: Path, written: list[Path]) -> None:
+    """#8141: the ruled item's coder and every reviewer capture the prompt they
+    were launched with; the answerable coder asks until the tech lead resolves it."""
+    from tests.e2e.exam.agents import ANSWERABLE_CODER_LABEL, RULED_CODER_LABEL
+
+    agents = RulingAgents(tmp_path / "prompts")
+    loaded = _load_case_config(case_i_engine(agents), tmp_path, written)
+
+    coder = loaded.agents[RULED_CODER_LABEL]
+    assert coder.reviewer == REVIEWER_LABEL
+    assert f"--capture-prompts {agents.capture_dir}" in coder.command
+    reviewer = loaded.agents[REVIEWER_LABEL].command
+    assert "--role reviewer" in reviewer and f"--capture-prompts {agents.capture_dir}" in reviewer
+    answerable = loaded.agents[ANSWERABLE_CODER_LABEL].command
+    assert "--until-resolved" in answerable and "--asks" in answerable
+    assert loaded.tech_lead.authority.mode_for("resolve_block") == "execute"

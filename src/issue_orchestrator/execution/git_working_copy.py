@@ -374,6 +374,21 @@ class GitWorkingCopy:
             )
             return BranchPathsResult(success=False, error=error)
 
+    def branch_touched_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        """Every path the branch touches: ``--no-renames`` lists a rename as its
+        deletion and its addition, and no ``--diff-filter`` keeps deletions."""
+        try:
+            paths = self._run_git_nul_paths(
+                worktree, ["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", f"{base_ref}...HEAD"],
+            )
+            return BranchPathsResult(success=True, paths=tuple(paths))
+        except GitError as exc:
+            error = _git_error_output(exc)
+            logger.warning("Failed to read touched paths against %s in %s: %s", base_ref, worktree, error)
+            return BranchPathsResult(success=False, error=error)
+
     def branch_commit_messages_against_base(
         self, worktree: Path, base_ref: str
     ) -> BranchCommitMessagesResult:
