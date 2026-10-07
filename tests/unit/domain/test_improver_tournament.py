@@ -11,7 +11,7 @@ from issue_orchestrator.contracts.improver_tournament import AnswerKey, AnswerKe
 from issue_orchestrator.domain.improver_tournament import (
     GradesRejected,
     anonymize,
-    arm_means,
+    pool,
     parse_sealed_key,
     rank,
     read_grades,
@@ -124,26 +124,66 @@ def test_a_candidate_key_item_is_not_graded() -> None:
         read_grades(json.dumps({"S10": _grades({"1": "full", "2": "full", "9": "full", "H-8137": "full"})}), NO_FINDINGS_1, key)
 
 
-def test_the_2026_10_04_published_means_and_ranking_follow_from_these_rules() -> None:
-    """The tournament's graders' scores per output (key max 24), as its
-    files give them: C 3.8, B 1.3, A 0.2, D 0.2; C > B > A ≈ D."""
-    per_grader = {
-        "claude": {"A1": 0, "A2": 0, "A3": 0, "B1": 0, "B2": 2.0, "B3": 0, "C1": 2.5, "C2": 2.5, "C3": 5.5,
-                   "D1": 0.5, "D2": 0, "D3": 0.5},
-        "codex": {"A1": 0, "A2": 0, "A3": 1.5, "B1": 1.5, "B2": 3, "B3": 1.5, "C1": 3.5, "C2": 3.5, "C3": 5.5,
-                  "D1": 0, "D2": 0, "D3": 0},
+THE_10_04_GRADINGS = {
+    "claude": {"A1": 0, "A2": 0, "A3": 0, "B1": 0, "B2": 2.0, "B3": 0, "C1": 2.5, "C2": 2.5, "C3": 5.5,
+               "D1": 0.5, "D2": 0, "D3": 0.5},
+    "codex": {"A1": 0, "A2": 0, "A3": 1.5, "B1": 1.5, "B2": 3, "B3": 1.5, "C1": 3.5, "C2": 3.5, "C3": 5.5,
+              "D1": 0, "D2": 0, "D3": 0},
+}
+
+
+def test_the_2026_10_04_published_means_follow_from_these_rules_and_only_c_stands_out() -> None:
+    """The tournament's two gradings per output (key max 24) give its
+    published means; within their measured noise only C is told apart."""
+    pooled = pool(THE_10_04_GRADINGS, {label: label[0] for label in THE_10_04_GRADINGS["claude"]}, ungraded={})
+
+    assert {arm: round(a.mean, 2) for arm, a in pooled.arms.items()} == {"A": 0.25, "B": 1.33, "C": 3.83, "D": 0.17}
+    assert pooled.gradings == 2 and pooled.grading_sd is not None and 0.5 < pooled.grading_sd < 1.0
+    means = {arm: a.mean for arm, a in pooled.arms.items()}
+    assert rank(means, distinguishable=pooled.distinguishable) == (("C",), ("B", "A", "D"))
+    assert all(pooled.distinguishable("C", arm) for arm in "ABD")
+
+
+def test_an_arms_noise_is_its_heats_spread_or_the_grading_noise_whichever_is_larger() -> None:
+    gradings = {
+        "g#1": {"x1": 4.0, "x2": 0.0, "y1": 1.0, "y2": 2.0},
+        "g#2": {"x1": 4.0, "x2": 0.0, "y1": 2.0, "y2": 1.0},
     }
 
-    pooled = arm_means(per_grader, {label: label[0] for label in per_grader["claude"]})
-    means = {arm: sum(v) / len(v) for arm, v in pooled.items()}
+    pooled = pool(gradings, {"x1": "X", "x2": "X", "y1": "Y", "y2": "Y"}, ungraded={"z1": "Z"})
 
-    assert {arm: round(m, 2) for arm, m in means.items()} == {"A": 0.25, "B": 1.33, "C": 3.83, "D": 0.17}
-    assert rank(means, tie_margin=0.5) == (("C",), ("B",), ("A", "D"))
+    # Grading noise, pooled over the 4 graded outputs (1 degree of freedom each):
+    # y1 and y2 each move 0.5 about their mean, x1 and x2 not at all -> (4 x 0.25) / 4.
+    assert pooled.grading_sd == pytest.approx(0.5)
+    x, y, z = pooled.arms["X"], pooled.arms["Y"], pooled.arms["Z"]
+    assert (x.mean, x.output_means) == (2.0, (0.0, 4.0))
+    assert x.se == pytest.approx((8.0 / 2) ** 0.5)  # its heats' spread
+    assert y.output_means == (1.5, 1.5)
+    assert y.se == pytest.approx((0.25 / (2 * 2)) ** 0.5)  # graders disagree, heats agree: the grading noise
+    # An output with no answer scores 0; one output, so its noise is the grading noise alone.
+    assert (z.mean, z.se) == (0.0, pytest.approx((0.25 / 2) ** 0.5))
+    assert pooled.band("X", "Y") == pytest.approx(2 * (x.se ** 2 + y.se ** 2) ** 0.5)
+    assert not pooled.distinguishable("X", "Y")
 
 
-def test_ranking_groups_arms_within_the_margin_of_their_groups_best() -> None:
-    assert rank({"a": 3.0, "b": 2.6, "c": 2.2, "d": 0.1}, tie_margin=0.5) == (("a", "b"), ("c",), ("d",))
-    assert rank({"x": 1.0, "y": 1.0}, tie_margin=0.0) == (("x", "y"),)
+def test_a_single_grading_leaves_the_grading_noise_unmeasured() -> None:
+    pooled = pool({"g#1": {"a1": 1.0, "a2": 3.0}}, {"a1": "A", "a2": "A"}, ungraded={})
+    assert pooled.grading_sd is None and pooled.arms["A"].se == pytest.approx(1.0)
+
+
+def test_a_grading_that_misses_an_output_is_not_pooled() -> None:
+    with pytest.raises(ValueError, match="not every output"):
+        pool({"g#1": {"a1": 1.0}, "g#2": {"a1": 1.0, "a2": 0.0}}, {"a1": "A", "a2": "A"}, ungraded={})
+
+
+def test_ranking_groups_arms_not_distinguishable_from_their_groups_best() -> None:
+    means = {"a": 3.0, "b": 2.6, "c": 2.2, "d": 0.1}
+
+    def within_half(p: str, q: str) -> bool:
+        return abs(means[p] - means[q]) > 0.5
+
+    assert rank(means, distinguishable=within_half) == (("a", "b"), ("c",), ("d",))
+    assert rank({"x": 1.0, "y": 1.0}, distinguishable=lambda p, q: False) == (("x", "y"),)
 
 
 def test_the_graders_read_the_keys_preamble_and_each_item_in_its_own_words() -> None:

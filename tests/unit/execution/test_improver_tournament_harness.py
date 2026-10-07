@@ -566,9 +566,15 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
         # P's answers broke io's rules (rejected): like X's none, they are not graded.
         ("G", 1, True), ("G", 2, True), ("P", 1, False), ("P", 2, False), ("X", 1, False), ("X", 2, False),
     }
-    assert [g.accepted for g in result.graders] == [True, True]
+    # Each grader graded every output three times (the default passes), side by side.
+    assert sorted(g.grading for g in result.graders) == [f"{g}#{n}" for g in ("claude", "codex") for n in (1, 2, 3)]
+    assert all(g.accepted for g in result.graders) and result.passes == 3
     assert {a.arm: a.mean for a in result.arms} == {"G": 8.0, "P": 0.0, "X": 0.0}
-    assert result.ranking == (("G",), ("P", "X"))
+    # The fake graders agree exactly: no noise, so G is told apart and P and X (both 0) are not.
+    assert result.grading_sd == 0.0 and result.ranking == (("G",), ("P", "X"))
+    assert result.distinguishable == (("G", "P"), ("G", "X"))
+    assert result.cost.arm_heats == {"claude": 2, "codex": 4}
+    assert result.cost.grader_calls == {"claude": 3, "codex": 3}
     directory = harness.directory("t1").resolve()
     # Graders read only the anonymized outputs and the key; never the
     # sealed mapping, the arms' run dirs or the key store.
@@ -598,25 +604,25 @@ def test_a_tournament_one_grader_could_not_grade_has_no_result(stores) -> None: 
 
     harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": partial}))
 
-    with pytest.raises(RuntimeError, match=r"not every grader.*codex: rejected"):
+    with pytest.raises(RuntimeError, match=r"not every grading was complete.*codex#1: rejected"):
         harness.grade("t2", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")], seed=1)
     assert not (harness.directory("t2") / "result.json").exists()
-    # What each grader answered stays for a person to read.
-    assert (harness.directory("t2") / "graders" / "codex" / "grades.json").is_file()
+    # What each grading answered stays for a person to read.
+    assert (harness.directory("t2") / "graders" / "codex" / "p3" / "grades.json").is_file()
 
 
 def test_arms_are_ranked_on_their_exact_means_not_the_rounded_ones(stores) -> None:  # type: ignore[no-untyped-def]
-    """1.0004 and 0.4996 differ by more than the 0.5 margin; rounded to
-    1.0 and 0.5, they would tie."""
+    """Noise-free, 1.0004 and 0.9996 are told apart; rounded, both show 1.0."""
+    from issue_orchestrator.domain.improver_tournament import pool
     from issue_orchestrator.execution.improver_tournament import _result
 
     key = stores[1].get("20261004")
-    per_grader = {"g": {"S10": 1.0004, "S11": 0.4996}}
-    result = _result("t", "20261004", key, [], per_grader, {"S10": "A", "S11": "B"},
-                     [ArmOutput("A", 1, "x"), ArmOutput("B", 1, "y")])
+    gradings = {"g#1": {"S10": 1.0004, "S11": 0.9996}}
+    arm_of = {"S10": "A", "S11": "B"}
+    result = _result("t", "20261004", key, (), 1, pool(gradings, arm_of, ungraded={}), gradings, arm_of, {}, {})
 
     assert result.ranking == (("A",), ("B",))
-    assert [a.mean for a in result.arms] == [1.0, 0.5]
+    assert [a.mean for a in result.arms] == [1.0, 1.0]
 
 
 def test_a_challenger_and_its_champion_run_together_each_as_specified(stores) -> None:  # type: ignore[no-untyped-def]
@@ -732,14 +738,14 @@ def test_a_failed_grading_is_retried_on_the_same_anonymized_outputs(stores) -> N
     result = harness.grade("t10", "20261004", outputs, seed=4)
 
     directory = harness.directory("t10")
-    assert [g.accepted for g in result.graders] == [True, True]
-    assert {a.arm: a.scores for a in result.arms} == {"A": {"claude": (4.0,), "codex": (4.0,)},
-                                                      "B": {"claude": (4.0,), "codex": (4.0,)}}
+    assert len(result.graders) == 6 and all(g.accepted for g in result.graders)
+    every = {f"{g}#{n}": (4.0,) for g in ("claude", "codex") for n in (1, 2, 3)}
+    assert {a.arm: a.scores for a in result.arms} == {"A": every, "B": every}
     assert {p.name: p.read_text() for p in (directory / "anon").iterdir()} == first
     # The failed attempt's answers are kept for a person to read.
-    kept = directory / "graders-attempt-1" / "codex" / "grades.json"
+    kept = directory / "graders-attempt-1" / "codex" / "p1" / "grades.json"
     assert kept.read_text() == partial(sorted(Path(name).stem for name in first))
-    assert (directory / "graders" / "codex" / "grades.json").is_file()
+    assert (directory / "graders" / "codex" / "p3" / "grades.json").is_file()
     with pytest.raises(RuntimeError, match="already has a result"):
         harness.grade("t10", "20261004", outputs, seed=4)
 
@@ -818,6 +824,40 @@ def test_outputs_are_graded_only_on_the_snapshot_their_arms_ran_on(stores, tmp_p
                                                                  mode="scripted"), heats=HeatPlan(1, 1))])
     assert len(agents.spaces) == arm_calls
     assert harness.grade("t14", "20261004", outputs, seed=1).snapshot_id == "20261004"
+
+
+def test_arms_within_the_measured_grading_noise_are_reported_indistinguishable(stores) -> None:  # type: ignore[no-untyped-def]
+    """Graders that disagree from pass to pass widen the noise band: a small
+    difference in means inside it is "≈", not an order."""
+    _, _, root = stores
+    anon = root / "tournaments" / "t15" / "anon"
+    passes: dict[str, int] = {}
+    lock = threading.Lock()
+
+    def noisy(labels: list[str]) -> str:
+        with lock:
+            n = passes["n"] = passes.get("n", 0) + 1
+        out = {}
+        for label in labels:
+            strong = "strong" in (anon / f"{label}.json").read_text()
+            weak_grade = "half" if n == 1 else "miss"  # one grading of six credits the weak arm
+            grade = "full" if strong else weak_grade
+            out[label] = {"items": {i: {"grade": grade if i == "1" else "miss", "why": "q"} for i in ("1", "2", "9")},
+                          "unsupported": 0}
+        return json.dumps(out)
+
+    harness = _harness(root, stores, Agents({}, {"claude": noisy, "codex": noisy}))
+    outputs = [ArmOutput("S", 1, '{"strong": 1}'), ArmOutput("S", 2, '{"strong": 2}'),
+               ArmOutput("W", 1, '{"weak": 1}'), ArmOutput("W", 2, '{"weak": 2}'), ArmOutput("N", 1, None)]
+
+    result = harness.grade("t15", "20261004", outputs, seed=2)
+
+    means = {a.arm: a.mean for a in result.arms}
+    assert (means["S"], means["W"], means["N"]) == (3.0, 0.25, 0.0)
+    assert result.grading_sd is not None and result.grading_sd > 0
+    # W differs from N, but by less than the noise its gradings showed.
+    assert result.ranking == (("S",), ("W", "N"))
+    assert ("W", "N") not in result.distinguishable and ("S", "W") in result.distinguishable
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

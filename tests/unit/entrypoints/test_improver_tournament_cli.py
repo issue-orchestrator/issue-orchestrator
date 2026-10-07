@@ -20,7 +20,8 @@ def test_an_arm_and_a_grader_are_named_by_provider_model_and_mode() -> None:
         ("C", "claude", "opus", "empowered"), ("A", "codex", "gpt-5.6-sol", "scripted"),
     ]
     assert args.grader[0].name == "g2" and args.grader[0].choice.describe() == "codex:gpt-5.6-sol"
-    assert (args.heats, args.parallel_heats) == (3, 3)
+    # Modest defaults: Claude heats and gradings count against the operator's subscription.
+    assert (args.heats, args.parallel_heats, args.passes) == (2, 2, 3)
 
 
 @pytest.mark.parametrize("arm", [
@@ -60,7 +61,7 @@ def test_a_challenger_arm_sets_its_own_prompt_heats_and_minutes(tmp_path: Path) 
 
     a, b = (request.spec(args, prompt=champion, addendum="ADD") for request in args.arm)
 
-    assert (a.prompt, a.heats.count, a.heats.parallel, a.budget_minutes, a.agent_timeout_minutes) == ("CHAMPION", 3, 3, 60, 80)
+    assert (a.prompt, a.heats.count, a.heats.parallel, a.budget_minutes, a.agent_timeout_minutes) == ("CHAMPION", 2, 2, 60, 80)
     assert (b.prompt, b.heats.count, b.heats.parallel, b.budget_minutes, b.agent_timeout_minutes) == ("CHALLENGER", 2, 1, 45, 55)
     over = cli.build_parser().parse_args(["run", "--snapshot", "s", "--arm", "C=claude:opus:empowered,budget=90"])
     with pytest.raises(ValueError, match="budget must be below"):
@@ -121,11 +122,13 @@ def test_a_failed_grading_is_regraded_without_running_the_arms_again(tmp_path: P
     assert cli.main(["regrade", "--tournament", tournament]) == 0
 
     directory = store / "tournaments" / tournament
-    assert calls == ["claude", "codex", "claude", "codex"]
+    assert sorted(calls) == ["claude"] * 6 + ["codex"] * 6  # 3 passes each, twice; the arms never ran
     assert {p.name: p.read_text() for p in (directory / "anon").iterdir()} == anon
-    assert (directory / "graders-attempt-1" / "codex" / "grades.json").read_text() == "{}"
+    assert (directory / "graders-attempt-1" / "codex" / "p1" / "grades.json").read_text() == "{}"
     result = json.loads((directory / "result.json").read_text())
-    assert [g["accepted"] for g in result["graders"]] == [True, True]
+    assert len(result["graders"]) == 6 and all(g["accepted"] for g in result["graders"])
+    assert result["cost"] == {"arm_heats": {}, "grader_calls": {"claude": 3, "codex": 3},
+                              "grader_seconds": result["cost"]["grader_seconds"]}
 
 
 def test_two_tournaments_started_in_one_second_get_their_own_ids() -> None:

@@ -32,7 +32,9 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,15 +49,18 @@ from ..contracts.improver_tournament import (
     ArmScore,
     GraderRun,
     TournamentArm,
+    TournamentCost,
     TournamentResult,
     require_slug,
 )
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_tournament import (
+    NOISE_BAND_SES,
     GradesRejected,
+    PooledScores,
     anonymize,
-    arm_means,
     finding_ids,
+    pool,
     rank,
     read_grades,
     score,
@@ -77,7 +82,8 @@ from .improver_snapshots import FrozenSnapshotStore, audit_of
 TOURNAMENTS_DIRNAME = "tournaments"
 #: A tournament's outputs are filed nowhere: this names its effects' repository.
 NO_OUTPUTS_REPO = "tournament/no-outputs"
-TIE_MARGIN = 0.5
+#: Each grader grades every output this many times; the spread is the noise.
+DEFAULT_PASSES = 3
 #: What was graded (outputs, seed, snapshot), sealed with the mapping, so a failed grading can be retried.
 _REQUEST = "sealed/request.json"
 #: What the tournament's arms were run on (written by run_arms).
@@ -222,8 +228,10 @@ class TournamentHarness:
             (self.directory(tournament_id) / "arms").mkdir(parents=True)
         except FileExistsError:
             raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
+        heats_by_provider: dict[str, int] = {}
         for spec in specs:
             arm, heats = spec.arm, spec.heats
+            heats_by_provider[arm.provider] = heats_by_provider.get(arm.provider, 0) + heats.count
             store = FileImproverRunStore(self.directory(tournament_id) / "arms" / arm.name)
             run = ImproverRun(
                 store=store,
@@ -256,7 +264,8 @@ class TournamentHarness:
                 outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
         # What these outputs were run on: grading them under another snapshot is refused.
         _write_atomic(self.directory(tournament_id) / _ARMS_RUN, json.dumps(
-            {"snapshot_id": snapshot_id, "outputs": _digests(outputs)}, indent=2
+            {"snapshot_id": snapshot_id, "outputs": _digests(outputs), "heats_by_provider": heats_by_provider},
+            indent=2,
         ) + "\n")
         return outputs
 
@@ -278,16 +287,20 @@ class TournamentHarness:
         outputs: Sequence[ArmOutput],
         *,
         graders: Sequence[Grader] = DEFAULT_GRADERS,
+        passes: int = DEFAULT_PASSES,
         seed: int,
     ) -> TournamentResult:
-        """Anonymize the outputs, grade them with every grader, rank the arms.
+        """Anonymize the outputs, grade them ``passes`` times with every
+        grader, pool the gradings and rank the arms within their noise.
 
-        Cross-model means every grader: a tournament one grader failed to
+        Cross-model means every grader: a tournament any grading failed to
         grade completely has no result (one model's judgment could rank it).
         Grading it again with the same outputs, seed and key reruns every
-        grader on the same anonymized files (the earlier attempt is kept).
+        grading on the same anonymized files (the earlier attempt is kept).
         """
         require_cross_model(graders)
+        if passes < 1:
+            raise ValueError(f"each grader grades at least once, not {passes} time(s)")
         key = self._keys.get(snapshot_id)
         root = self.directory(tournament_id).resolve()
         if (root / "result.json").exists():
@@ -298,33 +311,30 @@ class TournamentHarness:
         by_id = {o.output_id: o for o in answered}
         _prepare(root, _grading_inputs(root, labels, by_id, seed, key, snapshot_id, outputs))
 
-        runs: list[GraderRun] = []
-        per_grader: dict[str, dict[str, float]] = {}
-        for grader in graders:
-            accepted, detail, scores = self._grade_with(grader, root, labels, key)
-            runs.append(GraderRun(
-                name=grader.name, provider=grader.choice.provider.value, model=grader.choice.model,
-                accepted=accepted, detail=detail,
-            ))
-            if scores is not None:
-                per_grader[grader.name] = {
-                    **scores,
-                    # A heat with no (accepted) answer scores 0 for every grader.
-                    **{f"(none){o.output_id}": 0.0 for o in outputs if o.text is None},
-                }
+        jobs = [(grader, n) for n in range(1, passes + 1) for grader in graders]
+        # One grading per grader at a time: graders run side by side, a grader's passes in turn.
+        with ThreadPoolExecutor(max_workers=len(graders)) as pool_:
+            graded = list(pool_.map(lambda job: self._grade_with(job[0], job[1], root, labels, key), jobs))
+        runs = tuple(run for run, _ in graded)
         refused = [run for run in runs if not run.accepted]
         if refused:
             raise RuntimeError(
-                "not every grader produced a complete grading; no result (grade it again to retry): "
-                + "; ".join(f"{run.name}: {run.detail}" for run in refused)
+                "not every grading was complete; no result (grade it again to retry): "
+                + "; ".join(f"{run.grading}: {run.detail}" for run in refused)
             )
-        arm_of = {**{label: by_id[oid].arm for label, oid in labels.items()},
-                  **{f"(none){o.output_id}": o.arm for o in outputs if o.text is None}}
-        result = _result(tournament_id, snapshot_id, key, runs, per_grader, arm_of, outputs)
+        gradings = {run.grading: scores for run, scores in graded if scores is not None}
+        arm_of = {label: by_id[oid].arm for label, oid in labels.items()}
+        ungraded = {o.output_id: o.arm for o in outputs if o.text is None}
+        result = _result(
+            tournament_id, snapshot_id, key, runs, passes, pool(gradings, arm_of, ungraded=ungraded),
+            gradings, arm_of, ungraded, _arm_heats(root),
+        )
         _write_atomic(root / "result.json", result.model_dump_json(indent=2) + "\n")
         return result
 
-    def regrade(self, tournament_id: str, *, graders: Sequence[Grader] = DEFAULT_GRADERS) -> TournamentResult:
+    def regrade(
+        self, tournament_id: str, *, graders: Sequence[Grader] = DEFAULT_GRADERS, passes: int = DEFAULT_PASSES
+    ) -> TournamentResult:
         """Grade a tournament whose grading failed again: the same outputs,
         seed and snapshot, as its sealed request recorded them."""
         request = self.directory(tournament_id) / _REQUEST
@@ -332,12 +342,14 @@ class TournamentHarness:
             raise RuntimeError(f"tournament {tournament_id} was never prepared for grading")
         doc = json.loads(request.read_text(encoding="utf-8"))
         outputs = [ArmOutput(o["arm"], o["heat"], o["text"], tuple(o["hide"])) for o in doc["outputs"]]
-        return self.grade(tournament_id, doc["snapshot_id"], outputs, graders=graders, seed=doc["seed"])
+        return self.grade(
+            tournament_id, doc["snapshot_id"], outputs, graders=graders, passes=passes, seed=doc["seed"]
+        )
 
     def _grade_with(
-        self, grader: Grader, root: Path, labels: Mapping[str, str], key: AnswerKey
-    ) -> tuple[bool, str, dict[str, float] | None]:
-        workdir = root / "graders" / grader.name
+        self, grader: Grader, pass_number: int, root: Path, labels: Mapping[str, str], key: AnswerKey
+    ) -> tuple[GraderRun, dict[str, float] | None]:
+        workdir = root / "graders" / grader.name / f"p{pass_number}"
         workdir.mkdir(parents=True)
         prompt = (
             self._grader_prompt.replace("<<COUNT>>", str(len(labels)))
@@ -347,17 +359,26 @@ class TournamentHarness:
             .replace("<<ITEM_IDS>>", ", ".join(i.id for i in key.scored))
         )
         space = HeatSpace(heat=1, run_dir=root, workdir=workdir, evidence=(root / "anon", root / "key"))
+        started = time.monotonic()
         answer = self._agent_for(grader.choice, grader.timeout_minutes).run(prompt=prompt, space=space, toolbox=None)
+        seconds = round(time.monotonic() - started, 1)
+
+        def run(accepted: bool, detail: str) -> GraderRun:
+            return GraderRun(
+                name=grader.name, provider=grader.choice.provider.value, model=grader.choice.model,
+                pass_number=pass_number, accepted=accepted, detail=detail, seconds=seconds,
+            )
+
         if answer.final_message is None:
-            return False, f"no answer: {answer.detail}", None
+            return run(False, f"no answer: {answer.detail}"), None
         (workdir / "grades.json").write_text(answer.final_message, encoding="utf-8")
         try:
             grades = read_grades(answer.final_message, {
                 label: finding_ids((root / "anon" / f"{label}.json").read_text(encoding="utf-8")) for label in labels
             }, key)
         except GradesRejected as rejected:
-            return False, f"rejected: {rejected}", None
-        return True, f"graded {len(grades)} output(s)", {label: score(g, key) for label, g in grades.items()}
+            return run(False, f"rejected: {rejected}"), None
+        return run(True, f"graded {len(grades)} output(s)"), {label: score(g, key) for label, g in grades.items()}
 
 
 def render_key(key: AnswerKey) -> str:
@@ -492,37 +513,62 @@ def _result(
     tournament_id: str,
     snapshot_id: str,
     key: AnswerKey,
-    runs: list[GraderRun],
-    per_grader: dict[str, dict[str, float]],
+    runs: tuple[GraderRun, ...],
+    passes: int,
+    pooled: PooledScores,
+    gradings: Mapping[str, Mapping[str, float]],
     arm_of: Mapping[str, str],
-    outputs: Sequence[ArmOutput],
+    ungraded: Mapping[str, str],
+    arm_heats: dict[str, int],
 ) -> TournamentResult:
-    """Each arm's scores (per grader, over its outputs) and the ranking."""
-    pooled = arm_means(per_grader, arm_of)
-    # Ranked on the exact means; only what is shown is rounded.
-    means = {arm: sum(values) / len(values) for arm, values in pooled.items()}
-    scores: list[ArmScore] = []
-    for arm in sorted({o.arm for o in outputs}):
-        values = pooled[arm]
-        scores.append(ArmScore(
+    """Each arm's pooled score with its noise, the ranking, and the cost."""
+    arms: list[ArmScore] = []
+    for arm in sorted(pooled.arms):
+        p = pooled.arms[arm]
+        no_answer = [0.0] * sum(1 for a in ungraded.values() if a == arm)
+        arms.append(ArmScore(
             arm=arm,
             scores={
-                grader: tuple(sorted(v for label, v in by_label.items() if arm_of[label] == arm))
-                for grader, by_label in per_grader.items()
+                grading: tuple(sorted([*(v for label, v in by_label.items() if arm_of[label] == arm), *no_answer]))
+                for grading, by_label in gradings.items()
             },
-            mean=round(means[arm], 3),
-            low=min(values),
-            high=max(values),
+            output_means=tuple(round(v, 3) for v in p.output_means),
+            # Ranked on the exact means; only what is shown is rounded.
+            mean=round(p.mean, 3),
+            se=round(p.se, 3),
+            low=min(p.output_means),
+            high=max(p.output_means),
         ))
+    means = {arm: p.mean for arm, p in pooled.arms.items()}
+    ordered = sorted(means, key=lambda arm: (-means[arm], arm))
+    calls: dict[str, int] = {}
+    seconds: dict[str, float] = {}
+    for run in runs:
+        calls[run.provider] = calls.get(run.provider, 0) + 1
+        seconds[run.provider] = round(seconds.get(run.provider, 0.0) + run.seconds, 1)
     return TournamentResult(
         tournament_id=tournament_id, snapshot_id=snapshot_id, key_items=len(key.scored),
-        max_score=key.max_score, graders=tuple(runs), arms=tuple(scores),
-        ranking=rank(means, tie_margin=TIE_MARGIN), tie_margin=TIE_MARGIN,
+        max_score=key.max_score, graders=runs, passes=passes,
+        grading_sd=None if pooled.grading_sd is None else round(pooled.grading_sd, 3),
+        band_ses=NOISE_BAND_SES, arms=tuple(arms),
+        ranking=rank(means, distinguishable=pooled.distinguishable),
+        distinguishable=tuple(
+            (a, b) for i, a in enumerate(ordered) for b in ordered[i + 1:] if pooled.distinguishable(a, b)
+        ),
+        cost=TournamentCost(arm_heats=arm_heats, grader_calls=calls, grader_seconds=seconds),
     )
+
+
+def _arm_heats(root: Path) -> dict[str, int]:
+    record = root / _ARMS_RUN
+    if not record.is_file():
+        return {}
+    return dict(json.loads(record.read_text(encoding="utf-8"))["heats_by_provider"])
 
 
 __all__ = [
     "DEFAULT_GRADERS",
+    "DEFAULT_PASSES",
     "NO_OUTPUTS_REPO",
     "TOURNAMENTS_DIRNAME",
     "ArmOutput",

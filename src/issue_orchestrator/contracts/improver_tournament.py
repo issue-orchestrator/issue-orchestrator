@@ -137,20 +137,42 @@ class TournamentArm(_Closed):
 
 
 class GraderRun(_Closed):
+    """One grading: one grader's pass over every output."""
+
     name: Slug
     provider: Literal["claude", "codex"]
     model: str
+    #: Which of the grader's passes (1..k) this was.
+    pass_number: Annotated[int, Field(ge=1)]
     accepted: bool
     detail: str
+    seconds: Annotated[float, Field(ge=0)]
+
+    @property
+    def grading(self) -> str:
+        return f"{self.name}#{self.pass_number}"
 
 
 class ArmScore(_Closed):
     arm: str
-    #: Each output's score, per grader (ascending; a heat with no answer is 0).
+    #: Each output's score, per grading (``grader#pass``; ascending; a heat with no answer is 0).
     scores: dict[str, tuple[float, ...]]
+    #: Each output's mean over the gradings (ascending).
+    output_means: tuple[float, ...]
     mean: float
+    #: The mean's standard error (heats and grading noise).
+    se: float
     low: float
     high: float
+
+
+class TournamentCost(_Closed):
+    """What a tournament spent: Claude calls count against the operator's subscription."""
+
+    #: Arm heats run, by provider (none for answers graded from a record).
+    arm_heats: dict[str, int]
+    grader_calls: dict[str, int]
+    grader_seconds: dict[str, float]
 
 
 class TournamentResult(_Closed):
@@ -158,11 +180,19 @@ class TournamentResult(_Closed):
     snapshot_id: str
     key_items: int
     max_score: int
+    #: Every grading: each grader's pass over every output.
     graders: tuple[GraderRun, ...]
+    passes: Annotated[int, Field(ge=1)]
+    #: One grading's spread about an output's mean (None: unmeasured).
+    grading_sd: float | None
+    #: How many standard errors of a difference tell two arms apart.
+    band_ses: float
     arms: tuple[ArmScore, ...]
-    #: Best first; arms within the tie margin share a group.
+    #: Best first; arms whose means differ by no more than the noise band share a group.
     ranking: tuple[tuple[str, ...], ...]
-    tie_margin: float
+    #: Every pair (higher, lower) whose means differ by more than their noise band.
+    distinguishable: tuple[tuple[str, str], ...]
+    cost: TournamentCost
 
     def ranking_text(self) -> str:
         return " > ".join(" ≈ ".join(group) for group in self.ranking)
@@ -180,5 +210,6 @@ __all__ = [
     "ItemGrade",
     "OutputGrades",
     "TournamentArm",
+    "TournamentCost",
     "TournamentResult",
 ]

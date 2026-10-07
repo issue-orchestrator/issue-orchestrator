@@ -10,7 +10,7 @@
     improver_tournament key confirm --snapshot ID --id H-7999 --by NAME
     improver_tournament key show --snapshot ID
     improver_tournament run --snapshot ID --arm C=claude:opus:empowered --arm A=codex:gpt-5.6-sol:scripted \\
-        [--heats 3 --parallel-heats 3 --budget-minutes 60 --agent-timeout-minutes 80] [--seed N]
+        [--heats 2 --parallel-heats 2 --budget-minutes 60 --agent-timeout-minutes 80] [--passes 3] [--seed N]
     improver_tournament grade-recorded --snapshot ID --recorded DIR [--seed N]
     improver_tournament regrade --tournament ID    # a tournament whose grading failed
 
@@ -56,6 +56,7 @@ from ...execution.improver_run_store import improver_root
 from ...execution.improver_snapshots import FrozenSnapshotStore
 from ...execution.improver_tournament import (
     DEFAULT_GRADERS,
+    DEFAULT_PASSES,
     ArmOutput,
     ArmSpec,
     Grader,
@@ -141,12 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm", action="append", required=True, type=parse_arm,
         help="NAME=provider:model:scripted|empowered[,prompt=P,heats=N,parallel=N,budget=MIN,timeout=MIN]",
     )
-    run.add_argument("--heats", type=int, default=3)
-    run.add_argument("--parallel-heats", type=int, default=3)
+    run.add_argument("--heats", type=int, default=2)
+    run.add_argument("--parallel-heats", type=int, default=2)
     run.add_argument("--budget-minutes", type=int, default=60)
     run.add_argument("--agent-timeout-minutes", type=int, default=80)
     run.add_argument("--grader", action="append", type=parse_grader, help="NAME=provider:model (default: Claude and Codex)")
     run.add_argument("--grader-timeout-minutes", type=int, default=40)
+    run.add_argument("--passes", type=int, default=DEFAULT_PASSES, help="Gradings per grader, pooled (default: %(default)s)")
     run.add_argument("--seed", type=int)
     graded = sub.add_parser("grade-recorded")
     graded.add_argument("--snapshot", required=True)
@@ -154,10 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     graded.add_argument("--grader", action="append", type=parse_grader)
     graded.add_argument("--seed", type=int)
     graded.add_argument("--grader-timeout-minutes", type=int, default=40)
+    graded.add_argument("--passes", type=int, default=DEFAULT_PASSES, help="Gradings per grader, pooled (default: %(default)s)")
     regrade = sub.add_parser("regrade", help="Grade a tournament whose grading failed again (same outputs and seed)")
     regrade.add_argument("--tournament", required=True)
     regrade.add_argument("--grader", action="append", type=parse_grader)
     regrade.add_argument("--grader-timeout-minutes", type=int, default=40)
+    regrade.add_argument("--passes", type=int, default=DEFAULT_PASSES)
     return parser
 
 
@@ -221,7 +225,7 @@ def main(argv: list[str]) -> int:
     require_cross_model(graders)
     if args.command == "regrade":
         tournament_id = args.tournament
-        result = _graded(lambda: harness.regrade(tournament_id, graders=graders), tournament_id)
+        result = _graded(lambda: harness.regrade(tournament_id, graders=graders, passes=args.passes), tournament_id)
         print(render_result(result, harness.directory(tournament_id)))
         return 0
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
@@ -234,7 +238,7 @@ def main(argv: list[str]) -> int:
     else:
         outputs = read_recorded(args.recorded)
     result = _graded(
-        lambda: harness.grade(tournament_id, args.snapshot, outputs, graders=graders, seed=seed), tournament_id
+        lambda: harness.grade(tournament_id, args.snapshot, outputs, graders=graders, passes=args.passes, seed=seed), tournament_id
     )
     print(render_result(result, harness.directory(tournament_id)))
     return 0
@@ -302,11 +306,19 @@ def read_recorded(directory: Path) -> list[ArmOutput]:
 
 def render_result(result: TournamentResult, directory: Path) -> str:
     lines = [f"tournament {result.tournament_id} on {result.snapshot_id}: key {result.key_items} item(s), max {result.max_score}"]
-    lines += [f"  grader {g.name} ({g.provider}:{g.model}): {'accepted' if g.accepted else 'NOT accepted'}: {g.detail}"
-              for g in result.graders]
-    lines += [f"  arm {a.arm}: mean {a.mean:.2f} (range {a.low:.1f}-{a.high:.1f}) "
-              + " ".join(f"{grader}={list(v)}" for grader, v in a.scores.items()) for a in result.arms]
-    lines.append(f"  ranking: {result.ranking_text()} (ties within {result.tie_margin})")
+    lines += [f"  grading {g.grading} ({g.provider}:{g.model}, {g.seconds:.0f}s): "
+              f"{'accepted' if g.accepted else 'NOT accepted'}: {g.detail}" for g in result.graders]
+    sd = "unmeasured" if result.grading_sd is None else f"{result.grading_sd:.2f}"
+    lines.append(f"  {len(result.graders)} grading(s) ({result.passes} pass(es) per grader); one grading's sd per output: {sd}")
+    lines += [f"  arm {a.arm}: mean {a.mean:.2f} ± {a.se:.2f} se (outputs {list(a.output_means)}) "
+              + " ".join(f"{grading}={list(v)}" for grading, v in a.scores.items()) for a in result.arms]
+    lines.append(
+        f"  ranking: {result.ranking_text()} (≈: means within {result.band_ses:g} standard errors of their difference)"
+    )
+    lines.append("  distinguishable: " + (", ".join(f"{a}>{b}" for a, b in result.distinguishable) or "none"))
+    cost = result.cost
+    lines.append(f"  cost: arm heats {cost.arm_heats or 'none (recorded)'}; grader calls {cost.grader_calls};"
+                 f" grader seconds {cost.grader_seconds} (Claude counts against the operator's subscription)")
     lines.append(f"  in {directory}")
     return "\n".join(lines)
 
