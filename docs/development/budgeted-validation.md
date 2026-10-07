@@ -211,12 +211,13 @@ data lives under `<git common dir>/io-improver/`:
 
 - `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
   `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
-  A snapshot is imported once, never changed, and links to nothing outside
-  itself (a clone borrowing objects is repacked to own them), and keeps no
-  commit made after it (`snapshot import`), and an old
-  bundle is upgraded to today's contracts with each change named.
+  A snapshot is imported once (`snapshot import`) and never changed. It links
+  to nothing outside itself (a clone borrowing objects is repacked to own
+  them) and holds nothing from after it: no later commit, and its checkout
+  is rebuilt from its commit. An old bundle is upgraded to today's contracts
+  with each change named.
 - `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
-  written before results (`key seed`), then problems found later that the
+  written before results (`key seed`; no arm runs until it exists), then problems found later that the
   snapshot's evidence already showed (`key add`, a `candidate` until
   `key confirm`). Only these commands write keys. No improver run can reach
   the key store, and no agent can read it.

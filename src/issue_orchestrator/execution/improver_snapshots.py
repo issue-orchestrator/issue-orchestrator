@@ -166,7 +166,9 @@ class FrozenSnapshotStore:
         nothing after ``taken_at``: only objects its refs reach are kept
         (reflogs expired, repacked, pruned), and a ref reaching a commit
         made after the snapshot refuses it (a clone taken later than the
-        staged inputs would show the arms what was done since)."""
+        staged inputs would show the arms what was done since). Its
+        working tree is rebuilt from its commit, so no file edited or
+        added after the commit stays in it."""
         self._copy(clone, target)
         git = target / ".git"
         if git.is_symlink() or not git.is_dir():
@@ -174,6 +176,8 @@ class FrozenSnapshotStore:
         if (git / "commondir").exists():
             raise SnapshotUnavailable(f"{clone} is a linked worktree; freeze a clone")
         require_self_contained(target)
+        if self._runner.run(["git", "-C", str(target), "rev-parse", "--verify", "-q", "HEAD"], timeout_seconds=60).returncode:
+            raise SnapshotUnavailable(f"{clone} has no commit to freeze")
         self._git(target, "reflog", "expire", "--expire=now", "--all")
         self._git(target, "repack", "-a", "-d", "-q")
         (git / "objects" / "info" / "alternates").unlink(missing_ok=True)
@@ -185,6 +189,8 @@ class FrozenSnapshotStore:
                 f"{clone} reaches {len(later)} commit(s) made after the snapshot ({taken_at.isoformat()}),"
                 f" e.g. {later[0][:12]}; freeze a clone taken with the inputs"
             )
+        self._git(target, "reset", "--hard", "-q", "HEAD")
+        self._git(target, "clean", "-ffdxq")
 
     def _git(self, repo: Path, *args: str) -> str:
         done = self._runner.run(["git", "-C", str(repo), *args], timeout_seconds=1800)

@@ -52,6 +52,11 @@ def _engine_files(root: Path) -> tuple[Path, Path]:
     clone = root / "clone"
     clone.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=clone, check=True)
+    (clone / "README.md").write_text("the audited repository")
+    when = (T0 - timedelta(days=1)).isoformat()
+    env = {"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when, "PATH": "/usr/bin:/bin"}
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "README.md"], cwd=clone, check=True, env=env)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"], cwd=clone, check=True, env=env)
     return state, clone
 
 
@@ -196,6 +201,50 @@ def test_a_clone_showing_commits_after_the_snapshot_is_refused(stores, tmp_path:
     assert "late" not in snapshots.ids()
 
 
+def test_a_frozen_clone_shows_its_commit_and_nothing_written_since(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    snapshots, _, root = stores
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"GIT_AUTHOR_DATE": (T0 - timedelta(hours=1)).isoformat(),
+           "GIT_COMMITTER_DATE": (T0 - timedelta(hours=1)).isoformat(), "PATH": "/usr/bin:/bin"}
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "tracked.md").write_text("as committed")
+    (repo / ".gitignore").write_text("ignored.log\n")
+    subprocess.run([*git, "add", "."], cwd=repo, check=True, env=env)
+    subprocess.run([*git, "commit", "-qm", "c"], cwd=repo, check=True, env=env)
+    (repo / "tracked.md").write_text("edited after the snapshot")
+    (repo / "untracked.md").write_text("written after the snapshot")
+    (repo / "ignored.log").write_text("ignored, later")
+    state, _ = _engine_files(tmp_path / "e")
+
+    snapshots.import_("worktree", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                      state_dir=state, clone=repo)
+
+    frozen = root / "snapshots" / "worktree" / "toolbox" / "repo"
+    assert (frozen / "tracked.md").read_text() == "as committed"
+    assert sorted(p.name for p in frozen.iterdir()) == [".git", ".gitignore", "tracked.md"]
+    status = subprocess.run(["git", "-C", str(frozen), "status", "--porcelain", "--ignored"],
+                            capture_output=True, text=True, check=True)
+    assert status.stdout == ""
+
+
+def test_no_arm_runs_before_its_snapshot_has_a_key(tmp_path: Path) -> None:
+    """A key is sealed before any result is seen: arms run without one could
+    be read, and the key written to fit them."""
+    root = tmp_path / "io-improver"
+    snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
+    snapshots.import_("keyless", improver_data=_legacy_inputs(tmp_path / "src"), taken_at=T0, origin="x")
+    agents = Agents({"m": "{}"}, {})
+    harness = _harness(root, (snapshots, FileAnswerKeyStore(root), root), agents)
+    arm = TournamentArm(name="A", provider="claude", model="m", mode="scripted")
+
+    with pytest.raises(AnswerKeyError, match="no answer key"):
+        harness.run_arms("t8", "keyless", [_spec(arm)])
+    assert agents.spaces == [] and agents.timeouts == {}
+    assert not harness.directory("t8").exists()
+
+
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     snapshots, _, _ = stores
     snapshots.import_("bundle-only", improver_data=_legacy_inputs(tmp_path / "b"), taken_at=T0, origin="x")
@@ -205,6 +254,17 @@ def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path)
     snapshots.copy_inputs("bundle-only", run)
     with pytest.raises(SnapshotUnavailable, match="scripted arms only"):
         snapshots.copy_toolbox("bundle-only", run)
+
+
+def test_a_clone_with_no_commit_is_refused(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    snapshots, _, _ = stores
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=empty, check=True)
+    state, _ = _engine_files(tmp_path / "e")
+    with pytest.raises(SnapshotUnavailable, match="has no commit to freeze"):
+        snapshots.import_("empty", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                          state_dir=state, clone=empty)
 
 
 # -- answer keys ---------------------------------------------------------------

@@ -182,7 +182,12 @@ class TournamentHarness:
         return self._root / require_slug(tournament_id, "a tournament id")
 
     def run_arms(self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec]) -> list[ArmOutput]:
-        """Each arm's heats on the snapshot, as outputs (a failed heat has none)."""
+        """Each arm's heats on the snapshot, as outputs (a failed heat has none).
+
+        The snapshot's answer key must exist first: a key is written before
+        any result is seen, never after reading the arms' answers.
+        """
+        self._keys.get(snapshot_id)
         names = [spec.arm.name for spec in specs]
         if len(set(names)) != len(names):
             raise ValueError(f"arm names repeat: {names}")
