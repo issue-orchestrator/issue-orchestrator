@@ -338,7 +338,7 @@ def test_probe_evaluates_every_owner_and_names_unverifiable(custody):
 
 def test_stale_generation_does_not_close_replacement_intake(custody):
     active = SimpleNamespace(issue=SimpleNamespace(number=42), key=SimpleNamespace(kind=SessionKind.CODE),
-        terminal_id="issue-42", run_assets=custody.run)
+        terminal_id="issue-42", run_assets=custody.run, lease_id=None)
     custody.lifecycle.core.active_sessions.append(active)
     target = TechLeadSessionGeneration(42, SessionKind.CODE, "issue-42", "old-generation")
     stop = Mock()
@@ -435,7 +435,7 @@ def test_stop_committed_then_raised_preserves_batch(custody):
     from issue_orchestrator.control.review_exchange_lifecycle import GenerationTerminationPartialFailure
     submit(custody, "retained")
     active = SimpleNamespace(issue=SimpleNamespace(number=42), key=SimpleNamespace(kind=SessionKind.CODE),
-        terminal_id="issue-42", run_assets=custody.run)
+        terminal_id="issue-42", run_assets=custody.run, lease_id=None)
     custody.lifecycle.core.active_sessions.append(active)
     running = True
     def stop(terminal):
