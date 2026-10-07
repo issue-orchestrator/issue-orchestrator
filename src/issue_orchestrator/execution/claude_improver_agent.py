@@ -1,6 +1,7 @@
 """Run the improver on Claude Code, non-interactively and read-only (#8001).
 
-``claude -p --restricted`` with only the read tools:
+``claude -p --restricted`` with only the read tools, in the heat's own
+workdir, with the run's shared evidence added (``--add-dir``):
 
 * ``--restricted`` confines Claude's file tools to the working directory, the
   staged run directory, and ignores the user, project and local settings
@@ -28,11 +29,10 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from pathlib import Path
 
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
-from ..ports.improver import ImproverAgentResult, heat_file
+from ..ports.improver import HeatSpace, ImproverAgentResult
 from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, TOOLBOX_TOKEN_ENV, ToolboxEndpoint
 
 #: The prompt, inside the run directory, that the launch feeds on stdin.
@@ -69,12 +69,12 @@ class ClaudeImproverAgent:
     def choice(self) -> ImproverAgentChoice:
         return self._choice
 
-    def argv(self, *, run_dir: Path, toolbox: ToolboxEndpoint | None, heat: int) -> list[str]:
+    def argv(self, *, space: HeatSpace, toolbox: ToolboxEndpoint | None) -> list[str]:
         return [
             # The prompt file is the shell's first argument, so no path is
             # ever spliced into the script text.
             "/bin/sh", "-c", 'prompt="$1"; shift; exec "$@" <"$prompt"', "sh",
-            str(run_dir / heat_file(PROMPT_FILE, heat)),
+            str(space.workdir / PROMPT_FILE),
             "claude", "-p",
             "--restricted",
             "--tools", ",".join(READ_TOOLS),
@@ -83,25 +83,25 @@ class ClaudeImproverAgent:
             "--no-session-persistence",
             "--output-format", "text",
             *_toolbox_arguments(toolbox),
+            # Beside its own workdir (its cwd), the heat reads only the
+            # shared evidence: no other heat's answer (#8001).
+            "--add-dir", *(str(root) for root in space.evidence),
             "--model", self._choice.model,
         ]
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None, heat: int) -> ImproverAgentResult:
-        # Absolute: the launch runs IN the run dir, so a relative prompt path
-        # would resolve beneath it.
-        run_dir = run_dir.resolve()
-        (run_dir / heat_file(PROMPT_FILE, heat)).write_text(prompt, encoding="utf-8")
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
+        (space.workdir / PROMPT_FILE).write_text(prompt, encoding="utf-8")
         result = self._runner.run(
-            self.argv(run_dir=run_dir, toolbox=toolbox, heat=heat),
-            cwd=run_dir,
+            self.argv(space=space, toolbox=toolbox),
+            cwd=space.workdir,
             env={
                 **agent_environment(os.environ),
-                "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir),
+                "ISSUE_ORCHESTRATOR_RUN_DIR": str(space.run_dir),
                 **({} if toolbox is None else {TOOLBOX_TOKEN_ENV: toolbox.token}),
             },
             timeout_seconds=self._timeout,
         )
-        (run_dir / heat_file(AGENT_LOG, heat)).write_text(result.stdout + "\n--- stderr ---\n" + result.stderr, encoding="utf-8")
+        (space.workdir / AGENT_LOG).write_text(result.stdout + "\n--- stderr ---\n" + result.stderr, encoding="utf-8")
         if result.timed_out:
             return ImproverAgentResult(None, f"claude timed out after {self._timeout}s")
         if result.returncode:

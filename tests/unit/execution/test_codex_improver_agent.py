@@ -13,7 +13,18 @@ from issue_orchestrator.execution.codex_improver_agent import (
     CodexImproverAgent,
 )
 from issue_orchestrator.ports.command_runner import CommandResult
-from issue_orchestrator.ports.improver import heat_file
+from issue_orchestrator.ports.improver import HeatSpace
+
+def _space(run_dir: Path) -> HeatSpace:
+    """Heat 1's own workdir under ``run_dir``, reading only the staged inputs."""
+    workdir = run_dir / "heats" / "h1"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return HeatSpace(heat=1, run_dir=run_dir, workdir=workdir, evidence=(run_dir / "improver-data",))
+
+
+def _wd(run_dir: Path) -> Path:
+    return run_dir / "heats" / "h1"
+
 
 
 class FakeRunner:
@@ -30,7 +41,7 @@ class FakeRunner:
             return CommandResult(done.returncode, done.stdout, done.stderr)
         self.calls.append({"command": command, "cwd": cwd, "env": env, "timeout": timeout_seconds})
         if self.message is not None:
-            (Path(cwd) / heat_file(FINAL_MESSAGE_FILE, 1)).write_text(self.message)
+            (Path(cwd) / FINAL_MESSAGE_FILE).write_text(self.message)
         return self.result
 
 
@@ -41,7 +52,7 @@ def _agent(runner: FakeRunner) -> CodexImproverAgent:
 def test_codex_runs_under_the_permission_profile_and_its_last_message_is_the_output(tmp_path: Path) -> None:
     runner = FakeRunner(CommandResult(0, "events", ""), message='{"findings": []}')
 
-    result = _agent(runner).run(prompt="PROMPT", run_dir=tmp_path, toolbox=None, heat=1)
+    result = _agent(runner).run(prompt="PROMPT", space=_space(tmp_path), toolbox=None)
 
     [call] = runner.calls
     argv = call["command"]
@@ -50,21 +61,23 @@ def test_codex_runs_under_the_permission_profile_and_its_last_message_is_the_out
     profile_args = codex[:exec_at]
     # The orchestrator's profile, never the legacy flag that disables it.
     assert "--sandbox" not in codex
-    assert profile_args[profile_args.index("-C") + 1] == str(tmp_path / heat_file(AGENT_WORKSPACE, 1))
+    assert profile_args[profile_args.index("-C") + 1] == str(_wd(tmp_path) / AGENT_WORKSPACE)
     profile = " ".join(profile_args)
     assert '"~/.config/gh" = "deny"' in profile and '"~/.codex" = "deny"' in profile
-    assert f'"{tmp_path}" = "read"' in profile
+    assert f'"{tmp_path / "improver-data"}" = "read"' in profile
+    # Only its own workspace and the shared evidence: not the run dir itself.
+    assert f'"{tmp_path}" = "read"' not in profile
     assert "network = { enabled = false }" in profile
     assert "--add-dir" not in profile_args
     assert codex[codex.index("--model") + 1] == "gpt-5.6-sol"
-    assert codex[codex.index("--output-last-message") + 1] == str(tmp_path / heat_file(FINAL_MESSAGE_FILE, 1))
+    assert codex[codex.index("--output-last-message") + 1] == str(_wd(tmp_path) / FINAL_MESSAGE_FILE)
     assert "--ephemeral" in codex and codex[-1] == "PROMPT"
     assert argv[:3] == ["/bin/sh", "-c", 'exec "$@" </dev/null']
-    assert (tmp_path / heat_file(AGENT_WORKSPACE, 1) / ".git").is_dir()
+    assert (_wd(tmp_path) / AGENT_WORKSPACE / ".git").is_dir()
     assert call["env"]["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(tmp_path)
     assert call["timeout"] == 600
     assert result.final_message == '{"findings": []}'
-    assert (tmp_path / heat_file("improver-agent.log", 1)).read_text().startswith("events")
+    assert (_wd(tmp_path) / "improver-agent.log").read_text().startswith("events")
 
 
 @pytest.mark.parametrize(
@@ -78,7 +91,7 @@ def test_codex_runs_under_the_permission_profile_and_its_last_message_is_the_out
     ],
 )
 def test_no_output_says_why(tmp_path: Path, result: CommandResult, message: str | None, detail: str) -> None:
-    answer = _agent(FakeRunner(result, message)).run(prompt="P", run_dir=tmp_path, toolbox=None, heat=1)
+    answer = _agent(FakeRunner(result, message)).run(prompt="P", space=_space(tmp_path), toolbox=None)
 
     assert answer.final_message is None
     assert detail in answer.detail
@@ -92,27 +105,11 @@ def test_no_repository_host_credential_reaches_the_agent(tmp_path: Path, monkeyp
     monkeypatch.setenv("CODEX_HOME", "/codex")
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None, heat=1)
+    _agent(runner).run(prompt="P", space=_space(tmp_path), toolbox=None)
 
     env = runner.calls[0]["env"]
     assert "secret" not in env.values()
     assert env["CODEX_HOME"] == "/codex" and "PATH" in env
-
-
-def test_a_relative_run_dir_is_made_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """r1 F1: Codex runs IN the run dir, so a relative final-message path or
-    sandbox root would resolve beneath it."""
-    (tmp_path / "out" / "run").mkdir(parents=True)
-    monkeypatch.chdir(tmp_path)
-    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
-
-    answer = _agent(runner).run(prompt="P", run_dir=Path("out/run"), toolbox=None, heat=1)
-
-    run_dir = tmp_path.resolve() / "out" / "run"
-    codex = runner.calls[0]["command"]
-    assert codex[codex.index("--output-last-message") + 1] == str(run_dir / heat_file(FINAL_MESSAGE_FILE, 1))
-    assert runner.calls[0]["cwd"] == run_dir
-    assert answer.final_message == "{}"
 
 
 def test_an_empowered_run_gets_the_toolbox_by_url_and_its_token_by_env(tmp_path: Path) -> None:
@@ -121,8 +118,7 @@ def test_an_empowered_run_gets_the_toolbox_by_url_and_its_token_by_env(tmp_path:
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
 
     _agent(runner).run(
-        prompt="P", run_dir=tmp_path, toolbox=ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="run-token-xyz"),
-        heat=1,
+        prompt="P", space=_space(tmp_path), toolbox=ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="run-token-xyz"),
     )
 
     [call] = runner.calls
@@ -145,7 +141,7 @@ def test_the_operators_codex_config_never_reaches_the_agent(tmp_path: Path, empo
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
     toolbox = ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="t") if empowered else None
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=toolbox, heat=1)
+    _agent(runner).run(prompt="P", space=_space(tmp_path), toolbox=toolbox)
 
     argv = runner.calls[0]["command"]
     assert "--ignore-user-config" in argv[argv.index("exec"):]
@@ -162,15 +158,15 @@ def test_the_shell_reads_only_its_run_dir(tmp_path: Path) -> None:
     import os
     import tempfile
 
-    scope = CodexImproverAgent.scope(tmp_path, 1)
+    scope = CodexImproverAgent.scope(_space(tmp_path))
 
     assert scope.reads_confined is True
     assert "~" in scope.deny_read_files and "/var/tmp" in scope.deny_read_files
     assert os.path.realpath(tempfile.gettempdir()) in scope.deny_read_files
     assert "/tmp" in scope.deny_read_files and os.path.realpath("/tmp") in scope.deny_read_files
-    assert tmp_path in scope.read_roots
+    assert tmp_path / "improver-data" in scope.read_roots and tmp_path not in scope.read_roots
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
-    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None, heat=1)
+    _agent(runner).run(prompt="P", space=_space(tmp_path), toolbox=None)
     profile = " ".join(runner.calls[0]["command"])
     assert '"/" = "deny"' in profile and '":minimal" = "read"' in profile
-    assert '"~" = "deny"' in profile and f'"{tmp_path.resolve()}" = "read"' in profile
+    assert '"~" = "deny"' in profile and f'"{tmp_path / "improver-data"}" = "read"' in profile

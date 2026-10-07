@@ -58,7 +58,7 @@ from ..domain.improver_findings_validation import (
     StagedEvidence,
     validate_findings,
 )
-from ..ports.improver import ImproverAgent, ImproverAgentResult, ImproverRunStore, heat_file
+from ..ports.improver import HeatSpace, ImproverAgent, ImproverAgentResult, ImproverRunStore, heat_file
 from ..ports.improver_investigation import ImproverInvestigation
 from .improver_staging import (
     ImproverInputsUnavailable,
@@ -113,6 +113,8 @@ class ImproverRunRequest:
         )
 
 
+#: In the run dir: each heat's own workdir, ``heats/h<k>/``.
+HEATS_DIRNAME = "heats"
 #: Each heat is a whole agent run; more than this is not a modest default
 #: but a tournament, which belongs to the tournament harness.
 MAX_HEATS = 5
@@ -295,11 +297,18 @@ class ImproverRun:
                 return self._finish(
                     base, RunOutcome.UNAVAILABLE, f"toolbox unavailable: {type(error).__name__}: {error}"
                 )
-            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}{kit.instructions}"
+            root = run_dir.resolve()
+            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}"
+            evidence = ((root / IMPROVER_DATA_DIRNAME), *kit.evidence)
 
             def heat_answer(heat: int) -> tuple[int, ImproverAgentResult]:
+                # Its own workdir: no heat can read another's answer, so
+                # the heats that find a finding are independent support.
+                workdir = root / HEATS_DIRNAME / f"h{heat}"
+                workdir.mkdir(parents=True)
+                space = HeatSpace(heat=heat, run_dir=root, workdir=workdir, evidence=evidence)
                 try:
-                    return heat, self._agent.run(prompt=prompt, run_dir=run_dir, toolbox=kit.toolbox, heat=heat)
+                    return heat, self._agent.run(prompt=prompt, space=space, toolbox=kit.toolbox)
                 except Exception as error:
                     # The agent could not even be launched (an incompatible
                     # Codex config, a missing binary): the heat failed, with why.

@@ -28,7 +28,7 @@ from issue_orchestrator.entrypoints.improver_sweep import (
 )
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
-from issue_orchestrator.ports.improver import ImproverAgentResult
+from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.entrypoints.test_improver_staging import (
     COMMIT,
     NOW,
@@ -72,8 +72,8 @@ class EmptyFindingsAgent:
     def __init__(self) -> None:
         self.engines: list[tuple[str, str]] = []
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
-        inputs = json.loads((run_dir / "improver-data" / "inputs.json").read_text())
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
+        inputs = json.loads((space.run_dir / "improver-data" / "inputs.json").read_text())
         self.engines.append((inputs["engine_id"], inputs["audited_repo"]))
         return ImproverAgentResult(json.dumps({
             "schema_version": 5, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],

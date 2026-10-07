@@ -25,7 +25,7 @@ from issue_orchestrator.contracts.improver_toolbox import ImproverMode
 from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
 from issue_orchestrator.ports.improver_investigation import InvestigationKit
 from issue_orchestrator.ports.improver_toolbox import ToolboxEndpoint
-from issue_orchestrator.ports.improver import ImproverAgentResult
+from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.improver_support import (
     FakeIssueHost,
     MemoryRunStore,
@@ -65,7 +65,7 @@ class FakeAgent:
         self.prompts: list[str] = []
         self.toolboxes: list[object] = []
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
         self.prompts.append(prompt)
         self.toolboxes.append(toolbox)
         return ImproverAgentResult(self.message, self.detail)
@@ -321,7 +321,7 @@ def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path
     class Refused:
         choice = FakeAgent.choice
 
-        def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
+        def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
             raise RuntimeError("legacy sandbox_mode disables the permission profile")
 
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
@@ -510,21 +510,23 @@ class HeatAgent:
         self.answers = answers
         self.hold = hold
         self.heats: list[int] = []
+        self.spaces: list[HeatSpace] = []
         self.running = 0
         self.most_at_once = 0
         self._lock = threading.Lock()
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
         import time
 
         with self._lock:
-            self.heats.append(heat)
+            self.heats.append(space.heat)
+            self.spaces.append(space)
             self.running += 1
             self.most_at_once = max(self.most_at_once, self.running)
         time.sleep(self.hold)
         with self._lock:
             self.running -= 1
-        answer = self.answers[heat]
+        answer = self.answers[space.heat]
         if answer == "RAISE":
             raise RuntimeError("binary missing")
         return ImproverAgentResult(answer, "done" if answer else "timed out")
@@ -651,3 +653,25 @@ def test_a_comment_on_an_existing_issue_carries_the_same_support_and_conflicts(t
     assert number == 901
     assert "**Found by 1 of 2 independent heat(s)** (1)." in body
     assert "**Not merged, to resolve:**" in body and "Plant the other anomaly instead." in body
+
+
+def test_each_heat_has_its_own_workdir_and_reads_only_the_shared_evidence(tmp_path: Path) -> None:
+    """r3 F1: heats are independent support only if none can read another's
+    answer. Each runs in heats/h<k>/; what it may read is the staged inputs
+    and what the investigation staged, never the run dir or another heat."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: _findings("exam_case")}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(2, 2), investigation=FakeEmpowered()).run(
+        _request(), apply=False
+    )
+
+    run_dir = Path(record.run_dir).resolve()
+    spaces = sorted(agent.spaces, key=lambda s: s.heat)
+    assert [s.workdir for s in spaces] == [run_dir / "heats" / "h1", run_dir / "heats" / "h2"]
+    for space in spaces:
+        assert space.run_dir == run_dir
+        assert space.evidence[0] == run_dir / "improver-data"
+        others = [o.workdir for o in spaces if o is not space]
+        assert not any(o.is_relative_to(root) for o in others for root in space.evidence)
+        assert run_dir not in space.evidence
