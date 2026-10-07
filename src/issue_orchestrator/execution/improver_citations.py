@@ -86,6 +86,10 @@ class RunDirCitations:
         # leftover bytes are not dumped. The quote must lie inside ONE text
         # value of a row, never across values or the dump's own SQL (r3 F1).
         with closing(sqlite3.connect(f"{store.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
+            # The schema is stored data too: each object's live ``sql`` value.
+            for (ddl,) in conn.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
+                if any(needle in ddl for needle in needles):
+                    return CitationCheck.FOUND
             for statement in conn.iterdump():
                 values = _text_values(statement)
                 if values and any(needle in value for value in values for needle in needles):

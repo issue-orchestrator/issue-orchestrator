@@ -295,3 +295,19 @@ def test_a_sql_quote_must_lie_inside_one_stored_value(run_dir: Path, planted: st
     assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
     # The stored value itself is still evidence.
     _validate(run_dir, _doc(_design({"kind": "tool", "call": 12, "quote": "a kept harmless value"})))
+
+
+def test_a_stored_schema_value_is_evidence(run_dir: Path) -> None:
+    """r4 F1: ``sqlite_master.sql`` is a live stored value an agent may cite
+    (e.g. that a table has no index on the column a query scans)."""
+    import sqlite3
+
+    state = run_dir / "toolbox" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(state / "facts.sqlite") as conn:
+        conn.execute("CREATE TABLE facts (description TEXT)")
+    ddl = "CREATE TABLE facts (description TEXT)"
+    _tool_call(run_dir, 13, "sql_query", {"database": "facts.sqlite", "sql": "SELECT sql FROM sqlite_master"},
+               json.dumps({"columns": ["sql"], "rows": [[ddl]], "truncated": False}))
+
+    _validate(run_dir, _doc(_design({"kind": "tool", "call": 13, "quote": ddl})))
