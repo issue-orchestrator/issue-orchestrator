@@ -77,3 +77,30 @@ def test_a_failed_read_raises_and_a_redirect_is_not_followed() -> None:
         _reader(lambda request: httpx.Response(404, content=json.dumps({"message": "Not Found"}).encode())).get(
             READ, max_bytes=1000
         )
+
+
+def test_a_compressed_answer_is_refused_unread() -> None:
+    """r8 F1: httpx decompresses a chunk before yielding it, so a 20 kB gzip
+    body could become a 20 MB chunk. Only identity encoding is asked for,
+    and an encoded answer is refused before a byte is decoded."""
+    import gzip
+
+    wire = gzip.compress(json.dumps({"content": "A" * 20_000_000}).encode())
+    asked: list[str | None] = []
+
+    class Wire(httpx.SyncByteStream):
+        pulled = 0
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            Wire.pulled += len(wire)
+            yield wire
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.headers.get("Accept-Encoding"))
+        return httpx.Response(200, headers={"Content-Encoding": "gzip"}, stream=Wire())
+
+    with pytest.raises(AuditedReadTooLarge, match="gzip"):
+        _reader(handler).get(READ, max_bytes=1_000_000)
+
+    assert asked == ["identity"]
+    assert Wire.pulled == 0

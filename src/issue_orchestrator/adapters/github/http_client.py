@@ -1090,7 +1090,10 @@ class GitHubHttpClient:
         For a caller whose own policy decides which paths are readable and
         how much it may hold (the improver's toolbox, #8001); it never writes.
         """
-        headers = self._auth_headers()
+        # Uncompressed only: httpx decompresses each chunk before yielding
+        # it, so a small compressed body could expand past any limit before
+        # it is counted (#8001 r8). An encoded answer is refused unread.
+        headers = {**self._auth_headers(), "Accept-Encoding": "identity"}
         start = time.monotonic()
         error: str | None = None
         received = 0
@@ -1098,6 +1101,15 @@ class GitHubHttpClient:
             try:
                 with self._client.stream("GET", path, params=params, headers=headers) as response:
                     declared = int(response.headers.get("Content-Length") or 0)
+                    encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
+                    if encoding not in ("", "identity"):
+                        error = f"refused a {encoding}-encoded response"
+                        raise GitHubResponseTooLarge(
+                            f"GitHub GET {path} answered {encoding}-encoded; only an uncompressed answer is read",
+                            method="GET",
+                            url=str(response.url),
+                            status_code=response.status_code,
+                        )
                     body = bytearray()
                     if declared <= max_bytes:
                         for chunk in response.iter_bytes():
