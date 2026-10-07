@@ -24,6 +24,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -40,12 +41,15 @@ from ..contracts.improver_inputs import (
 )
 from ..contracts.improver_run import (
     ExamScore,
+    FindingSupport,
+    HeatRecord,
     FindingGrade,
     ImproverRunRecord,
     RunOutcome,
     StallPointMove,
 )
-from ..control.improver_effects import planned_effects
+from ..control.improver_effects import finding_key, planned_effects
+from ..domain.improver_heats import AcceptedHeat, merge_heats
 from ..execution.improver_effect_applier import ImproverEffects
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_findings_validation import (
@@ -53,7 +57,7 @@ from ..domain.improver_findings_validation import (
     StagedEvidence,
     validate_findings,
 )
-from ..ports.improver import ImproverAgent, ImproverAgentResult, ImproverRunStore
+from ..ports.improver import ImproverAgent, ImproverAgentResult, ImproverRunStore, heat_file
 from ..ports.improver_investigation import ImproverInvestigation
 from .improver_staging import (
     ImproverInputsUnavailable,
@@ -108,6 +112,21 @@ class ImproverRunRequest:
         )
 
 
+@dataclass(frozen=True)
+class HeatPlan:
+    """How many heats a run sends, and how many run at once (#8001).
+
+    Each heat is a whole agent run on the provider (a Claude heat counts
+    against the operator's subscription), so the CLI's default is modest."""
+
+    count: int
+    parallel: int
+
+    def __post_init__(self) -> None:
+        if self.count < 1 or self.parallel < 1:
+            raise ValueError("a run sends at least one heat, at least one at a time")
+
+
 class ImproverRun:
     def __init__(
         self,
@@ -118,9 +137,11 @@ class ImproverRun:
         investigation: ImproverInvestigation,
         effects: ImproverEffects,
         prompt: str,
+        heats: HeatPlan,
         clock: Callable[[], datetime],
     ) -> None:
         self._store = store
+        self._heats = heats
         self._stager = stager
         self._agent = agent
         self._investigation = investigation
@@ -177,27 +198,39 @@ class ImproverRun:
                 "exam_scores": _exam_scores(evidence),
             }
         )
-        answer = self._investigate(request, run_dir, base)
-        if isinstance(answer, ImproverRunRecord):
-            return answer
-        if answer.final_message is None:
-            return self._finish(base, RunOutcome.AGENT_FAILED, answer.detail)
-        text = findings_text(answer.final_message)
+        answers = self._investigate(request, run_dir, base)
+        if isinstance(answers, ImproverRunRecord):
+            return answers
+        heats = [self._judge(heat, answer, run_dir, evidence) for heat, answer in answers]
+        records = tuple(record for record, _ in heats)
+        base = base.model_copy(update={"heats": records})
+        accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
+        if not accepted:
+            return self._finish_unaccepted(base, records)
+        merged = merge_heats(accepted, lambda f: finding_key(f, request.engine))
+        text = merged.findings.model_dump_json(indent=2, by_alias=True) + "\n"
         (run_dir / FINDINGS_FILE).write_text(text, encoding="utf-8")
         try:
             findings = validate_findings(text, evidence)
         except ImproverFindingsRejected as rejection:
+            # Each heat was accepted alone: a rejected merge is a merge defect.
             return self._finish(
                 base,
                 RunOutcome.REJECTED,
-                f"{len(rejection.violations)} rule violation(s); nothing applied",
+                f"the merge of {len(accepted)} accepted heat(s) broke {len(rejection.violations)} rule(s);"
+                " nothing applied",
                 rejections=tuple(v.describe() for v in rejection.violations),
             )
-        accepted = self._finish(
+        accepted_run = self._finish(
             base,
             RunOutcome.ACCEPTED,
             f"{len(findings.findings)} finding(s) and {len(findings.design_findings)} design finding(s) accepted"
+            f" from {len(accepted)} of {len(records)} heat(s)"
             + ("; blind run: nothing is filed" if request.blind else ""),
+            finding_support=tuple(
+                FindingSupport(finding_id=finding_id, heats=heats_seen)
+                for finding_id, heats_seen in sorted(merged.support.items())
+            ),
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),
             trend=findings.trend,
@@ -205,9 +238,9 @@ class ImproverRun:
             effects=() if request.blind else planned_effects(findings, request.engine),
         )
         if not apply:
-            return accepted
+            return accepted_run
         self._effects.apply_pending()
-        current = self._explain_unapplied(next(r for r in self._store.runs() if r.run_id == accepted.run_id))
+        current = self._explain_unapplied(next(r for r in self._store.runs() if r.run_id == accepted_run.run_id))
         earlier = tuple(r for r in self._effects.owing_runs() if r != current.run_id)
         if not earlier:
             return current
@@ -217,10 +250,10 @@ class ImproverRun:
 
     def _investigate(
         self, request: ImproverRunRequest, run_dir: Path, base: ImproverRunRecord
-    ) -> ImproverAgentResult | ImproverRunRecord:
-        """The agent's answer, run inside its investigation (the toolbox is
-        staged and served only while the agent runs), or the finished record
-        of a run whose toolbox or agent could not even start."""
+    ) -> list[tuple[int, ImproverAgentResult]] | ImproverRunRecord:
+        """Each heat's answer, run inside the investigation (the toolbox is
+        staged once and served while the heats run), or the finished record
+        of a run whose toolbox could not even start."""
         with ExitStack() as investigation:
             try:
                 kit = investigation.enter_context(
@@ -231,19 +264,58 @@ class ImproverRun:
                 return self._finish(
                     base, RunOutcome.UNAVAILABLE, f"toolbox unavailable: {type(error).__name__}: {error}"
                 )
-            try:
-                return self._agent.run(
-                    prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}{kit.instructions}",
-                    run_dir=run_dir,
-                    toolbox=kit.toolbox,
-                )
-            except Exception as error:
-                # The agent could not even be launched (an incompatible Codex
-                # config refused by the sandbox profile, a missing binary): the
-                # run is recorded unavailable, never lost without a record.
-                return self._finish(
-                    base, RunOutcome.AGENT_FAILED, f"agent not launched: {type(error).__name__}: {error}"
-                )
+            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}{kit.instructions}"
+
+            def heat_answer(heat: int) -> tuple[int, ImproverAgentResult]:
+                try:
+                    return heat, self._agent.run(prompt=prompt, run_dir=run_dir, toolbox=kit.toolbox, heat=heat)
+                except Exception as error:
+                    # The agent could not even be launched (an incompatible
+                    # Codex config, a missing binary): the heat failed, with why.
+                    return heat, ImproverAgentResult(None, f"agent not launched: {type(error).__name__}: {error}")
+
+            with ThreadPoolExecutor(max_workers=self._heats.parallel, thread_name_prefix="improver-heat") as pool:
+                return list(pool.map(heat_answer, range(1, self._heats.count + 1)))
+
+    def _judge(
+        self, heat: int, answer: ImproverAgentResult, run_dir: Path, evidence: StagedEvidence
+    ) -> tuple[HeatRecord, ImproverFindings | None]:
+        """One heat's answer, validated alone; its findings if accepted."""
+        if answer.final_message is None:
+            return HeatRecord(heat=heat, outcome=RunOutcome.AGENT_FAILED, detail=answer.detail), None
+        text = findings_text(answer.final_message)
+        (run_dir / heat_file(FINDINGS_FILE, heat)).write_text(text, encoding="utf-8")
+        try:
+            findings = validate_findings(text, evidence)
+        except ImproverFindingsRejected as rejection:
+            return HeatRecord(
+                heat=heat,
+                outcome=RunOutcome.REJECTED,
+                detail=f"{len(rejection.violations)} rule violation(s)",
+                rejections=tuple(v.describe() for v in rejection.violations),
+            ), None
+        return HeatRecord(
+            heat=heat,
+            outcome=RunOutcome.ACCEPTED,
+            detail="accepted",
+            findings=len(findings.findings),
+            design_findings=len(findings.design_findings),
+        ), findings
+
+    def _finish_unaccepted(self, base: ImproverRunRecord, heats: tuple[HeatRecord, ...]) -> ImproverRunRecord:
+        """No heat was accepted: rejected if any answered and broke a rule
+        (their reasons kept), else failed with each heat's reason."""
+        rejected = [h for h in heats if h.outcome is RunOutcome.REJECTED]
+        if rejected:
+            return self._finish(
+                base,
+                RunOutcome.REJECTED,
+                f"all {len(heats)} heat(s) unaccepted; {len(rejected)} broke a rule; nothing applied",
+                rejections=tuple(f"heat {h.heat}: {r}" for h in rejected for r in h.rejections),
+            )
+        return self._finish(
+            base, RunOutcome.AGENT_FAILED, "; ".join(f"heat {h.heat}: {h.detail}" for h in heats)
+        )
 
     def _explain_unapplied(self, run: ImproverRunRecord) -> ImproverRunRecord:
         """Say why effects left pending without a reason of their own were
@@ -320,6 +392,14 @@ def render_run(record: ImproverRunRecord) -> str:
         lines.append(
             "  blind: hid " + ", ".join(f"#{n}" for n in record.blind_excluded_issues) + "; files nothing"
         )
+    lines += [
+        f"  heat {h.heat}: {h.outcome.value}: {h.detail}"
+        + (f" ({h.findings} finding(s), {h.design_findings} design)" if h.outcome is RunOutcome.ACCEPTED else "")
+        for h in record.heats
+    ]
+    lines += [
+        f"  {s.finding_id}: found by {len(s.heats)} of {len(record.heats)} heat(s)" for s in record.finding_support
+    ]
     lines += [f"  rejected: {reason}" for reason in record.rejections]
     lines += [
         f"  {g.finding_id}: stalled at {g.stall_point} -> {g.output} ({g.classification})"
@@ -377,4 +457,4 @@ def _exam_scores(evidence: StagedEvidence) -> tuple[ExamScore, ...]:
     return tuple(ExamScore(case_id=card.case_id, passed=card.passed) for card in cards)
 
 
-__all__ = ["ImproverRun", "ImproverRunRequest", "findings_text", "render_run"]
+__all__ = ["HeatPlan", "ImproverRun", "ImproverRunRequest", "findings_text", "render_run"]

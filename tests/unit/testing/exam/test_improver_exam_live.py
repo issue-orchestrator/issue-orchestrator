@@ -88,7 +88,10 @@ def test_improver_exam(case) -> None:
     )
 
     answer = agent.run(
-        prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{PROMPT.read_text(encoding='utf-8')}", run_dir=run_dir
+        prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{PROMPT.read_text(encoding='utf-8')}",
+        run_dir=run_dir,
+        toolbox=None,
+        heat=1,
     )
 
     assert answer.final_message is not None, f"the improver did not finish: {answer.detail}; see {run_dir}"

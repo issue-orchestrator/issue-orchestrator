@@ -68,13 +68,24 @@ class ImproverAgent(Protocol):
         """The provider and model this agent runs on."""
         ...
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
-        """Run the agent on ``prompt`` in ``run_dir``; with ``toolbox`` (an
-        empowered run), the agent may also call the read-only toolbox."""
+    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None, heat: int) -> ImproverAgentResult:
+        """Run heat ``heat`` of the agent on ``prompt`` in ``run_dir``; with
+        ``toolbox`` (an empowered run), the agent may also call the
+        read-only toolbox. Heats of one run share ``run_dir`` and may run at
+        the same time: each writes only its own files (:func:`heat_file`)."""
         ...
 
 
+def heat_file(name: str, heat: int) -> str:
+    """``name`` for heat ``heat``: ``improver-prompt.txt`` -> ``improver-prompt-h2.txt``."""
+    if heat < 1:
+        raise ValueError(f"heats count from 1, not {heat}")
+    stem, dot, suffix = name.partition(".")
+    return f"{stem}-h{heat}{dot}{suffix}"
+
+
 __all__ = [
+    "heat_file",
     "ImproverAgent",
     "ImproverAgentResult",
     "ImproverRunReader",

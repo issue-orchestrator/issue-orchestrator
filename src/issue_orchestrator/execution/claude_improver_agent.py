@@ -32,7 +32,7 @@ from pathlib import Path
 
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
-from ..ports.improver import ImproverAgentResult
+from ..ports.improver import ImproverAgentResult, heat_file
 from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, TOOLBOX_TOKEN_ENV, ToolboxEndpoint
 
 #: The prompt, inside the run directory, that the launch feeds on stdin.
@@ -69,12 +69,12 @@ class ClaudeImproverAgent:
     def choice(self) -> ImproverAgentChoice:
         return self._choice
 
-    def argv(self, *, run_dir: Path, toolbox: ToolboxEndpoint | None) -> list[str]:
+    def argv(self, *, run_dir: Path, toolbox: ToolboxEndpoint | None, heat: int) -> list[str]:
         return [
             # The prompt file is the shell's first argument, so no path is
             # ever spliced into the script text.
             "/bin/sh", "-c", 'prompt="$1"; shift; exec "$@" <"$prompt"', "sh",
-            str(run_dir / PROMPT_FILE),
+            str(run_dir / heat_file(PROMPT_FILE, heat)),
             "claude", "-p",
             "--restricted",
             "--tools", ",".join(READ_TOOLS),
@@ -86,13 +86,13 @@ class ClaudeImproverAgent:
             "--model", self._choice.model,
         ]
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None, heat: int) -> ImproverAgentResult:
         # Absolute: the launch runs IN the run dir, so a relative prompt path
         # would resolve beneath it.
         run_dir = run_dir.resolve()
-        (run_dir / PROMPT_FILE).write_text(prompt, encoding="utf-8")
+        (run_dir / heat_file(PROMPT_FILE, heat)).write_text(prompt, encoding="utf-8")
         result = self._runner.run(
-            self.argv(run_dir=run_dir, toolbox=toolbox),
+            self.argv(run_dir=run_dir, toolbox=toolbox, heat=heat),
             cwd=run_dir,
             env={
                 **agent_environment(os.environ),
@@ -101,7 +101,7 @@ class ClaudeImproverAgent:
             },
             timeout_seconds=self._timeout,
         )
-        (run_dir / AGENT_LOG).write_text(result.stdout + "\n--- stderr ---\n" + result.stderr, encoding="utf-8")
+        (run_dir / heat_file(AGENT_LOG, heat)).write_text(result.stdout + "\n--- stderr ---\n" + result.stderr, encoding="utf-8")
         if result.timed_out:
             return ImproverAgentResult(None, f"claude timed out after {self._timeout}s")
         if result.returncode:

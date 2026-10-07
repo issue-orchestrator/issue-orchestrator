@@ -770,12 +770,16 @@ test-improver-escape: sync-deps
 # the CLI's default applies (the latest improver tournament's winner, #8001).
 # IMPROVER_MODE (empowered|scripted) likewise; the run is DRY unless
 # IMPROVER_APPLY=1, which files what the accepted findings ask for.
+# IMPROVER_HEATS / IMPROVER_PARALLEL_HEATS: independent agent runs per
+# engine, merged (CLI default 2, both at once; each costs a whole run).
 # Runs are recorded under <git common dir>/io-improver (improver status).
 IMPROVER_REPO ?= issue-orchestrator/issue-orchestrator
 IMPROVER_PROVIDER ?=
 IMPROVER_MODEL ?=
 IMPROVER_MODE ?=
 IMPROVER_APPLY ?=
+IMPROVER_HEATS ?=
+IMPROVER_PARALLEL_HEATS ?=
 IMPROVER_AGENT_TIMEOUT_MINUTES ?= 90
 IMPROVER_RECENT_HOURS ?= 24
 tech-lead-improver: sync-deps
@@ -784,6 +788,7 @@ tech-lead-improver: sync-deps
 		--outputs-repo $(IMPROVER_REPO) --exam-dir "$(EXAM_OUT)" \
 		$(if $(IMPROVER_PROVIDER),--provider $(IMPROVER_PROVIDER),) $(if $(IMPROVER_MODEL),--model $(IMPROVER_MODEL),) \
 		$(if $(IMPROVER_MODE),--mode $(IMPROVER_MODE),) $(if $(filter 1,$(IMPROVER_APPLY)),--apply,) \
+		$(if $(IMPROVER_HEATS),--heats $(IMPROVER_HEATS),) $(if $(IMPROVER_PARALLEL_HEATS),--parallel-heats $(IMPROVER_PARALLEL_HEATS),) \
 		--agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 
 test-e2e-onboarding-live: sync-deps

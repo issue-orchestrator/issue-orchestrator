@@ -46,4 +46,5 @@ def test_the_make_target_runs_the_improver_on_the_cli_default_agent() -> None:
     assert "$(if $(IMPROVER_PROVIDER),--provider $(IMPROVER_PROVIDER),)" in target
     assert "$(if $(IMPROVER_MODEL),--model $(IMPROVER_MODEL),)" in target
     assert "\nIMPROVER_PROVIDER ?=\n" in makefile and "\nIMPROVER_MODEL ?=\n" in makefile
+    assert "$(if $(IMPROVER_HEATS),--heats $(IMPROVER_HEATS),)" in target
     assert '--exam-dir "$(EXAM_OUT)"' in target

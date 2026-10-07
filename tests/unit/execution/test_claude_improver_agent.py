@@ -17,6 +17,7 @@ from issue_orchestrator.execution.claude_improver_agent import AGENT_LOG, PROMPT
 from issue_orchestrator.execution.codex_improver_agent import CodexImproverAgent
 from issue_orchestrator.execution.improver_agents import improver_agent
 from issue_orchestrator.ports.command_runner import CommandResult
+from issue_orchestrator.ports.improver import heat_file
 
 
 class FakeRunner:
@@ -36,7 +37,7 @@ def _agent(runner: FakeRunner) -> ClaudeImproverAgent:
 def test_claude_runs_restricted_to_the_read_tools_with_the_prompt_on_stdin(tmp_path: Path) -> None:
     runner = FakeRunner(CommandResult(0, '{"findings": []}\n', ""))
 
-    result = _agent(runner).run(prompt="THE PROMPT", run_dir=tmp_path, toolbox=None)
+    result = _agent(runner).run(prompt="THE PROMPT", run_dir=tmp_path, toolbox=None, heat=1)
 
     [call] = runner.calls
     argv = call["command"]
@@ -50,20 +51,20 @@ def test_claude_runs_restricted_to_the_read_tools_with_the_prompt_on_stdin(tmp_p
     assert claude[claude.index("--output-format") + 1] == "text"
     # The prompt is never positional: the variadic --tools would swallow it.
     assert "THE PROMPT" not in argv
-    assert (tmp_path / PROMPT_FILE).read_text() == "THE PROMPT"
+    assert (tmp_path / heat_file(PROMPT_FILE, 1)).read_text() == "THE PROMPT"
     assert call["cwd"] == tmp_path
     assert call["env"]["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(tmp_path)
     assert call["timeout"] == 600
     assert result.final_message == '{"findings": []}\n'
-    assert (tmp_path / AGENT_LOG).read_text().startswith('{"findings": []}')
+    assert (tmp_path / heat_file(AGENT_LOG, 1)).read_text().startswith('{"findings": []}')
 
 
 def test_the_shell_feeds_the_prompt_file_to_claude_on_stdin(tmp_path: Path) -> None:
     """The launch's own shell: ``claude`` replaced by ``cat`` reads the prompt
     from stdin, with the run dir's path never spliced into the script."""
     agent = _agent(FakeRunner(CommandResult(0, "", "")))
-    (tmp_path / PROMPT_FILE).write_text("prompt via stdin")
-    argv = agent.argv(run_dir=tmp_path, toolbox=None)
+    (tmp_path / heat_file(PROMPT_FILE, 1)).write_text("prompt via stdin")
+    argv = agent.argv(run_dir=tmp_path, toolbox=None, heat=1)
     shell = argv[: argv.index("claude")]
 
     done = subprocess.run([*shell, "cat"], capture_output=True, text=True, check=True)
@@ -81,7 +82,7 @@ def test_the_shell_feeds_the_prompt_file_to_claude_on_stdin(tmp_path: Path) -> N
     ],
 )
 def test_no_output_says_why(tmp_path: Path, result: CommandResult, detail: str) -> None:
-    answer = _agent(FakeRunner(result)).run(prompt="P", run_dir=tmp_path, toolbox=None)
+    answer = _agent(FakeRunner(result)).run(prompt="P", run_dir=tmp_path, toolbox=None, heat=1)
 
     assert answer.final_message is None
     assert detail in answer.detail
@@ -94,7 +95,7 @@ def test_no_repository_host_credential_reaches_the_agent(tmp_path: Path, monkeyp
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
     runner = FakeRunner(CommandResult(0, "{}", ""))
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None, heat=1)
 
     env = runner.calls[0]["env"]
     assert "secret" not in env.values()
@@ -144,7 +145,7 @@ def test_a_relative_run_dir_still_feeds_the_prompt(tmp_path: Path, monkeypatch: 
 
     runner = ShellRunner(CommandResult(0, "", ""))
 
-    answer = _agent(runner).run(prompt="the prompt", run_dir=Path("out/run"), toolbox=None)
+    answer = _agent(runner).run(prompt="the prompt", run_dir=Path("out/run"), toolbox=None, heat=1)
 
     assert answer.final_message == "the prompt", answer.detail
     assert runner.calls[0]["env"]["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(tmp_path.resolve() / "out" / "run")
@@ -158,7 +159,7 @@ def test_an_empowered_run_gets_the_toolbox_as_its_one_mcp_server_never_its_token
     runner = FakeRunner(CommandResult(0, "{}", ""))
     endpoint = ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="run-token-xyz")
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=endpoint)
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=endpoint, heat=1)
 
     [call] = runner.calls
     argv = call["command"]
@@ -181,7 +182,7 @@ def test_an_empowered_run_gets_the_toolbox_as_its_one_mcp_server_never_its_token
 def test_a_scripted_run_has_no_toolbox(tmp_path: Path) -> None:
     runner = FakeRunner(CommandResult(0, "{}", ""))
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None, heat=1)
 
     argv = runner.calls[0]["command"]
     assert "--mcp-config" not in argv and "--allowedTools" not in argv

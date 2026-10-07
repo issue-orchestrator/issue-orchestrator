@@ -116,7 +116,7 @@ Finish with a JSON object {{"attempts": [{{"n": <1-6>, "result": "<what happened
             ImproverAgentChoice.for_provider(provider, model),
             runner=ProcessGroupCommandRunner(),
             timeout_seconds=15 * 60,
-        ).run(prompt=prompt, run_dir=run_dir, toolbox=endpoint)
+        ).run(prompt=prompt, run_dir=run_dir, toolbox=endpoint, heat=1)
 
     print(f"\n[IMPROVER ESCAPE] run dir {run_dir}\n{answer.final_message}", flush=True)
     assert answer.final_message is not None, answer.detail

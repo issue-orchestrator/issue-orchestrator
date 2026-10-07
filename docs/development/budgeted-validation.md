@@ -187,6 +187,18 @@ says so in `github.attribution_limits`, along with which sources stopped
 before the window's start. With `--no-github`, or a failed read, the file
 names what it is missing; staging never fails on it.
 
+**Heats** (#8001): a run sends `--heats` independent agent runs
+(`IMPROVER_HEATS`, default 2) on the same staged inputs and toolbox,
+`--parallel-heats` at a time (default 2). Each is a whole agent run, and a
+Claude heat counts against the operator's subscription, so keep N modest.
+Each heat's answer is validated alone (`improver-findings-h<k>.json`); the
+accepted ones are merged into `improver-findings.json`, which is validated
+again. A stall finding is one finding across heats when its effect key
+matches, or when it proposes the same new exam case; design findings of one
+kind merge on a shared id or citation. The run records each heat's outcome
+and, per finding, the heats that found it. A filed issue says "Found by k of
+N independent heats". A run is accepted when any heat is.
+
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits

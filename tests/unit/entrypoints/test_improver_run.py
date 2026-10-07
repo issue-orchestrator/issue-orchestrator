@@ -14,7 +14,7 @@ from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE
 from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverAgentChoice, ImproverProvider, RunOutcome
 from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
-from issue_orchestrator.entrypoints.improver_run import ImproverRun, ImproverRunRequest, findings_text, render_run
+from issue_orchestrator.entrypoints.improver_run import HeatPlan, ImproverRun, ImproverRunRequest, findings_text, render_run
 from issue_orchestrator.entrypoints.improver_staging import (
     ImproverInputsUnavailable,
     ImproverStagingRequest,
@@ -65,7 +65,7 @@ class FakeAgent:
         self.prompts: list[str] = []
         self.toolboxes: list[object] = []
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
         self.prompts.append(prompt)
         self.toolboxes.append(toolbox)
         return ImproverAgentResult(self.message, self.detail)
@@ -93,6 +93,7 @@ def _improver(
     agent: FakeAgent,
     stager: FakeStager | None = None,
     investigation: object | None = None,
+    heats: HeatPlan | None = None,
 ) -> ImproverRun:
     # Each improver's clock starts a day after the previous one's, so runs order by time.
     start = NOW + timedelta(days=next(_RUNS))
@@ -106,6 +107,7 @@ def _improver(
             store=store, host=host, outputs_repo="issue-orchestrator/issue-orchestrator", clock=lambda: NOW
         ),
         prompt="THE PROMPT",
+        heats=heats or HeatPlan(count=1, parallel=1),
         clock=lambda: next(clock),
     )
 
@@ -319,7 +321,7 @@ def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path
     class Refused:
         choice = FakeAgent.choice
 
-        def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
+        def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
             raise RuntimeError("legacy sandbox_mode disables the permission profile")
 
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
@@ -494,3 +496,100 @@ def test_a_blind_run_hides_its_issues_from_the_toolbox_when_it_audits_its_output
         _improver(store, host, FakeAgent(_findings("exam_case")), investigation=empowered).run(blind, apply=False)
 
     assert empowered.hidden == [frozenset({7592}), frozenset()]
+
+
+
+class HeatAgent:
+    """Answers per heat, and records how many heats ran at once."""
+
+    choice = ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="opus")
+
+    def __init__(self, answers: dict[int, str | None], hold: float = 0.2) -> None:
+        import threading
+
+        self.answers = answers
+        self.hold = hold
+        self.heats: list[int] = []
+        self.running = 0
+        self.most_at_once = 0
+        self._lock = threading.Lock()
+
+    def run(self, *, prompt: str, run_dir: Path, toolbox: object, heat: int) -> ImproverAgentResult:
+        import time
+
+        with self._lock:
+            self.heats.append(heat)
+            self.running += 1
+            self.most_at_once = max(self.most_at_once, self.running)
+        time.sleep(self.hold)
+        with self._lock:
+            self.running -= 1
+        answer = self.answers[heat]
+        if answer == "RAISE":
+            raise RuntimeError("binary missing")
+        return ImproverAgentResult(answer, "done" if answer else "timed out")
+
+
+def test_heats_run_in_parallel_up_to_the_plan_and_their_findings_merge_with_support(tmp_path: Path) -> None:
+    """#8001: N heats on the same inputs; a finding several found is kept once
+    and says so; each heat's answer is kept beside the merged one."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: _findings("exam_case", "capability_issue"), 3: _findings("exam_case")})
+
+    record = _improver(store, host, agent, heats=HeatPlan(count=3, parallel=2)).run(_request(), apply=False)
+
+    assert sorted(agent.heats) == [1, 2, 3] and agent.most_at_once == 2
+    assert record.outcome is RunOutcome.ACCEPTED
+    assert "from 3 of 3 heat(s)" in record.detail
+    assert [(h.heat, h.outcome, h.findings) for h in record.heats] == [
+        (1, RunOutcome.ACCEPTED, 1), (2, RunOutcome.ACCEPTED, 2), (3, RunOutcome.ACCEPTED, 1),
+    ]
+    exam = example("exam_case")["findings"][0]["id"]
+    capability = example("capability_issue")["findings"][0]["id"]
+    assert {s.finding_id: s.heats for s in record.finding_support} == {exam: (1, 2, 3), capability: (2,)}
+    run_dir = Path(record.run_dir)
+    assert all((run_dir / f"improver-findings-h{h}.json").is_file() for h in (1, 2, 3))
+    merged = json.loads((run_dir / "improver-findings.json").read_text())
+    assert [f["id"] for f in merged["findings"]] == [exam, capability]
+    assert f"{exam}: found by 3 of 3 heat(s)" in render_run(record)
+    assert len(record.effects) == 2
+
+
+def test_a_run_is_accepted_if_any_heat_is_and_keeps_why_the_others_were_not(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: "not json", 2: None, 3: "RAISE", 4: _findings("capability_issue")}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(count=4, parallel=4)).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.ACCEPTED and "from 1 of 4 heat(s)" in record.detail
+    outcomes = {h.heat: (h.outcome, h.detail) for h in record.heats}
+    assert outcomes[1][0] is RunOutcome.REJECTED and outcomes[2] == (RunOutcome.AGENT_FAILED, "timed out")
+    assert outcomes[3] == (RunOutcome.AGENT_FAILED, "agent not launched: RuntimeError: binary missing")
+    assert record.heats[0].rejections
+
+
+def test_no_accepted_heat_is_a_rejection_when_any_answered_and_a_failure_otherwise(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    rejected = _improver(store, host, HeatAgent({1: "not json", 2: None}, hold=0), heats=HeatPlan(2, 2)).run(
+        _request(), apply=False
+    )
+    failed = _improver(store, host, HeatAgent({1: None, 2: "RAISE"}, hold=0), heats=HeatPlan(2, 2)).run(
+        _request(), apply=False
+    )
+
+    assert rejected.outcome is RunOutcome.REJECTED and rejected.effects == ()
+    assert all(r.startswith("heat 1: ") for r in rejected.rejections)
+    assert failed.outcome is RunOutcome.AGENT_FAILED
+    assert failed.detail == "heat 1: timed out; heat 2: agent not launched: RuntimeError: binary missing"
+
+
+def test_a_filed_issue_says_how_many_heats_found_its_finding(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: _findings("exam_case", "capability_issue")}, hold=0)
+
+    _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request())
+
+    bodies = {c["title"].split("] ", 1)[1].split(":")[0]: c["body"] for c in host.created}
+    assert "**Found by 2 of 2 independent heat(s)** (1, 2)." in next(b for t, b in bodies.items() if t.startswith("Exam case"))
+    assert "**Found by 1 of 2 independent heat(s)** (2)." in bodies["Capability gap"]

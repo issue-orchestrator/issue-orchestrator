@@ -235,7 +235,8 @@ def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490, #8001), run `{run.run_id}` against"
-            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
+            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`)."
+            + support_note(run, design.id),
             f"**Design finding (`{design.kind}`):** {_inert(design.summary)}",
             f"**Evidence** (every quote checked against the run's evidence):\n{evidence}",
             f"**Impact:** {_inert(design.impact)}",
@@ -277,12 +278,25 @@ def _summary(finding: Finding) -> str:
     }.get(finding.output, finding.id)
 
 
+def support_note(run: ImproverRunRecord, finding_id: str) -> str:
+    """How many of the run's heats found the finding: several independent
+    heats are stronger evidence than one (#8001)."""
+    if not run.heats:
+        return ""
+    found = next((s.heats for s in run.finding_support if s.finding_id == finding_id), ())
+    return (
+        f" **Found by {len(found)} of {len(run.heats)} independent heat(s)**"
+        + (f" ({', '.join(map(str, found))})." if found else ".")
+    )
+
+
 def issue_body(run: ImproverRunRecord, finding: Finding) -> str:
     """The issue an accepted finding files: what it asks for, then its JSON."""
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490), run `{run.run_id}` against"
-            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
+            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`)."
+            + support_note(run, finding.id),
             *_route_note(run, finding),
             f"**Stalled at:** `{finding.stall_point}`. **Classification:** `{finding.classification}`.",
             _inert(_definition_of_done(finding)),
@@ -355,6 +369,7 @@ __all__ = [
     "finding_marker",
     "issue_body",
     "plan_effect",
+    "support_note",
     "planned_effects",
     "title_token",
 ]

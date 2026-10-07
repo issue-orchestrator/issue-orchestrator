@@ -73,7 +73,7 @@ from ...ports.improver_investigation import ImproverInvestigation
 from ...execution.improver_run_store import FileImproverRunStore
 from ...ports.improver import ImproverStoreBusy
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
-from ..improver_run import ImproverRun, render_run
+from ..improver_run import HeatPlan, ImproverRun, render_run
 from ..improver_sweep import ImproverSweep, ImproverSweepRequest
 from ..improver_staging import (
     ImproverInputStager,
@@ -87,6 +87,11 @@ EXIT_OK = 0
 EXIT_REJECTED = 1
 EXIT_UNAVAILABLE = 75
 
+
+#: Heats per engine: two, so a finding found twice stands out, at twice one
+#: run's cost (#8001); both at once, so a run takes one heat's time.
+DEFAULT_HEATS = 2
+DEFAULT_PARALLEL_HEATS = 2
 
 #: The prompt, relative to the io checkout the command runs in.
 DEFAULT_PROMPT = Path("examples/prompts/tech-lead-improver.md")
@@ -147,6 +152,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Empowered: the investigation budget the agent is given (below the agent timeout)",
     )
     run.add_argument("--empowered-addendum", type=Path, default=EMPOWERED_ADDENDUM)
+    run.add_argument(
+        "--heats", type=int, default=DEFAULT_HEATS,
+        help="Independent agent runs per engine, merged (default: %(default)s). Each is a whole"
+        " agent run on the provider: a Claude heat counts against the subscription",
+    )
+    run.add_argument(
+        "--parallel-heats", type=int, default=DEFAULT_PARALLEL_HEATS,
+        help="Heats run at once (default: %(default)s)",
+    )
     run.add_argument(
         "--apply", action="store_true",
         help="Apply accepted findings' GitHub effects; without it the run is dry and they stay owed",
@@ -244,13 +258,20 @@ def agent_choice(args: argparse.Namespace) -> ImproverAgentChoice:
     return ImproverAgentChoice.for_provider(args.provider, args.model)
 
 
-def run(args: argparse.Namespace) -> int:
+def _refuse_contradictions(args: argparse.Namespace) -> None:
+    """``run``'s options that cannot hold together end the command at once."""
     if (args.state_dir is None) != (args.audited_repo is None):
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
     if args.exclude_open_issue and args.apply:
         raise SystemExit("improver run: --exclude-open-issue is a blind run; it cannot --apply")
+    if args.heats < 1 or args.parallel_heats < 1:
+        raise SystemExit("improver run: --heats and --parallel-heats are at least 1")
     if args.mode is ImproverMode.EMPOWERED and args.budget_minutes >= args.agent_timeout_minutes:
         raise SystemExit("improver run: --budget-minutes must be below --agent-timeout-minutes")
+
+
+def run(args: argparse.Namespace) -> int:
+    _refuse_contradictions(args)
     store = _store()
     prompt = args.prompt.read_text(encoding="utf-8")
     investigation = _investigation(args)
@@ -267,6 +288,7 @@ def run(args: argparse.Namespace) -> int:
             investigation=investigation,
             effects=_effects(args.outputs_repo, store),
             prompt=prompt,
+            heats=HeatPlan(count=args.heats, parallel=args.parallel_heats),
             clock=_now,
         )
 
