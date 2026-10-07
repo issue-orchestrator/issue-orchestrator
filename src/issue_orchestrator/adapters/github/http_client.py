@@ -29,6 +29,7 @@ from .errors import (
     GitHubAuthError,
     GitHubHttpError,
     GitHubRateLimitedError,
+    GitHubResponseTooLarge,
     GitHubScanIncompleteError,
     GitHubTransportError,
 )
@@ -1079,13 +1080,72 @@ class GitHubHttpClient:
 
         return collected[:limit], oldest_updated_at
 
-    def get_json(self, path: str, *, params: dict[str, Any] | None = None, caller: str) -> Any:
-        """An uncached ``GET`` of an API path (``/repos/...``), as decoded JSON.
+    def get_json_bounded(
+        self, path: str, *, params: dict[str, Any] | None = None, max_bytes: int, caller: str
+    ) -> Any:
+        """An uncached ``GET`` of an API path (``/repos/...``), as decoded JSON,
+        read as a stream and refused past ``max_bytes`` before it is decoded
+        (raises :class:`GitHubResponseTooLarge`). Redirects are not followed.
 
-        For a caller whose own policy decides which paths are readable (the
-        improver's audited-repository reads, #8001); it never writes.
+        For a caller whose own policy decides which paths are readable and
+        how much it may hold (the improver's toolbox, #8001); it never writes.
         """
-        return self._request_json("GET", path, params=params, use_cache=False, caller=caller)
+        headers = self._auth_headers()
+        start = time.monotonic()
+        error: str | None = None
+        received = 0
+        try:
+            try:
+                with self._client.stream("GET", path, params=params, headers=headers) as response:
+                    declared = int(response.headers.get("Content-Length") or 0)
+                    body = bytearray()
+                    if declared <= max_bytes:
+                        for chunk in response.iter_bytes():
+                            body += chunk
+                            if len(body) > max_bytes:
+                                break
+                    received = len(body)
+                    if declared > max_bytes or received > max_bytes:
+                        error = f"response larger than {max_bytes} bytes"
+                        raise GitHubResponseTooLarge(
+                            f"GitHub GET {path} returned more than {max_bytes} bytes",
+                            method="GET",
+                            url=str(response.url),
+                            status_code=response.status_code,
+                        )
+                    text = body.decode("utf-8", errors="replace")
+                    # Only the target's own answer: a redirect's body (a renamed
+                    # repository) is not it, and is never followed.
+                    if response.status_code != 200:
+                        error = f"{response.status_code} {text.strip()[:280]}"
+                        summary = _summarize_github_error(text)
+                        raise github_http_failure(
+                            f"GitHub GET {path} failed: {response.status_code}" + (f" — {summary}" if summary else ""),
+                            method="GET",
+                            url=str(response.url),
+                            status_code=response.status_code,
+                            headers=response.headers,
+                            response_text=text,
+                        )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                error = f"transport_error: {exc}"
+                raise GitHubTransportError(
+                    f"GitHub transport error for GET {path}", method="GET", url=path, original=exc
+                ) from exc
+            return _decode_response_payload(text, "json")
+        finally:
+            gh_audit.record_live_call(command=f"GET {path}", caller=caller, error=error, rate_limit=None)
+            gh_audit.record(
+                args=["GET", path],
+                repo=self._config.repo,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error=error,
+                caller=caller,
+                bytes_returned=received,
+                items_returned=0,
+                full_scan=False,
+                rate_limit=None,
+            )
 
     def get_issue(self, issue_number: int, *, use_cache: bool = True) -> dict[str, Any] | None:
         payload = self._request_json(

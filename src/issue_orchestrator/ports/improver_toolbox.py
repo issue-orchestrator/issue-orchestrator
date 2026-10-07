@@ -16,9 +16,15 @@ from typing import Any, Protocol
 from ..domain.improver_toolbox_policy import GitHubRead
 
 
+class AuditedReadTooLarge(RuntimeError):
+    """The response exceeded the read's byte limit; nothing of it is returned."""
+
+
 class AuditedRepoReads(Protocol):
-    def get(self, read: GitHubRead) -> Any:
-        """The decoded JSON of one allowed ``GET``; raises on any failure."""
+    def get(self, read: GitHubRead, *, max_bytes: int) -> Any:
+        """The decoded JSON of one allowed ``GET``, refused with
+        :class:`AuditedReadTooLarge` past ``max_bytes`` before it is decoded;
+        raises on any other failure."""
         ...
 
 
@@ -39,4 +45,4 @@ class ToolboxEndpoint:
         return f"ToolboxEndpoint(url={self.url!r})"
 
 
-__all__ = ["TOOLBOX_SERVER_NAME", "TOOLBOX_TOKEN_ENV", "AuditedRepoReads", "ToolboxEndpoint"]
+__all__ = ["TOOLBOX_SERVER_NAME", "TOOLBOX_TOKEN_ENV", "AuditedReadTooLarge", "AuditedRepoReads", "ToolboxEndpoint"]

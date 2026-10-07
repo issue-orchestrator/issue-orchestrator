@@ -45,10 +45,12 @@ from ..domain.improver_toolbox_policy import (
     ToolboxRefusal,
     sqlite_action_allowed,
 )
-from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, AuditedRepoReads, ToolboxEndpoint
+from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, AuditedReadTooLarge, AuditedRepoReads, ToolboxEndpoint
 
 #: Each answer is capped, so one call cannot flood the agent's context.
 MAX_ANSWER_CHARS = 200_000
+#: A GitHub response larger than this is refused before it is decoded.
+MAX_GITHUB_BYTES = 4_000_000
 MAX_SQL_ROWS = 1000
 MAX_CELL_CHARS = 4000
 #: SQLite's own limits for a toolbox query, set before it runs: no value it
@@ -95,7 +97,10 @@ class ImproverToolbox:
         read = self._github_policy.check(path, params)
         if self._github is None:
             raise ToolboxRefusal("GitHub reads are off for this run")
-        answer = self._github.get(read)
+        try:
+            answer = self._github.get(read, max_bytes=MAX_GITHUB_BYTES)
+        except AuditedReadTooLarge as too_large:
+            raise ToolboxRefusal(f"{too_large}; narrow the request (per_page, a smaller path)") from too_large
         if read.path.startswith("/search/"):
             self._check_search_results(answer)
         if self._hidden and _mentions_issue(answer, self._hidden):

@@ -31,7 +31,7 @@ class FakeReads:
     def __init__(self) -> None:
         self.reads: list[GitHubRead] = []
 
-    def get(self, read: GitHubRead) -> Any:
+    def get(self, read: GitHubRead, *, max_bytes: int) -> Any:
         self.reads.append(read)
         return {"number": 450, "title": "unschedulable", "milestone": None}
 
@@ -141,7 +141,7 @@ class SearchReads:
     def __init__(self, items: list[dict[str, Any]]) -> None:
         self.items = items
 
-    def get(self, read: GitHubRead) -> Any:
+    def get(self, read: GitHubRead, *, max_bytes: int) -> Any:
         return {"total_count": len(self.items), "items": self.items}
 
 
@@ -273,7 +273,7 @@ class AnswerReads:
     def __init__(self, answer: Any) -> None:
         self.answer = answer
 
-    def get(self, read: GitHubRead) -> Any:
+    def get(self, read: GitHubRead, *, max_bytes: int) -> Any:
         return self.answer
 
 
@@ -347,3 +347,23 @@ def test_no_single_row_can_exceed_the_fetch_budget(run_dir: Path) -> None:
     too_many = ", ".join(["1"] * (toolbox_module.MAX_SQL_COLUMNS + 1))
     with pytest.raises(ToolboxRefusal):
         _toolbox(run_dir).sql_query("timeline.sqlite", f"SELECT {too_many}")
+
+
+def test_an_oversized_github_answer_is_refused_with_a_hint(run_dir: Path) -> None:
+    from issue_orchestrator.ports.improver_toolbox import AuditedReadTooLarge
+
+    class TooLarge:
+        def __init__(self) -> None:
+            self.limits: list[int] = []
+
+        def get(self, read: GitHubRead, *, max_bytes: int) -> Any:
+            self.limits.append(max_bytes)
+            raise AuditedReadTooLarge("GitHub GET returned more than the limit")
+
+    reads = TooLarge()
+    with pytest.raises(ToolboxRefusal, match="narrow the request"):
+        _toolbox(run_dir, reads).github_get("repos/porchpin/porchpin/git/blobs/abc")  # type: ignore[arg-type]
+
+    import issue_orchestrator.execution.improver_toolbox as toolbox_module
+
+    assert reads.limits == [toolbox_module.MAX_GITHUB_BYTES]

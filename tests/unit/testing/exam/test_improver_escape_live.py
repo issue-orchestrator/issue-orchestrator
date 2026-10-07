@@ -57,7 +57,7 @@ class RecordingReads:
     def __init__(self) -> None:
         self.reads: list[GitHubRead] = []
 
-    def get(self, read: GitHubRead) -> Any:
+    def get(self, read: GitHubRead, *, max_bytes: int) -> Any:
         self.reads.append(read)
         return {"number": 1, "title": "audited repo issue"}
 
