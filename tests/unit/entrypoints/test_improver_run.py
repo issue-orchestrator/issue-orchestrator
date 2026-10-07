@@ -593,3 +593,34 @@ def test_a_filed_issue_says_how_many_heats_found_its_finding(tmp_path: Path) -> 
     bodies = {c["title"].split("] ", 1)[1].split(":")[0]: c["body"] for c in host.created}
     assert "**Found by 2 of 2 independent heat(s)** (1, 2)." in next(b for t, b in bodies.items() if t.startswith("Exam case"))
     assert "**Found by 1 of 2 independent heat(s)** (2)." in bodies["Capability gap"]
+
+
+def test_a_conflict_between_heats_is_recorded_and_shown_on_the_kept_findings_issue(tmp_path: Path) -> None:
+    """r1 F2: a different finding proposing the same exam case is not lost."""
+    # A valid finding about another anomaly that proposes the same new case.
+    other = json.loads(_findings("capability_issue"))
+    finding = other["findings"][0]
+    finding["id"] = "same-case-other-anomaly"
+    finding["output"] = "exam_case"
+    finding["reproduction"] = example("exam_case")["findings"][0]["reproduction"]
+    finding["proposal"] = "Plant the other anomaly instead."
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: json.dumps(other)}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request())
+
+    assert record.outcome is RunOutcome.ACCEPTED, record.rejections or [h.rejections for h in record.heats]
+    [conflict] = record.heat_conflicts
+    assert conflict.heat == 2 and conflict.claim == "Plant the other anomaly instead."
+    assert "heat 2 not merged" in render_run(record)
+    [issue] = host.created
+    assert "**Not merged, to resolve:**" in issue["body"] and "Plant the other anomaly instead." in issue["body"]
+
+
+def test_a_heat_plan_is_bounded() -> None:
+    from issue_orchestrator.entrypoints.improver_run import MAX_HEATS
+
+    assert HeatPlan(5, 2).waves == 3 and HeatPlan(2, 2).waves == 1
+    for count, parallel in ((0, 1), (MAX_HEATS + 1, 1), (2, 3), (2, 0)):
+        with pytest.raises(ValueError):
+            HeatPlan(count, parallel)

@@ -193,11 +193,16 @@ names what it is missing; staging never fails on it.
 Claude heat counts against the operator's subscription, so keep N modest.
 Each heat's answer is validated alone (`improver-findings-h<k>.json`); the
 accepted ones are merged into `improver-findings.json`, which is validated
-again. A stall finding is one finding across heats when its effect key
-matches, or when it proposes the same new exam case; design findings of one
-kind merge on a shared id or citation. The run records each heat's outcome
-and, per finding, the heats that found it. A filed issue says "Found by k of
-N independent heats". A run is accepted when any heat is.
+again. Findings merge by ONE identity, the key their issues are deduplicated
+by: the same key is the same finding (a design finding only with the same
+claim too). What cannot merge (a different finding proposing a taken exam
+case, the same design id with another claim) is recorded as a conflict and
+listed on the kept finding's issue, never dropped. The run records each
+heat's outcome and, per finding, the heats that found it; a filed issue says
+"Found by k of N independent heats". A run is accepted when any heat is. At
+most 5 heats; their waves (`ceil(heats / parallel-heats)`) times
+`--agent-timeout-minutes` must fit `--run-budget-minutes` (default 105,
+inside the suite's 120).
 
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every

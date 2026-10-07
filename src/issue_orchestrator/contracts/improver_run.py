@@ -151,6 +151,16 @@ class HeatRecord(_Closed):
     design_findings: int = 0
 
 
+class HeatConflictRecord(_Closed):
+    """What a heat found that could not be merged into ``finding_id``: shown
+    on the finding's issue for the operator to resolve, never dropped."""
+
+    finding_id: str
+    heat: int
+    reason: str
+    claim: str
+
+
 class FindingSupport(_Closed):
     """How many of the run's heats found one merged finding."""
 
@@ -201,6 +211,8 @@ class ImproverRunRecord(_Closed):
     heats: tuple[HeatRecord, ...] = ()
     #: For an accepted run: the heats that found each merged finding.
     finding_support: tuple[FindingSupport, ...] = ()
+    #: What the heats found that could not be merged (#8001).
+    heat_conflicts: tuple[HeatConflictRecord, ...] = ()
     #: Earlier runs whose effects were still owed when this run finished:
     #: a run is not green while the improver owes GitHub anything.
     owed_by_earlier_runs: tuple[str, ...] = ()
@@ -235,6 +247,7 @@ __all__ = [
     "EffectStatus",
     "ExamScore",
     "FindingSupport",
+    "HeatConflictRecord",
     "HeatRecord",
     "FindingGrade",
     "ImproverAgentChoice",

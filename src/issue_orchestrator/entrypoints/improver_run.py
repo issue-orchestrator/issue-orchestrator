@@ -42,13 +42,14 @@ from ..contracts.improver_inputs import (
 from ..contracts.improver_run import (
     ExamScore,
     FindingSupport,
+    HeatConflictRecord,
     HeatRecord,
     FindingGrade,
     ImproverRunRecord,
     RunOutcome,
     StallPointMove,
 )
-from ..control.improver_effects import finding_key, planned_effects
+from ..control.improver_effects import design_finding_key, finding_key, planned_effects
 from ..domain.improver_heats import AcceptedHeat, merge_heats
 from ..execution.improver_effect_applier import ImproverEffects
 from ..domain.engine_activity import EngineRef
@@ -112,6 +113,11 @@ class ImproverRunRequest:
         )
 
 
+#: Each heat is a whole agent run; more than this is not a modest default
+#: but a tournament, which belongs to the tournament harness.
+MAX_HEATS = 5
+
+
 @dataclass(frozen=True)
 class HeatPlan:
     """How many heats a run sends, and how many run at once (#8001).
@@ -123,8 +129,25 @@ class HeatPlan:
     parallel: int
 
     def __post_init__(self) -> None:
-        if self.count < 1 or self.parallel < 1:
-            raise ValueError("a run sends at least one heat, at least one at a time")
+        if not 1 <= self.count <= MAX_HEATS:
+            raise ValueError(f"a run sends 1 to {MAX_HEATS} heats, not {self.count}")
+        if not 1 <= self.parallel <= self.count:
+            raise ValueError(f"1 to {self.count} heats run at once, not {self.parallel}")
+
+    @property
+    def waves(self) -> int:
+        """How many heats run one after another at most: the run takes up to
+        this many agent timeouts."""
+        return -(-self.count // self.parallel)
+
+    def require_within(self, *, agent_timeout_minutes: int, budget_minutes: int) -> None:
+        """Raise unless every wave of heats, each up to the agent's timeout,
+        fits the run's budget (queued heats wait for a wave to finish)."""
+        if self.waves * agent_timeout_minutes > budget_minutes:
+            raise ValueError(
+                f"{self.waves} wave(s) of heats x {agent_timeout_minutes} minutes exceeds the"
+                f" {budget_minutes}-minute run budget; run more heats at once, or fewer"
+            )
 
 
 class ImproverRun:
@@ -207,7 +230,11 @@ class ImproverRun:
         accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
         if not accepted:
             return self._finish_unaccepted(base, records)
-        merged = merge_heats(accepted, lambda f: finding_key(f, request.engine))
+        merged = merge_heats(
+            accepted,
+            lambda f: finding_key(f, request.engine),
+            lambda d: design_finding_key(d, request.engine),
+        )
         text = merged.findings.model_dump_json(indent=2, by_alias=True) + "\n"
         (run_dir / FINDINGS_FILE).write_text(text, encoding="utf-8")
         try:
@@ -231,11 +258,15 @@ class ImproverRun:
                 FindingSupport(finding_id=finding_id, heats=heats_seen)
                 for finding_id, heats_seen in sorted(merged.support.items())
             ),
+            heat_conflicts=tuple(
+                HeatConflictRecord(finding_id=c.finding_id, heat=c.heat, reason=c.reason, claim=c.claim)
+                for c in merged.conflicts
+            ),
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),
             trend=findings.trend,
             # A blind run's findings may duplicate the issues it was not shown.
-            effects=() if request.blind else planned_effects(findings, request.engine),
+            effects=() if request.blind else planned_effects(findings, request.engine, merged.original_ids),
         )
         if not apply:
             return accepted_run
@@ -400,6 +431,9 @@ def render_run(record: ImproverRunRecord) -> str:
     lines += [
         f"  {s.finding_id}: found by {len(s.heats)} of {len(record.heats)} heat(s)" for s in record.finding_support
     ]
+    lines += [
+        f"  {c.finding_id}: heat {c.heat} not merged: {c.reason}" for c in record.heat_conflicts
+    ]
     lines += [f"  rejected: {reason}" for reason in record.rejections]
     lines += [
         f"  {g.finding_id}: stalled at {g.stall_point} -> {g.output} ({g.classification})"
@@ -457,4 +491,4 @@ def _exam_scores(evidence: StagedEvidence) -> tuple[ExamScore, ...]:
     return tuple(ExamScore(case_id=card.case_id, passed=card.passed) for card in cards)
 
 
-__all__ = ["HeatPlan", "ImproverRun", "ImproverRunRequest", "findings_text", "render_run"]
+__all__ = ["MAX_HEATS", "HeatPlan", "ImproverRun", "ImproverRunRequest", "findings_text", "render_run"]

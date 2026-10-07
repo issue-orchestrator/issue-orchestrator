@@ -92,6 +92,8 @@ EXIT_UNAVAILABLE = 75
 #: run's cost (#8001); both at once, so a run takes one heat's time.
 DEFAULT_HEATS = 2
 DEFAULT_PARALLEL_HEATS = 2
+#: The budgeted suite allows 120 minutes; staging and the toolbox take the rest.
+DEFAULT_RUN_BUDGET_MINUTES = 105
 
 #: The prompt, relative to the io checkout the command runs in.
 DEFAULT_PROMPT = Path("examples/prompts/tech-lead-improver.md")
@@ -160,6 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--parallel-heats", type=int, default=DEFAULT_PARALLEL_HEATS,
         help="Heats run at once (default: %(default)s)",
+    )
+    run.add_argument(
+        "--run-budget-minutes", type=int, default=DEFAULT_RUN_BUDGET_MINUTES,
+        help="The longest the heats may take, one wave after another, each wave up to"
+        " --agent-timeout-minutes (default: %(default)s, inside the budgeted suite's timeout)",
     )
     run.add_argument(
         "--apply", action="store_true",
@@ -264,8 +271,12 @@ def _refuse_contradictions(args: argparse.Namespace) -> None:
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
     if args.exclude_open_issue and args.apply:
         raise SystemExit("improver run: --exclude-open-issue is a blind run; it cannot --apply")
-    if args.heats < 1 or args.parallel_heats < 1:
-        raise SystemExit("improver run: --heats and --parallel-heats are at least 1")
+    try:
+        HeatPlan(count=args.heats, parallel=args.parallel_heats).require_within(
+            agent_timeout_minutes=args.agent_timeout_minutes, budget_minutes=args.run_budget_minutes
+        )
+    except ValueError as error:
+        raise SystemExit(f"improver run: --heats/--parallel-heats: {error}") from error
     if args.mode is ImproverMode.EMPOWERED and args.budget_minutes >= args.agent_timeout_minutes:
         raise SystemExit("improver run: --budget-minutes must be below --agent-timeout-minutes")
 

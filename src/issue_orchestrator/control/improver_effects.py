@@ -120,15 +120,26 @@ def finding_marker(key: str) -> str:
     return f"<!-- io-improver-finding:{key} -->"
 
 
-def planned_effects(findings: ImproverFindings, engine: EngineRef) -> tuple[EffectReceipt, ...]:
-    """One pending effect per accepted finding and design finding."""
+def planned_effects(
+    findings: ImproverFindings, engine: EngineRef, original_ids: Mapping[str, str] | None = None
+) -> tuple[EffectReceipt, ...]:
+    """One pending effect per accepted finding and design finding.
+
+    ``original_ids``: a design finding renamed by a multi-heat merge keeps the
+    effect key of the id its heat wrote, so it deduplicates the same way
+    whatever the run's other findings were (#8001)."""
+    originals = original_ids or {}
     return (
         *(
             EffectReceipt(finding_id=f.id, key=finding_key(f, engine), status=EffectStatus.PENDING)
             for f in findings.findings
         ),
         *(
-            EffectReceipt(finding_id=d.id, key=design_finding_key(d, engine), status=EffectStatus.PENDING)
+            EffectReceipt(
+                finding_id=d.id,
+                key=design_finding_key(d.model_copy(update={"id": originals.get(d.id, d.id)}), engine),
+                status=EffectStatus.PENDING,
+            )
             for d in findings.design_findings
         ),
     )
@@ -279,15 +290,21 @@ def _summary(finding: Finding) -> str:
 
 
 def support_note(run: ImproverRunRecord, finding_id: str) -> str:
-    """How many of the run's heats found the finding: several independent
-    heats are stronger evidence than one (#8001)."""
+    """How many of the run's heats found the finding (several independent
+    heats are stronger evidence than one), and what other heats claimed
+    that could not be merged into it, for the operator to resolve (#8001)."""
     if not run.heats:
         return ""
     found = next((s.heats for s in run.finding_support if s.finding_id == finding_id), ())
-    return (
-        f" **Found by {len(found)} of {len(run.heats)} independent heat(s)**"
-        + (f" ({', '.join(map(str, found))})." if found else ".")
+    note = f" **Found by {len(found)} of {len(run.heats)} independent heat(s)**" + (
+        f" ({', '.join(map(str, found))})." if found else "."
     )
+    conflicts = [c for c in run.heat_conflicts if c.finding_id == finding_id]
+    if conflicts:
+        note += "\n\n**Not merged, to resolve:**\n" + "\n".join(
+            f"- heat {c.heat}: {_inert(c.reason)}: {_inert(c.claim)}" for c in conflicts
+        )
+    return note
 
 
 def issue_body(run: ImproverRunRecord, finding: Finding) -> str:

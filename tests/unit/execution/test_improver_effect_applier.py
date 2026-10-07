@@ -443,3 +443,22 @@ def test_a_run_accepted_under_schema_v4_still_applies_its_owed_effects(tmp_path:
     assert {r.run_id: [e.status for e in r.effects] for r in runs} == {
         "r1": [EffectStatus.FILED], later.run_id: [EffectStatus.FILED],
     }
+
+
+def test_a_design_renamed_by_a_merge_keeps_its_effect_key(tmp_path: Path) -> None:
+    """r1 F3: the same design finding dedups the same way whether or not a
+    multi-heat merge had to rename it in this run."""
+    from issue_orchestrator.contracts.improver_findings import ImproverFindings
+
+    plain = {**example("exam_case"), "design_findings": [_DESIGN]}
+    renamed = {**example("exam_case"), "design_findings": [{**_DESIGN, "id": "approval-by-label-removal-h2"}]}
+    engine = _engine("porchpin/porchpin")
+
+    [_, as_written] = planned_effects(ImproverFindings.model_validate_json(json.dumps(plain)), engine)
+    [_, after_merge] = planned_effects(
+        ImproverFindings.model_validate_json(json.dumps(renamed)), engine,
+        {"approval-by-label-removal-h2": "approval-by-label-removal"},
+    )
+
+    assert after_merge.key == as_written.key
+    assert after_merge.finding_id == "approval-by-label-removal-h2"
