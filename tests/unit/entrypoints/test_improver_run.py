@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +21,10 @@ from issue_orchestrator.entrypoints.improver_staging import (
     StagedImproverInputs,
     load_staged_evidence,
 )
+from issue_orchestrator.contracts.improver_toolbox import ImproverMode
+from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
+from issue_orchestrator.ports.improver_investigation import InvestigationKit
+from issue_orchestrator.ports.improver_toolbox import ToolboxEndpoint
 from issue_orchestrator.ports.improver import ImproverAgentResult
 from tests.unit.improver_support import (
     FakeIssueHost,
@@ -57,9 +63,11 @@ class FakeAgent:
         self.message = message
         self.detail = detail
         self.prompts: list[str] = []
+        self.toolboxes: list[object] = []
 
-    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
         self.prompts.append(prompt)
+        self.toolboxes.append(toolbox)
         return ImproverAgentResult(self.message, self.detail)
 
 
@@ -79,7 +87,13 @@ def _request(audited_repo: str = "porchpin/porchpin", engine_id: str | None = No
 _RUNS = iter(range(10**6))
 
 
-def _improver(store: MemoryRunStore, host: FakeIssueHost, agent: FakeAgent, stager: FakeStager | None = None) -> ImproverRun:
+def _improver(
+    store: MemoryRunStore,
+    host: FakeIssueHost,
+    agent: FakeAgent,
+    stager: FakeStager | None = None,
+    investigation: object | None = None,
+) -> ImproverRun:
     # Each improver's clock starts a day after the previous one's, so runs order by time.
     start = NOW + timedelta(days=next(_RUNS))
     clock = iter(start + timedelta(minutes=i) for i in range(1000))
@@ -87,6 +101,7 @@ def _improver(store: MemoryRunStore, host: FakeIssueHost, agent: FakeAgent, stag
         store=store,
         stager=stager or FakeStager(),
         agent=agent,
+        investigation=investigation or ScriptedInvestigation(),  # type: ignore[arg-type]
         effects=ImproverEffects(
             store=store, host=host, outputs_repo="issue-orchestrator/issue-orchestrator", clock=lambda: NOW
         ),
@@ -304,7 +319,7 @@ def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path
     class Refused:
         choice = FakeAgent.choice
 
-        def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+        def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
             raise RuntimeError("legacy sandbox_mode disables the permission profile")
 
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
@@ -396,3 +411,86 @@ def test_a_change_of_agent_starts_a_new_stall_point_baseline(tmp_path: Path) -> 
 
     assert {m.previous for m in first_claude.stall_points} == {None}
     assert [(m.stall_point, m.previous) for m in second_claude.stall_points] == [("noticed_not_acted", 1)]
+
+
+class FakeEmpowered:
+    """An empowered investigation whose toolbox is a fixed endpoint."""
+
+    mode = ImproverMode.EMPOWERED
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.fail = fail
+        self.opened: list[tuple[str, Path]] = []
+        self.hidden: list[frozenset[int]] = []
+        self.closed = 0
+
+    @contextmanager
+    def open(self, engine: EngineRef, run_dir: Path, *, hidden_issues: frozenset[int]) -> Iterator[InvestigationKit]:
+        if self.fail:
+            raise self.fail
+        self.opened.append((engine.repo, run_dir))
+        self.hidden.append(hidden_issues)
+        try:
+            yield InvestigationKit(
+                toolbox=ToolboxEndpoint(url="http://127.0.0.1:1/mcp", token="t"), instructions="\n\nEMPOWERED ADDENDUM"
+            )
+        finally:
+            self.closed += 1
+
+
+def test_an_empowered_run_gives_the_agent_its_toolbox_and_instructions_and_records_the_mode(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent(_findings("exam_case"))
+    empowered = FakeEmpowered()
+
+    record = _improver(store, host, agent, investigation=empowered).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.ACCEPTED and record.mode is ImproverMode.EMPOWERED
+    [(repo, run_dir)] = empowered.opened
+    assert repo == "porchpin/porchpin" and str(run_dir) == record.run_dir
+    assert agent.prompts[0].endswith("THE PROMPT\n\nEMPOWERED ADDENDUM")
+    assert agent.toolboxes == [ToolboxEndpoint(url="http://127.0.0.1:1/mcp", token="t")]
+    # The toolbox is served only while the agent runs.
+    assert empowered.closed == 1
+    assert "claude:opus, empowered" in render_run(record)
+
+
+def test_a_toolbox_that_cannot_be_prepared_ends_the_run_unavailable_with_no_agent(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent(_findings("exam_case"))
+
+    record = _improver(
+        store, host, agent, investigation=FakeEmpowered(fail=RuntimeError("clone failed"))
+    ).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.UNAVAILABLE and record.exit_code == 75
+    assert "toolbox unavailable: RuntimeError: clone failed" in record.detail
+    assert agent.prompts == []
+
+
+def test_a_change_of_mode_starts_a_new_stall_point_baseline(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent(_findings("exam_case"))
+    _improver(store, host, agent).run(_request(), apply=False)
+
+    empowered = _improver(store, host, agent, investigation=FakeEmpowered()).run(_request(), apply=False)
+
+    assert {m.previous for m in empowered.stall_points} == {None}
+
+
+def test_a_blind_run_hides_its_issues_from_the_toolbox_when_it_audits_its_outputs_repo(tmp_path: Path) -> None:
+    """r5 F1: a blind run of io auditing itself must not let the toolbox's
+    GitHub reads show the hidden issues; auditing another repository, the
+    numbers name other issues, so nothing is hidden there."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    empowered = FakeEmpowered()
+    io = "issue-orchestrator/issue-orchestrator"
+    for audited in (io, "porchpin/porchpin"):
+        request = _request(audited_repo=audited)
+        blind = ImproverRunRequest(
+            engine=request.engine, outputs_repo=io, exam_dir=None, window=request.window,
+            log_tail_bytes=1024, excluded_open_issues=frozenset({7592}),
+        )
+        _improver(store, host, FakeAgent(_findings("exam_case")), investigation=empowered).run(blind, apply=False)
+
+    assert empowered.hidden == [frozenset({7592}), frozenset()]

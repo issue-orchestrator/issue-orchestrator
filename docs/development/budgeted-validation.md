@@ -139,7 +139,31 @@ validates the findings strictly and records the run under
 (#8001): `IMPROVER_PROVIDER=claude|codex` and `IMPROVER_MODEL=<model>` (the
 CLI's `--provider` and `--model`). Unset, the improver runs on the latest
 improver tournament's winner, Claude Opus (`claude -p --restricted` with only
-the read tools, the prompt on stdin); each run records which it used. A rejected findings file exits 1 with every
+the read tools, the prompt on stdin); each run records which it used.
+
+**Empowered mode** (the default, #8001; `IMPROVER_MODE=scripted` gives the
+agent the staged bundle alone). The staged `improver-data/` is the agent's
+starting map; beside it the run stages a read-only toolbox,
+`<run dir>/toolbox/`: byte copies of every engine store and of the engine's
+logs, and a `--no-hardlinks` clone of the audited repository. The
+orchestrator serves three tools to the agent as an MCP server on 127.0.0.1,
+gated by a per-run bearer token passed in the agent's environment:
+`github_get` (GitHub `GET` of the audited repository only; the credential
+stays in the orchestrator), `sql_query` (SELECT and schema pragmas on a
+store copy, under an SQLite authorizer: no write, `ATTACH` or extension) and
+`git` (read-only subcommands in the clone; options that write a file, run a
+program or read one outside it are refused, abbreviations included). The
+agent has no shell and no write tool, and is told its budget
+(`--budget-minutes`, default 60) to choose its depth in. Every toolbox call
+is logged to `<run dir>/toolbox-calls.jsonl`. A blind run (`--exclude-open-issue`) of an engine that works the
+outputs repository itself also hides those issues from `github_get`: a direct
+read, or any answer that holds one, is refused. Git output is bounded while
+it streams, and a SQL query runs under SQLite's own size limits. The Codex
+agent's shell reads only its run directory (and the platform's runtime files). `make test-improver-escape`
+runs a live agent ordered to break out of each boundary.
+
+**A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
+GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits
 75. The accepted findings' effects (an issue per finding, deduplicated against
 open issues by the `[improver:<key>]` title token, or an evidence comment on a

@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from .improver_findings import AnomalyKeyRef, Trend
+from .improver_toolbox import ImproverMode
 
 IMPROVER_RUN_SCHEMA_VERSION = 1
 
@@ -157,6 +158,9 @@ class ImproverRunRecord(_Closed):
     #: recorded before the improver's model was pluggable (#8001), which ran
     #: on Codex.
     agent: ImproverAgentChoice | None = None
+    #: How the agent investigated (scripted or empowered). ``None`` only on a
+    #: run recorded before the empowered mode existed (#8001): scripted.
+    mode: ImproverMode | None = None
     #: Set once staging read the engine's start record.
     engine_commit: str | None = None
     #: Whether ``run_dir`` holds a staged ``audit.json`` the next run can diff against.

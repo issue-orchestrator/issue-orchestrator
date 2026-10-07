@@ -26,6 +26,7 @@ from issue_orchestrator.entrypoints.improver_sweep import (
     ImproverSweepRequest,
 )
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
+from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
 from issue_orchestrator.ports.improver import ImproverAgentResult
 from tests.unit.entrypoints.test_improver_staging import (
     COMMIT,
@@ -70,7 +71,7 @@ class EmptyFindingsAgent:
     def __init__(self) -> None:
         self.engines: list[tuple[str, str]] = []
 
-    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
         inputs = json.loads((run_dir / "improver-data" / "inputs.json").read_text())
         self.engines.append((inputs["engine_id"], inputs["audited_repo"]))
         return ImproverAgentResult(json.dumps({
@@ -99,6 +100,7 @@ def _sweep(
                 audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), clock=lambda: NOW,
             ),
             agent=agent,
+            investigation=ScriptedInvestigation(),
             effects=ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW),
             prompt="PROMPT",
             clock=lambda: now,

@@ -1,4 +1,4 @@
-.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-tech-lead-exam test-improver-exam tech-lead-improver test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-tech-lead-exam test-improver-exam test-improver-escape tech-lead-improver test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -45,6 +45,7 @@ help:
 	@echo "  test-e2e-onboarding-live  Run opt-in live agent-guided onboarding acceptance"
 	@echo "  test-tech-lead-exam Run the live tech-lead exam (EXAM_CASE=A|B|C|D|E|F|G|H|U, EXAM_ENGINE_REF=<commit or branch>, EXAM_BASE_REF=<U: upgrade from, default origin/main>)"
 	@echo "  test-improver-exam  Run the live improver exam (IM1: blocked items ignored; IM2: a review the block vetoes) on a real model"
+	@echo "  test-improver-escape Run the live escape test: a real empowered improver agent told to break out (#8001)"
 	@echo "  tech-lead-improver  Run the tech-lead improver once over every running engine (#7490, #7567)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
@@ -754,17 +755,27 @@ IMPROVER_EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-d
 test-improver-exam: sync-deps
 	E2E_IMPROVER_EXAM=1 E2E_IMPROVER_EXAM_OUT=$(IMPROVER_EXAM_OUT) $(if $(IMPROVER_PROVIDER),E2E_IMPROVER_EXAM_PROVIDER=$(IMPROVER_PROVIDER),) $(if $(IMPROVER_MODEL),E2E_IMPROVER_EXAM_MODEL=$(IMPROVER_MODEL),) $(PYTEST) tests/unit/testing/exam/test_improver_exam_live.py -m improver_exam -v -s --tb=short $(PYTEST_TIMINGS)
 
+# Live escape test (#8001): a real empowered improver agent (Claude, model
+# E2E_IMPROVER_ESCAPE_MODEL, default haiku) ordered to break out of its run
+# dir, the audited repository and the toolbox. Every vector must leave no trace.
+test-improver-escape: sync-deps
+	E2E_IMPROVER_ESCAPE=1 $(PYTEST) tests/unit/testing/exam/test_improver_escape_live.py -m live_agent -v -s --tb=short $(PYTEST_TIMINGS)
+
 # The tech-lead improver (#7490, #7567): audit every engine Control Center
 # runs (or ran within IMPROVER_RECENT_HOURS), run the improver prompt read-only
-# once per engine, validate its findings strictly, record each run and file
-# what the accepted findings ask for, into this repository. Set
+# once per engine, validate its findings strictly and record each run (filing
+# into this repository only with IMPROVER_APPLY=1, below). Set
 # IMPROVER_STATE_DIR and IMPROVER_AUDITED_REPO to audit one engine instead.
 # IMPROVER_PROVIDER (claude|codex) and IMPROVER_MODEL pick the agent; unset,
 # the CLI's default applies (the latest improver tournament's winner, #8001).
+# IMPROVER_MODE (empowered|scripted) likewise; the run is DRY unless
+# IMPROVER_APPLY=1, which files what the accepted findings ask for.
 # Runs are recorded under <git common dir>/io-improver (improver status).
 IMPROVER_REPO ?= issue-orchestrator/issue-orchestrator
 IMPROVER_PROVIDER ?=
 IMPROVER_MODEL ?=
+IMPROVER_MODE ?=
+IMPROVER_APPLY ?=
 IMPROVER_AGENT_TIMEOUT_MINUTES ?= 90
 IMPROVER_RECENT_HOURS ?= 24
 tech-lead-improver: sync-deps
@@ -772,6 +783,7 @@ tech-lead-improver: sync-deps
 		$(if $(IMPROVER_STATE_DIR),--state-dir "$(IMPROVER_STATE_DIR)" --audited-repo $(IMPROVER_AUDITED_REPO),--recent-hours $(IMPROVER_RECENT_HOURS)) \
 		--outputs-repo $(IMPROVER_REPO) --exam-dir "$(EXAM_OUT)" \
 		$(if $(IMPROVER_PROVIDER),--provider $(IMPROVER_PROVIDER),) $(if $(IMPROVER_MODEL),--model $(IMPROVER_MODEL),) \
+		$(if $(IMPROVER_MODE),--mode $(IMPROVER_MODE),) $(if $(filter 1,$(IMPROVER_APPLY)),--apply,) \
 		--agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 
 test-e2e-onboarding-live: sync-deps

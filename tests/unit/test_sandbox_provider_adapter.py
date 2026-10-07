@@ -755,3 +755,34 @@ def test_scope_argv_replaces_bypass_with_dontask() -> None:
     assert "bypassPermissions" not in argv
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
     assert "--settings" in argv
+
+
+def _confined_scope() -> SandboxScope:
+    base = _scope()
+    return SandboxScope(
+        working_directory=base.working_directory,
+        read_roots=base.read_roots,
+        write_roots=base.write_roots,
+        egress=base.egress,
+        deny_env=base.deny_env,
+        deny_read_files=base.deny_read_files,
+        reads_confined=True,
+    )
+
+
+def test_a_confined_codex_scope_denies_the_disk_beyond_its_roots_and_the_platform() -> None:
+    """#8001: a denylist cannot bound a shell. Confined, the profile denies
+    "/" and grants only the roots and Codex's ``:minimal`` platform set
+    (verified live with codex-cli 0.157: commands run, the run dir reads,
+    /var/tmp, /Users/Shared, /Library and ~ do not)."""
+    profile = _codex_config_overrides(_codex_argv(_confined_scope()))[f"permissions.{CODEX_PERMISSION_PROFILE}"]
+    filesystem = profile["filesystem"]  # type: ignore[index]
+
+    assert filesystem["/"] == "deny"
+    assert filesystem[":minimal"] == "read"
+    assert "/" not in _codex_config_overrides(_codex_argv())[f"permissions.{CODEX_PERMISSION_PROFILE}"]["filesystem"]  # type: ignore[index]
+
+
+def test_claude_refuses_a_confined_scope_it_cannot_enforce() -> None:
+    with pytest.raises(SandboxUnsupportedError, match="confine"):
+        build_claude_sandbox_settings(_confined_scope())

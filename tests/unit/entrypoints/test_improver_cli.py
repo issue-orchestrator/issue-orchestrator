@@ -76,3 +76,30 @@ def test_run_launches_the_chosen_provider_and_model(argv: list[str], expected: s
 def test_an_unknown_provider_is_refused() -> None:
     with pytest.raises(SystemExit):
         improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", "--provider", "gemini"])
+
+
+def test_a_run_is_empowered_and_dry_by_default() -> None:
+    args = improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"])
+
+    assert args.mode is improver.ImproverMode.EMPOWERED
+    assert args.apply is False
+    assert isinstance(improver._investigation(args), improver.EmpoweredInvestigation)
+
+
+def test_a_scripted_run_has_no_toolbox() -> None:
+    args = improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", "--mode", "scripted"])
+
+    assert isinstance(improver._investigation(args), improver.ScriptedInvestigation)
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--budget-minutes", "90"], "below --agent-timeout-minutes"),
+        (["--exclude-open-issue", "7", "--apply"], "cannot --apply"),
+    ],
+)
+def test_contradictory_run_options_are_refused(argv: list[str], message: str) -> None:
+    with pytest.raises(SystemExit, match=message):
+        improver.main(["run", "--outputs-repo", "o/r", "--state-dir", "/x/.issue-orchestrator/state",
+                       "--audited-repo", "o/r", *argv])

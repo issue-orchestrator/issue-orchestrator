@@ -2,10 +2,11 @@
 """The tech-lead improver's orchestrator side (#7490).
 
     improver run --outputs-repo issue-orchestrator/issue-orchestrator \
-        [--provider claude|codex] [--model M] [--exam-dir D] [--engine-source-repo .] [--recent-hours 24]
+        [--provider claude|codex] [--model M] [--mode empowered|scripted] [--budget-minutes 60] \
+        [--apply] [--exam-dir D] [--engine-source-repo .] [--recent-hours 24]
     improver run --state-dir ~/dev/porchpin/.issue-orchestrator/state \
         --audited-repo porchpin/porchpin --outputs-repo issue-orchestrator/issue-orchestrator \
-        [--no-apply --exclude-open-issue N ...]
+        [--exclude-open-issue N ...]
     improver status
     improver apply --outputs-repo issue-orchestrator/issue-orchestrator
     improver stage ... --run-dir RUN [--previous-audit A]
@@ -14,8 +15,12 @@
 (each ``python -m issue_orchestrator.entrypoints.cli_tools.improver ...``)
 
 ``run`` is the whole daily run (:mod:`..improver_run`): stage the inputs, run
-the improver read-only, validate its findings strictly, record the
-run and apply the accepted findings' GitHub effects. The agent runs on
+the improver read-only, validate its findings strictly and record the run.
+It is a DRY RUN unless ``--apply``: an accepted run's GitHub effects are
+recorded as owed (``improver apply`` applies them later). ``--mode
+empowered`` (the default, #8001) gives the agent the read-only toolbox and
+``--budget-minutes`` to choose its depth in; ``scripted`` gives it the
+staged bundle alone. The agent runs on
 ``--provider`` (default: the latest improver tournament's winner, Claude) and
 ``--model`` (default: that provider's default model). Without ``--state-dir``
 it sweeps every engine Control Center runs or ran within ``--recent-hours``
@@ -52,11 +57,15 @@ from ...domain.improver_findings_validation import (
     validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
-from ...execution.providers import create_repository_host
+from ...execution.providers import create_audited_repo_reads, create_repository_host
 from ...observation.engine_audit import Unavailable
 from ...execution.improver_effect_applier import ImproverEffects
 from ...contracts.improver_run import DEFAULT_IMPROVER_AGENT, ImproverAgentChoice, ImproverProvider
+from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...execution.improver_agents import improver_agent
+from ...execution.improver_investigation import EMPOWERED_ADDENDUM, EmpoweredInvestigation, ScriptedInvestigation
+from ...execution.improver_toolbox_staging import ImproverToolboxStager
+from ...ports.improver_investigation import ImproverInvestigation
 from ...execution.improver_run_store import FileImproverRunStore
 from ...ports.improver import ImproverStoreBusy
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
@@ -97,7 +106,7 @@ def _engine_arguments(parser: argparse.ArgumentParser, *, one_engine: bool) -> N
     parser.add_argument(
         "--exclude-open-issue", type=int, action="append", default=[], metavar="N",
         help="Blind test: hide outputs-repo issue N from open-issues.json (repeatable). A run with"
-        " it needs --no-apply and files nothing",
+        " it cannot --apply and files nothing",
     )
 
 
@@ -125,8 +134,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--agent-timeout-minutes", type=int, default=90)
     run.add_argument("--prompt", type=Path, default=DEFAULT_PROMPT)
     run.add_argument(
-        "--no-apply", action="store_true",
-        help="Record accepted findings' effects as owed without touching GitHub (see apply)",
+        "--mode", type=ImproverMode, choices=list(ImproverMode), default=DEFAULT_IMPROVER_MODE,
+        help="empowered: the staged bundle plus the read-only toolbox; scripted: the bundle alone"
+        " (default: %(default)s)",
+    )
+    run.add_argument(
+        "--budget-minutes", type=int, default=60,
+        help="Empowered: the investigation budget the agent is given (below the agent timeout)",
+    )
+    run.add_argument("--empowered-addendum", type=Path, default=EMPOWERED_ADDENDUM)
+    run.add_argument(
+        "--apply", action="store_true",
+        help="Apply accepted findings' GitHub effects; without it the run is dry and they stay owed",
     )
     apply = sub.add_parser("apply", help="Apply what accepted runs still owe GitHub")
     apply.add_argument("--outputs-repo", required=True)
@@ -202,6 +221,17 @@ def _effects(outputs_repo: str, store: FileImproverRunStore) -> ImproverEffects:
     )
 
 
+def _investigation(args: argparse.Namespace) -> ImproverInvestigation:
+    if args.mode is ImproverMode.SCRIPTED:
+        return ScriptedInvestigation()
+    return EmpoweredInvestigation(
+        stager=ImproverToolboxStager(runner=LocalCommandRunner(), clock=_now),
+        github=lambda repo: None if args.no_github else create_audited_repo_reads(repo),
+        addendum=args.empowered_addendum.read_text(encoding="utf-8"),
+        budget_minutes=args.budget_minutes,
+    )
+
+
 def agent_choice(args: argparse.Namespace) -> ImproverAgentChoice:
     """The provider and model ``run`` launches the improver on."""
     return ImproverAgentChoice.for_provider(args.provider, args.model)
@@ -210,10 +240,13 @@ def agent_choice(args: argparse.Namespace) -> ImproverAgentChoice:
 def run(args: argparse.Namespace) -> int:
     if (args.state_dir is None) != (args.audited_repo is None):
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
-    if args.exclude_open_issue and not args.no_apply:
-        raise SystemExit("improver run: --exclude-open-issue is a blind run; it needs --no-apply")
+    if args.exclude_open_issue and args.apply:
+        raise SystemExit("improver run: --exclude-open-issue is a blind run; it cannot --apply")
+    if args.mode is ImproverMode.EMPOWERED and args.budget_minutes >= args.agent_timeout_minutes:
+        raise SystemExit("improver run: --budget-minutes must be below --agent-timeout-minutes")
     store = _store()
     prompt = args.prompt.read_text(encoding="utf-8")
+    investigation = _investigation(args)
 
     def improver_for(engine: EngineRef) -> ImproverRun:
         return ImproverRun(
@@ -224,6 +257,7 @@ def run(args: argparse.Namespace) -> int:
                 runner=ProcessGroupCommandRunner(),
                 timeout_seconds=args.agent_timeout_minutes * 60,
             ),
+            investigation=investigation,
             effects=_effects(args.outputs_repo, store),
             prompt=prompt,
             clock=_now,
@@ -247,7 +281,7 @@ def run(args: argparse.Namespace) -> int:
             inventory=inventory, runs=store, effects=_effects(args.outputs_repo, store),
             run_for=improver_for, clock=_now,
         ).sweep(
-            request, apply=not args.no_apply
+            request, apply=args.apply
         )
     except ImproverStoreBusy as busy:
         print(f"improver run: {busy}", file=sys.stderr)
@@ -258,9 +292,9 @@ def run(args: argparse.Namespace) -> int:
         print("improver run: no engine ran since it was last audited; nothing to audit", file=sys.stderr)
     for record in result.runs:
         print(render_run(record))
-    if result.owed_by and not args.no_apply:
+    if result.owed_by and args.apply:
         print(f"improver run: effects still owed by {', '.join(result.owed_by)}", file=sys.stderr)
-    # --no-apply leaves effects owed on purpose; only outcomes count.
+    # A dry run leaves effects owed on purpose; only outcomes count.
     return result.exit_code
 
 

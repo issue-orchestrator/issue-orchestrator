@@ -40,7 +40,7 @@ def _agent(runner: FakeRunner) -> CodexImproverAgent:
 def test_codex_runs_under_the_permission_profile_and_its_last_message_is_the_output(tmp_path: Path) -> None:
     runner = FakeRunner(CommandResult(0, "events", ""), message='{"findings": []}')
 
-    result = _agent(runner).run(prompt="PROMPT", run_dir=tmp_path)
+    result = _agent(runner).run(prompt="PROMPT", run_dir=tmp_path, toolbox=None)
 
     [call] = runner.calls
     argv = call["command"]
@@ -77,7 +77,7 @@ def test_codex_runs_under_the_permission_profile_and_its_last_message_is_the_out
     ],
 )
 def test_no_output_says_why(tmp_path: Path, result: CommandResult, message: str | None, detail: str) -> None:
-    answer = _agent(FakeRunner(result, message)).run(prompt="P", run_dir=tmp_path)
+    answer = _agent(FakeRunner(result, message)).run(prompt="P", run_dir=tmp_path, toolbox=None)
 
     assert answer.final_message is None
     assert detail in answer.detail
@@ -91,7 +91,7 @@ def test_no_repository_host_credential_reaches_the_agent(tmp_path: Path, monkeyp
     monkeypatch.setenv("CODEX_HOME", "/codex")
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path)
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
 
     env = runner.calls[0]["env"]
     assert "secret" not in env.values()
@@ -105,10 +105,70 @@ def test_a_relative_run_dir_is_made_absolute(tmp_path: Path, monkeypatch: pytest
     monkeypatch.chdir(tmp_path)
     runner = FakeRunner(CommandResult(0, "", ""), message="{}")
 
-    answer = _agent(runner).run(prompt="P", run_dir=Path("out/run"))
+    answer = _agent(runner).run(prompt="P", run_dir=Path("out/run"), toolbox=None)
 
     run_dir = tmp_path.resolve() / "out" / "run"
     codex = runner.calls[0]["command"]
     assert codex[codex.index("--output-last-message") + 1] == str(run_dir / FINAL_MESSAGE_FILE)
     assert runner.calls[0]["cwd"] == run_dir
     assert answer.final_message == "{}"
+
+
+def test_an_empowered_run_gets_the_toolbox_by_url_and_its_token_by_env(tmp_path: Path) -> None:
+    from issue_orchestrator.ports.improver_toolbox import TOOLBOX_TOKEN_ENV, ToolboxEndpoint
+
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+
+    _agent(runner).run(
+        prompt="P", run_dir=tmp_path, toolbox=ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="run-token-xyz")
+    )
+
+    [call] = runner.calls
+    argv = call["command"]
+    codex = argv[argv.index("codex"):argv.index("exec")]
+    assert 'mcp_servers.improver_toolbox.url="http://127.0.0.1:5555/mcp"' in codex
+    assert f'mcp_servers.improver_toolbox.bearer_token_env_var="{TOOLBOX_TOKEN_ENV}"' in codex
+    # Without it, ``-a never`` refuses every toolbox call (found by the live escape test).
+    assert 'mcp_servers.improver_toolbox.default_tools_approval_mode="approve"' in codex
+    assert not any("run-token-xyz" in a for a in argv)
+    assert call["env"][TOOLBOX_TOKEN_ENV] == "run-token-xyz"
+
+
+@pytest.mark.parametrize("empowered", [False, True])
+def test_the_operators_codex_config_never_reaches_the_agent(tmp_path: Path, empowered: bool) -> None:
+    """r2 F1: an MCP server (or profile) in the operator's config.toml would
+    hand the agent tools beyond its boundary, scripted or empowered."""
+    from issue_orchestrator.ports.improver_toolbox import ToolboxEndpoint
+
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+    toolbox = ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="t") if empowered else None
+
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=toolbox)
+
+    argv = runner.calls[0]["command"]
+    assert "--ignore-user-config" in argv[argv.index("exec"):]
+
+
+def test_the_shell_reads_only_its_run_dir(tmp_path: Path) -> None:
+    """r3 F1 / r4 F1: the shared profile reads the whole disk, and a denylist
+    cannot bound a shell. The improver's scope is a read BOUNDARY (the disk
+    denied, the run dir and the platform's runtime files granted), plus
+    explicit denies for the temp areas the shared profile grants. Verified
+    live with the run dir under the temp root and under home: the run dir
+    reads; a sibling, /var/tmp, /Users/Shared, ~/.claude, /Library and
+    /private/var/log do not."""
+    import os
+    import tempfile
+
+    scope = CodexImproverAgent.scope(tmp_path)
+
+    assert scope.reads_confined is True
+    assert "~" in scope.deny_read_files and "/var/tmp" in scope.deny_read_files
+    assert os.path.realpath(tempfile.gettempdir()) in scope.deny_read_files
+    assert "/tmp" in scope.deny_read_files and os.path.realpath("/tmp") in scope.deny_read_files
+    assert tmp_path in scope.read_roots
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
+    profile = " ".join(runner.calls[0]["command"])
+    assert '"/" = "deny"' in profile and '":minimal" = "read"' in profile
+    assert '"~" = "deny"' in profile and f'"{tmp_path.resolve()}" = "read"' in profile
