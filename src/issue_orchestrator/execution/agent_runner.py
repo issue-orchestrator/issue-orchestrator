@@ -56,32 +56,41 @@ __all__ = [
 _GRACEFUL_KILL_TIMEOUT = 5
 
 
-def _live_process_groups_in_session(session_id: int) -> set[int]:
-    """Find every live process group in a PTY agent's POSIX session.
+def _live_process_groups_in_session(session_id: int, tracked_groups: set[int] | None = None) -> set[int]:
+    """Find a PTY session and its descendants, including newly detached groups.
 
     Agent tools can create a new process group without leaving the session.
     Killing only the original agent group would leave those tools running.
     Read session IDs through getsid: macOS ps's ``sess`` is a pointer, not a SID.
     """
     result = subprocess.run(
-        ps_command("-A", "-o", "pid=,pgid=,state="),
+        ps_command("-A", "-o", "pid=,ppid=,pgid=,state="),
         capture_output=True,
         text=True,
         check=True,
         env=ps_env(),
     )
-    groups = set()
+    processes = {}
+    owned: set[int] = set()
     for line in result.stdout.splitlines():
-        pid, pgid, state = line.split()
+        raw_pid, raw_parent, raw_group, state = line.split()
         if state.startswith("Z"):
             continue
+        pid, parent, group = int(raw_pid), int(raw_parent), int(raw_group)
+        processes[pid] = (parent, group)
         try:
-            sid = os.getsid(int(pid))
+            sid = os.getsid(pid)
         except ProcessLookupError:
             continue  # The process exited since ps took its snapshot.
-        if sid == session_id:
-            groups.add(int(pgid))
-    return groups
+        if sid == session_id or group in (tracked_groups or set()):
+            owned.add(pid)
+    # Keep groups discovered before TERM after their parents exit/reparent.
+    while True:
+        descendants = {pid for pid, (parent, _) in processes.items() if parent in owned}
+        if descendants <= owned:
+            break
+        owned.update(descendants)
+    return {group for pid, (_, group) in processes.items() if pid in owned}
 
 
 def _signal_process_groups(groups: set[int], sig: signal.Signals) -> None:
@@ -90,6 +99,31 @@ def _signal_process_groups(groups: set[int], sig: signal.Signals) -> None:
             os.killpg(pgid, sig)
         except ProcessLookupError:
             continue
+
+
+def agent_session_has_live_processes(session_id: int) -> bool:
+    """Observe session workers even after the PTY leader exits."""
+    return bool(_live_process_groups_in_session(session_id))
+
+
+def terminate_agent_session(session_id: int) -> None:
+    """Drain the same process boundary for live and recovered PTY sessions."""
+    tracked = _live_process_groups_in_session(session_id)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        signalled: set[int] = set()
+        deadline = time.monotonic() + _GRACEFUL_KILL_TIMEOUT
+        while True:
+            groups = _live_process_groups_in_session(session_id, tracked)
+            if not groups:
+                return
+            tracked.update(groups)
+            _signal_process_groups(groups - signalled, sig)
+            signalled.update(groups)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+    if _live_process_groups_in_session(session_id, tracked):
+        raise RuntimeError(f"agent session {session_id} still has live processes after SIGKILL")
 
 
 class AgentSession:
@@ -179,31 +213,15 @@ class AgentSession:
             # Covers unexpected pexpect errors (e.g. child already closed)
             pass
 
+
         return self._close(timed_out=timed_out)
 
     def kill(self) -> None:
         """Terminate all process groups in this PTY session."""
-        if self._closed:
-            return
         pid = self._child.pid
         if pid is None:
             return
-        groups = _live_process_groups_in_session(pid)
-        _signal_process_groups(groups, signal.SIGTERM)
-        deadline = time.monotonic() + _GRACEFUL_KILL_TIMEOUT
-        while time.monotonic() < deadline:
-            groups = _live_process_groups_in_session(pid)
-            if not groups:
-                return
-            time.sleep(0.1)
-        logger.warning("Agent did not terminate gracefully, using SIGKILL")
-        _signal_process_groups(groups, signal.SIGKILL)
-        deadline = time.monotonic() + _GRACEFUL_KILL_TIMEOUT
-        while time.monotonic() < deadline:
-            if not _live_process_groups_in_session(pid):
-                return
-            time.sleep(0.1)
-        raise RuntimeError(f"agent session {pid} still has live processes after SIGKILL")
+        terminate_agent_session(pid)
 
     def _close(self, *, timed_out: bool) -> AgentResult:
         """Close the PTY, flush the log, return the result."""

@@ -14,14 +14,16 @@ import json
 import logging
 import os
 import re
-import signal
 import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from ..control.isolation import build_agent_tool_path, build_isolation_prefix
-from .agent_runner import AgentRunner, AgentSession, AgentSpec
+from .agent_runner import (
+    AgentRunner, AgentSession, AgentSpec,
+    agent_session_has_live_processes, terminate_agent_session,
+)
 from .session_interactions import (
     SessionInteractionHandler,
     builtin_session_interaction_rules,
@@ -371,28 +373,8 @@ class SubprocessPlugin:
         """Check if a process is still running."""
         session = self._sessions.get(session_name) if session_name else None
         if session is not None:
-            return session.is_alive()
-        # Fall back to kill(0) check for recovered sessions without a handle
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-
-    def _kill_process(self, pid: int, session_name: str | None = None) -> None:
-        """Kill a process, trying AgentSession first."""
-        session = self._sessions.get(session_name) if session_name else None
-        if session is not None:
-            session.kill()
-            return
-        # Fall back to manual kill for recovered sessions without a handle
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                return
+            return session.is_alive() or agent_session_has_live_processes(pid)
+        return agent_session_has_live_processes(pid)
 
     @hookimpl
     def create_session(
@@ -481,7 +463,7 @@ class SubprocessPlugin:
         record = records.get(session_name)
         if not record:
             return False
-        self._kill_process(record.pid, session_name)
+        terminate_agent_session(record.pid)
         self._cleanup_session(session_name)
         self._registry.remove(session_name)
         return True
@@ -556,7 +538,7 @@ class SubprocessPlugin:
         records = self._registry.load()
         for record in records.values():
             if self._process_alive(record.pid, record.session_name):
-                self._kill_process(record.pid, record.session_name)
+                terminate_agent_session(record.pid)
         # Wait for all watcher threads to finish
         for session_name in list(self._watcher_threads.keys()):
             self._wait_for_watcher_thread(session_name, timeout=1.0)
