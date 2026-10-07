@@ -64,6 +64,7 @@ from issue_orchestrator.contracts.improver_inputs import (
 )
 from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.observation.engine_audit import Unavailable
 from issue_orchestrator.observation.engine_audit_diff import diff_reports
 from issue_orchestrator.testing.exam.cases import EXAM_CASE_IDS
 
@@ -396,3 +397,7 @@ class FakeIssueHost:
 
     def issue_comment_marker_present(self, issue_number, marker):  # type: ignore[no-untyped-def]
         return any(n == issue_number and marker in body for n, body in self.comments)
+
+
+#: A stager's GitHub activity source, for a test that reads none.
+NO_ACTIVITY = Unavailable(SourceStatus.SKIPPED, "test")

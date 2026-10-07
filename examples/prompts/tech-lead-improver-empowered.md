@@ -42,7 +42,9 @@ above). Look for places where the system's model of the world doesn't match real
 mechanism carrying two meanings, a silent assumption, the operator doing by hand what the
 system should do, a human needed only because a tool is missing, and frictions only the
 operator experiences (how they approve, what they must do before approving, where they
-see what waits on them). Quote what you read: a `file` citation of a log or source line
+see what waits on them). `improver-data/interventions.json` lists the hand actions on GitHub
+(a label removed to approve, a body edited before approving, a merge by hand): each is
+evidence of what the operator does that the system should. Quote what you read: a `file` citation of a log or source line
 under `toolbox/` or `improver-data/`, or a `tool` citation of a `github_get` answer (or of
 one stored value in a `sql_query` answer) by its `[toolbox call N]` number. A `git` answer
 is never evidence: cite the file in `toolbox/repo/` instead.

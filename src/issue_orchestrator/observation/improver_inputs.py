@@ -25,6 +25,8 @@ from ..contracts.improver_inputs import (
     CharterDecisionsInput,
     Coverage,
     EngineStartInput,
+    GitHubInterventionsCoverage,
+    GitHubSourceCoverage,
     Intervention,
     InterventionKind,
     InterventionsInput,
@@ -33,6 +35,8 @@ from ..contracts.improver_inputs import (
     StagedDecision,
     StagedDiagnosis,
 )
+from ..domain.operator_interventions import ATTRIBUTION_LIMITS, github_interventions
+from ..ports.operator_activity import RepoActivityRead
 from ..domain.pause_state import PauseActor, PauseTransition
 from ..domain.tech_lead_charter_decisions import (
     CharterExecutionResult,
@@ -48,10 +52,14 @@ RESET_RETRY_REASON = "reset_retry_requested"
 
 #: What no local record shows, so ``interventions.json`` is never complete.
 NOT_DERIVABLE_INTERVENTIONS: tuple[str, ...] = (
-    "needs-human or other labels removed by a human on GitHub",
     "the dashboard's retry/dismiss buttons (logged, not recorded)",
-    "comments or direct edits an operator makes on GitHub",
 )
+#: Missing only when the audited repository's GitHub could not be read.
+GITHUB_NOT_DERIVABLE: tuple[str, ...] = (
+    "labels a person added or removed on GitHub",
+    "comments, edits, closes, merges and reviews a person made on GitHub",
+)
+GITHUB_INTERVENTIONS = "the audited repository's GitHub: issue events, comments, edits, reviews and merges"
 LEDGER_INTERVENTIONS = "charter ledger: proposal approvals and declines"
 TIMELINE_INTERVENTIONS = "timeline: Reset & Retry requests"
 PAUSE_INTERVENTIONS = "pause journal: pauses an operator surface requested"
@@ -387,21 +395,28 @@ def ledger_coverage(
 
 
 def interventions_input(
-    ledger: Iterable[TechLeadCharterDecision],
+    ledger: Iterable[TechLeadCharterDecision] | str,
     timeline: Iterable[TimelineEvent] | str,
     pauses: Iterable[PauseTransition],
+    github: RepoActivityRead | str,
     *,
+    repo: str,
     window_start: datetime,
     cutoff: datetime,
 ) -> InterventionsInput:
-    """The operator interventions the engine's records show in the window.
+    """The operator interventions in the window: the engine's records, and
+    the hand actions on the audited repository's GitHub (#8001).
 
-    ``timeline`` is its events, or why it could not be read; its Reset &
-    Retry requests are then named among what is not derivable.
+    ``ledger``, ``timeline`` and ``github`` are each their read, or why it
+    could not be made; what they would have shown is then named as not
+    derivable.
     """
-    unread = (f"{TIMELINE_INTERVENTIONS} (unread: {timeline})",) if isinstance(timeline, str) else ()
+    unread = (
+        *((f"{LEDGER_INTERVENTIONS} (unread: {ledger})",) if isinstance(ledger, str) else ()),
+        *((f"{TIMELINE_INTERVENTIONS} (unread: {timeline})",) if isinstance(timeline, str) else ()),
+    )
     found = [
-        *_proposal_interventions(ledger),
+        *(() if isinstance(ledger, str) else _proposal_interventions(ledger)),
         *(() if isinstance(timeline, str) else _reset_interventions(timeline)),
         *(
             Intervention(
@@ -409,20 +424,27 @@ def interventions_input(
                 kind="operator_pause",
                 subject="engine",
                 detail=f"{p.actor.value}: {p.reason}; {p.detail}".strip(),
+                source="pause_journal",
+                attribution="operator_surface",
             )
             for p in pauses
             if p.paused and p.actor is not PauseActor.SYSTEM
         ),
     ]
+    hand, coverage = _github_interventions(github, repo, window_start, cutoff)
+    found += hand
     return InterventionsInput(
         window_from=window_start,
         window_to=cutoff,
         derived_from=tuple(
             source
-            for source in (LEDGER_INTERVENTIONS, TIMELINE_INTERVENTIONS, PAUSE_INTERVENTIONS)
-            if not (unread and source == TIMELINE_INTERVENTIONS)
+            for source in (LEDGER_INTERVENTIONS, TIMELINE_INTERVENTIONS, PAUSE_INTERVENTIONS, GITHUB_INTERVENTIONS)
+            if not (isinstance(timeline, str) and source == TIMELINE_INTERVENTIONS)
+            and not (isinstance(ledger, str) and source == LEDGER_INTERVENTIONS)
+            and not (not coverage.read and source == GITHUB_INTERVENTIONS)
         ),
-        not_derivable=NOT_DERIVABLE_INTERVENTIONS + unread,
+        not_derivable=NOT_DERIVABLE_INTERVENTIONS + unread + (() if coverage.read else GITHUB_NOT_DERIVABLE),
+        github=coverage,
         interventions=tuple(
             sorted(
                 (i for i in found if window_start <= i.at <= cutoff),
@@ -454,6 +476,9 @@ def _proposal_interventions(ledger: Iterable[TechLeadCharterDecision]) -> Iterab
             if decision.proposal_issue_number
             else decision.decision_id,
             detail=f"{decision.action_kind} ({decision.decision_id})",
+            source="charter_ledger",
+            attribution="operator_surface",
+            ref=decision.decision_id,
         )
 
 
@@ -467,7 +492,28 @@ def _reset_interventions(timeline: Iterable[TimelineEvent]) -> Iterable[Interven
                 kind="reset_retry",
                 subject=f"#{event.issue_number}",
                 detail=str(record.data.get("source", "")),
+                source="timeline",
+                attribution="operator_surface",
             )
+
+
+def _github_interventions(
+    github: RepoActivityRead | str, repo: str, since: datetime, until: datetime
+) -> tuple[list[Intervention], GitHubInterventionsCoverage]:
+    if isinstance(github, str):
+        return [], GitHubInterventionsCoverage(
+            repo=repo, read=False, detail=github, sources=(), automation_excluded=0,
+            attribution_limits=ATTRIBUTION_LIMITS,
+        )
+    hand, excluded = github_interventions(github, since=since, until=until)
+    return list(hand), GitHubInterventionsCoverage(
+        repo=repo,
+        read=True,
+        detail="read" if all(s.complete for s in github.sources) else "partial: a source stopped before the window's start",
+        sources=tuple(GitHubSourceCoverage(name=s.name, complete=s.complete, detail=s.detail) for s in github.sources),
+        automation_excluded=excluded,
+        attribution_limits=ATTRIBUTION_LIMITS,
+    )
 
 
 @dataclass(frozen=True)
@@ -509,6 +555,8 @@ def exam_series(scorecards: Iterable[Scorecard]) -> ExamSeries:
 
 __all__ = [
     "ExamSeries",
+    "GITHUB_INTERVENTIONS",
+    "GITHUB_NOT_DERIVABLE",
     "NOT_DERIVABLE_INTERVENTIONS",
     "RESET_RETRY_REASON",
     "Scorecard",

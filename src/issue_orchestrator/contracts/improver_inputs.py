@@ -156,7 +156,41 @@ class CaseFilesInput(_Closed):
     diagnoses: tuple[StagedDiagnosis, ...]
 
 
-InterventionKind = Literal["reset_retry", "proposal_approved", "proposal_declined", "operator_pause"]
+InterventionKind = Literal[
+    # From the engine's own records.
+    "reset_retry",
+    "proposal_approved",
+    "proposal_declined",
+    "operator_pause",
+    # From the audited repository's GitHub (#8001): what a person did by hand.
+    "label_added",
+    "label_removed",
+    "title_edited",
+    "body_edited",
+    "opened",
+    "closed",
+    "reopened",
+    "merged",
+    "review_approved",
+    "review_changes_requested",
+    "review_commented",
+    # A review submitted in the window and dismissed since: GitHub reports
+    # only its current state, so its verdict at submission is unknown.
+    "review_since_dismissed",
+    "commented",
+]
+
+#: Who acted, as far as the evidence shows:
+#: * ``operator_surface``: an operator surface of the engine recorded it
+#:   (Control Center, the dashboard, the pause API);
+#: * ``coordinator``: a person's GitHub identity, and the text carries the
+#:   coordinator's signature (an AI coding session working for the operator);
+#: * ``person``: a person's GitHub identity, with nothing to tell the
+#:   operator from the coordinator, who acts under the operator's identity.
+InterventionAttribution = Literal["operator_surface", "coordinator", "person"]
+InterventionSource = Literal[
+    "charter_ledger", "timeline", "pause_journal", "github_events", "github_comments", "github_items"
+]
 
 
 class Intervention(_Closed):
@@ -164,14 +198,49 @@ class Intervention(_Closed):
     kind: InterventionKind
     subject: str
     detail: str
+    source: InterventionSource
+    attribution: InterventionAttribution
+    #: The GitHub login that acted, when the source names one.
+    actor: str | None = None
+    #: Where to read it: a GitHub URL, or the engine record's id.
+    ref: str = ""
+    #: For a GitHub action: whether GitHub reported that no App acted for
+    #: the person (``checked``), or does not say (``unreported``: an App
+    #: using that person's token cannot be ruled out). None for the engine's
+    #: own records.
+    app_provenance: Literal["checked", "unreported"] | None = None
+
+
+class GitHubSourceCoverage(_Closed):
+    name: str
+    #: Whether the read reached back to the window's start.
+    complete: bool
+    detail: str
+
+
+class GitHubInterventionsCoverage(_Closed):
+    """What the GitHub read of hand actions covered, and what it cannot say."""
+
+    repo: str
+    read: bool
+    #: Why it was not read, or how it was.
+    detail: str
+    sources: tuple[GitHubSourceCoverage, ...]
+    #: Events, comments and edits by automation (a ``Bot`` account or an
+    #: App acting for a user) seen in the window and left out.
+    automation_excluded: int
+    #: What the attribution cannot tell apart.
+    attribution_limits: tuple[str, ...]
 
 
 class InterventionsInput(_Closed):
-    """The operator interventions the engine's own records show.
+    """The operator's interventions: the engine's own records, and the hand
+    actions on the audited repository's GitHub (#8001).
 
-    Never complete: an operator removing ``needs-human`` on GitHub, or the
-    dashboard's retry/dismiss buttons, leave no local record, so a count over
-    this file is a floor. ``not_derivable`` names what is missing.
+    Never complete: the dashboard's retry/dismiss buttons leave no record,
+    and the GitHub read is bounded, so a count over this file is a floor.
+    ``not_derivable`` names what is missing; ``github`` says what the GitHub
+    read covered and what its attribution cannot tell apart.
     """
 
     window_from: AwareDatetime
@@ -179,6 +248,7 @@ class InterventionsInput(_Closed):
     complete: Literal[False] = False
     derived_from: tuple[str, ...]
     not_derivable: tuple[str, ...]
+    github: GitHubInterventionsCoverage
     interventions: tuple[Intervention, ...]
 
 
@@ -385,7 +455,11 @@ __all__ = [
     "Coverage",
     "EngineStartInput",
     "InputsManifest",
+    "GitHubInterventionsCoverage",
+    "GitHubSourceCoverage",
     "Intervention",
+    "InterventionAttribution",
+    "InterventionSource",
     "NeedsHumanCauseInput",
     "InterventionsInput",
     "OpenIssue",

@@ -57,7 +57,11 @@ from ...domain.improver_findings_validation import (
     validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
-from ...execution.providers import create_audited_repo_reads, create_repository_host
+from ...execution.providers import (
+    create_audited_repo_reads,
+    create_operator_activity_source,
+    create_repository_host,
+)
 from ...observation.engine_audit import Unavailable
 from ...execution.improver_effect_applier import ImproverEffects
 from ...contracts.improver_run import DEFAULT_IMPROVER_AGENT, ImproverAgentChoice, ImproverProvider
@@ -181,6 +185,9 @@ def _stager(args: argparse.Namespace, audited_repo: str) -> ImproverInputStager:
         audited_host=audited,
         outputs_host=outputs,
         source=GitEngineSourceArchive(args.engine_source_repo.resolve(), LocalCommandRunner()),
+        activity=Unavailable(SourceStatus.SKIPPED, "--no-github")
+        if args.no_github
+        else create_operator_activity_source(audited_repo),
         clock=_now,
     )
 

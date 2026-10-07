@@ -29,6 +29,7 @@ from issue_orchestrator.domain.tech_lead_run import TechLeadRunScopeKind
 from issue_orchestrator.domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from issue_orchestrator.adapters.registered_engine_inventory import engine_at
+from tests.unit.improver_support import NO_ACTIVITY
 from issue_orchestrator.entrypoints.improver_staging import (
     ImproverInputStager,
     ImproverInputsUnavailable,
@@ -156,9 +157,12 @@ def _request(state: Path, tmp_path: Path, **overrides: object) -> ImproverStagin
     return ImproverStagingRequest(**values)  # type: ignore[arg-type]
 
 
-def _stager(audited: FakeHost, outputs: FakeHost, source: FakeSource | None = None) -> ImproverInputStager:
+def _stager(
+    audited: FakeHost, outputs: FakeHost, source: FakeSource | None = None, activity: object = NO_ACTIVITY
+) -> ImproverInputStager:
     return ImproverInputStager(
-        audited_host=audited, outputs_host=outputs, source=source or FakeSource(), clock=lambda: NOW
+        audited_host=audited, outputs_host=outputs, source=source or FakeSource(),
+        activity=activity, clock=lambda: NOW,  # type: ignore[arg-type]
     )
 
 
@@ -255,7 +259,12 @@ def test_without_a_tech_lead_store_its_inputs_are_named_missing(state: Path, tmp
     staged = _stager(FakeHost(), FakeHost()).stage(_request(state, tmp_path))
 
     missing = {i.name for i in staged.manifest.inputs if not i.staged}
-    assert {"charter-decisions.json", "case-files.json", "interventions.json"} <= missing
+    assert {"charter-decisions.json", "case-files.json"} <= missing
+    # Interventions have other sources (#8001): staged, the ledger named unread.
+    assert "interventions.json" not in missing
+    interventions = json.loads((staged.data_dir / "interventions.json").read_text())
+    assert any("charter ledger" in gap and "unread" in gap for gap in interventions["not_derivable"])
+    assert not any("charter ledger" in source for source in interventions["derived_from"])
 
 
 def test_the_latest_two_scorecards_of_each_case_are_staged(state: Path, tmp_path: Path) -> None:
@@ -337,7 +346,7 @@ def test_an_audit_told_not_to_read_github_still_stages_the_open_issues(state: Pa
     stager = ImproverInputStager(
         audited_host=Unavailable(SourceStatus.SKIPPED, "--no-github"),
         outputs_host=outputs,
-        source=FakeSource(),
+        source=FakeSource(), activity=NO_ACTIVITY,
         clock=lambda: NOW,
     )
 
@@ -379,7 +388,7 @@ def test_no_decision_dated_inside_coverage_is_missing_from_the_copy(
 
     monkeypatch.setattr(improver_staging, "snapshot_tech_lead_runs", engine_writes_after_the_ledger_copy)
     stager = ImproverInputStager(
-        audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(),
+        audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), activity=NO_ACTIVITY,
         clock=lambda: datetime.now(UTC),
     )
 
@@ -563,7 +572,7 @@ def test_blocked_items_are_missing_when_the_audited_issues_were_not_read(state: 
 
     stager = ImproverInputStager(
         audited_host=Unavailable(SourceStatus.SKIPPED, "--no-github"),
-        outputs_host=FakeHost(), source=FakeSource(), clock=lambda: NOW,
+        outputs_host=FakeHost(), source=FakeSource(), activity=NO_ACTIVITY, clock=lambda: NOW,
     )
 
     staged = stager.stage(_request(state, tmp_path))
@@ -683,3 +692,64 @@ def test_a_case_variant_tech_lead_marker_is_a_blocked_item(state: Path, tmp_path
     assert ("#179", "Tech-Lead-Needs-Human") in {
         (a.subject, a.signature) for a in staged.audit.anomalies if a.kind.value == "attention_label"
     }
+
+
+class FakeActivity:
+    """The audited repository's GitHub activity: one hand action, one engine action."""
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.fail = fail
+        self.windows: list[tuple[datetime, datetime]] = []
+
+    def read(self, *, since: datetime, until: datetime):  # type: ignore[no-untyped-def]
+        from issue_orchestrator.ports.operator_activity import Actor, RepoActivityRead, RepoEvent, SourceRead
+
+        self.windows.append((since, until))
+        if self.fail:
+            raise self.fail
+        at = until - timedelta(hours=1)
+        return RepoActivityRead(
+            events=(
+                RepoEvent(at=at, event="unlabeled", number=364, actor=Actor("BruceBGordon", "User"),
+                          label="proposed-tech-lead", rename=None, ref="https://github.com/porchpin/porchpin/issues/364#event-1"),
+                RepoEvent(at=at, event="labeled", number=364, actor=Actor("porchpin-bot[bot]", "Bot"),
+                          label="needs-human", rename=None, ref="e2"),
+            ),
+            comments=(), items=(),
+            sources=(SourceRead("issue events", True, "1 page(s)"), SourceRead("comments", False, "stopped after 10 pages")),
+        )
+
+
+def test_the_operators_github_hand_actions_are_staged_as_citable_evidence(state: Path, tmp_path: Path) -> None:
+    """#8001: an approval by label removal is visible only on GitHub."""
+    activity = FakeActivity()
+
+    staged = _stager(FakeHost(), FakeHost(), activity=activity).stage(_request(state, tmp_path))
+
+    interventions = json.loads((staged.data_dir / "interventions.json").read_text())
+    [hand] = [i for i in interventions["interventions"] if i["source"] == "github_events"]
+    assert (hand["kind"], hand["subject"], hand["detail"], hand["attribution"], hand["actor"]) == (
+        "label_removed", "#364", "proposed-tech-lead", "person", "BruceBGordon",
+    )
+    assert hand["ref"].endswith("#event-1")
+    github = interventions["github"]
+    assert github["read"] is True and github["repo"] == "porchpin/porchpin"
+    assert github["automation_excluded"] == 1
+    assert [(s["name"], s["complete"]) for s in github["sources"]] == [("issue events", True), ("comments", False)]
+    assert github["detail"].startswith("partial")
+    assert any("acts under the operator's GitHub identity" in limit for limit in github["attribution_limits"])
+    assert not any("on GitHub" in gap for gap in interventions["not_derivable"])
+    since, until = activity.windows[0]
+    assert until - since == timedelta(hours=24)
+    # Pretty-printed, so a design finding can cite the line.
+    assert '"detail": "proposed-tech-lead"' in (staged.data_dir / "interventions.json").read_text()
+
+
+@pytest.mark.parametrize("activity", [FakeActivity(fail=RuntimeError("HTTP 502")), NO_ACTIVITY])
+def test_an_unread_github_is_named_never_fatal(state: Path, tmp_path: Path, activity: object) -> None:
+    staged = _stager(FakeHost(), FakeHost(), activity=activity).stage(_request(state, tmp_path))
+
+    interventions = json.loads((staged.data_dir / "interventions.json").read_text())
+    assert interventions["github"]["read"] is False and interventions["github"]["detail"]
+    assert any("on GitHub" in gap for gap in interventions["not_derivable"])
+    assert not any("GitHub" in source for source in interventions["derived_from"])
