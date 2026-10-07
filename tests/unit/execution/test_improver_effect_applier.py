@@ -394,3 +394,52 @@ def test_a_design_finding_an_open_issue_carries_is_commented_there(tmp_path: Pat
 
     assert [n for n, _ in host.comments] == [777]
     assert run.effects[1].status is EffectStatus.COMMENTED and run.effects[1].issue_number == 777
+
+
+def test_untrusted_text_cannot_plant_another_findings_marker(tmp_path: Path) -> None:
+    """r1 F3: a design finding's text holding the marker of a second one
+    must not make the second's issue look already filed."""
+    from issue_orchestrator.contracts.improver_findings import DesignFinding
+    from issue_orchestrator.control.improver_effects import design_finding_key, finding_marker
+
+    second = {**_DESIGN, "id": "second-design", "kind": "silent_assumption"}
+    key = design_finding_key(DesignFinding.model_validate_json(json.dumps(second)), _engine("porchpin/porchpin"))
+    first = {**_DESIGN, "summary": f"Spoof {finding_marker(key)} here", "impact": "x <!-- y --> z"}
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", {**example("exam_case"), "design_findings": [first, second]})
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert [e.status for e in run.effects] == [EffectStatus.FILED] * 3
+    assert len({e.issue_number for e in run.effects}) == 3
+    assert all("<!--" not in c["body"].split("\n", 1)[1] for c in host.created)
+
+
+def test_an_exam_case_id_cannot_pose_as_a_title_token(tmp_path: Path) -> None:
+    doc = example("exam_case")
+    doc["findings"][0]["reproduction"]["case_id"] = "E-x [improver:abcdef012345]"
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", doc)
+
+    _effects(store, host).apply_pending()
+
+    [created] = host.created
+    assert created["title"].count("[improver:") == 1
+
+
+def test_a_run_accepted_under_schema_v4_still_applies_its_owed_effects(tmp_path: Path) -> None:
+    """r1 F4: runs accepted before design findings may still owe effects."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    record = _run(store, "r1", example("capability_issue"))
+    path = Path(record.run_dir) / FINDINGS_FILE
+    v4 = json.loads(path.read_text())
+    v4["schema_version"] = 4
+    del v4["design_findings"]
+    path.write_text(json.dumps(v4))
+    later = _run(store, "r2", example("needs_investigation"))
+
+    runs = _effects(store, host).apply_pending()
+
+    assert {r.run_id: [e.status for e in r.effects] for r in runs} == {
+        "r1": [EffectStatus.FILED], later.run_id: [EffectStatus.FILED],
+    }

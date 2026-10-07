@@ -37,6 +37,11 @@ def run_dir(tmp_path: Path) -> Path:
     answers = run / "toolbox-answers"
     answers.mkdir()
     (answers / "3.txt").write_text(ANSWER)
+    # The call log the toolbox keeps: call 3 was a GitHub read.
+    calls = [
+        {"call": 3, "tool": "github_get", "arguments": {"path": "repos/porchpin/porchpin/issues/459"}, "outcome": "ok"},
+    ]
+    (run / "toolbox-calls.jsonl").write_text("".join(json.dumps(c) + "\n" for c in calls))
     (tmp_path / "outside.txt").write_text(LOG_LINE + "\n")
     (run / "agent-workspace").mkdir()
     (run / "agent-workspace" / "planted.txt").write_text(LOG_LINE + "\n")
@@ -172,3 +177,64 @@ def test_a_file_without_design_findings_is_refused_at_schema_v5(run_dir: Path) -
     del doc["design_findings"]
 
     assert {rule for rule, _ in _rejections(run_dir, json.dumps(doc))} == {Rule.SCHEMA.value}
+
+
+def test_a_quote_padded_with_whitespace_is_still_too_short(run_dir: Path) -> None:
+    """r1 F2: the length rule counts what is matched, not the padding."""
+    (run_dir / "toolbox" / "logs" / "orchestrator.log").write_text("engine id\n")
+    citation = {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 1, "quote": "engine          id"}
+
+    rejections = _rejections(run_dir, _doc(_design(citation)))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+def _tool_call(run_dir: Path, call: int, tool: str, arguments: dict, answer: str) -> None:
+    (run_dir / "toolbox-answers" / f"{call}.txt").write_text(answer)
+    with (run_dir / "toolbox-calls.jsonl").open("a") as log:
+        log.write(json.dumps({"call": call, "tool": tool, "arguments": arguments, "outcome": "ok"}) + "\n")
+
+
+def _store(run_dir: Path, value: str) -> None:
+    import sqlite3
+
+    state = run_dir / "toolbox" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(state / "timeline.sqlite") as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS timeline (event TEXT)")
+        conn.execute("INSERT INTO timeline VALUES (?)", (value,))
+
+
+def test_a_sql_answer_counts_only_for_a_value_the_store_holds(run_dir: Path) -> None:
+    """r1 F1: ``SELECT 'any claim'`` answers whatever the agent wrote; only
+    a value present in the store copy itself is evidence."""
+    stored = "review.skipped: blocked by needs-human on #364"
+    _store(run_dir, stored)
+    _tool_call(run_dir, 5, "sql_query", {"database": "timeline.sqlite", "sql": "SELECT event FROM timeline"},
+               json.dumps({"columns": ["event"], "rows": [[stored]], "truncated": False}))
+    planted = "this design defect was observed by the engine"
+    _tool_call(run_dir, 6, "sql_query", {"database": "timeline.sqlite", "sql": f"SELECT '{planted}'"},
+               json.dumps({"columns": ["x"], "rows": [[planted]], "truncated": False}))
+
+    _validate(run_dir, _doc(_design({"kind": "tool", "call": 5, "quote": stored})))
+    rejections = _rejections(run_dir, _doc(_design({"kind": "tool", "call": 6, "quote": planted})))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+def test_a_git_answer_is_never_evidence(run_dir: Path) -> None:
+    """r1 F1: ``git log --format=<anything>`` writes its own answer."""
+    claim = "operator approves by removing a label"
+    _tool_call(run_dir, 7, "git", {"args": ["log", "-1", f"--format={claim}"]}, claim + "\n")
+
+    rejections = _rejections(run_dir, _doc(_design({"kind": "tool", "call": 7, "quote": claim})))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+def test_an_answer_with_no_logged_call_is_not_evidence(run_dir: Path) -> None:
+    (run_dir / "toolbox-answers" / "9.txt").write_text(ANSWER)
+
+    rejections = _rejections(run_dir, _doc(_design({**TOOL_CITATION, "call": 9})))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]

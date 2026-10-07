@@ -18,6 +18,8 @@ TOOLBOX_REPO_DIRNAME = "repo"
 #: In the run directory: each toolbox answer the agent was served, by call
 #: id, so a design finding can cite it (#8001). Written by the orchestrator.
 TOOLBOX_ANSWERS_DIRNAME = "toolbox-answers"
+#: In the run directory: every toolbox call, its tool, arguments and outcome.
+TOOLBOX_CALL_LOG = "toolbox-calls.jsonl"
 
 
 class ImproverMode(StrEnum):
@@ -57,6 +59,7 @@ class ToolboxManifest(_Closed):
 __all__ = [
     "DEFAULT_IMPROVER_MODE",
     "TOOLBOX_ANSWERS_DIRNAME",
+    "TOOLBOX_CALL_LOG",
     "TOOLBOX_DIRNAME",
     "TOOLBOX_LOGS_DIRNAME",
     "TOOLBOX_MANIFEST",

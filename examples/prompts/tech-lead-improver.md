@@ -378,10 +378,15 @@ in `engine-source/examples/improver/findings/`.
     staged bundle or toolbox, nothing else), the `line` the quote is on, and
     at least 12 characters of that line;
   - a `tool` entry names a toolbox answer by its `call` number (each answer
-    begins `[toolbox call N]`) and quotes text from it.
+    begins `[toolbox call N]`) and quotes text from it. Only answers that are
+    data count: a `github_get` answer, or ONE value of a `sql_query` answer
+    that is stored in that database (not text your query computed). A `git`
+    answer is never evidence, since your own arguments shape it: cite the
+    file in `toolbox/repo/` instead, or the commit through `github_get`.
 
   The orchestrator looks each quote up. Whitespace may differ and the line
-  may be off by two, but the words must be there. One quote that is not
+  may be off by two, but the words must be there, and the quote needs 12
+  characters besides whitespace. One quote that is not
   there rejects the whole file. Ids are unique across `findings` and
   `design_findings`. An accepted design finding files an issue for the
   operator's decision; nothing is changed.

@@ -61,3 +61,5 @@ def test_the_prompts_ask_for_design_findings_under_the_evidence_rule() -> None:
     assert "**The same evidence rule holds: no citation, no finding.**" in text
     assert '{"kind": "file", "path":' in text and '{"kind": "tool", "call":' in text
     assert "`design_findings`" in addendum and "[toolbox call N]" in addendum
+    # r1 F1: only data is evidence; the agent is told which answers count.
+    assert "A `git` answer is never evidence" in text and "A `git` answer is never evidence" in " ".join(addendum.split())

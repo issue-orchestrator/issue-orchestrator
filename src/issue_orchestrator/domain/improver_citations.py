@@ -18,6 +18,9 @@ from typing import Protocol
 
 #: How far a file citation's quote may sit from its cited line.
 LINE_SLACK = 2
+#: A quote's least length once its whitespace is collapsed: long enough to be
+#: found, not matched by chance (r1 F2: padding does not count).
+MIN_QUOTE_CHARS = 12
 
 
 class CitationCheck(StrEnum):
@@ -28,6 +31,11 @@ class CitationCheck(StrEnum):
     NO_SUCH_SOURCE = "no_such_source"
     #: The path resolves outside the run's evidence (``..``, a symlink out).
     OUTSIDE_EVIDENCE = "outside_evidence"
+    #: A toolbox answer whose text the agent's own request can shape (a git
+    #: ``--format``, a SQL literal), or a SQL value not in the store itself.
+    NOT_EVIDENCE = "not_evidence"
+    #: Shorter than :data:`MIN_QUOTE_CHARS` once whitespace is collapsed.
+    TOO_SHORT = "too_short"
 
 
 class CitationIndex(Protocol):
@@ -37,7 +45,11 @@ class CitationIndex(Protocol):
         ...
 
     def quote_in_answer(self, call: int, quote: str) -> CitationCheck:
-        """Whether ``quote`` is in the answer of toolbox call ``call``."""
+        """Whether ``quote`` is in the answer of toolbox call ``call`` AND is
+        data rather than text the agent's request put there: a GitHub answer
+        is GitHub's; a SQL answer counts only for a value present, byte for
+        byte, in the queried store copy; a git answer never counts (its
+        format is the request's; cite the clone's file instead)."""
         ...
 
 

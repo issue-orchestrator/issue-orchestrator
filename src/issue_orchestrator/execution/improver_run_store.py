@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..contracts.improver_findings import FINDINGS_FILE, ImproverFindings
+from ..contracts.improver_findings import FINDINGS_FILE, ImproverFindings, stored_findings
 from ..contracts.improver_run import ImproverRunRecord, RunOutcome
 from ..infra.atomic_io import atomic_write_bytes
 from ..ports.command_runner import CommandRunner
@@ -80,9 +80,7 @@ class FileImproverRunStore:
     def accepted_findings(self, run: ImproverRunRecord) -> ImproverFindings:
         if run.outcome is not RunOutcome.ACCEPTED:
             raise ValueError(f"run {run.run_id} was {run.outcome.value}; it owes no findings")
-        return ImproverFindings.model_validate_json(
-            (self._runs / run.run_id / FINDINGS_FILE).read_text(encoding="utf-8")
-        )
+        return stored_findings((self._runs / run.run_id / FINDINGS_FILE).read_text(encoding="utf-8"))
 
 
 __all__ = ["FileImproverRunStore", "RUN_RECORD", "STORE_DIRNAME"]

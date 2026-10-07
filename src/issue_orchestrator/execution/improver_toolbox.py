@@ -40,6 +40,7 @@ from typing import Any
 
 from ..contracts.improver_toolbox import (
     TOOLBOX_ANSWERS_DIRNAME,
+    TOOLBOX_CALL_LOG,
     TOOLBOX_DIRNAME,
     TOOLBOX_REPO_DIRNAME,
     TOOLBOX_STATE_DIRNAME,
@@ -71,7 +72,7 @@ MAX_SQL_TEXT = 100_000
 MAX_SQL_FETCH_BYTES = MAX_SQL_VALUE_BYTES * MAX_SQL_COLUMNS
 SQL_SECONDS = 20.0
 GIT_SECONDS = 60
-CALL_LOG = "toolbox-calls.jsonl"
+CALL_LOG = TOOLBOX_CALL_LOG
 
 
 class ImproverToolbox:

@@ -24,6 +24,10 @@ tech-lead charter), so it is labelled :data:`TARGET_OPERATOR_LABEL` and names
 the repository whose operator decides. Every title and body names the engine
 and repository the finding came from.
 
+Untrusted text never carries a marker: every body and comment is built from
+the improver's text through :func:`_inert`, so a finding cannot plant the
+marker by which another finding's issue is later recognized (#8001 r1 F3).
+
 Deduplication is against OPEN issues: every filed issue's title carries the
 finding's identity (``[improver:<key>]``), so a finding an open issue already
 carries — filed by an earlier run, or by this one before a crash lost its
@@ -223,29 +227,48 @@ def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
     """The issue an accepted design finding files: the claim, its quoted
     evidence, the proposed change, then its JSON."""
     evidence = "\n".join(
-        f"- `{c.path}:{c.line}`: \"{c.quote}\"" if c.kind == "file" else f"- toolbox call {c.call}: \"{c.quote}\""
+        f"- `{_inert(c.path)}:{c.line}`: \"{_inert(c.quote)}\""
+        if c.kind == "file"
+        else f"- toolbox call {c.call}: \"{_inert(c.quote)}\""
         for c in design.evidence
     )
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490, #8001), run `{run.run_id}` against"
             f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
-            f"**Design finding (`{design.kind}`):** {design.summary}",
+            f"**Design finding (`{design.kind}`):** {_inert(design.summary)}",
             f"**Evidence** (every quote checked against the run's evidence):\n{evidence}",
-            f"**Impact:** {design.impact}",
-            f"**Proposed change (operator decision required; nothing is applied):** {design.proposed_change}",
+            f"**Impact:** {_inert(design.impact)}",
+            "**Proposed change (operator decision required; nothing is applied):**"
+            f" {_inert(design.proposed_change)}",
             _design_json(design),
         )
     )
 
 
 def _design_json(design: DesignFinding) -> str:
-    return "```json\n" + design.model_dump_json(indent=2) + "\n```"
+    return "```json\n" + _inert_json(design.model_dump_json(indent=2)) + "\n```"
+
+
+def _inert_title(text: str) -> str:
+    """Untrusted title text that cannot pose as an ``[improver:<key>]`` token."""
+    return text.replace("[", "(").replace("]", ")")
+
+
+def _inert(text: str) -> str:
+    """Untrusted markdown with no HTML comment: no marker, hidden or not."""
+    return text.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+
+
+def _inert_json(text: str) -> str:
+    """Untrusted JSON, still valid JSON, with no HTML comment opener in it."""
+    return text.replace("<!--", "<\\u0021--")
 
 
 def _summary(finding: Finding) -> str:
     if finding.output == "exam_case" and finding.reproduction and finding.reproduction.case_id:
-        return f"Exam case {finding.reproduction.case_id}: {finding.id}"
+        # The case id is the improver's text: it must not carry a title token.
+        return f"Exam case {_inert_title(finding.reproduction.case_id)}: {finding.id}"
     return {
         "capability_issue": f"Capability gap: {finding.id}",
         "charter_proposal": f"Charter proposal (operator decision): {finding.id}",
@@ -262,7 +285,7 @@ def issue_body(run: ImproverRunRecord, finding: Finding) -> str:
             f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
             *_route_note(run, finding),
             f"**Stalled at:** `{finding.stall_point}`. **Classification:** `{finding.classification}`.",
-            _definition_of_done(finding),
+            _inert(_definition_of_done(finding)),
             _finding_json(finding),
         )
     )
@@ -312,7 +335,7 @@ def _definition_of_done(finding: Finding) -> str:
 
 
 def _finding_json(finding: Finding) -> str:
-    return "```json\n" + finding.model_dump_json(indent=2, by_alias=True) + "\n```"
+    return "```json\n" + _inert_json(finding.model_dump_json(indent=2, by_alias=True)) + "\n```"
 
 
 __all__ = [

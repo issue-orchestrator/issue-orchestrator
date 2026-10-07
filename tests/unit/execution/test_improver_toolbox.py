@@ -384,5 +384,7 @@ def test_a_served_answer_is_citable_by_its_call_and_a_refusal_never_is(run_dir: 
     calls = [json.loads(line) for line in (run_dir / CALL_LOG).read_text().splitlines()]
     assert [(c["call"], c["outcome"].split(":")[0]) for c in calls] == [(1, "refused"), (2, "ok")]
     citations = RunDirCitations(run_dir)
-    assert citations.quote_in_answer(2, '[["review.skipped"], ["rework.queued"]]') is CitationCheck.FOUND
+    # One stored value is evidence; a span across two rows is no stored value.
+    assert citations.quote_in_answer(2, "review.skipped") is CitationCheck.FOUND
+    assert citations.quote_in_answer(2, '[["review.skipped"], ["rework.queued"]]') is CitationCheck.NOT_EVIDENCE
     assert citations.quote_in_answer(1, "is not a read; allowed") is CitationCheck.NO_SUCH_SOURCE

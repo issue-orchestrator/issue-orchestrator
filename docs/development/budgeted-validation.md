@@ -169,7 +169,9 @@ capability, an operator-only friction), beside the stall findings. They are
 held to the same evidence rule, checked mechanically: each citation quotes a
 line of a staged file under `improver-data/` or `toolbox/` (never outside
 them, symlinks resolved) or a toolbox answer by its call number (answers are
-kept in `<run dir>/toolbox-answers/`). A quote that isn't there rejects the
+kept in `<run dir>/toolbox-answers/`). Only data counts: a `github_get`
+answer, or a `sql_query` value present byte for byte in the queried store
+copy; a `git` answer never counts (its `--format` is the request's). A quote that isn't there rejects the
 whole file. An accepted design finding files one issue labelled
 `needs-operator-decision` and `improver:design`; nothing is applied.
 

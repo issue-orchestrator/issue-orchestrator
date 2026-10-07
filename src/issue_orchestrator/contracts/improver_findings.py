@@ -16,6 +16,7 @@ test can name it.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
@@ -267,6 +268,20 @@ class ImproverFindings(_Closed):
     trend: Trend
 
 
+def stored_findings(raw: str | bytes) -> ImproverFindings:
+    """An ACCEPTED run's stored findings file, in the current form.
+
+    A run accepted under schema v4 (before design findings, #8001) may still
+    owe effects; it is read as v5 with no design findings. A NEW submission
+    is never read through here: the validator accepts only the current
+    version.
+    """
+    document = json.loads(raw)
+    if isinstance(document, dict) and document.get("schema_version") == 4:
+        document = {**document, "schema_version": 5, "design_findings": []}
+    return ImproverFindings.model_validate_json(json.dumps(document))
+
+
 __all__ = [
     "FINDINGS_FILE",
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
@@ -286,4 +301,5 @@ __all__ = [
     "RootCause",
     "ToolCitation",
     "Trend",
+    "stored_findings",
 ]

@@ -66,7 +66,7 @@ from ..contracts.improver_inputs import (
     StagedDecision,
 )
 from ..events.catalog import EventName
-from .improver_citations import CitationCheck, CitationIndex
+from .improver_citations import MIN_QUOTE_CHARS, CitationCheck, CitationIndex, normalized
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -294,6 +294,13 @@ class _Checker:
             )
         index = self._evidence.citations
         for n, citation in enumerate(design.evidence):
+            if len(normalized(citation.quote)) < MIN_QUOTE_CHARS:
+                yield (
+                    Rule.DESIGN_CITATION_RESOLVES,
+                    f"evidence[{n}]: {CitationCheck.TOO_SHORT.value}: a quote needs {MIN_QUOTE_CHARS}"
+                    f" characters besides whitespace: {citation.quote[:80]!r}",
+                )
+                continue
             if isinstance(citation, FileCitation):
                 where = f"{citation.path}:{citation.line}"
                 check = index.quote_at(citation.path, citation.line, citation.quote)

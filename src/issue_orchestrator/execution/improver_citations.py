@@ -8,7 +8,12 @@
   (the staged toolbox). The prompt file, the agent's own workspace and
   anything outside the run are never evidence;
 * a TOOL citation names a toolbox call whose answer the orchestrator
-  recorded in ``toolbox-answers/<call>.txt`` (:mod:`.improver_toolbox`).
+  recorded in ``toolbox-answers/<call>.txt`` (:mod:`.improver_toolbox`), and
+  only an answer that is DATA counts (r1 F1): a ``github_get`` answer is
+  GitHub's; a ``sql_query`` value counts only if its bytes are in the
+  queried store copy (``SELECT 'any claim'`` or ``char(...)`` produce text
+  that is not); a ``git`` answer never counts, since ``--format`` and its
+  escapes let the request write it (the clone's files are cited instead).
 
 A file is read as a stream up to the cited line (engine logs run to hundreds
 of megabytes), never whole.
@@ -16,11 +21,20 @@ of megabytes), never whole.
 
 from __future__ import annotations
 
+import contextlib
+import json
+import mmap
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 from ..contracts.improver_inputs import IMPROVER_DATA_DIRNAME
-from ..contracts.improver_toolbox import TOOLBOX_ANSWERS_DIRNAME, TOOLBOX_DIRNAME
+from ..contracts.improver_toolbox import (
+    TOOLBOX_ANSWERS_DIRNAME,
+    TOOLBOX_CALL_LOG,
+    TOOLBOX_DIRNAME,
+    TOOLBOX_STATE_DIRNAME,
+)
 from ..domain.improver_citations import LINE_SLACK, CitationCheck, quoted_in
 
 
@@ -42,10 +56,44 @@ class RunDirCitations:
 
     def quote_in_answer(self, call: int, quote: str) -> CitationCheck:
         answer = self._run_dir / TOOLBOX_ANSWERS_DIRNAME / f"{call}.txt"
-        if not answer.is_file():
+        request = self._calls().get(call)
+        if not answer.is_file() or request is None:
             return CitationCheck.NO_SUCH_SOURCE
-        text = answer.read_text(encoding="utf-8", errors="replace")
-        return CitationCheck.FOUND if quoted_in(quote, text) else CitationCheck.QUOTE_NOT_FOUND
+        if not quoted_in(quote, answer.read_text(encoding="utf-8", errors="replace")):
+            return CitationCheck.QUOTE_NOT_FOUND
+        tool, arguments = request
+        if tool == "github_get":
+            return CitationCheck.FOUND
+        if tool == "sql_query":
+            return self._stored(str(arguments.get("database", "")), quote)
+        return CitationCheck.NOT_EVIDENCE
+
+    def _stored(self, database: str, quote: str) -> CitationCheck:
+        """Whether ``quote`` (as quoted, or JSON-unescaped as the answer
+        showed it) is byte for byte in the staged store copy."""
+        store = (self._run_dir / TOOLBOX_DIRNAME / TOOLBOX_STATE_DIRNAME / database).resolve()
+        if (
+            store.parent != (self._run_dir / TOOLBOX_DIRNAME / TOOLBOX_STATE_DIRNAME).resolve()
+            or not store.is_file()
+            or store.stat().st_size == 0
+        ):
+            return CitationCheck.NOT_EVIDENCE
+        needles = {quote.encode("utf-8")}
+        with contextlib.suppress(json.JSONDecodeError):
+            needles.add(json.loads(f'"{quote}"').encode("utf-8"))
+        with store.open("rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return CitationCheck.FOUND if any(data.find(n) >= 0 for n in needles) else CitationCheck.NOT_EVIDENCE
+
+    def _calls(self) -> dict[int, tuple[str, dict[str, Any]]]:
+        """Each logged call's tool and arguments, by id (toolbox-calls.jsonl)."""
+        log = self._run_dir / TOOLBOX_CALL_LOG
+        if not log.is_file():
+            return {}
+        calls: dict[int, tuple[str, dict[str, Any]]] = {}
+        for line in log.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            calls[int(entry["call"])] = (str(entry["tool"]), dict(entry.get("arguments") or {}))
+        return calls
 
 
 def _lines_around(path: Path, line: int) -> list[str] | None:
