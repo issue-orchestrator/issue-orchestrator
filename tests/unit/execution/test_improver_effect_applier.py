@@ -37,6 +37,7 @@ def _run(
     engine = _engine(audited_repo)
     merged = json.loads(json.dumps(docs[0]))
     merged["findings"] = [f for d in docs for f in d["findings"]]
+    merged["design_findings"] = [f for d in docs for f in d.get("design_findings", [])]
     findings = ImproverFindings.model_validate_json(json.dumps(merged))
     run_dir = store.new_run_dir(run_id)
     (run_dir / FINDINGS_FILE).write_text(json.dumps(merged))
@@ -343,3 +344,53 @@ def test_a_tracked_issue_closed_since_staging_gets_no_comment(tmp_path: Path) ->
     assert host.comments == []
     assert run.effects[0].status is EffectStatus.PENDING
     assert "no longer open" in (run.effects[0].error or "")
+
+
+_DESIGN = {
+    "id": "approval-by-label-removal",
+    "engine": {"id": "repo-porchpin-porchpin", "repo": "porchpin/porchpin"},
+    "kind": "operator_friction",
+    "summary": "Approving a proposal is removing a label.",
+    "evidence": [
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 41, "quote": "auth_expired: parking all work"},
+        {"kind": "tool", "call": 3, "quote": "Removed proposed-tech-lead to approve"},
+    ],
+    "impact": "Anything that strips labels approves.",
+    "proposed_change": "A positive approval act, recorded with its actor.",
+}
+
+
+def _with_design(doc: dict) -> dict:
+    return {**doc, "design_findings": [_DESIGN]}
+
+
+def test_a_design_finding_files_one_issue_for_the_operators_decision(tmp_path: Path) -> None:
+    """#8001: an accepted design finding files one issue, labelled for the
+    operator's decision, carrying its quoted evidence; nothing is applied."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", _with_design(example("exam_case")))
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert run.effects[1].finding_id == "approval-by-label-removal"
+    assert [e.status for e in run.effects] == [EffectStatus.FILED, EffectStatus.FILED]
+    design = next(c for c in host.created if "Design (operator friction)" in c["title"])
+    assert set(design["labels"]) == {IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:design"}
+    assert '`toolbox/logs/orchestrator.log:41`: "auth_expired: parking all work"' in design["body"]
+    assert 'toolbox call 3: "Removed proposed-tech-lead to approve"' in design["body"]
+    assert "nothing is applied" in design["body"]
+
+
+def test_a_design_finding_an_open_issue_carries_is_commented_there(tmp_path: Path) -> None:
+    from issue_orchestrator.contracts.improver_findings import DesignFinding
+    from issue_orchestrator.control.improver_effects import design_finding_key
+
+    key = design_finding_key(DesignFinding.model_validate_json(json.dumps(_DESIGN)), _engine("porchpin/porchpin"))
+    host = FakeIssueHost([OpenIssueLabels(number=777, title=f"{title_token(key)} Design: x", labels=())])
+    store = MemoryRunStore(tmp_path)
+    _run(store, "r1", _with_design(example("exam_case")))
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert [n for n, _ in host.comments] == [777]
+    assert run.effects[1].status is EffectStatus.COMMENTED and run.effects[1].issue_number == 777

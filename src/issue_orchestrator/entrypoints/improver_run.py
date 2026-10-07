@@ -196,7 +196,7 @@ class ImproverRun:
         accepted = self._finish(
             base,
             RunOutcome.ACCEPTED,
-            f"{len(findings.findings)} finding(s) accepted"
+            f"{len(findings.findings)} finding(s) and {len(findings.design_findings)} design finding(s) accepted"
             + ("; blind run: nothing is filed" if request.blind else ""),
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),

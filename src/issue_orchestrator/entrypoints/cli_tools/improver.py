@@ -343,7 +343,7 @@ def validate(run_dir: Path) -> int:
         for violation in rejection.violations:
             print(violation.describe())
         return EXIT_REJECTED
-    print(f"valid: {len(findings.findings)} finding(s)")
+    print(f"valid: {len(findings.findings)} finding(s), {len(findings.design_findings)} design finding(s)")
     return EXIT_OK
 
 

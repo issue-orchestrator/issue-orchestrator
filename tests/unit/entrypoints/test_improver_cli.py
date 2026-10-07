@@ -16,7 +16,7 @@ def test_a_valid_findings_file_exits_zero(tmp_path: Path, capsys: pytest.Capture
     (tmp_path / improver.FINDINGS_FILE).write_text(json.dumps(example("exam_case")))
 
     assert improver.main(["validate", "--run-dir", str(tmp_path)]) == improver.EXIT_OK
-    assert "valid: 1 finding(s)" in capsys.readouterr().out
+    assert "valid: 1 finding(s), 0 design finding(s)" in capsys.readouterr().out
 
 
 def test_a_rejected_findings_file_exits_one_naming_each_rule(

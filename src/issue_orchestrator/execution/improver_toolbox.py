@@ -38,7 +38,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..contracts.improver_toolbox import TOOLBOX_DIRNAME, TOOLBOX_REPO_DIRNAME, TOOLBOX_STATE_DIRNAME
+from ..contracts.improver_toolbox import (
+    TOOLBOX_ANSWERS_DIRNAME,
+    TOOLBOX_DIRNAME,
+    TOOLBOX_REPO_DIRNAME,
+    TOOLBOX_STATE_DIRNAME,
+)
 from ..domain.improver_toolbox_policy import (
     AuditedRepoReadPolicy,
     GitReadPolicy,
@@ -91,7 +96,9 @@ class ImproverToolbox:
             raise RuntimeError("the improver toolbox needs git on PATH")
         self._git_binary = git
         self._log = run_dir / CALL_LOG
+        self._answers = run_dir / TOOLBOX_ANSWERS_DIRNAME
         self._log_lock = threading.Lock()
+        self._calls = 0
 
     def github_get(self, path: str, params: dict[str, Any] | None = None) -> str:
         read = self._github_policy.check(path, params)
@@ -161,13 +168,28 @@ class ImproverToolbox:
             raise ToolboxRefusal(f"git exited {done.returncode}: {done.stderr_tail}")
         return text
 
-    def record(self, tool: str, arguments: dict[str, Any], outcome: str) -> None:
-        line = json.dumps(
-            {"at": datetime.now(UTC).isoformat(), "tool": tool, "arguments": arguments, "outcome": outcome},
-            default=str,
-        )
-        with self._log_lock, self._log.open("a", encoding="utf-8") as log:
-            log.write(line + "\n")
+    def record(self, tool: str, arguments: dict[str, Any], outcome: str, answer: str | None = None) -> int:
+        """Log one call and return its id. A served ``answer`` is kept as
+        ``toolbox-answers/<id>.txt``, so a design finding can cite it."""
+        with self._log_lock:
+            self._calls += 1
+            call = self._calls
+            if answer is not None:
+                self._answers.mkdir(exist_ok=True)
+                (self._answers / f"{call}.txt").write_text(answer, encoding="utf-8")
+            line = json.dumps(
+                {
+                    "call": call,
+                    "at": datetime.now(UTC).isoformat(),
+                    "tool": tool,
+                    "arguments": arguments,
+                    "outcome": outcome,
+                },
+                default=str,
+            )
+            with self._log.open("a", encoding="utf-8") as log:
+                log.write(line + "\n")
+        return call
 
     def _database(self, name: str) -> Path:
         if "/" in name or "\\" in name or name.startswith(".") or not name.endswith(".sqlite"):
@@ -351,8 +373,9 @@ def _call(toolbox: ImproverToolbox, tool: str, arguments: dict[str, Any], run: C
     except Exception as error:  # a failed read is the agent's to know about
         toolbox.record(tool, arguments, f"failed: {type(error).__name__}: {error}")
         raise ToolError(f"{type(error).__name__}: {error}") from error
-    toolbox.record(tool, arguments, f"ok: {len(answer)} chars")
-    return answer
+    call = toolbox.record(tool, arguments, f"ok: {len(answer)} chars", answer)
+    # The id is how a design finding cites this answer ({"kind": "tool", "call": N}).
+    return f"[toolbox call {call}]\n{answer}"
 
 
 def _bearer_guarded(app: Any, token: str) -> Any:

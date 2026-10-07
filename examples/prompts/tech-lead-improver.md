@@ -194,7 +194,7 @@ decision, never applied.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "engine_commit": "<sha>",
   "engine_started_at": "<iso>",
   "findings": [
@@ -223,6 +223,15 @@ decision, never applied.
   "blocked_items": [
     {"number": 262, "disposition": "finding | awaiting_operator", "finding_id": "<finding only: the finding about it>", "evidence": ["<awaiting_operator only: the decision ids that handed it over>"], "why": "<why it is blocked, and what the tech lead did about it>",
      "downstream": [{"anomaly_key": {"kind": "refused_work", "subject": "<stalled_work subject>", "signature": "<stalled_work signature>"}, "finding_id": "<the finding that grades it>", "refused_action": "review | rework | tech_lead_run", "pipeline_event": "blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k> | null", "impact": "<what the block holds up, and why it cannot proceed>"}]}
+  ],
+  "design_findings": [
+    {"id": "<stable slug>", "engine": {"id": "<inputs.json engine_id>", "repo": "<inputs.json audited_repo>"},
+     "kind": "conflated_mechanism | silent_assumption | manual_operator_step | missing_capability | operator_friction",
+     "summary": "<what is wrong with the system's model of the world>",
+     "evidence": [{"kind": "file", "path": "<improver-data/... | toolbox/...>", "line": 412, "quote": "<the cited line's text, verbatim>"},
+                  {"kind": "tool", "call": 7, "quote": "<text of toolbox answer 7, verbatim>"}],
+     "impact": "<what it costs: stalls, operator work, wrong outcomes>",
+     "proposed_change": "<the change that makes the model match reality>"}
   ],
   "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
 }
@@ -357,6 +366,25 @@ in `engine-source/examples/improver/findings/`.
   scorecard for exactly the cases it holds a latest one for.
   `interventions.json` is never complete (not every intervention is recorded),
   so `operator_interventions` is `unobserved` until it is.
+
+- **Design findings** (`design_findings`, `[]` when there are none) report a
+  place where the system's model of the world does not match reality,
+  rather than a stall on one anomaly. Examples: one mechanism carrying two
+  meanings, a silent assumption, the operator doing by hand what the system
+  should do, a human needed only because a tool is missing, a friction only
+  the operator experiences. **The same evidence rule holds: no citation, no
+  finding.** Every `evidence` entry quotes, verbatim, what you read:
+  - a `file` entry names a file under `improver-data/` or `toolbox/` (the
+    staged bundle or toolbox, nothing else), the `line` the quote is on, and
+    at least 12 characters of that line;
+  - a `tool` entry names a toolbox answer by its `call` number (each answer
+    begins `[toolbox call N]`) and quotes text from it.
+
+  The orchestrator looks each quote up. Whitespace may differ and the line
+  may be off by two, but the words must be there. One quote that is not
+  there rejects the whole file. Ids are unique across `findings` and
+  `design_findings`. An accepted design finding files an issue for the
+  operator's decision; nothing is changed.
 
 What each output means:
 - **`exam_case`:** a new exam case for a class of miss.

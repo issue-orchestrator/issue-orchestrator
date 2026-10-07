@@ -42,7 +42,15 @@ from pydantic import ValidationError
 
 from ..contracts.engine_audit import AnomalyKind, AuditDiff, EngineAuditReport
 from ..contracts.engine_start import EffectiveCharter
-from ..contracts.improver_findings import BlockedItemAccount, DownstreamStall, Finding, ImproverFindings, Observed
+from ..contracts.improver_findings import (
+    BlockedItemAccount,
+    DesignFinding,
+    DownstreamStall,
+    FileCitation,
+    Finding,
+    ImproverFindings,
+    Observed,
+)
 from ..contracts.improver_inputs import (
     AUDIT_FILE,
     AUDIT_PREVIOUS_FILE,
@@ -58,6 +66,7 @@ from ..contracts.improver_inputs import (
     StagedDecision,
 )
 from ..events.catalog import EventName
+from .improver_citations import CitationCheck, CitationIndex
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -126,6 +135,10 @@ class Rule(StrEnum):
     #: pipeline event. A hand-over or a grade of the block does not examine
     #: what it holds up.
     BLOCKED_ITEM_STALLED_WORK_EXAMINED = "blocked_item_stalled_work_examined"
+    #: A design finding's every citation quotes what is really there: a line
+    #: of a staged file (``improver-data/`` or ``toolbox/``, never outside
+    #: them), or an answer the toolbox served. No citation, no finding.
+    DESIGN_CITATION_RESOLVES = "design_citation_resolves"
 
 
 @dataclass(frozen=True)
@@ -184,6 +197,8 @@ class StagedEvidence:
     exam_comparable: bool
     #: Every file of the staged engine source, relative and ``/``-separated.
     engine_source_files: frozenset[str]
+    #: The run directory's citable evidence, for design findings (#8001).
+    citations: CitationIndex
 
     def decisions_by_id(self) -> dict[str, StagedDecision]:
         """Every staged decision: the window's (``charter-decisions.json``)
@@ -265,6 +280,31 @@ class _Checker:
                 Violation(rule, finding.id, message)
                 for rule, message in self._finding_rules(finding, records)
             )
+        for design in self._findings.design_findings:
+            yield from (Violation(rule, design.id, message) for rule, message in self._design_rules(design))
+
+    # -- design findings (#8001) ----------------------------------------------
+
+    def _design_rules(self, design: DesignFinding) -> Iterator[tuple[Rule, str]]:
+        if (design.engine.id, design.engine.repo) != (self._evidence.engine_id, self._evidence.audited_repo):
+            yield (
+                Rule.ENGINE_TAG_MATCHES_INPUTS,
+                f"tagged {design.engine.id}/{design.engine.repo}, but the run staged"
+                f" {self._evidence.engine_id}/{self._evidence.audited_repo}",
+            )
+        index = self._evidence.citations
+        for n, citation in enumerate(design.evidence):
+            if isinstance(citation, FileCitation):
+                where = f"{citation.path}:{citation.line}"
+                check = index.quote_at(citation.path, citation.line, citation.quote)
+            else:
+                where = f"toolbox call {citation.call}"
+                check = index.quote_in_answer(citation.call, citation.quote)
+            if check is not CitationCheck.FOUND:
+                yield (
+                    Rule.DESIGN_CITATION_RESOLVES,
+                    f"evidence[{n}] ({where}): {check.value}: {citation.quote[:80]!r}",
+                )
 
     # -- the file ------------------------------------------------------------
 
@@ -287,6 +327,11 @@ class _Checker:
                 yield Violation(Rule.EXAM_CASE_ID_IS_NEW, finding.id, f"case id {case_id} is proposed twice")
             if case_id is not None:
                 case_ids.add(case_id)
+        # Effects are keyed by id, so a design finding's id is unique across both lists.
+        for design in f.design_findings:
+            if design.id in seen:
+                yield Violation(Rule.UNIQUE_FINDING_IDS, design.id, "the id is used twice")
+            seen.add(design.id)
         if f.trend.exam_scores != "unobserved" and not self._evidence.exam_comparable:
             yield Violation(
                 Rule.TREND_UNOBSERVED_WHEN_INCOMPARABLE, None,

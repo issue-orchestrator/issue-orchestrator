@@ -10,7 +10,10 @@ run is :mod:`..execution.improver_effect_applier`:
   ``exam_case`` and ``capability_issue`` carry the reproduce-first definition
   of done, a ``charter_proposal`` or ``prompt_proposal`` waits for the
   operator's decision (nothing is ever applied), a ``needs_investigation``
-  names the evidence it lacks.
+  names the evidence it lacks;
+* a design finding (#8001) files one issue for the operator's decision:
+  what the model of the world gets wrong, its quoted evidence, and the
+  proposed change. Nothing is applied.
 
 Every effect is filed in io (the outputs repository), never in the audited
 engine's repository: the improver writes nothing to a target repository. What
@@ -41,7 +44,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..contracts.improver_findings import Finding, ImproverFindings
+from ..contracts.improver_findings import DesignFinding, Finding, ImproverFindings
 from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord
 from ..domain.engine_activity import EngineRef
 from ..ports.engine_audit import OpenIssueLabels
@@ -59,6 +62,8 @@ _LABELS: dict[str, tuple[str, ...]] = {
     "prompt_proposal": (IMPROVER_LABEL, OPERATOR_DECISION_LABEL),
     "needs_investigation": (IMPROVER_LABEL, "improver:investigation"),
 }
+#: A design finding: the operator decides whether the model changes.
+DESIGN_LABELS: tuple[str, ...] = (IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:design")
 
 
 class EffectRoute(StrEnum):
@@ -92,6 +97,17 @@ def finding_key(finding: Finding, engine: EngineRef) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
+def design_finding_key(design: DesignFinding, engine: EngineRef) -> str:
+    """A design finding's identity across runs: its kind and slug, on which engine."""
+    identity = {
+        "engine_id": engine.engine_id,
+        "audited_repo": engine.repo,
+        "design": design.kind,
+        "id": design.id,
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def title_token(key: str) -> str:
     return f"[improver:{key}]"
 
@@ -101,10 +117,16 @@ def finding_marker(key: str) -> str:
 
 
 def planned_effects(findings: ImproverFindings, engine: EngineRef) -> tuple[EffectReceipt, ...]:
-    """One pending effect per accepted finding."""
-    return tuple(
-        EffectReceipt(finding_id=f.id, key=finding_key(f, engine), status=EffectStatus.PENDING)
-        for f in findings.findings
+    """One pending effect per accepted finding and design finding."""
+    return (
+        *(
+            EffectReceipt(finding_id=f.id, key=finding_key(f, engine), status=EffectStatus.PENDING)
+            for f in findings.findings
+        ),
+        *(
+            EffectReceipt(finding_id=d.id, key=design_finding_key(d, engine), status=EffectStatus.PENDING)
+            for d in findings.design_findings
+        ),
     )
 
 
@@ -137,12 +159,14 @@ class TrackedIssueNotOpen(RuntimeError):
 
 def plan_effect(
     run: ImproverRunRecord,
-    finding: Finding,
+    finding: Finding | DesignFinding,
     key: str,
     open_issues: Mapping[int, OpenIssueLabels],
 ) -> ImproverEffectCommand:
     """The one GitHub effect an accepted finding asks for, deduplicated
     against ``open_issues``."""
+    if isinstance(finding, DesignFinding):
+        return _plan_design_effect(run, finding, key, open_issues)
     target = finding.tracked_issue if finding.classification == "tracked" else None
     if target is not None and target not in open_issues:
         raise TrackedIssueNotOpen(
@@ -171,6 +195,52 @@ def plan_effect(
         body=f"{marker}\n{issue_body(run, finding)}",
         labels=(*labels, TARGET_OPERATOR_LABEL) if route is EffectRoute.TARGET_OPERATOR else labels,
     )
+
+
+def _plan_design_effect(
+    run: ImproverRunRecord, design: DesignFinding, key: str, open_issues: Mapping[int, OpenIssueLabels]
+) -> ImproverEffectCommand:
+    token = title_token(key)
+    filed = next((n for n, i in sorted(open_issues.items()) if token in i.title), None)
+    if filed is not None:
+        marker = f"<!-- io-improver:{run.run_id}:{design.id} -->"
+        return CommentImproverEvidence(
+            issue_number=filed,
+            marker=marker,
+            body=f"{marker}\n**Improver run `{run.run_id}`** found this again on `{run.audited_repo}`"
+            f" (engine `{run.engine_id}` at `{run.engine_commit}`).\n\n{_design_json(design)}",
+        )
+    marker = finding_marker(key)
+    return FileImproverIssue(
+        title=f"{token} Design ({design.kind.replace('_', ' ')}): {design.id} ({run.audited_repo})",
+        marker=marker,
+        body=f"{marker}\n{design_issue_body(run, design)}",
+        labels=DESIGN_LABELS,
+    )
+
+
+def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
+    """The issue an accepted design finding files: the claim, its quoted
+    evidence, the proposed change, then its JSON."""
+    evidence = "\n".join(
+        f"- `{c.path}:{c.line}`: \"{c.quote}\"" if c.kind == "file" else f"- toolbox call {c.call}: \"{c.quote}\""
+        for c in design.evidence
+    )
+    return "\n\n".join(
+        (
+            f"Filed by the tech-lead improver (#7490, #8001), run `{run.run_id}` against"
+            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
+            f"**Design finding (`{design.kind}`):** {design.summary}",
+            f"**Evidence** (every quote checked against the run's evidence):\n{evidence}",
+            f"**Impact:** {design.impact}",
+            f"**Proposed change (operator decision required; nothing is applied):** {design.proposed_change}",
+            _design_json(design),
+        )
+    )
+
+
+def _design_json(design: DesignFinding) -> str:
+    return "```json\n" + design.model_dump_json(indent=2) + "\n```"
 
 
 def _summary(finding: Finding) -> str:
@@ -249,11 +319,14 @@ __all__ = [
     "IMPROVER_LABEL",
     "OPERATOR_DECISION_LABEL",
     "TARGET_OPERATOR_LABEL",
+    "DESIGN_LABELS",
     "CommentImproverEvidence",
     "EffectRoute",
     "FileImproverIssue",
     "ImproverEffectCommand",
     "TrackedIssueNotOpen",
+    "design_finding_key",
+    "design_issue_body",
     "effect_route",
     "finding_key",
     "finding_marker",

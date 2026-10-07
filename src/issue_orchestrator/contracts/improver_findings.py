@@ -22,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 #: Bump when a field is added, removed or changes meaning. The prompt's
 #: ``schema_version`` must match.
-IMPROVER_FINDINGS_SCHEMA_VERSION = 4
+IMPROVER_FINDINGS_SCHEMA_VERSION = 5
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
 FINDINGS_FILE = "improver-findings.json"
@@ -147,6 +147,66 @@ class Finding(_Closed):
     missing_evidence: tuple[NonEmpty, ...] = ()
 
 
+#: What a design finding says is wrong with the system's model of the world.
+DesignFindingKind = Literal[
+    #: One mechanism carrying two meanings (one label for work-block and merge-gate).
+    "conflated_mechanism",
+    #: An assumption the system relies on and nothing checks.
+    "silent_assumption",
+    #: The operator doing by hand what the system should do.
+    "manual_operator_step",
+    #: A human needed only because a tool or action type is missing.
+    "missing_capability",
+    #: Something only the operator experiences: approval by label removal, no
+    #: single view of what waits on them.
+    "operator_friction",
+]
+#: A quote long enough to be found, not matched by chance.
+Quote = Annotated[str, StringConstraints(pattern=r"\S(?:.*\S)?", min_length=12, max_length=2000)]
+#: A path relative to the run directory, under ``improver-data/`` or ``toolbox/``.
+EvidencePath = Annotated[
+    str, StringConstraints(pattern=r"^(improver-data|toolbox)/[^\x00]+$", max_length=1024)
+]
+
+
+class FileCitation(_Closed):
+    """Text the improver read in a staged file: ``path:line`` and a verbatim
+    quote of it (a log line with its timestamp, a source line, a JSON field)."""
+
+    kind: Literal["file"]
+    path: EvidencePath
+    line: Annotated[int, Field(gt=0)]
+    quote: Quote
+
+
+class ToolCitation(_Closed):
+    """Text a toolbox call answered (an issue body, a review verdict, a query
+    result): the call's id, as the toolbox numbered its answer, and a
+    verbatim quote of it."""
+
+    kind: Literal["tool"]
+    call: Annotated[int, Field(gt=0)]
+    quote: Quote
+
+
+Citation = Annotated[FileCitation | ToolCitation, Field(discriminator="kind")]
+
+
+class DesignFinding(_Closed):
+    """A place where the system's model of the world doesn't match reality
+    (#8001): not a stall of the tech lead on an anomaly, but a design that
+    makes stalls, or operator work, inevitable. Held to the same evidence
+    rule as a stall finding: every claim cites what was read."""
+
+    id: Slug
+    engine: EngineTag
+    kind: DesignFindingKind
+    summary: Stated
+    evidence: tuple[Citation, ...] = Field(min_length=1)
+    impact: Stated
+    proposed_change: Stated
+
+
 class Trend(_Closed):
     exam_scores: TrendValue
     operator_interventions: TrendValue
@@ -196,10 +256,12 @@ class BlockedItemAccount(_Closed):
 
 
 class ImproverFindings(_Closed):
-    schema_version: Literal[4]
+    schema_version: Literal[5]
     engine_commit: NonEmpty
     engine_started_at: Timestamp
     findings: tuple[Finding, ...]
+    #: Design findings (#8001); empty when there is none.
+    design_findings: tuple[DesignFinding, ...]
     #: Every staged blocked item, each exactly once.
     blocked_items: tuple[BlockedItemAccount, ...]
     trend: Trend
@@ -210,13 +272,18 @@ __all__ = [
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
     "BlockedItemAccount",
+    "Citation",
+    "DesignFinding",
+    "DesignFindingKind",
     "DownstreamStall",
     "EngineTag",
+    "FileCitation",
     "Finding",
     "GradingWindow",
     "ImproverFindings",
     "Observed",
     "Reproduction",
     "RootCause",
+    "ToolCitation",
     "Trend",
 ]

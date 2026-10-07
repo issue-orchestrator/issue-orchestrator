@@ -162,6 +162,17 @@ it streams, and a SQL query runs under SQLite's own size limits. The Codex
 agent's shell reads only its run directory (and the platform's runtime files). `make test-improver-escape`
 runs a live agent ordered to break out of each boundary.
 
+**Design findings** (`design_findings`, findings schema v5, #8001) report
+where the system's model of the world doesn't match reality (a mechanism
+with two meanings, a silent assumption, a manual operator step, a missing
+capability, an operator-only friction), beside the stall findings. They are
+held to the same evidence rule, checked mechanically: each citation quotes a
+line of a staged file under `improver-data/` or `toolbox/` (never outside
+them, symlinks resolved) or a toolbox answer by its call number (answers are
+kept in `<run dir>/toolbox-answers/`). A quote that isn't there rejects the
+whole file. An accepted design finding files one issue labelled
+`needs-operator-decision` and `improver:design`; nothing is applied.
+
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits

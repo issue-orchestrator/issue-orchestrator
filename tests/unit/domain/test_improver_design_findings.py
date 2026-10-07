@@ -1,0 +1,174 @@
+"""Design findings are first class, under the same evidence rule (#8001).
+
+A design finding cites what the improver read: a line of a staged file or a
+toolbox answer. Every citation is looked up in the run directory; one that
+is not there rejects the whole file, as a stall finding's would.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from issue_orchestrator.domain.improver_findings_validation import (
+    ImproverFindingsRejected,
+    Rule,
+    validate_findings,
+)
+from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
+from tests.unit.improver_support import AUDITED_REPO, ENGINE_ID, build_improver_data, example
+
+LOG_LINE = "2026-10-04 02:00:01,123 INFO [provider] auth_expired: parking all claude work"
+ANSWER = '{"number": 459, "body": "Removed proposed-tech-lead to approve; it came back."}'
+
+
+@pytest.fixture
+def run_dir(tmp_path: Path) -> Path:
+    run = tmp_path / "run"
+    build_improver_data(run)
+    logs = run / "toolbox" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "orchestrator.log").write_text(
+        "".join(f"2026-10-04 01:59:{i:02d},000 INFO tick {i}\n" for i in range(40)) + LOG_LINE + "\n" + "tail\n"
+    )
+    answers = run / "toolbox-answers"
+    answers.mkdir()
+    (answers / "3.txt").write_text(ANSWER)
+    (tmp_path / "outside.txt").write_text(LOG_LINE + "\n")
+    (run / "agent-workspace").mkdir()
+    (run / "agent-workspace" / "planted.txt").write_text(LOG_LINE + "\n")
+    return run
+
+
+def _design(*evidence: dict, id: str = "approval-by-label-removal") -> dict:
+    return {
+        "id": id,
+        "engine": {"id": ENGINE_ID, "repo": AUDITED_REPO},
+        "kind": "operator_friction",
+        "summary": "Approving a proposal is removing a label: anything that strips labels approves.",
+        "evidence": list(evidence),
+        "impact": "An unapproved proposal can run; the operator's approval did not stick on #459.",
+        "proposed_change": "A positive approval act, recorded with its actor.",
+    }
+
+
+LOG_CITATION = {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 41, "quote": "auth_expired: parking all claude work"}
+TOOL_CITATION = {"kind": "tool", "call": 3, "quote": "Removed proposed-tech-lead to approve"}
+
+
+def _doc(*designs: dict) -> str:
+    doc = example("exam_case")
+    doc["design_findings"] = list(designs)
+    return json.dumps(doc)
+
+
+def _validate(run_dir: Path, text: str):  # type: ignore[no-untyped-def]
+    return validate_findings(text, load_staged_evidence(run_dir / "improver-data"))
+
+
+def _rejections(run_dir: Path, text: str) -> list[tuple[str, str | None]]:
+    with pytest.raises(ImproverFindingsRejected) as rejected:
+        _validate(run_dir, text)
+    return [(v.rule.value, v.finding_id) for v in rejected.value.violations]
+
+
+def test_a_design_finding_whose_every_citation_is_there_is_accepted(run_dir: Path) -> None:
+    findings = _validate(run_dir, _doc(_design(LOG_CITATION, TOOL_CITATION)))
+
+    [design] = findings.design_findings
+    assert design.kind == "operator_friction" and len(design.evidence) == 2
+
+
+@pytest.mark.parametrize(
+    "citation",
+    [
+        # Whitespace differs, and the agent counted a line off: still the same text.
+        {**LOG_CITATION, "line": 40, "quote": "auth_expired:   parking all\nclaude work"},
+        {**LOG_CITATION, "line": 42},
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 1, "quote": "2026-10-04 01:59:00,000 INFO tick 0"},
+        # A staged bundle file.
+        {"kind": "file", "path": "improver-data/inputs.json", "line": 4, "quote": f"\"audited_repo\": \"{AUDITED_REPO}\""},
+    ],
+)
+def test_a_citation_is_found_through_whitespace_and_a_small_line_slip(run_dir: Path, citation: dict) -> None:
+    _validate(run_dir, _doc(_design(citation)))
+
+
+@pytest.mark.parametrize(
+    ("citation", "why"),
+    [
+        ({**LOG_CITATION, "quote": "auth_expired: paging the operator now"}, "quote_not_found"),
+        ({**LOG_CITATION, "line": 30}, "quote_not_found"),
+        ({**LOG_CITATION, "line": 999}, "no_such_source"),
+        ({**LOG_CITATION, "path": "toolbox/logs/missing.log"}, "no_such_source"),
+        ({**TOOL_CITATION, "call": 4}, "no_such_source"),
+        ({**TOOL_CITATION, "quote": "Approved by the maintainer"}, "quote_not_found"),
+        # Outside the evidence: the run's parent, by traversal.
+        ({**LOG_CITATION, "path": "toolbox/../../outside.txt", "line": 1}, "outside_evidence"),
+    ],
+)
+def test_a_citation_that_is_not_there_rejects_the_file(run_dir: Path, citation: dict, why: str) -> None:
+    rejections = _rejections(run_dir, _doc(_design(citation)))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+def test_a_symlink_out_of_the_evidence_is_not_evidence(run_dir: Path) -> None:
+    os.symlink(run_dir.parent / "outside.txt", run_dir / "toolbox" / "logs" / "linked.log")
+
+    rejections = _rejections(run_dir, _doc(_design({**LOG_CITATION, "path": "toolbox/logs/linked.log", "line": 1})))
+
+    assert rejections == [(Rule.DESIGN_CITATION_RESOLVES.value, "approval-by-label-removal")]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # The agent's own writable workspace and the prompt are never evidence.
+        "agent-workspace/planted.txt",
+        "improver-prompt.txt",
+        "/etc/hosts",
+    ],
+)
+def test_only_the_staged_evidence_roots_may_be_cited(run_dir: Path, path: str) -> None:
+    rejections = _rejections(run_dir, _doc(_design({**LOG_CITATION, "path": path, "line": 1})))
+
+    assert {rule for rule, _ in rejections} == {Rule.SCHEMA.value}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda d: d.update(evidence=[]),
+        lambda d: d.update(summary="   "),
+        lambda d: d.update(kind="opinion"),
+        lambda d: d["evidence"][0].update(quote="too short"),
+        lambda d: d["evidence"][0].update(kind="hunch"),
+        lambda d: d["evidence"][0].pop("line"),
+        lambda d: d.update(extra="field"),
+    ],
+)
+def test_a_design_finding_has_its_shape(run_dir: Path, mutation) -> None:  # type: ignore[no-untyped-def]
+    design = _design(dict(LOG_CITATION))
+    mutation(design)
+
+    assert {rule for rule, _ in _rejections(run_dir, _doc(design))} == {Rule.SCHEMA.value}
+
+
+def test_a_design_finding_names_the_staged_engine_and_a_unique_id(run_dir: Path) -> None:
+    other_engine = _design(LOG_CITATION)
+    other_engine["engine"] = {"id": "repo-" + "b" * 64, "repo": AUDITED_REPO}
+    stall_id = example("exam_case")["findings"][0]["id"]
+
+    assert _rejections(run_dir, _doc(other_engine)) == [(Rule.ENGINE_TAG_MATCHES_INPUTS.value, other_engine["id"])]
+    assert _rejections(run_dir, _doc(_design(LOG_CITATION, id=stall_id))) == [(Rule.UNIQUE_FINDING_IDS.value, stall_id)]
+
+
+def test_a_file_without_design_findings_is_refused_at_schema_v5(run_dir: Path) -> None:
+    doc = example("exam_case")
+    del doc["design_findings"]
+
+    assert {rule for rule, _ in _rejections(run_dir, json.dumps(doc))} == {Rule.SCHEMA.value}
