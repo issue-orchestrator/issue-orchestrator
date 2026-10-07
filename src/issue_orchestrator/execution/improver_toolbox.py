@@ -45,6 +45,14 @@ from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, AuditedRepoReads, Tool
 MAX_ANSWER_CHARS = 200_000
 MAX_SQL_ROWS = 1000
 MAX_CELL_CHARS = 4000
+#: SQLite's own limits for a toolbox query, set before it runs: no value it
+#: computes or returns may exceed MAX_SQL_VALUE_BYTES (``randomblob(1e9)``
+#: fails instead of allocating), nor a row more than MAX_SQL_COLUMNS values.
+MAX_SQL_VALUE_BYTES = 1_000_000
+MAX_SQL_COLUMNS = 64
+MAX_SQL_TEXT = 100_000
+#: Rows are fetched one by one until their cells add up to this many bytes.
+MAX_SQL_FETCH_BYTES = 4_000_000
 SQL_SECONDS = 20.0
 GIT_SECONDS = 60
 CALL_LOG = "toolbox-calls.jsonl"
@@ -104,19 +112,18 @@ class ImproverToolbox:
         copy = self._database(database)
         deadline = time.monotonic() + SQL_SECONDS
         with closing(sqlite3.connect(f"{copy.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_SQL_VALUE_BYTES)
+            conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_SQL_COLUMNS)
+            conn.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, MAX_SQL_TEXT)
             conn.set_authorizer(_authorize)
             conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
             try:
                 cursor = conn.execute(sql)
-                rows = cursor.fetchmany(MAX_SQL_ROWS + 1)
+                rows, truncated = _bounded_rows(cursor)
             except sqlite3.DatabaseError as error:
                 raise ToolboxRefusal(f"query refused or failed: {error}") from error
             columns = [d[0] for d in cursor.description or ()]
-        answer = {
-            "columns": columns,
-            "rows": [[_cell(v) for v in row] for row in rows[:MAX_SQL_ROWS]],
-            "truncated": len(rows) > MAX_SQL_ROWS,
-        }
+        answer = {"columns": columns, "rows": rows, "truncated": truncated}
         return _capped(json.dumps(answer))
 
     def git(self, args: list[str]) -> str:
@@ -150,6 +157,19 @@ class ImproverToolbox:
             staged = sorted(p.name for p in self._state.glob("*.sqlite"))
             raise ToolboxRefusal(f"no staged store {name!r}; staged: {', '.join(staged) or 'none'}")
         return copy
+
+
+def _bounded_rows(cursor: sqlite3.Cursor) -> tuple[list[list[object]], bool]:
+    """At most MAX_SQL_ROWS rows and MAX_SQL_FETCH_BYTES of cells, fetched
+    one row at a time so an answer never grows past its budget."""
+    rows: list[list[object]] = []
+    fetched = 0
+    for row in cursor:
+        if len(rows) == MAX_SQL_ROWS or fetched > MAX_SQL_FETCH_BYTES:
+            return rows, True
+        fetched += sum(len(v) if isinstance(v, (str, bytes)) else 8 for v in row)
+        rows.append([_cell(v) for v in row])
+    return rows, False
 
 
 def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None, _source: str | None) -> int:

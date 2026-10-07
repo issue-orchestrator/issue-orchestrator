@@ -128,6 +128,8 @@ def test_an_empowered_run_gets_the_toolbox_by_url_and_its_token_by_env(tmp_path:
     codex = argv[argv.index("codex"):argv.index("exec")]
     assert 'mcp_servers.improver_toolbox.url="http://127.0.0.1:5555/mcp"' in codex
     assert f'mcp_servers.improver_toolbox.bearer_token_env_var="{TOOLBOX_TOKEN_ENV}"' in codex
+    # Without it, ``-a never`` refuses every toolbox call (found by the live escape test).
+    assert 'mcp_servers.improver_toolbox.default_tools_approval_mode="approve"' in codex
     assert not any("run-token-xyz" in a for a in argv)
     assert call["env"][TOOLBOX_TOKEN_ENV] == "run-token-xyz"
 
@@ -145,3 +147,23 @@ def test_the_operators_codex_config_never_reaches_the_agent(tmp_path: Path, empo
 
     argv = runner.calls[0]["command"]
     assert "--ignore-user-config" in argv[argv.index("exec"):]
+
+
+def test_the_shell_is_denied_the_home_and_temp_roots_beyond_the_run_dir(tmp_path: Path) -> None:
+    """r3 F1: the shared profile reads the whole disk; the improver's shell
+    must not read ~/.claude, the coordinator's dirs or a sibling temp file.
+    The run dir keeps its own, more specific, read grant (verified live: a
+    run dir under the temp root or under home stays readable)."""
+    import os
+    import tempfile
+
+    scope = CodexImproverAgent.scope(tmp_path)
+
+    assert "~" in scope.deny_read_files
+    assert os.path.realpath(tempfile.gettempdir()) in scope.deny_read_files
+    assert "/tmp" in scope.deny_read_files and os.path.realpath("/tmp") in scope.deny_read_files
+    assert tmp_path in scope.read_roots
+    runner = FakeRunner(CommandResult(0, "", ""), message="{}")
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
+    profile = " ".join(runner.calls[0]["command"])
+    assert '"~" = "deny"' in profile and f'"{tmp_path.resolve()}" = "read"' in profile

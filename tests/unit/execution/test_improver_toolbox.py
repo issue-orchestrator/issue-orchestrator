@@ -240,3 +240,28 @@ def test_the_server_stops_with_the_run(run_dir: Path) -> None:
 
     with pytest.raises(httpx.ConnectError):
         httpx.post(url, json={}, timeout=2)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT randomblob(16000000)",
+        "SELECT zeroblob(2000000000)",
+        "SELECT printf('%.*c', 50000000, 'x')",
+        "WITH RECURSIVE r(s) AS (SELECT 'x' UNION ALL SELECT s || s FROM r) SELECT s FROM r",
+    ],
+)
+def test_a_query_producing_an_oversized_value_is_refused_before_it_is_built(run_dir: Path, sql: str) -> None:
+    """r3 F2: SQLite's length limit stops the value; the orchestrator never
+    holds it."""
+    with pytest.raises(ToolboxRefusal, match="too big|failed"):
+        _toolbox(run_dir).sql_query("timeline.sqlite", sql)
+
+
+def test_an_answer_stops_at_its_byte_budget(run_dir: Path) -> None:
+    sql = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 900) SELECT randomblob(900000) FROM n"
+
+    answer = json.loads(_toolbox(run_dir).sql_query("timeline.sqlite", sql))
+
+    assert answer["truncated"] is True
+    assert len(answer["rows"]) <= 6
