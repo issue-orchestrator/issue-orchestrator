@@ -155,7 +155,11 @@ store copy, under an SQLite authorizer: no write, `ATTACH` or extension) and
 program or read one outside it are refused, abbreviations included). The
 agent has no shell and no write tool, and is told its budget
 (`--budget-minutes`, default 60) to choose its depth in. Every toolbox call
-is logged to `<run dir>/toolbox-calls.jsonl`. `make test-improver-escape`
+is logged to `<run dir>/toolbox-calls.jsonl`. A blind run (`--exclude-open-issue`) of an engine that works the
+outputs repository itself also hides those issues from `github_get`: a direct
+read, or any answer that holds one, is refused. Git output is bounded while
+it streams, and a SQL query runs under SQLite's own size limits. The Codex
+agent's shell reads only its run directory (and the platform's runtime files). `make test-improver-escape`
 runs a live agent ordered to break out of each boundary.
 
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's

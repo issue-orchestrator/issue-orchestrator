@@ -30,8 +30,12 @@ class ImproverInvestigation(Protocol):
     @property
     def mode(self) -> ImproverMode: ...
 
-    def open(self, engine: EngineRef, run_dir: Path) -> AbstractContextManager[InvestigationKit]:
-        """Prepare what the agent investigates with, for the duration of its run."""
+    def open(
+        self, engine: EngineRef, run_dir: Path, *, hidden_issues: frozenset[int]
+    ) -> AbstractContextManager[InvestigationKit]:
+        """Prepare what the agent investigates with, for the duration of its
+        run. ``hidden_issues``: issues of the AUDITED repository a blind run
+        hides; no tool may show them."""
         ...
 
 

@@ -227,7 +227,6 @@ def _investigation(args: argparse.Namespace) -> ImproverInvestigation:
     return EmpoweredInvestigation(
         stager=ImproverToolboxStager(runner=LocalCommandRunner(), clock=_now),
         github=lambda repo: None if args.no_github else create_audited_repo_reads(repo),
-        runner=LocalCommandRunner(),
         addendum=args.empowered_addendum.read_text(encoding="utf-8"),
         budget_minutes=args.budget_minutes,
     )

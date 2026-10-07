@@ -421,13 +421,15 @@ class FakeEmpowered:
     def __init__(self, fail: Exception | None = None) -> None:
         self.fail = fail
         self.opened: list[tuple[str, Path]] = []
+        self.hidden: list[frozenset[int]] = []
         self.closed = 0
 
     @contextmanager
-    def open(self, engine: EngineRef, run_dir: Path) -> Iterator[InvestigationKit]:
+    def open(self, engine: EngineRef, run_dir: Path, *, hidden_issues: frozenset[int]) -> Iterator[InvestigationKit]:
         if self.fail:
             raise self.fail
         self.opened.append((engine.repo, run_dir))
+        self.hidden.append(hidden_issues)
         try:
             yield InvestigationKit(
                 toolbox=ToolboxEndpoint(url="http://127.0.0.1:1/mcp", token="t"), instructions="\n\nEMPOWERED ADDENDUM"
@@ -474,3 +476,21 @@ def test_a_change_of_mode_starts_a_new_stall_point_baseline(tmp_path: Path) -> N
     empowered = _improver(store, host, agent, investigation=FakeEmpowered()).run(_request(), apply=False)
 
     assert {m.previous for m in empowered.stall_points} == {None}
+
+
+def test_a_blind_run_hides_its_issues_from_the_toolbox_when_it_audits_its_outputs_repo(tmp_path: Path) -> None:
+    """r5 F1: a blind run of io auditing itself must not let the toolbox's
+    GitHub reads show the hidden issues; auditing another repository, the
+    numbers name other issues, so nothing is hidden there."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    empowered = FakeEmpowered()
+    io = "issue-orchestrator/issue-orchestrator"
+    for audited in (io, "porchpin/porchpin"):
+        request = _request(audited_repo=audited)
+        blind = ImproverRunRequest(
+            engine=request.engine, outputs_repo=io, exam_dir=None, window=request.window,
+            log_tail_bytes=1024, excluded_open_issues=frozenset({7592}),
+        )
+        _improver(store, host, FakeAgent(_findings("exam_case")), investigation=empowered).run(blind, apply=False)
+
+    assert empowered.hidden == [frozenset({7592}), frozenset()]

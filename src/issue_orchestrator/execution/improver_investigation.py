@@ -16,7 +16,6 @@ from pathlib import Path
 
 from ..contracts.improver_toolbox import ImproverMode
 from ..domain.engine_activity import EngineRef
-from ..ports.command_runner import CommandRunner
 from ..ports.improver_investigation import InvestigationKit
 from ..ports.improver_toolbox import AuditedRepoReads
 from .improver_toolbox import ImproverToolbox, serve_toolbox
@@ -31,7 +30,7 @@ class ScriptedInvestigation:
     mode = ImproverMode.SCRIPTED
 
     @contextmanager
-    def open(self, engine: EngineRef, run_dir: Path) -> Iterator[InvestigationKit]:
+    def open(self, engine: EngineRef, run_dir: Path, *, hidden_issues: frozenset[int]) -> Iterator[InvestigationKit]:
         yield InvestigationKit(toolbox=None, instructions="")
 
 
@@ -43,7 +42,6 @@ class EmpoweredInvestigation:
         *,
         stager: ImproverToolboxStager,
         github: Callable[[str], AuditedRepoReads | None],
-        runner: CommandRunner,
         addendum: str,
         budget_minutes: int,
     ) -> None:
@@ -54,15 +52,17 @@ class EmpoweredInvestigation:
             raise ValueError(f"the empowered addendum lacks {', '.join(missing)}")
         self._stager = stager
         self._github = github
-        self._runner = runner
         self._addendum = addendum
         self._budget = budget_minutes
 
     @contextmanager
-    def open(self, engine: EngineRef, run_dir: Path) -> Iterator[InvestigationKit]:
+    def open(self, engine: EngineRef, run_dir: Path, *, hidden_issues: frozenset[int]) -> Iterator[InvestigationKit]:
         manifest = self._stager.stage(engine, run_dir)
         toolbox = ImproverToolbox(
-            run_dir=run_dir, audited_repo=engine.repo, github=self._github(engine.repo), runner=self._runner
+            run_dir=run_dir,
+            audited_repo=engine.repo,
+            github=self._github(engine.repo),
+            hidden_issues=hidden_issues,
         )
         instructions = (
             self._addendum.replace("<<AUDITED_REPO>>", engine.repo)

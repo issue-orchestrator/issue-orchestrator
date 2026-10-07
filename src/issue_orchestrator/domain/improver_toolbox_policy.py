@@ -58,7 +58,7 @@ class AuditedRepoReadPolicy:
     """``GET`` of ``repos/<audited>/...`` and of an issue or commit search
     scoped to the audited repository by its own ``repo:`` qualifier."""
 
-    def __init__(self, repo: str) -> None:
+    def __init__(self, repo: str, *, hidden_issues: frozenset[int] = frozenset()) -> None:
         owner, _, name = repo.partition("/")
         if (
             "/" in name
@@ -66,6 +66,8 @@ class AuditedRepoReadPolicy:
         ):
             raise ValueError(f"not an owner/repo: {repo!r}")
         self.repo = repo
+        #: A blind run's hidden issues of this repository: never read directly.
+        self.hidden_issues = hidden_issues
 
     def check(self, path: str, params: Mapping[str, object] | None = None) -> GitHubRead:
         query = _params(params or {})
@@ -73,12 +75,24 @@ class AuditedRepoReadPolicy:
         if segments[0] == "repos":
             if len(segments) < 3 or f"{segments[1]}/{segments[2]}".lower() != self.repo.lower():
                 raise ToolboxRefusal(f"only {self.repo} may be read; refused {path!r}")
+            if self._names_hidden(segments[3:]):
+                raise ToolboxRefusal(f"this blind run may not read {path!r}")
             return GitHubRead("/" + "/".join(segments), query)
         if segments[0] == "search" and len(segments) == 2 and segments[1] in _SEARCHES:
             self._check_search(query.get("q", ""))
             return GitHubRead("/" + "/".join(segments), query)
         raise ToolboxRefusal(
             f"only repos/{self.repo}/... and search/issues or search/commits are readable; refused {path!r}"
+        )
+
+    def _names_hidden(self, rest: list[str]) -> bool:
+        """``issues/N...`` or ``pulls/N...`` of a hidden issue (GitHub numbers
+        issues and pull requests from one sequence)."""
+        return (
+            len(rest) >= 2
+            and rest[0] in ("issues", "pulls")
+            and rest[1].isdigit()
+            and int(rest[1]) in self.hidden_issues
         )
 
     def _check_search(self, q: str) -> None:

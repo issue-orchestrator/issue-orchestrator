@@ -28,7 +28,6 @@ def _empowered(addendum: str, github_repos: list[str]) -> EmpoweredInvestigation
     return EmpoweredInvestigation(
         stager=ImproverToolboxStager(runner=LocalCommandRunner(), clock=lambda: NOW),
         github=github,
-        runner=LocalCommandRunner(),
         addendum=addendum,
         budget_minutes=45,
     )
@@ -41,7 +40,7 @@ def test_the_toolbox_is_staged_served_and_explained_for_the_agents_run(tmp_path:
     repos: list[str] = []
     investigation = _empowered((REPO_ROOT / EMPOWERED_ADDENDUM).read_text(), repos)
 
-    with investigation.open(engine, run) as kit:
+    with investigation.open(engine, run, hidden_issues=frozenset()) as kit:
         assert kit.toolbox is not None
         unauthorized = httpx.post(kit.toolbox.url, json={})
         url = kit.toolbox.url
@@ -63,6 +62,6 @@ def test_an_addendum_missing_a_placeholder_is_refused() -> None:
 
 
 def test_a_scripted_investigation_has_no_toolbox(tmp_path: Path) -> None:
-    with ScriptedInvestigation().open(_engine(tmp_path), tmp_path) as kit:
+    with ScriptedInvestigation().open(_engine(tmp_path), tmp_path, hidden_issues=frozenset()) as kit:
         assert kit.toolbox is None and kit.instructions == ""
     assert not (tmp_path / "toolbox").exists()

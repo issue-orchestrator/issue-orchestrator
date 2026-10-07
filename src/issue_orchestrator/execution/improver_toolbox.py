@@ -18,15 +18,21 @@ directory, so a run shows how deep the agent dug.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import secrets
 import shutil
+import signal
 import socket
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,7 +44,6 @@ from ..domain.improver_toolbox_policy import (
     ToolboxRefusal,
     sqlite_action_allowed,
 )
-from ..ports.command_runner import CommandRunner
 from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, AuditedRepoReads, ToolboxEndpoint
 
 #: Each answer is capped, so one call cannot flood the agent's context.
@@ -65,16 +70,16 @@ class ImproverToolbox:
         run_dir: Path,
         audited_repo: str,
         github: AuditedRepoReads | None,
-        runner: CommandRunner,
+        hidden_issues: frozenset[int] = frozenset(),
     ) -> None:
         self._root = run_dir / TOOLBOX_DIRNAME
         self._state = self._root / TOOLBOX_STATE_DIRNAME
         self._repo = self._root / TOOLBOX_REPO_DIRNAME
-        self._github_policy = AuditedRepoReadPolicy(audited_repo)
+        self._github_policy = AuditedRepoReadPolicy(audited_repo, hidden_issues=hidden_issues)
+        self._hidden = hidden_issues
         self._audited_repo = audited_repo
         self._git_policy = GitReadPolicy()
         self._github = github
-        self._runner = runner
         git = shutil.which("git")
         if git is None:
             raise RuntimeError("the improver toolbox needs git on PATH")
@@ -89,6 +94,8 @@ class ImproverToolbox:
         answer = self._github.get(read)
         if read.path.startswith("/search/"):
             self._check_search_results(answer)
+        if self._hidden and _mentions_issue(answer, self._hidden):
+            raise ToolboxRefusal("the answer holds an issue this blind run may not see; refused")
         return _capped(json.dumps(answer, indent=1, default=str))
 
     def _check_search_results(self, answer: Any) -> None:
@@ -130,16 +137,20 @@ class ImproverToolbox:
         checked = self._git_policy.check(args)
         if not (self._repo / ".git").is_dir():
             raise ToolboxRefusal("no clone of the audited repository was staged (see toolbox/toolbox.json)")
-        done = self._runner.run(
+        done = _bounded_run(
             [self._git_binary, "--no-pager", "-C", str(self._repo), "-c", "core.fsmonitor=false", *checked],
             env=_git_environment(self._root),
+            limit_bytes=MAX_ANSWER_CHARS,
             timeout_seconds=GIT_SECONDS,
         )
         if done.timed_out:
             raise ToolboxRefusal(f"git timed out after {GIT_SECONDS}s")
+        text = done.stdout.decode("utf-8", errors="replace")
+        if done.truncated:
+            return text + f"\n... <truncated at {MAX_ANSWER_CHARS} bytes; narrow the request>"
         if done.returncode:
-            raise ToolboxRefusal(f"git exited {done.returncode}: {done.stderr.strip()[-2000:]}")
-        return _capped(done.stdout)
+            raise ToolboxRefusal(f"git exited {done.returncode}: {done.stderr_tail}")
+        return text
 
     def record(self, tool: str, arguments: dict[str, Any], outcome: str) -> None:
         line = json.dumps(
@@ -176,6 +187,71 @@ def _bounded_rows(cursor: sqlite3.Cursor) -> tuple[list[list[object]], bool]:
 def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None, _source: str | None) -> int:
     # SQLite reads the authorizer's answer as a code: 0 allows, 1 denies.
     return sqlite3.SQLITE_OK if sqlite_action_allowed(action, arg1, arg2) else sqlite3.SQLITE_DENY
+
+
+def _mentions_issue(value: Any, numbers: frozenset[int]) -> bool:
+    """Whether ``value`` holds, at any depth, an issue or pull request
+    (an object with a ``number`` and a ``title``) numbered in ``numbers``."""
+    if isinstance(value, dict):
+        number = value.get("number")
+        if isinstance(number, int) and number in numbers and "title" in value:
+            return True
+        return any(_mentions_issue(v, numbers) for v in value.values())
+    if isinstance(value, list):
+        return any(_mentions_issue(v, numbers) for v in value)
+    return False
+
+
+@dataclass(frozen=True)
+class _Bounded:
+    returncode: int | None
+    stdout: bytes
+    truncated: bool
+    timed_out: bool
+    stderr_tail: str
+
+
+def _bounded_run(argv: list[str], *, env: dict[str, str], limit_bytes: int, timeout_seconds: int) -> _Bounded:
+    """Run ``argv``, keeping at most ``limit_bytes`` of its output: past the
+    limit the process group is killed, so a huge blob is never held whole
+    (``git show HEAD:big.bin``). stderr goes to a file; its tail is kept."""
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=errors, stdin=subprocess.DEVNULL, env=env, start_new_session=True
+        )
+        fired = threading.Event()
+
+        def stop() -> None:
+            fired.set()
+            _kill_group(process)
+
+        timer = threading.Timer(timeout_seconds, stop)
+        timer.start()
+        kept = bytearray()
+        truncated = False
+        stdout = process.stdout
+        if stdout is None:
+            raise RuntimeError("the child process has no stdout pipe")
+        try:
+            with stdout:
+                while chunk := os.read(stdout.fileno(), 65536):
+                    room = limit_bytes - len(kept)
+                    kept += chunk[:room]
+                    if len(chunk) > room:
+                        truncated = True
+                        _kill_group(process)
+                        break
+        finally:
+            timer.cancel()
+            returncode = process.wait()
+        errors.seek(0)
+        tail = errors.read()[-4000:].decode("utf-8", errors="replace").strip()[-2000:]
+    return _Bounded(returncode, bytes(kept), truncated, fired.is_set(), tail)
+
+
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
 
 
 def _git_environment(home: Path) -> dict[str, str]:

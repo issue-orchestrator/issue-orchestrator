@@ -88,6 +88,13 @@ class ImproverRunRequest:
     def blind(self) -> bool:
         return bool(self.excluded_open_issues)
 
+    @property
+    def hidden_from_toolbox(self) -> frozenset[int]:
+        """The hidden issues the toolbox's GitHub reads could otherwise reach:
+        those of the audited repository, when it is also the outputs one
+        (#8001 r5 F1)."""
+        return self.excluded_open_issues if self.engine.repo == self.outputs_repo else frozenset()
+
     def staging(self, run_dir: Path, previous_audit: Path | None) -> ImproverStagingRequest:
         return ImproverStagingRequest(
             engine=self.engine,
@@ -216,7 +223,9 @@ class ImproverRun:
         of a run whose toolbox or agent could not even start."""
         with ExitStack() as investigation:
             try:
-                kit = investigation.enter_context(self._investigation.open(request.engine, run_dir))
+                kit = investigation.enter_context(
+                    self._investigation.open(request.engine, run_dir, hidden_issues=request.hidden_from_toolbox)
+                )
             except Exception as error:
                 # The toolbox could not be staged or served: no agent ran.
                 return self._finish(

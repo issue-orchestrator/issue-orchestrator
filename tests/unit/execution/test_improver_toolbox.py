@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,6 @@ import pytest
 
 from issue_orchestrator.contracts.improver_toolbox import TOOLBOX_DIRNAME
 from issue_orchestrator.domain.improver_toolbox_policy import GitHubRead, ToolboxRefusal
-from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.improver_toolbox import CALL_LOG, ImproverToolbox, serve_toolbox
 from tests.unit.improver_toolbox_support import OUTSIDE_CANARY, build_toolbox_run
 
@@ -41,8 +41,8 @@ def run_dir(tmp_path: Path) -> Path:
     return build_toolbox_run(tmp_path)
 
 
-def _toolbox(run_dir: Path, reads: FakeReads | None = None) -> ImproverToolbox:
-    return ImproverToolbox(run_dir=run_dir, audited_repo=REPO, github=reads, runner=LocalCommandRunner())
+def _toolbox(run_dir: Path, reads: FakeReads | None = None, hidden: frozenset[int] = frozenset()) -> ImproverToolbox:
+    return ImproverToolbox(run_dir=run_dir, audited_repo=REPO, github=reads, hidden_issues=hidden)
 
 
 def _files(root: Path) -> set[Path]:
@@ -266,3 +266,64 @@ def test_an_answer_stops_at_its_byte_budget(run_dir: Path) -> None:
     assert answer["truncated"] is True
     # Never past the budget: four 900 kB rows fit in 4 MB, a fifth would not.
     assert len(answer["rows"]) == 4
+
+
+class AnswerReads:
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+
+    def get(self, read: GitHubRead) -> Any:
+        return self.answer
+
+
+@pytest.mark.parametrize(
+    ("path", "params", "answer"),
+    [
+        ("repos/porchpin/porchpin/issues/7592", None, {}),
+        ("repos/porchpin/porchpin/issues/7592/timeline", None, []),
+        ("repos/porchpin/porchpin/pulls/7592/reviews", None, []),
+        # Listed, searched or referenced: refused all the same.
+        ("repos/porchpin/porchpin/issues", {"state": "open"}, [{"number": 1, "title": "a"}, {"number": 7592, "title": "hidden"}]),
+        ("search/issues", {"q": "repo:porchpin/porchpin x"},
+         {"items": [{"number": 7592, "title": "hidden", "repository_url": "https://api.github.com/repos/porchpin/porchpin"}]}),
+        ("repos/porchpin/porchpin/issues/1/timeline", None,
+         [{"event": "cross-referenced", "source": {"issue": {"number": 7592, "title": "hidden"}}}]),
+    ],
+)
+def test_a_blind_runs_hidden_issue_is_never_shown(run_dir: Path, path: str, params: dict | None, answer: Any) -> None:
+    """r5 F1: direct reads, lists, searches and references of a hidden issue."""
+    toolbox = _toolbox(run_dir, AnswerReads(answer), hidden=frozenset({7592}))  # type: ignore[arg-type]
+
+    with pytest.raises(ToolboxRefusal, match="blind run"):
+        toolbox.github_get(path, params)
+
+
+def test_an_unhidden_issue_with_the_same_shape_is_shown(run_dir: Path) -> None:
+    toolbox = _toolbox(run_dir, AnswerReads([{"number": 1, "title": "a"}]), hidden=frozenset({7592}))  # type: ignore[arg-type]
+
+    assert json.loads(toolbox.github_get("repos/porchpin/porchpin/issues"))[0]["number"] == 1
+
+
+def test_git_output_is_bounded_while_it_streams(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """r5 F2: ``git show HEAD:big.bin`` must never be held whole."""
+    import issue_orchestrator.execution.improver_toolbox as toolbox_module
+
+    repo = run_dir / "toolbox" / "repo"
+    (repo / "big.bin").write_bytes(b"x" * 3_000_000)
+    subprocess.run(["git", "add", "big.bin"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "big"], cwd=repo, check=True)
+    monkeypatch.setattr(toolbox_module, "MAX_ANSWER_CHARS", 10_000)
+    captured: list[int] = []
+    real = toolbox_module._bounded_run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        done = real(*args, **kwargs)
+        captured.append(len(done.stdout))
+        return done
+
+    monkeypatch.setattr(toolbox_module, "_bounded_run", spy)
+
+    answer = _toolbox(run_dir).git(["show", "HEAD:big.bin"])
+
+    assert captured == [10_000]
+    assert answer.endswith("narrow the request>")
