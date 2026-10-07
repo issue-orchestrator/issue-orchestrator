@@ -18,6 +18,7 @@ from issue_orchestrator.contracts.improver_run import ImproverAgentChoice, Impro
 from issue_orchestrator.domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
 from issue_orchestrator.entrypoints.engine_activity_probe import SnapshotEngineActivityProbe
 from issue_orchestrator.entrypoints.improver_run import ImproverRun
+from tests.unit.improver_support import NO_ACTIVITY
 from issue_orchestrator.entrypoints.improver_staging import ImproverInputStager
 from issue_orchestrator.entrypoints.improver_sweep import (
     EXIT_OK,
@@ -97,7 +98,7 @@ def _sweep(
         return ImproverRun(
             store=store,
             stager=ImproverInputStager(
-                audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), clock=lambda: NOW,
+                audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), activity=NO_ACTIVITY, clock=lambda: NOW,
             ),
             agent=agent,
             investigation=ScriptedInvestigation(),

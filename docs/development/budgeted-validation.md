@@ -175,6 +175,18 @@ copy; a `git` answer never counts (its `--format` is the request's). A quote tha
 whole file. An accepted design finding files one issue labelled
 `needs-operator-decision` and `improver:design`; nothing is applied.
 
+**Operator interventions** (`interventions.json`, #8001) also stage the hand
+actions on the audited repository's GitHub, read in bounded pages over the
+window: labels a person added or removed, title and body edits, items
+opened, closes, reopens, merges, reviews and comments. Automation (a Bot
+account or an App acting for a user) is left out and counted. Each entry
+names its actor and a GitHub URL. Because the coordinator acts under the
+operator's identity, an entry is attributed `coordinator` only when its
+text carries the coordinator's signature, and `person` otherwise; the file
+says so in `github.attribution_limits`, along with which sources stopped
+before the window's start. With `--no-github`, or a failed read, the file
+names what it is missing; staging never fails on it.
+
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits

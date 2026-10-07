@@ -1,0 +1,104 @@
+"""The audited repository's GitHub activity, read raw and bounded (#8001)."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+
+import httpx
+
+from issue_orchestrator.adapters.github import operator_activity
+from issue_orchestrator.adapters.github.operator_activity import GitHubOperatorActivity
+from tests.unit.test_github_http import _client_with_transport
+
+UNTIL = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+SINCE = UNTIL - timedelta(days=1)
+
+
+def _iso(at: datetime) -> str:
+    return at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _event(i: int, at: datetime, **extra: object) -> dict:
+    return {
+        "id": i, "event": "labeled", "created_at": _iso(at), "issue": {"number": 364},
+        "actor": {"login": "BruceBGordon", "type": "User"}, "performed_via_github_app": None,
+        "label": {"name": "approved"}, **extra,
+    }
+
+
+def _source(events_pages: list[list[dict]], comments: list[dict], search: dict, seen: list[httpx.Request]):  # type: ignore[no-untyped-def]
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/issues/events"):
+            page = int(request.url.params["page"])
+            return httpx.Response(200, json=events_pages[page - 1] if page <= len(events_pages) else [])
+        if request.url.path.endswith("/issues/comments"):
+            return httpx.Response(200, json=comments if request.url.params["page"] == "1" else [])
+        if request.url.path == "/graphql":
+            return httpx.Response(200, json={"data": {"search": search}})
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    return GitHubOperatorActivity("porchpin/porchpin", http_client=_client_with_transport(httpx.MockTransport(handler)))
+
+
+_EMPTY_SEARCH = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}
+
+
+def test_events_are_paged_back_to_the_windows_start_with_each_actor() -> None:
+    full = [_event(i, UNTIL - timedelta(minutes=i)) for i in range(100)]
+    older = [_event(200, SINCE - timedelta(hours=1)),
+             _event(201, SINCE - timedelta(hours=2), actor={"login": "porchpin-bot[bot]", "type": "Bot"},
+                    performed_via_github_app={"slug": "porchpin-bot"})]
+    seen: list[httpx.Request] = []
+
+    read = _source([full, older], [], _EMPTY_SEARCH, seen).read(since=SINCE, until=UNTIL)
+
+    assert len(read.events) == 102
+    assert read.events[0].actor.login == "BruceBGordon" and read.events[0].label == "approved"
+    assert read.events[-1].actor.via_app is True and read.events[-1].actor.account_type == "Bot"
+    assert read.events[0].ref == "https://github.com/porchpin/porchpin/issues/364#event-0"
+    [events_read, comments_read, items_read] = read.sources
+    assert events_read.complete and events_read.detail == "2 page(s)"
+    assert sum(r.url.path.endswith("/issues/events") for r in seen) == 2
+
+
+def test_a_source_that_hits_its_page_bound_says_it_is_incomplete(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(operator_activity, "EVENT_PAGES", 2)
+    pages = [[_event(i, UNTIL - timedelta(minutes=i)) for i in range(p * 100, p * 100 + 100)] for p in range(3)]
+
+    read = _source(pages, [], _EMPTY_SEARCH, []).read(since=SINCE - timedelta(days=30), until=UNTIL)
+
+    assert read.sources[0].complete is False and "stopped after 2 pages" in read.sources[0].detail
+
+
+def test_comments_and_items_carry_their_actors_and_a_truncated_list_is_said() -> None:
+    comments = [{
+        "created_at": _iso(UNTIL), "issue_url": "https://api.github.com/repos/porchpin/porchpin/issues/379",
+        "user": {"login": "BruceBGordon", "type": "User"}, "performed_via_github_app": None,
+        "body": "Ruling: rework to this design", "html_url": "https://github.com/porchpin/porchpin/issues/379#c1",
+    }]
+    search = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [{
+        "__typename": "PullRequest", "number": 511, "url": "https://github.com/porchpin/porchpin/pull/511",
+        "createdAt": _iso(SINCE), "author": {"login": "porchpin-bot", "__typename": "Bot"},
+        "mergedAt": _iso(UNTIL), "mergedBy": {"login": "BruceBGordon", "__typename": "User"},
+        "userContentEdits": {"totalCount": 60, "nodes": [{"editedAt": _iso(UNTIL), "editor": {"login": "BruceBGordon", "__typename": "User"}}]},
+        "reviews": {"totalCount": 0, "nodes": []},
+    }, {"__typename": "Discussion"}]}
+    seen: list[httpx.Request] = []
+
+    read = _source([[]], comments, search, seen).read(since=SINCE, until=UNTIL)
+
+    [comment] = read.comments
+    assert (comment.number, comment.actor.login, comment.body) == (379, "BruceBGordon", "Ruling: rework to this design")
+    [item] = read.items
+    assert item.is_pr and item.merged_by is not None and item.merged_by.login == "BruceBGordon"
+    assert item.author.account_type == "Bot" and item.edits[0].editor.account_type == "User"
+    assert read.sources[2].complete is False and "#511" in read.sources[2].detail
+    graphql = next(r for r in seen if r.url.path == "/graphql")
+    assert json.loads(graphql.content)["variables"]["q"] == "repo:porchpin/porchpin updated:>=2026-10-04T12:00:00Z"
+    # Every request is a read.
+    assert {r.method for r in seen} == {"GET", "POST"} and all(
+        r.method == "GET" or r.url.path == "/graphql" for r in seen
+    )
+    assert not json.loads(graphql.content)["query"].lstrip().startswith("mutation")

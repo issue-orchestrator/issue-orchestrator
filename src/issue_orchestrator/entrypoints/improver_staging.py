@@ -83,6 +83,7 @@ from ..ports.engine_audit import OpenIssueLabels, OpenWorkHost, TechLeadRunHisto
 from ..ports.pull_request_tracker import PRInfo
 from ..testing.exam.cases import EXAM_CASE_IDS
 from ..execution.improver_citations import RunDirCitations
+from ..ports.operator_activity import OperatorActivitySource, RepoActivityRead
 from .engine_snapshot import EngineSnapshot, snapshot_engine, snapshot_tech_lead_runs
 
 M = TypeVar("M", bound=BaseModel)
@@ -137,11 +138,13 @@ class ImproverInputStager:
         audited_host: OpenWorkHost | Unavailable,
         outputs_host: OpenIssueListing,
         source: EngineSourceExporter,
+        activity: OperatorActivitySource | Unavailable,
         clock: Callable[[], datetime],
     ) -> None:
         self._audited_host = audited_host
         self._outputs_host = outputs_host
         self._source = source
+        self._activity = activity
         self._clock = clock
 
     def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs:
@@ -189,6 +192,7 @@ class ImproverInputStager:
             window_start = now - request.window
             tech_lead = _stage_tech_lead(snapshot, runs_store, request, data, window_start, now)
             entries += tech_lead.entries
+            entries.append(self._stage_interventions(tech_lead.ledger, snapshot, request, data, window_start, now))
             entries.append(_stage_blocked_items(audit, audited, snapshot, tech_lead, data, now))
         entries.append(self._stage_open_issues(request, audited, data, now))
         series, unreadable_cards = _stage_exam(request.exam_dir, data)
@@ -209,6 +213,41 @@ class ImproverInputStager:
         )
         _write(data / INPUTS_FILE, manifest)
         return StagedImproverInputs(data_dir=data, manifest=manifest, audit=audit)
+
+    def _stage_interventions(
+        self,
+        ledger: tuple[TechLeadCharterDecision, ...] | str,
+        snapshot: EngineSnapshot,
+        request: ImproverStagingRequest,
+        data: Path,
+        window_start: datetime,
+        cutoff: datetime,
+    ) -> StagedInput:
+        """The operator's interventions: the engine's records and the hand
+        actions on the audited repository's GitHub (#8001). Each source that
+        cannot be read is named in the file; none stops the others."""
+        timeline = snapshot.timeline
+        interventions = interventions_input(
+            ledger,
+            f"{timeline.status.value}: {timeline.detail}"
+            if isinstance(timeline, Unavailable)
+            else timeline.events_between(window_start, cutoff),
+            JsonlPauseJournal(request.engine.state_dir / PAUSE_JOURNAL_FILENAME).recent(limit=_PAUSE_ROWS),
+            self._read_activity(window_start, cutoff),
+            repo=request.engine.repo,
+            window_start=window_start,
+            cutoff=cutoff,
+        )
+        _write(data / INTERVENTIONS_FILE, interventions)
+        return _staged(INTERVENTIONS_FILE, f"a floor: not every intervention is recorded; GitHub {interventions.github.detail}")
+
+    def _read_activity(self, since: datetime, until: datetime) -> RepoActivityRead | str:
+        if isinstance(self._activity, Unavailable):
+            return f"{self._activity.status.value}: {self._activity.detail}"
+        try:
+            return self._activity.read(since=since, until=until)
+        except Exception as error:  # an unreadable source is named, never fatal
+            return f"unreadable: {type(error).__name__}: {error}"
 
     def _stage_open_issues(
         self,
@@ -316,24 +355,11 @@ def _stage_tech_lead(
         )})
     _write(data / CASE_FILES_FILE, staged)
     entries.append(_staged(CASE_FILES_FILE, staged.coverage.detail))
-    timeline = snapshot.timeline
-    interventions = interventions_input(
-        ledger,
-        f"{timeline.status.value}: {timeline.detail}"
-        if isinstance(timeline, Unavailable)
-        else timeline.events_between(window_start, cutoff),
-        JsonlPauseJournal(request.engine.state_dir / PAUSE_JOURNAL_FILENAME).recent(limit=_PAUSE_ROWS),
-        window_start=window_start,
-        cutoff=cutoff,
-    )
-    _write(data / INTERVENTIONS_FILE, interventions)
-    entries.append(_staged(INTERVENTIONS_FILE, "a floor: not every intervention is recorded"))
     return _TechLeadStaged(entries, ledger, staged)
 
 
 def _tech_lead_missing(why: str) -> list[StagedInput]:
-    return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why),
-            _missing(INTERVENTIONS_FILE, why)]
+    return [_missing(CHARTER_DECISIONS_FILE, why), _missing(CASE_FILES_FILE, why)]
 
 
 def _stage_blocked_items(

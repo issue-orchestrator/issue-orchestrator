@@ -1080,6 +1080,15 @@ class GitHubHttpClient:
 
         return collected[:limit], oldest_updated_at
 
+    def graphql_query(self, query: str, variables: dict[str, Any], *, caller: str) -> dict[str, Any]:
+        """A read-only GraphQL query's ``data`` (raises on any GraphQL error)."""
+        if query.lstrip().startswith("mutation"):
+            raise ValueError("graphql_query reads; a mutation goes through its own method")
+        data = self._graphql(query, variables, caller=caller).get("data")
+        if not isinstance(data, dict):
+            raise GitHubHttpError("GitHub GraphQL returned no data", method="POST", url="/graphql")
+        return data
+
     def get_json_bounded(
         self, path: str, *, params: dict[str, Any] | None = None, max_bytes: int, caller: str
     ) -> Any:

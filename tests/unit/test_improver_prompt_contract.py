@@ -63,3 +63,13 @@ def test_the_prompts_ask_for_design_findings_under_the_evidence_rule() -> None:
     assert "`design_findings`" in addendum and "[toolbox call N]" in addendum
     # r1 F1: only data is evidence; the agent is told which answers count.
     assert "A `git` answer is never evidence" in text and "A `git` answer is never evidence" in " ".join(addendum.split())
+
+
+def test_the_prompts_present_the_operators_hand_actions_and_their_attribution_limit() -> None:
+    """#8001: the operator's GitHub hand actions are evidence, and `person`
+    is never read as the operator."""
+    text = " ".join(PROMPT.read_text(encoding="utf-8").split())
+    addendum = " ".join((PROMPT.parent / "tech-lead-improver-empowered.md").read_text(encoding="utf-8").split())
+    assert "**the hand actions on the audited repository's GitHub**" in text
+    assert "**`person` may be the operator or the coordinator**" in text
+    assert "`improver-data/interventions.json` lists the hand actions on GitHub" in addendum
