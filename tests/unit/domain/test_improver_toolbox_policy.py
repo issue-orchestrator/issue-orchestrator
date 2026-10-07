@@ -25,6 +25,8 @@ POLICY = AuditedRepoReadPolicy("porchpin/porchpin")
         ("repos/porchpin/porchpin", None, "/repos/porchpin/porchpin"),
         ("search/issues", {"q": "repo:porchpin/porchpin is:open label:needs-human"}, "/search/issues"),
         ("search/issues", {"q": 'is:pr repo:"porchpin/porchpin"'}, "/search/issues"),
+        ("search/issues", {"q": 'repo:porchpin/porchpin label:"needs human" "or" in:title'}, "/search/issues"),
+        ("search/commits", {"q": "repo:porchpin/porchpin fix"}, "/search/commits"),
     ],
 )
 def test_reads_of_the_audited_repository_pass(path: str, params: dict | None, expected: str) -> None:
@@ -57,6 +59,16 @@ def test_reads_of_the_audited_repository_pass(path: str, params: dict | None, ex
         ("search/issues", {"q": "repo:porchpin/porchpin org:issue-orchestrator"}),
         ("search/issues", {"q": "repo:porchpin/porchpin user:BruceBGordon"}),
         ("search/issues", {"q": "repo:porchpin/porchpin -repo:porchpin/porchpin"}),
+        # r1 F1: one scoped side of OR does not scope the other; a phrase is not a scope.
+        ("search/issues", {"q": "repo:porchpin/porchpin OR is:issue"}),
+        ("search/issues", {"q": "repo:porchpin/porchpin or is:issue"}),
+        ("search/issues", {"q": "repo:porchpin/porchpin AND is:issue"}),
+        ("search/issues", {"q": "repo:porchpin/porchpin NOT is:pr"}),
+        ("search/issues", {"q": "(repo:porchpin/porchpin is:issue) OR label:x"}),
+        ("search/issues", {"q": '"repo:porchpin/porchpin" improver'}),
+        ("search/issues", {"q": '"needs human repo:porchpin/porchpin"'}),
+        ("search/issues", {"q": 'repo:porchpin/porchpin "unbalanced'}),
+        ("search/issues", {"q": "REPO:issue-orchestrator/issue-orchestrator"}),
         # Parameters are scalars.
         ("repos/porchpin/porchpin/issues", {"labels": ["a", "b"]}),
         ("repos/porchpin/porchpin/issues", {"q x": "1"}),

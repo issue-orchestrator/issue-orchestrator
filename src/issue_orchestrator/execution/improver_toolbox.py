@@ -63,6 +63,7 @@ class ImproverToolbox:
         self._state = self._root / TOOLBOX_STATE_DIRNAME
         self._repo = self._root / TOOLBOX_REPO_DIRNAME
         self._github_policy = AuditedRepoReadPolicy(audited_repo)
+        self._audited_repo = audited_repo
         self._git_policy = GitReadPolicy()
         self._github = github
         self._runner = runner
@@ -77,7 +78,27 @@ class ImproverToolbox:
         read = self._github_policy.check(path, params)
         if self._github is None:
             raise ToolboxRefusal("GitHub reads are off for this run")
-        return _capped(json.dumps(self._github.get(read), indent=1, default=str))
+        answer = self._github.get(read)
+        if read.path.startswith("/search/"):
+            self._check_search_results(answer)
+        return _capped(json.dumps(answer, indent=1, default=str))
+
+    def _check_search_results(self, answer: Any) -> None:
+        """The second wall behind the query policy: a search answer holding
+        any item that does not name the audited repository is refused whole."""
+        items = answer.get("items") if isinstance(answer, dict) else None
+        if not isinstance(items, list):
+            raise ToolboxRefusal("the search answer has no item list; refused")
+        wanted = f"/repos/{self._audited_repo}".casefold()
+        for item in items:
+            repository = item.get("repository") if isinstance(item, dict) else None
+            url = (
+                item.get("repository_url")
+                if isinstance(item, dict) and "repository_url" in item
+                else repository.get("url") if isinstance(repository, dict) else None
+            )
+            if not isinstance(url, str) or not url.casefold().endswith(wanted):
+                raise ToolboxRefusal(f"the search returned an item outside {self._audited_repo}; refused")
 
     def sql_query(self, database: str, sql: str) -> str:
         copy = self._database(database)

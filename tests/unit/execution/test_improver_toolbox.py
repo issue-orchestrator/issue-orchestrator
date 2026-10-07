@@ -137,6 +137,42 @@ def test_github_reads_only_the_audited_repository(run_dir: Path) -> None:
     assert [r.path for r in reads.reads] == ["/repos/porchpin/porchpin/issues/450"]
 
 
+class SearchReads:
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        self.items = items
+
+    def get(self, read: GitHubRead) -> Any:
+        return {"total_count": len(self.items), "items": self.items}
+
+
+@pytest.mark.parametrize(
+    ("items", "allowed"),
+    [
+        ([{"number": 1, "repository_url": "https://api.github.com/repos/porchpin/porchpin"}], True),
+        ([{"sha": "a", "repository": {"url": "https://api.github.com/repos/Porchpin/Porchpin"}}], True),
+        ([], True),
+        # r1 F1, the second wall: a search answer naming another repository.
+        ([{"number": 1, "repository_url": "https://api.github.com/repos/porchpin/porchpin"},
+          {"number": 8001, "repository_url": "https://api.github.com/repos/issue-orchestrator/issue-orchestrator"}], False),
+        ([{"number": 2}], False),
+        ([{"sha": "b", "repository": {"url": "https://api.github.com/repos/x/porchpin/porchpin2"}}], False),
+    ],
+)
+def test_a_search_answer_outside_the_audited_repository_is_refused_whole(
+    run_dir: Path, items: list[dict[str, Any]], allowed: bool
+) -> None:
+    toolbox = _toolbox(run_dir, SearchReads(items))  # type: ignore[arg-type]
+
+    def read() -> str:
+        return toolbox.github_get("search/issues", {"q": "repo:porchpin/porchpin label:x"})
+
+    if allowed:
+        assert json.loads(read())["total_count"] == len(items)
+    else:
+        with pytest.raises(ToolboxRefusal, match="outside porchpin/porchpin"):
+            read()
+
+
 def test_with_github_off_nothing_is_read(run_dir: Path) -> None:
     with pytest.raises(ToolboxRefusal, match="off"):
         _toolbox(run_dir, None).github_get("repos/porchpin/porchpin/issues/1")

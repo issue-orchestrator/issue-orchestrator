@@ -108,3 +108,46 @@ def test_the_copies_are_not_the_live_files(tmp_path: Path) -> None:
     live = engine.state_dir / "timeline.sqlite"
     copy = run / TOOLBOX_DIRNAME / "state" / "timeline.sqlite"
     assert os.stat(live).st_ino != os.stat(copy).st_ino
+
+
+def test_a_symlinked_log_or_store_is_never_followed(tmp_path: Path) -> None:
+    """r1 F2: a symlink in the state dir could point at any file the
+    orchestrator can read; its copy would land where the agent reads."""
+    engine = _engine(tmp_path)
+    (tmp_path / "secret.log").write_text("canary-log-3391\n")
+    with sqlite3.connect(tmp_path / "foreign.sqlite") as conn:
+        conn.execute("CREATE TABLE secret (v TEXT)")
+        conn.execute("INSERT INTO secret VALUES ('canary-store-3391')")
+    (engine.state_dir / "logs" / "linked.log").symlink_to(tmp_path / "secret.log")
+    (engine.state_dir / "linked.sqlite").symlink_to(tmp_path / "foreign.sqlite")
+    run = tmp_path / "run"
+    run.mkdir()
+
+    manifest = ImproverToolboxStager(runner=LocalCommandRunner(), clock=lambda: NOW).stage(engine, run)
+
+    staged = {s.path: (s.staged, s.detail) for s in manifest.sources}
+    assert staged["logs/linked.log"] == (False, "a symlink; not followed")
+    assert staged["state/linked.sqlite"] == (False, "a symlink; not followed")
+    assert staged["logs/orchestrator.log"][0] and staged["state/timeline.sqlite"][0]
+    for path in (run / "toolbox").rglob("*"):
+        if path.is_file():
+            assert b"canary-" not in path.read_bytes(), path
+
+
+def test_a_symlinked_logs_directory_is_never_followed(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "orchestrator.log").write_text("canary-dir-3391\n")
+    logs = engine.state_dir / "logs"
+    for f in logs.iterdir():
+        f.unlink()
+    logs.rmdir()
+    logs.symlink_to(elsewhere)
+    run = tmp_path / "run"
+    run.mkdir()
+
+    manifest = ImproverToolboxStager(runner=LocalCommandRunner(), clock=lambda: NOW).stage(engine, run)
+
+    assert ("logs", False, "a symlink; not followed") in {(s.path, s.staged, s.detail) for s in manifest.sources}
+    assert not any((run / "toolbox" / "logs").iterdir())

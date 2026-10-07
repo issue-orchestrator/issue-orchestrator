@@ -43,6 +43,15 @@ SQLITE_TIMEOUT = 120.0
 CLONE_TIMEOUT = 600
 
 
+#: A symlink is never followed: it could point anywhere the orchestrator can
+#: read, and its copy would land where the agent can read it.
+_SYMLINK = "a symlink; not followed"
+
+
+def _links_out(*paths: Path) -> bool:
+    return any(p.is_symlink() for p in paths)
+
+
 class ImproverToolboxStager:
     def __init__(self, *, runner: CommandRunner, clock: Callable[[], datetime]) -> None:
         self._runner = runner
@@ -67,6 +76,9 @@ class ImproverToolboxStager:
         sources = []
         for live in sorted(state_dir.glob("*.sqlite")):
             path = f"{TOOLBOX_STATE_DIRNAME}/{live.name}"
+            if _links_out(live, live.with_name(live.name + "-wal")):
+                sources.append(ToolboxSource(path=path, staged=False, detail=_SYMLINK))
+                continue
             try:
                 snapshot_sqlite(live, destination / live.name, timeout=SQLITE_TIMEOUT)
             except ReadOnlySqliteAccessError as error:
@@ -80,15 +92,20 @@ class ImproverToolboxStager:
     @staticmethod
     def _logs(logs: Path, destination: Path) -> list[ToolboxSource]:
         destination.mkdir()
-        files = sorted(p for p in logs.glob("*") if p.is_file()) if logs.is_dir() else []
-        if not files:
+        if logs.is_symlink():
+            return [ToolboxSource(path=TOOLBOX_LOGS_DIRNAME, staged=False, detail=_SYMLINK)]
+        entries = sorted(p for p in logs.glob("*") if p.is_symlink() or p.is_file()) if logs.is_dir() else []
+        if not entries:
             return [ToolboxSource(path=TOOLBOX_LOGS_DIRNAME, staged=False, detail=f"no log in {logs}")]
-        for log in files:
-            shutil.copyfile(log, destination / log.name)
-        return [
-            ToolboxSource(path=f"{TOOLBOX_LOGS_DIRNAME}/{log.name}", staged=True, detail="byte copy")
-            for log in files
-        ]
+        sources = []
+        for log in entries:
+            path = f"{TOOLBOX_LOGS_DIRNAME}/{log.name}"
+            if log.is_symlink():
+                sources.append(ToolboxSource(path=path, staged=False, detail=_SYMLINK))
+                continue
+            shutil.copyfile(log, destination / log.name, follow_symlinks=False)
+            sources.append(ToolboxSource(path=path, staged=True, detail="byte copy"))
+        return sources
 
     def _clone(self, checkout: Path, destination: Path) -> ToolboxSource:
         path = TOOLBOX_REPO_DIRNAME

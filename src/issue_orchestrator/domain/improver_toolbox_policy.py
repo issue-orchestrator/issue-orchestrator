@@ -36,8 +36,14 @@ _SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _PARAM_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_\[\]]*$")
 #: Search endpoints scoped by a ``repo:`` qualifier in ``q``.
 _SEARCHES = frozenset({"issues", "commits"})
-#: Qualifiers that would widen a search beyond one repository.
-_SCOPE_QUALIFIER = re.compile(r"(?i)(?:^|\s|\()(-?)(repo|org|user|owner)\s*:\s*(\"[^\"]*\"|\S+)")
+#: One search term: a qualifier (its value may be quoted), a quoted phrase,
+#: or a bare word. An unbalanced quote matches none of them.
+_SEARCH_TERM = re.compile(r'(-?[A-Za-z_-]+:"[^"]*")|("[^"]*")|([^\s"]+)')
+#: A qualifier that scopes a search by owner or repository.
+_SCOPE_QUALIFIER = re.compile(r'(?i)^(-?)(repo|org|user|owner):"?([^"]*)"?$')
+#: GitHub's boolean search operators: ``a OR b`` matches either side, so one
+#: scoped side would not scope the other.
+_SEARCH_OPERATORS = frozenset({"or", "and", "not"})
 
 
 @dataclass(frozen=True)
@@ -76,14 +82,47 @@ class AuditedRepoReadPolicy:
         )
 
     def _check_search(self, q: str) -> None:
-        scopes = [
-            (negated == "-", kind.casefold() == "repo" and value.strip('"').casefold() == self.repo.casefold())
-            for negated, kind, value in _SCOPE_QUALIFIER.findall(q)
-        ]
-        if not scopes or any(negated or not audited for negated, audited in scopes):
-            raise ToolboxRefusal(
-                f"a search is scoped with repo:{self.repo} in q, and names no other scope; refused q={q!r}"
-            )
+        """Every result must come from the audited repository: the query is
+        scoped by ``repo:<audited>`` and by no other scope, and has no boolean
+        operator or grouping that could match beside the scope. A ``repo:``
+        inside a quoted phrase is text, not a scope."""
+        refused = ToolboxRefusal(
+            f"a search is scoped with repo:{self.repo} in q, names no other scope, and uses no"
+            f" OR/AND/NOT or parentheses; refused q={q!r}"
+        )
+        terms = _search_terms(q)
+        if terms is None:
+            raise refused
+        scoped = False
+        for qualifier, phrase, word in terms:
+            if phrase:
+                continue
+            if word and (word.casefold() in _SEARCH_OPERATORS or "(" in word or ")" in word):
+                raise refused
+            scope = _SCOPE_QUALIFIER.match(qualifier or word)
+            if scope is None:
+                continue
+            negated, kind, value = scope.groups()
+            if negated or kind.casefold() != "repo" or value.casefold() != self.repo.casefold():
+                raise refused
+            scoped = True
+        if not scoped:
+            raise refused
+
+
+def _search_terms(q: str) -> list[tuple[str, str, str]] | None:
+    """``q``'s terms, or ``None`` if a quote is unbalanced (GitHub's reading
+    of such a query is not this policy's)."""
+    terms = []
+    position = 0
+    for match in _SEARCH_TERM.finditer(q):
+        if q[position:match.start()].strip():
+            return None
+        terms.append((match.group(1) or "", match.group(2) or "", match.group(3) or ""))
+        position = match.end()
+    if q[position:].strip() or q.count('"') % 2:
+        return None
+    return terms
 
 
 def _segments(path: str) -> list[str]:
