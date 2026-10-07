@@ -97,6 +97,7 @@ from .control_api_e2e_support import (
     install_control_api_e2e_dependencies,
 )
 from .control_api_issue_routes import control_issue_router
+from .control_api_ruling_routes import control_ruling_router
 from .control_api_issue_support import (
     ControlApiIssueDependencies,
     install_control_api_issue_dependencies,
@@ -1167,6 +1168,7 @@ from .completion_intake_routes import completion_intake_router
 
 control_app.include_router(completion_intake_router)
 control_app.include_router(control_issue_router)
+control_app.include_router(control_ruling_router)  # maintainer rulings (#8141)
 control_app.include_router(control_tools_router)
 control_app.include_router(control_repo_router)
 control_app.include_router(control_setup_router)

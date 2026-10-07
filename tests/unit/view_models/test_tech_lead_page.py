@@ -79,6 +79,7 @@ def _inputs(**changes) -> TechLeadPageInputs:
         needs_human_causes=(), issues=(), tech_lead_needs_human_label="tech-lead-needs-human",
         blocked_numbers=frozenset(), decisions=(), parked=(), case_files=(),
         health_interval_minutes=60, last_health_review_at=0.0, latest_run=None, merge_statuses={},
+        rulings={},
     )
     return replace(base, **changes)
 
@@ -272,3 +273,37 @@ def test_a_proposal_stripped_of_every_gate_label_still_waits() -> None:
 
     assert [item.number for item in section.waiting] == [30]
     assert section.waiting_count == 1
+
+
+def test_every_waiting_item_shows_its_issues_active_standing_rulings() -> None:
+    """#8141: the operator sees the rulings that bind each item's agents."""
+    from issue_orchestrator.ports.standing_rulings import SyncedRulings
+    from tests.standing_ruling_helpers import a_ruling
+
+    ruling = a_ruling(text="Runtime stamping replaces the static symbol-walk checker.\n\nDetail.")
+    synced = SyncedRulings((ruling,), "2026-10-04T12:00:00+00:00")
+    rulings = {7: synced, 40: synced, 41: synced}
+    section = _section(
+        proposals=((_issue(10), None),),
+        ops={10: _op("propose_decision", target=7,
+                     decision=OperatorDecision(title="Rework #379", body="why", follow_ups=()))},
+        needs_human_causes=(
+            NeedsHumanCauseRow(40, NeedsHumanCause.MERGE_DECISION.value, "merge after the ruling"),
+            NeedsHumanCauseRow(41, NeedsHumanCause.TECH_LEAD_ESCALATION.value, "needs a person"),
+        ),
+        issues=(_issue(41, ("needs-human", "tech-lead-needs-human")),),
+        rulings=rulings,
+    )
+
+    expected = (f"Standing ruling {ruling.ruling_id}",
+                "Runtime stamping replaces the static symbol-walk checker. (maintainer ruling; maintainer,"
+                " in a test; as of 2026-10-04 12:00 UTC)")
+    for item in section.waiting:
+        rows = [(row.label, row.value) for row in item.details if row.label.startswith("Standing ruling")]
+        assert rows == [expected], item.number
+
+
+def test_an_item_without_rulings_shows_none() -> None:
+    section = _section(proposals=((_issue(10), None),), ops={10: _op()}, rulings={})
+
+    assert not any(row.label.startswith("Standing ruling") for row in section.waiting[0].details)

@@ -1,6 +1,9 @@
 """Issue action control route tests split from test_control_api."""
 
 from tests.unit.control.liveness_doubles import liveness_owner
+from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
+from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with, rulings_owner
 from issue_orchestrator.infra.config import Config
 
 # ruff: noqa: F403,F405
@@ -204,10 +207,17 @@ class TestDebugSessionEndpoint:
         mock_issue.agent_type = "agent:claude"
         mock_orch.state.cached_queue_issues = [mock_issue]
 
-        # Agent config - get_command returns the base command
+        # Agent config renders the prompt the engine composes (#8141: rulings first)
         mock_agent_config = MagicMock()
-        mock_agent_config.get_command.return_value = "claude --model sonnet 'Work on issue'"
+        mock_agent_config.render_initial_prompt.side_effect = (
+            lambda **kw: f"IMPORTANT: {kw['existing_work']}\n\nWork on issue #{kw['issue_number']}"
+        )
+        mock_agent_config.get_command_for_prompt.side_effect = lambda prompt, **kw: f"claude '{prompt}'"
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
+        ruling = a_ruling(text="Runtime stamping replaces the walk checker.")
+        mock_orch.deps.launch_prompt = IssueLaunchPrompt(
+            NO_CODER_PROMPT_ADDENDUM, rulings_owner(IssueBodies({123: body_with(ruling)})),
+        )
         mock_orch.config.web_port = 8080
         mock_orch.config.control_api_port = 8080
         from issue_orchestrator.infra.agent_callback_endpoint import (
@@ -254,13 +264,14 @@ class TestDebugSessionEndpoint:
         assert data["agent"] == "claude"
         assert "coding-done --resume" in data["hint"]
 
-        # Verify get_command was called with debug context
-        mock_agent_config.get_command.assert_called_once()
-        call_kwargs = mock_agent_config.get_command.call_args.kwargs
+        # The command carries the engine's composition: the rulings, then the debug context
+        mock_agent_config.get_command_for_prompt.assert_called_once()
+        prompt = mock_agent_config.get_command_for_prompt.call_args.args[0]
+        call_kwargs = mock_agent_config.get_command_for_prompt.call_args.kwargs
         assert call_kwargs["issue_number"] == 123
         assert call_kwargs["issue_title"] == "Test Issue"
         assert call_kwargs["worktree"] == worktree
-        assert "DEBUG SESSION" in call_kwargs["existing_work"]
+        assert prompt.index(ruling.text) < prompt.index("DEBUG SESSION")
 
         # Verify session was created with correct args
         mock_orch.deps.runner.create_session.assert_called_once()
@@ -283,6 +294,29 @@ class TestDebugSessionEndpoint:
         manifest = session_output.read_manifest(run_dir)
         assert manifest is not None
         assert manifest["completion_path"] == completion_path
+
+    def test_a_debug_session_never_launches_without_its_launch_prompt(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """#8141: the debug launch asks the one launch-prompt owner; an input it
+        requires (a ruling, the coder addendum) that cannot be read refuses it."""
+        from issue_orchestrator.domain.launch_prompt import LaunchPromptUnavailable
+
+        client, mock_orch = client_with_orchestrator
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        mock_issue = MagicMock(number=123, key=FakeIssueKey("123", "test/repo"), title="T", agent_type="agent:claude")
+        mock_orch.state.cached_queue_issues = [mock_issue]
+        mock_orch.config.agents = {"agent:claude": MagicMock()}
+        mock_orch.deps.runner.session_exists.return_value = False
+        mock_orch.deps.launch_prompt.prepare.return_value = LaunchPromptUnavailable("instructions unreadable")
+
+        with patch("issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path") as mock_get_path:
+            mock_get_path.return_value = worktree
+            response = client.post("/api/issues/123/debug-session")
+
+        assert response.status_code == 503 and response.json()["error"] == "instructions unreadable"
+        mock_orch.deps.runner.create_session.assert_not_called()
 
     def test_debug_session_returns_500_when_session_creation_fails(
         self, client_with_orchestrator, tmp_path

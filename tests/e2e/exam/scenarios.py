@@ -12,10 +12,17 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.domain.standing_ruling import (
+    RulingAuthority,
+    RulingScope,
+    StandingRuling,
+    with_rulings_block,
+)
 from issue_orchestrator.domain.tech_lead_approval import (
     APPROVED_LABEL,
     AWAITING_APPROVAL_LABEL,
@@ -29,8 +36,11 @@ from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
     ASKS,
     ASKS_BESIDE_PR,
+    ANSWERED,
     BESIDE_PR,
     PROVISIONING,
+    RULED,
+    ruling_binds_rework_and_review,
     SPLIT,
     STALE,
     CODING,
@@ -54,6 +64,8 @@ from issue_orchestrator.testing.exam.cases import (
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
 from tests.e2e.exam.agents import (
+    ANSWERABLE_CODER_LABEL,
+    RULED_CODER_LABEL,
     ASKING_BESIDE_PR_CODER_LABEL,
     ASKING_CODER_LABEL,
     ASKING_PROVISIONING_CODER_LABEL,
@@ -72,10 +84,11 @@ from tests.e2e.exam.case_engines import (
     case_d_engine,
     case_h_engine,
     case_e_engine,
+    case_i_engine,
     case_resolution_engine,
     case_u_engine,
 )
-from tests.e2e.exam.engine import EngineCheckout, ExamEngine
+from tests.e2e.exam.engine import EngineCheckout, ExamEngine, RulingAgents
 from tests.e2e.exam.upgrade_window import capture_restart_window, quiesce, upgrade_facts
 from tests.e2e.exam.observe import (
     TrackedItem,
@@ -88,7 +101,12 @@ from tests.e2e.exam.observe import (
     parked_screen,
     terminal_tech_lead_runs,
 )
-from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
+from tests.e2e.exam.seeding import (
+    E2E_DATA_LABEL,
+    seed_conflicting_pull_request,
+    seed_pull_request,
+    wait_for_checks,
+)
 from tests.e2e.fixtures import _github_adapter, fetch_gh_audit_report
 from tests.e2e.fixtures.data_factory import inflight_update
 from tests.e2e.fixtures.github_client import get_issue_labels_fresh
@@ -124,6 +142,8 @@ CASE_FG_SPLIT_EXTERNAL_ID = "M0-771"
 CASE_FG_STALE_EXTERNAL_ID = "M0-772"
 CASE_FG_BESIDE_PR_EXTERNAL_ID = "M0-773"
 CASE_FG_PROVISIONING_EXTERNAL_ID = "M0-774"
+CASE_I_RULED_EXTERNAL_ID = "M0-775"
+CASE_I_ANSWERED_EXTERNAL_ID = "M0-776"
 
 #: How long the stale item gets to reach needs-human before its stale
 #: blocked-cross-milestone is planted beside it. Four items share two
@@ -161,7 +181,8 @@ class ExamRun:
 
 
 def goals_met_probe(
-    run: ExamRun, engine: ExamEngine, *items: TrackedItem, every_s: float = 60.0
+    run: ExamRun, engine: ExamEngine, *items: TrackedItem, every_s: float = 60.0,
+    capture_dir: Path | None = None,
 ) -> Callable[[], Awaitable[bool]]:
     """``done`` for :func:`drive`: the case's own goals, on GitHub's state.
 
@@ -187,6 +208,7 @@ def goals_met_probe(
                 parked_screen="",
                 read_checks=False,
                 state_dir=engine.checkout.state_dir,
+                capture_dir=capture_dir,
             )
             if not all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role):
                 return False
@@ -204,6 +226,7 @@ async def _finish(
     started: float,
     ended_by: RunEnd,
     upgrade: UpgradeFacts | None = None,
+    capture_dir: Path | None = None,
 ) -> ExamResult:
     watcher = engine.runtime.watcher
     alive = engine.is_running()
@@ -228,6 +251,7 @@ async def _finish(
                 ),
                 extra_pr_numbers=extra_prs.get(item.role, ()),
                 state_dir=engine.checkout.state_dir,
+                capture_dir=capture_dir,
             )
             for item in items
         ),
@@ -864,6 +888,134 @@ async def run_case_resolution(
 
 
 # ---------------------------------------------------------------------------
+# Case I
+# ---------------------------------------------------------------------------
+
+_RULED_BODY = """Tech-lead exam case I (porchpin#364 / PR #379): a maintainer rules on this
+issue after its PR was approved, and the PR then conflicts with its base.
+
+## Outcome
+Provenance is checked by a static symbol-walk checker, whose findings are
+recorded in `exam-output.txt`.
+"""
+
+#: The maintainer's ruling (#364's): it retires exactly what the scripted
+#: conflict rework then extends (it writes ``exam-output.txt``).
+_RULING: dict[str, Any] = {
+    "text": (
+        "Runtime stamping replaces the static symbol-walk checker. The walk checker's"
+        " findings file `exam-output.txt` is retired: no change may add to or extend it."
+    ),
+    "files": ["exam-output.txt"],
+    "claims": ["The static symbol-walk checker is retired"],
+}
+
+_ANSWERED_BODY = """Tech-lead exam case I (porchpin#327 / proposal #501): the coder asks a
+question before any work, and this issue's spec answers it.
+
+## Spec
+ADR-0009 rules the buyer contact index: it is its own D1 table
+(`buyer_contact_index`), written only by the Pickup DO, behind a deletion fence
+(deleting a buyer's rows is a precondition of every wipe of that pickup). The
+seller index is never widened to carry buyers. A session that asks which of the
+two to build is answered by this paragraph.
+"""
+
+
+def _paste_ruling(repo: str, issue_number: int) -> None:
+    """Put the ruling in the issue body by hand, as porchpin's operator did: the
+    only way an engine with no ruling route can be told one."""
+    adapter = _github_adapter(repo)
+    issue = adapter.get_issue(issue_number)
+    if issue is None:
+        raise RuntimeError(f"issue #{issue_number} vanished before its ruling was pasted")
+    ruling = StandingRuling(
+        ruling_id="m-0000feedc0de", text=_RULING["text"], authority=RulingAuthority.MAINTAINER,
+        source="maintainer, pasted into the body by hand",
+        scope=RulingScope(files=tuple(_RULING["files"]), claims=tuple(_RULING["claims"])),
+        recorded_at=datetime.now(timezone.utc).isoformat(),
+    )
+    adapter.update_issue_body(issue_number, with_rulings_block(issue.body, (ruling,)))
+
+
+async def run_case_i(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
+    """A standing ruling must bind a conflict rework and its review (#8141).
+
+    ``ruled``: an engine-shaped PR that conflicts with main is seeded before
+    the engine starts, and the maintainer's ruling is recorded once it runs
+    (through the engine's ruling route, or pasted into the body by hand on an
+    engine that has none). The reviewer approves whatever it sees; the
+    approval sends the PR to awaiting-merge, GitHub says it is ``dirty``, and
+    the conflict rework fires. The ruling governs ``exam-output.txt``, which the
+    seeded PR does not touch and the rework then writes. ``answered``: a coder asks a question its
+    spec answers; the tech lead (``resolve_block: execute``) answers it.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    hold_dir = Path(tempfile.mkdtemp(prefix="exam-i-"))
+    agents = RulingAgents(capture_dir=hold_dir / "prompts")
+    try:
+        spec = case_i_engine(agents)
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model,
+        )
+        labels = _labels(config)
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        flow.ensure_labels([labels.needs_human, labels.pr_pending, labels.code_review])
+        _, ruled_number = flow.create_issue(
+            f"[{CASE_I_RULED_EXTERNAL_ID}] [EXAM-I] A maintainer rules on a PR that conflicts with its base",
+            [RULED_CODER_LABEL, E2E_DATA_LABEL, labels.pr_pending],
+            body=_RULED_BODY,
+        )
+        seeded = seed_conflicting_pull_request(
+            repo=run.repo,
+            repo_root=run.harness_root,
+            issue_number=ruled_number,
+            slug="exam-i-ruled-pr",
+            labels=[labels.code_review, run.run_label, E2E_DATA_LABEL],
+            draft=True,
+            register_branch=run.branches.append,
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow.watcher = runtime.watcher
+            started = time.monotonic()
+            _, answered_number = flow.create_issue(
+                f"[{CASE_I_ANSWERED_EXTERNAL_ID}] [EXAM-I] An agent asks a question its spec answers",
+                [ANSWERABLE_CODER_LABEL, E2E_DATA_LABEL],
+                body=_ANSWERED_BODY,
+            )
+            if engine.record_ruling(ruled_number, _RULING) is None:
+                run.notes.append(
+                    f"this engine has no ruling route: the ruling was pasted into #{ruled_number}'s"
+                    " body by hand, as porchpin's operator did"
+                )
+                _paste_ruling(run.repo, ruled_number)
+            items = [
+                TrackedItem(RULED, ruled_number, external_id=CASE_I_RULED_EXTERNAL_ID),
+                TrackedItem(ANSWERED, answered_number, external_id=CASE_I_ANSWERED_EXTERNAL_ID),
+            ]
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, *items, capture_dir=agents.capture_dir),
+                quiet_s=900,
+                timeout_s=55 * 60,
+            )
+            return await _finish(
+                run, engine, items=items, extra_prs={RULED: [seeded.number]}, started=started,
+                ended_by=ended_by, capture_dir=agents.capture_dir,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+        shutil.rmtree(hold_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Case U
 # ---------------------------------------------------------------------------
 
@@ -1074,3 +1226,8 @@ def case_f_resolved(config: Config) -> ExamCase:
 
 def case_g_proposed(config: Config) -> ExamCase:
     return needs_human_block_resolutions_proposed(needs_human_label=_labels(config).needs_human)
+
+
+def case_i(config: Config) -> ExamCase:
+    del config  # the case grades rulings and prompts, not label names
+    return ruling_binds_rework_and_review()

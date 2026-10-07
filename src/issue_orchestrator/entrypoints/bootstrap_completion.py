@@ -26,10 +26,9 @@ from ..control.completion_ports import LabelAdapter, PRAdapter
 from ..infra.config import Config
 from ..control.review_exchange_lifecycle import ReviewExchangeCancellation
 from ..ports import EventSink
-from ..ports.coder_prompt import (
-    CoderPromptAddendumProvider,
-    NO_CODER_PROMPT_ADDENDUM,
-)
+from ..control.launch_prompt import NO_LAUNCH_PROMPT
+from ..ports.launch_prompt import LaunchPromptProvider
+from ..ports.standing_rulings import NO_STANDING_RULINGS, StandingRulings
 
 if TYPE_CHECKING:
     from ..control.publish_recovery import PublishRecoveryService
@@ -131,7 +130,9 @@ def create_completion_components(
     # two different in-memory histories while the facade claimed broken wiring
     # fails loudly (#6858 round 1 A2). The caller passes the ONE owner it built.
     tech_lead_run_activity: "TechLeadRunActivity",
-    coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+    launch_prompt: LaunchPromptProvider = NO_LAUNCH_PROMPT,
+    # The review rule's owner: an approval must attest the rulings it covers (#8141).
+    standing_rulings: StandingRulings = NO_STANDING_RULINGS,
 ) -> tuple[
     "CompletionProcessor | None",
     "SessionController | None",
@@ -183,7 +184,7 @@ def create_completion_components(
             pair_registry,
             completion_intake=completion_intake,
             turn_mailbox=turn_mailbox,
-            coder_prompt_addendum=coder_prompt_addendum,
+            launch_prompt=launch_prompt,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
@@ -198,6 +199,7 @@ def create_completion_components(
         runtime_identity=runtime_identity.resolve_runtime_identity(),
         tech_lead_authority=tech_lead_authority,
         needs_human_block=needs_human_block,
+        standing_rulings=standing_rulings,
     )
 
     session_controller_instance = SessionController(

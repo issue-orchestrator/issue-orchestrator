@@ -49,9 +49,9 @@ from ..domain.models import (
     SessionKind,
     get_completion_path,
 )
-from ..domain.coder_prompt import (
-    CoderPromptAddendumUnavailable,
-    PreparedCoderPromptAddendum,
+from ..domain.launch_prompt import (
+    LaunchPromptUnavailable,
+    PreparedLaunchPrompt,
 )
 from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
@@ -82,10 +82,8 @@ from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadinessProbe,
 )
-from ..ports.coder_prompt import (
-    CoderPromptAddendumProvider,
-    NO_CODER_PROMPT_ADDENDUM,
-)
+from ..ports.launch_prompt import LaunchPromptProvider
+from .launch_prompt import NO_LAUNCH_PROMPT
 from ..ports.session_output import SessionOutput
 from ..ports.event_sink import SessionStartedEventPayload, make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
@@ -211,7 +209,8 @@ class SessionLauncher:
         provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
-        coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+        # The coder addendum and the issue's standing rulings (#8141).
+        launch_prompt: LaunchPromptProvider = NO_LAUNCH_PROMPT,
         # The validated-work recovery owner's holds (#7455): a review waits only
         # for a hold that owner confirms, never for a lingering label alone.
         recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
@@ -246,7 +245,7 @@ class SessionLauncher:
         self._dependency_evaluator = dependency_evaluator
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
-        self._coder_prompt_addendum = coder_prompt_addendum
+        self._launch_prompt = launch_prompt
         self._provider_credentials = provider_credentials
         self._provider_gate = (
             ProviderLaunchGate(
@@ -735,11 +734,9 @@ class SessionLauncher:
 
         # Phase 2: Resolve required prompt input before any gate that may park
         # the issue by writing a shared label or durable provider record.
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=kind)
-        if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
-            return LaunchResult.required_input_unavailable(
-                prepared_coder_prompt.reason
-            )
+        prepared_coder_prompt = self._launch_prompt_for(kind, issue.number)
+        if isinstance(prepared_coder_prompt, LaunchResult):
+            return prepared_coder_prompt
 
         # Phase 3: Verify dependencies and provider readiness.
         freshness = self._dependency_gate.verify_fresh(issue)
@@ -1155,7 +1152,7 @@ class SessionLauncher:
 
     def _admit_validation_retry(
         self, retry: PendingValidationRetry, active_sessions: list[Session]
-    ) -> "LaunchResult | tuple[Issue, AgentConfig, str, PreparedCoderPromptAddendum]":
+    ) -> "LaunchResult | tuple[Issue, AgentConfig, str, PreparedLaunchPrompt]":
         """Resolve who a validation retry runs as, and whether it may run now.
 
         The retry's whole admission phase in one place: which issue and agent it
@@ -1176,11 +1173,9 @@ class SessionLauncher:
             issue, active_sessions, retry.source_kind, busy=LaunchDisposition.SUBJECT_BUSY
         ):
             return result
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=retry.source_kind)
-        if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
-            return LaunchResult.required_input_unavailable(
-                prepared_coder_prompt.reason
-            )
+        prepared_coder_prompt = self._launch_prompt_for(retry.source_kind, issue.number)
+        if isinstance(prepared_coder_prompt, LaunchResult):
+            return prepared_coder_prompt
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
         # A retry of work already published under an open PR must not start a
@@ -1581,8 +1576,9 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config, review.issue_number):
-            return result
+        prepared_prompt = self._reviewer_launch_inputs(agent_config, SessionKind.REVIEW, review.issue_number)
+        if isinstance(prepared_prompt, LaunchResult):
+            return prepared_prompt
 
         session_name = SessionKind.REVIEW.terminal_name(review.pr_number)
         if result := self._check_review_preconditions(
@@ -1723,21 +1719,21 @@ class SessionLauncher:
             )
 
             # Build command
-            rendered_prompt = agent_config.render_initial_prompt(
+            rendered_prompt = prepared_prompt.compose(agent_config.render_initial_prompt(
                 issue_number=review.issue_number,
                 issue_title=f"Review PR #{review.pr_number}",
                 worktree=worktree_path,
                 pr_number=review.pr_number,
                 existing_work=existing_work,
                 task_kind=SessionKind.REVIEW.value,
-            )
+            ))
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-            base_command = agent_config.get_command(
+            base_command = agent_config.get_command_for_prompt(
+                rendered_prompt,
                 issue_number=review.issue_number,
                 issue_title=f"Review PR #{review.pr_number}",
                 worktree=worktree_path,
                 pr_number=review.pr_number,
-                existing_work=existing_work,
                 task_kind=SessionKind.REVIEW.value,
                 extra_provider_args=extra_args,
             )
@@ -1890,8 +1886,9 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config, review.issue_number):
-            return result
+        prepared_prompt = self._reviewer_launch_inputs(agent_config, SessionKind.RETROSPECTIVE_REVIEW, review.issue_number)
+        if isinstance(prepared_prompt, LaunchResult):
+            return prepared_prompt
 
         session_name = SessionKind.RETROSPECTIVE_REVIEW.terminal_name(review.issue_number)
         if result := self._check_retrospective_preconditions(
@@ -2022,14 +2019,14 @@ class SessionLauncher:
                 f"Review Existing Implementation #{review.issue_number}: "
                 f"{review.issue_title}"
             )
-            rendered_prompt = agent_config.render_initial_prompt(
+            rendered_prompt = prepared_prompt.compose(agent_config.render_initial_prompt(
                 issue_number=review.issue_number,
                 issue_title=issue_title,
                 worktree=worktree_path,
                 pr_number=prompt_pr_number,
                 existing_work=existing_work,
                 task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
-            )
+            ))
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
                 rendered_prompt,
@@ -2169,7 +2166,7 @@ class SessionLauncher:
             check_provider_ready=self._check_provider_ready,
             session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
-            coder_prompt_addendum=self._coder_prompt_addendum,
+            launch_prompt=self._launch_prompt,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
             refuse_unapproved=self._refuse_unapproved,
         )
@@ -2177,26 +2174,25 @@ class SessionLauncher:
             rework, active_sessions, deps, work_claim=work_claim
         )
 
+    def _reviewer_launch_inputs(
+        self, agent_config: "AgentConfig", kind: SessionKind, issue_number: int,
+    ) -> "PreparedLaunchPrompt | LaunchResult":
+        """A reviewer launch's provider readiness, then its launch prompt (#8141)."""
+        if result := self._check_provider_ready(agent_config, issue_number):
+            return result
+        return self._launch_prompt_for(kind, issue_number)
+
+    def _launch_prompt_for(self, kind: SessionKind, issue_number: int) -> "PreparedLaunchPrompt | LaunchResult":
+        """Resolve the launch-prompt additions (#8141), or the launch's refusal."""
+        prepared = self._launch_prompt.prepare(kind=kind, issue_number=issue_number)
+        if isinstance(prepared, LaunchPromptUnavailable):
+            return LaunchResult.required_input_unavailable(prepared.reason)
+        return prepared
+
     def _persist_session_prompt(self, run_dir: Path, prompt_text: str) -> str:
         """Persist rendered launch prompt into run-scoped artifacts."""
         prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
         return str(prompt_path)
-
-    def _send_initial_prompt(self, session_name: str, prompt_path: Path, agent_config: "AgentConfig") -> None:
-        """Send the initial prompt to an interactive session via PTY stdin.
-
-        Instead of typing the full prompt text (which garbles in the TUI),
-        we send a short file-reference instruction. The agent reads the file
-        to get the full prompt content.
-        """
-        if not self._send_to_session:
-            logger.warning("[launch] No send_to_session_fn configured; cannot deliver prompt to %s", session_name)
-            return
-        # Give the TUI time to initialize before sending the prompt.
-        time.sleep(3)
-        msg = f"Read and follow your instructions in {prompt_path}"
-        sent = self._send_to_session(session_name, msg)
-        logger.info("[launch] Sent initial prompt to interactive session %s: success=%s", session_name, sent)
 
     def _wrap_provider_command(
         self,

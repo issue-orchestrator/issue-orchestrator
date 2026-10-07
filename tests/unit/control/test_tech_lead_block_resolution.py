@@ -17,6 +17,14 @@ from typing import Any
 
 import pytest
 
+from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
+from issue_orchestrator.domain.standing_ruling import (
+    RulingAuthority,
+    StandingRuling,
+    parse_rulings_block,
+    resolution_ruling_id,
+)
+from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
 from issue_orchestrator.control.action_results import ActionResult
 from issue_orchestrator.control.actions import (
     Action,
@@ -158,6 +166,9 @@ class World:
     requeued: list[int] = field(default_factory=list)
     indexed: list[int] = field(default_factory=list)
     events: list[TraceEvent] = field(default_factory=list)
+    #: GitHub refuses the body write that records the standing ruling (#8141).
+    body_write_fails: bool = False
+    bodies_written: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.store = SqlitePendingWorkClaimStore(self.tmp / "causes.sqlite")
@@ -172,6 +183,12 @@ class World:
         self.github.labels.setdefault(number, set()).update(labels)
         for cause in causes:
             assert self.block.acquire(HumanBlockRequest(number, cause, "planted")) is BlockOutcome.HELD
+
+    def write_body(self, number: int, body: str) -> None:
+        if self.body_write_fails:
+            raise RuntimeError("GitHub kept the old body")
+        self.bodies_written.append(number)
+        self.github.bodies[number] = body
 
     def executor(self) -> TechLeadBlockResolutionExecutor:
         labels = LabelManager(Config())
@@ -202,6 +219,9 @@ class World:
             requeue=requeue,
             discharges=self.discharges,
             index_proposals=self.indexed.extend,
+            rulings=StandingRulingsOwner(
+                read_issue=self.github.issue, write_body=self.write_body, index=InMemoryStandingRulingsIndex(),
+            ),
         )
 
 
@@ -1013,3 +1033,63 @@ def test_a_split_child_just_filed_is_activated_though_search_has_not_indexed_it(
     assert result.success, result.error
     [child] = world.github.created
     assert AGENT in world.github.labels[child["number"]]
+
+
+# -- the decided answer is a standing ruling in the body (#8141) ---------------
+
+
+def test_327_an_answer_lands_in_the_item_body_before_the_block_is_discharged(tmp_path: Path) -> None:
+    """porchpin#327/#501: the approved answer stayed in a comment and the
+    resumed session never read it. It is the item's standing ruling now."""
+    world = World(tmp_path)
+    world.github.bodies[ITEM] = "## Outcome\n\nThe buyer index."
+    world.blocked_by(ITEM, _AGENT)
+    action = _action(_resolution(title="Build option A", body="A buyer join-key map of its own."))
+
+    result = world.executor().apply(action)
+
+    assert result.success, result.error
+    [ruling] = parse_rulings_block(world.github.bodies[ITEM])
+    assert ruling.ruling_id == resolution_ruling_id(action.decision_id)
+    assert ruling.authority is RulingAuthority.APPROVED_RESOLUTION
+    assert ruling.text == "## Build option A\n\nA buyer join-key map of its own."
+    assert world.github.bodies[ITEM].endswith("The buyer index.")
+    assert world.bodies_written == [ITEM]
+
+
+def test_a_replay_records_the_ruling_once(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    action = _action(_resolution())
+    assert world.executor().apply(action).success
+
+    world.executor().apply(action)
+
+    assert len(parse_rulings_block(world.github.bodies[ITEM])) == 1 and world.bodies_written == [ITEM]
+
+
+def test_a_ruling_github_would_not_keep_leaves_the_block_in_place(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    world.body_write_fails = True
+
+    result = world.executor().apply(_action(_resolution()))
+
+    assert not result.success and "standing ruling not recorded" in (result.error or "")
+    assert "needs-human" in world.github.labels[ITEM]
+    assert world.store.needs_human_causes(ITEM) == frozenset({"agent_completion"})
+    assert world.requeued == []
+
+
+def test_a_narrowing_split_binds_the_parent_and_a_lift_binds_nothing(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT, _SWEEP, labels=(AGENT,))
+    world.blocked_by(326, _SWEEP)
+    world.question = None
+
+    assert world.executor().apply(_action(_split())).success
+    assert world.executor().apply(_action(_resolution(ResolutionKind.LIFT, _SWEEP), number=326,
+                                          action_id="A2")).success
+
+    assert len(parse_rulings_block(world.github.bodies[ITEM])) == 1
+    assert parse_rulings_block(world.github.bodies.get(326, "")) == ()

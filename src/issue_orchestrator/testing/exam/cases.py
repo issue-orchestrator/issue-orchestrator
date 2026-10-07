@@ -29,10 +29,16 @@ from .case import (
     released_review_launches,
     published_work_survives,
     single_pull_request,
+    contradicting_approval_refused,
+    reviews_after_rework_carry_rulings,
+    rework_prompts_carry_rulings,
+    rulings_in_body,
+    resolution_answer_in_body,
 )
 from .case import Goal
 from .observation import PullRequestState
 from .upgrade import UpgradeSpec
+from ...domain.standing_ruling import RulingAuthority
 
 SUBJECT = "subject"
 
@@ -45,6 +51,7 @@ POSITIVE_APPROVAL_EXECUTES_ONCE = "H-positive-approval-executes-once"
 MERGE_HELD_WORK_PROCEEDS = "E-merge-held-work-proceeds"
 BLOCKS_RESOLVED_UNDER_EXECUTE = "F-needs-human-blocks-resolved"
 BLOCK_RESOLUTIONS_PROPOSED = "G-needs-human-block-resolutions-proposed"
+RULING_BINDS_REWORK_AND_REVIEW = "I-ruling-binds-rework-and-review"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -58,6 +65,7 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     MERGE_HELD_WORK_PROCEEDS,
     BLOCKS_RESOLVED_UNDER_EXECUTE,
     BLOCK_RESOLUTIONS_PROPOSED,
+    RULING_BINDS_REWORK_AND_REVIEW,
 )
 
 #: Case U's two in-flight items.
@@ -92,6 +100,13 @@ BOT_RACED_ROLES = (BOT_APPROVED, "bot_approved_2", "bot_approved_3", "bot_approv
 BOT_REAPPLIED = "bot_reapplied"
 #: Every case H proposal only a bot "approved": none may ever be worked.
 BOT_APPROVED_ROLES = (*BOT_RACED_ROLES, BOT_REAPPLIED)
+
+#: Case I's two items (#8141): a PR a maintainer ruled on, whose conflict
+#: rework and review must be bound by the ruling (porchpin#364/PR #379), and a
+#: pre-work question the issue's spec answers, whose approved resolve_block
+#: answer must land in the issue BODY (porchpin#327/#501).
+RULED = "ruled"
+ANSWERED = "answered"
 
 #: Candidate ticks Case U's quiet window covers after the restart.
 UPGRADE_EARLY_TICKS = 5
@@ -531,5 +546,44 @@ def positive_approval_executes_once(
         ),
         known_blockers=(
             "#7763 approval was the REMOVAL of proposed-tech-lead: any strip approved",
+        ),
+    )
+
+
+def ruling_binds_rework_and_review() -> ExamCase:
+    """Case I — a maintainer ruling binds every agent on the issue (#8141).
+
+    ``ruled`` (porchpin#364/PR #379): an approved PR that conflicts with its
+    base; a maintainer records a ruling that retires what the next rework
+    would extend (``exam-output.txt``). The conflict rework fires, and its
+    scripted coder extends exactly that; its scripted reviewer approves
+    whatever it sees, as #379's did. Right answer: every rework prompt
+    carries the ruling (the first as its BRIEF), every later review prompt
+    carries it, and the approval of the contradicting diff is refused and
+    flagged implementation-required, never accepted.
+
+    ``answered`` (porchpin#327/proposal #501): a coder asks a pre-work
+    question its issue's spec answers; the tech lead's ``resolve_block``
+    (``execute``) answers it. Right answer: the answer is a standing ruling in
+    the issue BODY (sessions read the body, not comments).
+    """
+    return ExamCase(
+        case_id=RULING_BINDS_REWORK_AND_REVIEW,
+        title="A standing ruling binds the conflict rework and its review",
+        fault=(
+            "a maintainer rules on an approved PR that conflicts with its base; its conflict"
+            " rework extends what the ruling retires and the reviewer approves it; and an"
+            " approved resolve_block answer stays in a comment"
+        ),
+        goals=(
+            rulings_in_body(RULED),
+            rework_prompts_carry_rulings(RULED),
+            reviews_after_rework_carry_rulings(RULED),
+            contradicting_approval_refused(RULED),
+            resolution_answer_in_body(ANSWERED, authority=RulingAuthority.APPROVED_RESOLUTION.value),
+        ),
+        known_blockers=(
+            "porchpin#379 a conflict rework and its review never saw the maintainer's ruling",
+            "porchpin#327 an approved resolve_block answer never reached the issue body",
         ),
     )

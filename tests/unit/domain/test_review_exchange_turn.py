@@ -496,3 +496,23 @@ class TestReviewExchangeTurnResultRoundTrip:
             "response_text": "ok",
             # kind missing
         }) is None
+
+
+def test_a_packets_standing_rulings_round_trip_and_lead_its_prompt(tmp_path: Path) -> None:
+    """#8141: the persisted packet shows exactly what bound the turn."""
+    from issue_orchestrator.domain.review_exchange import build_coder_prompt, build_reviewer_prompt
+
+    reviewer = ReviewExchangeTurnPacket(
+        issue_number=364, issue_title="Ruled", round_index=1, role=Role.REVIEWER,
+        require_validation=False, run_dir=tmp_path, standing_rulings="RULINGS-FOR-THE-REVIEWER",
+    )
+    coder = ReviewExchangeTurnPacket(
+        issue_number=364, issue_title="Ruled", round_index=1, role=Role.CODER, require_validation=False,
+        run_dir=tmp_path, reviewer_feedback="Fix F1", standing_rulings="RULINGS-FOR-THE-CODER",
+        coder_prompt_addendum="ADDENDUM",
+    )
+
+    assert ReviewExchangeTurnPacket.from_manifest(reviewer.to_manifest_fields()) == reviewer
+    assert build_reviewer_prompt(reviewer).startswith("RULINGS-FOR-THE-REVIEWER\n\n---\n\n")
+    coder_prompt = build_coder_prompt(coder)
+    assert coder_prompt.startswith("RULINGS-FOR-THE-CODER") and coder_prompt.rstrip().endswith("ADDENDUM")

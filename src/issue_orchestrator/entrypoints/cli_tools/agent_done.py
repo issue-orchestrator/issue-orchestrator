@@ -281,9 +281,13 @@ def get_issue_number() -> Optional[int]:
     return None
 
 
-#: Boolean flags that only one status may carry. ``--partial`` declares a PR
-#: that delivers part of its issue, so only a completion can make it (#7288).
-_FLAGS_OWNED_BY_ONE_STATUS: dict[str, str] = {"partial": AgentStatus.COMPLETED}
+#: Flags that only one status may carry. ``--partial`` declares a PR that
+#: delivers part of its issue, so only a completion can make it (#7288);
+#: ``--upholds-ruling`` attests a standing ruling, which only an approval does (#8141).
+_FLAGS_OWNED_BY_ONE_STATUS: dict[str, str] = {
+    "partial": AgentStatus.COMPLETED,
+    "upholds_ruling": AgentStatus.APPROVED,
+}
 
 
 def _flags_set_for_another_status(
@@ -310,7 +314,7 @@ def validate_fields(status: str, args: argparse.Namespace) -> None:
     if missing:
         die(f"Status '{status}' requires: {', '.join(missing)}")
     for flag, owner in _flags_set_for_another_status(status, args):
-        die(f"--{flag} is only valid with '{owner}', not '{status}'")
+        die(f"--{flag.replace('_', '-')} is only valid with '{owner}', not '{status}'")
     if getattr(args, "partial", False):
         _refuse_closing_keyword_in_partial_text(args)
 
@@ -381,6 +385,7 @@ def format_comment_body(status: str, args: argparse.Namespace) -> str:  # noqa: 
     elif status == AgentStatus.APPROVED:
         risk_emoji = {"low": "G", "medium": "Y", "high": "R"}[args.risk]
         checks_str = ", ".join(f"`{c}`" for c in (args.checks or []))
+        upheld_str = ", ".join(f"`{r}`" for r in _upheld_rulings(args) or ())
         return f"""## Code Review Approved
 
 {args.summary}
@@ -390,6 +395,7 @@ def format_comment_body(status: str, args: argparse.Namespace) -> str:  # noqa: 
 **Verdict:** `approve`
 **Risk:** {risk_emoji} `{args.risk}`
 {f"**Checks passed:** {checks_str}" if checks_str else ""}
+{f"**Upholds standing rulings:** {upheld_str}" if upheld_str else ""}
 <!-- VERDICT_END -->"""
 
     else:  # CHANGES_REQUESTED
@@ -515,8 +521,15 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         pr_labels=getattr(args, 'pr_labels', None),
         follow_up_issues=follow_up_issues,
         partial_pr=bool(getattr(args, "partial", False)),
+        upheld_rulings=_upheld_rulings(args),
         ),
     )
+
+
+def _upheld_rulings(args: argparse.Namespace) -> list[str] | None:
+    """An approval's standing-ruling attestations (#8141), each once; ``validate_fields``
+    already refused them on any other verdict."""
+    return list(dict.fromkeys(getattr(args, "upholds_ruling", None) or ())) or None
 
 
 def write_completion_record(record: CompletionRecord) -> Path:

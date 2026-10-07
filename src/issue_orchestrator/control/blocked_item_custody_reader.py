@@ -545,4 +545,5 @@ def build_blocked_item_triage(
         charter_ledger=deps.tech_lead_authority.charter_ledger,
         open_proposals=lambda: open_proposal_index(deps.tech_lead_authority),
         timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
+        standing_rulings=deps.standing_rulings.active,
     )

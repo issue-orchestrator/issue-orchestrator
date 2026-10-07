@@ -43,6 +43,18 @@ class PublicationSourceGuards:
         forbidden = forbidden_branch_runtime_artifacts(paths.paths)
         return build_forbidden_runtime_artifact_reason(forbidden) if forbidden else None
 
+    def branch_paths(self, worktree: Path, base_branch: str | None) -> tuple[str, ...]:
+        """Every path the branch's diff touches against *base_branch* (the default
+        base when None), deleted and renamed-from paths included; raises when
+        git cannot say."""
+        base_ref = f"origin/{base_branch or self._base_branch()}"
+        paths = self._working_copy.branch_touched_paths_against_base(worktree, base_ref)
+        if not paths.success:
+            raise RuntimeError(
+                f"Could not read the branch's changed paths against {base_ref}: {paths.error or 'unknown git error'}"
+            )
+        return paths.paths
+
     def branch_commit_messages(self, worktree: Path) -> tuple[tuple[str, ...], str | None]:
         """The full messages of the branch's own commits, or why they are unreadable."""
         base_ref = f"origin/{self._base_branch()}"

@@ -7,6 +7,7 @@ from ..domain.models import Issue
 from ..domain.session_key import SessionKey
 from ..domain.session_kind import SessionKind
 
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -16,7 +17,8 @@ from ..domain.models import CompletionRecord, RequestedAction
 from ..domain.completion_finalization import ReviewExchangeRunningQuery
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_resume import ResumeDecision
-from ..domain.review_artifacts import review_artifacts_from_exchange_result
+from ..domain.review_artifacts import REVIEW_DECISION_ARTIFACT, review_artifacts_from_exchange_result
+from ..domain.standing_ruling import upheld_rulings_of
 from ..domain.runtime_config import RuntimeConfigReference
 from ..domain.review_validation import ReviewValidationEvidence
 from ..ports.background_job import NullBackgroundJobRunner
@@ -81,6 +83,22 @@ def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:
     """Return True when *job_id* belongs to *issue_number*'s exchange."""
     base = f"review-exchange:{issue_number}"
     return job_id == base or job_id.startswith(f"{base}:")
+
+
+def cached_attestations(outcome: ReviewExchangeOutcome) -> tuple[str, ...]:
+    """The standing rulings a cached approval's own final decision attested (#8141).
+
+    Read from the decision JSON its summary references; an approval with no
+    decision artifact attested nothing, so a ruling covering its diff refuses it.
+    """
+    refs = [
+        ref for ref in (outcome.summary.artifacts if outcome.summary is not None else ())
+        if ref.artifact_type == REVIEW_DECISION_ARTIFACT
+    ]
+    if not refs:
+        return ()
+    decision = json.loads(Path(refs[-1].value).read_text(encoding="utf-8"))
+    return upheld_rulings_of({"decision": decision})
 
 
 def _cached_review_event_metadata(
@@ -483,6 +501,7 @@ class CompletionReviewExchange:
             errors=errors,
             actions_taken=actions_taken,
             review_cache_boundary_started_at=review_cache_boundary_started_at,
+            approval_gate=approval_gate,
         )
         if early is not None:
             return early
@@ -784,6 +803,7 @@ class CompletionReviewExchange:
         errors: list[str],
         actions_taken: list[str],
         review_cache_boundary_started_at: str | None,
+        approval_gate: "ReviewExchangeApprovalGate | None",
     ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool] | None:
         """Translate a ``ResumeResolution`` into the early-return tuple
         that ``run_review_exchange_if_needed`` expects, or ``None`` to
@@ -799,6 +819,13 @@ class CompletionReviewExchange:
         if decision is ResumeDecision.REUSE_APPROVAL:
             if not isinstance(resolution, ReuseResumeResolution):
                 raise TypeError("REUSE_APPROVAL requires ReuseResumeResolution")
+            stale = approval_gate.cached_approval_reason(
+                upheld_rulings=cached_attestations(resolution.cached.outcome),
+            ) if approval_gate is not None else None
+            if stale is not None:
+                # A standing ruling recorded since the approval (#8141): review afresh.
+                logger.warning("[REVIEW_EXCHANGE] cached approval not reused for #%d: %s", issue_number, stale)
+                return None
             mode, outcome, halt = self._handle_cached_review_exchange_outcome(
                 exchange_mode=exchange_mode,
                 existing_outcome=resolution.cached.outcome,

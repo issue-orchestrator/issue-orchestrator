@@ -125,8 +125,10 @@ from .review_exchange_pr_comment import (
 )
 from .partial_delivery_guard import PartialDeliveryGuard
 from .publication_source_guards import PublicationSourceGuards
+from .standing_ruling_review import StandingRulingsReview
+from ..ports.standing_rulings import NO_STANDING_RULINGS, StandingRulings
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
-from .tech_lead_completion import tech_lead_decision_processing_error
+from .tech_lead_completion import reject_invalid_tech_lead_completion
 from .tech_lead_session_policy import is_benign_tech_lead_no_commits, resolve_tech_lead_completion_actions
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
@@ -230,6 +232,7 @@ class CompletionProcessor:
         # An explicit null object rather than an optional: it governs no label,
         # so a composition path without one behaves as it always did.
         needs_human_block: "SharedNeedsHumanBlock" = NO_OTHER_NEEDS_HUMAN_CAUSES,
+        standing_rulings: StandingRulings = NO_STANDING_RULINGS,  # the review rule's owner (#8141)
     ):
         """Initialize the processor with required adapters.
 
@@ -305,6 +308,7 @@ class CompletionProcessor:
         # so the catch-all ceiling matches the in-loop bound.
         self._validation_reroute_counts: dict[tuple[str, str], int] = {}
         self._publication_source_guards = PublicationSourceGuards(git_adapter, self._base_branch)
+        self._rulings_review = StandingRulingsReview(standing_rulings, self._reviewed_paths)
         self._partial_delivery = PartialDeliveryGuard(
             source=self._publication_source_guards, prs=pr_adapter,
             repo_slug=self._partial_claim_repo_slug,
@@ -390,6 +394,23 @@ class CompletionProcessor:
             log=logger,
         )
         return resolved.branch
+
+    def _reviewed_paths(self, worktree: Path, pr_number: int | None) -> tuple[str, ...]:
+        """Every path the reviewed branch touches, against its PR's CURRENT base
+        (a stacked PR's predecessor, a retargeted PR's new base), read fresh; the
+        default base before the branch has a PR."""
+        if pr_number is None:
+            branch = self.git_adapter.get_current_branch(worktree)
+            prs = self.pr_adapter.get_prs_for_branch(branch) if branch else []
+            if len(prs) > 1:
+                raise RuntimeError(f"branch {branch} has {len(prs)} open PRs: its review base is ambiguous")
+            pr_number = prs[0].number if prs else None
+        if pr_number is None:
+            return self._publication_source_guards.branch_paths(worktree, None)
+        pr = self.pr_adapter.get_pr(pr_number)
+        if pr is None or not pr.base_branch:
+            raise RuntimeError(f"PR #{pr_number} could not be read for its base branch")
+        return self._publication_source_guards.branch_paths(worktree, pr.base_branch)
 
     def process_registered_completion(
         self,
@@ -754,7 +775,7 @@ class CompletionProcessor:
             worktree, issue_number, issue_title, run_assets=run_assets,
             completion_path=completion_path, agent_label=agent_label,
             intake_receipt=intake_receipt, actions_taken=actions_taken, errors=errors,
-            prepared_evidence=prepared_evidence,
+            prepared_evidence=prepared_evidence, review_pr_number=pr_number,
         )
         if isinstance(prepared, ProcessingResult):
             return prepared
@@ -813,8 +834,13 @@ class CompletionProcessor:
         agent_label: str | None, intake_receipt: CompletionIntakeReceipt | None,
         actions_taken: list[str], errors: list[str],
         prepared_evidence: PreparedCompletionEvidence | None = None,
+        review_pr_number: int | None = None,
     ) -> PreparedCompletion | ProcessingResult:
-        """One owner runs every policy phase before live or manual execution."""
+        """One owner runs every policy phase before live or manual execution.
+
+        ``review_pr_number`` is the PR a review session reviewed; the standing
+        rulings' review rule reads its current base (#8141).
+        """
         try:
             context = (
                 context_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
@@ -850,6 +876,8 @@ class CompletionProcessor:
         # The shared human block never goes on a PR (#6999 F2, #7592): the door
         # moves it to the issue, on the FINAL record (a receipt reloads above).
         record = route_reserved_pr_labels(record, self.needs_human_block)
+        record = self._rulings_review.admit(record, issue_number=issue_number, worktree=worktree,
+                                            pr_number=review_pr_number)
 
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
@@ -953,41 +981,10 @@ class CompletionProcessor:
         issue_number: int,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        """Authoritative tech_lead authority + pair validation (ADR-0031).
-
-        A COMPLETED tech_lead session must have a trusted launch-authority
-        record (#6761 re-review F1) and a valid decision artifact pair
-        (#6761 F3). Running here — in the pre-action policy phase, before
-        the completion record is preserved and before ANY requested action
-        executes (#6769 finding 1) — a rejection produces ZERO push/PR/
-        comment calls and a failed processing result whose tagged error is
-        classified critical, so history records FAILED for every flavor and
-        the tech_lead failure labeling path fires downstream.
-        """
-        if not processing_policy.is_tech_lead:
-            return None
-        if self._config is None:
-            raise CompletionIntakeError("Tech Lead processing requires configured launch policy")
-        if record.outcome is not CompletionOutcome.COMPLETED:
-            return None
-        tech_lead_error = tech_lead_decision_processing_error(
-            self._config,
-            tech_lead_authority=self._tech_lead_authority,
-            run_dir=run_assets.run_dir,
-            run_id=run_assets.run_id,
-            session_name=run_assets.session_name,
-        )
-        if tech_lead_error is None:
-            return None
-        logger.warning(
-            "Tech Lead completion rejected before any action for issue #%d: %s",
-            issue_number,
-            tech_lead_error,
-        )
-        return ProcessingResult(
-            success=False,
-            message=f"Tech Lead completion rejected: {tech_lead_error}",
-            errors=[tech_lead_error],
+        """Authoritative tech_lead authority + pair validation (ADR-0031); see the owner."""
+        return reject_invalid_tech_lead_completion(
+            self._config, self._tech_lead_authority, record=record,
+            processing_policy=processing_policy, issue_number=issue_number, run_assets=run_assets,
         )
 
     def _review_exchange_approval_gate(
@@ -995,16 +992,18 @@ class CompletionProcessor:
         *,
         processing_policy: CompletionProcessingPolicy,
         run_assets: SessionRunAssets,
-    ) -> "ReviewExchangeApprovalGate | None":
-        """Build the artifact gate used at the terminal reviewer boundary."""
-        return build_tech_lead_decision_approval_gate(
+        issue_number: int,
+        worktree: Path,
+    ) -> "ReviewExchangeApprovalGate":
+        """The gates at the terminal reviewer boundary: the Tech Lead's artifacts, then the rulings."""
+        return self._rulings_review.exchange_gate(issue_number, worktree, build_tech_lead_decision_approval_gate(
             self._config,
             processing_policy=processing_policy,
             tech_lead_authority=self._tech_lead_authority,
             run_dir=run_assets.run_dir,
             run_id=run_assets.run_id,
             session_name=run_assets.session_name,
-        )
+        ))
 
     def _check_pre_action_policies(
         self,
@@ -1418,6 +1417,7 @@ class CompletionProcessor:
             agent_label=processing_policy.agent_label,
             approval_gate=self._review_exchange_approval_gate(
                 processing_policy=processing_policy, run_assets=run_assets,
+                issue_number=issue_number, worktree=worktree,
             ),
             initial_validation_evidence=validation_evidence,
             current_head_sha=current_worktree_head_sha(
@@ -1586,8 +1586,8 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
             approval_gate=self._review_exchange_approval_gate(
-                processing_policy=processing_policy,
-                run_assets=run_assets,
+                processing_policy=processing_policy, run_assets=run_assets,
+                issue_number=issue_number, worktree=worktree,
             ),
         )
         if deferred:

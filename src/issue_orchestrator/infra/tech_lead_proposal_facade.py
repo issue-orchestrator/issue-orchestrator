@@ -86,6 +86,7 @@ def tech_lead_page_section(orchestrator: Orchestrator) -> "TechLeadPageSectionPa
             last_health_review_at=state.last_health_review_at,
             latest_run=runs[0] if runs else None,
             merge_statuses={},
+            rulings=deps.standing_rulings.synced(),
             known_proposals=approvals.indexed_proposals() if approvals is not None else frozenset(),
         )
     held = [row.issue_number for row in inputs.needs_human_causes if row.cause in MERGE_HOLD_CAUSES]

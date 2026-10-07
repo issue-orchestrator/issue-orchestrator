@@ -13,7 +13,9 @@ is legible without a colour key.
 Three lanes, oldest first where time matters to the operator:
 
 * **waiting** — tech-lead proposals (every kind), PRs whose merge is held for a
-  person, and items the tech lead handed to a person;
+  person, and items the tech lead handed to a person; each shows the active
+  standing rulings on its issue (#8141), the maintainer's binding decisions
+  every agent on it works to;
 * **doing** — what the tech lead did on its own in the last day, in flight
   first, plus actions the liveness owner parked;
 * **watching** — blocked items it triaged, case files it tracks, and when the
@@ -49,6 +51,7 @@ from ..domain.tech_lead_charter_decisions import (
 if TYPE_CHECKING:
     from ..control.merge_hold_status import MergeHoldStatus
     from ..domain.action_liveness import LivenessRow
+    from ..ports.standing_rulings import SyncedRulings
     from ..domain.tech_lead_session import StoredTechLeadOp, TechLeadCaseFileSummary
     from ..ports.issue import Issue
     from ..ports.pending_work_claim_store import NeedsHumanCauseRow
@@ -129,6 +132,9 @@ class TechLeadPageInputs:
     latest_run: "TechLeadRunActivityEntry | None"
     #: GitHub's view of each merge-held PR (``MergeHoldStatuses``), keyed by PR.
     merge_statuses: Mapping[int, "MergeHoldStatus"]
+    #: Each issue's standing rulings as the rulings owner's index last synced
+    #: them from its body, with when (#8141): what binds the agents working it.
+    rulings: Mapping[int, "SyncedRulings"]
     #: Issues the approval owner's index names as proposals, whatever an edit
     #: left of their labels and marker (#7763 review r16 F1).
     known_proposals: frozenset[int] = frozenset()
@@ -193,7 +199,7 @@ def _waiting(inputs: TechLeadPageInputs) -> list[TechLeadWaitingItemPayload]:
         status = inputs.merge_statuses.get(number)
         if status is not None and not status.held:
             continue  # merged, closed or released since the engine stopped
-        items.append(_merge_ready(inputs.repository, row, by_number.get(number), status))
+        items.append(_merge_ready(inputs.repository, row, by_number.get(number), status, inputs.rulings))
     hand_over = inputs.tech_lead_needs_human_label.casefold()
     reasons = {
         row.issue_number: row.reason
@@ -204,7 +210,7 @@ def _waiting(inputs: TechLeadPageInputs) -> list[TechLeadWaitingItemPayload]:
         if issue.state != "open" or issue.number in proposal_numbers or issue.number in merge_rows:
             continue
         if any(str(label).casefold() == hand_over for label in issue.labels):
-            items.append(_hand_over(inputs.repository, issue, reasons.get(issue.number, "")))
+            items.append(_hand_over(inputs.repository, issue, reasons.get(issue.number, ""), inputs.rulings))
     # Oldest first; an item with no known time sorts after the dated ones.
     return sorted(items, key=lambda item: (item.waiting_since == "", item.waiting_since, item.number))
 
@@ -243,6 +249,7 @@ def _proposal(
             key = op.rework_request.key
             receipt = next((item for item in inputs.rework_receipts if item.request_key == key), None)
             details.extend(_rework_details(op))
+        details.extend(ruling_details(inputs.rulings, op.target_issue_number))
     status, label = _proposal_status(verdict, receipt)
     open_for_decision = receipt is None
     return TechLeadWaitingItemPayload(
@@ -260,6 +267,24 @@ def _proposal(
         can_decline=open_for_decision,
         details=details,
     )
+
+
+def ruling_details(
+    rulings: Mapping[int, "SyncedRulings"], issue_number: int
+) -> list[TechLeadDetailRowPayload]:
+    """One row per standing ruling on *issue_number* (#8141), in order, as of
+    the engine's last read of the issue body (the page makes no GitHub call)."""
+    synced = rulings.get(issue_number)
+    if synced is None:
+        return []
+    return [
+        TechLeadDetailRowPayload(
+            label=f"Standing ruling {ruling.ruling_id}",
+            value=(f"{ruling.summary} ({ruling.authority.described}; {ruling.source};"
+                   f" as of {synced.synced_at[:16].replace('T', ' ')} UTC)"),
+        )
+        for ruling in synced.rulings
+    ]
 
 
 def _rework_details(op: "StoredTechLeadOp") -> list[TechLeadDetailRowPayload]:
@@ -302,6 +327,7 @@ def _merge_ready(
     row: "NeedsHumanCauseRow",
     issue: "Issue | None",
     status: "MergeHoldStatus | None",
+    rulings: Mapping[int, "SyncedRulings"],
 ) -> TechLeadWaitingItemPayload:
     details = [TechLeadDetailRowPayload(label="Why the engine stopped", value=row.reason)] if row.reason else []
     if status is not None:
@@ -309,6 +335,7 @@ def _merge_ready(
         details.append(TechLeadDetailRowPayload(label="Checks", value=status.checks))
         if status.read_error:
             details.append(TechLeadDetailRowPayload(label="GitHub read failed", value=status.read_error))
+    details.extend(ruling_details(rulings, row.issue_number))
     title = issue.title if issue is not None else status.title if status is not None else f"#{row.issue_number}"
     return TechLeadWaitingItemPayload(
         kind="merge_ready_pr",
@@ -327,7 +354,9 @@ def _merge_ready(
     )
 
 
-def _hand_over(repository: str, issue: "Issue", reason: str) -> TechLeadWaitingItemPayload:
+def _hand_over(
+    repository: str, issue: "Issue", reason: str, rulings: Mapping[int, "SyncedRulings"]
+) -> TechLeadWaitingItemPayload:
     return TechLeadWaitingItemPayload(
         kind="hand_over",
         number=issue.number,
@@ -341,7 +370,7 @@ def _hand_over(repository: str, issue: "Issue", reason: str) -> TechLeadWaitingI
         status_label="Handed to you",
         can_approve=False,
         can_decline=False,
-        details=[],
+        details=ruling_details(rulings, issue.number),
     )
 
 

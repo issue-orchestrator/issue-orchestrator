@@ -364,6 +364,14 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
+    def branch_touched_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        """Every path the branch's diff touches (merge-base semantics), deletions
+        and BOTH sides of a rename included: what a change could break, not
+        only what it leaves in the tip (the standing-rulings review rule, #8141)."""
+        ...
+
     def branch_commit_messages_against_base(
         self, worktree: Path, base_ref: str
     ) -> BranchCommitMessagesResult:

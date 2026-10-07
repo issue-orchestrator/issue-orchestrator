@@ -3654,8 +3654,9 @@ class TestTechLeadCompletionEffects:
         assert result.success is True
         assert len(review_runner.calls) == 1
         gate = review_runner.calls[0]["approval_gate"]
-        assert isinstance(gate, TechLeadDecisionApprovalGate)
-        assert gate.rejection_reason() is None
+        # The Tech Lead's artifact gate runs first, inside the standing-rulings gate (#8141).
+        assert isinstance(gate.other, TechLeadDecisionApprovalGate)
+        assert gate.rejection_reason(upheld_rulings=()) is None
 
     def test_ordinary_completion_supplies_no_approval_gate(
         self,
@@ -3682,7 +3683,9 @@ class TestTechLeadCompletionEffects:
 
         assert result.success is True
         assert len(review_runner.calls) == 1
-        assert review_runner.calls[0]["approval_gate"] is None
+        # Only the standing-rulings gate (#8141); no Tech Lead policy inside it.
+        gate = review_runner.calls[0]["approval_gate"]
+        assert gate.other is None and gate.rejection_reason(upheld_rulings=()) is None
 
     def test_completed_tech_lead_session_without_pair_records_critical_error(
         self,
