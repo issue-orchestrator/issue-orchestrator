@@ -390,3 +390,16 @@ def test_the_ranking_text_never_states_an_order_the_pairs_do_not_hold() -> None:
     # A is not told apart from C, so nothing reads "A > C" or "A ≈ B ≈ C" (B > C holds).
     assert result.ranking_text() == "{A, B, C: B>C} > D"
     assert result.distinguishable == (("B", "C"), ("A", "D"), ("B", "D"), ("C", "D"))
+
+
+def test_an_arms_shown_error_is_never_below_its_own_heats() -> None:
+    both = [{"x1": 0.0, "x2": 4.0, "y1": 1.5, "y2": 1.5}]
+    arm_of = {"x1": "X", "x2": "X", "y1": "Y", "y2": "Y"}
+    quiet = {f"q{i}": "Q" for i in range(6)}
+
+    alone = pool({"g": both, "h": both}, arm_of, ungraded={}, resolution=STEP)
+    crowded = pool({g: [{**r, **{q: 0.0 for q in quiet}} for r in both] for g in ("g", "h")},
+                   {**arm_of, **quiet}, ungraded={}, resolution=STEP)
+
+    # X's own heats: variance 8 over 2 -> se 2, whatever the others show.
+    assert alone.arms["X"].se >= 2.0 and crowded.arms["X"].se >= 2.0

@@ -319,10 +319,15 @@ def _pass_term(a: PooledArm, b: PooledArm, graders: Sequence[str], passes: int) 
 
 
 def _arm_se(scores: PooledScores, arm: str) -> float:
-    """For display: the standard error of one arm's mean, on the tournament's noise."""
-    n, g, noise = len(scores.arms[arm].output_means), len(scores.graders), scores.noise
-    shared = max(noise.grader, noise.pass_) / 2  # half a difference's
-    return math.sqrt(max((noise.heat or 0.0) / n + shared, scores.resolution ** 2 / (4 * g * n)))
+    """For display: the standard error of one arm's mean, never below what
+    its own measurements show (pairwise ``difference_se`` decides)."""
+    a, g, p, noise = scores.arms[arm], len(scores.graders), scores.passes, scores.noise
+    n = len(a.output_means)
+    heat = max(_pooled_variance([list(a.output_means)]) or 0.0, noise.heat or 0.0)
+    own_grader = (_pooled_variance([list(a.grader_means.values())]) or 0.0) / g
+    own_pass = (_pooled_variance([list(a.pass_means[x]) for x in scores.graders]) or 0.0) / (p * g)
+    shared = max(own_grader, own_pass, max(noise.grader, noise.pass_) / 2)  # a tournament difference's, halved
+    return math.sqrt(max(heat / n + shared, scores.resolution ** 2 / (4 * g * n)))
 
 
 def _pooled_variance(groups: Sequence[Sequence[float]]) -> float | None:
