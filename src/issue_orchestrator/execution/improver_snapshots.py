@@ -16,9 +16,9 @@ costs no space until something changes it, and nothing does.
 A snapshot holds nothing that reaches outside it, or later evidence would
 leak into it: a symlink in a copied tree must be relative and stay inside
 that tree (a bundle's ``CLAUDE.md -> AGENTS.md`` is fine; ``.git ->
-/live/repo/.git`` is refused), the clone's ``.git`` must be its own
-directory, and a clone that borrows objects (``--shared``: Git alternates)
-is repacked to own them and the borrowing is removed.
+/live/repo/.git`` is refused), and the clone is not copied but rebuilt: a
+new repository that fetches the clone's refs (so owns every object it
+shows, borrowed or not) and checks out its HEAD.
 """
 
 from __future__ import annotations
@@ -47,6 +47,9 @@ from ..domain.engine_activity import EngineRef
 from ..ports.command_runner import CommandRunner
 
 SNAPSHOTS_DIRNAME = "snapshots"
+_STAGING_DIRNAME = ".staging"
+#: What a frozen clone keeps of its source's refs (no stash, no notes, no io store).
+_FROZEN_REFSPECS = ("+refs/heads/*:refs/heads/*", "+refs/remotes/*:refs/remotes/*", "+refs/tags/*:refs/tags/*")
 
 #: Interventions staged before #8001 increment 4 carry no source or
 #: attribution: each kind came from one engine record and one operator surface.
@@ -87,34 +90,39 @@ class FrozenSnapshotStore:
         clone: Path | None = None,
     ) -> FrozenSnapshot:
         """Freeze ``improver_data`` (and, for empowered arms, the engine's
-        store copies and logs in ``state_dir`` and a repository ``clone``)."""
+        store copies and logs in ``state_dir`` and a repository ``clone``).
+
+        Built in a staging directory and published by one rename: a
+        snapshot exists whole or not at all, even if the import is killed
+        (an abandoned staging directory under ``.staging/`` is never listed).
+        """
         target = self._root / require_slug(snapshot_id, "a snapshot id")
         if target.exists():
             raise SnapshotUnavailable(f"snapshot {snapshot_id!r} exists; a snapshot is never changed")
         if (state_dir is None) != (clone is None):
             raise SnapshotUnavailable("a toolbox needs both the store copies and the repository clone")
-        target.mkdir(parents=True)
+        (self._root / _STAGING_DIRNAME).mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=self._root / _STAGING_DIRNAME, prefix=f"{snapshot_id}-"))
         try:
-            data = target / IMPROVER_DATA_DIRNAME
+            data = staging / IMPROVER_DATA_DIRNAME
             self._copy(improver_data, data)
             require_self_contained(data)
             upgrades = upgrade_staged_inputs(data)
             manifest = InputsManifest.model_validate_json((data / INPUTS_FILE).read_text(encoding="utf-8"))
             _require_loadable(data)
             if state_dir is not None and clone is not None:
-                self._freeze_toolbox(target / TOOLBOX_DIRNAME, state_dir, clone, manifest.audited_repo, taken_at)
+                self._freeze_toolbox(staging / TOOLBOX_DIRNAME, state_dir, clone, manifest.audited_repo, taken_at)
             snapshot = FrozenSnapshot(
                 id=snapshot_id, taken_at=taken_at, audited_repo=manifest.audited_repo,
                 engine_id=manifest.engine_id, engine_commit=_engine_commit(data), origin=origin,
                 upgrades=upgrades, has_toolbox=state_dir is not None,
             )
-            # Published last, whole or not at all: a snapshot exists once its manifest does.
-            handle, temporary = tempfile.mkstemp(dir=target, prefix=".snapshot-")
-            with os.fdopen(handle, "w", encoding="utf-8") as out:
-                out.write(snapshot.model_dump_json(indent=2) + "\n")
-            os.replace(temporary, target / SNAPSHOT_MANIFEST)
+            (staging / SNAPSHOT_MANIFEST).write_text(snapshot.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            if target.exists():
+                raise SnapshotUnavailable(f"snapshot {snapshot_id!r} was published meanwhile")
+            os.rename(staging, target)
         except BaseException:
-            shutil.rmtree(target, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
             raise
         return snapshot
 
@@ -143,8 +151,6 @@ class FrozenSnapshotStore:
         return ToolboxManifest.model_validate_json((toolbox / TOOLBOX_MANIFEST).read_text(encoding="utf-8"))
 
     def _freeze_toolbox(self, toolbox: Path, state_dir: Path, clone: Path, repo: str, taken_at: datetime) -> None:
-        if not (clone / ".git").is_dir():
-            raise SnapshotUnavailable(f"{clone} is not a Git clone")
         state, logs = toolbox / TOOLBOX_STATE_DIRNAME, toolbox / TOOLBOX_LOGS_DIRNAME
         state.mkdir(parents=True)
         logs.mkdir()
@@ -167,26 +173,29 @@ class FrozenSnapshotStore:
         (toolbox / TOOLBOX_MANIFEST).write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     def _freeze_clone(self, clone: Path, target: Path, taken_at: datetime) -> None:
-        """A copy of ``clone`` that owns everything it shows, and shows
-        nothing after ``taken_at``: only objects its refs reach are kept
-        (reflogs expired, repacked, pruned), and a ref reaching a commit
-        made after the snapshot refuses it (a clone taken later than the
-        staged inputs would show the arms what was done since). Its
-        working tree is rebuilt from its commit, so no file edited or
-        added after the commit stays in it."""
-        self._copy(clone, target)
-        git = target / ".git"
-        if git.is_symlink() or not git.is_dir():
-            raise SnapshotUnavailable(f"{clone}: .git is not the clone's own directory")
-        if (git / "commondir").exists():
-            raise SnapshotUnavailable(f"{clone} is a linked worktree; freeze a clone")
-        require_self_contained(target)
-        if self._runner.run(["git", "-C", str(target), "rev-parse", "--verify", "-q", "HEAD"], timeout_seconds=60).returncode:
+        """A new repository holding only what ``clone``'s refs and HEAD
+        reach, checked out at its HEAD, and nothing after ``taken_at``.
+
+        Nothing else of the clone's ``.git`` is copied (its config, hooks,
+        borrowed objects, or files such as io's own ``.git/io-improver/``
+        store with its answer keys), and no working-tree file: the checkout
+        is rebuilt from the commit. A ref reaching a commit made after the
+        snapshot refuses it: a clone taken later than the staged inputs
+        would show the arms what was done since.
+        """
+        source = str(clone.resolve())
+        head = self._runner.run(["git", "-C", source, "rev-parse", "--verify", "-q", "HEAD^{commit}"], timeout_seconds=60)
+        if head.returncode:
             raise SnapshotUnavailable(f"{clone} has no commit to freeze")
-        self._git(target, "reflog", "expire", "--expire=now", "--all")
-        self._git(target, "repack", "-a", "-d", "-q")
-        (git / "objects" / "info" / "alternates").unlink(missing_ok=True)
-        self._git(target, "prune", "--expire=now")
+        branch = self._runner.run(["git", "-C", source, "symbolic-ref", "-q", "HEAD"], timeout_seconds=60)
+        target.mkdir(parents=True)
+        self._git(target, "init", "-q")
+        self._git(target, "fetch", "-q", "--no-tags", "--update-head-ok", source, *_FROZEN_REFSPECS, "HEAD")
+        if branch.returncode == 0:
+            self._git(target, "symbolic-ref", "HEAD", branch.stdout.strip())
+        else:
+            self._git(target, "update-ref", "--no-deref", "HEAD", head.stdout.strip())
+        (target / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
         self._git(target, "fsck", "--connectivity-only", "--no-progress")
         later = self._git(target, "rev-list", "--all", f"--since={taken_at.isoformat()}").split()
         if later:
@@ -195,8 +204,7 @@ class FrozenSnapshotStore:
                 f" e.g. {later[0][:12]}; freeze a clone taken with the inputs"
             )
         self._git(target, "reset", "--hard", "-q", "HEAD")
-        self._git(target, "clean", "-ffdxq")
-        # The rebuilt checkout is the commit's: a link it commits must stay inside too.
+        # The checkout is the commit's: a link it commits must stay inside.
         require_self_contained(target)
 
     def _git(self, repo: Path, *args: str) -> str:

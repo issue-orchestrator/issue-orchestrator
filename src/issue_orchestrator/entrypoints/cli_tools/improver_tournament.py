@@ -12,6 +12,7 @@
     improver_tournament run --snapshot ID --arm C=claude:opus:empowered --arm A=codex:gpt-5.6-sol:scripted \\
         [--heats 3 --parallel-heats 3 --budget-minutes 60 --agent-timeout-minutes 80] [--seed N]
     improver_tournament grade-recorded --snapshot ID --recorded DIR [--seed N]
+    improver_tournament regrade --tournament ID    # a tournament whose grading failed
 
 An arm may set its own prompt, heats and minutes after its mode:
 ``--arm 'X=claude:opus:empowered,prompt=challenger.md,heats=2,parallel=1,budget=45,timeout=70'``
@@ -36,11 +37,16 @@ import dataclasses
 import random
 import re
 import sys
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from ...contracts.improver_run import ImproverAgentChoice, ImproverProvider
-from ...contracts.improver_tournament import AnswerKeyItem, TournamentArm, TournamentResult
+from ...contracts.improver_tournament import (
+    AnswerKeyItem,
+    TournamentArm,
+    TournamentResult,
+)
 from ...execution.command_runner import LocalCommandRunner
 from ...execution.improver_agents import improver_agent
 from ...execution.improver_answer_keys import FileAnswerKeyStore
@@ -147,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
     graded.add_argument("--grader", action="append", type=parse_grader)
     graded.add_argument("--seed", type=int)
     graded.add_argument("--grader-timeout-minutes", type=int, default=40)
+    regrade = sub.add_parser("regrade", help="Grade a tournament whose grading failed again (same outputs and seed)")
+    regrade.add_argument("--tournament", required=True)
+    regrade.add_argument("--grader", action="append", type=parse_grader)
+    regrade.add_argument("--grader-timeout-minutes", type=int, default=40)
     return parser
 
 
@@ -199,12 +209,17 @@ def main(argv: list[str]) -> int:
         grader_prompt=GRADER_PROMPT.read_text(encoding="utf-8"),
         clock=_now,
     )
-    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
-    tournament_id = f"{_now().strftime('%Y%m%dT%H%M%SZ')}-{args.snapshot}"
     graders = tuple(
         dataclasses.replace(g, timeout_minutes=args.grader_timeout_minutes) for g in (args.grader or DEFAULT_GRADERS)
     )
     require_cross_model(graders)
+    if args.command == "regrade":
+        tournament_id = args.tournament
+        result = _graded(lambda: harness.regrade(tournament_id, graders=graders), tournament_id)
+        print(render_result(result, harness.directory(tournament_id)))
+        return 0
+    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
+    tournament_id = f"{_now().strftime('%Y%m%dT%H%M%SZ')}-{args.snapshot}"
     if args.command == "run":
         addendum = EMPOWERED_ADDENDUM.read_text(encoding="utf-8")
         # Every arm's settings are checked before any arm runs.
@@ -212,9 +227,22 @@ def main(argv: list[str]) -> int:
         outputs = harness.run_arms(tournament_id, args.snapshot, specs)
     else:
         outputs = read_recorded(args.recorded)
-    result = harness.grade(tournament_id, args.snapshot, outputs, graders=graders, seed=seed)
+    result = _graded(
+        lambda: harness.grade(tournament_id, args.snapshot, outputs, graders=graders, seed=seed), tournament_id
+    )
     print(render_result(result, harness.directory(tournament_id)))
     return 0
+
+
+def _graded(grade: Callable[[], TournamentResult], tournament_id: str) -> TournamentResult:
+    """The result, or (a grader failed) how to grade the same outputs again."""
+    try:
+        return grade()
+    except RuntimeError as failed:
+        raise SystemExit(
+            f"improver_tournament: {failed}\n  retry the grading (the arms do not run again):"
+            f" improver_tournament regrade --tournament {tournament_id}"
+        ) from failed
 
 
 def _snapshot(args: argparse.Namespace, snapshots: FrozenSnapshotStore) -> int:

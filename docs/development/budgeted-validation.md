@@ -212,9 +212,9 @@ data lives under `<git common dir>/io-improver/`:
 - `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
   `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
   A snapshot is imported once (`snapshot import`) and never changed. It links
-  to nothing outside itself (a clone borrowing objects is repacked to own
-  them) and holds nothing from after it: no later commit, and its checkout
-  is rebuilt from its commit. An old bundle is upgraded to today's contracts
+  to nothing outside itself and holds nothing from after it: the clone is
+  rebuilt as a new repository from its refs (nothing else of its `.git` is
+  kept), no ref may reach a later commit, and the checkout is its commit's. An old bundle is upgraded to today's contracts
   with each change named.
 - `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
   written before results (`key seed`; no arm runs until it exists), then problems found later that the
@@ -227,8 +227,8 @@ data lives under `<git common dir>/io-improver/`:
   `grade-recorded` grades answers an earlier tournament recorded. Either way
   the outputs are anonymized (`anon/`, mapping sealed in `sealed/`), graded by
   cross-model graders (default one Claude, one Codex) that read only `anon/`
-  and `key/` (every grader must grade every output, or there is no result),
-  and ranked: weight × (full 1, half ½, miss 0), less 1 per
+  and `key/` (every grader must grade every output, or there is no result;
+  `regrade --tournament ID` grades the same outputs again), and ranked: weight × (full 1, half ½, miss 0), less 1 per
   unsupported finding, averaged over heats and graders; ties within 0.5.
 
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's

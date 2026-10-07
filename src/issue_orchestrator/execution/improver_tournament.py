@@ -76,6 +76,8 @@ TOURNAMENTS_DIRNAME = "tournaments"
 #: A tournament's outputs are filed nowhere: this names its effects' repository.
 NO_OUTPUTS_REPO = "tournament/no-outputs"
 TIE_MARGIN = 0.5
+#: What was graded (outputs, seed, snapshot), sealed with the mapping, so a failed grading can be retried.
+_REQUEST = "sealed/request.json"
 
 
 class FrozenInputs:
@@ -279,7 +281,7 @@ class TournamentHarness:
         answered = [o for o in outputs if o.text is not None]
         labels = anonymize([o.output_id for o in answered], seed=seed)
         by_id = {o.output_id: o for o in answered}
-        _prepare(root, _grading_inputs(root, labels, by_id, seed, key))
+        _prepare(root, _grading_inputs(root, labels, by_id, seed, key, snapshot_id, outputs))
 
         runs: list[GraderRun] = []
         per_grader: dict[str, dict[str, float]] = {}
@@ -306,6 +308,16 @@ class TournamentHarness:
         result = _result(tournament_id, snapshot_id, key, runs, per_grader, arm_of, outputs)
         _write_atomic(root / "result.json", result.model_dump_json(indent=2) + "\n")
         return result
+
+    def regrade(self, tournament_id: str, *, graders: Sequence[Grader] = DEFAULT_GRADERS) -> TournamentResult:
+        """Grade a tournament whose grading failed again: the same outputs,
+        seed and snapshot, as its sealed request recorded them."""
+        request = self.directory(tournament_id) / _REQUEST
+        if not request.is_file():
+            raise RuntimeError(f"tournament {tournament_id} was never prepared for grading")
+        doc = json.loads(request.read_text(encoding="utf-8"))
+        outputs = [ArmOutput(o["arm"], o["heat"], o["text"], tuple(o["hide"])) for o in doc["outputs"]]
+        return self.grade(tournament_id, doc["snapshot_id"], outputs, graders=graders, seed=doc["seed"])
 
     def _grade_with(
         self, grader: Grader, root: Path, labels: Mapping[str, str], key: AnswerKey
@@ -348,16 +360,46 @@ _IMPROVER_STORE_PATH = re.compile(r"/[^\s\"']*/io-improver/[^\s\"']*")
 def _scrubbed(text: str, hide: Sequence[str]) -> str:
     """The answer as a grader reads it: no path that names where (so by
     which arm) it was written. The audited engine's own paths stay: they
-    are evidence, and the same for every arm."""
+    are evidence, and the same for every arm.
+
+    A JSON answer is scrubbed value by value after decoding (a path may be
+    spelled with escaped slashes) and written out again.
+    """
+    body = findings_text(text)
+    try:
+        doc = json.loads(body)
+    except json.JSONDecodeError:
+        return _scrub_string(body, hide)
+    return json.dumps(_scrub_json(doc, hide), indent=2, ensure_ascii=False) + "\n"
+
+
+def _scrub_json(value: Any, hide: Sequence[str]) -> Any:
+    if isinstance(value, str):
+        return _scrub_string(value, hide)
+    if isinstance(value, list):
+        return [_scrub_json(v, hide) for v in value]
+    if isinstance(value, dict):
+        return {_scrub_string(k, hide): _scrub_json(v, hide) for k, v in value.items()}
+    return value
+
+
+def _scrub_string(text: str, hide: Sequence[str]) -> str:
     for path in sorted(hide, key=len, reverse=True):
         text = re.sub(re.escape(path) + r"[^\s\"']*", "<RUN>", text)
-    return findings_text(_IMPROVER_STORE_PATH.sub("<RUN>", text))
+    return _IMPROVER_STORE_PATH.sub("<RUN>", text)
 
 
 def _grading_inputs(
-    root: Path, labels: Mapping[str, str], by_id: Mapping[str, ArmOutput], seed: int, key: AnswerKey
+    root: Path,
+    labels: Mapping[str, str],
+    by_id: Mapping[str, ArmOutput],
+    seed: int,
+    key: AnswerKey,
+    snapshot_id: str,
+    outputs: Sequence[ArmOutput],
 ) -> dict[str, str]:
-    """What the graders read (``anon/``, ``key/``) and the sealed mapping, by relative path."""
+    """What the graders read (``anon/``, ``key/``), the sealed mapping, and
+    the sealed request a retry grades again, by relative path."""
     files = {
         f"anon/{label}.json": _scrubbed(by_id[oid].text or "", (str(root), *by_id[oid].hide))
         for label, oid in labels.items()
@@ -367,6 +409,10 @@ def _grading_inputs(
         indent=2,
     ) + "\n"
     files["key/KEY.md"] = render_key(key)
+    files[_REQUEST] = json.dumps({
+        "snapshot_id": snapshot_id, "seed": seed,
+        "outputs": [{"arm": o.arm, "heat": o.heat, "text": o.text, "hide": list(o.hide)} for o in outputs],
+    }, indent=2) + "\n"
     return files
 
 

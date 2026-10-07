@@ -115,13 +115,6 @@ def test_a_snapshot_never_links_outside_itself(stores, tmp_path: Path) -> None: 
     live = tmp_path / "live"
     live.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=live, check=True)
-    state, _ = _engine_files(tmp_path / "e")
-    linked = tmp_path / "linked-clone"
-    linked.mkdir()
-    (linked / ".git").symlink_to(live / ".git")
-    with pytest.raises(SnapshotUnavailable, match="not the clone's own directory|not a Git clone"):
-        snapshots.import_("linked", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
-                          state_dir=state, clone=linked)
     data = _legacy_inputs(tmp_path / "b")
     (data / "later.md").symlink_to(live / "README")
     with pytest.raises(SnapshotUnavailable, match="later.md links outside the snapshot"):
@@ -131,7 +124,7 @@ def test_a_snapshot_never_links_outside_itself(stores, tmp_path: Path) -> None: 
     with pytest.raises(SnapshotUnavailable, match="up.md links outside"):
         snapshots.import_("escaping", improver_data=escaping, taken_at=T0, origin="x")
     assert snapshots.ids() == ("20261004",)
-    assert not any((root / "snapshots" / name).exists() for name in ("linked", "leaky", "escaping"))
+    assert not any((root / "snapshots" / name).exists() for name in ("leaky", "escaping"))
     # A link that stays inside (a bundle's CLAUDE.md -> AGENTS.md) is fine.
     inside = _legacy_inputs(tmp_path / "d")
     (inside / "AGENTS.md").write_text("agents")
@@ -271,19 +264,53 @@ def test_a_snapshot_is_published_whole_or_not_at_all(stores, tmp_path: Path, mon
     import issue_orchestrator.execution.improver_snapshots as module
 
     snapshots, _, root = stores
-    real_replace = module.os.replace
+    real_rename = module.os.rename
 
     def failing(source: str, target: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(module.os, "replace", failing)
+    monkeypatch.setattr(module.os, "rename", failing)
     with pytest.raises(OSError, match="disk full"):
         snapshots.import_("torn", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x")
     assert not (root / "snapshots" / "torn").exists() and "torn" not in snapshots.ids()
+    assert list((root / "snapshots" / ".staging").iterdir()) == []
 
-    monkeypatch.setattr(module.os, "replace", real_replace)
+    # An import killed mid-way leaves only a staging directory: never listed,
+    # and the id is still free.
+    abandoned = root / "snapshots" / ".staging" / "torn-killed"
+    (abandoned / "improver-data").mkdir(parents=True)
+    (abandoned / "snapshot.json").write_text("{")
+    monkeypatch.setattr(module.os, "rename", real_rename)
+    assert "torn" not in snapshots.ids()
     snapshots.import_("torn", improver_data=_legacy_inputs(tmp_path / "b"), taken_at=T0, origin="x")
-    assert snapshots.get("torn").id == "torn"
+    assert snapshots.get("torn").id == "torn" and snapshots.ids() == ("20261004", "torn")
+
+
+def test_a_frozen_clone_takes_nothing_from_its_sources_git_directory(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A clone of io's own checkout holds io's improver store (its answer
+    keys) in .git; a symlinked .git reads a live repository. The frozen
+    clone is a new repository with only the refs' history."""
+    snapshots, _, root = stores
+    _, live = _engine_files(tmp_path / "live")
+    keys = live / ".git" / "io-improver" / "keys"
+    keys.mkdir(parents=True)
+    (keys / "20261004.json").write_text("THE ANSWER KEY")
+    (live / ".git" / "hooks" / "post-checkout").write_text("#!/bin/sh\ntouch HOOK-RAN\n")
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / ".git").symlink_to(live / ".git")
+    state, _ = _engine_files(tmp_path / "e")
+
+    snapshots.import_("rebuilt", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                      state_dir=state, clone=linked)
+
+    frozen = root / "snapshots" / "rebuilt" / "toolbox" / "repo"
+    assert (frozen / ".git").is_dir() and not (frozen / ".git").is_symlink()
+    everything = [str(p.relative_to(frozen)) for p in frozen.rglob("*")]
+    assert not any("io-improver" in p for p in everything)
+    assert not any(p.read_bytes().find(b"THE ANSWER KEY") >= 0 for p in frozen.rglob("*") if p.is_file())
+    assert not (frozen / ".git" / "hooks" / "post-checkout").exists()
+    assert (frozen / "README.md").read_text() == "the audited repository"
 
 
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -641,6 +668,20 @@ def test_a_path_that_names_where_an_answer_was_written_is_hidden_from_graders(st
     assert "io-improver" not in texts and "arms/A" not in texts and str(recorded.resolve()) not in texts
     assert texts.count("<RUN>") == 2
     # The audited engine's paths are evidence, the same for every arm.
+    assert engine in texts
+
+
+def test_a_path_spelled_with_escaped_slashes_is_hidden_too(stores) -> None:  # type: ignore[no-untyped-def]
+    _, _, root = stores
+    escaped = "\\/Users\\/x\\/.git\\/io-improver\\/tournaments\\/old\\/arms\\/A\\/runs\\/r1\\/f.json"
+    engine = "/Users/x/dev/worktree/porchpin/porchpin-7/.issue-orchestrator/sessions/s1"
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": _complete}))
+
+    harness.grade("t12", "20261004", [ArmOutput("A", 1, '{"note": "' + escaped + '", "e": "' + engine + '"}'),
+                                      ArmOutput("B", 1, "{}")], seed=7)
+
+    texts = " ".join(p.read_text() for p in (harness.directory("t12") / "anon").iterdir())
+    assert "io-improver" not in texts and "arms" not in texts and "<RUN>" in texts
     assert engine in texts
 
 

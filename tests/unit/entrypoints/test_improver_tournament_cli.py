@@ -71,3 +71,58 @@ def test_a_challenger_arm_sets_its_own_prompt_heats_and_minutes(tmp_path: Path) 
 def test_a_grader_name_is_one_path_component(grader: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError, match="one path component"):
         cli.parse_grader(grader)
+
+
+def test_a_failed_grading_is_regraded_without_running_the_arms_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The arms are costly; a grader that failed is retried on the same
+    tournament (same outputs, seed, anonymized files), not by a new run."""
+    import json
+    from datetime import UTC, datetime
+
+    from issue_orchestrator.execution.improver_answer_keys import FileAnswerKeyStore
+    from issue_orchestrator.ports.improver import ImproverAgentResult
+    from tests.unit.domain.test_improver_tournament import SEALED
+    from tests.unit.execution.test_improver_tournament_harness import _legacy_inputs
+
+    store = tmp_path / "io-improver"
+    monkeypatch.setattr(cli, "improver_root", lambda checkout, runner: store)
+    monkeypatch.chdir(Path(__file__).resolve().parents[3])
+    assert cli.main(["snapshot", "import", "--id", "s1", "--improver-data", str(_legacy_inputs(tmp_path / "d")),
+                     "--taken-at", "2026-10-04T07:36:00+00:00", "--origin", "test"]) == 0
+    FileAnswerKeyStore(store).seed_sealed("s1", SEALED, sealed_at=datetime(2026, 10, 4, tzinfo=UTC), added_by="coordinator")
+    calls: list[str] = []
+    codex_complete = {"now": False}
+
+    class Agent:
+        def __init__(self, choice):  # type: ignore[no-untyped-def]
+            self.choice = choice
+
+        def run(self, *, prompt, space, toolbox):  # type: ignore[no-untyped-def]
+            labels = sorted(p.stem for p in (space.run_dir / "anon").glob("*.json"))
+            calls.append(self.choice.provider.value)
+            if self.choice.provider.value == "codex" and not codex_complete["now"]:
+                return ImproverAgentResult("{}", "partial")
+            return ImproverAgentResult(json.dumps({label: {
+                "items": {i: {"grade": "half", "why": "q"} for i in ("1", "2", "9")}, "unsupported": 0,
+            } for label in labels}), "graded")
+
+    monkeypatch.setattr(cli, "improver_agent", lambda choice, runner, timeout_seconds: Agent(choice))
+    recorded = tmp_path / "recorded"
+    recorded.mkdir()
+    (recorded / "A1.txt").write_text("{}")
+    (recorded / "B1.txt").write_text('{"b": 1}')
+
+    with pytest.raises(SystemExit, match=r"regrade --tournament (\S+)") as failed:
+        cli.main(["grade-recorded", "--snapshot", "s1", "--recorded", str(recorded), "--seed", "9"])
+    tournament = str(failed.value).rsplit("--tournament ", 1)[1].strip()
+    anon = {p.name: p.read_text() for p in (store / "tournaments" / tournament / "anon").iterdir()}
+    codex_complete["now"] = True
+
+    assert cli.main(["regrade", "--tournament", tournament]) == 0
+
+    directory = store / "tournaments" / tournament
+    assert calls == ["claude", "codex", "claude", "codex"]
+    assert {p.name: p.read_text() for p in (directory / "anon").iterdir()} == anon
+    assert (directory / "graders-attempt-1" / "codex" / "grades.json").read_text() == "{}"
+    result = json.loads((directory / "result.json").read_text())
+    assert [g["accepted"] for g in result["graders"]] == [True, True]
