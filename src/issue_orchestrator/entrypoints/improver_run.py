@@ -5,7 +5,9 @@ The owner of the run's sequence, which is also its trust boundary:
 1. apply whatever an earlier accepted run still owes GitHub;
 2. stage the inputs (:mod:`.improver_staging`); an input the improver cannot
    run without ends the run ``unavailable``;
-3. run the agent read-only on the prompt; its final message is its output;
+3. run the agent read-only on the prompt, inside its investigation (the
+   staged bundle alone, or, EMPOWERED, with the read-only toolbox staged and
+   served for the agent's run, #8001); its final message is its output;
 4. validate that output strictly against what was staged; a rejection is
    recorded with every broken rule and NOTHING is applied;
 5. record the accepted run (its stall-point grades and how they moved since
@@ -22,6 +24,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,7 +41,6 @@ from ..contracts.improver_inputs import (
 from ..contracts.improver_run import (
     ExamScore,
     FindingGrade,
-    ImproverAgentChoice,
     ImproverRunRecord,
     RunOutcome,
     StallPointMove,
@@ -51,7 +53,8 @@ from ..domain.improver_findings_validation import (
     StagedEvidence,
     validate_findings,
 )
-from ..ports.improver import ImproverAgent, ImproverRunStore
+from ..ports.improver import ImproverAgent, ImproverAgentResult, ImproverRunStore
+from ..ports.improver_investigation import ImproverInvestigation
 from .improver_staging import (
     ImproverInputsUnavailable,
     ImproverStagingRequest,
@@ -85,6 +88,13 @@ class ImproverRunRequest:
     def blind(self) -> bool:
         return bool(self.excluded_open_issues)
 
+    @property
+    def hidden_from_toolbox(self) -> frozenset[int]:
+        """The hidden issues the toolbox's GitHub reads could otherwise reach:
+        those of the audited repository, when it is also the outputs one
+        (#8001 r5 F1)."""
+        return self.excluded_open_issues if self.engine.repo == self.outputs_repo else frozenset()
+
     def staging(self, run_dir: Path, previous_audit: Path | None) -> ImproverStagingRequest:
         return ImproverStagingRequest(
             engine=self.engine,
@@ -105,6 +115,7 @@ class ImproverRun:
         store: ImproverRunStore,
         stager: ImproverInputStaging,
         agent: ImproverAgent,
+        investigation: ImproverInvestigation,
         effects: ImproverEffects,
         prompt: str,
         clock: Callable[[], datetime],
@@ -112,6 +123,7 @@ class ImproverRun:
         self._store = store
         self._stager = stager
         self._agent = agent
+        self._investigation = investigation
         self._effects = effects
         self._prompt = prompt
         self._clock = clock
@@ -149,6 +161,7 @@ class ImproverRun:
             run_dir=str(run_dir),
             blind_excluded_issues=tuple(sorted(request.excluded_open_issues)),
             agent=self._agent.choice,
+            mode=self._investigation.mode,
         )
         try:
             staged = self._stager.stage(
@@ -164,17 +177,9 @@ class ImproverRun:
                 "exam_scores": _exam_scores(evidence),
             }
         )
-        try:
-            answer = self._agent.run(
-                prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}", run_dir=run_dir
-            )
-        except Exception as error:
-            # The agent could not even be launched (an incompatible Codex
-            # config refused by the sandbox profile, a missing binary): the
-            # run is recorded unavailable, never lost without a record.
-            return self._finish(
-                base, RunOutcome.AGENT_FAILED, f"agent not launched: {type(error).__name__}: {error}"
-            )
+        answer = self._investigate(request, run_dir, base)
+        if isinstance(answer, ImproverRunRecord):
+            return answer
         if answer.final_message is None:
             return self._finish(base, RunOutcome.AGENT_FAILED, answer.detail)
         text = findings_text(answer.final_message)
@@ -194,7 +199,7 @@ class ImproverRun:
             f"{len(findings.findings)} finding(s) accepted"
             + ("; blind run: nothing is filed" if request.blind else ""),
             grades=_grades(findings),
-            stall_points=self._stall_point_moves(findings, request.engine.engine_id, self._agent.choice),
+            stall_points=self._stall_point_moves(findings, request.engine.engine_id),
             trend=findings.trend,
             # A blind run's findings may duplicate the issues it was not shown.
             effects=() if request.blind else planned_effects(findings, request.engine),
@@ -209,6 +214,36 @@ class ImproverRun:
         owed = current.model_copy(update={"owed_by_earlier_runs": earlier})
         self._store.record(owed)
         return owed
+
+    def _investigate(
+        self, request: ImproverRunRequest, run_dir: Path, base: ImproverRunRecord
+    ) -> ImproverAgentResult | ImproverRunRecord:
+        """The agent's answer, run inside its investigation (the toolbox is
+        staged and served only while the agent runs), or the finished record
+        of a run whose toolbox or agent could not even start."""
+        with ExitStack() as investigation:
+            try:
+                kit = investigation.enter_context(
+                    self._investigation.open(request.engine, run_dir, hidden_issues=request.hidden_from_toolbox)
+                )
+            except Exception as error:
+                # The toolbox could not be staged or served: no agent ran.
+                return self._finish(
+                    base, RunOutcome.UNAVAILABLE, f"toolbox unavailable: {type(error).__name__}: {error}"
+                )
+            try:
+                return self._agent.run(
+                    prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{self._prompt}{kit.instructions}",
+                    run_dir=run_dir,
+                    toolbox=kit.toolbox,
+                )
+            except Exception as error:
+                # The agent could not even be launched (an incompatible Codex
+                # config refused by the sandbox profile, a missing binary): the
+                # run is recorded unavailable, never lost without a record.
+                return self._finish(
+                    base, RunOutcome.AGENT_FAILED, f"agent not launched: {type(error).__name__}: {error}"
+                )
 
     def _explain_unapplied(self, run: ImproverRunRecord) -> ImproverRunRecord:
         """Say why effects left pending without a reason of their own were
@@ -243,18 +278,19 @@ class ImproverRun:
                 return Path(run.run_dir) / IMPROVER_DATA_DIRNAME / AUDIT_FILE
         return None
 
-    def _stall_point_moves(
-        self, findings: ImproverFindings, engine_id: str, agent: ImproverAgentChoice
-    ) -> tuple[StallPointMove, ...]:
+    def _stall_point_moves(self, findings: ImproverFindings, engine_id: str) -> tuple[StallPointMove, ...]:
         """How the grades moved since the previous audit of the engine BY THE
-        SAME AGENT: a change of provider or model is not a change in the
-        engine, so it starts a new baseline (#8001)."""
+        SAME AGENT IN THE SAME MODE: a change of provider, model or mode is
+        not a change in the engine, so it starts a new baseline (#8001)."""
         current = Counter(f.stall_point for f in findings.findings)
         previous_run = next(
             (
                 r
                 for r in self._store.runs()
-                if r.is_engine_audit and r.engine_id == engine_id and r.agent == agent
+                if r.is_engine_audit
+                and r.engine_id == engine_id
+                and r.agent == self._agent.choice
+                and r.mode == self._investigation.mode
             ),
             None,
         )
@@ -276,7 +312,8 @@ def render_run(record: ImproverRunRecord) -> str:
         f"{record.run_id} {record.outcome.value}: {record.detail}",
         f"  audited {record.audited_repo} (engine {record.engine_id} at {record.engine_commit});"
         f" outputs to {record.outputs_repo}",
-        f"  agent {record.agent.describe() if record.agent else 'codex (recorded before #8001)'}",
+        f"  agent {record.agent.describe() if record.agent else 'codex (recorded before #8001)'},"
+        f" {record.mode.value if record.mode else 'scripted'}",
         f"  run dir {record.run_dir}",
     ]
     if record.blind_excluded_issues:

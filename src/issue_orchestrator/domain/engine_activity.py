@@ -44,6 +44,13 @@ class EngineRef:
         if not self.engine_id or not self.repo:
             raise ValueError("an engine needs an id and a repository")
 
+    @property
+    def checkout(self) -> Path:
+        """The engine's repository checkout (``<checkout>/.issue-orchestrator/state``)."""
+        if self.state_dir.parent.name != ".issue-orchestrator" or self.state_dir.name != "state":
+            raise ValueError(f"{self.state_dir} is not <checkout>/.issue-orchestrator/state")
+        return self.state_dir.parent.parent
+
 
 @dataclass(frozen=True, slots=True)
 class EngineSighting:

@@ -18,6 +18,7 @@ from typing import Protocol
 
 from ..contracts.improver_findings import ImproverFindings
 from ..contracts.improver_run import ImproverAgentChoice, ImproverRunRecord
+from .improver_toolbox import ToolboxEndpoint
 
 
 class ImproverRunReader(Protocol):
@@ -67,7 +68,10 @@ class ImproverAgent(Protocol):
         """The provider and model this agent runs on."""
         ...
 
-    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult: ...
+    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
+        """Run the agent on ``prompt`` in ``run_dir``; with ``toolbox`` (an
+        empowered run), the agent may also call the read-only toolbox."""
+        ...
 
 
 __all__ = [

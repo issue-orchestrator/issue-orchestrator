@@ -18,7 +18,9 @@ the orchestrator passes it.
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from ..domain.sandbox_scope import (
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
 from ..ports.improver import ImproverAgentResult
+from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, TOOLBOX_TOKEN_ENV, ToolboxEndpoint
 from .agent_runner_providers.sandbox import build_codex_sandbox_argv
 
 #: Where Codex leaves the agent's last message, inside the run directory.
@@ -47,6 +50,22 @@ _PASSED_NAMES = frozenset(
     {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM", "TZ", "OPENAI_API_KEY"}
 )
 _PASSED_PREFIXES = ("LC_", "CODEX_")
+
+
+def _beyond_the_run_dir() -> tuple[str, ...]:
+    """Denies on top of the read boundary (``reads_confined``, #8001 r3/r4).
+
+    The boundary denies everything outside the run dir except the platform's
+    runtime files. The shared profile still grants the temp directories, and
+    the platform set reaches the world-writable ``/var/tmp``, where another
+    process's file could sit: those are denied explicitly. The run dir keeps
+    its own, more specific, grant even when it lies beneath one of them.
+    """
+    temp_roots = {
+        "/tmp", "/var/tmp",
+        *(os.path.realpath(p) for p in ("/tmp", "/var/tmp", tempfile.gettempdir())),
+    }
+    return ("~", *sorted(temp_roots))
 
 
 def agent_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -78,16 +97,21 @@ class CodexImproverAgent:
             write_roots=(workspace,),
             egress="model-only",
             deny_env=DEFAULT_SANDBOX_DENY_ENV,
-            deny_read_files=DEFAULT_SANDBOX_DENY_READ_FILES,
+            deny_read_files=(*DEFAULT_SANDBOX_DENY_READ_FILES, *_beyond_the_run_dir()),
+            reads_confined=True,
         )
 
-    def argv(self, *, prompt: str, run_dir: Path) -> list[str]:
+    def argv(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> list[str]:
         # stdin is /dev/null: ``codex exec`` appends a PIPED stdin to the
         # prompt, and would wait on one inherited from a runner that never
         # closes it.
         return [
             "/bin/sh", "-c", 'exec "$@" </dev/null', "sh",
-            "codex", *build_codex_sandbox_argv(self.scope(run_dir)), "exec",
+            "codex", *build_codex_sandbox_argv(self.scope(run_dir)), *_toolbox_overrides(toolbox), "exec",
+            # The operator's config.toml is not the agent's: its MCP servers,
+            # profiles and tools would reach past the run's boundary (#8001
+            # r2 F1). Authentication still comes from CODEX_HOME.
+            "--ignore-user-config",
             "--skip-git-repo-check",
             "--ephemeral",
             "--color", "never",
@@ -96,7 +120,7 @@ class CodexImproverAgent:
             prompt,
         ]
 
-    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
         # Absolute: Codex runs IN the run dir, so a relative final-message
         # path or sandbox root would resolve beneath it.
         run_dir = run_dir.resolve()
@@ -106,9 +130,13 @@ class CodexImproverAgent:
         if initialized.returncode:
             raise RuntimeError(f"cannot prepare the agent workspace: {initialized.stderr.strip()}")
         result = self._runner.run(
-            self.argv(prompt=prompt, run_dir=run_dir),
+            self.argv(prompt=prompt, run_dir=run_dir, toolbox=toolbox),
             cwd=run_dir,
-            env={**agent_environment(os.environ), "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir)},
+            env={
+                **agent_environment(os.environ),
+                "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir),
+                **({} if toolbox is None else {TOOLBOX_TOKEN_ENV: toolbox.token}),
+            },
             timeout_seconds=self._timeout,
         )
         (run_dir / "improver-agent.log").write_text(
@@ -123,6 +151,22 @@ class CodexImproverAgent:
         if not text.strip():
             return ImproverAgentResult(None, "codex finished without a final message")
         return ImproverAgentResult(text, "codex finished")
+
+
+def _toolbox_overrides(toolbox: ToolboxEndpoint | None) -> list[str]:
+    """The empowered toolbox as Codex's one MCP server (the operator's own
+    servers are never loaded: ``--ignore-user-config``); Codex reads its
+    bearer token from the named environment variable, never the argv."""
+    if toolbox is None:
+        return []
+    server = f"mcp_servers.{TOOLBOX_SERVER_NAME}"
+    return [
+        "-c", f"{server}.url={json.dumps(toolbox.url)}",
+        "-c", f"{server}.bearer_token_env_var={json.dumps(TOOLBOX_TOKEN_ENV)}",
+        # Under ``-a never`` an unapproved MCP call is refused outright; the
+        # toolbox offers only reads, each checked by its own policy.
+        "-c", f"{server}.default_tools_approval_mode={json.dumps('approve')}",
+    ]
 
 
 __all__ = ["CodexImproverAgent", "FINAL_MESSAGE_FILE"]

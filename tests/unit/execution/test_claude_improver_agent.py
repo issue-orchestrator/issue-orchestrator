@@ -36,7 +36,7 @@ def _agent(runner: FakeRunner) -> ClaudeImproverAgent:
 def test_claude_runs_restricted_to_the_read_tools_with_the_prompt_on_stdin(tmp_path: Path) -> None:
     runner = FakeRunner(CommandResult(0, '{"findings": []}\n', ""))
 
-    result = _agent(runner).run(prompt="THE PROMPT", run_dir=tmp_path)
+    result = _agent(runner).run(prompt="THE PROMPT", run_dir=tmp_path, toolbox=None)
 
     [call] = runner.calls
     argv = call["command"]
@@ -63,7 +63,7 @@ def test_the_shell_feeds_the_prompt_file_to_claude_on_stdin(tmp_path: Path) -> N
     from stdin, with the run dir's path never spliced into the script."""
     agent = _agent(FakeRunner(CommandResult(0, "", "")))
     (tmp_path / PROMPT_FILE).write_text("prompt via stdin")
-    argv = agent.argv(run_dir=tmp_path)
+    argv = agent.argv(run_dir=tmp_path, toolbox=None)
     shell = argv[: argv.index("claude")]
 
     done = subprocess.run([*shell, "cat"], capture_output=True, text=True, check=True)
@@ -81,7 +81,7 @@ def test_the_shell_feeds_the_prompt_file_to_claude_on_stdin(tmp_path: Path) -> N
     ],
 )
 def test_no_output_says_why(tmp_path: Path, result: CommandResult, detail: str) -> None:
-    answer = _agent(FakeRunner(result)).run(prompt="P", run_dir=tmp_path)
+    answer = _agent(FakeRunner(result)).run(prompt="P", run_dir=tmp_path, toolbox=None)
 
     assert answer.final_message is None
     assert detail in answer.detail
@@ -94,7 +94,7 @@ def test_no_repository_host_credential_reaches_the_agent(tmp_path: Path, monkeyp
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
     runner = FakeRunner(CommandResult(0, "{}", ""))
 
-    _agent(runner).run(prompt="P", run_dir=tmp_path)
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
 
     env = runner.calls[0]["env"]
     assert "secret" not in env.values()
@@ -144,7 +144,45 @@ def test_a_relative_run_dir_still_feeds_the_prompt(tmp_path: Path, monkeypatch: 
 
     runner = ShellRunner(CommandResult(0, "", ""))
 
-    answer = _agent(runner).run(prompt="the prompt", run_dir=Path("out/run"))
+    answer = _agent(runner).run(prompt="the prompt", run_dir=Path("out/run"), toolbox=None)
 
     assert answer.final_message == "the prompt", answer.detail
     assert runner.calls[0]["env"]["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(tmp_path.resolve() / "out" / "run")
+
+
+def test_an_empowered_run_gets_the_toolbox_as_its_one_mcp_server_never_its_token_on_argv(tmp_path: Path) -> None:
+    import json
+
+    from issue_orchestrator.ports.improver_toolbox import TOOLBOX_TOKEN_ENV, ToolboxEndpoint
+
+    runner = FakeRunner(CommandResult(0, "{}", ""))
+    endpoint = ToolboxEndpoint(url="http://127.0.0.1:5555/mcp", token="run-token-xyz")
+
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=endpoint)
+
+    [call] = runner.calls
+    argv = call["command"]
+    claude = argv[argv.index("claude"):]
+    assert not any("run-token-xyz" in a for a in argv)
+    config = json.loads(claude[claude.index("--mcp-config") + 1])
+    server = config["mcpServers"]["improver_toolbox"]
+    assert server == {
+        "type": "http",
+        "url": "http://127.0.0.1:5555/mcp",
+        "headers": {"Authorization": "Bearer ${" + TOOLBOX_TOKEN_ENV + "}"},
+    }
+    assert claude[claude.index("--allowedTools") + 1] == "mcp__improver_toolbox"
+    # Still no shell and no write tool, still confined to the run dir.
+    assert claude[claude.index("--tools") + 1] == "Read,Grep,Glob" and "--restricted" in claude
+    assert "--strict-mcp-config" in claude
+    assert call["env"][TOOLBOX_TOKEN_ENV] == "run-token-xyz"
+
+
+def test_a_scripted_run_has_no_toolbox(tmp_path: Path) -> None:
+    runner = FakeRunner(CommandResult(0, "{}", ""))
+
+    _agent(runner).run(prompt="P", run_dir=tmp_path, toolbox=None)
+
+    argv = runner.calls[0]["command"]
+    assert "--mcp-config" not in argv and "--allowedTools" not in argv
+    assert "IO_IMPROVER_TOOLBOX_TOKEN" not in runner.calls[0]["env"]
