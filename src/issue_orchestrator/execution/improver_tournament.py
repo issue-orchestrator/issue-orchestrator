@@ -79,6 +79,8 @@ NO_OUTPUTS_REPO = "tournament/no-outputs"
 TIE_MARGIN = 0.5
 #: What was graded (outputs, seed, snapshot), sealed with the mapping, so a failed grading can be retried.
 _REQUEST = "sealed/request.json"
+#: What the tournament's arms were run on (written by run_arms).
+_ARMS_RUN = "arms/run.json"
 
 
 class FrozenInputs:
@@ -245,6 +247,10 @@ class TournamentHarness:
                 accepted = heat_record is not None and heat_record.outcome is RunOutcome.ACCEPTED
                 text = answer.read_text(encoding="utf-8") if accepted else None
                 outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
+        # What these outputs were run on: grading them under another snapshot is refused.
+        _write_atomic(self.directory(tournament_id) / _ARMS_RUN, json.dumps(
+            {"snapshot_id": snapshot_id, "outputs": sorted(o.output_id for o in outputs)}, indent=2
+        ) + "\n")
         return outputs
 
     def _investigation(self, spec: ArmSpec, snapshot_id: str) -> Any:
@@ -279,6 +285,7 @@ class TournamentHarness:
         root = self.directory(tournament_id).resolve()
         if (root / "result.json").exists():
             raise RuntimeError(f"tournament {tournament_id} already has a result")
+        _require_run_on(root, snapshot_id, outputs)
         answered = [o for o in outputs if o.text is not None]
         labels = anonymize([o.output_id for o in answered], seed=seed)
         by_id = {o.output_id: o for o in answered}
@@ -444,6 +451,19 @@ def _prepare(root: Path, files: Mapping[str, str]) -> None:
         (root / directory).mkdir(parents=True)
     for name, text in sorted(files.items(), key=lambda item: item[0] == "sealed/mapping.json"):
         _write_atomic(root / name, text)
+
+
+def _require_run_on(root: Path, snapshot_id: str, outputs: Sequence[ArmOutput]) -> None:
+    """Outputs this tournament's arms produced are graded only as what they
+    are: the same outputs, on the snapshot they were run on."""
+    record = root / _ARMS_RUN
+    if not record.is_file():
+        return
+    ran = json.loads(record.read_text(encoding="utf-8"))
+    if ran["snapshot_id"] != snapshot_id:
+        raise RuntimeError(f"the arms ran on snapshot {ran['snapshot_id']}, not {snapshot_id}; no grading")
+    if ran["outputs"] != sorted(o.output_id for o in outputs):
+        raise RuntimeError(f"the arms produced {ran['outputs']}, not these outputs; no grading")
 
 
 def _write_atomic(path: Path, text: str) -> None:

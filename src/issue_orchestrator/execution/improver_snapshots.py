@@ -229,7 +229,11 @@ class FrozenSnapshotStore:
         return done.stdout
 
     def _copy(self, source: Path, target: Path) -> None:
-        """An independent copy: an APFS clone on macOS, a plain copy elsewhere."""
+        """An independent copy: an APFS clone on macOS, a plain copy elsewhere.
+        A source that is itself a link is refused (copied, it would stay a
+        reference to whatever it points at)."""
+        if source.is_symlink():
+            raise SnapshotUnavailable(f"{source} is a symlink; a snapshot copies only files and directories")
         if sys.platform == "darwin":
             done = self._runner.run(["/bin/cp", "-cRp", str(source), str(target)], timeout_seconds=1800)
             if done.returncode:
@@ -271,7 +275,9 @@ def upgrade_staged_inputs(data: Path) -> tuple[str, ...]:
 
 
 def require_self_contained(tree: Path) -> None:
-    """Refuse a symlink in ``tree`` that is absolute or leaves ``tree``."""
+    """Refuse a symlink in ``tree`` that is absolute or leaves ``tree`` (``tree`` itself included)."""
+    if tree.is_symlink():
+        raise SnapshotUnavailable(f"{tree} is a link, not the snapshot's own directory")
     root = os.path.normpath(tree)
     for directory, dirnames, filenames in os.walk(tree):
         for name in (*dirnames, *filenames):

@@ -354,6 +354,21 @@ def test_a_frozen_store_holds_the_rows_its_write_ahead_log_had(stores, tmp_path:
         assert conn.execute("SELECT name FROM events").fetchall() == [("only-in-the-log",)]
 
 
+def test_a_bundle_reached_through_a_link_is_refused_and_left_untouched(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """Copied, a link would stay a reference: later edits to the bundle
+    would change the frozen evidence (and the upgrade would edit the source)."""
+    snapshots, _, root = stores
+    real = _legacy_inputs(tmp_path / "real")
+    before = (real / "interventions.json").read_text()
+    link = tmp_path / "bundle-link"
+    link.symlink_to(real)
+
+    with pytest.raises(SnapshotUnavailable, match="is a symlink"):
+        snapshots.import_("linked-bundle", improver_data=link, taken_at=T0, origin="x")
+    assert (real / "interventions.json").read_text() == before
+    assert "linked-bundle" not in snapshots.ids() and not (root / "snapshots" / "linked-bundle").exists()
+
+
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     snapshots, _, _ = stores
     snapshots.import_("bundle-only", improver_data=_legacy_inputs(tmp_path / "b"), taken_at=T0, origin="x")
@@ -415,6 +430,44 @@ def test_a_key_is_seeded_once_and_an_item_added_once(stores) -> None:  # type: i
         keys.add(_hindsight(), snapshot_id="20261004")
     with pytest.raises(AnswerKeyError, match="only hindsight"):
         keys.add(_hindsight().model_copy(update={"id": "H-x", "source": "sealed_key"}), snapshot_id="20261004")
+
+
+def test_two_seeds_at_once_publish_exactly_one_key(tmp_path: Path) -> None:
+    """A sealed key is never replaced, even by a seed racing it."""
+    keys = FileAnswerKeyStore(tmp_path / "io-improver")
+    other = SEALED.replace("#364 ruling", "#365 ruling")
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+
+    def seed(markdown: str, name: str) -> None:
+        barrier.wait()
+        try:
+            keys.seed_sealed("race", markdown, sealed_at=T0, added_by=name)
+            outcomes.append(name)
+        except AnswerKeyError:
+            outcomes.append("refused")
+
+    threads = [threading.Thread(target=seed, args=(SEALED, "one")), threading.Thread(target=seed, args=(other, "two"))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(outcomes) in (["one", "refused"], ["refused", "two"])
+    winner = next(o for o in outcomes if o != "refused")
+    assert all(i.added_by == winner for i in keys.get("race").items)
+
+
+def test_hindsight_items_added_at_once_are_all_kept(stores) -> None:  # type: ignore[no-untyped-def]
+    _, keys, _ = stores
+    threads = [threading.Thread(target=keys.add, args=(_hindsight(f"H-{n}"),), kwargs={"snapshot_id": "20261004"})
+               for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert {i.id for i in keys.get("20261004").items} >= {f"H-{n}" for n in range(8)}
 
 
 def test_no_improver_run_module_can_reach_the_answer_keys() -> None:
@@ -739,6 +792,25 @@ def test_a_grading_that_calls_a_missing_finding_unsupported_has_no_result(stores
     with pytest.raises(RuntimeError, match="calls unsupported \\['ghost'\\]"):
         harness.grade("t13", "20261004", [ArmOutput("A", 1, json.dumps({"findings": [{"id": "f1"}]}))], seed=8)
     assert not (harness.directory("t13") / "result.json").exists()
+
+
+def test_outputs_are_graded_only_on_the_snapshot_their_arms_ran_on(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    snapshots, keys, root = stores
+    snapshots.import_("other", improver_data=_legacy_inputs(tmp_path / "o"), taken_at=T0, origin="x")
+    keys.seed_sealed("other", SEALED, sealed_at=T0, added_by="coordinator")
+    agents = Agents({"valid": json.dumps(example("exam_case"))}, {"claude": _full_credit, "codex": _full_credit})
+    harness = _harness(root, stores, agents)
+    outputs = harness.run_arms("t14", "20261004", [_spec(TournamentArm(name="A", provider="claude", model="valid",
+                                                                       mode="scripted"), heats=HeatPlan(1, 1))])
+    arm_calls = len(agents.spaces)
+
+    with pytest.raises(RuntimeError, match="the arms ran on snapshot 20261004, not other"):
+        harness.grade("t14", "other", outputs, seed=1)
+    with pytest.raises(RuntimeError, match="not these outputs"):
+        harness.grade("t14", "20261004", [*outputs, ArmOutput("Z", 1, "{}")], seed=1)
+    assert len(agents.spaces) == arm_calls
+    assert not (harness.directory("t14") / "result.json").exists()
+    assert harness.grade("t14", "20261004", outputs, seed=1).snapshot_id == "20261004"
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

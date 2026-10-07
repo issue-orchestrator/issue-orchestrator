@@ -14,8 +14,11 @@ score until :meth:`confirm`.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -45,40 +48,55 @@ class FileAnswerKeyStore:
         return AnswerKey.model_validate_json(path.read_text(encoding="utf-8"))
 
     def seed_sealed(self, snapshot_id: str, markdown: str, *, sealed_at: datetime, added_by: str) -> AnswerKey:
-        if self.path(snapshot_id).exists():
-            raise AnswerKeyError(f"snapshot {snapshot_id!r} already has a key; add hindsight items to it")
         key = parse_sealed_key(markdown, snapshot_id=snapshot_id, added_at=sealed_at, added_by=_author(added_by))
-        self._write(key)
+        with self._locked():
+            # Published only if no key is there: a sealed key is never replaced.
+            temporary = self._temporary(key)
+            try:
+                os.link(temporary, self.path(snapshot_id))
+            except FileExistsError:
+                raise AnswerKeyError(f"snapshot {snapshot_id!r} already has a key; add hindsight items to it") from None
+            finally:
+                os.unlink(temporary)
         return key
 
     def add(self, item: AnswerKeyItem, *, snapshot_id: str) -> AnswerKey:
         if item.source != "hindsight":
             raise AnswerKeyError("only hindsight items are added; the sealed key is seeded once")
         _author(item.added_by)
-        key = self.get(snapshot_id)
-        if any(existing.id == item.id for existing in key.items):
-            raise AnswerKeyError(f"key item {item.id!r} exists")
-        updated = key.model_copy(update={"items": (*key.items, item)})
-        self._write(updated)
+        with self._locked():
+            key = self.get(snapshot_id)
+            if any(existing.id == item.id for existing in key.items):
+                raise AnswerKeyError(f"key item {item.id!r} exists")
+            updated = key.model_copy(update={"items": (*key.items, item)})
+            os.replace(self._temporary(updated), self.path(snapshot_id))
         return updated
 
     def confirm(self, snapshot_id: str, item_id: str, *, by: str) -> AnswerKey:
         _author(by)
-        key = self.get(snapshot_id)
-        if not any(i.id == item_id for i in key.items):
-            raise AnswerKeyError(f"no key item {item_id!r}")
-        updated = key.model_copy(update={"items": tuple(
-            i.model_copy(update={"status": "confirmed"}) if i.id == item_id else i for i in key.items
-        )})
-        self._write(updated)
+        with self._locked():
+            key = self.get(snapshot_id)
+            if not any(i.id == item_id for i in key.items):
+                raise AnswerKeyError(f"no key item {item_id!r}")
+            updated = key.model_copy(update={"items": tuple(
+                i.model_copy(update={"status": "confirmed"}) if i.id == item_id else i for i in key.items
+            )})
+            os.replace(self._temporary(updated), self.path(snapshot_id))
         return updated
 
-    def _write(self, key: AnswerKey) -> None:
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Every key write, one at a time (a read-modify-write never loses one)."""
         self._root.mkdir(parents=True, exist_ok=True)
+        with open(self._root / ".lock", "w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    def _temporary(self, key: AnswerKey) -> str:
         handle, temporary = tempfile.mkstemp(dir=self._root, prefix=".key-")
         with os.fdopen(handle, "w", encoding="utf-8") as out:
             out.write(key.model_dump_json(indent=2) + "\n")
-        os.replace(temporary, self.path(key.snapshot_id))
+        return temporary
 
 
 def _author(name: str) -> str:
