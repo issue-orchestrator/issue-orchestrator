@@ -11,7 +11,7 @@ half credit.
 For EACH output, for EACH key item (<<ITEM_IDS>>), give one of `full`, `half` or `miss`, and a
 one-line justification (`why`) that quotes the output's own words. Then give:
 - `unsupported`: how many of its findings have no concrete evidence citation, or contradict the
-  key's facts; `unsupported_ids` lists their ids.
+  key's facts; `unsupported_ids` lists their ids, one per finding (so `unsupported` is its length).
 - `extras`: findings outside the key that look real and evidence-backed, each `{"id": ..., "summary":
   ...}`. List them; do not score them.
 

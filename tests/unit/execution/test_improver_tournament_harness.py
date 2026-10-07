@@ -229,6 +229,28 @@ def test_a_frozen_clone_shows_its_commit_and_nothing_written_since(stores, tmp_p
     assert status.stdout == ""
 
 
+def test_a_committed_link_out_restored_by_the_rebuild_is_refused(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """The checkout is rebuilt from the commit, so a link the commit holds
+    (but the working tree had deleted) comes back: it is checked again."""
+    snapshots, _, root = stores
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    when = (T0 - timedelta(hours=1)).isoformat()
+    env = {"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when, "PATH": "/usr/bin:/bin"}
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "live.md").symlink_to(tmp_path / "outside.md")
+    subprocess.run([*git, "add", "live.md"], cwd=repo, check=True, env=env)
+    subprocess.run([*git, "commit", "-qm", "c"], cwd=repo, check=True, env=env)
+    (repo / "live.md").unlink()
+    state, _ = _engine_files(tmp_path / "e")
+
+    with pytest.raises(SnapshotUnavailable, match="live.md links outside the snapshot"):
+        snapshots.import_("relinked", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                          state_dir=state, clone=repo)
+    assert not (root / "snapshots" / "relinked").exists()
+
+
 def test_no_arm_runs_before_its_snapshot_has_a_key(tmp_path: Path) -> None:
     """A key is sealed before any result is seen: arms run without one could
     be read, and the key written to fit them."""

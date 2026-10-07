@@ -75,7 +75,8 @@ def test_anonymous_labels_are_unique_seeded_and_unordered() -> None:
 
 def _grades(item_grades: dict[str, str], unsupported: int = 0) -> dict:
     return {"items": {i: {"grade": g, "why": "quote"} for i, g in item_grades.items()},
-            "unsupported": unsupported, "unsupported_ids": [], "extras": [{"id": "x", "summary": "real"}]}
+            "unsupported": unsupported, "unsupported_ids": [f"u{n}" for n in range(unsupported)],
+            "extras": [{"id": "x", "summary": "real"}]}
 
 
 def test_an_output_scores_its_items_weights_by_grade_less_its_unsupported_findings() -> None:
@@ -183,3 +184,16 @@ def test_a_grading_that_names_an_output_or_an_item_twice_is_refused() -> None:
         read_grades(twice_label, ["S10"], key)
     with pytest.raises(GradesRejected, match=r"\['1'\] more than once"):
         read_grades(twice_item, ["S10"], key)
+
+
+@pytest.mark.parametrize(
+    ("unsupported", "ids", "why"),
+    [(0, ["f1"], "unsupported is 0 but unsupported_ids names 1"), (2, ["f1"], "unsupported is 2"),
+     (2, ["f1", "f1"], "unsupported_ids repeat")],
+)
+def test_an_unsupported_count_must_match_the_findings_it_names(unsupported: int, ids: list[str], why: str) -> None:
+    """A grader naming an unsupported finding but counting 0 would score it free."""
+    grading = {**_grades({"1": "full", "2": "miss", "9": "miss"}), "unsupported": unsupported, "unsupported_ids": ids}
+
+    with pytest.raises(GradesRejected, match=why):
+        read_grades(json.dumps({"S10": grading}), ["S10"], _key())

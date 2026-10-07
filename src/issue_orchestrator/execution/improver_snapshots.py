@@ -191,6 +191,8 @@ class FrozenSnapshotStore:
             )
         self._git(target, "reset", "--hard", "-q", "HEAD")
         self._git(target, "clean", "-ffdxq")
+        # The rebuilt checkout is the commit's: a link it commits must stay inside too.
+        require_self_contained(target)
 
     def _git(self, repo: Path, *args: str) -> str:
         done = self._runner.run(["git", "-C", str(repo), *args], timeout_seconds=1800)

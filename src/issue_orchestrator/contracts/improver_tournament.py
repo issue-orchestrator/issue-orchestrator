@@ -18,7 +18,7 @@ import re
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 SLUG_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 #: A name that is also one path component (a snapshot, key, tournament, arm, grader).
@@ -109,9 +109,22 @@ class OutputGrades(_Closed):
     """One grader's grades of one anonymized output."""
 
     items: dict[str, ItemGrade]
+    #: How many findings are unsupported: one per id in ``unsupported_ids``.
     unsupported: Annotated[int, Field(ge=0)]
     unsupported_ids: tuple[str, ...] = ()
     extras: tuple[Extra, ...] = ()
+
+    @model_validator(mode="after")
+    def _one_count_per_unsupported_finding(self) -> OutputGrades:
+        # A grader naming an unsupported finding but counting 0 would score
+        # it free; the count and the ids must say the same thing.
+        if len(set(self.unsupported_ids)) != len(self.unsupported_ids):
+            raise ValueError(f"unsupported_ids repeat: {list(self.unsupported_ids)}")
+        if self.unsupported != len(self.unsupported_ids):
+            raise ValueError(
+                f"unsupported is {self.unsupported} but unsupported_ids names {len(self.unsupported_ids)} finding(s)"
+            )
+        return self
 
 
 class TournamentArm(_Closed):
