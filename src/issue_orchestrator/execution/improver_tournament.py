@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -364,7 +365,16 @@ class TournamentHarness:
         )
         space = HeatSpace(heat=1, run_dir=root, workdir=workdir, evidence=(root / "anon", root / "key"))
         started = time.monotonic()
-        answer = self._agent_for(grader.choice, grader.timeout_minutes).run(prompt=prompt, space=space, toolbox=None)
+        try:
+            answer = self._agent_for(grader.choice, grader.timeout_minutes).run(prompt=prompt, space=space, toolbox=None)
+        except BaseException as error:
+            # The call was made (and spent) even though it raised: it is counted.
+            _write_atomic(workdir / _GRADING_RECORD, GraderRun(
+                name=grader.name, provider=grader.choice.provider.value, model=grader.choice.model,
+                pass_number=pass_number, accepted=False, detail=f"raised: {error!r}"[:500],
+                seconds=round(time.monotonic() - started, 1),
+            ).model_dump_json(indent=2) + "\n")
+            raise
         seconds = round(time.monotonic() - started, 1)
 
         def run(accepted: bool, detail: str) -> GraderRun:
@@ -552,7 +562,7 @@ def _result(
     return TournamentResult(
         tournament_id=tournament_id, snapshot_id=snapshot_id, key_items=len(key.scored),
         max_score=key.max_score, graders=runs, passes=passes,
-        pass_sd=None if pooled.pass_sd is None else round(pooled.pass_sd, 3),
+        pass_sd=_pass_sd(gradings),
         band_ses=NOISE_BAND_SES, arms=tuple(arms),
         ranking=rank(means, distinguishable=pooled.distinguishable),
         distinguishable=tuple(
@@ -560,6 +570,22 @@ def _result(
         ),
         cost=cost,
     )
+
+
+def _pass_sd(gradings: Mapping[str, Sequence[Mapping[str, float]]]) -> float | None:
+    """For the record: one pass's spread about its grader's mean score of an
+    output (None: one pass). The noise band uses the arms' differences."""
+    passes = {len(runs) for runs in gradings.values()}.pop()
+    if passes < 2:
+        return None
+    squares, dof = 0.0, 0
+    for runs in gradings.values():
+        for label in runs[0]:
+            values = [r[label] for r in runs]
+            m = sum(values) / passes
+            squares += sum((v - m) ** 2 for v in values)
+            dof += passes - 1
+    return round(math.sqrt(squares / dof), 3) if dof else None
 
 
 def _cost(root: Path) -> TournamentCost:

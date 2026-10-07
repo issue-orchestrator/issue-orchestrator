@@ -864,13 +864,15 @@ def test_arms_within_the_measured_grading_noise_are_reported_indistinguishable(s
 
 
 def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> None:  # type: ignore[no-untyped-def]
-    """Claude and Codex grade at once; one grader never runs two passes at
-    once (Codex's slow first pass must not be overtaken by its second)."""
+    """Codex's first pass waits until Claude has finished all three of its
+    passes: that proves the graders run side by side, and a queued Codex
+    pass 2 starting meanwhile would be a grader running two passes at once."""
     _, _, root = stores
-    together = threading.Barrier(2, timeout=10)
+    claude_done = threading.Event()
     active: dict[str, int] = {}
     overlaps: list[str] = []
-    calls: dict[str, int] = {}
+    order: list[str] = []
+    side_by_side: list[bool] = []
     lock = threading.Lock()
 
     class Agent:
@@ -878,21 +880,23 @@ def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> N
             self.provider = provider
 
         def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
+            pass_dir = space.workdir.name
             with lock:
-                calls[self.provider] = n = calls.get(self.provider, 0) + 1
                 active[self.provider] = active.get(self.provider, 0) + 1
                 if active[self.provider] > 1:
                     overlaps.append(self.provider)
+                order.append(f"{self.provider}:{pass_dir}:start")
             try:
-                if n == 1:
-                    together.wait()  # both graders' first passes are running at once
-                    if self.provider == "codex":
-                        time.sleep(0.5)
+                if self.provider == "codex" and pass_dir == "p1":
+                    side_by_side.append(claude_done.wait(timeout=10))
                 labels = sorted(p.stem for p in (space.run_dir / "anon").glob("*.json"))
                 return ImproverAgentResult(_complete(labels), "graded")
             finally:
                 with lock:
                     active[self.provider] -= 1
+                    order.append(f"{self.provider}:{pass_dir}:end")
+                if self.provider == "claude" and pass_dir == "p3":
+                    claude_done.set()
 
     class Graders:
         @staticmethod
@@ -903,7 +907,10 @@ def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> N
 
     result = harness.grade("t16", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")], seed=3)
 
-    assert overlaps == [] and calls == {"claude": 3, "codex": 3}
+    assert side_by_side == [True] and overlaps == []
+    for provider in ("claude", "codex"):
+        mine = [e for e in order if e.startswith(provider)]
+        assert mine == [f"{provider}:p{n}:{edge}" for n in (1, 2, 3) for edge in ("start", "end")]
     assert [g.grading for g in result.graders] == [f"{g}#{n}" for g in ("claude", "codex") for n in (1, 2, 3)]
 
 
@@ -924,6 +931,28 @@ def test_a_retried_gradings_cost_counts_every_attempt(stores) -> None:  # type: 
 
     assert result.cost.grader_calls == {"claude": 6, "codex": 6}
     assert set(result.cost.grader_seconds) == {"claude", "codex"}
+
+
+def test_a_grader_call_that_raises_is_still_counted(stores) -> None:  # type: ignore[no-untyped-def]
+    _, _, root = stores
+    raised = {"once": False}
+
+    def crashing(labels: list[str]) -> str:
+        if not raised["once"]:
+            raised["once"] = True
+            raise RuntimeError("provider went away")
+        return _complete(labels)
+
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": crashing}))
+    outputs = [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")]
+    with pytest.raises(RuntimeError, match="provider went away"):
+        harness.grade("t18", "20261004", outputs, seed=4)
+
+    result = harness.grade("t18", "20261004", outputs, seed=4)
+
+    # Codex: the call that raised, then three; Claude: whatever ran beside it, then three.
+    assert result.cost.grader_calls["codex"] == 4
+    assert 4 <= result.cost.grader_calls["claude"] <= 6
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

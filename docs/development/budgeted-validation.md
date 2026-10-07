@@ -234,8 +234,9 @@ data lives under `<git common dir>/io-improver/`:
   passes are averaged first, since repeating one grader's opinion is not more
   evidence. An arm's score is the mean over its outputs and graders. Two arms
   are told apart only when their means differ by more than twice the standard
-  error of the difference: the graders' disagreement on that difference, plus
-  the heats' spread (never below the measured pass-to-pass noise). Arms within
+  error of the difference: the larger of the graders' disagreement on that
+  difference and its pass-to-pass noise (measured on the difference itself,
+  pass by pass), plus the heats' spread. Arms within
   that band are reported indistinguishable (`≈`, grouped only when pairwise
   so), which is a result, not a failure. `result.json` records each grading,
   the pass noise, the distinguishable pairs and the cost (arm heats and every

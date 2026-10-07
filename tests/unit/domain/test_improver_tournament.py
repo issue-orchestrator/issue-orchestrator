@@ -144,7 +144,7 @@ def test_the_2026_10_04_published_means_follow_from_these_rules_and_only_c_stand
     pooled = _ten_four()
 
     assert {arm: round(a.mean, 2) for arm, a in pooled.arms.items()} == {"A": 0.25, "B": 1.33, "C": 3.83, "D": 0.17}
-    assert pooled.passes == 1 and pooled.pass_sd is None
+    assert pooled.passes == 1
     means = {arm: a.mean for arm, a in pooled.arms.items()}
     assert rank(means, distinguishable=pooled.distinguishable) == (("C",), ("B", "A", "D"))
     assert all(pooled.distinguishable("C", arm) for arm in "ABD")
@@ -171,29 +171,45 @@ def test_a_difference_every_grader_sees_in_every_heat_is_told_apart() -> None:
 
     pooled = pool({"claude": claude, "codex": codex}, {"a1": "A", "a2": "A", "b1": "B", "b2": "B"}, ungraded={})
 
-    assert pooled.pass_sd is not None and pooled.pass_sd > 0
-    assert pooled.distinguishable("A", "B") and pooled.band("A", "B") < 2.0
+    # Each output's score wobbles, but A - B is 2 in every pass of every grader.
+    assert pooled.band("A", "B") == 0.0 and pooled.distinguishable("A", "B")
 
 
-def test_heats_that_disagree_widen_the_band_and_pass_noise_floors_it() -> None:
+def test_heats_that_disagree_widen_the_band() -> None:
     both = [{"x1": 4.0, "x2": 0.0, "y1": 1.0, "y2": 2.0}, {"x1": 4.0, "x2": 0.0, "y1": 2.0, "y2": 1.0}]
 
     pooled = pool({"g": both, "h": both}, {"x1": "X", "x2": "X", "y1": "Y", "y2": "Y"}, ungraded={"z1": "Z"})
 
-    x, y, z = pooled.arms["X"], pooled.arms["Y"], pooled.arms["Z"]
+    x, y = pooled.arms["X"], pooled.arms["Y"]
     assert x.output_means == (0.0, 4.0) and x.heat_variance == 8.0
-    assert y.output_means == (1.5, 1.5) and y.heat_variance == 0.0
-    # Pass noise, pooled over 2 graders x 4 outputs (1 degree of freedom each): y's move 0.5 -> 4 x 2 x 0.25 / 8.
-    assert pooled.pass_sd == pytest.approx(0.5)
+    assert y.output_means == (1.5, 1.5) and y.pass_means == {"g": (1.5, 1.5), "h": (1.5, 1.5)}
     assert pooled.difference_se("X", "Y") == pytest.approx((8.0 / 2) ** 0.5)  # the heats' spread
-    # Y and Z (no answer, one output) agree in every heat: the pass noise is the floor.
-    assert pooled.difference_se("Y", "Z") == pytest.approx((0.25 / (2 * 2) * (1 / 2 + 1)) ** 0.5)
     assert not pooled.distinguishable("X", "Y")
+    # Y's outputs trade scores between passes but Y scores 1.5 in every pass
+    # of every grader, in both heats: nothing about Y over Z is uncertain.
+    assert pooled.difference_se("Y", "Z") == 0.0 and pooled.distinguishable("Y", "Z")
 
 
-def test_one_pass_leaves_the_pass_noise_unmeasured() -> None:
+def test_heats_that_move_together_in_a_pass_are_one_observation_of_pass_noise() -> None:
+    """Both graders give A's two heats 2 in their first pass and 0 after;
+    B and C score 0. Pass noise moves A's heats together, so it is measured
+    on A's difference from B, pass by pass, not per output."""
+    runs = [{"a1": 2.0, "a2": 2.0, "b1": 0.0, "b2": 0.0, "c1": 0.0, "c2": 0.0},
+            {"a1": 0.0, "a2": 0.0, "b1": 0.0, "b2": 0.0, "c1": 0.0, "c2": 0.0},
+            {"a1": 0.0, "a2": 0.0, "b1": 0.0, "b2": 0.0, "c1": 0.0, "c2": 0.0}]
+    arm_of = {"a1": "A", "a2": "A", "b1": "B", "b2": "B", "c1": "C", "c2": "C"}
+
+    pooled = pool({"claude": runs, "codex": runs}, arm_of, ungraded={})
+
+    assert pooled.arms["A"].mean == pytest.approx(2 / 3)
+    # Per pass, A - B is 2, 0, 0 for each grader: variance 4/3, over 3 passes x 2 graders.
+    assert pooled.band("A", "B") == pytest.approx(2 * (4 / 3 / 6) ** 0.5)
+    assert not pooled.distinguishable("A", "B")
+
+
+def test_one_pass_one_grader_leaves_only_the_heats_spread() -> None:
     pooled = pool({"g": [{"a1": 1.0, "a2": 3.0}]}, {"a1": "A", "a2": "A"}, ungraded={})
-    assert pooled.pass_sd is None and pooled.arms["A"].se == pytest.approx(1.0)
+    assert pooled.arms["A"].se == pytest.approx(1.0)
 
 
 def test_a_grading_that_misses_an_output_or_a_short_grader_is_not_pooled() -> None:

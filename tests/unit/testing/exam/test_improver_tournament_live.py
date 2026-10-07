@@ -1,7 +1,7 @@
 """Live: io's tournament reproduces the 2026-10-04 improver tournament's ranking (#8001).
 
-Not part of ``make validate-pr``: it spends two real grader runs (one
-Claude, one Codex). Run it with ``make test-improver-tournament``
+Not part of ``make validate-pr``: it spends six real grader calls (three
+Claude, three Codex). Run it with ``make test-improver-tournament``
 (``E2E_IMPROVER_TOURNAMENT=1``; ``E2E_IMPROVER_AB`` names the 2026-10-04
 tournament's directory, default ``~/dev/improver-ab``, and
 ``E2E_IMPROVER_AB_KEY`` its sealed key).
