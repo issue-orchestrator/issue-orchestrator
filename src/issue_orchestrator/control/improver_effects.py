@@ -120,15 +120,26 @@ def finding_marker(key: str) -> str:
     return f"<!-- io-improver-finding:{key} -->"
 
 
-def planned_effects(findings: ImproverFindings, engine: EngineRef) -> tuple[EffectReceipt, ...]:
-    """One pending effect per accepted finding and design finding."""
+def planned_effects(
+    findings: ImproverFindings, engine: EngineRef, original_ids: Mapping[str, str] | None = None
+) -> tuple[EffectReceipt, ...]:
+    """One pending effect per accepted finding and design finding.
+
+    ``original_ids``: a design finding renamed by a multi-heat merge keeps the
+    effect key of the id its heat wrote, so it deduplicates the same way
+    whatever the run's other findings were (#8001)."""
+    originals = original_ids or {}
     return (
         *(
             EffectReceipt(finding_id=f.id, key=finding_key(f, engine), status=EffectStatus.PENDING)
             for f in findings.findings
         ),
         *(
-            EffectReceipt(finding_id=d.id, key=design_finding_key(d, engine), status=EffectStatus.PENDING)
+            EffectReceipt(
+                finding_id=d.id,
+                key=design_finding_key(d.model_copy(update={"id": originals.get(d.id, d.id)}), engine),
+                status=EffectStatus.PENDING,
+            )
             for d in findings.design_findings
         ),
     )
@@ -187,7 +198,7 @@ def plan_effect(
             marker=marker,
             body=f"{marker}\n**Improver run `{run.run_id}`** saw this again on `{run.audited_repo}`"
             f" (engine `{run.engine_id}` at `{run.engine_commit}`): stalled at"
-            f" `{finding.stall_point}`.\n\n"
+            f" `{finding.stall_point}`." + support_note(run, finding.id) + "\n\n"
             f"{_finding_json(finding)}",
         )
     marker = finding_marker(key)
@@ -212,7 +223,8 @@ def _plan_design_effect(
             issue_number=filed,
             marker=marker,
             body=f"{marker}\n**Improver run `{run.run_id}`** found this again on `{run.audited_repo}`"
-            f" (engine `{run.engine_id}` at `{run.engine_commit}`).\n\n{_design_json(design)}",
+            f" (engine `{run.engine_id}` at `{run.engine_commit}`)." + support_note(run, design.id)
+            + f"\n\n{_design_json(design)}",
         )
     marker = finding_marker(key)
     return FileImproverIssue(
@@ -235,7 +247,8 @@ def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490, #8001), run `{run.run_id}` against"
-            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
+            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`)."
+            + support_note(run, design.id),
             f"**Design finding (`{design.kind}`):** {_inert(design.summary)}",
             f"**Evidence** (every quote checked against the run's evidence):\n{evidence}",
             f"**Impact:** {_inert(design.impact)}",
@@ -277,12 +290,31 @@ def _summary(finding: Finding) -> str:
     }.get(finding.output, finding.id)
 
 
+def support_note(run: ImproverRunRecord, finding_id: str) -> str:
+    """How many of the run's heats found the finding (several independent
+    heats are stronger evidence than one), and what other heats claimed
+    that could not be merged into it, for the operator to resolve (#8001)."""
+    if not run.heats:
+        return ""
+    found = next((s.heats for s in run.finding_support if s.finding_id == finding_id), ())
+    note = f" **Found by {len(found)} of {len(run.heats)} independent heat(s)**" + (
+        f" ({', '.join(map(str, found))})." if found else "."
+    )
+    conflicts = [c for c in run.heat_conflicts if c.finding_id == finding_id]
+    if conflicts:
+        note += "\n\n**Not merged, to resolve:**\n" + "\n".join(
+            f"- heat {c.heat}: {_inert(c.reason)}: {_inert(c.claim)}" for c in conflicts
+        )
+    return note
+
+
 def issue_body(run: ImproverRunRecord, finding: Finding) -> str:
     """The issue an accepted finding files: what it asks for, then its JSON."""
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490), run `{run.run_id}` against"
-            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`).",
+            f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`)."
+            + support_note(run, finding.id),
             *_route_note(run, finding),
             f"**Stalled at:** `{finding.stall_point}`. **Classification:** `{finding.classification}`.",
             _inert(_definition_of_done(finding)),
@@ -355,6 +387,7 @@ __all__ = [
     "finding_marker",
     "issue_body",
     "plan_effect",
+    "support_note",
     "planned_effects",
     "title_token",
 ]

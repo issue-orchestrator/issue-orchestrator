@@ -139,6 +139,35 @@ class ExamScore(_Closed):
     passed: bool
 
 
+class HeatRecord(_Closed):
+    """One heat of a run (#8001): an independent agent run on the same
+    staged inputs, and what became of its answer."""
+
+    heat: int = Field(ge=1)
+    outcome: RunOutcome
+    detail: str
+    rejections: tuple[str, ...] = ()
+    findings: int = 0
+    design_findings: int = 0
+
+
+class HeatConflictRecord(_Closed):
+    """What a heat found that could not be merged into ``finding_id``: shown
+    on the finding's issue for the operator to resolve, never dropped."""
+
+    finding_id: str
+    heat: int
+    reason: str
+    claim: str
+
+
+class FindingSupport(_Closed):
+    """How many of the run's heats found one merged finding."""
+
+    finding_id: str
+    heats: tuple[int, ...]
+
+
 class ImproverRunRecord(_Closed):
     schema_version: Literal[1] = IMPROVER_RUN_SCHEMA_VERSION
     run_id: str = Field(min_length=1)
@@ -177,6 +206,13 @@ class ImproverRunRecord(_Closed):
     #: track. Its findings are graded and recorded, never filed: a blind run
     #: owes GitHub nothing, and a later run does not compare its grades.
     blind_excluded_issues: tuple[int, ...] = ()
+    #: Each heat and its outcome (#8001); empty on a run recorded before
+    #: heats existed (one agent run).
+    heats: tuple[HeatRecord, ...] = ()
+    #: For an accepted run: the heats that found each merged finding.
+    finding_support: tuple[FindingSupport, ...] = ()
+    #: What the heats found that could not be merged (#8001).
+    heat_conflicts: tuple[HeatConflictRecord, ...] = ()
     #: Earlier runs whose effects were still owed when this run finished:
     #: a run is not green while the improver owes GitHub anything.
     owed_by_earlier_runs: tuple[str, ...] = ()
@@ -210,6 +246,9 @@ __all__ = [
     "EffectReceipt",
     "EffectStatus",
     "ExamScore",
+    "FindingSupport",
+    "HeatConflictRecord",
+    "HeatRecord",
     "FindingGrade",
     "ImproverAgentChoice",
     "ImproverProvider",

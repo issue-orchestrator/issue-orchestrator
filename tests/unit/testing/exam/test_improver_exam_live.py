@@ -46,6 +46,7 @@ from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.engine_source_archive import GitEngineSourceArchive
 from issue_orchestrator.execution.process_group_command_runner import ProcessGroupCommandRunner
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.improver import HeatSpace
 from issue_orchestrator.testing.exam import improver_blocked_items, improver_downstream_stall
 
 #: Opt-in, like the live tech-lead exam: a plain test run must not spend a
@@ -87,8 +88,14 @@ def test_improver_exam(case) -> None:
         timeout_seconds=90 * 60,
     )
 
+    heat_dir = run_dir.resolve() / "heats" / "h1"
+    heat_dir.mkdir(parents=True)
     answer = agent.run(
-        prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{PROMPT.read_text(encoding='utf-8')}", run_dir=run_dir
+        prompt=f"ISSUE_ORCHESTRATOR_RUN_DIR={run_dir}\n\n{PROMPT.read_text(encoding='utf-8')}",
+        space=HeatSpace(
+            heat=1, run_dir=run_dir.resolve(), workdir=heat_dir, evidence=(run_dir.resolve() / "improver-data",)
+        ),
+        toolbox=None,
     )
 
     assert answer.final_message is not None, f"the improver did not finish: {answer.detail}; see {run_dir}"
