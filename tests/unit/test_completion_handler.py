@@ -873,6 +873,51 @@ class TestReviewMachineTransitions:
         assert "review.changes_requested" in published
         assert review_machine.get_state() == ReviewState.REWORK_PENDING
 
+    def test_a_re_review_requesting_changes_wins_over_a_stale_code_reviewed(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        config.code_reviewed_label = "code-reviewed"
+        config.label_needs_rework = "needs-rework"
+        issue = make_issue()
+        session = create_test_session(
+            issue, agent_config, tmp_worktree, terminal_id="review-42", task_kind=SessionKind.REVIEW,
+        )
+        review_machine = ReviewStateMachine(pr_number=42, issue_number=issue.number,
+                                            initial_state=ReviewState.IN_REVIEW)
+        review_machine.approve()
+        pr_info = SimpleNamespace(branch="b", number=42, labels=["code-reviewed", "needs-rework"], url="http://pr")
+        events = MagicMock()
+        handler = make_handler(config, repository_host=make_repository_host(prs=[pr_info], pr_info=pr_info),
+                               review_machine=review_machine, events=events)
+
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
+
+        published = [str(call.args[0].event_type) for call in events.publish.call_args_list]
+        assert "review.changes_requested" in published and "review.approved" not in published
+        assert review_machine.get_state() == ReviewState.REWORK_PENDING
+
+    def test_a_re_review_with_no_outcome_label_leaves_the_approval(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        config.code_reviewed_label = "code-reviewed"
+        issue = make_issue()
+        session = create_test_session(
+            issue, agent_config, tmp_worktree, terminal_id="review-42", task_kind=SessionKind.REVIEW,
+        )
+        review_machine = ReviewStateMachine(pr_number=42, issue_number=issue.number,
+                                            initial_state=ReviewState.IN_REVIEW)
+        review_machine.approve()
+        pr_info = SimpleNamespace(branch="b", number=42, labels=[], url="http://pr")
+        events = MagicMock()
+        handler = make_handler(config, repository_host=make_repository_host(prs=[pr_info], pr_info=pr_info),
+                               review_machine=review_machine, events=events)
+
+        handler.process_completion(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, handler.config.tech_lead_review_agent))
+
+        published = [str(call.args[0].event_type) for call in events.publish.call_args_list]
+        assert "review.approved" not in published and "review.changes_requested" not in published
+        assert review_machine.get_state() == ReviewState.APPROVED
+
     def test_review_session_no_transition_when_machine_not_found(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

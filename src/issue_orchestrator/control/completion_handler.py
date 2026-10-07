@@ -843,10 +843,6 @@ class CompletionHandler:
                     issue_key=session.key.issue.stable_id(),
                     issue_number=session.issue.number,
                 )
-                if review_machine.can_transition("reopen_review"):
-                    # A re-review of a PR approved before (it went back for a
-                    # post-publish rework): this verdict decides afresh.
-                    review_machine.reopen_review()
                 before = review_machine.last_transition
                 self._process_review_outcome(pr_info, pr_number_review, review_machine)
                 # Publish only an outcome THIS review produced: a stale earlier
@@ -922,12 +918,22 @@ class CompletionHandler:
         self.events.publish(make_trace_event(EventName(tr.event_name), payload))
 
     def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
-        """Process review outcome based on PR labels."""
+        """Process review outcome based on PR labels.
+
+        Rework wins over a ``code-reviewed`` left from an earlier approval: a
+        changes-requested verdict does not take that label off. A re-review of
+        an approved PR reopens the review only once its outcome is known
+        (#8141), so a review with no outcome label leaves the approval as is.
+        """
         labels = pr_info.labels
-        if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
-            self._handle_review_approved(pr_info, pr_number, review_machine)
-        elif self._lm.needs_rework in labels:
+        rework = self._lm.needs_rework in labels
+        approved = bool(self.config.code_reviewed_label) and self.config.code_reviewed_label in labels
+        if (rework or approved) and review_machine.can_transition("reopen_review"):
+            review_machine.reopen_review()
+        if rework:
             self._handle_changes_requested(pr_number, review_machine)
+        elif approved:
+            self._handle_review_approved(pr_info, pr_number, review_machine)
 
     def _handle_review_approved(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Handle approved review outcome."""
