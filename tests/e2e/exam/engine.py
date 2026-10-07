@@ -8,7 +8,9 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,6 +20,9 @@ from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.e2e.exam.agents import (
+    ANSWERABLE_CODER_LABEL,
+    ANSWERABLE_QUESTION,
+    RULED_CODER_LABEL,
     ASKING_BESIDE_PR_CODER_LABEL,
     ASKING_CODER_LABEL,
     ASKING_PROVISIONING_CODER_LABEL,
@@ -68,6 +73,7 @@ def exam_config(
     asking_coders: bool = False,
     reviewer_changes_once: Path | None = None,
     resolution_coders: bool = False,
+    ruling_agents: "RulingAgents | None" = None,
 ) -> Config:
     """The e2e session config, pointed at the checkout, with exam agents.
 
@@ -81,6 +87,11 @@ def exam_config(
     needs-human blocks (#7658): a split question asked until the tech lead
     resolves it, a coder that gives up until then, a question beside a PR that
     the issue's spec answers, and an account-provisioning question.
+
+    With ``ruling_agents`` (Case I, #8141), the ruled item's coder and every
+    reviewer capture each prompt they are launched with (the reviewer still
+    approves whatever it sees), and a coder asks a question its issue's spec
+    answers until the tech lead resolves it.
 
     With ``release_file``, work is held mid-flight until the file exists:
     every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
@@ -173,6 +184,8 @@ def exam_config(
                 provider_args={"permission_mode": "bypassPermissions"},
                 reviewer=REVIEWER_LABEL,
             )
+    if ruling_agents is not None:
+        _add_ruling_agents(config, prompt, ruling_agents)
     if tech_lead_model:
         config.agents[TECH_LEAD_LABEL] = AgentConfig(
             prompt_path=checkout.root / TECH_LEAD_PROMPT,
@@ -188,6 +201,43 @@ def exam_config(
             ),
         )
     return config
+
+
+@dataclass(frozen=True)
+class RulingAgents:
+    """Case I's scripted agents (#8141): where their prompts are captured."""
+
+    capture_dir: Path
+
+
+def _add_ruling_agents(config: Config, prompt: Path, agents: RulingAgents) -> None:
+    def shim_agent(command: str, *, timeout: int, reviewer: str | None) -> AgentConfig:
+        return AgentConfig(
+            prompt_path=prompt,
+            timeout_minutes=timeout,
+            model="sonnet",
+            command=command,
+            meta_agent="claude-code",
+            ai_system="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+            reviewer=reviewer,
+        )
+
+    config.agents[RULED_CODER_LABEL] = shim_agent(
+        shim_command("coder", capture_prompts=agents.capture_dir), timeout=3, reviewer=REVIEWER_LABEL,
+    )
+    # Every review (a seeded PR's has no coder to inherit a reviewer from)
+    # approves whatever it sees, as porchpin#379's did, and captures its prompt.
+    config.agents[REVIEWER_LABEL] = shim_agent(
+        shim_command("reviewer", capture_prompts=agents.capture_dir), timeout=1, reviewer=None,
+    )
+    config.agents[ANSWERABLE_CODER_LABEL] = shim_agent(
+        shim_command(
+            "coder", asks=ANSWERABLE_QUESTION, until_resolved=True, capture_prompts=agents.capture_dir,
+        ),
+        timeout=3,
+        reviewer=REVIEWER_LABEL,
+    )
 
 
 class ExamEngine:
@@ -312,6 +362,30 @@ class ExamEngine:
         if isinstance(value, bool) or not isinstance(value, int):
             raise RuntimeError(f"/api/status active_sessions is not an int: {status!r}")
         return value
+
+    def record_ruling(self, issue_number: int, ruling: Mapping[str, Any]) -> str | None:
+        """Record a maintainer ruling through the engine's ruling route (#8141).
+
+        The ruling's id, or None when this engine has no ruling route (it
+        predates #8141): the caller then records the ruling the only other way
+        there is, by hand in the issue body, as porchpin's operator did.
+        """
+        request = urllib.request.Request(
+            f"http://localhost:{self.config.control_api_port}/api/issues/{issue_number}/rulings",
+            data=json.dumps(dict(ruling)).encode("utf-8"), method="POST",
+            headers={**control_api_headers(), "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            if error.code in (404, 405):
+                return None
+            raise RuntimeError(f"recording the ruling returned {error.code}: {error.read()!r}") from error
+        ruling_id = payload.get("ruling_id")
+        if not isinstance(ruling_id, str):
+            raise RuntimeError(f"the ruling route returned no ruling id: {payload!r}")
+        return ruling_id
 
     def _post(self, port: int, path: str) -> None:
         request = urllib.request.Request(

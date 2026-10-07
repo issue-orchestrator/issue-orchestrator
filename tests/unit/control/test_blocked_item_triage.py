@@ -8,6 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
+from issue_orchestrator.domain.standing_ruling import StandingRuling
+from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
 from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.control.actions import (
     ApplyOperatorDecisionAction,
@@ -158,6 +161,7 @@ def _owner(
     ledger: _Ledger | None = None,
     timeline: dict[int, list[TimelineRecord]] | None = None,
     open_proposals: OpenProposals | None = None,
+    rulings: dict[int, tuple[StandingRuling, ...]] | None = None,
 ) -> StateBlockedItemTriage:
     state = OrchestratorState()
     state.cached_scope_issues = issues
@@ -170,6 +174,7 @@ def _owner(
         charter_ledger=ledger or _Ledger(),
         open_proposals=lambda: open_proposals or _NO_OPEN_PROPOSALS,
         timeline_reader=lambda number, limit: (timeline or {}).get(number, []),
+        standing_rulings=lambda number: (rulings or {}).get(number, ()),
     )
 
 
@@ -542,9 +547,17 @@ class _Host:
     create_error: Exception | None = None
     comment_failures: set[int] = field(default_factory=set)
     retries: InMemoryTechLeadAuthorityStore = field(default_factory=InMemoryTechLeadAuthorityStore)
+    #: Body writes fail (the standing ruling cannot be recorded).
+    body_write_error: Exception | None = None
 
     def get_issue(self, number: int) -> Issue | None:
         return self.issues.get(number)
+
+    def write_body(self, number: int, body: str) -> None:
+        self.calls.append(f"body:{number}")
+        if self.body_write_error is not None:
+            raise self.body_write_error
+        self.issues[number].body = body
 
     def find_issue_by_marker(self, *, title: str, marker: str, authoritative: bool = False) -> int | None:
         assert authoritative, "a miss must prove absence before a create"
@@ -593,6 +606,9 @@ def _executor(host: _Host, retry, *, held: tuple[str, ...] = (), authority=None)
         create_issue=host.create_issue, comment_marker_present=host.comment_marker_present,
         apply_action=host.apply, require_authority=authority or (lambda action, number: None),
         retries=host.retries,
+        rulings=StandingRulingsOwner(
+            read_issue=host.get_issue, write_body=host.write_body, index=InMemoryStandingRulingsIndex(),
+        ),
     )
 
 
@@ -623,7 +639,7 @@ def test_approval_publishes_first_retries_last_and_never_retries_twice() -> None
     again = executor.apply(_approved())  # the finalize failed and the op replays
 
     assert first.success and again.success and again.details.get("replayed") is True
-    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+    assert host.calls == ["create_issue", "comment:262", "body:262", "retry:262", "comment:950"]
     [follow_up] = host.created
     assert follow_up["title"] == "Live D1 seller pickup index"
     assert follow_up["labels"] == ["agent:backend", "priority:high"]  # never workflow state
@@ -648,7 +664,7 @@ def test_a_replay_after_the_retry_committed_never_retries_again() -> None:
     replay = executor.apply(_approved())
 
     assert replay.success and replay.details["replayed"] is True
-    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+    assert host.calls == ["create_issue", "comment:262", "body:262", "retry:262", "comment:950"]
 
 
 class _EngineStopped(BaseException):
@@ -692,7 +708,7 @@ def test_a_replay_after_the_engine_stopped_mid_retry_finishes_an_unblocked_item(
     replay = _executor(host, lambda n: pytest.fail("retried twice")).apply(_approved())
 
     assert replay.success and replay.details["replayed"] is True
-    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+    assert host.calls == ["create_issue", "comment:262", "body:262", "retry:262", "comment:950"]
     assert host.retries.decision_retry_state(proposal_issue_number=950) is DecisionRetryState.COMMITTED
 
 
@@ -717,7 +733,7 @@ def test_a_failed_follow_up_leaves_the_item_blocked_and_the_replay_resumes() -> 
 
     host.create_error = None
     assert executor.apply(_approved()).success
-    assert host.calls == ["create_issue", "comment:262", "retry:262", "comment:950"]
+    assert host.calls == ["create_issue", "comment:262", "body:262", "retry:262", "comment:950"]
 
 
 def test_a_lost_claim_files_no_follow_up() -> None:
@@ -857,3 +873,45 @@ def test_a_different_decision_for_the_same_item_is_its_own_proposal() -> None:
     assert not any(isinstance(a, ReuseTechLeadProposalAction) for a in planned)
     [new] = [a for a in planned if isinstance(a, CreateTechLeadProposalIssueAction)]
     assert new.op.decision is not None and new.op.decision.title.startswith("Do not split")
+
+
+def test_an_approved_decision_becomes_the_items_standing_ruling() -> None:
+    """#8141: porchpin#364's approved decision (#456) was posted as a comment and
+    never bound the later rework or review. It is in the item's body now."""
+    from issue_orchestrator.domain.standing_ruling import RulingAuthority, parse_rulings_block
+
+    host = _Host({262: _blocked_target()})
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED, removed=("needs-human",)))
+
+    assert executor.apply(_approved()).success
+
+    [ruling] = parse_rulings_block(host.issues[262].body)
+    assert ruling.ruling_id == "pd-950" and ruling.authority is RulingAuthority.APPROVED_DECISION
+    assert "Split #262" in ruling.text and "Land the slice under Refs #262." in ruling.text
+    assert "proposal #950" in ruling.source
+
+
+def test_a_ruling_github_would_not_keep_retries_nothing() -> None:
+    host = _Host({262: _blocked_target()}, body_write_error=RuntimeError("GitHub kept the old body"))
+    executor = _executor(host, lambda n: _outcome(OperatorCommandStatus.COMMITTED, removed=("needs-human",)))
+
+    result = executor.apply(_approved())
+
+    assert not result.success and "standing ruling not recorded" in (result.error or "")
+    assert "retry:262" not in host.calls
+
+
+def test_the_triage_agenda_names_each_items_standing_rulings() -> None:
+    from issue_orchestrator.domain.blocked_item_triage import render_triage_instructions
+    from tests.standing_ruling_helpers import a_ruling
+
+    ruling = a_ruling(text="Runtime stamping replaces the walk checker.\n\nNever extend the walk checker.")
+    owner = _owner([_issue(262, "agent:backend", "needs-human")], rulings={262: (ruling,)})
+
+    agenda = owner.agenda(anchor_issue_number=950)
+
+    [item] = agenda.items
+    assert item.to_dict()["standing_rulings"] == list(item.standing_rulings)
+    rendered = render_triage_instructions(agenda)
+    assert "standing rulings (binding" in rendered and f"`{ruling.ruling_id}`" in rendered
+    assert "Never extend the walk checker." in rendered  # the full text, not a summary line

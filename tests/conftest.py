@@ -1327,6 +1327,16 @@ def build_test_orchestrator_deps(
         NoValidatedWorkRecoveryAuthority,
     )
 
+    from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+    from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
+    from issue_orchestrator.infra.standing_rulings_store import SqliteStandingRulingsIndex
+    from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
+
+    standing_rulings = StandingRulingsOwner(
+        read_issue=repo_host.get_issue, write_body=repo_host.update_issue_body,
+        index=SqliteStandingRulingsIndex.for_repo(config.repo_root),
+    )
+
     return OrchestratorDeps(
         runtime_lifecycle=runtime_lifecycle,
         events=events,
@@ -1345,6 +1355,8 @@ def build_test_orchestrator_deps(
             needs_human_block=needs_human_block,
         ),
         needs_human_block=needs_human_block,
+        standing_rulings=standing_rulings,
+        launch_prompt=IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, standing_rulings),
         # The same endpoint the completion processor got, mirroring how
         # bootstrap shares one instance. Nothing binds a port in tests, so
         # it honestly resolves to "no endpoint yet".

@@ -138,6 +138,9 @@ class TriageAgendaItem:
     #: Why it is on the agenda: never triaged, or its block changed since.
     reason: str
     prior: PriorTriage | None
+    #: The item's standing rulings (#8141), each in full (heading, authority,
+    #: scope, text): the maintainer's binding decisions no triage may contradict.
+    standing_rulings: tuple[str, ...] = ()
 
     @property
     def grant(self) -> TriageGrant:
@@ -153,6 +156,7 @@ class TriageAgendaItem:
             "agent_question": self.agent_question,
             "reason": self.reason,
             "prior_triage": self.prior.to_dict() if self.prior is not None else None,
+            "standing_rulings": list(self.standing_rulings),
         }
 
 
@@ -250,4 +254,8 @@ def render_triage_instructions(agenda: TriageAgenda) -> str:
         lines.append(f"- #{item.issue_number} {item.title} (blocked by: {blocking}; {item.reason})")
         if item.agent_question:
             lines.append(f"  - the agent asked: {item.agent_question}")
+        if item.standing_rulings:
+            lines.append("  - its standing rulings (binding; never act against one):")
+            lines.extend(f"    {line}" if line else "" for ruling in item.standing_rulings
+                         for line in ruling.splitlines())
     return "\n".join(lines) + "\n"

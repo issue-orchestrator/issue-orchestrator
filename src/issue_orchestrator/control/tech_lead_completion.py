@@ -77,7 +77,10 @@ from .actions import (
 from .completion_types import (
     ERROR_PREFIX_TECH_LEAD_AUTHORITY,
     ERROR_PREFIX_TECH_LEAD_DECISION,
+    ProcessingResult,
 )
+from ..domain.completion_intake import CompletionIntakeError
+from ..domain.models import CompletionOutcome
 from .label_manager import LabelManager
 from .publish_recovery import is_publish_failure
 from .proposal_dedup_gate import DuplicateTargetGrant
@@ -102,6 +105,8 @@ from .tech_lead_dispositions import investigation_disposition_violation
 from .blocked_item_triage import triage_coverage_violation
 
 if TYPE_CHECKING:
+    from ..domain.models import CompletionRecord
+    from ..domain.session_run import SessionRunAssets
     from ..domain.tech_lead_artifacts import TechLeadDecision
     from ..infra.config import Config
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -306,6 +311,53 @@ _TECH_LEAD_ERROR_PREFIXES = (
     ERROR_PREFIX_TECH_LEAD_AUTHORITY,
 )
 
+
+
+def reject_invalid_tech_lead_completion(
+    config: "Config | None",
+    tech_lead_authority: "TechLeadAuthorityStore",
+    *,
+    record: "CompletionRecord",
+    processing_policy: CompletionProcessingPolicy,
+    issue_number: int,
+    run_assets: "SessionRunAssets",
+) -> "ProcessingResult | None":
+    """Authoritative tech_lead authority + pair validation (ADR-0031).
+
+    A COMPLETED tech_lead session must have a trusted launch-authority
+    record (#6761 re-review F1) and a valid decision artifact pair
+    (#6761 F3). Running in the completion's pre-action policy phase, before
+    the completion record is preserved and before ANY requested action
+    executes (#6769 finding 1), a rejection produces ZERO push/PR/
+    comment calls and a failed processing result whose tagged error is
+    classified critical, so history records FAILED for every flavor and
+    the tech_lead failure labeling path fires downstream.
+    """
+    if not processing_policy.is_tech_lead:
+        return None
+    if config is None:
+        raise CompletionIntakeError("Tech Lead processing requires configured launch policy")
+    if record.outcome is not CompletionOutcome.COMPLETED:
+        return None
+    tech_lead_error = tech_lead_decision_processing_error(
+        config,
+        tech_lead_authority=tech_lead_authority,
+        run_dir=run_assets.run_dir,
+        run_id=run_assets.run_id,
+        session_name=run_assets.session_name,
+    )
+    if tech_lead_error is None:
+        return None
+    logger.warning(
+        "Tech Lead completion rejected before any action for issue #%d: %s",
+        issue_number,
+        tech_lead_error,
+    )
+    return ProcessingResult(
+        success=False,
+        message=f"Tech Lead completion rejected: {tech_lead_error}",
+        errors=[tech_lead_error],
+    )
 
 def has_tech_lead_decision_errors(processing_errors: list[str] | None) -> bool:
     """True when processing errors include a rejected pair or tampered scope."""

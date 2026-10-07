@@ -1620,6 +1620,27 @@ class TestBranchPostImagePathsAgainstBase:
         # A pure deletion leaves nothing in the branch tip, so it is excluded.
         assert "to_delete.txt" not in paths
 
+    def test_touched_paths_include_deletions_and_both_sides_of_a_rename(self, tmp_path):
+        """#8141: the review rule must see a ruled file deleted or renamed away."""
+        root = tmp_path / "repo"
+        self._init_repo(root)
+        (root / "ruled.txt").write_text("hello\n")
+        (root / "retired.txt").write_text("bye\n")
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "base")
+        base = _run_git_cmd(root, "rev-parse", "HEAD")
+        _run_git_cmd(root, "checkout", "-q", "-b", "feature")
+        os.replace(root / "ruled.txt", root / "moved.txt")
+        (root / "retired.txt").unlink()
+        (root / "added.txt").write_text("")
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "feature")
+
+        result = GitWorkingCopy().branch_touched_paths_against_base(root, base)
+
+        assert result.success
+        assert set(result.paths) == {"ruled.txt", "moved.txt", "retired.txt", "added.txt"}
+
     def test_uses_path_oriented_command_and_parses_nul_output(
         self, git_wc, worktree_path
     ):

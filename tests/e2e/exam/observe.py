@@ -38,6 +38,15 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
+from issue_orchestrator.domain.standing_ruling import (
+    REFUSED_APPROVAL_MARKER,
+    RulingsBlockError,
+    parse_rulings_block,
+)
+from issue_orchestrator.testing.exam.observation import BodyRulingFact, CapturedPrompt
+
+#: The tech lead's ``resolve_block`` decision comment (``domain/block_resolution.decision_marker``).
+RESOLUTION_COMMENT = "<!-- io:resolve-block:comment:decision="
 from issue_orchestrator.testing.exam import (
     DecisionFact,
     ExamObservation,
@@ -232,6 +241,7 @@ def observe_item(
     extra_pr_numbers: Iterable[int] = (),
     read_checks: bool = True,
     state_dir: Path | None = None,
+    capture_dir: Path | None = None,
 ) -> WorkItemFact:
     """The item's final facts; ``read_checks=False`` skips the GraphQL rollup
     read for the cheap progress probe the drive loop makes."""
@@ -258,6 +268,7 @@ def observe_item(
     open_prs = [adapter.get_pr(f.number) for f in facts if f.state.is_open]
     labels = LabelManager(config)
     events = item_events(watcher, item, (fact.number for fact in facts))
+    body_rulings, body_rulings_error = _body_rulings(issue.body)
     return WorkItemFact(
         role=item.role,
         issue_number=item.issue_number,
@@ -286,7 +297,39 @@ def observe_item(
             observe_decisions(state_dir, item.issue_number, proposal_open=proposal_open)
             if state_dir is not None else ()
         ),
+        prompts=captured_prompts(capture_dir, item.issue_number) if capture_dir is not None else (),
+        body_rulings=body_rulings,
+        body_rulings_error=body_rulings_error,
+        refused_approvals=sum(
+            len(adapter.issue_comment_bodies_containing(fact.number, REFUSED_APPROVAL_MARKER)) for fact in facts
+        ),
+        resolution_comments=tuple(adapter.issue_comment_bodies_containing(item.issue_number, RESOLUTION_COMMENT)),
     )
+
+
+def _body_rulings(body: str | None) -> tuple[tuple[BodyRulingFact, ...], str]:
+    """The standing rulings an issue body records (#8141), or why it cannot say."""
+    try:
+        rulings = parse_rulings_block(body)
+    except RulingsBlockError as error:
+        return (), str(error)
+    return tuple(BodyRulingFact(ruling.ruling_id, ruling.authority.value, ruling.text) for ruling in rulings), ""
+
+
+def captured_prompts(capture_dir: Path, issue_number: int) -> tuple[CapturedPrompt, ...]:
+    """The prompts the exam shim captured for *issue_number*, oldest first.
+
+    Files are ``<issue>-<task>-<ns>.txt`` (``tests/e2e/exam/shims/exam_agent.py``).
+    """
+    if not capture_dir.is_dir():
+        return ()
+    prompts = []
+    for path in capture_dir.glob(f"{issue_number}-*-*.txt"):
+        number, task, captured = path.stem.split("-", 1)[0], *path.stem.split("-", 1)[1].rsplit("-", 1)
+        if int(number) != issue_number:
+            continue
+        prompts.append(CapturedPrompt(task=task, captured_ns=int(captured), text=path.read_text(encoding="utf-8")))
+    return tuple(sorted(prompts, key=lambda prompt: prompt.captured_ns))
 
 
 # ---------------------------------------------------------------------------

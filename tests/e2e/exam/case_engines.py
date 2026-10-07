@@ -19,7 +19,7 @@ from typing import Any, Mapping
 from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.agents import CODER_LABEL
-from tests.e2e.exam.engine import ExamEngine, exam_config
+from tests.e2e.exam.engine import ExamEngine, RulingAgents, exam_config
 from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.e2e.exam.seeding import E2E_DATA_LABEL
 
@@ -63,6 +63,8 @@ class CaseEngine:
     """The first post-publish review requests changes (``exam_config``)."""
     resolution_coders: bool = False
     """Add the coders that plant Cases F/G's needs-human blocks (``exam_config``)."""
+    ruling_agents: RulingAgents | None = None
+    """Case I's ruled coder, held reviewer and answerable coder (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -91,6 +93,7 @@ class CaseEngine:
             asking_coders=self.asking_coders,
             reviewer_changes_once=self.reviewer_changes_once,
             resolution_coders=self.resolution_coders,
+            ruling_agents=self.ruling_agents,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -255,4 +258,24 @@ def case_resolution_engine(*, resolve_block: str) -> CaseEngine:
         # the interrupted-coding auto-retry on, the first run put the retry
         # guard label on and the item was never relaunched in 38 minutes.
         overlay={**base.overlay, "retry": {"interrupted_sessions": {"retry_coding": False}}},
+    )
+
+
+def case_i_engine(agents: RulingAgents) -> CaseEngine:
+    """Case I (#8141): a standing ruling must bind a conflict rework and its review.
+
+    The Case F engine (health reviews triage blocked items, ``resolve_block:
+    execute``, so an approved answer is applied at once) with Case I's agents:
+    the ruled item's coder captures its prompts, its reviewer holds until the
+    ruling is recorded and then approves whatever it sees, and the answerable
+    coder asks a question its issue's spec answers. Reviews run after
+    publication (``via-draft-pr``), as porchpin#379's did.
+    """
+    base = case_resolution_engine(resolve_block="execute")
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        worktree_reuse=True,
+        ruling_agents=agents,
+        overlay=base.overlay,
     )

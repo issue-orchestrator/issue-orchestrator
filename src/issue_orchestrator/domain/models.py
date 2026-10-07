@@ -18,6 +18,7 @@ from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
 from .issue_run_evidence import ReworkTarget
 from .session_kind import CompletionProtocol, SessionKind
+from .standing_ruling import parse_upheld_rulings
 from .sandbox_scope import (
     SandboxScope,
     SandboxScopeContext,
@@ -282,6 +283,15 @@ def _check_partial_pr(value: Any, outcome: "CompletionOutcome") -> bool:
     return value
 
 
+def _check_upheld_rulings(value: Any, outcome: "CompletionOutcome") -> list[str] | None:
+    """An approval's ruling attestations (#8141): ruling ids, and only on an approval."""
+    if value is None:
+        return None
+    if outcome is not CompletionOutcome.REVIEW_APPROVED:
+        raise ValueError(f"upheld_rulings is only valid for an approval, not {outcome.value}")
+    return list(parse_upheld_rulings(value))
+
+
 def _check_pr_labels(value: Any) -> list[str] | None:
     if value is None:
         return None
@@ -484,6 +494,15 @@ class CompletionRecord:
     # leaves the issue open for the next PR (#7288). COMPLETED only.
     partial_pr: bool = False
 
+    # The standing rulings (#8141) an approving review attests the diff
+    # upholds (``reviewer-done approved --upholds-ruling ID``). REVIEW_APPROVED only.
+    upheld_rulings: Optional[list[str]] = None
+
+    @property
+    def approves(self) -> bool:
+        """Whether this record is a reviewer's approval."""
+        return self.outcome is CompletionOutcome.REVIEW_APPROVED
+
     @property
     def requests_publication(self) -> bool:
         """Whether this intent requires publication prerequisites, before shaping."""
@@ -522,6 +541,7 @@ class CompletionRecord:
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
             "partial_pr": self.partial_pr,
+            "upheld_rulings": self.upheld_rulings,
         }
 
     @classmethod
@@ -627,6 +647,7 @@ class CompletionRecord:
                 for item in follow_up_raw
             ] if follow_up_raw is not None else None,
             partial_pr=_check_partial_pr(data.get("partial_pr", False), outcome),
+            upheld_rulings=_check_upheld_rulings(data.get("upheld_rulings"), outcome),
         )
 
 
