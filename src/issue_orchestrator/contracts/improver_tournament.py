@@ -160,7 +160,7 @@ class ArmScore(_Closed):
     #: Each output's mean over the gradings (ascending).
     output_means: tuple[float, ...]
     mean: float
-    #: The mean's standard error (heats and grading noise).
+    #: The mean's standard error (graders' disagreement and heats' spread).
     se: float
     low: float
     high: float
@@ -171,6 +171,7 @@ class TournamentCost(_Closed):
 
     #: Arm heats run, by provider (none for answers graded from a record).
     arm_heats: dict[str, int]
+    #: Every grading call made for the tournament, retried attempts included.
     grader_calls: dict[str, int]
     grader_seconds: dict[str, float]
 
@@ -183,12 +184,12 @@ class TournamentResult(_Closed):
     #: Every grading: each grader's pass over every output.
     graders: tuple[GraderRun, ...]
     passes: Annotated[int, Field(ge=1)]
-    #: One grading's spread about an output's mean (None: unmeasured).
-    grading_sd: float | None
+    #: One pass's spread about its grader's mean for an output (None: one pass).
+    pass_sd: float | None
     #: How many standard errors of a difference tell two arms apart.
     band_ses: float
     arms: tuple[ArmScore, ...]
-    #: Best first; arms whose means differ by no more than the noise band share a group.
+    #: Best first, in groups of pairwise-indistinguishable arms (">" orders groups by mean).
     ranking: tuple[tuple[str, ...], ...]
     #: Every pair (higher, lower) whose means differ by more than their noise band.
     distinguishable: tuple[tuple[str, str], ...]

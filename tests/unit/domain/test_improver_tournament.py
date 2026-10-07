@@ -11,6 +11,7 @@ from issue_orchestrator.contracts.improver_tournament import AnswerKey, AnswerKe
 from issue_orchestrator.domain.improver_tournament import (
     GradesRejected,
     anonymize,
+    PooledScores,
     pool,
     parse_sealed_key,
     rank,
@@ -132,58 +133,84 @@ THE_10_04_GRADINGS = {
 }
 
 
+def _ten_four() -> PooledScores:
+    return pool({g: [scores] for g, scores in THE_10_04_GRADINGS.items()},
+                {label: label[0] for label in THE_10_04_GRADINGS["claude"]}, ungraded={})
+
+
 def test_the_2026_10_04_published_means_follow_from_these_rules_and_only_c_stands_out() -> None:
     """The tournament's two gradings per output (key max 24) give its
     published means; within their measured noise only C is told apart."""
-    pooled = pool(THE_10_04_GRADINGS, {label: label[0] for label in THE_10_04_GRADINGS["claude"]}, ungraded={})
+    pooled = _ten_four()
 
     assert {arm: round(a.mean, 2) for arm, a in pooled.arms.items()} == {"A": 0.25, "B": 1.33, "C": 3.83, "D": 0.17}
-    assert pooled.gradings == 2 and pooled.grading_sd is not None and 0.5 < pooled.grading_sd < 1.0
+    assert pooled.passes == 1 and pooled.pass_sd is None
     means = {arm: a.mean for arm, a in pooled.arms.items()}
     assert rank(means, distinguishable=pooled.distinguishable) == (("C",), ("B", "A", "D"))
     assert all(pooled.distinguishable("C", arm) for arm in "ABD")
+    assert not any(pooled.distinguishable(x, y) for x, y in (("B", "A"), ("B", "D"), ("A", "D")))
 
 
-def test_an_arms_noise_is_its_heats_spread_or_the_grading_noise_whichever_is_larger() -> None:
-    gradings = {
-        "g#1": {"x1": 4.0, "x2": 0.0, "y1": 1.0, "y2": 2.0},
-        "g#2": {"x1": 4.0, "x2": 0.0, "y1": 2.0, "y2": 1.0},
-    }
+def test_repeating_a_graders_opinion_never_makes_a_difference_certain() -> None:
+    """Claude's three passes give A's outputs 1, Codex's three give them 0;
+    both give B 0. The 0.5 gap is the graders' disagreement, not evidence:
+    passes repeat one opinion, they are not more graders."""
+    claude = [{"a1": 1.0, "a2": 1.0, "b1": 0.0, "b2": 0.0}] * 3
+    codex = [{"a1": 0.0, "a2": 0.0, "b1": 0.0, "b2": 0.0}] * 3
 
-    pooled = pool(gradings, {"x1": "X", "x2": "X", "y1": "Y", "y2": "Y"}, ungraded={"z1": "Z"})
+    pooled = pool({"claude": claude, "codex": codex}, {"a1": "A", "a2": "A", "b1": "B", "b2": "B"}, ungraded={})
 
-    # Grading noise, pooled over the 4 graded outputs (1 degree of freedom each):
-    # y1 and y2 each move 0.5 about their mean, x1 and x2 not at all -> (4 x 0.25) / 4.
-    assert pooled.grading_sd == pytest.approx(0.5)
+    assert (pooled.arms["A"].mean, pooled.arms["B"].mean) == (0.5, 0.0)
+    assert pooled.difference_se("A", "B") == pytest.approx(0.5)  # (1 - 0)^2 / 2 graders' variance / 2
+    assert not pooled.distinguishable("A", "B")
+
+
+def test_a_difference_every_grader_sees_in_every_heat_is_told_apart() -> None:
+    claude = [{"a1": 2.0, "a2": 2.5, "b1": 0.0, "b2": 0.5}, {"a1": 2.5, "a2": 2.0, "b1": 0.5, "b2": 0.0}]
+    codex = [{"a1": 2.0, "a2": 2.0, "b1": 0.0, "b2": 0.0}, {"a1": 2.5, "a2": 2.5, "b1": 0.5, "b2": 0.5}]
+
+    pooled = pool({"claude": claude, "codex": codex}, {"a1": "A", "a2": "A", "b1": "B", "b2": "B"}, ungraded={})
+
+    assert pooled.pass_sd is not None and pooled.pass_sd > 0
+    assert pooled.distinguishable("A", "B") and pooled.band("A", "B") < 2.0
+
+
+def test_heats_that_disagree_widen_the_band_and_pass_noise_floors_it() -> None:
+    both = [{"x1": 4.0, "x2": 0.0, "y1": 1.0, "y2": 2.0}, {"x1": 4.0, "x2": 0.0, "y1": 2.0, "y2": 1.0}]
+
+    pooled = pool({"g": both, "h": both}, {"x1": "X", "x2": "X", "y1": "Y", "y2": "Y"}, ungraded={"z1": "Z"})
+
     x, y, z = pooled.arms["X"], pooled.arms["Y"], pooled.arms["Z"]
-    assert (x.mean, x.output_means) == (2.0, (0.0, 4.0))
-    assert x.se == pytest.approx((8.0 / 2) ** 0.5)  # its heats' spread
-    assert y.output_means == (1.5, 1.5)
-    assert y.se == pytest.approx((0.25 / (2 * 2)) ** 0.5)  # graders disagree, heats agree: the grading noise
-    # An output with no answer scores 0; one output, so its noise is the grading noise alone.
-    assert (z.mean, z.se) == (0.0, pytest.approx((0.25 / 2) ** 0.5))
-    assert pooled.band("X", "Y") == pytest.approx(2 * (x.se ** 2 + y.se ** 2) ** 0.5)
+    assert x.output_means == (0.0, 4.0) and x.heat_variance == 8.0
+    assert y.output_means == (1.5, 1.5) and y.heat_variance == 0.0
+    # Pass noise, pooled over 2 graders x 4 outputs (1 degree of freedom each): y's move 0.5 -> 4 x 2 x 0.25 / 8.
+    assert pooled.pass_sd == pytest.approx(0.5)
+    assert pooled.difference_se("X", "Y") == pytest.approx((8.0 / 2) ** 0.5)  # the heats' spread
+    # Y and Z (no answer, one output) agree in every heat: the pass noise is the floor.
+    assert pooled.difference_se("Y", "Z") == pytest.approx((0.25 / (2 * 2) * (1 / 2 + 1)) ** 0.5)
     assert not pooled.distinguishable("X", "Y")
 
 
-def test_a_single_grading_leaves_the_grading_noise_unmeasured() -> None:
-    pooled = pool({"g#1": {"a1": 1.0, "a2": 3.0}}, {"a1": "A", "a2": "A"}, ungraded={})
-    assert pooled.grading_sd is None and pooled.arms["A"].se == pytest.approx(1.0)
+def test_one_pass_leaves_the_pass_noise_unmeasured() -> None:
+    pooled = pool({"g": [{"a1": 1.0, "a2": 3.0}]}, {"a1": "A", "a2": "A"}, ungraded={})
+    assert pooled.pass_sd is None and pooled.arms["A"].se == pytest.approx(1.0)
 
 
-def test_a_grading_that_misses_an_output_is_not_pooled() -> None:
+def test_a_grading_that_misses_an_output_or_a_short_grader_is_not_pooled() -> None:
+    arm_of = {"a1": "A", "a2": "A"}
     with pytest.raises(ValueError, match="not every output"):
-        pool({"g#1": {"a1": 1.0}, "g#2": {"a1": 1.0, "a2": 0.0}}, {"a1": "A", "a2": "A"}, ungraded={})
+        pool({"g": [{"a1": 1.0}]}, arm_of, ungraded={})
+    with pytest.raises(ValueError, match="same number of passes"):
+        pool({"g": [{"a1": 1.0, "a2": 0.0}], "h": [{"a1": 1.0, "a2": 0.0}] * 2}, arm_of, ungraded={})
 
 
-def test_ranking_groups_arms_not_distinguishable_from_their_groups_best() -> None:
-    means = {"a": 3.0, "b": 2.6, "c": 2.2, "d": 0.1}
+def test_a_group_holds_only_arms_no_two_of_which_are_told_apart() -> None:
+    """A (3, unsure) overlaps B and C, but B (2.6) and C (2.2) are told apart:
+    C cannot share A and B's group."""
+    means = {"A": 3.0, "B": 2.6, "C": 2.2}
+    apart = {("B", "C"), ("C", "B")}
 
-    def within_half(p: str, q: str) -> bool:
-        return abs(means[p] - means[q]) > 0.5
-
-    assert rank(means, distinguishable=within_half) == (("a", "b"), ("c",), ("d",))
-    assert rank({"x": 1.0, "y": 1.0}, distinguishable=lambda p, q: False) == (("x", "y"),)
+    assert rank(means, distinguishable=lambda p, q: (p, q) in apart) == (("A", "B"), ("C",))
 
 
 def test_the_graders_read_the_keys_preamble_and_each_item_in_its_own_words() -> None:

@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from issue_orchestrator.contracts.improver_run import (
 from issue_orchestrator.contracts.improver_tournament import (
     AnswerKeyItem,
     TournamentArm,
+    TournamentCost,
 )
 from issue_orchestrator.entrypoints.improver_run import HeatPlan
 from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
@@ -571,7 +573,7 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
     assert all(g.accepted for g in result.graders) and result.passes == 3
     assert {a.arm: a.mean for a in result.arms} == {"G": 8.0, "P": 0.0, "X": 0.0}
     # The fake graders agree exactly: no noise, so G is told apart and P and X (both 0) are not.
-    assert result.grading_sd == 0.0 and result.ranking == (("G",), ("P", "X"))
+    assert result.pass_sd == 0.0 and result.ranking == (("G",), ("P", "X"))
     assert result.distinguishable == (("G", "P"), ("G", "X"))
     assert result.cost.arm_heats == {"claude": 2, "codex": 4}
     assert result.cost.grader_calls == {"claude": 3, "codex": 3}
@@ -617,9 +619,10 @@ def test_arms_are_ranked_on_their_exact_means_not_the_rounded_ones(stores) -> No
     from issue_orchestrator.execution.improver_tournament import _result
 
     key = stores[1].get("20261004")
-    gradings = {"g#1": {"S10": 1.0004, "S11": 0.9996}}
+    gradings = {"g": [{"S10": 1.0004, "S11": 0.9996}]}
     arm_of = {"S10": "A", "S11": "B"}
-    result = _result("t", "20261004", key, (), 1, pool(gradings, arm_of, ungraded={}), gradings, arm_of, {}, {})
+    cost = TournamentCost(arm_heats={}, grader_calls={}, grader_seconds={})
+    result = _result("t", "20261004", key, (), 1, pool(gradings, arm_of, ungraded={}), gradings, arm_of, {}, cost)
 
     assert result.ranking == (("A",), ("B",))
     assert [a.mean for a in result.arms] == [1.0, 1.0]
@@ -854,10 +857,73 @@ def test_arms_within_the_measured_grading_noise_are_reported_indistinguishable(s
 
     means = {a.arm: a.mean for a in result.arms}
     assert (means["S"], means["W"], means["N"]) == (3.0, 0.25, 0.0)
-    assert result.grading_sd is not None and result.grading_sd > 0
+    assert result.pass_sd is not None and result.pass_sd > 0
     # W differs from N, but by less than the noise its gradings showed.
     assert result.ranking == (("S",), ("W", "N"))
     assert ("W", "N") not in result.distinguishable and ("S", "W") in result.distinguishable
+
+
+def test_graders_grade_side_by_side_and_each_graders_passes_in_turn(stores) -> None:  # type: ignore[no-untyped-def]
+    """Claude and Codex grade at once; one grader never runs two passes at
+    once (Codex's slow first pass must not be overtaken by its second)."""
+    _, _, root = stores
+    together = threading.Barrier(2, timeout=10)
+    active: dict[str, int] = {}
+    overlaps: list[str] = []
+    calls: dict[str, int] = {}
+    lock = threading.Lock()
+
+    class Agent:
+        def __init__(self, provider: str) -> None:
+            self.provider = provider
+
+        def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
+            with lock:
+                calls[self.provider] = n = calls.get(self.provider, 0) + 1
+                active[self.provider] = active.get(self.provider, 0) + 1
+                if active[self.provider] > 1:
+                    overlaps.append(self.provider)
+            try:
+                if n == 1:
+                    together.wait()  # both graders' first passes are running at once
+                    if self.provider == "codex":
+                        time.sleep(0.5)
+                labels = sorted(p.stem for p in (space.run_dir / "anon").glob("*.json"))
+                return ImproverAgentResult(_complete(labels), "graded")
+            finally:
+                with lock:
+                    active[self.provider] -= 1
+
+    class Graders:
+        @staticmethod
+        def agent_for(choice: ImproverAgentChoice, minutes: int) -> Agent:
+            return Agent(choice.provider.value)
+
+    harness = _harness(root, stores, Graders())  # type: ignore[arg-type]
+
+    result = harness.grade("t16", "20261004", [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")], seed=3)
+
+    assert overlaps == [] and calls == {"claude": 3, "codex": 3}
+    assert [g.grading for g in result.graders] == [f"{g}#{n}" for g in ("claude", "codex") for n in (1, 2, 3)]
+
+
+def test_a_retried_gradings_cost_counts_every_attempt(stores) -> None:  # type: ignore[no-untyped-def]
+    _, _, root = stores
+
+    def partial(labels: list[str]) -> str:
+        return json.dumps({labels[0]: {}})
+
+    agents = Agents({}, {"claude": _complete, "codex": partial})
+    harness = _harness(root, stores, agents)
+    outputs = [ArmOutput("A", 1, "{}"), ArmOutput("B", 1, "{}")]
+    with pytest.raises(RuntimeError, match="grade it again"):
+        harness.grade("t17", "20261004", outputs, seed=4)
+    agents.grader_answers["codex"] = _complete
+
+    result = harness.grade("t17", "20261004", outputs, seed=4)
+
+    assert result.cost.grader_calls == {"claude": 6, "codex": 6}
+    assert set(result.cost.grader_seconds) == {"claude", "codex"}
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

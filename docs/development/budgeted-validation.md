@@ -230,14 +230,16 @@ data lives under `<git common dir>/io-improver/`:
   and `key/` (every grader must grade every output, or there is no result;
   `regrade --tournament ID` grades the same outputs again), and ranked: weight × (full 1, half ½, miss 0), less 1 per
   unsupported finding. Each grader grades every output `--passes` times
-  (default 3); an arm's score is the mean over its outputs of their mean over
-  every grading, with a standard error: the larger of its heats' spread and
-  the measured grading noise. Two arms are told apart only when their means
-  differ by more than twice the standard error of the difference (the noise
-  band); arms within it are reported indistinguishable (`≈`), which is a
-  result, not a failure. `result.json` records each grading, the grading
-  noise, the distinguishable pairs and the cost (arm heats and grader calls
-  per provider; Claude's count against the operator's subscription).
+  (default 3; graders side by side, a grader's passes in turn); a grader's
+  passes are averaged first, since repeating one grader's opinion is not more
+  evidence. An arm's score is the mean over its outputs and graders. Two arms
+  are told apart only when their means differ by more than twice the standard
+  error of the difference: the graders' disagreement on that difference, plus
+  the heats' spread (never below the measured pass-to-pass noise). Arms within
+  that band are reported indistinguishable (`≈`, grouped only when pairwise
+  so), which is a result, not a failure. `result.json` records each grading,
+  the pass noise, the distinguishable pairs and the cost (arm heats and every
+  grader call, retries included, per provider; Claude's count against the operator's subscription).
 
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every

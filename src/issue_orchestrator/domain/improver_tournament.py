@@ -10,11 +10,12 @@
   label on exactly the key's scored items; anything else is no grade.
 * :func:`score`, :func:`pool` and :func:`rank`: an output earns each
   item's weight times its grade's credit (full 1, half 1/2, miss 0), less
-  1 per unsupported finding; graded k times by each grader, an arm's score
-  is the mean over its outputs of their mean over the gradings, with a
-  standard error from the measured spread. Two arms are told apart only
-  when their means differ by more than twice the standard error of the
-  difference (the noise band); arms within it share a place.
+  1 per unsupported finding; graded k times by each grader (passes
+  averaged per grader first), an arm's score is the mean over its outputs
+  and graders. Two arms are told apart only when their means differ by
+  more than twice the standard error of the difference, from the graders'
+  disagreement on it and the heats' spread (the noise band); arms within
+  it share a place.
 
 The rules reproduce the 2026-10-04 tournament's published means (C 3.8, B
 1.3, A 0.2, D 0.2) from its graders' files.
@@ -178,32 +179,54 @@ def score(grades: OutputGrades, key: AnswerKey) -> float:
 
 @dataclass(frozen=True)
 class PooledArm:
-    """One arm over every grading: each output's mean score across the
-    gradings, their mean, and that mean's standard error."""
+    """One arm over every grading: each output's mean score (over every
+    grader, each grader's passes averaged first), their mean, each
+    grader's mean, and the mean's standard error (for display; arms are
+    compared pairwise, see :meth:`PooledScores.difference_se`)."""
 
     output_means: tuple[float, ...]
     mean: float
+    grader_means: Mapping[str, float]
+    #: The spread of the output means about the arm's mean (None: one output).
+    heat_variance: float | None
     se: float
 
 
 @dataclass(frozen=True)
 class PooledScores:
-    """Every arm's pooled score, and the grading noise they were measured under.
+    """Every arm's pooled score, and the noise it was measured under.
 
-    ``gradings`` is how many complete gradings (graders x passes) scored
-    every output; ``grading_sd`` the standard deviation of one grading's
-    score of one output about that output's mean, pooled over every graded
-    output (None when one grading leaves it unmeasured).
+    The independent units are the graders and the heats (outputs); a
+    grader's repeated passes over the same output measure only its own
+    pass-to-pass noise (``pass_sd``) and are averaged before anything else,
+    so repeating a grader's fixed opinion never adds certainty.
     """
 
     arms: Mapping[str, PooledArm]
-    gradings: int
-    grading_sd: float | None
+    graders: tuple[str, ...]
+    passes: int
+    #: One pass's spread about its grader's mean for that output (None: one pass).
+    pass_sd: float | None
+
+    def difference_se(self, a: str, b: str) -> float:
+        """The standard error of ``mean(a) - mean(b)``: graders' disagreement
+        on that difference, plus the heats' spread (never below what pass
+        noise alone would give)."""
+        g = len(self.graders)
+        diffs = [self.arms[a].grader_means[x] - self.arms[b].grader_means[x] for x in self.graders]
+        mean_diff = sum(diffs) / g
+        grader_term = sum((d - mean_diff) ** 2 for d in diffs) / (g - 1) / g if g > 1 else 0.0
+        heat_term = sum(
+            (self.arms[x].heat_variance or 0.0) / len(self.arms[x].output_means) for x in (a, b)
+        )
+        pass_floor = (self.pass_sd or 0.0) ** 2 / (self.passes * g) * sum(
+            1 / len(self.arms[x].output_means) for x in (a, b)
+        )
+        return math.sqrt(grader_term + max(heat_term, pass_floor))
 
     def band(self, a: str, b: str) -> float:
-        """How far apart two arms' means must be to tell them apart: twice
-        the standard error of their difference."""
-        return NOISE_BAND_SES * math.sqrt(self.arms[a].se ** 2 + self.arms[b].se ** 2)
+        """How far apart two arms' means must be to tell them apart."""
+        return NOISE_BAND_SES * self.difference_se(a, b)
 
     def distinguishable(self, a: str, b: str) -> bool:
         return abs(self.arms[a].mean - self.arms[b].mean) > self.band(a, b)
@@ -214,55 +237,82 @@ NOISE_BAND_SES = 2.0
 
 
 def pool(
-    gradings: Mapping[str, Mapping[str, float]],
+    gradings: Mapping[str, Sequence[Mapping[str, float]]],
     arm_of: Mapping[str, str],
     *,
     ungraded: Mapping[str, str],
 ) -> PooledScores:
-    """Pool complete gradings (grading -> label -> score) into each arm's
-    score with its noise. ``arm_of`` maps graded labels to arms;
-    ``ungraded`` outputs (no answer to grade) score 0 in every grading.
-
-    An arm's standard error is the larger of two estimates of how much its
-    mean would move on another grading of other heats: the spread of its
-    output means (heats and grading noise together), and the measured
-    grading noise alone. The second keeps an arm every grader scored 0
-    from looking certain when graders disagree elsewhere.
+    """Pool complete gradings (grader -> its passes, each label -> score)
+    into each arm's score with its noise. ``arm_of`` maps graded labels to
+    arms; ``ungraded`` outputs (no answer to grade) score 0 in every grading.
+    Every grader must have made the same number of passes.
     """
+    labels = set(arm_of)
+    passes = _passes_of(gradings, labels)
+    # Each grader's view of each output: its passes averaged.
+    views = {g: {label: sum(r[label] for r in runs) / passes for label in labels} for g, runs in gradings.items()}
+    if passes > 1 and labels:
+        squares = sum((r[label] - views[g][label]) ** 2 for g, runs in gradings.items() for r in runs for label in labels)
+        pass_var: float | None = squares / (len(gradings) * len(labels) * (passes - 1))
+    else:
+        pass_var = None
+    outputs: dict[str, list[str]] = {}
+    for label, arm in arm_of.items():
+        outputs.setdefault(arm, []).append(label)
+    for output_id, arm in ungraded.items():
+        outputs.setdefault(arm, []).append(f"(none){output_id}")
+
+    graders = tuple(sorted(gradings))
+    # An output with no answer scores 0 in every grader's view.
+    full = {g: {**views[g], **{label: 0.0 for arm_labels in outputs.values() for label in arm_labels
+                               if label.startswith("(none)")}} for g in graders}
+    floor_per_output = (pass_var or 0.0) / (passes * len(graders))
+    arms = {arm: _pooled_arm(arm_labels, full, floor_per_output) for arm, arm_labels in outputs.items()}
+    return PooledScores(
+        arms=arms, graders=graders, passes=passes, pass_sd=None if pass_var is None else math.sqrt(pass_var)
+    )
+
+
+def _passes_of(gradings: Mapping[str, Sequence[Mapping[str, float]]], labels: set[str]) -> int:
+    """How many passes every grader made, if each pass scored every output."""
     if not gradings:
         raise ValueError("no grading to pool")
-    labels = set(arm_of)
-    for name, by_label in gradings.items():
-        if set(by_label) != labels:
-            raise ValueError(f"grading {name} scores {sorted(by_label)}, not every output {sorted(labels)}")
-    m = len(gradings)
-    label_means = {label: sum(g[label] for g in gradings.values()) / m for label in labels}
-    if m > 1 and labels:
-        squares = sum((g[label] - label_means[label]) ** 2 for g in gradings.values() for label in labels)
-        grading_var: float | None = squares / (len(labels) * (m - 1))
-    else:
-        grading_var = None
-    per_arm: dict[str, list[float]] = {}
-    for label, arm in arm_of.items():
-        per_arm.setdefault(arm, []).append(label_means[label])
-    for arm in ungraded.values():
-        per_arm.setdefault(arm, []).append(0.0)
-    arms: dict[str, PooledArm] = {}
-    for arm, values in per_arm.items():
-        n = len(values)
-        mean = sum(values) / n
-        between = sum((v - mean) ** 2 for v in values) / (n - 1) / n if n > 1 else 0.0
-        noise = (grading_var or 0.0) / (m * n)
-        arms[arm] = PooledArm(output_means=tuple(sorted(values)), mean=mean, se=math.sqrt(max(between, noise)))
-    return PooledScores(arms=arms, gradings=m, grading_sd=None if grading_var is None else math.sqrt(grading_var))
+    pass_counts = {len(p) for p in gradings.values()}
+    if len(pass_counts) != 1 or 0 in pass_counts:
+        raise ValueError(f"every grader makes the same number of passes, not {sorted(pass_counts)}")
+    for grader, runs in gradings.items():
+        for n, by_label in enumerate(runs, 1):
+            if set(by_label) != labels:
+                raise ValueError(f"grading {grader}#{n} scores {sorted(by_label)}, not every output {sorted(labels)}")
+    return pass_counts.pop()
+
+
+def _pooled_arm(
+    labels: Sequence[str], views: Mapping[str, Mapping[str, float]], floor_per_output: float
+) -> PooledArm:
+    graders = sorted(views)
+    n = len(labels)
+    output_means = [sum(views[g][label] for g in graders) / len(graders) for label in labels]
+    mean = sum(output_means) / n
+    heat_var = sum((v - mean) ** 2 for v in output_means) / (n - 1) if n > 1 else None
+    grader_means = {g: sum(views[g][label] for label in labels) / n for g in graders}
+    gm = list(grader_means.values())
+    grader_term = sum((x - mean) ** 2 for x in gm) / (len(gm) - 1) / len(gm) if len(gm) > 1 else 0.0
+    return PooledArm(
+        output_means=tuple(sorted(output_means)), mean=mean, grader_means=grader_means, heat_variance=heat_var,
+        se=math.sqrt(grader_term + max((heat_var or 0.0) / n, floor_per_output / n)),
+    )
 
 
 def rank(means: Mapping[str, float], *, distinguishable: Callable[[str, str], bool]) -> tuple[tuple[str, ...], ...]:
-    """Best first; an arm not distinguishable from its group's best joins it."""
+    """Best first, in groups of arms that are pairwise indistinguishable: an
+    arm joins the current group only if no member is distinguishable from
+    it. (Between groups, ">" orders by mean; whether two arms in different
+    groups are told apart is the pairwise record, not the grouping.)"""
     ordered = sorted(means, key=lambda arm: (-means[arm], arm))
     groups: list[list[str]] = []
     for arm in ordered:
-        if groups and not distinguishable(groups[-1][0], arm):
+        if groups and not any(distinguishable(member, arm) for member in groups[-1]):
             groups[-1].append(arm)
         else:
             groups.append([arm])

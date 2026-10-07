@@ -127,7 +127,8 @@ def test_a_failed_grading_is_regraded_without_running_the_arms_again(tmp_path: P
     assert (directory / "graders-attempt-1" / "codex" / "p1" / "grades.json").read_text() == "{}"
     result = json.loads((directory / "result.json").read_text())
     assert len(result["graders"]) == 6 and all(g["accepted"] for g in result["graders"])
-    assert result["cost"] == {"arm_heats": {}, "grader_calls": {"claude": 3, "codex": 3},
+    # Both attempts' calls: the failed one cost as much as the one that counted.
+    assert result["cost"] == {"arm_heats": {}, "grader_calls": {"claude": 6, "codex": 6},
                               "grader_seconds": result["cost"]["grader_seconds"]}
 
 

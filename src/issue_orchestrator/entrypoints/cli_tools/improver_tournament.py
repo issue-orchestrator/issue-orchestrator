@@ -308,12 +308,12 @@ def render_result(result: TournamentResult, directory: Path) -> str:
     lines = [f"tournament {result.tournament_id} on {result.snapshot_id}: key {result.key_items} item(s), max {result.max_score}"]
     lines += [f"  grading {g.grading} ({g.provider}:{g.model}, {g.seconds:.0f}s): "
               f"{'accepted' if g.accepted else 'NOT accepted'}: {g.detail}" for g in result.graders]
-    sd = "unmeasured" if result.grading_sd is None else f"{result.grading_sd:.2f}"
-    lines.append(f"  {len(result.graders)} grading(s) ({result.passes} pass(es) per grader); one grading's sd per output: {sd}")
+    sd = "unmeasured" if result.pass_sd is None else f"{result.pass_sd:.2f}"
+    lines.append(f"  {len(result.graders)} grading(s) ({result.passes} pass(es) per grader); pass-to-pass sd: {sd}")
     lines += [f"  arm {a.arm}: mean {a.mean:.2f} ± {a.se:.2f} se (outputs {list(a.output_means)}) "
               + " ".join(f"{grading}={list(v)}" for grading, v in a.scores.items()) for a in result.arms]
     lines.append(
-        f"  ranking: {result.ranking_text()} (≈: means within {result.band_ses:g} standard errors of their difference)"
+        f"  ranking: {result.ranking_text()} (≈: pairwise within {result.band_ses:g} standard errors of their difference)"
     )
     lines.append("  distinguishable: " + (", ".join(f"{a}>{b}" for a, b in result.distinguishable) or "none"))
     cost = result.cost
