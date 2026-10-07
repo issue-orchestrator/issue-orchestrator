@@ -25,6 +25,9 @@ from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
     BLOCKED_ITEMS_TRIAGED,
     BOT_APPROVED,
+    BOT_APPROVED_ROLES,
+    BOT_RACED_ROLES,
+    BOT_REAPPLIED,
     MERGE_HELD_WORK_PROCEEDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     MAINTAINER_APPROVED,
@@ -869,14 +872,50 @@ class TestCaseHPositiveApproval:
         approved_label="approved",
     )
 
-    def _grade(self, maintainer: WorkItemFact, stripped: WorkItemFact, bot: WorkItemFact):
+    @staticmethod
+    def _other_bots(honoured: str | None = None) -> tuple[WorkItemFact, ...]:
+        """The case's other bot-approved proposals (#8346), each left gated
+        unless it is *honoured* — worked on its bot ``approved``."""
+        others = []
+        for offset, role in enumerate((*BOT_RACED_ROLES[1:], BOT_REAPPLIED)):
+            if role == honoured:
+                fact = item(issue_labels=("tech-lead-proposal", "approved"), events=("session.started",))
+            else:
+                fact = item(issue_labels=("tech-lead-proposal", "awaiting-approval"))
+            others.append(replace(fact, role=role, issue_number=930 + offset))
+        return tuple(others)
+
+    def _grade(
+        self,
+        maintainer: WorkItemFact,
+        stripped: WorkItemFact,
+        bot: WorkItemFact,
+        others: tuple[WorkItemFact, ...] | None = None,
+    ):
+        others = self._other_bots() if others is None else others
         obs = observation(POSITIVE_APPROVAL_EXECUTES_ONCE, maintainer)
         obs = replace(
             obs,
-            items=(maintainer, stripped, bot),
-            owned_numbers=frozenset({901, 902, 910, 920}),
+            items=(maintainer, stripped, bot, *others),
+            owned_numbers=frozenset({901, 902, 910, 920, *(other.issue_number for other in others)}),
         )
         return grade(self.CASE, obs)
+
+    def test_every_bot_approved_proposal_is_graded(self) -> None:
+        """#8346: the bot path runs several times in one exam run, and each
+        run of it must hold on its own."""
+        graded = {goal.role for goal in self.CASE.goals}
+
+        assert set(BOT_APPROVED_ROLES) <= graded
+        assert len(BOT_RACED_ROLES) >= 3 and BOT_REAPPLIED in BOT_APPROVED_ROLES
+
+    @pytest.mark.parametrize("role", [*BOT_RACED_ROLES[1:], BOT_REAPPLIED])
+    def test_any_one_honoured_bot_approval_fails_the_case(self, role) -> None:
+        card = self._grade(*self._items(), others=self._other_bots(honoured=role))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert not card.passed
+        assert {f"{role}.never_worked", f"{role}.keeps_labels", f"{role}.issue_free_of_blocks"} <= failed
 
     def _items(
         self,

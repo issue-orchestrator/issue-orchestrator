@@ -1704,30 +1704,32 @@ class GitHubHttpClient:
                     issue_number=issue_number,
                 )
 
-    def latest_label_event(
+    def standing_label_events(
         self, issue_number: int, label: str, *, removed: bool = False
-    ) -> dict[str, Any] | None:
-        """The newest ``labeled`` (or, with ``removed``, ``unlabeled``) event for
-        ``label`` (case-insensitive).
+    ) -> list[dict[str, Any]]:
+        """Every ``labeled`` (or, with ``removed``, ``unlabeled``) event for
+        ``label`` (case-insensitive) in its STANDING run, oldest first.
 
-        Approval evidence (#7763): the approval owner reads who applied an
-        ``approved`` label. Fail-loud like ``issue_closed_on_or_after``: every
-        page is read fresh, a malformed or truncated listing raises, and
-        ``None`` is answered only after the true final page. GitHub lists
-        events oldest first, so the last match wins.
+        Approval evidence (#7763, #8346): the approval owner judges who put
+        an ``approved`` label on. Fail-loud like ``issue_closed_on_or_after``:
+        every page is read fresh, a malformed or truncated listing raises,
+        and an empty answer is given only after the true final page. GitHub
+        lists events oldest first.
 
-        Only a STANDING transition is returned (#7763 review r8 F1): a later
-        opposite transition for the label voids an earlier match, so an
-        ``approved`` removed after the caller read the issue is no approval,
-        whatever the issue snapshot said. A ``closed`` or ``reopened`` event
-        voids every earlier match too (#7763 review r7 F2, r17 F1): closing a
-        proposal declines it, so an approval given before the close never
-        counts — not for a reopened issue, and not for a caller whose issue
-        snapshot predates the close.
+        The run is every matching transition since the last opposite one, so
+        an ``approved`` removed after the caller read the issue is no
+        approval (#7763 review r8 F1). A ``closed`` or ``reopened`` event
+        voids the run too (#7763 review r7 F2, r17 F1): closing a proposal
+        declines it. The WHOLE run is returned, not its newest event (#8346):
+        GitHub records the labels an issue is filed with asynchronously,
+        attributing every label present when that job runs — a bot's
+        ``approved`` added seconds after filing included — to the issue's
+        author, so a later labeled event of a standing label is not who
+        applied it.
         """
         folded = label.casefold()
         kind = "unlabeled" if removed else "labeled"
-        latest: dict[str, Any] | None = None
+        run: list[dict[str, Any]] = []
         for batch in self._paginate_fresh(
             f"/repos/{self._config.repo}/issues/{issue_number}/events",
             params={"per_page": 100},
@@ -1741,7 +1743,7 @@ class GitHubHttpClient:
                     # standing answer exists (#7763 review r26 F2).
                     raise GitHubScanIncompleteError(f"issue #{issue_number} events: a malformed event row")
                 if event.get("event") in ("closed", "reopened"):
-                    latest = None
+                    run = []
                     continue
                 if event.get("event") not in ("labeled", "unlabeled"):
                     continue
@@ -1754,8 +1756,8 @@ class GitHubHttpClient:
                         f"issue #{issue_number} events: a {event.get('event')} event names no label"
                     )
                 if str(named["name"]).casefold() == folded:
-                    latest = event if event.get("event") == kind else None
-        return latest
+                    run = [*run, event] if event.get("event") == kind else []
+        return run
 
     def app_identity(self) -> GitHubAppIdentity | None:
         """This client's effective GitHub App identity, or None for a token."""

@@ -3,7 +3,7 @@
 Two reads and one ledger, kept apart from the fat repository host so the
 approval owner depends on exactly what it uses:
 
-* :class:`ApprovalEvidenceReader` — who last applied a label, and what role a
+* :class:`ApprovalEvidenceReader` — who applied a label that stands now, and what role a
   login holds in the repository. GitHub's issue events and collaborator
   permission endpoints back it.
 * :class:`OperatorApprovalRecords` — the engine-owned record of approvals an
@@ -16,21 +16,26 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol
 
-from ..domain.tech_lead_approval import LabelEvent, OperatorApprovalRecord
+from ..domain.tech_lead_approval import LabelEvent, OperatorApprovalRecord, StandingLabel
 
 
 class ApprovalEvidenceReader(Protocol):
     """Read-only evidence about who approved an item."""
 
-    def latest_label_event(
-        self, issue_number: int, label: str, *, removed: bool = False
-    ) -> LabelEvent | None:
-        """The newest ``labeled`` event adding *label* (case-insensitive), or
-        with ``removed`` the newest ``unlabeled`` event taking it off.
+    def standing_label(self, issue_number: int, label: str) -> StandingLabel | None:
+        """Every ``labeled`` event adding *label* (case-insensitive) since it
+        was last absent, oldest first — the application in force now and any
+        later labeled event GitHub recorded while it stayed on (#8346).
 
-        ``None`` means the complete event history has no such event. A read
-        that cannot prove completeness raises instead of answering ``None``.
+        ``None`` means the complete event history shows the label not
+        standing (never applied, or removed, or voided by a close or reopen
+        since). A read that cannot prove completeness raises instead.
         """
+        ...
+
+    def latest_label_removal(self, issue_number: int, label: str) -> LabelEvent | None:
+        """The newest ``unlabeled`` event taking *label* off, while it is
+        still off; ``None`` when the complete history has none standing."""
         ...
 
     def repository_role(self, login: str) -> str | None:

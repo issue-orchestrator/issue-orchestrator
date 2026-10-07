@@ -158,10 +158,14 @@ Semantics:
   gate is now three labels with one meaning each, owned by
   `control/tech_lead_approval.py`: `tech-lead-proposal` (provenance,
   permanent), `awaiting-approval` (state, blocking-class) and `approved`
-  (the approval). An `approved` label counts only when the latest `labeled`
-  event's actor is a person with the `admin` or `maintain` repository role,
-  or when it is the exact event the engine's own write produced for an
-  operator's Approve in the Control Center (recorded orchestrator-side).
+  (the approval). An `approved` label counts only when EVERY `labeled`
+  event of its standing run (since it was last absent, closed or reopened)
+  vouches: a person with the `admin` or `maintain` repository role, or the
+  exact event the engine's own write produced for an operator's Approve in
+  the Control Center (recorded orchestrator-side). Not just the newest one
+  (#8346): GitHub emits a filed issue's labeled events asynchronously and
+  attributes every label present at that moment — a bot's `approved` added
+  seconds after filing included — to the issue's author.
   Bot/App identities and agent sessions never approve; an `approved` that
   does not count is removed with a comment. A proposal is schedulable only
   when the engine has verified its approval in this process (it then removes

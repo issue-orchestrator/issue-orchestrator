@@ -5,7 +5,8 @@ owns the POLICY that turns labels plus evidence into decisions, and every
 approval-label write the engine makes:
 
 * **Verification** — :meth:`TechLeadApprovals.verify` answers "did a
-  maintainer approve this?" from the latest ``approved`` labeled event: a
+  maintainer approve this?" from the standing ``approved`` label's labeled
+  events — EVERY one of them since it was last absent (#8346) — each a
   Control Center approval recorded against that exact event, or a non-bot
   actor whose repository role is a maintainer role. It reads events only for
   items that carry ``approved``, and caches positive verdicts for the engine's
@@ -43,6 +44,7 @@ from ..domain.tech_lead_approval import (
     ApprovalTransition,
     ApprovalVerdict,
     ApprovalVerdictKind,
+    OperatorApprovalRecord,
     ProposalLabelState,
     known_proposal_state,
     proposal_label_state,
@@ -230,19 +232,54 @@ class TechLeadApprovals:
             self._verified.pop(number, None)
         return verdict
 
-    def judge_latest_approval(self, number: int) -> ApprovalVerdict:
-        """The verdict on the latest ``approved`` event alone, read fresh.
+    def bind_engine_approval(self, number: int, *, recorded_at: str) -> ApprovalVerdict:
+        """Judge the ``approved`` the engine itself just applied for an operator.
 
-        For a caller that just wrote the label itself and so knows it is
-        present without trusting a possibly-cached issue read.
+        The Control Center approve command and the legacy-approval migration
+        both write the label and then ask this. When the engine's own App
+        produced exactly one event of the standing run, that event is recorded
+        as the operator's act (a personal-token engine has none: its write is
+        judged like anyone's). The verdict is then read fresh over the WHOLE
+        run (#8346), so another identity's labeled event in it — a relabel
+        racing ours, or GitHub's late attribution of a filing's labels —
+        still refuses, and nothing is left recorded for a refused approval.
         """
-        return self._read_verdict(number, fresh=True)
+        standing = self.evidence.standing_label(number, APPROVED_LABEL)
+        if standing is None:
+            raise RuntimeError(
+                f"applied {APPROVED_LABEL!r} to #{number} but GitHub shows no standing"
+                " labeled event to bind the approval to"
+            )
+        own = [event for event in standing.events if self.evidence.is_own_write(event)]
+        if len(own) == 1:
+            self.records.record_operator_approval(
+                OperatorApprovalRecord(number, own[0].event_id, recorded_at)
+            )
+        verdict = self._read_verdict(number, fresh=True)
+        if not verdict.approved:
+            self.records.discard_operator_approval(number)
+        return verdict
 
     def _read_verdict(self, number: int, *, fresh: bool) -> ApprovalVerdict:
-        event = self.evidence.latest_label_event(number, APPROVED_LABEL)
-        if event is None:
+        """The verdict on the standing ``approved``: EVERY labeled event of its
+        run must vouch (#8346), so no single event — the newest included — can
+        speak for an application someone else made."""
+        standing = self.evidence.standing_label(number, APPROVED_LABEL)
+        if standing is None:
             return ApprovalVerdict(number, ApprovalVerdictKind.NO_LABEL_EVENT)
         record = self.records.load_operator_approval(number)
+        verdicts = [self._judge_event(number, event, record, fresh=fresh) for event in standing.events]
+        refusal = next((verdict for verdict in verdicts if not verdict.approved), None)
+        return refusal if refusal is not None else verdicts[0]
+
+    def _judge_event(
+        self,
+        number: int,
+        event: "LabelEvent",
+        record: "OperatorApprovalRecord | None",
+        *,
+        fresh: bool,
+    ) -> ApprovalVerdict:
         # Both halves: the recorded event, AND an event this engine's own
         # credential produced — a record can never vouch for someone else's
         # label, however it came to hold that id (#7763 review F3).
@@ -401,7 +438,8 @@ def unapproved_proposal_launch(
     admits on the verified CACHE, which is only as fresh as the last tick's
     observation: an ``approved`` removed and re-applied by a bot between two
     ticks still looks verified there. So a launch re-reads the issue and, for
-    a proposal, its latest ``approved`` event and the actor's role, all fresh.
+    a proposal, its standing ``approved`` events and their actors' roles, all
+    fresh.
     Ordinary issues cost one (ETag-cached) issue read. No owner: fail closed.
     """
     issue = repository.get_issue(issue_number)

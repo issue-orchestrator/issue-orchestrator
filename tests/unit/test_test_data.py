@@ -92,6 +92,22 @@ class TestCreateIssue:
 
         mock_wait.assert_called_once_with("owner/repo", 456, ["label"], None)
 
+    def test_on_created_runs_before_the_visibility_wait(self):
+        """#8346: case H's bot approval must race what GitHub does right after
+        filing, so the hook runs the moment the create answers."""
+        client = Mock()
+        client.create_issue.return_value = {"number": 321, "html_url": "u"}
+        order: list[str] = []
+
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
+            with patch(
+                "issue_orchestrator.testing.support.test_data._wait_for_issue_visible",
+                side_effect=lambda *args: order.append("wait"),
+            ):
+                create_issue("owner/repo", "Test", ["label"], on_created=lambda n: order.append(f"created {n}"))
+
+        assert order == ["created 321", "wait"]
+
     def test_create_issue_skip_wait(self):
         """Test that wait_visible=False skips waiting."""
         client = Mock()

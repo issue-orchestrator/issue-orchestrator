@@ -8,6 +8,7 @@ caching, and rate-limit handling.
 import logging
 import random
 import time
+from collections.abc import Callable
 from typing import Optional
 
 from ...infra import gh_audit
@@ -82,6 +83,7 @@ def create_issue(
     body: str = "E2E test issue.\n\nExpected: Agent completes.",
     wait_visible: bool = True,
     timeout: int | None = None,
+    on_created: Callable[[int], None] | None = None,
 ) -> int:
     """Create a single GitHub issue with all constraints honored.
 
@@ -97,6 +99,9 @@ def create_issue(
         body: Issue body text
         wait_visible: If True, wait until issue is visible in API queries
         timeout: Seconds to wait for visibility
+        on_created: Called with the new issue's number the moment GitHub
+            answers the create, before any visibility wait — for a write
+            that must race what GitHub does right after filing (#8346).
 
     Returns:
         Issue number
@@ -120,6 +125,8 @@ def create_issue(
     issue_number = result.get("number")
     if issue_number is None:
         raise RuntimeError("Issue created but no number returned")
+    if on_created is not None:
+        on_created(issue_number)
 
     # Wait for GitHub eventual consistency
     if wait_visible:

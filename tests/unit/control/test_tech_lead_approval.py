@@ -37,6 +37,7 @@ from tests.approval_helpers import (
     BOT,
     CLAIMED,
     CONTRIBUTOR,
+    ENGINE,
     GATED,
     MAINTAINER,
     FakeApprovalEvidence,
@@ -89,7 +90,7 @@ class TestVerification:
         from issue_orchestrator.domain.tech_lead_approval import LabelEvent
 
         evidence = FakeApprovalEvidence()
-        evidence.events[(500, "approved", False)] = LabelEvent(77, MAINTAINER, True, "t")
+        evidence.record(500, "approved", LabelEvent(77, MAINTAINER, True, "t"))
 
         assert make_approvals(evidence).verify(_issue(500, CLAIMED)).kind is ApprovalVerdictKind.BOT_ACTOR
 
@@ -149,6 +150,65 @@ class TestVerification:
         # Removed and re-applied by automation: a NEW event the record never covered.
         evidence.label(500, by=BOT)
         assert approvals.verify(_issue(500, CLAIMED), fresh=True).kind is ApprovalVerdictKind.BOT_ACTOR
+
+
+class TestEveryEventOfTheStandingLabelMustVouch:
+    """#8346: GitHub can record more than one labeled event while ``approved``
+    stays on — its late attribution of a filing's labels names the issue's
+    AUTHOR for a bot's ``approved``. No single event may speak for the run."""
+
+    @pytest.mark.parametrize(
+        ("run", "kind"),
+        [
+            ((BOT, MAINTAINER), ApprovalVerdictKind.BOT_ACTOR),  # exam H at a0b61b2
+            ((MAINTAINER, BOT), ApprovalVerdictKind.BOT_ACTOR),
+            ((CONTRIBUTOR, MAINTAINER), ApprovalVerdictKind.NOT_A_MAINTAINER),
+            ((MAINTAINER, CONTRIBUTOR), ApprovalVerdictKind.NOT_A_MAINTAINER),
+        ],
+        ids=["bot-then-author", "author-then-bot", "contributor-then-author", "author-then-contributor"],
+    )
+    def test_one_unvouched_event_refuses_the_whole_run(self, run, kind) -> None:
+        evidence = FakeApprovalEvidence()
+        for actor in run:
+            evidence.label(500, by=actor)
+        approvals = make_approvals(evidence)
+
+        verdict = approvals.verify(_issue(500, CLAIMED))
+
+        assert verdict.kind is kind and verdict.rejected_claim
+        assert verdict.actor != MAINTAINER
+        assert not approvals.confirm(_issue(500, CLAIMED))
+
+    def test_a_run_of_maintainer_events_approves_as_its_application(self) -> None:
+        evidence = FakeApprovalEvidence()
+        first = evidence.label(500, by=MAINTAINER)
+        evidence.label(500, by=MAINTAINER)
+
+        verdict = make_approvals(evidence).verify(_issue(500, CLAIMED))
+
+        assert verdict.kind is ApprovalVerdictKind.MAINTAINER and verdict.event_id == first.event_id
+
+    def test_a_removed_human_approval_never_vouches_for_a_bot_reapplication(self) -> None:
+        evidence = FakeApprovalEvidence()
+        evidence.label(500, by=MAINTAINER)
+        evidence.label(500, by=MAINTAINER, removed=True)
+        evidence.label(500, by=BOT)
+
+        assert make_approvals(evidence).verify(_issue(500, CLAIMED)).kind is ApprovalVerdictKind.BOT_ACTOR
+
+    def test_a_bot_approval_is_settled_as_a_rejected_claim(self) -> None:
+        evidence = FakeApprovalEvidence()
+        evidence.label(500, by=BOT)
+        evidence.label(500, by=MAINTAINER)
+        approvals = make_approvals(evidence)
+        claimed = Issue(number=500, title="t", labels=list(CLAIMED), state="open", repo="o/r",
+                        body=with_proposal_marker("b"))
+
+        [settlement] = plan_approval_settlements([claimed], approvals.verify_claims([claimed]), op_backed=())
+
+        assert settlement.transition is ApprovalTransition.REJECT_CLAIM
+        assert not approvals.admits(Issue(number=500, title="t", labels=list(ADMITTED), state="open",
+                                          repo="o/r", body=with_proposal_marker("b")))
 
 
 class TestCacheAndRevocation:
@@ -392,6 +452,7 @@ class _Host:
 
     def remove_label(self, number: int, label: str) -> None:
         self.issue = self._relabel([l for l in self.issue.labels if l != label])
+        self.evidence.label(number, label, by=ENGINE, removed=True)
 
     def add_comment(self, number: int, body: str) -> str:
         self.comments.append((number, body))
@@ -532,7 +593,8 @@ class TestTheLaunchBoundaryRechecksFresh:
         admitted = _issue(700, ["agent:backend", *ADMITTED])
         approvals.verify(admitted)
         assert approvals.admits(admitted)  # the scheduler's view: still verified
-        evidence.label(700, by=BOT)  # removed and re-applied by a bot, unobserved
+        evidence.label(700, by=MAINTAINER, removed=True)  # removed, then
+        evidence.label(700, by=BOT)  # re-applied by a bot, both unobserved
         host = MagicMock()
         host.get_issue.return_value = admitted
 
@@ -601,6 +663,43 @@ class TestControlCenterApprovalIsAttributed:
         approvals.records.record_operator_approval(OperatorApprovalRecord(500, event.event_id, "t"))
 
         assert approvals.verify(_issue(500, CLAIMED), fresh=True).kind is ApprovalVerdictKind.BOT_ACTOR
+
+
+class TestBindingTheEnginesOwnApproval:
+    """#8346: the operator's approval binds only an UNAMBIGUOUS own event,
+    and a refused one leaves nothing recorded."""
+
+    def test_another_identitys_event_in_the_run_refuses_and_unbinds(self) -> None:
+        evidence = FakeApprovalEvidence()
+        approvals = make_approvals(evidence)
+        evidence.engine_write(500)
+        evidence.label(500, by=BOT)  # GitHub's late attribution, or a racing bot
+
+        verdict = approvals.bind_engine_approval(500, recorded_at="t")
+
+        assert verdict.kind is ApprovalVerdictKind.BOT_ACTOR
+        assert approvals.records.load_operator_approval(500) is None
+
+    def test_two_own_events_bind_neither(self) -> None:
+        """An App-filed proposal: GitHub attributes a fast `approved` to the
+        engine's App too, so which own event is the operator's is unknowable."""
+        evidence = FakeApprovalEvidence()
+        approvals = make_approvals(evidence)
+        evidence.engine_write(500)
+        evidence.engine_write(500)
+
+        assert not approvals.bind_engine_approval(500, recorded_at="t").approved
+        assert approvals.records.load_operator_approval(500) is None
+
+    def test_the_single_own_event_is_the_operators_approval(self) -> None:
+        evidence = FakeApprovalEvidence()
+        approvals = make_approvals(evidence)
+        event = evidence.engine_write(500)
+
+        verdict = approvals.bind_engine_approval(500, recorded_at="t")
+
+        assert (verdict.kind, verdict.event_id) == (ApprovalVerdictKind.CONTROL_CENTER, event.event_id)
+        assert approvals.records.load_operator_approval(500) == OperatorApprovalRecord(500, event.event_id, "t")
 
 
 def test_a_personal_token_engine_approves_as_its_maintainer_user() -> None:
