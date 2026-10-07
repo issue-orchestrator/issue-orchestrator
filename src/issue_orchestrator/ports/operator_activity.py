@@ -45,7 +45,11 @@ class RepoEvent:
 
 @dataclass(frozen=True)
 class RepoComment:
+    """A comment as GitHub has it NOW: ``body`` is its current text, so a
+    comment edited after ``updated_at`` would show text written later."""
+
     at: datetime
+    updated_at: datetime
     number: int
     actor: Actor
     body: str
@@ -99,10 +103,15 @@ class RepoActivityRead:
     sources: tuple[SourceRead, ...]
 
 
+class MalformedActivity(ValueError):
+    """GitHub answered a row without a field the read relies on: the read
+    is refused whole, never staged with the row silently missing."""
+
+
 class OperatorActivitySource(Protocol):
     def read(self, *, since: datetime, until: datetime) -> RepoActivityRead:
         """The repository's activity in ``[since, until]``; raises if it
-        cannot be read at all."""
+        cannot be read, or if a row is malformed (:class:`MalformedActivity`)."""
         ...
 
 
@@ -110,6 +119,7 @@ __all__ = [
     "Actor",
     "ContentEdit",
     "ItemActivity",
+    "MalformedActivity",
     "OperatorActivitySource",
     "RepoActivityRead",
     "RepoComment",

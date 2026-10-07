@@ -80,7 +80,7 @@ def github_interventions(
     }
     for actor, intervention in (
         *_events(read.events),
-        *_comments(read.comments),
+        *_comments(read.comments, until),
         *(pair for item in read.items for pair in _item(item)),
     ):
         if not since <= intervention.at <= until or _is_merge_close(intervention, merges):
@@ -119,8 +119,17 @@ def _events(events: Iterable[RepoEvent]) -> Iterator[tuple[Actor, Intervention]]
         )
 
 
-def _comments(comments: Iterable[RepoComment]) -> Iterator[tuple[Actor, Intervention]]:
+def _comments(comments: Iterable[RepoComment], until: datetime) -> Iterator[tuple[Actor, Intervention]]:
     for c in comments:
+        # The body is GitHub's current text: edited after the cutoff, it is
+        # not what the window saw, and it is withheld (signature included).
+        if c.updated_at > until:
+            yield c.actor, Intervention(
+                at=c.at, kind="commented", subject=f"#{c.number}",
+                detail="(edited after the cutoff; its text as of the window is unknown and is withheld)",
+                source="github_comments", attribution=attribution(), actor=c.actor.login, ref=c.ref,
+            )
+            continue
         excerpt = " ".join(c.body.split())[:_COMMENT_EXCERPT]
         yield c.actor, Intervention(
             at=c.at, kind="commented", subject=f"#{c.number}", detail=excerpt,

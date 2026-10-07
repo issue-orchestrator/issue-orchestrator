@@ -81,8 +81,8 @@ def test_the_operators_identity_is_never_guessed_to_be_the_operator() -> None:
     """The coordinator acts under the operator's identity: without the
     coordinator's signature a hand action is a person's, and the coverage
     says why."""
-    signed = RepoComment(at=T0, number=8, actor=PERSON, body="Round 2 ... 🤖 Generated with [Claude Code](x)", ref="c1")
-    plain = RepoComment(at=T0, number=8, actor=PERSON, body="Ruling: rework #379 to this design.", ref="c2")
+    signed = RepoComment(at=T0, updated_at=T0, number=8, actor=PERSON, body="Round 2 ... 🤖 Generated with [Claude Code](x)", ref="c1")
+    plain = RepoComment(at=T0, updated_at=T0, number=8, actor=PERSON, body="Ruling: rework #379 to this design.", ref="c2")
 
     hand, _ = github_interventions(_read(comments=[signed, plain]), since=SINCE, until=UNTIL)
 
@@ -124,3 +124,17 @@ def test_only_the_window_counts() -> None:
     late = _event("labeled", ENGINE, label="x", at=UNTIL + timedelta(seconds=1))
 
     assert github_interventions(_read(events=[early, late]), since=SINCE, until=UNTIL) == ((), 0)
+
+
+def test_a_comment_edited_after_the_cutoff_keeps_its_act_but_not_its_later_text() -> None:
+    """r1 F1: GitHub serves a comment's CURRENT body; text written after the
+    cutoff is not what the window saw."""
+    late = RepoComment(at=T0, updated_at=UNTIL + timedelta(minutes=5), number=379, actor=PERSON,
+                       body="Edited later: approve now 🤖 Generated with [Claude Code](x)", ref="c3")
+
+    [hand], _ = github_interventions(_read(comments=[late]), since=SINCE, until=UNTIL)
+
+    assert hand.kind == "commented" and hand.ref == "c3"
+    assert "Edited later" not in hand.detail and "withheld" in hand.detail
+    # Nor is the later text's signature trusted.
+    assert hand.attribution == "person"

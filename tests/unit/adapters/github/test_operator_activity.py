@@ -6,9 +6,11 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from issue_orchestrator.adapters.github import operator_activity
 from issue_orchestrator.adapters.github.operator_activity import GitHubOperatorActivity
+from issue_orchestrator.ports.operator_activity import MalformedActivity
 from tests.unit.test_github_http import _client_with_transport
 
 UNTIL = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
@@ -74,7 +76,8 @@ def test_a_source_that_hits_its_page_bound_says_it_is_incomplete(monkeypatch) ->
 
 def test_comments_and_items_carry_their_actors_and_a_truncated_list_is_said() -> None:
     comments = [{
-        "created_at": _iso(UNTIL), "issue_url": "https://api.github.com/repos/porchpin/porchpin/issues/379",
+        "created_at": _iso(UNTIL), "updated_at": _iso(UNTIL),
+        "issue_url": "https://api.github.com/repos/porchpin/porchpin/issues/379",
         "user": {"login": "BruceBGordon", "type": "User"}, "performed_via_github_app": None,
         "body": "Ruling: rework to this design", "html_url": "https://github.com/porchpin/porchpin/issues/379#c1",
     }]
@@ -102,3 +105,52 @@ def test_comments_and_items_carry_their_actors_and_a_truncated_list_is_said() ->
         r.method == "GET" or r.url.path == "/graphql" for r in seen
     )
     assert not json.loads(graphql.content)["query"].lstrip().startswith("mutation")
+
+
+def _pr_node(**overrides: object) -> dict:
+    node = {
+        "__typename": "PullRequest", "number": 511, "url": "u", "createdAt": _iso(SINCE),
+        "author": None, "mergedAt": None, "mergedBy": None,
+        "userContentEdits": {"totalCount": 0, "nodes": []}, "reviews": {"totalCount": 0, "nodes": []},
+    }
+    node.update(overrides)
+    return {k: v for k, v in node.items() if v != "DROP"}
+
+
+@pytest.mark.parametrize(
+    ("events", "comments", "nodes"),
+    [
+        # r1 F2: a relevant event without its issue, or a rename without its titles.
+        ([{"id": 1, "event": "labeled", "created_at": "2026-10-05T11:00:00Z", "label": {"name": "approved"},
+           "actor": {"login": "BruceBGordon", "type": "User"}}], [], []),
+        ([_event(2, UNTIL, event="renamed")], [], []),
+        ([_event(3, UNTIL, label=None)], [], []),
+        # A comment whose issue_url names no issue.
+        ([], [{"created_at": _iso(UNTIL), "updated_at": _iso(UNTIL), "issue_url": "https://x/issues/",
+               "html_url": "h", "user": {"login": "a", "type": "User"}, "body": "b"}], []),
+        # r1 F3: a PR without its reviews, an item without its edits.
+        ([], [], [_pr_node(reviews="DROP")]),
+        ([], [], [_pr_node(userContentEdits="DROP")]),
+        ([], [], [_pr_node(reviews={"nodes": []})]),
+    ],
+)
+def test_a_malformed_row_fails_the_read_never_a_complete_read_with_it_missing(events, comments, nodes) -> None:  # type: ignore[no-untyped-def]
+    search = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+
+    with pytest.raises(MalformedActivity):
+        _source([events], comments, search, []).read(since=SINCE, until=UNTIL)
+
+
+def test_a_comment_from_before_the_window_edited_in_it_is_counted_not_staged() -> None:
+    """GitHub's ``since`` is the update time: an older comment edited in the
+    window is returned, and its editor is unknown."""
+    older = {
+        "created_at": _iso(SINCE - timedelta(days=3)), "updated_at": _iso(UNTIL),
+        "issue_url": "https://api.github.com/repos/porchpin/porchpin/issues/12", "html_url": "h12",
+        "user": {"login": "BruceBGordon", "type": "User"}, "body": "old text",
+    }
+
+    read = _source([[]], [older], _EMPTY_SEARCH, []).read(since=SINCE, until=UNTIL)
+
+    assert read.comments == ()
+    assert "1 comment(s) created before the window and edited in it are not staged" in read.sources[1].detail

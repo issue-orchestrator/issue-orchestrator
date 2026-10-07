@@ -5,11 +5,16 @@ bounded reads, each reporting whether it reached back to the window's start:
 
 * issue events (``/repos/<r>/issues/events``, newest first): label changes,
   renames, closes and reopens, with each event's actor;
-* issue and PR comments updated since the window began;
+* issue and PR comments updated since the window began (a comment created
+  before the window and edited in it is counted, not staged: GitHub does not
+  say who edited it);
 * the issues and PRs updated in the window (one GraphQL search): who opened
   each, who edited its body, reviewed it or merged it.
 
-People and automation are told apart by the domain policy, not here.
+People and automation are told apart by the domain policy, not here. A
+row missing a field the read relies on fails the whole read
+(:class:`~...ports.operator_activity.MalformedActivity`): staging then names
+GitHub as unread, rather than claiming a complete read with a row missing.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from ...ports.operator_activity import (
     Actor,
     ContentEdit,
     ItemActivity,
+    MalformedActivity,
     RepoActivityRead,
     RepoComment,
     RepoEvent,
@@ -76,7 +82,7 @@ class GitHubOperatorActivity:
         found: list[RepoEvent] = []
         for number in range(1, EVENT_PAGES + 1):
             page = self._page(f"/repos/{self._repo}/issues/events", {"per_page": 100, "page": number})
-            found += (_event(e, self._repo) for e in page if e.get("issue"))
+            found += (_event(e, self._repo) for e in page)
             if len(page) < 100 or (page and _at(page[-1]["created_at"]) < since):
                 return tuple(found), SourceRead("issue events", True, f"{number} page(s)")
         return tuple(found), SourceRead(
@@ -85,12 +91,22 @@ class GitHubOperatorActivity:
 
     def _comments(self, since: datetime) -> tuple[tuple[RepoComment, ...], SourceRead]:
         found: list[RepoComment] = []
+        edited_earlier = 0
         params: dict[str, Any] = {"since": since.isoformat(), "sort": "updated", "direction": "asc", "per_page": 100}
         for number in range(1, COMMENT_PAGES + 1):
             page = self._page(f"/repos/{self._repo}/issues/comments", {**params, "page": number})
-            found += (_comment(c) for c in page)
+            for comment in map(_comment, page):
+                if comment.at < since:
+                    edited_earlier += 1  # an earlier comment edited since: who edited it is unknown
+                else:
+                    found.append(comment)
             if len(page) < 100:
-                return tuple(found), SourceRead("comments", True, f"{number} page(s)")
+                detail = f"{number} page(s)" + (
+                    f"; {edited_earlier} comment(s) created before the window and edited in it are not"
+                    " staged (GitHub does not say who edited them)"
+                    if edited_earlier else ""
+                )
+                return tuple(found), SourceRead("comments", True, detail)
         return tuple(found), SourceRead(
             "comments", False, f"stopped after {COMMENT_PAGES} pages; later comments are missing"
         )
@@ -139,7 +155,19 @@ def _graph_actor(node: dict[str, Any] | None) -> Actor:
     return Actor(node.get("login"), node.get("__typename"))
 
 
+def _required(row: dict[str, Any], *fields: str) -> None:
+    missing = [f for f in fields if row.get(f) in (None, "")]
+    if missing:
+        raise MalformedActivity(f"GitHub answered a row without {', '.join(missing)}: {str(row)[:200]}")
+
+
 def _event(e: dict[str, Any], repo: str) -> RepoEvent:
+    _required(e, "id", "event", "created_at", "issue")
+    _required(e["issue"], "number")
+    if e["event"] == "renamed":
+        _required(e, "rename")
+    if e["event"] in ("labeled", "unlabeled"):
+        _required(e, "label")
     number = int(e["issue"]["number"])
     rename = e.get("rename")
     return RepoEvent(
@@ -154,9 +182,14 @@ def _event(e: dict[str, Any], repo: str) -> RepoEvent:
 
 
 def _comment(c: dict[str, Any]) -> RepoComment:
+    _required(c, "created_at", "updated_at", "issue_url", "html_url")
+    tail = str(c["issue_url"]).rsplit("/", 1)[-1]
+    if not tail.isdigit():
+        raise MalformedActivity(f"a comment's issue_url names no issue: {c['issue_url']}")
     return RepoComment(
         at=_at(c["created_at"]),
-        number=int(str(c["issue_url"]).rsplit("/", 1)[1]),
+        updated_at=_at(c["updated_at"]),
+        number=int(tail),
         actor=_rest_actor(c.get("user"), c.get("performed_via_github_app")),
         body=str(c.get("body") or ""),
         ref=str(c["html_url"]),
@@ -164,11 +197,17 @@ def _comment(c: dict[str, Any]) -> RepoComment:
 
 
 def _item(node: dict[str, Any]) -> tuple[ItemActivity, bool]:
-    edits = node.get("userContentEdits") or {"totalCount": 0, "nodes": []}
-    reviews = node.get("reviews") or {"totalCount": 0, "nodes": []}
+    is_pr = node["__typename"] == "PullRequest"
+    _required(node, "number", "url", "createdAt", "userContentEdits", *(("reviews",) if is_pr else ()))
+    edits = node["userContentEdits"]
+    reviews = node["reviews"] if is_pr else {"totalCount": 0, "nodes": []}
+    for nested in (edits, reviews):
+        _required(nested, "nodes")
+        if "totalCount" not in nested:
+            raise MalformedActivity(f"a nested list without totalCount on #{node['number']}")
     item = ItemActivity(
         number=int(node["number"]),
-        is_pr=node["__typename"] == "PullRequest",
+        is_pr=is_pr,
         created_at=_at(node["createdAt"]),
         author=_graph_actor(node.get("author")),
         edits=tuple(ContentEdit(_at(e["editedAt"]), _graph_actor(e.get("editor"))) for e in edits["nodes"]),
