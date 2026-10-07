@@ -1079,6 +1079,14 @@ class GitHubHttpClient:
 
         return collected[:limit], oldest_updated_at
 
+    def get_json(self, path: str, *, params: dict[str, Any] | None = None, caller: str) -> Any:
+        """An uncached ``GET`` of an API path (``/repos/...``), as decoded JSON.
+
+        For a caller whose own policy decides which paths are readable (the
+        improver's audited-repository reads, #8001); it never writes.
+        """
+        return self._request_json("GET", path, params=params, use_cache=False, caller=caller)
+
     def get_issue(self, issue_number: int, *, use_cache: bool = True) -> dict[str, Any] | None:
         payload = self._request_json(
             "GET",

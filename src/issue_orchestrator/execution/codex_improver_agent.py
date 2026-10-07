@@ -18,6 +18,7 @@ the orchestrator passes it.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -30,6 +31,7 @@ from ..domain.sandbox_scope import (
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
 from ..ports.improver import ImproverAgentResult
+from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, TOOLBOX_TOKEN_ENV, ToolboxEndpoint
 from .agent_runner_providers.sandbox import build_codex_sandbox_argv
 
 #: Where Codex leaves the agent's last message, inside the run directory.
@@ -81,13 +83,13 @@ class CodexImproverAgent:
             deny_read_files=DEFAULT_SANDBOX_DENY_READ_FILES,
         )
 
-    def argv(self, *, prompt: str, run_dir: Path) -> list[str]:
+    def argv(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> list[str]:
         # stdin is /dev/null: ``codex exec`` appends a PIPED stdin to the
         # prompt, and would wait on one inherited from a runner that never
         # closes it.
         return [
             "/bin/sh", "-c", 'exec "$@" </dev/null', "sh",
-            "codex", *build_codex_sandbox_argv(self.scope(run_dir)), "exec",
+            "codex", *build_codex_sandbox_argv(self.scope(run_dir)), *_toolbox_overrides(toolbox), "exec",
             "--skip-git-repo-check",
             "--ephemeral",
             "--color", "never",
@@ -96,7 +98,7 @@ class CodexImproverAgent:
             prompt,
         ]
 
-    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
         # Absolute: Codex runs IN the run dir, so a relative final-message
         # path or sandbox root would resolve beneath it.
         run_dir = run_dir.resolve()
@@ -106,9 +108,13 @@ class CodexImproverAgent:
         if initialized.returncode:
             raise RuntimeError(f"cannot prepare the agent workspace: {initialized.stderr.strip()}")
         result = self._runner.run(
-            self.argv(prompt=prompt, run_dir=run_dir),
+            self.argv(prompt=prompt, run_dir=run_dir, toolbox=toolbox),
             cwd=run_dir,
-            env={**agent_environment(os.environ), "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir)},
+            env={
+                **agent_environment(os.environ),
+                "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir),
+                **({} if toolbox is None else {TOOLBOX_TOKEN_ENV: toolbox.token}),
+            },
             timeout_seconds=self._timeout,
         )
         (run_dir / "improver-agent.log").write_text(
@@ -123,6 +129,18 @@ class CodexImproverAgent:
         if not text.strip():
             return ImproverAgentResult(None, "codex finished without a final message")
         return ImproverAgentResult(text, "codex finished")
+
+
+def _toolbox_overrides(toolbox: ToolboxEndpoint | None) -> list[str]:
+    """The empowered toolbox as Codex's one MCP server; Codex reads its
+    bearer token from the named environment variable, never the argv."""
+    if toolbox is None:
+        return []
+    server = f"mcp_servers.{TOOLBOX_SERVER_NAME}"
+    return [
+        "-c", f"{server}.url={json.dumps(toolbox.url)}",
+        "-c", f"{server}.bearer_token_env_var={json.dumps(TOOLBOX_TOKEN_ENV)}",
+    ]
 
 
 __all__ = ["CodexImproverAgent", "FINAL_MESSAGE_FILE"]

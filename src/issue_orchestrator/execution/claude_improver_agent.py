@@ -7,8 +7,10 @@
   files, so no hook, permission rule or instruction file of the operator's
   reaches the agent (the tournament's arms had to deny ``~/.claude`` and the
   io checkouts one by one; this confines by construction);
-* ``--tools Read,Grep,Glob`` is the whole toolset: no shell, no writes, no
-  web. ``--permission-mode dontAsk`` denies anything else instead of
+* ``--tools Read,Grep,Glob`` is the whole built-in toolset: no shell, no
+  writes, no web. An EMPOWERED run adds the read-only toolbox
+  (:mod:`.improver_toolbox`) as its one MCP server, served by the
+  orchestrator. ``--permission-mode dontAsk`` denies anything else instead of
   prompting a terminal nobody watches, and ``--strict-mcp-config`` loads no
   MCP server;
 * the PROMPT GOES ON STDIN. ``--tools`` (like ``--disallowedTools``) is
@@ -23,6 +25,7 @@ credential (a token in a finding's free text would reach a filed issue).
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -30,6 +33,7 @@ from pathlib import Path
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
 from ..ports.improver import ImproverAgentResult
+from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, TOOLBOX_TOKEN_ENV, ToolboxEndpoint
 
 #: The prompt, inside the run directory, that the launch feeds on stdin.
 PROMPT_FILE = "improver-prompt.txt"
@@ -65,7 +69,7 @@ class ClaudeImproverAgent:
     def choice(self) -> ImproverAgentChoice:
         return self._choice
 
-    def argv(self, *, run_dir: Path) -> list[str]:
+    def argv(self, *, run_dir: Path, toolbox: ToolboxEndpoint | None) -> list[str]:
         return [
             # The prompt file is the shell's first argument, so no path is
             # ever spliced into the script text.
@@ -78,18 +82,23 @@ class ClaudeImproverAgent:
             "--strict-mcp-config",
             "--no-session-persistence",
             "--output-format", "text",
+            *_toolbox_arguments(toolbox),
             "--model", self._choice.model,
         ]
 
-    def run(self, *, prompt: str, run_dir: Path) -> ImproverAgentResult:
+    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
         # Absolute: the launch runs IN the run dir, so a relative prompt path
         # would resolve beneath it.
         run_dir = run_dir.resolve()
         (run_dir / PROMPT_FILE).write_text(prompt, encoding="utf-8")
         result = self._runner.run(
-            self.argv(run_dir=run_dir),
+            self.argv(run_dir=run_dir, toolbox=toolbox),
             cwd=run_dir,
-            env={**agent_environment(os.environ), "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir)},
+            env={
+                **agent_environment(os.environ),
+                "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir),
+                **({} if toolbox is None else {TOOLBOX_TOKEN_ENV: toolbox.token}),
+            },
             timeout_seconds=self._timeout,
         )
         (run_dir / AGENT_LOG).write_text(result.stdout + "\n--- stderr ---\n" + result.stderr, encoding="utf-8")
@@ -101,6 +110,27 @@ class ClaudeImproverAgent:
         if not result.stdout.strip():
             return ImproverAgentResult(None, "claude finished without a final message")
         return ImproverAgentResult(result.stdout, "claude finished")
+
+
+def _toolbox_arguments(toolbox: ToolboxEndpoint | None) -> list[str]:
+    """The empowered toolbox as Claude's one MCP server. Its bearer token is
+    expanded by Claude from its environment, so it is never on a command
+    line; ``--allowedTools`` admits the server's tools under ``dontAsk``."""
+    if toolbox is None:
+        return []
+    config = {
+        "mcpServers": {
+            TOOLBOX_SERVER_NAME: {
+                "type": "http",
+                "url": toolbox.url,
+                "headers": {"Authorization": f"Bearer ${{{TOOLBOX_TOKEN_ENV}}}"},
+            }
+        }
+    }
+    return [
+        "--mcp-config", json.dumps(config, sort_keys=True),
+        "--allowedTools", f"mcp__{TOOLBOX_SERVER_NAME}",
+    ]
 
 
 __all__ = ["AGENT_LOG", "PROMPT_FILE", "READ_TOOLS", "ClaudeImproverAgent"]
