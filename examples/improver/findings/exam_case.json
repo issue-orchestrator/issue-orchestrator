@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "engine_commit": "0123456789abcdef0123456789abcdef01234567",
   "engine_started_at": "2026-09-28T12:00:00+00:00",
   "findings": [
@@ -71,6 +71,7 @@
       "proposal": "Add exam case E-refused-validation-retry-loop; do not change existing cases."
     }
   ],
+  "design_findings": [],
   "blocked_items": [
     {
       "number": 353,

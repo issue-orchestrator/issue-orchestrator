@@ -35,7 +35,16 @@ where you judge it pays.
   would leak other people's conclusions into yours. If a tool refuses you, that is why.
 - **Budget:** about <<BUDGET_MINUTES>> minutes of work. Stop when you judge further digging
   won't change your findings.
-- **The evidence rule is unchanged:** cite what you read (log lines with timestamps, issue/PR
-  numbers with quoted text, `file:line`, a query and its result). No citation, no finding.
+- **The evidence rule is unchanged:** no citation, no finding.
+
+**Report DESIGN findings too, not only stalls** (`design_findings`, see the field rules
+above). Look for places where the system's model of the world doesn't match reality: one
+mechanism carrying two meanings, a silent assumption, the operator doing by hand what the
+system should do, a human needed only because a tool is missing, and frictions only the
+operator experiences (how they approve, what they must do before approving, where they
+see what waits on them). Quote what you read: a `file` citation of a log or source line
+under `toolbox/` or `improver-data/`, or a `tool` citation of a `github_get` answer (or of
+one stored value in a `sql_query` answer) by its `[toolbox call N]` number. A `git` answer
+is never evidence: cite the file in `toolbox/repo/` instead.
 
 Your final message is the single findings JSON object specified above.

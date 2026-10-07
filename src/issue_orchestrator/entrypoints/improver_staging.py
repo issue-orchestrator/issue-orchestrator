@@ -82,6 +82,7 @@ from ..observation.improver_inputs import (
 from ..ports.engine_audit import OpenIssueLabels, OpenWorkHost, TechLeadRunHistoryRead
 from ..ports.pull_request_tracker import PRInfo
 from ..testing.exam.cases import EXAM_CASE_IDS
+from ..execution.improver_citations import RunDirCitations
 from .engine_snapshot import EngineSnapshot, snapshot_engine, snapshot_tech_lead_runs
 
 M = TypeVar("M", bound=BaseModel)
@@ -547,6 +548,7 @@ def load_staged_evidence(data_dir: Path) -> StagedEvidence:
         engine_source_files=frozenset(
             p.relative_to(source).as_posix() for p in source.rglob("*") if p.is_file()
         ),
+        citations=RunDirCitations(data_dir.parent),
     )
 
 
