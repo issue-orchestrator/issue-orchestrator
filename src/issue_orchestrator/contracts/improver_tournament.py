@@ -177,16 +177,27 @@ class TournamentCost(_Closed):
 
 
 class TournamentNoise(_Closed):
-    """Variances pooled over the tournament's arms (None: not measurable)."""
+    """The tournament's measured noise (heat: a variance, None when no arm
+    ran two heats; grader, pass_: what each adds to the variance of a
+    difference between two arms, averaged over every pair)."""
 
-    #: One heat's mean score about its arm's mean (needs an arm with two heats).
     heat: float | None
-    #: One grader's arm mean about the graders' consensus.
-    grader: float | None
-    #: One pass's arm mean about its grader's mean.
-    pass_: float | None
+    grader: float
+    pass_: float
     #: The smallest score step a grading expresses.
     resolution: float
+
+
+class ArmComparison(_Closed):
+    """Two arms compared: told apart only if the gap exceeds the band AND the
+    heats' permutation test reaches its level."""
+
+    higher: str
+    lower: str
+    gap: float
+    band: float
+    heat_p: float
+    distinguishable: bool
 
 
 class TournamentResult(_Closed):
@@ -199,17 +210,31 @@ class TournamentResult(_Closed):
     passes: Annotated[int, Field(ge=1)]
     #: The tournament's measured noise, pooled over every arm.
     noise: TournamentNoise
-    #: How many standard errors of a difference tell two arms apart.
+    #: How many standard errors of a difference the noise band is.
     band_ses: float
+    #: The level of the heats' permutation test.
+    heat_alpha: float
     arms: tuple[ArmScore, ...]
-    #: Best first, in groups of pairwise-indistinguishable arms (">" orders groups by mean).
+    #: Every pair, higher mean first.
+    comparisons: tuple[ArmComparison, ...]
+    #: Best first, in tiers: every arm in a tier is told apart from every arm in any lower tier.
     ranking: tuple[tuple[str, ...], ...]
-    #: Every pair (higher, lower) whose means differ by more than their noise band.
-    distinguishable: tuple[tuple[str, str], ...]
     cost: TournamentCost
 
+    @property
+    def distinguishable(self) -> tuple[tuple[str, str], ...]:
+        """Every pair (higher, lower) told apart."""
+        return tuple((c.higher, c.lower) for c in self.comparisons if c.distinguishable)
+
     def ranking_text(self) -> str:
-        return " > ".join(" ≈ ".join(group) for group in self.ranking)
+        """Tiers joined by ">"; a tier of arms none of which are told apart
+        is "A ≈ B"; one that holds a told-apart pair lists it: "{A, B, C: B>C}"."""
+        apart = set(self.distinguishable)
+        parts = []
+        for tier in self.ranking:
+            inside = [f"{x}>{y}" for i, x in enumerate(tier) for y in tier[i + 1:] if (x, y) in apart]
+            parts.append("{" + ", ".join(tier) + ": " + ", ".join(inside) + "}" if inside else " ≈ ".join(tier))
+        return " > ".join(parts)
 
 
 __all__ = [
@@ -217,6 +242,7 @@ __all__ = [
     "SNAPSHOT_MANIFEST",
     "AnswerKey",
     "AnswerKeyItem",
+    "ArmComparison",
     "ArmScore",
     "Extra",
     "FrozenSnapshot",

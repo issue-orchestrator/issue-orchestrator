@@ -232,16 +232,22 @@ data lives under `<git common dir>/io-improver/`:
   unsupported finding. Each grader grades every output `--passes` times
   (default 3; graders side by side, a grader's passes in turn); a grader's
   passes are averaged first, since repeating one grader's opinion is not more
-  evidence. An arm's score is the mean over its outputs and graders. The
-  tournament's noise is measured once, pooled over every arm (so one pair
-  agreeing by chance cannot zero it): the heats' spread, the graders'
-  disagreement and the passes' noise. An arm's mean varies by heat noise / its
-  heats plus the larger of grader and pass noise / graders, never less than a
-  grading's resolution allows (half credit on the lightest key item). Two arms
-  are told apart only when some arm ran two heats (else heat luck is unmeasured) and
-  their means differ by more than twice the standard error of the difference;
-  arms within that band are reported indistinguishable (`≈`, grouped only
-  when pairwise so), which is a result, not a failure. `result.json` records each grading,
+  evidence. An arm's score is the mean over its outputs and graders. Two arms
+  are told apart only when both hold: (1) **heats**, the arms' independent
+  samples: an exact one-sided permutation test over their per-heat scores
+  reaches p <= 0.05 (two heats an arm can never pass it, since the most extreme
+  split has p = 1/6; three heats each, wholly separated, give p = 1/20); and
+  (2) **the noise band**: the gap exceeds twice the standard error of the
+  difference, from the heats' spread plus the larger of the graders'
+  disagreement on the difference and its pass-to-pass noise (paired, so a
+  grader's bias shared by both arms cancels). Each component is the larger of
+  its estimate on the pair and on the whole tournament (never zero by a
+  pair's chance agreement, never diluted by quiet arms), and never below what
+  a grading resolves (half credit on the lightest key item). The ranking is
+  in tiers: `>` between tiers means every arm above is told apart from every
+  arm below; a tier lists any pair inside it that is told apart
+  (`{A, B, C: B>C}`); arms not told apart are reported indistinguishable,
+  which is a result, not a failure. `result.json` records each grading,
   the pass noise, the distinguishable pairs and the cost (arm heats and every
   grader call, retries included, per provider; Claude's count against the operator's subscription).
 

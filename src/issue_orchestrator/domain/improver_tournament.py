@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import math
 import random
+from itertools import combinations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -194,60 +195,73 @@ class PooledArm:
 
 @dataclass(frozen=True)
 class NoiseComponents:
-    """The tournament's measured noise, pooled over every arm (so one pair
-    agreeing by chance cannot zero it). None: not measurable from this
-    sample. Each is a variance of one unit's score about its expectation."""
+    """The tournament's noise. ``heat`` is a variance (None: no arm ran two
+    heats); ``grader`` and ``pass_`` are what they add to the variance of a
+    difference between two arms, averaged over every pair."""
 
-    #: One heat's (output's) mean score about its arm's mean; needs an arm with two heats.
+    #: One heat's (output's) mean score about its arm's mean, pooled over every arm.
     heat: float | None
-    #: One grader's arm mean about the graders' consensus; needs two graders.
-    grader: float | None
-    #: One pass's arm mean about its grader's mean; needs two passes.
-    pass_: float | None
-    #: The smallest score step a grading can express (half credit on the
-    #: lightest key item): no grading resolves an output closer than half of it.
-    resolution: float
+    #: The graders' disagreement on a difference: var over graders of each one's difference / graders.
+    grader: float
+    #: The passes' noise on a difference: within-grader var over passes / (passes x graders).
+    pass_: float
 
 
 @dataclass(frozen=True)
 class PooledScores:
     """Every arm's pooled score and the noise it was measured under.
 
-    An arm's mean varies with its heats (``heat / n``) and with who graded
-    it (the larger of grader disagreement and pass noise, ``/ graders``);
-    never less than grading resolution allows. Two arms are told apart only
-    when heat noise is measured and their means differ by more than twice
-    the standard error of the difference. Comparisons are unpaired, which is
-    conservative: a promotion should need a clear win.
+    Two arms are told apart only when both hold:
+
+    * **Heats.** Heats are the arms' independent samples: an exact
+      one-sided permutation test over the two arms' per-heat scores must
+      reach ``ALPHA``. With two heats an arm can never pass it (the most
+      extreme split has p = 1/6); three heats each, wholly separated, give
+      p = 1/20.
+    * **Noise band.** The gap exceeds twice the standard error of the
+      difference: the heats' spread, plus the larger of the graders'
+      disagreement on the difference and its pass-to-pass noise (both
+      paired: a grader's bias shared by both arms cancels). Each component
+      is the larger of its estimate on the two arms and on the whole
+      tournament (so it is neither zero by a pair's chance agreement nor
+      diluted by quiet arms), and never below what a grading resolves.
     """
 
     arms: Mapping[str, PooledArm]
     graders: tuple[str, ...]
     passes: int
+    #: The tournament's noise, pooled over every arm.
     noise: NoiseComponents
-
-    def variance(self, arm: str) -> float:
-        n, g = len(self.arms[arm].output_means), len(self.graders)
-        heat = (self.noise.heat or 0.0) / n
-        grading = max(self.noise.grader or 0.0, (self.noise.pass_ or 0.0) / self.passes) / g
-        return max(heat + grading, self.noise.resolution ** 2 / (4 * g * n))
+    #: The smallest score step a grading expresses (half credit on the lightest key item).
+    resolution: float
 
     def difference_se(self, a: str, b: str) -> float:
-        return math.sqrt(self.variance(a) + self.variance(b))
+        pair_heat = _pooled_variance([list(self.arms[a].output_means), list(self.arms[b].output_means)])
+        heat = max(pair_heat or 0.0, self.noise.heat or 0.0)
+        grader = max(_grader_term(self.arms[a], self.arms[b], self.graders), self.noise.grader)
+        pass_ = max(_pass_term(self.arms[a], self.arms[b], self.graders, self.passes), self.noise.pass_)
+        n_a, n_b = len(self.arms[a].output_means), len(self.arms[b].output_means)
+        floor = self.resolution ** 2 / (4 * len(self.graders)) * (1 / n_a + 1 / n_b)
+        return math.sqrt(max(heat * (1 / n_a + 1 / n_b) + max(grader, pass_), floor))
 
     def band(self, a: str, b: str) -> float:
-        """How far apart two arms' means must be to tell them apart."""
+        """How far apart two arms' means must be to tell them apart (with the heats' test)."""
         return NOISE_BAND_SES * self.difference_se(a, b)
 
+    def heat_p(self, a: str, b: str) -> float:
+        """One-sided exact permutation p that the higher arm's heats beat the lower's by chance."""
+        hi, lo = (a, b) if self.arms[a].mean >= self.arms[b].mean else (b, a)
+        return _permutation_p(self.arms[hi].output_means, self.arms[lo].output_means)
+
     def distinguishable(self, a: str, b: str) -> bool:
-        # With no arm run twice, an arm cannot be told from its heat's luck.
-        if self.noise.heat is None:
-            return False
-        return abs(self.arms[a].mean - self.arms[b].mean) > self.band(a, b)
+        gap = abs(self.arms[a].mean - self.arms[b].mean)
+        return gap > self.band(a, b) and self.heat_p(a, b) <= ALPHA
 
 
 #: How many standard errors of a difference separate two arms (about 95%).
 NOISE_BAND_SES = 2.0
+#: The heats' permutation test's level.
+ALPHA = 0.05
 
 
 def pool(
@@ -276,14 +290,39 @@ def pool(
     nothing = {label: 0.0 for ls in outputs.values() for label in ls if label.startswith("(none)")}
     runs = {g: [{**r, **nothing} for r in gradings[g]] for g in graders}
     arms = {arm: _pooled_arm(arm_labels, runs) for arm, arm_labels in outputs.items()}
-    noise = NoiseComponents(
-        heat=_pooled_variance([list(a.output_means) for a in arms.values()]),
-        grader=_pooled_variance([list(a.grader_means.values()) for a in arms.values()]),
-        pass_=_pooled_variance([list(a.pass_means[g]) for a in arms.values() for g in graders]),
+    scores = PooledScores(
+        arms=arms, graders=graders, passes=passes, noise=_components(list(arms.values()), graders, passes),
         resolution=resolution,
     )
-    scores = PooledScores(arms=arms, graders=graders, passes=passes, noise=noise)
-    return replace(scores, arms={arm: replace(a, se=math.sqrt(scores.variance(arm))) for arm, a in arms.items()})
+    return replace(scores, arms={arm: replace(a, se=_arm_se(scores, arm)) for arm, a in arms.items()})
+
+
+def _components(arms: Sequence[PooledArm], graders: Sequence[str], passes: int) -> NoiseComponents:
+    pairs = list(combinations(arms, 2))
+    return NoiseComponents(
+        heat=_pooled_variance([list(a.output_means) for a in arms]),
+        grader=sum(_grader_term(a, b, graders) for a, b in pairs) / len(pairs) if pairs else 0.0,
+        pass_=sum(_pass_term(a, b, graders, passes) for a, b in pairs) / len(pairs) if pairs else 0.0,
+    )
+
+
+def _grader_term(a: PooledArm, b: PooledArm, graders: Sequence[str]) -> float:
+    """The graders' disagreement on ``a - b``: its variance over graders / graders."""
+    diffs = [a.grader_means[g] - b.grader_means[g] for g in graders]
+    return (_pooled_variance([diffs]) or 0.0) / len(diffs)
+
+
+def _pass_term(a: PooledArm, b: PooledArm, graders: Sequence[str], passes: int) -> float:
+    """``a - b``'s pass-to-pass noise: within-grader variance over passes / (passes x graders)."""
+    groups = [[x - y for x, y in zip(a.pass_means[g], b.pass_means[g], strict=True)] for g in graders]
+    return (_pooled_variance(groups) or 0.0) / (passes * len(graders))
+
+
+def _arm_se(scores: PooledScores, arm: str) -> float:
+    """For display: the standard error of one arm's mean, on the tournament's noise."""
+    n, g, noise = len(scores.arms[arm].output_means), len(scores.graders), scores.noise
+    shared = max(noise.grader, noise.pass_) / 2  # half a difference's
+    return math.sqrt(max((noise.heat or 0.0) / n + shared, scores.resolution ** 2 / (4 * g * n)))
 
 
 def _pooled_variance(groups: Sequence[Sequence[float]]) -> float | None:
@@ -295,6 +334,21 @@ def _pooled_variance(groups: Sequence[Sequence[float]]) -> float | None:
             squares += sum((v - m) ** 2 for v in values)
             dof += len(values) - 1
     return squares / dof if dof else None
+
+
+def _permutation_p(high: Sequence[float], low: Sequence[float]) -> float:
+    """The share of all splits of the pooled heats into groups of these sizes
+    whose first group beats the second by at least the observed gap."""
+    together = [*high, *low]
+    observed = sum(high) / len(high) - sum(low) / len(low)
+    total = sum(together)
+    hits = splits = 0
+    for chosen in combinations(range(len(together)), len(high)):
+        first = sum(together[i] for i in chosen)
+        gap = first / len(high) - (total - first) / len(low)
+        hits += gap >= observed - 1e-9
+        splits += 1
+    return hits / splits
 
 
 def _passes_of(gradings: Mapping[str, Sequence[Mapping[str, float]]], labels: set[str]) -> int:
@@ -326,18 +380,19 @@ def _pooled_arm(labels: Sequence[str], runs: Mapping[str, Sequence[Mapping[str, 
 
 
 def rank(means: Mapping[str, float], *, distinguishable: Callable[[str, str], bool]) -> tuple[tuple[str, ...], ...]:
-    """Best first, in groups of arms that are pairwise indistinguishable: an
-    arm joins the current group only if no member is distinguishable from
-    it. (Between groups, ">" orders by mean; whether two arms in different
-    groups are told apart is the pairwise record, not the grouping.)"""
+    """Best first, in tiers: a tier ends only where every arm above is told
+    apart from every arm below, so ">" between tiers always holds pairwise.
+    Within a tier arms are in mean order; which of them are told apart is
+    the pairwise record, not the tier."""
     ordered = sorted(means, key=lambda arm: (-means[arm], arm))
-    groups: list[list[str]] = []
-    for arm in ordered:
-        if groups and not any(distinguishable(member, arm) for member in groups[-1]):
-            groups[-1].append(arm)
-        else:
-            groups.append([arm])
-    return tuple(tuple(g) for g in groups)
+    tiers: list[list[str]] = []
+    start = 0
+    for cut in range(1, len(ordered) + 1):
+        above, below = ordered[start:cut], ordered[cut:]
+        if cut == len(ordered) or all(distinguishable(x, y) for x in ordered[:cut] for y in below):
+            tiers.append(above)
+            start = cut
+    return tuple(tuple(t) for t in tiers)
 
 
-__all__ = ["NOISE_BAND_SES", "GradesRejected", "NoiseComponents", "PooledArm", "PooledScores", "anonymize", "finding_ids", "parse_sealed_key", "pool", "rank", "read_grades", "score"]
+__all__ = ["ALPHA", "NOISE_BAND_SES", "GradesRejected", "NoiseComponents", "PooledArm", "PooledScores", "anonymize", "finding_ids", "parse_sealed_key", "pool", "rank", "read_grades", "score"]

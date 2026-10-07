@@ -317,10 +317,11 @@ def render_result(result: TournamentResult, directory: Path) -> str:
                  f" heat {var(n.heat)}, grader {var(n.grader)}, pass {var(n.pass_)}; resolution {n.resolution:g}")
     lines += [f"  arm {a.arm}: mean {a.mean:.2f} ± {a.se:.2f} se (outputs {list(a.output_means)}) "
               + " ".join(f"{grading}={list(v)}" for grading, v in a.scores.items()) for a in result.arms]
-    lines.append(
-        f"  ranking: {result.ranking_text()} (≈: pairwise within {result.band_ses:g} standard errors of their difference)"
-    )
-    lines.append("  distinguishable: " + (", ".join(f"{a}>{b}" for a, b in result.distinguishable) or "none"))
+    lines.append(f"  ranking: {result.ranking_text()}")
+    lines.append(f"  (told apart: gap > {result.band_ses:g} standard errors of the difference AND the heats'"
+                 f" permutation p <= {result.heat_alpha:g})")
+    lines += [f"    {c.higher} vs {c.lower}: gap {c.gap:.2f}, band {c.band:.2f}, heat p {c.heat_p:.3f}"
+              f" -> {'told apart' if c.distinguishable else 'indistinguishable'}" for c in result.comparisons]
     cost = result.cost
     lines.append(f"  cost: arm heats {cost.arm_heats or 'none (recorded)'}; grader calls {cost.grader_calls};"
                  f" grader seconds {cost.grader_seconds} (Claude counts against the operator's subscription)")

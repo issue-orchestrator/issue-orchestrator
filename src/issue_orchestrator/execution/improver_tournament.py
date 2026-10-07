@@ -47,6 +47,7 @@ from ..contracts.improver_toolbox import ToolboxManifest
 from ..contracts.improver_tournament import (
     GRADE_CREDIT,
     AnswerKey,
+    ArmComparison,
     ArmScore,
     GraderRun,
     TournamentArm,
@@ -57,6 +58,7 @@ from ..contracts.improver_tournament import (
 )
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_tournament import (
+    ALPHA,
     NOISE_BAND_SES,
     GradesRejected,
     PooledScores,
@@ -567,13 +569,17 @@ def _result(
         tournament_id=tournament_id, snapshot_id=snapshot_id, key_items=len(key.scored),
         max_score=key.max_score, graders=runs, passes=passes,
         noise=TournamentNoise(
-            heat=_rounded(pooled.noise.heat), grader=_rounded(pooled.noise.grader),
-            pass_=_rounded(pooled.noise.pass_), resolution=pooled.noise.resolution,
+            heat=_rounded(pooled.noise.heat), grader=round(pooled.noise.grader, 4),
+            pass_=round(pooled.noise.pass_, 4), resolution=pooled.resolution,
         ),
-        band_ses=NOISE_BAND_SES, arms=tuple(arms),
+        band_ses=NOISE_BAND_SES, heat_alpha=ALPHA, arms=tuple(arms),
         ranking=rank(means, distinguishable=pooled.distinguishable),
-        distinguishable=tuple(
-            (a, b) for i, a in enumerate(ordered) for b in ordered[i + 1:] if pooled.distinguishable(a, b)
+        comparisons=tuple(
+            ArmComparison(
+                higher=a, lower=b, gap=round(means[a] - means[b], 3), band=round(pooled.band(a, b), 3),
+                heat_p=round(pooled.heat_p(a, b), 4), distinguishable=pooled.distinguishable(a, b),
+            )
+            for i, a in enumerate(ordered) for b in ordered[i + 1:]
         ),
         cost=cost,
     )

@@ -561,12 +561,13 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
         TournamentArm(name="X", provider="codex", model="dead-model", mode="scripted"),
     ]
 
-    outputs = harness.run_arms("t1", "20261004", [_spec(arm) for arm in arms])
+    # Three heats an arm: with two, no arm can be told from its heats' luck.
+    outputs = harness.run_arms("t1", "20261004", [_spec(arm, heats=HeatPlan(3, 3)) for arm in arms])
     result = harness.grade("t1", "20261004", outputs, seed=11)
 
     assert {(o.arm, o.heat, o.text is not None) for o in outputs} == {
         # P's answers broke io's rules (rejected): like X's none, they are not graded.
-        ("G", 1, True), ("G", 2, True), ("P", 1, False), ("P", 2, False), ("X", 1, False), ("X", 2, False),
+        *((arm, heat, arm == "G") for arm in "GPX" for heat in (1, 2, 3)),
     }
     # Each grader graded every output three times (the default passes), side by side.
     assert sorted(g.grading for g in result.graders) == [f"{g}#{n}" for g in ("claude", "codex") for n in (1, 2, 3)]
@@ -577,7 +578,7 @@ def test_arms_run_on_the_frozen_snapshot_and_are_graded_blind_by_every_grader(st
     assert result.noise.resolution == 1.0  # half credit on the key's lightest item (weight 2)
     assert result.ranking == (("G",), ("P", "X"))
     assert result.distinguishable == (("G", "P"), ("G", "X"))
-    assert result.cost.arm_heats == {"claude": 2, "codex": 4}
+    assert result.cost.arm_heats == {"claude": 3, "codex": 6}
     assert result.cost.grader_calls == {"claude": 3, "codex": 3}
     directory = harness.directory("t1").resolve()
     # Graders read only the anonymized outputs and the key; never the
@@ -717,7 +718,8 @@ def test_an_answer_io_rejected_scores_nothing_however_it_reads(stores) -> None: 
     arms = [TournamentArm(name="V", provider="claude", model="valid", mode="scripted"),
             TournamentArm(name="R", provider="codex", model="invalid", mode="scripted")]
 
-    result = harness.grade("t9", "20261004", harness.run_arms("t9", "20261004", [_spec(a) for a in arms]), seed=3)
+    outputs = harness.run_arms("t9", "20261004", [_spec(a, heats=HeatPlan(3, 3)) for a in arms])
+    result = harness.grade("t9", "20261004", outputs, seed=3)
 
     assert {a.arm: a.mean for a in result.arms} == {"V": 8.0, "R": 0.0}
     assert result.ranking == (("V",), ("R",))
@@ -853,8 +855,9 @@ def test_arms_within_the_measured_grading_noise_are_reported_indistinguishable(s
         return json.dumps(out)
 
     harness = _harness(root, stores, Agents({}, {"claude": noisy, "codex": noisy}))
-    outputs = [ArmOutput("S", 1, '{"strong": 1}'), ArmOutput("S", 2, '{"strong": 2}'),
-               ArmOutput("W", 1, '{"weak": 1}'), ArmOutput("W", 2, '{"weak": 2}'), ArmOutput("N", 1, None)]
+    outputs = [*(ArmOutput("S", h, f'{{"strong": {h}}}') for h in (1, 2, 3)),
+               *(ArmOutput("W", h, f'{{"weak": {h}}}') for h in (1, 2, 3)),
+               *(ArmOutput("N", h, None) for h in (1, 2, 3))]
 
     result = harness.grade("t15", "20261004", outputs, seed=2)
 
