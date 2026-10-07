@@ -13,17 +13,25 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Protocol
 
-from ..contracts.improver_toolbox import TOOLBOX_DIRNAME, ImproverMode
+from ..contracts.improver_toolbox import TOOLBOX_DIRNAME, ImproverMode, ToolboxManifest
 from ..domain.engine_activity import EngineRef
 from ..ports.improver_investigation import InvestigationKit
 from ..ports.improver_toolbox import AuditedRepoReads
 from .improver_toolbox import ImproverToolbox, serve_toolbox
-from .improver_toolbox_staging import ImproverToolboxStager
 
 #: The addendum, relative to the io checkout.
 EMPOWERED_ADDENDUM = Path("examples/prompts/tech-lead-improver-empowered.md")
 _PLACEHOLDERS = ("<<AUDITED_REPO>>", "<<BUDGET_MINUTES>>", "<<STAGED_AT>>")
+
+
+class ToolboxStaging(Protocol):
+    """Puts the toolbox in a run dir: staged from a live engine
+    (:class:`.improver_toolbox_staging.ImproverToolboxStager`) or copied from
+    a frozen snapshot (a tournament's arms)."""
+
+    def stage(self, engine: EngineRef, run_dir: Path) -> ToolboxManifest: ...
 
 
 class ScriptedInvestigation:
@@ -40,7 +48,7 @@ class EmpoweredInvestigation:
     def __init__(
         self,
         *,
-        stager: ImproverToolboxStager,
+        stager: ToolboxStaging,
         github: Callable[[str], AuditedRepoReads | None],
         addendum: str,
         budget_minutes: int,
@@ -75,4 +83,4 @@ class EmpoweredInvestigation:
             )
 
 
-__all__ = ["EMPOWERED_ADDENDUM", "EmpoweredInvestigation", "ScriptedInvestigation"]
+__all__ = ["EMPOWERED_ADDENDUM", "EmpoweredInvestigation", "ScriptedInvestigation", "ToolboxStaging"]

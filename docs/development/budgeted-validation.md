@@ -204,6 +204,29 @@ most 5 heats; their waves (`ceil(heats / parallel-heats)`) times
 `--agent-timeout-minutes` must fit `--run-budget-minutes` (default 105,
 inside the suite's 120).
 
+**The improver tournament** (#8001;
+`python -m issue_orchestrator.entrypoints.cli_tools.improver_tournament`)
+compares improver arms (a provider, model and mode) on equal ground. All its
+data lives under `<git common dir>/io-improver/`:
+
+- `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
+  `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
+  A snapshot is imported once and never changed (`snapshot import`), and an old
+  bundle is upgraded to today's contracts with each change named.
+- `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
+  written before results (`key seed`), then problems found later that the
+  snapshot's evidence already showed (`key add`, a `candidate` until
+  `key confirm`). Only these commands write keys. No improver run can reach
+  the key store, and no agent can read it.
+- `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats on
+  the snapshot as ordinary improver runs, which never apply or touch GitHub,
+  and read no live GitHub, since that would show what was found later.
+  `grade-recorded` grades answers an earlier tournament recorded. Either way
+  the outputs are anonymized (`anon/`, mapping sealed in `sealed/`), graded by
+  cross-model graders (default one Claude, one Codex) that read only `anon/`
+  and `key/`, and ranked: weight × (full 1, half ½, miss 0), less 1 per
+  unsupported finding, averaged over heats and graders; ties within 0.5.
+
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits
