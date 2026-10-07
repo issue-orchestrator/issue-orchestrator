@@ -37,6 +37,9 @@ Grade each item per arm.
 Max score = 8
 """
 T0 = datetime(2026, 10, 4, 3, 40, tzinfo=UTC)
+#: Outputs (label -> their finding ids) that name no finding.
+NO_FINDINGS_1: dict[str, frozenset[str]] = {"S10": frozenset()}
+NO_FINDINGS_2: dict[str, frozenset[str]] = {"S10": frozenset(), "S11": frozenset()}
 
 
 def _key() -> AnswerKey:
@@ -86,7 +89,7 @@ def test_an_output_scores_its_items_weights_by_grade_less_its_unsupported_findin
         "S11": _grades({"1": "miss", "2": "miss", "9": "full"}, unsupported=1),
     })
 
-    grades = read_grades(f"```json\n{answer}\n```", ["S10", "S11"], key)
+    grades = read_grades(f"```json\n{answer}\n```", {"S10": frozenset(), "S11": frozenset({"u0"})}, key)
 
     assert score(grades["S10"], key) == 3 + 1 + 0
     assert score(grades["S11"], key) == 3 - 1
@@ -106,7 +109,7 @@ def test_an_output_scores_its_items_weights_by_grade_less_its_unsupported_findin
 )
 def test_an_incomplete_or_malformed_grading_is_no_grade(answer: str, why: str) -> None:
     with pytest.raises(GradesRejected, match=why):
-        read_grades(answer, ["S10", "S11"], _key())
+        read_grades(answer, NO_FINDINGS_2, _key())
 
 
 def test_a_candidate_key_item_is_not_graded() -> None:
@@ -118,7 +121,7 @@ def test_a_candidate_key_item_is_not_graded() -> None:
 
     assert [i.id for i in key.scored] == ["1", "2", "9"] and key.max_score == 8
     with pytest.raises(GradesRejected, match="the key has"):
-        read_grades(json.dumps({"S10": _grades({"1": "full", "2": "full", "9": "full", "H-8137": "full"})}), ["S10"], key)
+        read_grades(json.dumps({"S10": _grades({"1": "full", "2": "full", "9": "full", "H-8137": "full"})}), NO_FINDINGS_1, key)
 
 
 def test_the_2026_10_04_published_means_and_ranking_follow_from_these_rules() -> None:
@@ -161,13 +164,13 @@ def test_one_fenced_block_after_a_sentence_is_read_and_two_are_ambiguous() -> No
     key = _key()
     body = json.dumps({"S10": _grades({"1": "full", "2": "miss", "9": "miss"})})
 
-    grades = read_grades(f"I read the key and the outputs; the grades follow.\n\n```json\n{body}\n```\n", ["S10"], key)
+    grades = read_grades(f"I read the key and the outputs; the grades follow.\n\n```json\n{body}\n```\n", NO_FINDINGS_1, key)
 
     assert score(grades["S10"], key) == 3
     with pytest.raises(GradesRejected, match="2 fenced block"):
-        read_grades(f"first\n```json\n{body}\n```\nsecond\n```json\n{body}\n```", ["S10"], key)
+        read_grades(f"first\n```json\n{body}\n```\nsecond\n```json\n{body}\n```", NO_FINDINGS_1, key)
     with pytest.raises(GradesRejected, match="0 fenced block"):
-        read_grades("no grades today", ["S10"], key)
+        read_grades("no grades today", NO_FINDINGS_1, key)
 
 
 def test_a_grading_that_names_an_output_or_an_item_twice_is_refused() -> None:
@@ -181,9 +184,9 @@ def test_a_grading_that_names_an_output_or_an_item_twice_is_refused() -> None:
                   ' "2": {"grade": "miss", "why": "q"}, "9": {"grade": "miss", "why": "q"}}, "unsupported": 0}}')
 
     with pytest.raises(GradesRejected, match=r"\['S10'\] more than once"):
-        read_grades(twice_label, ["S10"], key)
+        read_grades(twice_label, NO_FINDINGS_1, key)
     with pytest.raises(GradesRejected, match=r"\['1'\] more than once"):
-        read_grades(twice_item, ["S10"], key)
+        read_grades(twice_item, NO_FINDINGS_1, key)
 
 
 @pytest.mark.parametrize(
@@ -196,4 +199,23 @@ def test_an_unsupported_count_must_match_the_findings_it_names(unsupported: int,
     grading = {**_grades({"1": "full", "2": "miss", "9": "miss"}), "unsupported": unsupported, "unsupported_ids": ids}
 
     with pytest.raises(GradesRejected, match=why):
-        read_grades(json.dumps({"S10": grading}), ["S10"], _key())
+        read_grades(json.dumps({"S10": grading}), NO_FINDINGS_1, _key())
+
+
+def test_only_a_finding_the_output_has_can_be_called_unsupported() -> None:
+    """A grader naming a finding the output does not have would deduct a
+    point for nothing."""
+    grading = {**_grades({"1": "full", "2": "miss", "9": "miss"}), "unsupported": 1, "unsupported_ids": ["ghost"]}
+
+    with pytest.raises(GradesRejected, match=r"S10 calls unsupported \['ghost'\], which are not its findings"):
+        read_grades(json.dumps({"S10": grading}), {"S10": frozenset({"f1"})}, _key())
+    real = {**grading, "unsupported_ids": ["f1"]}
+    assert score(read_grades(json.dumps({"S10": real}), {"S10": frozenset({"f1"})}, _key())["S10"], _key()) == 2
+
+
+def test_an_outputs_findings_are_its_stall_and_design_finding_ids() -> None:
+    from issue_orchestrator.domain.improver_tournament import finding_ids
+
+    doc = {"findings": [{"id": "a"}, {"id": "b"}], "design_findings": [{"id": "d"}], "other": [{"id": "x"}]}
+    assert finding_ids(json.dumps(doc)) == {"a", "b", "d"}
+    assert finding_ids("not json") == frozenset() and finding_ids("[1]") == frozenset()

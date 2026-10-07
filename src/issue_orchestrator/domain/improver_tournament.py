@@ -22,12 +22,18 @@ from __future__ import annotations
 import json
 import random
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from datetime import datetime
 
 from pydantic import ValidationError
 
-from ..contracts.improver_tournament import GRADE_CREDIT, AnswerKey, AnswerKeyItem, OutputGrades
+from ..contracts.improver_tournament import (
+    GRADE_CREDIT,
+    AnswerKey,
+    AnswerKeyItem,
+    OutputGrades,
+)
 
 _ITEM = re.compile(r"^(?P<id>\d+)\. \((?P<weight>[123])\) \*\*(?P<title>.+?)\*\*\s*(?P<rest>.*)$")
 _FENCED = re.compile(r"\A```(?:json)?\n(?P<body>.*)\n```\Z", re.DOTALL)
@@ -90,12 +96,31 @@ def anonymize(output_ids: Sequence[str], *, seed: int) -> dict[str, str]:
     return dict(zip(labels, output_ids, strict=True))
 
 
-def read_grades(answer: str, labels: Iterable[str], key: AnswerKey) -> dict[str, OutputGrades]:
-    """A grader's answer, if it grades every label on exactly the key's scored items."""
+def finding_ids(output: str) -> frozenset[str]:
+    """The ids of an output's findings (stall and design): what a grader may
+    call unsupported. An output that is not a findings document has none."""
+    try:
+        doc = json.loads(output)
+    except json.JSONDecodeError:
+        return frozenset()
+    if not isinstance(doc, dict):
+        return frozenset()
+    return frozenset(
+        f["id"]
+        for kind in ("findings", "design_findings")
+        for f in doc.get(kind, [])
+        if isinstance(f, dict) and isinstance(f.get("id"), str)
+    )
+
+
+def read_grades(answer: str, outputs: Mapping[str, AbstractSet[str]], key: AnswerKey) -> dict[str, OutputGrades]:
+    """A grader's answer, if it grades every output (label -> its finding
+    ids) on exactly the key's scored items, and calls unsupported only
+    findings that output has."""
     raw = _one_json_object(answer)
     if not isinstance(raw, dict):
         raise GradesRejected("not one JSON object")
-    expected_labels, expected_items = set(labels), {i.id for i in key.scored}
+    expected_labels, expected_items = set(outputs), {i.id for i in key.scored}
     if set(raw) != expected_labels:
         raise GradesRejected(f"grades {sorted(raw)} but the outputs are {sorted(expected_labels)}")
     grades: dict[str, OutputGrades] = {}
@@ -106,6 +131,9 @@ def read_grades(answer: str, labels: Iterable[str], key: AnswerKey) -> dict[str,
             raise GradesRejected(f"{label}: {error.errors()[0]['msg']} at {error.errors()[0]['loc']}") from error
         if set(grade.items) != expected_items:
             raise GradesRejected(f"{label} grades items {sorted(grade.items)}, the key has {sorted(expected_items)}")
+        unknown = sorted(set(grade.unsupported_ids) - set(outputs[label]))
+        if unknown:
+            raise GradesRejected(f"{label} calls unsupported {unknown}, which are not its findings")
         grades[label] = grade
     return grades
 
@@ -165,4 +193,4 @@ def rank(means: Mapping[str, float], *, tie_margin: float) -> tuple[tuple[str, .
     return tuple(tuple(g) for g in groups)
 
 
-__all__ = ["GradesRejected", "anonymize", "arm_means", "parse_sealed_key", "rank", "read_grades", "score"]
+__all__ = ["GradesRejected", "anonymize", "arm_means", "finding_ids", "parse_sealed_key", "rank", "read_grades", "score"]

@@ -32,7 +32,13 @@ from datetime import datetime
 from pathlib import Path
 
 from ..contracts.engine_audit import EngineAuditReport
-from ..contracts.improver_inputs import AUDIT_FILE, IMPROVER_DATA_DIRNAME, INPUTS_FILE, INTERVENTIONS_FILE, InputsManifest
+from ..contracts.improver_inputs import (
+    AUDIT_FILE,
+    IMPROVER_DATA_DIRNAME,
+    INPUTS_FILE,
+    INTERVENTIONS_FILE,
+    InputsManifest,
+)
 from ..contracts.improver_toolbox import (
     TOOLBOX_DIRNAME,
     TOOLBOX_LOGS_DIRNAME,
@@ -42,11 +48,19 @@ from ..contracts.improver_toolbox import (
     ToolboxManifest,
     ToolboxSource,
 )
-from ..contracts.improver_tournament import SNAPSHOT_MANIFEST, FrozenSnapshot, require_slug
+from ..contracts.improver_tournament import (
+    SNAPSHOT_MANIFEST,
+    FrozenSnapshot,
+    require_slug,
+)
 from ..domain.engine_activity import EngineRef
+from ..domain.read_only_sqlite import ReadOnlySqliteAccessError
+from ..infra.sqlite_snapshot import snapshot_sqlite
 from ..ports.command_runner import CommandRunner
 
 SNAPSHOTS_DIRNAME = "snapshots"
+#: How long opening a store's copy may wait (as live staging allows).
+SQLITE_TIMEOUT = 120.0
 _STAGING_DIRNAME = ".staging"
 #: What a frozen clone keeps of its source's refs (no stash, no notes, no io store).
 _FROZEN_REFSPECS = ("+refs/heads/*:refs/heads/*", "+refs/remotes/*:refs/remotes/*", "+refs/tags/*:refs/tags/*")
@@ -156,13 +170,14 @@ class FrozenSnapshotStore:
         logs.mkdir()
         sources: list[ToolboxSource] = []
         for store in sorted(state_dir.glob("*.sqlite")):
-            if store.is_symlink():
-                raise SnapshotUnavailable(f"{store} is a symlink; a snapshot copies only files")
-            self._copy(store, state / store.name)
-            for sidecar in ("-wal", "-shm"):
-                beside = store.with_name(store.name + sidecar)
-                if beside.is_file() and not beside.is_symlink():
-                    self._copy(beside, state / beside.name)
+            if store.is_symlink() or store.with_name(store.name + "-wal").is_symlink():
+                raise SnapshotUnavailable(f"{store} (or its log) is a symlink; a snapshot copies only files")
+            # As a live run stages it: a byte copy with its write-ahead log
+            # folded in, so the toolbox's immutable read sees every committed row.
+            try:
+                snapshot_sqlite(store, state / store.name, timeout=SQLITE_TIMEOUT)
+            except ReadOnlySqliteAccessError as error:
+                raise SnapshotUnavailable(f"{store}: {error}") from error
             sources.append(ToolboxSource(path=f"{TOOLBOX_STATE_DIRNAME}/{store.name}", staged=True, detail="byte copy"))
         for log in sorted(p for p in (state_dir / "logs").glob("*") if p.is_file() and not p.is_symlink()):
             self._copy(log, logs / log.name)

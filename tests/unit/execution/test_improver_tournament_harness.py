@@ -7,22 +7,40 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from tests.unit.domain.test_improver_tournament import SEALED
+from tests.unit.improver_support import build_improver_data, example
 
-from issue_orchestrator.contracts.improver_run import ImproverAgentChoice, ImproverProvider
-from issue_orchestrator.contracts.improver_tournament import AnswerKeyItem, TournamentArm
+from issue_orchestrator.contracts.improver_run import (
+    ImproverAgentChoice,
+    ImproverProvider,
+)
+from issue_orchestrator.contracts.improver_tournament import (
+    AnswerKeyItem,
+    TournamentArm,
+)
 from issue_orchestrator.entrypoints.improver_run import HeatPlan
 from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
-from issue_orchestrator.execution.improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
-from issue_orchestrator.execution.improver_snapshots import FrozenSnapshotStore, SnapshotUnavailable
-from issue_orchestrator.execution.improver_tournament import ArmOutput, ArmSpec, Grader, TournamentHarness
+from issue_orchestrator.execution.improver_answer_keys import (
+    AnswerKeyError,
+    FileAnswerKeyStore,
+)
+from issue_orchestrator.execution.improver_snapshots import (
+    FrozenSnapshotStore,
+    SnapshotUnavailable,
+)
+from issue_orchestrator.execution.improver_tournament import (
+    ArmOutput,
+    ArmSpec,
+    Grader,
+    TournamentHarness,
+)
 from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
-from tests.unit.domain.test_improver_tournament import SEALED
-from tests.unit.improver_support import build_improver_data, example
 
 T0 = datetime(2026, 10, 4, 7, 36, tzinfo=UTC)
 
@@ -311,6 +329,29 @@ def test_a_frozen_clone_takes_nothing_from_its_sources_git_directory(stores, tmp
     assert not any(p.read_bytes().find(b"THE ANSWER KEY") >= 0 for p in frozen.rglob("*") if p.is_file())
     assert not (frozen / ".git" / "hooks" / "post-checkout").exists()
     assert (frozen / "README.md").read_text() == "the audited repository"
+
+
+def test_a_frozen_store_holds_the_rows_its_write_ahead_log_had(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """The toolbox reads a store copy immutable (no log): a row committed
+    to the log but not yet checkpointed must be in the frozen copy itself."""
+    snapshots, _, root = stores
+    state, clone = _engine_files(tmp_path / "e")
+    writer = sqlite3.connect(state / "events.sqlite")
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE events (name TEXT)")
+    writer.execute("INSERT INTO events VALUES ('only-in-the-log')")
+    writer.commit()
+    try:
+        assert (state / "events.sqlite-wal").stat().st_size > 0
+        snapshots.import_("wal", improver_data=_legacy_inputs(tmp_path / "a"), taken_at=T0, origin="x",
+                          state_dir=state, clone=clone)
+    finally:
+        writer.close()
+
+    frozen = root / "snapshots" / "wal" / "toolbox" / "state" / "events.sqlite"
+    with closing(sqlite3.connect(f"{frozen.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
+        assert conn.execute("SELECT name FROM events").fetchall() == [("only-in-the-log",)]
 
 
 def test_a_scripted_only_snapshot_has_no_toolbox_to_copy(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -651,7 +692,9 @@ def test_a_failed_grading_is_retried_on_the_same_anonymized_outputs(stores) -> N
 
 
 def test_a_path_that_names_where_an_answer_was_written_is_hidden_from_graders(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
-    from issue_orchestrator.entrypoints.cli_tools.improver_tournament import read_recorded
+    from issue_orchestrator.entrypoints.cli_tools.improver_tournament import (
+        read_recorded,
+    )
 
     _, _, root = stores
     recorded = tmp_path / "recorded"
@@ -683,6 +726,19 @@ def test_a_path_spelled_with_escaped_slashes_is_hidden_too(stores) -> None:  # t
     texts = " ".join(p.read_text() for p in (harness.directory("t12") / "anon").iterdir())
     assert "io-improver" not in texts and "arms" not in texts and "<RUN>" in texts
     assert engine in texts
+
+
+def test_a_grading_that_calls_a_missing_finding_unsupported_has_no_result(stores) -> None:  # type: ignore[no-untyped-def]
+    _, _, root = stores
+
+    def ghost(labels: list[str]) -> str:
+        return json.dumps({label: {"items": {i: {"grade": "half", "why": "q"} for i in ("1", "2", "9")},
+                                   "unsupported": 1, "unsupported_ids": ["ghost"]} for label in labels})
+
+    harness = _harness(root, stores, Agents({}, {"claude": _complete, "codex": ghost}))
+    with pytest.raises(RuntimeError, match="calls unsupported \\['ghost'\\]"):
+        harness.grade("t13", "20261004", [ArmOutput("A", 1, json.dumps({"findings": [{"id": "f1"}]}))], seed=8)
+    assert not (harness.directory("t13") / "result.json").exists()
 
 
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]

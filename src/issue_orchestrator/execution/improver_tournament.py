@@ -54,6 +54,7 @@ from ..domain.improver_tournament import (
     GradesRejected,
     anonymize,
     arm_means,
+    finding_ids,
     rank,
     read_grades,
     score,
@@ -337,7 +338,9 @@ class TournamentHarness:
             return False, f"no answer: {answer.detail}", None
         (workdir / "grades.json").write_text(answer.final_message, encoding="utf-8")
         try:
-            grades = read_grades(answer.final_message, labels, key)
+            grades = read_grades(answer.final_message, {
+                label: finding_ids((root / "anon" / f"{label}.json").read_text(encoding="utf-8")) for label in labels
+            }, key)
         except GradesRejected as rejected:
             return False, f"rejected: {rejected}", None
         return True, f"graded {len(grades)} output(s)", {label: score(g, key) for label, g in grades.items()}
