@@ -410,6 +410,11 @@ class StubWorkingCopy:
     ) -> BranchPathsResult:
         return BranchPathsResult(success=True, paths=())
 
+    def branch_touched_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        return BranchPathsResult(success=True, paths=())
+
     def branch_commit_messages_against_base(
         self, worktree: Path, base_ref: str
     ) -> BranchCommitMessagesResult:

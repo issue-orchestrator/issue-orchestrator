@@ -63,6 +63,42 @@ artifacts, labels, completion protocol, or orchestrator-managed round state.
 The ordinary external reviewer remains independent and receives the improved
 implementation through the unchanged outer workflow.
 
+### Standing Rulings Bind Every Agent on the Issue (#8141)
+
+A standing ruling is a maintainer's binding decision about how an issue is
+built. It is a typed record (`domain/standing_ruling.py`): the ruling text, its
+authority (a maintainer, an approved tech-lead decision, or an approved
+`resolve_block` answer), its source, and its scope (the files it governs and the
+claims it settles; no files means the whole issue).
+
+- **Where it lives.** In a block at the top of the issue body
+  (`<!-- io:standing-rulings:begin -->`), where agents read first, and in the
+  engine's local index (`.issue-orchestrator/state/standing_rulings.sqlite`).
+  `control/standing_rulings.py` is the only reader and writer. Prompts and
+  reviews read the body fresh. Change rulings through the owner, never by hand.
+- **Who records one.** Three writers:
+  - an approved `propose_decision`, before the item is retried;
+  - a `resolve_block` answer or narrowing split, before the block is
+    discharged;
+  - a maintainer, through `POST /api/issues/{n}/rulings` with
+    `{"text", "files", "claims"}` (the admin token only).
+    `DELETE /api/issues/{n}/rulings/{id}` retires one.
+- **Who is told.** Every prompt for the issue starts with its rulings. That
+  covers coding, validation retry, rework of every kind, review, retrospective
+  review, both review-exchange roles (read again before every turn), tech
+  lead, and debug sessions. Every rework (conflict, CI, merge queue or review
+  feedback) gets them as its brief. The triage agenda carries each item's
+  rulings in full, and the Tech lead page shows them as of the engine's last
+  read.
+- **The review rule.** An approval of a diff that touches a ruling's scope must
+  attest it: `reviewer-done approved ... --upholds-ruling <id>`, or
+  `upheld_rulings` in a review exchange's decision JSON. If it does not, the
+  orchestrator refuses the approval. It turns it into a changes-requested review
+  that names the ruling as implementation-required, so the PR goes back to
+  rework with the ruling as its brief. An approval the review exchange cached
+  is judged again before it is reused, with the attestations of its own final
+  decision, so a ruling recorded after it refuses it.
+
 ## Exchange Mechanisms
 
 The review loop can run through different mechanisms. The orchestrator selects the mechanism based on `review.exchange.mode` configuration.

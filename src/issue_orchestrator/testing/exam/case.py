@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from ...domain.standing_ruling import REWORK_BRIEF_OPENING, RULINGS_PROMPT_HEADING
 from ...domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION_TYPES
 from .observation import ExamObservation, PullRequestState, TriageFact, WorkItemFact
 from .upgrade import UpgradeSpec
@@ -594,3 +595,140 @@ def no_tech_lead_decision(role: str, kind: str) -> Goal:
         )
 
     return Goal(f"{role}.no_{kind}", role, f"the tech lead never decides {kind} about the {role} item", check)
+
+
+# -- standing rulings (#8141) ---------------------------------------------------
+
+#: The engine's events for a rework session it launched, and a review approval.
+REWORK_STARTED_EVENT = "rework.started"
+REVIEW_APPROVED_EVENT = "review.approved"
+#: Session kinds as a run directory records them.
+REWORK_TASK = "rework"
+REVIEW_TASK = "review"
+
+
+def rulings_in_body(role: str) -> Goal:
+    """The item's issue body carries a standing ruling."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        listed = [f"{r.ruling_id} ({r.authority})" for r in item.body_rulings] or ["none"]
+        return GoalCheck(bool(item.body_rulings), f"issue #{item.issue_number}'s body rulings: {', '.join(listed)}")
+
+    return Goal(f"{role}.ruling_in_body", role, f"the {role} issue body carries a standing ruling", check)
+
+
+_DECISION_HEADING = re.compile(r"^## Tech lead resolved this block \([a-z]+\): (?P<title>.+)$", re.MULTILINE)
+_DECISION_EVIDENCE = "\n\n### Evidence"
+
+
+def _posted_answer(decision: str) -> tuple[str, str] | None:
+    """(title, body) of a posted resolve_block decision (the engine's
+    ``_decision_comment`` layout: heading, the decision body, then Evidence)."""
+    heading = _DECISION_HEADING.search(decision)
+    if heading is None:
+        return None
+    rest = decision[heading.end():].lstrip("\n")
+    body, found, _ = rest.partition(_DECISION_EVIDENCE)
+    return (heading.group("title").strip(), body.strip()) if found and body.strip() else None
+
+
+def _states(ruling_text: str, decision: str) -> bool:
+    """Whether a ruling carries a posted decision's complete answer: its title and its whole body."""
+    answer = _posted_answer(decision)
+    return answer is not None and answer[0] in ruling_text and answer[1] in ruling_text
+
+
+def resolution_answer_in_body(role: str, *, authority: str) -> Goal:
+    """porchpin#327: the tech lead's applied ``resolve_block`` answer is a standing
+    ruling in the item's BODY, word for word the decision it posted."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        if not item.resolution_comments:
+            return GoalCheck(False, f"no resolve_block decision was posted on #{item.issue_number}")
+        answers = [r for r in item.body_rulings if r.authority == authority]
+        stated = [r.ruling_id for r in answers if any(_states(r.text, c) for c in item.resolution_comments)]
+        return GoalCheck(
+            bool(stated),
+            f"#{item.issue_number}: {len(item.resolution_comments)} decision(s) posted;"
+            f" {authority} rulings in the body: {[r.ruling_id for r in answers] or 'none'};"
+            f" stating a posted decision: {stated or 'none'}",
+        )
+
+    return Goal(f"{role}.resolution_answer_in_body", role,
+                f"the {role} issue body carries the applied resolve_block answer as a standing ruling", check)
+
+
+def _carries_every_ruling(text: str, item: WorkItemFact) -> list[str]:
+    """The body rulings a prompt does NOT bind its session to (id and full text)."""
+    if RULINGS_PROMPT_HEADING not in text:
+        return [ruling.ruling_id for ruling in item.body_rulings]
+    return [
+        ruling.ruling_id for ruling in item.body_rulings
+        if f"`{ruling.ruling_id}`" not in text or ruling.text not in text
+    ]
+
+
+def rework_prompts_carry_rulings(role: str) -> Goal:
+    """Every rework of the item was told its standing rulings in full, as its BRIEF.
+
+    porchpin#379's conflict rework extended the design the ruling retired:
+    nothing in its prompt tied it to the ruling.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        reworks = item.prompts_of(REWORK_TASK)
+        if not item.body_rulings:
+            return GoalCheck(False, f"issue #{item.issue_number} carries no standing ruling to bind a rework")
+        if not reworks:
+            return GoalCheck(False, f"no rework of #{item.issue_number} ran (no rework prompt captured)")
+        unbound = [(index, missing) for index, prompt in enumerate(reworks, start=1)
+                   if (missing := _carries_every_ruling(prompt.text, item))]
+        unbriefed = [index for index, prompt in enumerate(reworks, start=1) if REWORK_BRIEF_OPENING not in prompt.text]
+        return GoalCheck(
+            not unbound and not unbriefed,
+            f"{len(reworks)} rework prompt(s); missing rulings (prompt #, ids): {unbound or 'none'};"
+            f" without the brief: {unbriefed or 'none'}",
+        )
+
+    return Goal(f"{role}.rework_prompts_carry_rulings", role,
+                f"every {role} rework carries the standing rulings in full, as its brief", check)
+
+
+def reviews_after_rework_carry_rulings(role: str) -> Goal:
+    """Every review of the reworked PR was told to check the diff against each ruling."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        reworks = item.prompts_of(REWORK_TASK)
+        if not reworks:
+            return GoalCheck(False, f"no rework of #{item.issue_number} ran")
+        after = [p for p in item.prompts_of(REVIEW_TASK) if p.captured_ns > reworks[0].captured_ns]
+        if not after:
+            return GoalCheck(False, f"no review of #{item.issue_number}'s reworked PR ran")
+        unbound = [index for index, prompt in enumerate(after, start=1) if _carries_every_ruling(prompt.text, item)]
+        return GoalCheck(not unbound, f"{len(after)} review prompt(s) after the rework; unbound: {unbound or 'none'}")
+
+    return Goal(f"{role}.reviews_carry_rulings", role,
+                f"every review of the reworked {role} PR carries the standing rulings", check)
+
+
+def contradicting_approval_refused(role: str) -> Goal:
+    """No review approval stood once a rework touched what the ruling governs,
+    and the engine flagged at least one refused approval (implementation-required)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if REWORK_STARTED_EVENT not in item.events:
+            return GoalCheck(False, f"no rework of #{item.issue_number} started")
+        after = item.events[item.events.index(REWORK_STARTED_EVENT):]
+        approvals = after.count(REVIEW_APPROVED_EVENT)
+        return GoalCheck(
+            approvals == 0 and item.refused_approvals > 0,
+            f"{approvals} review approval(s) after the first rework;"
+            f" {item.refused_approvals} refused approval(s) flagged on the PR",
+        )
+
+    return Goal(f"{role}.contradicting_approval_refused", role,
+                f"an approval of the reworked {role} diff is refused, never accepted", check)

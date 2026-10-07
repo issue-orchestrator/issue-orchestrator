@@ -131,6 +131,7 @@ def build_tech_lead_operator_decision_executor(
         apply_action=deps.action_applier.apply,
         require_authority=deps.action_applier.require_mutation_authority,
         retries=deps.tech_lead_authority,
+        rulings=deps.standing_rulings,
     )
 
 
@@ -174,6 +175,7 @@ def build_tech_lead_block_resolution_executor(
         requeue=orchestrator.operator_issue_commands.requeue_resolved,
         discharges=deps.tech_lead_authority,
         index_proposals=deps.tech_lead_authority.proposal_index.index_proposals,
+        rulings=deps.standing_rulings,
     )
 
 

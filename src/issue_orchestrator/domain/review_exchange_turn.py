@@ -35,7 +35,7 @@ Public API:
 from __future__ import annotations
 
 import enum
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -119,6 +119,22 @@ class ReviewExchangePromptFiles:
         return cls(validation_record=validation_record)
 
 
+@dataclass(frozen=True, slots=True)
+class ExchangeStandingRulings:
+    """The issue's binding standing rulings, framed for a turn's role (#8141).
+
+    Read again before EVERY turn (a ruling recorded mid-exchange binds the next
+    turn); a read that fails raises and fails the exchange. Each turn's packet
+    carries the section it was given, so every persisted packet shows exactly
+    what bound that turn.
+    """
+
+    for_role: Callable[["Role"], str | None]
+
+
+NO_EXCHANGE_RULINGS = ExchangeStandingRulings(for_role=lambda role: None)
+
+
 @dataclass(frozen=True)
 class ReviewExchangeTurnPacket:
     """Typed input bundle for one role's turn in the exchange.
@@ -150,6 +166,8 @@ class ReviewExchangeTurnPacket:
     """
     coder_prompt_addendum: str | None = None
     """Coder-only instructions composed outside the pure exchange builder."""
+    standing_rulings: str | None = None
+    """The issue's binding rulings for this turn's role, put first (#8141)."""
 
     def to_manifest_fields(self) -> dict[str, Any]:
         """Render to a JSON-safe dict for artifact persistence.
@@ -177,6 +195,8 @@ class ReviewExchangeTurnPacket:
             manifest["reviewer_feedback"] = self.reviewer_feedback
         if self.coder_prompt_addendum is not None:
             manifest["coder_prompt_addendum"] = self.coder_prompt_addendum
+        if self.standing_rulings is not None:
+            manifest["standing_rulings"] = self.standing_rulings
         return manifest
 
     @classmethod
@@ -221,6 +241,7 @@ class ReviewExchangeTurnPacket:
         last_reviewer_text = manifest.get("last_reviewer_text")
         reviewer_feedback = manifest.get("reviewer_feedback")
         coder_prompt_addendum = manifest.get("coder_prompt_addendum")
+        standing_rulings = manifest.get("standing_rulings")
         prompt_files = ReviewExchangePromptFiles.from_manifest(
             manifest.get("prompt_files"),
         )
@@ -242,6 +263,7 @@ class ReviewExchangeTurnPacket:
                 if isinstance(coder_prompt_addendum, str)
                 else None
             ),
+            standing_rulings=standing_rulings if isinstance(standing_rulings, str) else None,
         )
 
 

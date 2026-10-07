@@ -116,6 +116,8 @@ class CompletionRecord:
     validation_record_path: str | None = None
     follow_up_issues: list[ProposedFollowUpIssue] | None = None
     partial_pr: bool = False
+    #: An approval's attestation that the diff upholds these standing rulings (#8141).
+    upheld_rulings: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,4 +148,5 @@ class CompletionRecord:
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
             "partial_pr": self.partial_pr,
+            "upheld_rulings": self.upheld_rulings,
         }

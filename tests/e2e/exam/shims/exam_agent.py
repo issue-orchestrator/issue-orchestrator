@@ -34,6 +34,12 @@ its completion's problems.
 gives up on the item: ``session_lifecycle``, porchpin#326's shape) until the
 tech lead's resolution is posted on the issue, after which it codes normally.
 
+``--capture-prompts DIR`` copies the prompt the engine launched the session
+with (its run directory's ``session-prompt.txt``) into DIR, named by issue,
+task and time, before doing anything else: Case I (#8141) grades what a
+conflict rework was told. The run directory and the file exist at every
+engine the exam runs, so the capture is engine-independent.
+
 ``--hold-until PATH`` makes a session wait, before doing anything, until
 PATH exists. The upgrade case (Case U) uses it to keep work mid-flight across
 an engine stop: the harness creates PATH only after the candidate engine has
@@ -47,6 +53,7 @@ that engine's own completion contract.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -68,6 +75,21 @@ def run(argv: list[str]) -> None:
 
 #: The marker the engine's ``resolve_block`` posts with its decision.
 RESOLUTION_MARKER = "<!-- io:resolve-block:comment:decision="
+
+
+RUN_DIR_ENV = "ISSUE_ORCHESTRATOR_RUN_DIR"
+SESSION_PROMPT = "session-prompt.txt"
+
+
+def capture_prompt(into: Path) -> None:
+    """Copy this session's launch prompt into *into* (fail loud: the case grades it)."""
+    run_dir = Path(os.environ[RUN_DIR_ENV])
+    identity = json.loads((run_dir / "session-identity.json").read_text(encoding="utf-8"))
+    task = str(identity.get("task", "unknown"))
+    into.mkdir(parents=True, exist_ok=True)
+    target = into / f"{issue_number()}-{task}-{time.time_ns()}.txt"
+    target.write_text((run_dir / SESSION_PROMPT).read_text(encoding="utf-8"), encoding="utf-8")
+    log(f"captured the {task} prompt into {target}")
 
 
 def ask_the_operator(question: str) -> None:
@@ -182,9 +204,12 @@ def main() -> int:
     parser.add_argument("--changes-once", type=Path, default=None)
     parser.add_argument("--gives-up", action="store_true")
     parser.add_argument("--until-resolved", action="store_true")
+    parser.add_argument("--capture-prompts", type=Path, default=None)
     args = parser.parse_args()
     in_exchange = bool(os.environ.get(RESPONSE_FILE_ENV))
     log(f"role={args.role} in_exchange={in_exchange} fault={args.exchange_fault}")
+    if args.capture_prompts is not None and not in_exchange:
+        capture_prompt(args.capture_prompts)
     if args.hold_until is not None:
         hold_until(args.hold_until)
 

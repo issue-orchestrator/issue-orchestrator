@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.standing_ruling_helpers import rulings_owner
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.control.merge_hold_status import MergeHoldStatuses
 from issue_orchestrator.domain.scoped_rework import TechLeadProposalCommand
@@ -187,6 +188,7 @@ def _page_engine(approvals):
             services=SimpleNamespace(tech_lead_authority=InMemoryTechLeadAuthorityStore()),
             label_manager=LabelManager(Config(repo=REPO)),
             pending_work_claims=claims,
+            standing_rulings=rulings_owner(),
             fact_gatherer=SimpleNamespace(board_publisher=None),
             action_liveness=SimpleNamespace(owner=SimpleNamespace(parked=lambda: ())),
             repository_host=MagicMock(),
@@ -219,6 +221,7 @@ def test_page_facade_reads_engine_state_only() -> None:
             services=SimpleNamespace(tech_lead_authority=InMemoryTechLeadAuthorityStore()),
             label_manager=LabelManager(Config(repo=REPO)),
             pending_work_claims=claims,
+            standing_rulings=rulings_owner(),
             fact_gatherer=SimpleNamespace(board_publisher=None),
             action_liveness=liveness,
             repository_host=host,

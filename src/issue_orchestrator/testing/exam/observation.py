@@ -205,6 +205,43 @@ class TriageFact:
 
 
 @dataclass(frozen=True)
+class CapturedPrompt:
+    """A prompt the engine launched one of the item's scripted sessions with.
+
+    Captured by the session itself (the exam shim's ``--capture-prompts``)
+    from its run directory, so the fact exists at every engine (#8141).
+    """
+
+    task: str
+    """The session's kind as its run directory records it (``rework``, ``review``...)."""
+    captured_ns: int
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"task": self.task, "captured_ns": self.captured_ns, "text": self.text}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "CapturedPrompt":
+        return cls(task=str(data["task"]), captured_ns=int(data["captured_ns"]), text=str(data["text"]))
+
+
+@dataclass(frozen=True)
+class BodyRulingFact:
+    """One standing ruling the item's issue body carries (#8141)."""
+
+    ruling_id: str
+    authority: str
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ruling_id": self.ruling_id, "authority": self.authority, "text": self.text}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "BodyRulingFact":
+        return cls(ruling_id=str(data["ruling_id"]), authority=str(data["authority"]), text=str(data["text"]))
+
+
+@dataclass(frozen=True)
 class WorkItemFact:
     """An exam work item: its issue, its pull requests, and where it stood."""
 
@@ -226,6 +263,20 @@ class WorkItemFact:
     decisions: tuple[DecisionFact, ...] = ()
     """Every tech-lead decision the engine's charter ledger recorded about the
     item, oldest first, whatever became of it (#7658)."""
+    prompts: tuple[CapturedPrompt, ...] = ()
+    """Prompts the item's capturing sessions were launched with, oldest first (#8141)."""
+    body_rulings: tuple[BodyRulingFact, ...] = ()
+    """The standing rulings in the issue body's rulings block (#8141)."""
+    body_rulings_error: str = ""
+    """Why the issue body's rulings block could not be read, if it could not."""
+    refused_approvals: int = 0
+    """Review comments on the item's PRs that record an approval the standing
+    rulings refused (#8141)."""
+    resolution_comments: tuple[str, ...] = ()
+    """The tech lead's ``resolve_block`` decisions posted on the item (#7658), verbatim."""
+
+    def prompts_of(self, task: str) -> tuple[CapturedPrompt, ...]:
+        return tuple(prompt for prompt in self.prompts if prompt.task == task)
 
     @property
     def decided_kinds(self) -> tuple[str, ...]:
@@ -253,6 +304,11 @@ class WorkItemFact:
             "approved_prs": sorted(self.approved_prs),
             "triage": None if self.triage is None else self.triage.to_dict(),
             "decisions": [decision.to_dict() for decision in self.decisions],
+            "prompts": [prompt.to_dict() for prompt in self.prompts],
+            "body_rulings": [ruling.to_dict() for ruling in self.body_rulings],
+            "body_rulings_error": self.body_rulings_error,
+            "refused_approvals": self.refused_approvals,
+            "resolution_comments": list(self.resolution_comments),
         }
 
     @classmethod
@@ -269,6 +325,12 @@ class WorkItemFact:
             # Saved before triage existed (#7593): no fact, never an error.
             triage=None if data.get("triage") is None else TriageFact.from_dict(data["triage"]),
             decisions=tuple(DecisionFact.from_dict(d) for d in data.get("decisions", ())),
+            # Saved before standing rulings existed (#8141): none of them.
+            prompts=tuple(CapturedPrompt.from_dict(p) for p in data.get("prompts", ())),
+            body_rulings=tuple(BodyRulingFact.from_dict(r) for r in data.get("body_rulings", ())),
+            body_rulings_error=str(data.get("body_rulings_error", "")),
+            refused_approvals=int(data.get("refused_approvals", 0)),
+            resolution_comments=tuple(str(c) for c in data.get("resolution_comments", ())),
         )
 
 

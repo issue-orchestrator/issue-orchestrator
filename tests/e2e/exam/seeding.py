@@ -71,8 +71,68 @@ def seed_pull_request(
     remote = github_remote(repo)
     _git(repo_root, "fetch", "--quiet", remote, "main")
     base = _git(repo_root, "rev-parse", "FETCH_HEAD")
-    branch = f"{issue_number}-{slug}"
     content = f"tech-lead exam seed for #{issue_number} at {time.ctime()}\n"
+    return _push_seed(
+        repo=repo, repo_root=repo_root, issue_number=issue_number, slug=slug, labels=labels,
+        draft=draft, register_branch=register_branch, base=base, path="exam-output.txt", content=content,
+    )
+
+
+def seed_conflicting_pull_request(
+    *,
+    repo: str,
+    repo_root: Path,
+    issue_number: int,
+    slug: str,
+    labels: list[str],
+    draft: bool,
+    register_branch: Callable[[str], None],
+) -> SeededPullRequest:
+    """Open a PR that GitHub reports as conflicting with main, without touching main.
+
+    The conflict comes from main's own history: the PR's commit sits on the
+    parent of main's latest commit that MODIFIED a file under ``docs/`` and
+    rewrites that same file, so the PR and main both changed it since their
+    merge base. The file is outside ``src/``, so CI's heavy lanes skip it.
+    """
+    remote = github_remote(repo)
+    _git(repo_root, "fetch", "--quiet", remote, "main")
+    head = _git(repo_root, "rev-parse", "FETCH_HEAD")
+    changed = _git(repo_root, "log", "-1", "--format=%H", "--diff-filter=M", head, "--", "docs")
+    if not changed:
+        raise RuntimeError("main has no commit that modified a file under docs/: no conflict to seed")
+    paths = _git(
+        repo_root, "diff", "--name-only", "--diff-filter=M", f"{changed}^", changed, "--", "docs"
+    ).splitlines()
+    if not paths:
+        raise RuntimeError(f"{changed[:10]} modified nothing under docs/ after all")
+    content = (
+        f"Tech-lead exam seed for #{issue_number} at {time.ctime()}: this rewrites {paths[0]}"
+        " on an older base, so the PR conflicts with main.\n"
+    )
+    return _push_seed(
+        repo=repo, repo_root=repo_root, issue_number=issue_number, slug=slug, labels=labels,
+        draft=draft, register_branch=register_branch, base=_git(repo_root, "rev-parse", f"{changed}^"),
+        path=paths[0], content=content,
+    )
+
+
+def _push_seed(
+    *,
+    repo: str,
+    repo_root: Path,
+    issue_number: int,
+    slug: str,
+    labels: list[str],
+    draft: bool,
+    register_branch: Callable[[str], None],
+    base: str,
+    path: str,
+    content: str,
+) -> SeededPullRequest:
+    """Commit *content* at *path* on *base* (plumbing, private index), push it, open the PR."""
+    remote = github_remote(repo)
+    branch = f"{issue_number}-{slug}"
     blob = _git(repo_root, "hash-object", "-w", "--stdin", stdin=content)
     with tempfile.TemporaryDirectory(prefix="exam-index-") as tmp:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
@@ -82,7 +142,7 @@ def seed_pull_request(
             "update-index",
             "--add",
             "--cacheinfo",
-            f"100644,{blob},exam-output.txt",
+            f"100644,{blob},{path}",
             env=env,
         )
         tree = _git(repo_root, "write-tree", env=env)

@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from .claim_quarantine import ClaimQuarantineOwner
     from .human_gates import HumanGates
     from .needs_human_block import SharedNeedsHumanBlock
+    from .standing_rulings import StandingRulingsOwner
+    from ..ports.launch_prompt import LaunchPromptProvider
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports import (
         EventSink,
@@ -162,6 +164,12 @@ class OrchestratorDeps:
     # release and operator force-clear of that label routes through it, so a
     # block can never exist without a discoverable cause (#6999 F2 round 3).
     needs_human_block: "SharedNeedsHumanBlock"
+    # THE owner of each issue's standing rulings (#8141): its writers record
+    # through it, and every prompt, review and the tech-lead page read it.
+    standing_rulings: "StandingRulingsOwner"
+    # Every launch prompt's engine-owned additions (the rulings, the coder
+    # addendum), for launch paths outside the session launcher (#8141).
+    launch_prompt: "LaunchPromptProvider"
 
     # Claim/lease management (multi-orchestrator coordination)
     claim_manager: "ClaimManager"

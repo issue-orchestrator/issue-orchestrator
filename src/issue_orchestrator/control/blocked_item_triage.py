@@ -29,6 +29,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..domain.standing_ruling import ruling_in_full
 from ..domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
     PriorTriage,
@@ -47,6 +48,7 @@ from ..events import EventName
 if TYPE_CHECKING:
     from ..domain.human_block import NeedsHumanCause
     from ..domain.models import OrchestratorState
+    from ..domain.standing_ruling import StandingRuling
     from ..domain.tech_lead_artifacts import TechLeadDecision
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..infra.config import Config
@@ -82,6 +84,7 @@ class StateBlockedItemTriage:
         charter_ledger: "TechLeadCharterDecisionReader",
         open_proposals: Callable[[], "OpenProposals"],
         timeline_reader: Callable[[int, int], Sequence["TimelineRecord"]],
+        standing_rulings: Callable[[int], Sequence["StandingRuling"]],
     ) -> None:
         self._config = config
         self._state = state
@@ -90,6 +93,7 @@ class StateBlockedItemTriage:
         self._ledger = charter_ledger
         self._open_proposals = open_proposals
         self._timeline = timeline_reader
+        self._standing_rulings = standing_rulings
 
     def agenda(self, *, anchor_issue_number: int) -> TriageAgenda:
         """Every blocked item owed a triage, oldest first, capped per run.
@@ -116,6 +120,9 @@ class StateBlockedItemTriage:
                 agent_question=self._agent_question(item.issue.number),
                 reason=_owed_reason(item.prior, item.fingerprint),
                 prior=item.prior,
+                standing_rulings=tuple(
+                    ruling_in_full(ruling) for ruling in self._standing_rulings(item.issue.number)
+                ),
             )
             for item in owed[:MAX_TRIAGE_ITEMS_PER_RUN]
         ]

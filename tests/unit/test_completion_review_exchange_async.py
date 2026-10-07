@@ -497,7 +497,10 @@ def test_background_job_forwards_approval_gate_to_loop(tmp_path: Path) -> None:
     calls: list[dict[str, Any]] = []
 
     class _ApprovalGate:
-        def rejection_reason(self) -> str | None:
+        def rejection_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+            return None
+
+        def cached_approval_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
             return None
 
     approval_gate = _ApprovalGate()
@@ -1084,6 +1087,49 @@ def test_cached_review_is_reused_when_validation_sha_matches(
         in approval_message
     )
     assert "reviewer_response_text='Looks good.'" in approval_message
+
+
+def test_a_cached_approval_is_not_reused_after_a_ruling_it_never_attested(tmp_path: Path) -> None:
+    """#8141: a maintainer rules between the exchange's approval and the resume
+    that would reuse it; the cached approval must not stand, so the exchange runs
+    afresh (bound by the ruling) instead of publishing."""
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(tmp_path, job_runner, [], [], require_validation=True)
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="same-sha")
+    _write_validation_record(current_validation, head_sha="same-sha")
+    _store_cached_approval(session_output, tmp_path, cached_validation)
+
+    seen: list[tuple[str, ...]] = []
+
+    class _RuledSince:
+        def rejection_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+            return None
+
+        def cached_approval_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+            seen.append(upheld_rulings)
+            return "Implementation-required: ruling `m-0123456789ab`."
+
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        run_id="coding-run-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        initial_validation_evidence=_validation_evidence("same-sha"),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(AssertionError("runs in the background")),
+        approval_gate=_RuledSince(),
+    )
+
+    assert deferred is True and outcome is None and completed is False and halt is False
+    assert len(job_runner.submitted) == 1  # a fresh exchange, never the cached approval
+    assert seen == [()]  # the cached summary references no decision: it attested nothing
 
 
 def test_cached_review_reuses_rework_head_when_completion_validation_is_stale(
@@ -1930,3 +1976,23 @@ def test_a_retained_replay_never_reads_the_checkout(tmp_path: Path) -> None:
     )
     assert started[-1]["subject"].branch_name == "123-at-exchange-start"
     assert outcomes[-1]["subject"].branch_name == "123-at-exchange-start"
+
+
+def test_a_cached_approval_attests_what_its_final_decision_attested(tmp_path: Path) -> None:
+    """#8141: the cache is judged with the decision the exchange actually ended on."""
+    from types import SimpleNamespace
+
+    from issue_orchestrator.control.completion_review_exchange import cached_attestations
+    from issue_orchestrator.domain.review_artifacts import REVIEW_DECISION_ARTIFACT
+    from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryArtifactRef
+
+    first, last = tmp_path / "round-1.json", tmp_path / "round-2.json"
+    first.write_text(json.dumps({"verdict": "changes_requested"}))
+    last.write_text(json.dumps({"verdict": "approved", "upheld_rulings": ["m-0123456789ab"]}))
+    refs = tuple(
+        ReviewExchangeSummaryArtifactRef(artifact_type=REVIEW_DECISION_ARTIFACT, label="Decision", value=str(path))
+        for path in (first, last)
+    )
+
+    assert cached_attestations(SimpleNamespace(summary=SimpleNamespace(artifacts=refs))) == ("m-0123456789ab",)
+    assert cached_attestations(SimpleNamespace(summary=None)) == ()

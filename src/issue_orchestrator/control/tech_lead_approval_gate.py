@@ -28,7 +28,8 @@ class TechLeadDecisionApprovalGate:
     authority: TechLeadLaunchAuthority
     config: Config
 
-    def rejection_reason(self) -> str | None:
+    def rejection_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+        del upheld_rulings  # the decision pair, not the issue's rulings, is judged here
         result = load_validated_tech_lead_pair(
             self.run_dir,
             self.authority,
@@ -43,13 +44,22 @@ class TechLeadDecisionApprovalGate:
             f"({failure}): {result.detail}."
         )
 
+    def cached_approval_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+        del upheld_rulings
+        return None
+
 
 @dataclass(frozen=True)
 class _RejectedTechLeadApprovalGate:
     reason: str
 
-    def rejection_reason(self) -> str:
+    def rejection_reason(self, *, upheld_rulings: tuple[str, ...]) -> str:
+        del upheld_rulings
         return self.reason
+
+    def cached_approval_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+        del upheld_rulings
+        return None
 
 
 def build_tech_lead_decision_approval_gate(
