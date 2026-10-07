@@ -22,6 +22,7 @@ from ..events import EventName
 from ..ports.event_sink import EventSink, make_trace_event
 from ..domain.validated_work_observation import disposition_observation
 from ..ports.session_runner import SessionRunner
+from ..ports.claim_manager import ClaimManager
 from .background_job_supervisor import drain_background_jobs
 from ..domain.session_kind import SessionKind
 from ..domain.session_run import SessionRunAssets
@@ -201,6 +202,7 @@ def _release_issue_runtime(
     publish_recovery: "PublishRetryAbandoner | None" = None,
     session_types: Iterable[SessionType] = ISSUE_RUNTIME_SESSION_TYPES,
     work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
 ) -> IssueRuntimeTermination:
     """Apply an issue terminal boundary to every issue-scoped runtime owner.
 
@@ -248,7 +250,7 @@ def _release_issue_runtime(
                     # same post-stop rule `_stop_exact_generation` applies.
                     if not session_manager.exists(ref):
                         _end_session_records(
-                            active_sessions, lambda session: session.terminal_id == ref.name, work
+                            active_sessions, lambda session: session.terminal_id == ref.name, work, claim_manager
                         )
                     raise
                 stopped.append(ref.name)
@@ -260,7 +262,7 @@ def _release_issue_runtime(
         set(stopped).union(stale),
     )
     ended = set(terminal_ids_to_clear)
-    _end_session_records(active_sessions, lambda session: session.terminal_id in ended, work)
+    _end_session_records(active_sessions, lambda session: session.terminal_id in ended, work, claim_manager)
     if stopped or terminal_ids_to_clear:
         logger.info(
             "[ISSUE_RUNTIME] terminated issue=%d reason=%s stopped=%s cleared=%s",
@@ -330,6 +332,7 @@ def _terminate_issue_session_generation(
     pair_registry: "PersistentExchangePairRegistry | None",
     job_supervisor: "BackgroundJobSupervisor | None",
     work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
     publish_recovery: "PublishRetryAbandoner | None" = None,
 ) -> GenerationBoundTermination:
     """Conditionally stop the exact launch-observed worker generation.
@@ -349,8 +352,8 @@ def _terminate_issue_session_generation(
     # Prepare every hidden owner before committing the visible terminal stop.
     # Each teardown is idempotent, and every owner is attempted even when a
     # sibling fails. A preparation failure deliberately leaves the terminal and
-    # exact active row intact so the action remains retryable. Once the terminal
-    # stop commits, no fallible external cleanup remains before reconciliation.
+    # exact active row intact so the action remains retryable. The stopped row
+    # also remains available if its external lease retirement cannot be verified.
     cleanup_errors: list[Exception] = []
     review_exchange: ReviewExchangeCancellation | None = None
     try:
@@ -383,6 +386,7 @@ def _terminate_issue_session_generation(
         kill_session=kill_session,
         validated_work=validated_work,
         work=work,
+        claim_manager=claim_manager,
     )
     termination = IssueRuntimeTermination(
         issue_number=target.issue_number,
@@ -405,11 +409,13 @@ def _end_session_records(
     active_sessions: list["Session"] | None,
     ended: Callable[["Session"], bool],
     work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
 ) -> None:
-    """Settle each ended run's claim as CONSUMED, THEN drop its record (#7380).
+    """Retire each ended run's CAS lease and work claim, THEN drop its record.
 
     The one settle-before-drop step every issue-runtime termination shares. The
-    record is what tells the recovery sweep the run is live, so a record dropped
+    record retains its lease if CAS release fails, and tells the recovery sweep
+    the run is live, so a record dropped
     beside a claim left HELD -- or before a settlement that then raised -- let
     the next tick re-admit the work this boundary just ended.
     """
@@ -417,6 +423,11 @@ def _end_session_records(
         return
     for session in tuple(active_sessions):
         if ended(session):
+            if session.lease_id:
+                claim_manager.release_claim(session.issue.number, session.lease_id)
+                current = claim_manager.get_current_claim(session.issue.number)
+                if current is not None and current.lease_id == session.lease_id:
+                    raise RuntimeError(f"issue #{session.issue.number} claim release was not acknowledged")
             work.settle(session, SettlementOutcome.CONSUMED)
     active_sessions[:] = [session for session in active_sessions if not ended(session)]
 
@@ -424,6 +435,7 @@ def _end_session_records(
 def _drop_exact_generation(
     active_sessions: list["Session"], target: TechLeadSessionGeneration,
     work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
 ) -> None:
     """Reconcile only the active row proven to represent the stopped generation."""
     _end_session_records(
@@ -435,6 +447,7 @@ def _drop_exact_generation(
             and session.run_assets.run_id == target.run_id
         ),
         work,
+        claim_manager,
     )
 
 
@@ -446,6 +459,7 @@ def _stop_exact_generation(
     session_exists: Callable[[str], bool],
     kill_session: Callable[[str], None],
     work: "InFlightWorkLedger",
+    claim_manager: ClaimManager,
 ) -> None:
     """Stop one exact terminal and reconcile whether a raised stop committed."""
     try:
@@ -460,10 +474,10 @@ def _stop_exact_generation(
             ) from stop_error
         if terminal_still_running:
             raise
-        _drop_exact_generation(active_sessions, target, work)
+        _drop_exact_generation(active_sessions, target, work, claim_manager)
         raise GenerationTerminationPartialFailure(target, stop_error, validated_work) from stop_error
 
-    _drop_exact_generation(active_sessions, target, work)
+    _drop_exact_generation(active_sessions, target, work, claim_manager)
 
 
 def _issue_runtime_session_active(
@@ -600,6 +614,7 @@ class CoreIssueRuntimeOwners:
     publish_recovery: IssuePublishRetryRuntime
     # Settles the pending-work claim of every run this boundary ends (#7380).
     work: "InFlightWorkLedger"
+    claim_manager: ClaimManager
 
     def probe(self, issue_number: int) -> IssueRuntimeActivity:
         return _probe_owners({
@@ -611,6 +626,10 @@ class CoreIssueRuntimeOwners:
             IssueRuntimeOwnerKind.PUBLISH_RETRY: lambda: self.publish_recovery.has_active_retry(issue_number),
         })
 
+    def end_session_records(self, terminal_ids: frozenset[str]) -> None:
+        _end_session_records(self.active_sessions, lambda session: session.terminal_id in terminal_ids,
+                             self.work, self.claim_manager)
+
     def cancel_preserved_exchange(self, issue_number: int, reason: str, validated_work: ValidatedWorkDispositionBatch) -> ReviewExchangeCancellation:
         return _cancel_issue_review_exchange(issue_number=issue_number, reason=reason, validated_work=validated_work,
             pair_registry=self.pair_registry, job_supervisor=self.job_supervisor)
@@ -619,7 +638,7 @@ class CoreIssueRuntimeOwners:
         return _release_issue_runtime(issue_number=issue_number, reason=reason, validated_work=batch,
             pair_registry=self.pair_registry, job_supervisor=self.job_supervisor,
             session_manager=self.session_manager, active_sessions=self.active_sessions,
-            publish_recovery=self.publish_recovery, work=self.work)
+            publish_recovery=self.publish_recovery, work=self.work, claim_manager=self.claim_manager)
 
 
 @dataclass(frozen=True, slots=True)
@@ -732,12 +751,13 @@ class IssueRuntimeLifecycleOwners:
         self._observe(batch)
         return result
 
-    def terminate_every_session(self, issue_number: int, reason: str) -> "IssueTerminationOutcome":
+    def terminate_every_session(self, issue_number: int, reason: str, *, prepare_stop: Callable[[], None] | None = None) -> "IssueTerminationOutcome":
         """Terminate every terminal this issue owns. See `issue_termination`."""
         return terminate_every_session(
             self, issue_number, reason,
             capture=lambda: self._capture(issue_number, reason),
             observe=self._observe,
+            prepare_stop=prepare_stop,
         )
 
     def require_published_work_released(self, issue_number: int) -> None:
@@ -788,7 +808,7 @@ class IssueRuntimeLifecycleOwners:
         return _terminate_issue_session_generation(target=target, reason=reason, preserve=self.preserve,
             active_sessions=self.core.active_sessions, session_exists=session_exists, kill_session=kill_session,
             pair_registry=self.core.pair_registry, job_supervisor=self.core.job_supervisor,
-            work=self.core.work, publish_recovery=self.core.publish_recovery)
+            work=self.core.work, claim_manager=self.core.claim_manager, publish_recovery=self.core.publish_recovery)
 
     def shutdown(self, runner: SessionRunner) -> None:
         # Freeze every retained issue before the first global subprocess teardown.

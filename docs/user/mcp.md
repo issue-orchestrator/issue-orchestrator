@@ -233,6 +233,10 @@ server is bound to.
 
 The subprocess backend drains the agent's POSIX session and descendant groups
 observed before signalling, including descendants that start another session.
+The required issue hold is acknowledged after work custody is established and
+before stopping processes. Ended sessions release their owned Git-ref CAS lease
+before their records are dropped; a surviving lease or unavailable release
+verification remains an incomplete termination, with its session evidence kept.
 The same drain runs for recovered sessions without an in-memory PTY handle.
 Remaining live workers or unavailable process evidence make termination fail.
 Already detached and reparented processes cannot be attributed by this process

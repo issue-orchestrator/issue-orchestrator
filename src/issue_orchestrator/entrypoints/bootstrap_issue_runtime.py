@@ -12,6 +12,7 @@ from ..control.validated_work_preservation import ValidatedWorkPreservationServi
 from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.event_sink import EventSink
+from ..ports.claim_manager import ClaimManager
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.working_copy import WorkingCopy
 from ..ports.persistent_exchange_pair_registry import PersistentExchangePairRegistry
@@ -36,7 +37,7 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         supervisor: BackgroundJobSupervisor | None,
         publish_recovery: IssuePublishRetryRuntime, events: EventSink,
         pull_requests: BranchPullRequestReader, stuck_sweep: FactGatherer | None,
-        pending_work_claims: PendingWorkClaimStore,
+        pending_work_claims: PendingWorkClaimStore, claim_manager: ClaimManager,
         base_branch: Callable[[int, Path], str | None]) -> IssueRuntimeLifecycleOwners:
     def live_runs(issue_number: int) -> tuple[IssueRunRecord, ...]:
         return tuple(IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id))
@@ -51,7 +52,7 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         # The sweep asks the very owner the reset gate enforces (#7293).
         stuck_sweep.published_review = published_review
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(sessions, state.active_sessions,
-        pair_registry, supervisor, publish_recovery, InFlightWorkLedger(state, pending_work_claims)),
+        pair_registry, supervisor, publish_recovery, InFlightWorkLedger(state, pending_work_claims), claim_manager),
         preservation, evidence, events, published_review)
 
 

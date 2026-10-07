@@ -108,7 +108,7 @@ def custody(tmp_path):
     sessions.exists.return_value = False
     pair, jobs, retry = Mock(), Mock(), Mock()
     jobs.cancel_matching.return_value = ()
-    core = CoreIssueRuntimeOwners(sessions, [], pair, jobs, retry, Mock())
+    core = CoreIssueRuntimeOwners(sessions, [], pair, jobs, retry, Mock(), Mock())
     lifecycle = IssueRuntimeLifecycleOwners(core, preservation, source, Mock(),
         PublishedReviewCustody(preservation, no_open_pull_requests()))
     return SimpleNamespace(repo=repo, git=git, worktree=worktree, ledger=ledger, run=run,

@@ -1,6 +1,7 @@
 """Explicit lifecycle bundle with controlled preservation-port responses for release tests."""
 
 from unittest.mock import Mock
+from issue_orchestrator.ports.claim_manager import NullClaimManager
 from issue_orchestrator.control.review_exchange_lifecycle import CoreIssueRuntimeOwners, IssueRuntimeLifecycleOwners, ReviewExchangeCancellation
 from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidence, IssueRunEvidenceOrigin, IssueRunEvidenceStatus
 from issue_orchestrator.domain.validated_work_commands import ValidatedWorkDispositionBatch
@@ -41,7 +42,7 @@ def runtime_owners(*, session_manager=None, active_sessions=None, pair_registry=
         retry.has_active_retry.return_value = False
     return IssueRuntimeLifecycleOwners(CoreIssueRuntimeOwners(session_manager,
         [] if active_sessions is None else active_sessions, pair_registry, job_supervisor, retry,
-        Mock()),  # claim settlement is covered by test_rework_claim_retirement
+        Mock(), NullClaimManager()),  # claim settlement is covered by test_rework_claim_retirement
         preservation, source, Mock(),
         published_review or PublishedReviewCustody(preservation, no_open_pull_requests()))
 

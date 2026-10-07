@@ -141,6 +141,7 @@ def terminate_every_session(
     *,
     capture: Callable[[], ValidatedWorkDispositionBatch],
     observe: Callable[[ValidatedWorkDispositionBatch], None],
+    prepare_stop: Callable[[], None] | None = None,
 ) -> IssueTerminationOutcome:
     """Terminate every terminal this issue is KNOWN to own, whatever its type.
 
@@ -173,6 +174,9 @@ def terminate_every_session(
             f"validated-work custody could not be established for issue "
             f"#{issue_number}: {exc}"
         ) from exc
+
+    if prepare_stop is not None:
+        prepare_stop()
 
     termination = owners.core.release_preserved(issue_number, reason, batch)
     observe(batch)
@@ -245,6 +249,7 @@ def _stop_session(
     # `SessionManager | None`, while `CoreIssueRuntimeOwners.session_manager` is
     # non-optional, so pyright proves the branch dead.
     if not owners.core.session_manager.exists(ref):
+        owners.core.end_session_records(frozenset({session.terminal_id}))
         return False
     # Exact-run preserve, the contract `Orchestrator._kill_session` used: passing
     # `run` scopes the read to this one issue instead of sweeping the ledger.
@@ -252,4 +257,5 @@ def _stop_session(
         session.issue.number, session.terminal_id, reason, run=session.run_assets
     )
     owners.core.session_manager.stop(ref)
+    owners.core.end_session_records(frozenset({session.terminal_id}))
     return True

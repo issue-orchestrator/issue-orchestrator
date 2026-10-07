@@ -32,6 +32,29 @@ from tests.unit.test_provider_readiness_boundary import (
 SUBJECT = 7  # the rework ``_pending_state("rework")`` queues
 
 
+@pytest.mark.parametrize("observed", [None, "owned", "peer", "unavailable"])
+def test_ended_run_retires_its_verified_cas_lease_before_dropping_record(tmp_path, observed):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    harness, state, session = _live_rework(tmp_path)
+    session.lease_id = "owned"
+    core, _ = _core(state, harness)
+    claims = MagicMock()
+    if observed == "unavailable":
+        claims.get_current_claim.side_effect = RuntimeError("claim read unavailable")
+    else:
+        claims.get_current_claim.return_value = None if observed is None else SimpleNamespace(lease_id=observed)
+    core = replace(core, claim_manager=claims)
+    if observed in ("owned", "unavailable"):
+        with pytest.raises(RuntimeError):
+            core.release_preserved(SUBJECT, "operator-terminated", ValidatedWorkDispositionBatch.no_work(SUBJECT, "t"))
+        assert state.active_sessions == [session]
+    else:
+        core.release_preserved(SUBJECT, "operator-terminated", ValidatedWorkDispositionBatch.no_work(SUBJECT, "t"))
+        assert state.active_sessions == []
+    claims.release_claim.assert_called_once_with(SUBJECT, "owned")
+
+
 def _next_tick_sweep(state, harness) -> int:
     return InFlightWorkLedger(state, harness.claims).recover_unresolved(
         _quarantine(harness)
@@ -63,6 +86,7 @@ def _core(state, harness, *, running: bool = True):
         None,
         retry,
         InFlightWorkLedger(state, harness.claims),
+        MagicMock(),
     ), sessions
 
 

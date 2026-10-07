@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Optional, cast
+from typing import TYPE_CHECKING, Callable, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
     from ..domain.completion_intake import (
@@ -286,9 +286,9 @@ class Orchestrator:
         """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
         return self.deps.runtime_lifecycle.terminate(issue_number, reason)
 
-    def terminate_every_session_for_issue(self, issue_number: int, *, reason: str) -> IssueTerminationOutcome:
+    def terminate_every_session_for_issue(self, issue_number: int, *, reason: str, prepare_stop: Callable[[], None] | None = None) -> IssueTerminationOutcome:
         """Every terminal this issue owns; raises with nothing torn down if custody fails (#7255)."""
-        return self.deps.runtime_lifecycle.terminate_every_session(issue_number, reason)
+        return self.deps.runtime_lifecycle.terminate_every_session(issue_number, reason, prepare_stop=prepare_stop)
 
     def issue_session_generation_stale_reason(self, target: "TechLeadSessionGeneration") -> str | None:
         """Read current applicability without stopping or re-approving any work."""
