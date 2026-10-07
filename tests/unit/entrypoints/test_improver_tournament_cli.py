@@ -126,3 +126,12 @@ def test_a_failed_grading_is_regraded_without_running_the_arms_again(tmp_path: P
     assert (directory / "graders-attempt-1" / "codex" / "grades.json").read_text() == "{}"
     result = json.loads((directory / "result.json").read_text())
     assert [g["accepted"] for g in result["graders"]] == [True, True]
+
+
+def test_two_tournaments_started_in_one_second_get_their_own_ids() -> None:
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 10, 7, 20, 0, tzinfo=UTC)
+    ids = {cli.new_tournament_id("20261004", now) for _ in range(20)}
+
+    assert len(ids) == 20 and all(i.startswith("20261007T200000Z-20261004-") for i in ids)

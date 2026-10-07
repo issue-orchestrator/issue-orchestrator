@@ -808,8 +808,15 @@ def test_outputs_are_graded_only_on_the_snapshot_their_arms_ran_on(stores, tmp_p
         harness.grade("t14", "other", outputs, seed=1)
     with pytest.raises(RuntimeError, match="not these outputs"):
         harness.grade("t14", "20261004", [*outputs, ArmOutput("Z", 1, "{}")], seed=1)
+    substituted = [ArmOutput(o.arm, o.heat, '{"findings": []}', o.hide) for o in outputs]
+    with pytest.raises(RuntimeError, match="not these outputs"):
+        harness.grade("t14", "20261004", substituted, seed=1)
     assert len(agents.spaces) == arm_calls
     assert not (harness.directory("t14") / "result.json").exists()
+    with pytest.raises(RuntimeError, match="has already run its arms"):
+        harness.run_arms("t14", "20261004", [_spec(TournamentArm(name="B", provider="claude", model="valid",
+                                                                 mode="scripted"), heats=HeatPlan(1, 1))])
+    assert len(agents.spaces) == arm_calls
     assert harness.grade("t14", "20261004", outputs, seed=1).snapshot_id == "20261004"
 
 

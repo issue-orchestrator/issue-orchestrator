@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import random
+import secrets
 import re
 import sys
 from collections.abc import Callable
@@ -188,6 +189,11 @@ def parse_grader(text: str) -> Grader:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
+def new_tournament_id(snapshot_id: str, now: datetime) -> str:
+    """When and on what, and unique even for two commands started in the same second."""
+    return f"{now.strftime('%Y%m%dT%H%M%SZ')}-{snapshot_id}-{secrets.token_hex(3)}"
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -219,7 +225,7 @@ def main(argv: list[str]) -> int:
         print(render_result(result, harness.directory(tournament_id)))
         return 0
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
-    tournament_id = f"{_now().strftime('%Y%m%dT%H%M%SZ')}-{args.snapshot}"
+    tournament_id = new_tournament_id(args.snapshot, _now())
     if args.command == "run":
         addendum = EMPOWERED_ADDENDUM.read_text(encoding="utf-8")
         # Every arm's settings are checked before any arm runs.

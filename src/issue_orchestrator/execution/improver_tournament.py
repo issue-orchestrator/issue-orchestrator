@@ -26,6 +26,7 @@ Everything a tournament writes stays in its own directory under
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -215,6 +216,12 @@ class TournamentHarness:
             raise ValueError(f"arm names repeat: {names}")
         outputs: list[ArmOutput] = []
         engine = self._snapshots.engine(snapshot_id)
+        # A tournament's arms run once: a second run in the same tournament
+        # (or a tournament id two runs share) is refused before any agent starts.
+        try:
+            (self.directory(tournament_id) / "arms").mkdir(parents=True)
+        except FileExistsError:
+            raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
         for spec in specs:
             arm, heats = spec.arm, spec.heats
             store = FileImproverRunStore(self.directory(tournament_id) / "arms" / arm.name)
@@ -249,7 +256,7 @@ class TournamentHarness:
                 outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
         # What these outputs were run on: grading them under another snapshot is refused.
         _write_atomic(self.directory(tournament_id) / _ARMS_RUN, json.dumps(
-            {"snapshot_id": snapshot_id, "outputs": sorted(o.output_id for o in outputs)}, indent=2
+            {"snapshot_id": snapshot_id, "outputs": _digests(outputs)}, indent=2
         ) + "\n")
         return outputs
 
@@ -462,8 +469,16 @@ def _require_run_on(root: Path, snapshot_id: str, outputs: Sequence[ArmOutput]) 
     ran = json.loads(record.read_text(encoding="utf-8"))
     if ran["snapshot_id"] != snapshot_id:
         raise RuntimeError(f"the arms ran on snapshot {ran['snapshot_id']}, not {snapshot_id}; no grading")
-    if ran["outputs"] != sorted(o.output_id for o in outputs):
-        raise RuntimeError(f"the arms produced {ran['outputs']}, not these outputs; no grading")
+    if ran["outputs"] != _digests(outputs):
+        raise RuntimeError(f"the arms produced {sorted(ran['outputs'])}, not these outputs; no grading")
+
+
+def _digests(outputs: Sequence[ArmOutput]) -> dict[str, str | None]:
+    """Each output's identity: its id and the bytes it answered (None: no answer)."""
+    return {
+        o.output_id: None if o.text is None else hashlib.sha256(o.text.encode("utf-8")).hexdigest()
+        for o in sorted(outputs, key=lambda o: o.output_id)
+    }
 
 
 def _write_atomic(path: Path, text: str) -> None:
