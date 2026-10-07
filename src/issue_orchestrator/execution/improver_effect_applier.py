@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
-from ..contracts.improver_findings import Finding
+from ..contracts.improver_findings import DesignFinding, Finding
 from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord, RunOutcome
 from ..control.improver_effects import (
     IMPROVER_LABEL,
@@ -112,7 +112,12 @@ class ImproverEffects:
     def _apply_run(
         self, run: ImproverRunRecord, open_issues: dict[int, OpenIssueLabels]
     ) -> tuple[ImproverRunRecord, bool]:
-        findings = {f.id: f for f in self._store.accepted_findings(run).findings}
+        accepted = self._store.accepted_findings(run)
+        # Ids are unique across both lists (the validator's rule).
+        findings: dict[str, Finding | DesignFinding] = {
+            **{f.id: f for f in accepted.findings},
+            **{d.id: d for d in accepted.design_findings},
+        }
         for index, receipt in enumerate(run.effects):
             if receipt.status is not EffectStatus.PENDING:
                 continue
@@ -148,7 +153,7 @@ class ImproverEffects:
     def _apply(
         self,
         run: ImproverRunRecord,
-        finding: Finding,
+        finding: Finding | DesignFinding,
         receipt: EffectReceipt,
         open_issues: dict[int, OpenIssueLabels],
         persist: Callable[[EffectReceipt], None],

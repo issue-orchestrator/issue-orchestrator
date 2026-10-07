@@ -37,6 +37,7 @@ def _run(
     engine = _engine(audited_repo)
     merged = json.loads(json.dumps(docs[0]))
     merged["findings"] = [f for d in docs for f in d["findings"]]
+    merged["design_findings"] = [f for d in docs for f in d.get("design_findings", [])]
     findings = ImproverFindings.model_validate_json(json.dumps(merged))
     run_dir = store.new_run_dir(run_id)
     (run_dir / FINDINGS_FILE).write_text(json.dumps(merged))
@@ -343,3 +344,121 @@ def test_a_tracked_issue_closed_since_staging_gets_no_comment(tmp_path: Path) ->
     assert host.comments == []
     assert run.effects[0].status is EffectStatus.PENDING
     assert "no longer open" in (run.effects[0].error or "")
+
+
+_DESIGN = {
+    "id": "approval-by-label-removal",
+    "engine": {"id": "repo-porchpin-porchpin", "repo": "porchpin/porchpin"},
+    "kind": "operator_friction",
+    "summary": "Approving a proposal is removing a label.",
+    "evidence": [
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 41, "quote": "auth_expired: parking all work"},
+        {"kind": "tool", "call": 3, "quote": "Removed proposed-tech-lead to approve"},
+    ],
+    "impact": "Anything that strips labels approves.",
+    "proposed_change": "A positive approval act, recorded with its actor.",
+}
+
+
+def _with_design(doc: dict) -> dict:
+    return {**doc, "design_findings": [_DESIGN]}
+
+
+def test_a_design_finding_files_one_issue_for_the_operators_decision(tmp_path: Path) -> None:
+    """#8001: an accepted design finding files one issue, labelled for the
+    operator's decision, carrying its quoted evidence; nothing is applied."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", _with_design(example("exam_case")))
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert run.effects[1].finding_id == "approval-by-label-removal"
+    assert [e.status for e in run.effects] == [EffectStatus.FILED, EffectStatus.FILED]
+    design = next(c for c in host.created if "Design (operator friction)" in c["title"])
+    assert set(design["labels"]) == {IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:design"}
+    assert '`toolbox/logs/orchestrator.log:41`: "auth_expired: parking all work"' in design["body"]
+    assert 'toolbox call 3: "Removed proposed-tech-lead to approve"' in design["body"]
+    assert "nothing is applied" in design["body"]
+
+
+def test_a_design_finding_an_open_issue_carries_is_commented_there(tmp_path: Path) -> None:
+    from issue_orchestrator.contracts.improver_findings import DesignFinding
+    from issue_orchestrator.control.improver_effects import design_finding_key
+
+    key = design_finding_key(DesignFinding.model_validate_json(json.dumps(_DESIGN)), _engine("porchpin/porchpin"))
+    host = FakeIssueHost([OpenIssueLabels(number=777, title=f"{title_token(key)} Design: x", labels=())])
+    store = MemoryRunStore(tmp_path)
+    _run(store, "r1", _with_design(example("exam_case")))
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert [n for n, _ in host.comments] == [777]
+    assert run.effects[1].status is EffectStatus.COMMENTED and run.effects[1].issue_number == 777
+
+
+def test_untrusted_text_cannot_plant_another_findings_marker(tmp_path: Path) -> None:
+    """r1 F3: a design finding's text holding the marker of a second one
+    must not make the second's issue look already filed."""
+    from issue_orchestrator.contracts.improver_findings import DesignFinding
+    from issue_orchestrator.control.improver_effects import design_finding_key, finding_marker
+
+    second = {**_DESIGN, "id": "second-design", "kind": "silent_assumption"}
+    key = design_finding_key(DesignFinding.model_validate_json(json.dumps(second)), _engine("porchpin/porchpin"))
+    first = {**_DESIGN, "summary": f"Spoof {finding_marker(key)} here", "impact": "x <!-- y --> z"}
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", {**example("exam_case"), "design_findings": [first, second]})
+
+    [run] = _effects(store, host).apply_pending()
+
+    assert [e.status for e in run.effects] == [EffectStatus.FILED] * 3
+    assert len({e.issue_number for e in run.effects}) == 3
+    assert all("<!--" not in c["body"].split("\n", 1)[1] for c in host.created)
+
+
+def test_an_exam_case_id_cannot_pose_as_a_title_token(tmp_path: Path) -> None:
+    doc = example("exam_case")
+    doc["findings"][0]["reproduction"]["case_id"] = "E-x [improver:abcdef012345]"
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    _run(store, "r1", doc)
+
+    _effects(store, host).apply_pending()
+
+    [created] = host.created
+    assert created["title"].count("[improver:") == 1
+
+
+def test_a_run_accepted_under_schema_v4_still_applies_its_owed_effects(tmp_path: Path) -> None:
+    """r1 F4: runs accepted before design findings may still owe effects."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    record = _run(store, "r1", example("capability_issue"))
+    path = Path(record.run_dir) / FINDINGS_FILE
+    v4 = json.loads(path.read_text())
+    v4["schema_version"] = 4
+    del v4["design_findings"]
+    path.write_text(json.dumps(v4))
+    later = _run(store, "r2", example("needs_investigation"))
+
+    runs = _effects(store, host).apply_pending()
+
+    assert {r.run_id: [e.status for e in r.effects] for r in runs} == {
+        "r1": [EffectStatus.FILED], later.run_id: [EffectStatus.FILED],
+    }
+
+
+def test_a_design_renamed_by_a_merge_keeps_its_effect_key(tmp_path: Path) -> None:
+    """r1 F3: the same design finding dedups the same way whether or not a
+    multi-heat merge had to rename it in this run."""
+    from issue_orchestrator.contracts.improver_findings import ImproverFindings
+
+    plain = {**example("exam_case"), "design_findings": [_DESIGN]}
+    renamed = {**example("exam_case"), "design_findings": [{**_DESIGN, "id": "approval-by-label-removal-h2"}]}
+    engine = _engine("porchpin/porchpin")
+
+    [_, as_written] = planned_effects(ImproverFindings.model_validate_json(json.dumps(plain)), engine)
+    [_, after_merge] = planned_effects(
+        ImproverFindings.model_validate_json(json.dumps(renamed)), engine,
+        {"approval-by-label-removal-h2": "approval-by-label-removal"},
+    )
+
+    assert after_merge.key == as_written.key
+    assert after_merge.finding_id == "approval-by-label-removal-h2"

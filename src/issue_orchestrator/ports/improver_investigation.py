@@ -24,6 +24,9 @@ class InvestigationKit:
     toolbox: ToolboxEndpoint | None
     #: Appended to the improver prompt: how this run may investigate.
     instructions: str
+    #: What the investigation staged for the agent to read beside the
+    #: staged inputs (the toolbox's copies); empty for a scripted run.
+    evidence: tuple[Path, ...] = ()
 
 
 class ImproverInvestigation(Protocol):

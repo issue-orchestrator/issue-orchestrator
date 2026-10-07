@@ -68,13 +68,49 @@ class ImproverAgent(Protocol):
         """The provider and model this agent runs on."""
         ...
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
-        """Run the agent on ``prompt`` in ``run_dir``; with ``toolbox`` (an
-        empowered run), the agent may also call the read-only toolbox."""
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
+        """Run one heat of the agent on ``prompt`` in its ``space``; with
+        ``toolbox`` (an empowered run), the agent may also call the
+        read-only toolbox."""
         ...
 
 
+@dataclass(frozen=True)
+class HeatSpace:
+    """Where one heat runs and what it may read (#8001).
+
+    Heats count as independent support only if none can read another's
+    answer: each runs in its own ``workdir`` (its cwd, where its files go),
+    and may read only ``evidence``, the run's shared staged inputs, beside
+    it. Every path is absolute."""
+
+    heat: int
+    #: ``$ISSUE_ORCHESTRATOR_RUN_DIR``, which the prompt's paths are under.
+    run_dir: Path
+    workdir: Path
+    evidence: tuple[Path, ...]
+
+    def __post_init__(self) -> None:
+        if self.heat < 1:
+            raise ValueError(f"heats count from 1, not {self.heat}")
+        for path in (self.run_dir, self.workdir, *self.evidence):
+            if not path.is_absolute():
+                raise ValueError(f"a heat's paths are absolute; {path} is not")
+        if any(self.workdir.is_relative_to(root) or root.is_relative_to(self.workdir) for root in self.evidence):
+            raise ValueError("a heat's workdir and its evidence are separate")
+
+
+def heat_file(name: str, heat: int) -> str:
+    """``name`` for heat ``heat``: ``improver-prompt.txt`` -> ``improver-prompt-h2.txt``."""
+    if heat < 1:
+        raise ValueError(f"heats count from 1, not {heat}")
+    stem, dot, suffix = name.partition(".")
+    return f"{stem}-h{heat}{dot}{suffix}"
+
+
 __all__ = [
+    "HeatSpace",
+    "heat_file",
     "ImproverAgent",
     "ImproverAgentResult",
     "ImproverRunReader",

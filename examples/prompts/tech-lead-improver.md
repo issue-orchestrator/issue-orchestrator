@@ -30,7 +30,7 @@ The orchestrator stages everything under `$ISSUE_ORCHESTRATOR_RUN_DIR/improver-d
 | `charter-decisions.json` | **All** of the tech lead's recorded decisions in the observation window, with stable decision IDs, outcome, effect, reason, `decided_at` and **`applied_at`** (when its effect was applied; absent if never applied), plus a `coverage` block (`from`, `to`, `complete: true/false`) |
 | `charter.json` | The engine's **effective** charter at the latest start: each role's `enabled`/depth/authority and the per-action authority settings, after config overrides |
 | `case-files.json` | The tech lead's case files and diagnoses in the window, with stable IDs and full bodies. `coverage` is the case-file ledger's; `diagnoses_coverage` is never complete (the run history is best-effort), so a diagnosis shows a look but a missing one proves nothing |
-| `interventions.json` | Operator interventions (needs-human removals, approvals, manual resets), timestamped, with comparable windows. May be absent |
+| `interventions.json` | Operator interventions in the window: from the engine's records (proposal approvals and declines, Reset & Retry, pauses), and **the hand actions on the audited repository's GitHub**: labels a person added or removed, title and body edits, items opened, closes, reopens, merges, reviews and comments. Automation (the engine's App, Dependabot) is left out. Each entry has its `source`, `actor`, `ref` (a GitHub URL) and `attribution`: `operator_surface`, `coordinator` (the text carries the coordinator's signature) or `person`. **`person` may be the operator or the coordinator**, who acts under the operator's GitHub identity; never assume which. An entry's `app_provenance` is `checked` when GitHub reported that no App acted for the person, and `unreported` when it does not say (body edits, reviews, merges, opened items): there it is a person's identity at work, not proven hand work. `github` says what the read covered (`sources`, each `complete` or not) and `attribution_limits` what it cannot tell apart. A floor: never complete |
 | `blocked-items.json` | **Every blocked item** of the audited engine: each open issue in its blocked lane (`needs-human`, `tech-lead-needs-human`, `blocked`, `blocked-*`, `blocked:*`, `recovery-pending`, `publish-failed`, a provider outage; `blocking_rule` says exactly). Per item: its labels, each blocking label's `since_at` (when the retained timeline last shows it put on; `null` if not retained) and `blocked_since`, its `needs_human_causes` (the engine's recorded reason and cause, byte for byte), its recent `block_events` (an agent's question, a block reason, label changes), every tech-lead charter `decision` about it from the **whole** ledger, the IDs of the case files and diagnoses in `case-files.json` that name it, its **`open_prs`** (each open PR of the item, with its recent `pipeline_events`: review/rework queued, skipped, started, PR label changes) and its **`stalled_work`** (every `refused_work` anomaly about the item or one of its PRs). Each source has a coverage block |
 | `open-issues.json` | Open issues with labels (read-only), including existing improver and tech-lead issues, so you don't duplicate them |
 | `engine-source/` | The io source tree at the engine's commit (read-only) |
@@ -194,7 +194,7 @@ decision, never applied.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "engine_commit": "<sha>",
   "engine_started_at": "<iso>",
   "findings": [
@@ -223,6 +223,15 @@ decision, never applied.
   "blocked_items": [
     {"number": 262, "disposition": "finding | awaiting_operator", "finding_id": "<finding only: the finding about it>", "evidence": ["<awaiting_operator only: the decision ids that handed it over>"], "why": "<why it is blocked, and what the tech lead did about it>",
      "downstream": [{"anomaly_key": {"kind": "refused_work", "subject": "<stalled_work subject>", "signature": "<stalled_work signature>"}, "finding_id": "<the finding that grades it>", "refused_action": "review | rework | tech_lead_run", "pipeline_event": "blocked-items.json#/items/<i>/open_prs/<j>/pipeline_events/<k> | null", "impact": "<what the block holds up, and why it cannot proceed>"}]}
+  ],
+  "design_findings": [
+    {"id": "<stable slug>", "engine": {"id": "<inputs.json engine_id>", "repo": "<inputs.json audited_repo>"},
+     "kind": "conflated_mechanism | silent_assumption | manual_operator_step | missing_capability | operator_friction",
+     "summary": "<what is wrong with the system's model of the world>",
+     "evidence": [{"kind": "file", "path": "<improver-data/... | toolbox/...>", "line": 412, "quote": "<the cited line's text, verbatim>"},
+                  {"kind": "tool", "call": 7, "quote": "<text of toolbox answer 7, verbatim>"}],
+     "impact": "<what it costs: stalls, operator work, wrong outcomes>",
+     "proposed_change": "<the change that makes the model match reality>"}
   ],
   "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
 }
@@ -357,6 +366,30 @@ in `engine-source/examples/improver/findings/`.
   scorecard for exactly the cases it holds a latest one for.
   `interventions.json` is never complete (not every intervention is recorded),
   so `operator_interventions` is `unobserved` until it is.
+
+- **Design findings** (`design_findings`, `[]` when there are none) report a
+  place where the system's model of the world does not match reality,
+  rather than a stall on one anomaly. Examples: one mechanism carrying two
+  meanings, a silent assumption, the operator doing by hand what the system
+  should do, a human needed only because a tool is missing, a friction only
+  the operator experiences. **The same evidence rule holds: no citation, no
+  finding.** Every `evidence` entry quotes, verbatim, what you read:
+  - a `file` entry names a file under `improver-data/` or `toolbox/` (the
+    staged bundle or toolbox, nothing else), the `line` the quote is on, and
+    at least 12 characters of that line;
+  - a `tool` entry names a toolbox answer by its `call` number (each answer
+    begins `[toolbox call N]`) and quotes text from it. Only answers that are
+    data count: a `github_get` answer, or ONE value of a `sql_query` answer
+    that is stored in that database (not text your query computed). A `git`
+    answer is never evidence, since your own arguments shape it: cite the
+    file in `toolbox/repo/` instead, or the commit through `github_get`.
+
+  The orchestrator looks each quote up. Whitespace may differ and the line
+  may be off by two, but the words must be there, and the quote needs 12
+  characters besides whitespace. One quote that is not
+  there rejects the whole file. Ids are unique across `findings` and
+  `design_findings`. An accepted design finding files an issue for the
+  operator's decision; nothing is changed.
 
 What each output means:
 - **`exam_case`:** a new exam case for a class of miss.

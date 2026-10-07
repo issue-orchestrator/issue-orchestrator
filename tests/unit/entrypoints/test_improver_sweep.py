@@ -17,7 +17,8 @@ from issue_orchestrator.adapters.registered_engine_inventory import engine_at
 from issue_orchestrator.contracts.improver_run import ImproverAgentChoice, ImproverProvider, RunOutcome
 from issue_orchestrator.domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
 from issue_orchestrator.entrypoints.engine_activity_probe import SnapshotEngineActivityProbe
-from issue_orchestrator.entrypoints.improver_run import ImproverRun
+from issue_orchestrator.entrypoints.improver_run import HeatPlan, ImproverRun
+from tests.unit.improver_support import NO_ACTIVITY
 from issue_orchestrator.entrypoints.improver_staging import ImproverInputStager
 from issue_orchestrator.entrypoints.improver_sweep import (
     EXIT_OK,
@@ -27,7 +28,7 @@ from issue_orchestrator.entrypoints.improver_sweep import (
 )
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
-from issue_orchestrator.ports.improver import ImproverAgentResult
+from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.entrypoints.test_improver_staging import (
     COMMIT,
     NOW,
@@ -71,11 +72,11 @@ class EmptyFindingsAgent:
     def __init__(self) -> None:
         self.engines: list[tuple[str, str]] = []
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
-        inputs = json.loads((run_dir / "improver-data" / "inputs.json").read_text())
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
+        inputs = json.loads((space.run_dir / "improver-data" / "inputs.json").read_text())
         self.engines.append((inputs["engine_id"], inputs["audited_repo"]))
         return ImproverAgentResult(json.dumps({
-            "schema_version": 4, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(),
+            "schema_version": 5, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
             "findings": [], "blocked_items": [],
             "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},
         }), "done")
@@ -97,12 +98,13 @@ def _sweep(
         return ImproverRun(
             store=store,
             stager=ImproverInputStager(
-                audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), clock=lambda: NOW,
+                audited_host=FakeHost(), outputs_host=FakeHost(), source=FakeSource(), activity=NO_ACTIVITY, clock=lambda: NOW,
             ),
             agent=agent,
             investigation=ScriptedInvestigation(),
             effects=ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW),
             prompt="PROMPT",
+            heats=HeatPlan(count=1, parallel=1),
             clock=lambda: now,
         )
 

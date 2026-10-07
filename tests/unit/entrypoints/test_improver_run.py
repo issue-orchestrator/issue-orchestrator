@@ -14,7 +14,7 @@ from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE
 from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverAgentChoice, ImproverProvider, RunOutcome
 from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
-from issue_orchestrator.entrypoints.improver_run import ImproverRun, ImproverRunRequest, findings_text, render_run
+from issue_orchestrator.entrypoints.improver_run import HeatPlan, ImproverRun, ImproverRunRequest, findings_text, render_run
 from issue_orchestrator.entrypoints.improver_staging import (
     ImproverInputsUnavailable,
     ImproverStagingRequest,
@@ -25,7 +25,7 @@ from issue_orchestrator.contracts.improver_toolbox import ImproverMode
 from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
 from issue_orchestrator.ports.improver_investigation import InvestigationKit
 from issue_orchestrator.ports.improver_toolbox import ToolboxEndpoint
-from issue_orchestrator.ports.improver import ImproverAgentResult
+from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.improver_support import (
     FakeIssueHost,
     MemoryRunStore,
@@ -65,7 +65,7 @@ class FakeAgent:
         self.prompts: list[str] = []
         self.toolboxes: list[object] = []
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
         self.prompts.append(prompt)
         self.toolboxes.append(toolbox)
         return ImproverAgentResult(self.message, self.detail)
@@ -93,6 +93,7 @@ def _improver(
     agent: FakeAgent,
     stager: FakeStager | None = None,
     investigation: object | None = None,
+    heats: HeatPlan | None = None,
 ) -> ImproverRun:
     # Each improver's clock starts a day after the previous one's, so runs order by time.
     start = NOW + timedelta(days=next(_RUNS))
@@ -106,6 +107,7 @@ def _improver(
             store=store, host=host, outputs_repo="issue-orchestrator/issue-orchestrator", clock=lambda: NOW
         ),
         prompt="THE PROMPT",
+        heats=heats or HeatPlan(count=1, parallel=1),
         clock=lambda: next(clock),
     )
 
@@ -319,7 +321,7 @@ def test_an_agent_that_cannot_be_launched_is_recorded_unavailable(tmp_path: Path
     class Refused:
         choice = FakeAgent.choice
 
-        def run(self, *, prompt: str, run_dir: Path, toolbox: object) -> ImproverAgentResult:
+        def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
             raise RuntimeError("legacy sandbox_mode disables the permission profile")
 
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
@@ -494,3 +496,202 @@ def test_a_blind_run_hides_its_issues_from_the_toolbox_when_it_audits_its_output
         _improver(store, host, FakeAgent(_findings("exam_case")), investigation=empowered).run(blind, apply=False)
 
     assert empowered.hidden == [frozenset({7592}), frozenset()]
+
+
+
+class HeatAgent:
+    """Answers per heat, and records how many heats ran at once."""
+
+    choice = ImproverAgentChoice(provider=ImproverProvider.CLAUDE, model="opus")
+
+    def __init__(self, answers: dict[int, str | None], hold: float = 0.2) -> None:
+        import threading
+
+        self.answers = answers
+        self.hold = hold
+        self.heats: list[int] = []
+        self.spaces: list[HeatSpace] = []
+        self.running = 0
+        self.most_at_once = 0
+        self._lock = threading.Lock()
+
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
+        import time
+
+        with self._lock:
+            self.heats.append(space.heat)
+            self.spaces.append(space)
+            self.running += 1
+            self.most_at_once = max(self.most_at_once, self.running)
+        time.sleep(self.hold)
+        with self._lock:
+            self.running -= 1
+        answer = self.answers[space.heat]
+        if answer == "RAISE":
+            raise RuntimeError("binary missing")
+        return ImproverAgentResult(answer, "done" if answer else "timed out")
+
+
+def test_heats_run_in_parallel_up_to_the_plan_and_their_findings_merge_with_support(tmp_path: Path) -> None:
+    """#8001: N heats on the same inputs; a finding several found is kept once
+    and says so; each heat's answer is kept beside the merged one."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: _findings("exam_case", "capability_issue"), 3: _findings("exam_case")})
+
+    record = _improver(store, host, agent, heats=HeatPlan(count=3, parallel=2)).run(_request(), apply=False)
+
+    assert sorted(agent.heats) == [1, 2, 3] and agent.most_at_once == 2
+    assert record.outcome is RunOutcome.ACCEPTED
+    assert "from 3 of 3 heat(s)" in record.detail
+    assert [(h.heat, h.outcome, h.findings) for h in record.heats] == [
+        (1, RunOutcome.ACCEPTED, 1), (2, RunOutcome.ACCEPTED, 2), (3, RunOutcome.ACCEPTED, 1),
+    ]
+    exam = example("exam_case")["findings"][0]["id"]
+    capability = example("capability_issue")["findings"][0]["id"]
+    assert {s.finding_id: s.heats for s in record.finding_support} == {exam: (1, 2, 3), capability: (2,)}
+    run_dir = Path(record.run_dir)
+    assert all((run_dir / f"improver-findings-h{h}.json").is_file() for h in (1, 2, 3))
+    merged = json.loads((run_dir / "improver-findings.json").read_text())
+    assert [f["id"] for f in merged["findings"]] == [exam, capability]
+    assert f"{exam}: found by 3 of 3 heat(s)" in render_run(record)
+    assert len(record.effects) == 2
+
+
+def test_a_run_is_accepted_if_any_heat_is_and_keeps_why_the_others_were_not(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: "not json", 2: None, 3: "RAISE", 4: _findings("capability_issue")}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(count=4, parallel=4)).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.ACCEPTED and "from 1 of 4 heat(s)" in record.detail
+    outcomes = {h.heat: (h.outcome, h.detail) for h in record.heats}
+    assert outcomes[1][0] is RunOutcome.REJECTED and outcomes[2] == (RunOutcome.AGENT_FAILED, "timed out")
+    assert outcomes[3] == (RunOutcome.AGENT_FAILED, "agent not launched: RuntimeError: binary missing")
+    assert record.heats[0].rejections
+
+
+def test_no_accepted_heat_is_a_rejection_when_any_answered_and_a_failure_otherwise(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    rejected = _improver(store, host, HeatAgent({1: "not json", 2: None}, hold=0), heats=HeatPlan(2, 2)).run(
+        _request(), apply=False
+    )
+    failed = _improver(store, host, HeatAgent({1: None, 2: "RAISE"}, hold=0), heats=HeatPlan(2, 2)).run(
+        _request(), apply=False
+    )
+
+    assert rejected.outcome is RunOutcome.REJECTED and rejected.effects == ()
+    assert all(r.startswith("heat 1: ") for r in rejected.rejections)
+    assert failed.outcome is RunOutcome.AGENT_FAILED
+    assert failed.detail == "heat 1: timed out; heat 2: agent not launched: RuntimeError: binary missing"
+
+
+def test_a_filed_issue_says_how_many_heats_found_its_finding(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: _findings("exam_case", "capability_issue")}, hold=0)
+
+    _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request())
+
+    bodies = {c["title"].split("] ", 1)[1].split(":")[0]: c["body"] for c in host.created}
+    assert "**Found by 2 of 2 independent heat(s)** (1, 2)." in next(b for t, b in bodies.items() if t.startswith("Exam case"))
+    assert "**Found by 1 of 2 independent heat(s)** (2)." in bodies["Capability gap"]
+
+
+def test_a_conflict_between_heats_is_recorded_and_shown_on_the_kept_findings_issue(tmp_path: Path) -> None:
+    """r1 F2: a different finding proposing the same exam case is not lost."""
+    # A valid finding about another anomaly that proposes the same new case.
+    other = json.loads(_findings("capability_issue"))
+    finding = other["findings"][0]
+    finding["id"] = "same-case-other-anomaly"
+    finding["output"] = "exam_case"
+    finding["reproduction"] = example("exam_case")["findings"][0]["reproduction"]
+    finding["proposal"] = "Plant the other anomaly instead."
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: json.dumps(other)}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request())
+
+    assert record.outcome is RunOutcome.ACCEPTED, record.rejections or [h.rejections for h in record.heats]
+    [conflict] = record.heat_conflicts
+    assert conflict.heat == 2 and conflict.claim == "Plant the other anomaly instead."
+    assert "heat 2 not merged" in render_run(record)
+    [issue] = host.created
+    assert "**Not merged, to resolve:**" in issue["body"] and "Plant the other anomaly instead." in issue["body"]
+
+
+def test_a_heat_plan_is_bounded() -> None:
+    from issue_orchestrator.entrypoints.improver_run import MAX_HEATS
+
+    assert HeatPlan(5, 2).waves == 3 and HeatPlan(2, 2).waves == 1
+    for count, parallel in ((0, 1), (MAX_HEATS + 1, 1), (2, 3), (2, 0)):
+        with pytest.raises(ValueError):
+            HeatPlan(count, parallel)
+
+
+def test_a_comment_on_an_existing_issue_carries_the_same_support_and_conflicts(tmp_path: Path) -> None:
+    """r2 F1: one rule for new issues and comments on existing ones."""
+    from issue_orchestrator.contracts.improver_findings import ImproverFindings
+    from issue_orchestrator.control.improver_effects import finding_key, title_token
+    from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+
+    other = json.loads(_findings("capability_issue"))
+    finding = other["findings"][0]
+    finding["id"] = "same-case-other-anomaly"
+    finding["output"] = "exam_case"
+    finding["reproduction"] = example("exam_case")["findings"][0]["reproduction"]
+    finding["proposal"] = "Plant the other anomaly instead."
+    kept = ImproverFindings.model_validate_json(_findings("exam_case")).findings[0]
+    token = title_token(finding_key(kept, _request().engine))
+    store = MemoryRunStore(tmp_path)
+    host = FakeIssueHost([OpenIssueLabels(number=901, title=f"{token} Exam case: earlier", labels=())])
+    agent = HeatAgent({1: _findings("exam_case"), 2: json.dumps(other)}, hold=0)
+
+    _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request())
+
+    assert host.created == []
+    [(number, body)] = host.comments
+    assert number == 901
+    assert "**Found by 1 of 2 independent heat(s)** (1)." in body
+    assert "**Not merged, to resolve:**" in body and "Plant the other anomaly instead." in body
+
+
+def test_each_heat_has_its_own_workdir_and_reads_only_the_shared_evidence(tmp_path: Path) -> None:
+    """r3 F1: heats are independent support only if none can read another's
+    answer. Each runs in heats/h<k>/; what it may read is the staged inputs
+    and what the investigation staged, never the run dir or another heat."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("exam_case"), 2: _findings("exam_case")}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(2, 2), investigation=FakeEmpowered()).run(
+        _request(), apply=False
+    )
+
+    run_dir = Path(record.run_dir).resolve()
+    spaces = sorted(agent.spaces, key=lambda s: s.heat)
+    assert [s.workdir for s in spaces] == [run_dir / "heats" / "h1", run_dir / "heats" / "h2"]
+    for space in spaces:
+        assert space.run_dir == run_dir
+        assert space.evidence[0] == run_dir / "improver-data"
+        others = [o.workdir for o in spaces if o is not space]
+        assert not any(o.is_relative_to(root) for o in others for root in space.evidence)
+        assert run_dir not in space.evidence
+
+
+def test_a_heat_naming_one_effect_twice_is_rejected_before_the_merge(tmp_path: Path) -> None:
+    """r4 F1: two findings of one answer with one effect key would split the
+    merge's support and plan two effects for one issue."""
+    twice = json.loads(_findings("capability_issue"))
+    copy = dict(twice["findings"][0])
+    copy["id"] = "same-effect-other-name"
+    twice["findings"].append(copy)
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: json.dumps(twice), 2: _findings("capability_issue")}, hold=0)
+
+    record = _improver(store, host, agent, heats=HeatPlan(2, 2)).run(_request(), apply=False)
+
+    heat1 = next(h for h in record.heats if h.heat == 1)
+    assert heat1.outcome is RunOutcome.REJECTED
+    assert any("[unique_effect_keys] finding same-effect-other-name" in r for r in heat1.rejections)
+    capability = example("capability_issue")["findings"][0]["id"]
+    assert {s.finding_id: s.heats for s in record.finding_support} == {capability: (2,)}
+    assert len(record.effects) == 1

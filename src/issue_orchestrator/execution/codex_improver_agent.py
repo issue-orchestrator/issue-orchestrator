@@ -22,7 +22,6 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping
-from pathlib import Path
 
 from ..domain.sandbox_scope import (
     DEFAULT_SANDBOX_DENY_ENV,
@@ -31,7 +30,7 @@ from ..domain.sandbox_scope import (
 )
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..ports.command_runner import CommandRunner
-from ..ports.improver import ImproverAgentResult
+from ..ports.improver import HeatSpace, ImproverAgentResult
 from ..ports.improver_toolbox import TOOLBOX_SERVER_NAME, TOOLBOX_TOKEN_ENV, ToolboxEndpoint
 from .agent_runner_providers.sandbox import build_codex_sandbox_argv
 
@@ -89,11 +88,12 @@ class CodexImproverAgent:
         return self._choice
 
     @staticmethod
-    def scope(run_dir: Path) -> SandboxScope:
-        workspace = run_dir / AGENT_WORKSPACE
+    def scope(space: HeatSpace) -> SandboxScope:
+        workspace = space.workdir / AGENT_WORKSPACE
         return SandboxScope(
             working_directory=workspace,
-            read_roots=(workspace, run_dir),
+            # Its own workspace and the shared evidence: no other heat's answer.
+            read_roots=(workspace, *space.evidence),
             write_roots=(workspace,),
             egress="model-only",
             deny_env=DEFAULT_SANDBOX_DENY_ENV,
@@ -101,13 +101,13 @@ class CodexImproverAgent:
             reads_confined=True,
         )
 
-    def argv(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> list[str]:
+    def argv(self, *, prompt: str, space: HeatSpace, toolbox: ToolboxEndpoint | None) -> list[str]:
         # stdin is /dev/null: ``codex exec`` appends a PIPED stdin to the
         # prompt, and would wait on one inherited from a runner that never
         # closes it.
         return [
             "/bin/sh", "-c", 'exec "$@" </dev/null', "sh",
-            "codex", *build_codex_sandbox_argv(self.scope(run_dir)), *_toolbox_overrides(toolbox), "exec",
+            "codex", *build_codex_sandbox_argv(self.scope(space)), *_toolbox_overrides(toolbox), "exec",
             # The operator's config.toml is not the agent's: its MCP servers,
             # profiles and tools would reach past the run's boundary (#8001
             # r2 F1). Authentication still comes from CODEX_HOME.
@@ -116,37 +116,34 @@ class CodexImproverAgent:
             "--ephemeral",
             "--color", "never",
             "--model", self._choice.model,
-            "--output-last-message", str(run_dir / FINAL_MESSAGE_FILE),
+            "--output-last-message", str(space.workdir / FINAL_MESSAGE_FILE),
             prompt,
         ]
 
-    def run(self, *, prompt: str, run_dir: Path, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
-        # Absolute: Codex runs IN the run dir, so a relative final-message
-        # path or sandbox root would resolve beneath it.
-        run_dir = run_dir.resolve()
-        workspace = run_dir / AGENT_WORKSPACE
+    def run(self, *, prompt: str, space: HeatSpace, toolbox: ToolboxEndpoint | None) -> ImproverAgentResult:
+        workspace = space.workdir / AGENT_WORKSPACE
         workspace.mkdir()
         initialized = self._runner.run(["git", "init", "-q", str(workspace)], timeout_seconds=60)
         if initialized.returncode:
             raise RuntimeError(f"cannot prepare the agent workspace: {initialized.stderr.strip()}")
         result = self._runner.run(
-            self.argv(prompt=prompt, run_dir=run_dir, toolbox=toolbox),
-            cwd=run_dir,
+            self.argv(prompt=prompt, space=space, toolbox=toolbox),
+            cwd=space.workdir,
             env={
                 **agent_environment(os.environ),
-                "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_dir),
+                "ISSUE_ORCHESTRATOR_RUN_DIR": str(space.run_dir),
                 **({} if toolbox is None else {TOOLBOX_TOKEN_ENV: toolbox.token}),
             },
             timeout_seconds=self._timeout,
         )
-        (run_dir / "improver-agent.log").write_text(
+        (space.workdir / "improver-agent.log").write_text(
             result.stdout + "\n--- stderr ---\n" + result.stderr, encoding="utf-8"
         )
         if result.timed_out:
             return ImproverAgentResult(None, f"codex timed out after {self._timeout}s")
         if result.returncode:
             return ImproverAgentResult(None, f"codex exited {result.returncode}: {result.stderr.strip()[-500:]}")
-        message = run_dir / FINAL_MESSAGE_FILE
+        message = space.workdir / FINAL_MESSAGE_FILE
         text = message.read_text(encoding="utf-8") if message.is_file() else ""
         if not text.strip():
             return ImproverAgentResult(None, "codex finished without a final message")

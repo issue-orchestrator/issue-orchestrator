@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..contracts.improver_toolbox import ImproverMode
+from ..contracts.improver_toolbox import TOOLBOX_DIRNAME, ImproverMode
 from ..domain.engine_activity import EngineRef
 from ..ports.improver_investigation import InvestigationKit
 from ..ports.improver_toolbox import AuditedRepoReads
@@ -70,7 +70,9 @@ class EmpoweredInvestigation:
             .replace("<<STAGED_AT>>", manifest.staged_at.isoformat())
         )
         with serve_toolbox(toolbox) as endpoint:
-            yield InvestigationKit(toolbox=endpoint, instructions=instructions)
+            yield InvestigationKit(
+                toolbox=endpoint, instructions=instructions, evidence=((run_dir / TOOLBOX_DIRNAME).resolve(),)
+            )
 
 
 __all__ = ["EMPOWERED_ADDENDUM", "EmpoweredInvestigation", "ScriptedInvestigation"]

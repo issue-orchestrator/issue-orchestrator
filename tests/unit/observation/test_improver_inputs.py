@@ -328,8 +328,8 @@ def test_interventions_are_the_recorded_operator_acts_in_the_window() -> None:
     )
 
     staged = interventions_input(
-        [approved, declined_long_ago], [reset, other], [operator, breaker],
-        window_start=WINDOW_START, cutoff=CUTOFF,
+        [approved, declined_long_ago], [reset, other], [operator, breaker], "skipped: test",
+        repo="porchpin/porchpin", window_start=WINDOW_START, cutoff=CUTOFF,
     )
 
     assert [(i.kind, i.subject) for i in staged.interventions] == [
@@ -375,7 +375,10 @@ def test_the_exam_writes_its_scorecards_somewhere_durable() -> None:
 
 
 def test_an_unread_timeline_is_named_among_what_is_not_derivable() -> None:
-    staged = interventions_input([], "absent: no timeline.sqlite", [], window_start=WINDOW_START, cutoff=CUTOFF)
+    staged = interventions_input(
+        [], "absent: no timeline.sqlite", [], "skipped: test", repo="porchpin/porchpin",
+        window_start=WINDOW_START, cutoff=CUTOFF,
+    )
 
     assert not any("timeline" in source for source in staged.derived_from)
     assert any("absent: no timeline.sqlite" in gap for gap in staged.not_derivable)

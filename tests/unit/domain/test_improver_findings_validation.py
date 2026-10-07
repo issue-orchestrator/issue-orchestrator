@@ -349,6 +349,8 @@ EVIDENCE_CASE_RULES = {
     Rule.NOT_NOTICED_NEEDS_COVERAGE,
     Rule.PRESENCE_MATCHES_CURRENT_AUDIT,
     Rule.NOT_NOTICED_UNREFERENCED,
+    # Design findings' citations: test_improver_design_findings.py.
+    Rule.DESIGN_CITATION_RESOLVES,
 }
 
 

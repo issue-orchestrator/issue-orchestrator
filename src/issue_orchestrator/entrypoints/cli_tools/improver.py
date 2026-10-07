@@ -57,7 +57,11 @@ from ...domain.improver_findings_validation import (
     validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
-from ...execution.providers import create_audited_repo_reads, create_repository_host
+from ...execution.providers import (
+    create_audited_repo_reads,
+    create_operator_activity_source,
+    create_repository_host,
+)
 from ...observation.engine_audit import Unavailable
 from ...execution.improver_effect_applier import ImproverEffects
 from ...contracts.improver_run import DEFAULT_IMPROVER_AGENT, ImproverAgentChoice, ImproverProvider
@@ -69,7 +73,7 @@ from ...ports.improver_investigation import ImproverInvestigation
 from ...execution.improver_run_store import FileImproverRunStore
 from ...ports.improver import ImproverStoreBusy
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
-from ..improver_run import ImproverRun, render_run
+from ..improver_run import HeatPlan, ImproverRun, render_run
 from ..improver_sweep import ImproverSweep, ImproverSweepRequest
 from ..improver_staging import (
     ImproverInputStager,
@@ -83,6 +87,13 @@ EXIT_OK = 0
 EXIT_REJECTED = 1
 EXIT_UNAVAILABLE = 75
 
+
+#: Heats per engine: two, so a finding found twice stands out, at twice one
+#: run's cost (#8001); both at once, so a run takes one heat's time.
+DEFAULT_HEATS = 2
+DEFAULT_PARALLEL_HEATS = 2
+#: The budgeted suite allows 120 minutes; staging and the toolbox take the rest.
+DEFAULT_RUN_BUDGET_MINUTES = 105
 
 #: The prompt, relative to the io checkout the command runs in.
 DEFAULT_PROMPT = Path("examples/prompts/tech-lead-improver.md")
@@ -144,6 +155,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--empowered-addendum", type=Path, default=EMPOWERED_ADDENDUM)
     run.add_argument(
+        "--heats", type=int, default=DEFAULT_HEATS,
+        help="Independent agent runs per engine, merged (default: %(default)s). Each is a whole"
+        " agent run on the provider: a Claude heat counts against the subscription",
+    )
+    run.add_argument(
+        "--parallel-heats", type=int, default=DEFAULT_PARALLEL_HEATS,
+        help="Heats run at once (default: %(default)s)",
+    )
+    run.add_argument(
+        "--run-budget-minutes", type=int, default=DEFAULT_RUN_BUDGET_MINUTES,
+        help="The longest the heats may take, one wave after another, each wave up to"
+        " --agent-timeout-minutes (default: %(default)s, inside the budgeted suite's timeout)",
+    )
+    run.add_argument(
         "--apply", action="store_true",
         help="Apply accepted findings' GitHub effects; without it the run is dry and they stay owed",
     )
@@ -181,6 +206,9 @@ def _stager(args: argparse.Namespace, audited_repo: str) -> ImproverInputStager:
         audited_host=audited,
         outputs_host=outputs,
         source=GitEngineSourceArchive(args.engine_source_repo.resolve(), LocalCommandRunner()),
+        activity=Unavailable(SourceStatus.SKIPPED, "--no-github")
+        if args.no_github
+        else create_operator_activity_source(audited_repo),
         clock=_now,
     )
 
@@ -237,13 +265,24 @@ def agent_choice(args: argparse.Namespace) -> ImproverAgentChoice:
     return ImproverAgentChoice.for_provider(args.provider, args.model)
 
 
-def run(args: argparse.Namespace) -> int:
+def _refuse_contradictions(args: argparse.Namespace) -> None:
+    """``run``'s options that cannot hold together end the command at once."""
     if (args.state_dir is None) != (args.audited_repo is None):
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
     if args.exclude_open_issue and args.apply:
         raise SystemExit("improver run: --exclude-open-issue is a blind run; it cannot --apply")
+    try:
+        HeatPlan(count=args.heats, parallel=args.parallel_heats).require_within(
+            agent_timeout_minutes=args.agent_timeout_minutes, budget_minutes=args.run_budget_minutes
+        )
+    except ValueError as error:
+        raise SystemExit(f"improver run: --heats/--parallel-heats: {error}") from error
     if args.mode is ImproverMode.EMPOWERED and args.budget_minutes >= args.agent_timeout_minutes:
         raise SystemExit("improver run: --budget-minutes must be below --agent-timeout-minutes")
+
+
+def run(args: argparse.Namespace) -> int:
+    _refuse_contradictions(args)
     store = _store()
     prompt = args.prompt.read_text(encoding="utf-8")
     investigation = _investigation(args)
@@ -260,6 +299,7 @@ def run(args: argparse.Namespace) -> int:
             investigation=investigation,
             effects=_effects(args.outputs_repo, store),
             prompt=prompt,
+            heats=HeatPlan(count=args.heats, parallel=args.parallel_heats),
             clock=_now,
         )
 
@@ -343,7 +383,7 @@ def validate(run_dir: Path) -> int:
         for violation in rejection.violations:
             print(violation.describe())
         return EXIT_REJECTED
-    print(f"valid: {len(findings.findings)} finding(s)")
+    print(f"valid: {len(findings.findings)} finding(s), {len(findings.design_findings)} design finding(s)")
     return EXIT_OK
 
 
