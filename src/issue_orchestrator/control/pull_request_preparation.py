@@ -19,6 +19,7 @@ from ..domain.issue_delivery import IssueDelivery
 from ..domain.models import CompletionRecord
 from ..domain.publication_remote import attributed_publication_body
 from ..domain.runtime_identity import RuntimeIdentity
+from ..ports.pull_request_tracker import PRInfo
 from .completion_preparation import PreparedPullRequest
 from .completion_result_artifacts import build_pr_body
 from .completion_review_exchange import CompletionReviewExchange
@@ -171,6 +172,18 @@ class PullRequestPreparation:
                 "claim one: merged PR #%s already refs it", issue_number, delivery.evidence_pr,
             )
         return delivery
+
+    def adopted_pr_refused(
+        self, pr: PRInfo, *, issue_number: int, delivery: IssueDelivery, errors: list[str],
+    ) -> bool:
+        """Whether the PR publication actually got (an idempotent create's
+        existing PR, or a reused one) breaks the resolved delivery; the
+        refusal is reported on ``errors`` and as publish-failed (#8689)."""
+        refusal = self._partial_delivery.adopted_pr_refusal(pr, issue_number, delivery)
+        if refusal is None:
+            return False
+        errors.extend(self._refused(refusal, issue_number=issue_number, branch=pr.branch).errors)
+        return True
 
     def _refused(
         self, refusal: PartialDeliveryRefusal, *, issue_number: int, branch: str,

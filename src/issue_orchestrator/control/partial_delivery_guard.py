@@ -108,6 +108,35 @@ class PartialDeliveryGuard:
                 host_rate_limit=host_rate_limit_of(exc),
             )
 
+    def adopted_pr_refusal(
+        self, pr: PRInfo, issue_number: int, delivery: IssueDelivery,
+    ) -> PartialDeliveryRefusal | None:
+        """Why an existing PR cannot carry ``delivery``, or None when it can.
+
+        Reuse, and an idempotent create that returns the branch's open PR,
+        keep that PR's body, so the body must carry the delivery's claim:
+        partial must not close the issue, finishing must close it. Checked
+        before the branch write and again on the PR publication actually
+        returns, since another publisher can open one in between (#8689).
+        """
+        if (not delivery.partial and not delivery.finishes) or honors_delivery_claim(
+            pr.body, issue_number, partial=delivery.partial, finishes=delivery.finishes,
+            repo_slug=self._repo_slug(),
+        ):
+            return None
+        if delivery.finishes:
+            return PartialDeliveryRefusal(
+                f"completion declared that it finishes #{issue_number}, but existing PR "
+                f"#{pr.number} does not close it, so merging it would leave "
+                f"#{issue_number} open; change its reference line to 'Closes #{issue_number}' "
+                f"or complete without --finishes-issue"
+            )
+        return PartialDeliveryRefusal(
+            f"{_partial_because(delivery, issue_number)}, but "
+            f"existing PR #{pr.number} closes it on merge; change its "
+            f"reference line to 'Refs #{issue_number}' or {_publish_whole_hint(delivery)}"
+        )
+
     def refusal(
         self,
         worktree: Path,
@@ -156,26 +185,13 @@ class PartialDeliveryGuard:
                 retryable=True,
                 host_rate_limit=host_rate_limit_of(exc),
             )
-        # Reuse keeps an open PR's body, so that body must carry this
-        # delivery's claim: partial must not close, finishing must close.
         mismatched = next(
-            (pr for pr in open_prs if not honors_delivery_claim(
-                pr.body, issue_number, partial=stated, finishes=finishing, repo_slug=slug)),
+            (refusal for pr in open_prs
+             if (refusal := self.adopted_pr_refusal(pr, issue_number, delivery)) is not None),
             None,
         )
-        if mismatched is not None and finishing:
-            return PartialDeliveryRefusal(
-                f"completion declared that it finishes #{issue_number}, but existing PR "
-                f"#{mismatched.number} does not close it, so merging it would leave "
-                f"#{issue_number} open; change its reference line to 'Closes #{issue_number}' "
-                f"or complete without --finishes-issue"
-            )
         if mismatched is not None:
-            return PartialDeliveryRefusal(
-                f"{_partial_because(delivery, issue_number)}, but "
-                f"existing PR #{mismatched.number} closes it on merge; change its "
-                f"reference line to 'Refs #{issue_number}' or {_publish_whole_hint(delivery)}"
-            )
+            return mismatched
         partial = stated or any(
             declares_partial_delivery(pr.body, issue_number, repo_slug=slug) for pr in open_prs
         )

@@ -821,6 +821,30 @@ class TestPartialPRReference:
                    for action in result.actions_taken)
         mock_pr_adapter.merged_pr_history.assert_called_with(123)
 
+    @pytest.mark.parametrize("adopted_by", ["create", "reuse"])
+    def test_a_closing_pr_adopted_after_the_guard_read_is_refused_for_an_inferred_delivery(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion, adopted_by,
+    ):
+        """#8689 codex r4 F1: the guard's branch read saw no open PR, then
+        another publisher opened "Closes #123" on the branch. An idempotent
+        create (or the issue-scoped reuse lookup) hands that PR back; its body
+        is checked against the inferred partial delivery before success."""
+        mock_pr_adapter.merged_pr_history.return_value = (
+            MergedPullRequest(98, "Refs #123\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
+        )
+        racing = self._pr("Closes #123\n\nRacing publisher")
+        mock_pr_adapter.get_prs_for_branch.return_value = []
+        if adopted_by == "create":
+            mock_pr_adapter.create_pr.return_value = racing
+        else:
+            mock_pr_adapter.get_prs_for_issue.return_value = [racing]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=False)
+
+        assert not result.success
+        assert any("existing PR #99 closes it on merge" in e for e in result.errors)
+        assert not any(a.startswith(("Created PR", "Reused PR")) for a in result.actions_taken or [])
+
     def test_a_finishing_completion_never_reuses_a_pr_that_only_refs_the_issue(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
     ):
