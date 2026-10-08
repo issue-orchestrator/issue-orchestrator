@@ -85,6 +85,7 @@ class GitHub:
     milestones: dict[int, int | None] = field(default_factory=dict)
     comments: dict[int, list[str]] = field(default_factory=dict)
     prs: set[int] = field(default_factory=set)
+    branches: dict[int, str] = field(default_factory=dict)
     open_milestones: list[dict[str, Any]] = field(
         default_factory=lambda: [{"number": 1, "title": "M1 - Surfaces"}, {"number": 3, "title": "M3 - Polish"}]
     )
@@ -117,7 +118,8 @@ class GitHub:
     def get_pr(self, number: int) -> PRInfo | None:
         if number not in self.prs:
             return None
-        return PRInfo(number, f"PR {number}", f"https://github.com/{REPO}/pull/{number}", f"{ITEM}-slice",
+        return PRInfo(number, f"PR {number}", f"https://github.com/{REPO}/pull/{number}",
+                      self.branches.get(number, f"{ITEM}-slice"),
                       self.bodies[number], self.states[number], self.read(number), draft=True, head_sha=HEAD)
 
     def write_body(self, number: int, body: str) -> None:
@@ -618,7 +620,7 @@ def test_a_precondition_broken_at_write_time_stops_unmarked_and_unreleased(tmp_p
     assert world.retried == [] and "needs-human" in world.github.labels[ITEM]
     # The decision's own comment and ruling already landed (r5 F1): handed back, never "no changes".
     assert replay.result_type is ActionResultType.FAILURE
-    assert "partly applied: its own writes" in (replay.error or "") and "PR #525 is closed" in (replay.error or "")
+    assert "partly applied" in (replay.error or "") and "PR #525 is closed" in (replay.error or "")
 
 
 def test_an_approved_proposal_is_never_closed_as_superseded(tmp_path: Path) -> None:
@@ -673,7 +675,7 @@ def test_a_step_broken_after_an_earlier_one_applied_is_handed_back_not_closed_st
 
     assert not first.success and world.github.milestones[SUBJECT] == 1
     assert replay.result_type is ActionResultType.FAILURE
-    assert "partly applied: step(s) 1" in (replay.error or "") and "#327 is closed" in (replay.error or "")
+    assert "and step(s) 1" in (replay.error or "") and "#327 is closed" in (replay.error or "")
     assert world.retried == []
 
 
@@ -745,7 +747,7 @@ def test_a_step_whose_marker_failed_is_never_read_as_no_changes(tmp_path: Path) 
     replay = world.executor().apply(action)
 
     assert not first.success and world.github.milestones[SUBJECT] == 1
-    assert replay.result_type is ActionResultType.FAILURE and "partly applied: step(s) 1" in (replay.error or "")
+    assert replay.result_type is ActionResultType.FAILURE and "and step(s) 1" in (replay.error or "")
 
 
 def test_rulings_that_fit_one_by_one_but_not_together_refuse_before_any_write(tmp_path: Path) -> None:
@@ -866,3 +868,70 @@ def test_a_rework_refused_after_the_release_is_reported_not_hidden(tmp_path: Pat
         assert result.details["steps_refused"] == ["step 1 (request_pr_rework #525)"]
         comment = _terminal_outcome_comment(result, "propose_decision", ITEM)
         assert comment is not None and "Not applied: step 1 (request_pr_rework #525)" in comment
+
+
+# -- review round 6 ---------------------------------------------------------------
+
+
+def test_a_begun_decision_whose_item_unblocked_is_handed_back_not_stale(tmp_path: Path) -> None:
+    """r6 F1: the decision's ruling landed and a step failed; then someone took
+    #326's block off. The replay's item refusal is still partial, never stale."""
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    action = world.approve(world.plan(proposed))
+    real = world.github.set_milestone
+
+    def fails(number: int, milestone: int) -> None:
+        raise RuntimeError("GitHub 502")
+
+    world.github.set_milestone = fails  # type: ignore[method-assign]
+    first = world.executor().apply(action)
+    world.github.set_milestone = real  # type: ignore[method-assign]
+    world.block.force_clear(SUBJECT, "a person took it off")
+
+    replay = world.executor().apply(action)
+
+    assert not first.success and parse_rulings_block(world.github.bodies[SUBJECT])
+    assert replay.result_type is ActionResultType.FAILURE and "no longer blocked" in (replay.error or "")
+    assert "partly applied" in (replay.error or "")
+
+
+def test_a_proposal_approved_during_its_step_is_not_closed(tmp_path: Path) -> None:
+    """r6 F2: a maintainer approves #445 while its step starts: it stays open."""
+    from issue_orchestrator.domain.decision_steps import step_started_marker
+
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    real_apply = world.apply
+
+    def approve_on_start(act: Action) -> ActionResult:
+        if isinstance(act, AddCommentAction) and step_started_marker(str(PROPOSAL), 5) in act.comment:
+            world.github.labels[SUPERSEDED].add("approved")
+        return real_apply(act)
+
+    world.apply = approve_on_start  # type: ignore[method-assign]
+    world.executor().apply(world.approve(world.plan(proposed)))
+
+    assert world.github.states[SUPERSEDED] == "open"
+    assert all(not w.startswith(f"close:{SUPERSEDED}") for w in world.github.writes)
+
+
+def test_a_pr_that_changed_owner_during_its_step_is_not_edited(tmp_path: Path) -> None:
+    """r6 F3: PR #525 moves to #999's branch while its step starts: its body is untouched."""
+    from issue_orchestrator.domain.decision_steps import step_started_marker
+
+    world = World(tmp_path)
+    _plant_327(world)
+    proposal = world.plan(_decision({"kind": "retarget_pr", "number": PR}))
+    real_apply = world.apply
+
+    def moves_on_start(act: Action) -> ActionResult:
+        if isinstance(act, AddCommentAction) and step_started_marker(str(PROPOSAL), 1) in act.comment:
+            world.github.branches[PR] = "999-other"
+        return real_apply(act)
+
+    world.apply = moves_on_start  # type: ignore[method-assign]
+    world.executor().apply(world.approve(proposal))
+
+    assert world.github.bodies[PR].startswith("Closes #327")
+    assert f"body:{PR}" not in world.github.writes

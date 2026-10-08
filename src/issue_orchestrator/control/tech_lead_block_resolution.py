@@ -382,8 +382,9 @@ class TechLeadBlockResolutionExecutor:
         decision recorded as begun), or the outcome of a refusal."""
         verdict = self.verify(action)
         if isinstance(verdict, RefusedResolution):
-            if verdict.partial:  # some steps already changed other items: the operator's, never stale
-                return ActionResult.fail(action, verdict.partial, issue_number=action.issue_number,
+            partial = verdict.partial or self._begun_hand_back(action, verdict.describe())
+            if partial:  # the decision already changed things: the operator's, never stale
+                return ActionResult.fail(action, partial, issue_number=action.issue_number,
                                          proposal_id=action.proposal_id)
             return self._refuse(action, verdict)
         self.steps.check_authority(self._steps(action), action.follow_through)
@@ -391,6 +392,11 @@ class TechLeadBlockResolutionExecutor:
         if begun is not None:  # nothing written yet
             return ActionResult.fail(action, begun, issue_number=action.issue_number, proposal_id=action.proposal_id)
         return verdict
+
+    def _begun_hand_back(self, action: ResolveBlockAction, reason: str) -> str:
+        """The hand-back for any refusal once the decision began writing, else ""."""
+        classified = self.steps.classify(self._steps(action), action.follow_through, reason)
+        return classified.hand_back() if classified.partial else ""
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
         """The discharge committed before: never discharge again, only settle."""

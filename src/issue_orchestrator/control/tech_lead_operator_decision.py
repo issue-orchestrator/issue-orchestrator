@@ -131,15 +131,10 @@ class OperatorDecisionExecutor:
 
     def _carry_out(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
         proposal = action.proposal_issue_number
-        refusal = self._refusal(action, target)
-        if refusal is not None:
-            return _stale(action, refusal)
+        refused = self._refused(action, target)
+        if refused is not None:
+            return refused
         assert target is not None  # a missing issue is a refusal
-        steps_refused = self.steps.refusal(self._steps(action), action.follow_through)
-        if steps_refused is not None:
-            # A partial one already changed other items: the operator's, never stale.
-            return (ActionResult.fail(action, steps_refused.hand_back(), issue_number=action.issue_number)
-                    if steps_refused.partial else _stale(action, steps_refused.reason))
         self.steps.check_authority(self._steps(action), action.follow_through)
         begun = self.steps.begin(self._steps(action), action.follow_through)
         if begun is not None:
@@ -178,6 +173,18 @@ class OperatorDecisionExecutor:
             return unsettled(action, outcome)
         self.retries.commit_decision_retry(proposal_issue_number=proposal)
         return self._finish(action, follow_ups=follow_ups, removed=outcome.removed, replayed=False)
+
+    def _refused(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult | None:
+        """The item's own refusal, else its steps'. Once the decision has begun
+        writing, any refusal is handed back partial, never closed as stale."""
+        item = self._refusal(action, target)
+        refusal = (self.steps.classify(self._steps(action), action.follow_through, item) if item is not None
+                   else self.steps.refusal(self._steps(action), action.follow_through))
+        if refusal is None:
+            return None
+        if refusal.partial:
+            return ActionResult.fail(action, refusal.hand_back(), issue_number=action.issue_number)
+        return _stale(action, refusal.reason)
 
     def _finish_replay(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
         """The retry committed before (or was interrupted, and its item is

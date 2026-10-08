@@ -137,8 +137,10 @@ class StepRefusal:
     def hand_back(self) -> str:
         """The operator's message for a partial refusal: nothing is closed as stale."""
         done = ", ".join(str(index) for index in self.applied)
-        what = f"step(s) {done}" if done else "its own writes (follow-ups, decision, ruling)"
-        return (f"approved decision partly applied: {what} were carried out, but {self.reason}."
+        what = (f"its own writes and step(s) {done}" if done
+                else "its own writes (follow-ups, decision, ruling)")
+        return (f"approved decision partly applied: {what} were (or may have been) carried out,"
+                f" but {self.reason}."
                 " The proposal stays open: finish the rest by hand, or close it.")
 
 
@@ -180,8 +182,7 @@ class DecisionStepsOwner:
         PARTIAL: the decision changed things and cannot be closed as stale."""
         if not follow_through.steps:
             return None
-        begun = self.comment_marker_present(
-            context.proposal_issue_number, decision_begun_marker(str(context.proposal_issue_number)))
+        begun = self.has_begun(context, follow_through)
         touched: list[int] = []
         rulings: dict[int, list["StandingRuling"]] = {context.subject: list(context.subject_rulings)}
         for index, step in enumerate(follow_through.steps, start=1):
@@ -208,6 +209,18 @@ class DecisionStepsOwner:
                 return StepRefusal(f"the rulings this decision records on #{number} cannot all be"
                                    f" recorded: {why}", applied=tuple(touched), begun=begun)
         return None
+
+    def has_begun(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> bool:
+        """Whether the decision already made writes (its begun marker is on the proposal)."""
+        return bool(follow_through) and self.comment_marker_present(
+            context.proposal_issue_number, decision_begun_marker(str(context.proposal_issue_number)))
+
+    def classify(self, context: DecisionStepContext, follow_through: DecisionFollowThrough,
+                 reason: str) -> StepRefusal:
+        """The ONE rule for any refusal of a decision with follow-through, the
+        item's own included: once the decision has begun, it is partial (handed
+        back, proposal open), never closed as stale (#8691 r6 F1)."""
+        return StepRefusal(reason, begun=self.has_begun(context, follow_through))
 
     def begin(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> str | None:
         """Record, before the decision's first write, that it has begun: a later
@@ -350,12 +363,14 @@ class DecisionStepsOwner:
 
     def _apply_step(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         """Carry out one step; why it was refused at write time, else None. Raises on failure."""
-        why = self._precondition(context, index, step)
-        if why is not None:
-            return why
         started = self._start(context, index)
         if started is not None:
             raise RuntimeError(started)
+        # Checked after the start marker, on fresh reads, as close to the write
+        # as GitHub allows (#8691 r6): each write re-checks its own target too.
+        why = self._precondition(context, index, step)
+        if why is not None:
+            return why
         writes: dict[DecisionStepKind, Callable[[DecisionStepContext, int, DecisionStep], str | None]] = {
             DecisionStepKind.SET_MILESTONE: self._set_milestone,
             DecisionStepKind.RECORD_RULING: self._record_ruling,
@@ -392,8 +407,12 @@ class DecisionStepsOwner:
 
     def _close_proposal(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         issue = self.read_issue(step.number)
-        if issue is not None and issue.state != "open":
+        if issue is None:
+            raise RuntimeError(f"#{step.number} could not be read")
+        if issue.state != "open":
             return None
+        if proposal_state(issue.labels, issue.body) is not ProposalLabelState.AWAITING:
+            return f"#{step.number} was approved since: it is the operator's, never closed here"
         closed = self.apply_action(CloseIssueAction(
             issue_number=step.number,
             comment=(f"Superseded by the decision on #{context.subject} approved on proposal"
@@ -408,7 +427,11 @@ class DecisionStepsOwner:
 
     def _retarget_pr(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         pr = self.read_pr(step.number)
-        assert pr is not None  # the precondition just held
+        if pr is None:
+            raise RuntimeError(f"PR #{step.number} could not be read")
+        changed = _retarget_precondition(pr, context.subject, self.repo_slug)
+        if changed is not None:  # the PR moved since the check: never edit it
+            return changed
         body = refs_in_place_of_closes(pr.body or "", context.subject, repo_slug=self.repo_slug)
         if body != (pr.body or ""):
             self.require_authority(context.action, step.number)

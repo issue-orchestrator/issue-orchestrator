@@ -1177,7 +1177,7 @@ def test_an_answer_whose_later_step_broke_after_an_earlier_applied_is_handed_bac
 
     result = world.executor(_steps_owner(world)).apply(action)
 
-    assert result.result_type.value == "failure" and "partly applied: step(s) 1" in (result.error or "")
+    assert result.result_type.value == "failure" and "and step(s) 1" in (result.error or "")
     assert "needs-human" in world.github.labels[ITEM]
 
 
