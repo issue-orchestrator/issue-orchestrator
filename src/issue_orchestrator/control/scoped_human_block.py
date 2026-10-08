@@ -50,6 +50,9 @@ class _ScopedCauses:
             )
         )
 
+    def open_needs_human_generation(self, issue_number: int) -> None:
+        self.scope.perform(lambda: self.causes.open_needs_human_generation(issue_number))
+
     def needs_human_causes(self, issue_number: int) -> frozenset[str]:
         return self.scope.perform(lambda: self.causes.needs_human_causes(issue_number))
 

@@ -30,9 +30,10 @@ policy turns into "custody unknown" — never into a guessed state.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar, cast
 
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
 from ..domain.host_rate_limit import episode_key
@@ -59,6 +60,8 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
     from ..infra.config import Config
     from .orchestrator_deps import OrchestratorDeps
+    from ..ports.label_application import LabelApplicationReader
+    from .needs_human_episodes import NeedsHumanEpisodes
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -546,4 +549,23 @@ def build_blocked_item_triage(
         open_proposals=lambda: open_proposal_index(deps.tech_lead_authority),
         timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
         standing_rulings=deps.standing_rulings.active,
+        episodes=build_needs_human_episodes(config, deps),
+    )
+
+
+def build_needs_human_episodes(config: "Config", deps: "OrchestratorDeps") -> "NeedsHumanEpisodes":
+    """The needs-human episode owner (#8688) over the deps' pending-work ledger,
+    verified against GitHub's issue events and rechecked on the tick once per
+    health-review interval."""
+    from .health_review_trigger import health_review_interval_minutes
+    from .needs_human_episodes import NeedsHumanEpisodes
+
+    return NeedsHumanEpisodes(
+        store=deps.pending_work_claims,
+        label_applications=lambda number, label: cast(
+            "LabelApplicationReader", deps.repository_host
+        ).label_application(number, label),
+        labels=deps.label_manager,
+        clock=time.time,
+        recheck_seconds=lambda: health_review_interval_minutes(config) * 60,
     )

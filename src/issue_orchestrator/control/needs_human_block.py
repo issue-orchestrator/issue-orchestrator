@@ -558,7 +558,8 @@ class NeedsHumanBlock(BlockResolutionCommand):
         re-adds the shared label, and a stale ordinary row left underneath it
         would be read as part of the new generation - so releasing the real
         owner would find a ghost and strand the block. It therefore CLEARS the
-        old rows without inserting one of its own; an ordinary cause replaces
+        old rows without inserting one of its own, still dating the new
+        generation (#8688); an ordinary cause replaces
         them with itself in ONE transaction, because a clear-then-record can die
         in between and leave the new cause beside the stale one.
 
@@ -577,7 +578,7 @@ class NeedsHumanBlock(BlockResolutionCommand):
                     request.target, request.cause_key, reason=request.reason
                 )
             elif self_recording:
-                self.causes.clear_needs_human_causes(request.target)
+                self.causes.open_needs_human_generation(request.target)
             else:
                 self.causes.restart_needs_human_causes(
                     request.target, request.cause_key, reason=request.reason

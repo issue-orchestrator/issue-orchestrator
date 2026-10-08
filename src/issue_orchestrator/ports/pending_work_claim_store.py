@@ -37,6 +37,7 @@ from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Protocol
 
 from ..domain.pending_work import PendingWorkClaim, PendingWorkKind
@@ -488,12 +489,22 @@ class NeedsHumanCauseStore(Protocol):
         """
         ...
 
+    def open_needs_human_generation(self, issue_number: int) -> None:
+        """End the previous generation and open a new one with NO cause row.
+
+        For a self-recording cause (its provenance lives in its own lifecycle)
+        putting an absent label back on: the stale rows go, as with a restart,
+        and the new generation still gets its onset (#8688).
+        """
+        ...
+
     def needs_human_causes(self, issue_number: int) -> frozenset[str]:
         """Every cause currently recorded against ``issue_number``."""
         ...
 
     def needs_human_cause_targets(self) -> frozenset[int]:
-        """Every number with at least one cause recorded (#7678 stale-row reconcile)."""
+        """Every number with a cause or a generation recorded (#7678 stale-row
+        reconcile): an observed-absent label retires both."""
         ...
 
     def withdraw_needs_human_cause(self, issue_number: int, cause: str) -> None:
@@ -501,8 +512,54 @@ class NeedsHumanCauseStore(Protocol):
         ...
 
     def clear_needs_human_causes(self, issue_number: int) -> None:
-        """Drop every cause for an issue whose shared label is gone."""
+        """Drop every cause, and the generation, of an issue whose shared label is gone."""
         ...
+
+
+class NeedsHumanEpisodeReader(Protocol):
+    """Which generation (episode) of the shared block each issue is in (#8688).
+
+    A generation opens when an acquisition puts the label on afresh
+    (:meth:`NeedsHumanCauseStore.restart_needs_human_causes` /
+    :meth:`~NeedsHumanCauseStore.open_needs_human_generation`) and ends with
+    the label. A lift and a later re-block are two episodes even under the
+    same label and cause, which is what a tech-lead triage is keyed to. An
+    episode is ``"<opened_at>#<n>"``: comparable for equality, readable by a
+    person, and unique even for two generations opened in the same instant.
+    """
+
+    def mutate_needs_human(
+        self, issue_number: int
+    ) -> AbstractContextManager[IssueDispositionGateStatus]:
+        """The block owner's per-issue gate (see :class:`NeedsHumanCauseStore`):
+        a binding holds it so the owner cannot open a generation in between."""
+        ...
+
+    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+        """The recorded episode of each issue that has one (read only)."""
+        ...
+
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
+        """Bind the issue's episode to GitHub's standing application of its
+        label (``event_id``, made at ``applied_at``) and return the episode.
+
+        The owner sees only its own writes; GitHub sees every one. An unbound
+        generation is bound to the event. A generation bound to a DIFFERENT
+        event is stale: the label was removed and re-applied outside the owner
+        (by hand, between owner observations), so it is replaced by a new one
+        dated by the event. A label no acquisition opened (put on by hand, or
+        before generations were recorded) gets one dated by the event. A
+        generation for a label that is in fact gone is retired by the owner's
+        stale-row reconcile.
+        """
+        ...
+
+
+class PendingWorkLedger(PendingWorkClaimStore, NeedsHumanEpisodeReader, Protocol):
+    """The orchestrator-owned pending-work database as the deps hold it: the
+    claim lifecycle, and the needs-human episodes it records (#8688)."""
 
 
 class ClaimQuarantineStore(Protocol):

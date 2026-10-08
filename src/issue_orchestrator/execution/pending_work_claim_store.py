@@ -39,6 +39,7 @@ from ..adapters.human_block_gate import FileHumanBlockMutationGate
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from pathlib import Path
 from typing import Iterator
+from collections.abc import Sequence
 
 from ..domain.pending_work import PendingWorkClaim, PendingWorkKind
 from ..domain.session_run import SessionRunAssets
@@ -54,6 +55,10 @@ from ..ports.pending_work_claim_store import (
     QuarantineRecord,
     UnreadableClaim,
     UnresolvedClaim,
+)
+from .needs_human_generation import (
+    bind_generation, end_generation as _end_generation,
+    open_generation as _open_generation, read_episodes,
 )
 from .pending_work_codec import (
     PendingWorkClaimDecodeError,
@@ -542,19 +547,18 @@ class SqlitePendingWorkClaimStore:
     ) -> None:
         """Replace every cause with this one, in a single transaction."""
         with self._write_lock, self._transaction() as conn:
-            conn.execute(
-                "DELETE FROM needs_human_cause WHERE issue_number = ?",
-                (issue_number,),
-            )
-            conn.execute(
-                "DELETE FROM needs_human_removal_intent WHERE issue_number = ?",
-                (issue_number,),
-            )
+            _end_generation(conn, issue_number)
             conn.execute(
                 "INSERT INTO needs_human_cause (issue_number, cause, reason) "
                 "VALUES (?, ?, ?)",
                 (issue_number, cause, reason),
             )
+            _open_generation(conn, issue_number)
+
+    def open_needs_human_generation(self, issue_number: int) -> None:
+        with self._write_lock, self._transaction() as conn:
+            _end_generation(conn, issue_number)
+            _open_generation(conn, issue_number)
 
     def needs_human_causes(self, issue_number: int) -> frozenset[str]:
         return frozenset(
@@ -569,7 +573,8 @@ class SqlitePendingWorkClaimStore:
         return frozenset(
             int(row["issue_number"])
             for row in self._get_connection().execute(
-                "SELECT DISTINCT issue_number FROM needs_human_cause"
+                "SELECT issue_number FROM needs_human_cause "
+                "UNION SELECT issue_number FROM needs_human_generation"
             )
         )
 
@@ -583,14 +588,17 @@ class SqlitePendingWorkClaimStore:
 
     def clear_needs_human_causes(self, issue_number: int) -> None:
         with self._write_lock, self._transaction() as conn:
-            conn.execute(
-                "DELETE FROM needs_human_cause WHERE issue_number = ?",
-                (issue_number,),
-            )
-            conn.execute(
-                "DELETE FROM needs_human_removal_intent WHERE issue_number = ?",
-                (issue_number,),
-            )
+            _end_generation(conn, issue_number)
+
+    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+        return read_episodes(self._get_connection(), issue_numbers)
+
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
+        with self._write_lock, self._transaction() as conn:
+            bind_generation(conn, issue_number, event_id=event_id, applied_at=applied_at)
+        return self.needs_human_episodes([issue_number])[issue_number]
 
     # -- quarantine --------------------------------------------------------
 
@@ -768,3 +776,4 @@ __all__ = [
     "PendingWorkClaimMigrationError",
     "SqlitePendingWorkClaimStore",
 ]
+
