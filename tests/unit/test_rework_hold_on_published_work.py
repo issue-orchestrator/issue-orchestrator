@@ -23,7 +23,9 @@ from issue_orchestrator.domain.models import SessionStatus
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.state_machines.issue_machine import IssueState
 from issue_orchestrator.observation.observation import SessionObservationResult
-from tests.unit.control.liveness_doubles import RecordingEscalation, liveness_owner
+from datetime import timedelta
+
+from tests.unit.control.liveness_doubles import TICK, ManualClock, RecordingEscalation, liveness_owner
 from tests.unit.session_run_helpers import make_session_run_assets
 from tests.unit.test_orchestrator import (
     create_issue,
@@ -48,7 +50,8 @@ def engine(sample_config):
     """An engine with a pr_pending issue #450 under rework and an in-progress #451."""
     orchestrator = create_test_orchestrator(sample_config)
     escalation = RecordingEscalation()
-    owner = liveness_owner(escalation=escalation)
+    clock = ManualClock()
+    owner = liveness_owner(escalation=escalation, clock=clock)
     orchestrator.deps = replace(
         orchestrator.deps, action_liveness=replace(orchestrator.deps.action_liveness, owner=owner)
     )
@@ -84,6 +87,7 @@ def engine(sample_config):
             orchestrator.deps.session_controller, "decide_outcome", side_effect=decide_outcome
         ),
     ):
+        orchestrator.liveness_clock = clock  # type: ignore[attr-defined]
         yield orchestrator, owner, escalation, rework, coding
 
 
@@ -181,3 +185,37 @@ def test_a_decision_that_raises_is_confined_in_a_synchronous_tick(engine):
     row = owner.admit(CompletionContainment.key(rework)).row
     assert row is not None and "run dir missing" in row.last_reason and not row.parked
     assert escalation.blocks == []
+
+
+def test_a_parked_completion_is_not_retired_while_its_steps_are_undone(engine):
+    """r2 F1: the failed apply already dropped its session, so nothing re-plans it.
+
+    The completion pass keeps asking about it, so a week of passes neither
+    abandons the park nor withdraws its block; only a person's release does.
+    """
+    orchestrator, owner, escalation, rework, _coding = engine
+    handler = orchestrator._completion_handler
+    real_finalize = handler.finalize_terminal_outcome
+
+    def finalize(session, *args, **kwargs):
+        if session.terminal_id == rework.terminal_id:
+            raise RuntimeError("finalize failed")
+        return real_finalize(session, *args, **kwargs)
+
+    with patch.object(handler, "finalize_terminal_outcome", side_effect=finalize):
+        orchestrator._process_active_sessions()
+    assert orchestrator.state.active_sessions == []
+    key = CompletionContainment.key(rework)
+    assert owner.admit(key).row is not None
+
+    for _day in range(10):
+        orchestrator.liveness_clock.advance(timedelta(days=1))
+        orchestrator._process_active_sessions()
+        owner.reconcile_effects(TICK)
+
+    row = owner.admit(key).row
+    assert row is not None and row.parked
+    assert escalation.unblocks == []
+
+    owner.release_issue(450)
+    assert owner.admit(key).row is None

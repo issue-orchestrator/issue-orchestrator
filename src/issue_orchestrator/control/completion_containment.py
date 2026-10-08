@@ -19,7 +19,7 @@ owner (#7350), keyed on the session's run:
 
 A park escalates through the liveness owner (the shared needs-human block and
 a comment on the issue) and, while it stands, :meth:`admit` keeps the session
-out of the pass. Engine-wide faults are not this owner's: anything that is not
+out of the pass and :meth:`hold_unfinished` keeps it from being retired. Engine-wide faults are not this owner's: anything that is not
 an :class:`Exception`, and a confirmed-permanent issue fetch failure, still
 reach the loop.
 """
@@ -73,6 +73,18 @@ class CompletionContainment:
     def confines(error: BaseException) -> bool:
         """Whether ``error`` is one session's, rather than the engine's."""
         return isinstance(error, Exception) and not isinstance(error, PermanentIssueFetchError)
+
+    def hold_unfinished(self) -> None:
+        """Keep every parked completion standing until it is settled (#8693 r2).
+
+        A failed apply parks after its session has left the pass, so nothing
+        else asks about that row again. Called once per pass, this keeps the
+        liveness owner from retiring it as abandoned (or superseded by a later
+        run's success) and withdrawing its block while the completion's
+        remaining steps are still undone. A person's Retry/Dismiss of the
+        escalation, or an operator release, settles it.
+        """
+        self.owner.keep_asking(COMPLETE_SESSION)
 
     def admit(self, session: "Session") -> bool:
         """May the pass handle ``session`` this tick? Not while it backs off or is parked."""

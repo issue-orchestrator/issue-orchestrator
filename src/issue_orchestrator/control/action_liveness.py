@@ -318,6 +318,20 @@ class ActionLivenessOwner:
         """
         return release_parked_action(self._store, identity)
 
+    def keep_asking(self, action: str) -> None:
+        """Every parked row of ``action`` is still a live question (#8693).
+
+        For an action whose park nothing re-plans - a session's completion that
+        failed after the session left the pass - but which stays wanted until
+        a person or an operator release settles it. Asked every cycle, it is
+        neither abandoned nor superseded by the same action succeeding for
+        another run, so its block is never withdrawn by elapsed time.
+        """
+        now = self._clock()
+        for row in self._store.parked_rows():
+            if row.key.identity.action == action:
+                self._store.touch(row.key, now)
+
     def parked(self) -> tuple[LivenessRow, ...]:
         """Every parked row, for the tech-lead board and diagnostics."""
         return self._store.parked_rows()

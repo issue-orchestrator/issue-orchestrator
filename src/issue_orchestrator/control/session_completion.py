@@ -579,6 +579,7 @@ def process_active_sessions(
     from ..observation.observation import SessionObservation
 
     dispatcher = completion_dispatcher or SynchronousCompletionDispatcher()
+    containment.hold_unfinished()
 
     def apply(completed: CompletedDecision) -> None:
         _apply_completed_decision(
