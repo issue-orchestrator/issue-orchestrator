@@ -127,6 +127,17 @@ def test_an_invited_run_is_asked_and_its_change_files_a_challenger_issue(tmp_pat
     assert "challenge --run " + record.run_id in issue["body"] and "`approved`" in issue["body"]
 
 
+def test_an_invited_heats_answer_revalidates_offline_as_judged(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from issue_orchestrator.entrypoints.cli_tools import improver
+
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    record = _champion_run(store, host, FakeAgent(json.dumps(_with_change(QUOTE))), rate=1.0).run(_request(), apply=False)
+    assert record.outcome is RunOutcome.ACCEPTED
+
+    assert improver.validate(Path(record.run_dir), heat=1) == improver.EXIT_OK
+    assert "valid:" in capsys.readouterr().out
+
+
 def test_an_uninvited_run_is_not_asked_and_its_change_rejects_its_answer(tmp_path: Path) -> None:
     store, host = MemoryRunStore(tmp_path), FakeIssueHost()
     agent = FakeAgent(json.dumps(_with_change(QUOTE)))

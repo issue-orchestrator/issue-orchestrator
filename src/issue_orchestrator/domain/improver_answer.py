@@ -5,11 +5,14 @@ sentence first ("Below is the findings file...", the first real porchpin run,
 2026-10-08). The answer is:
 
 * the whole message, when it is one JSON document (or one fenced block);
-* otherwise the ONE top-level JSON object in it, the prose around it
-  discarded (and reported, so it is logged);
-* otherwise nothing: no object, two objects, or an object that does not
-  parse (truncated, or broken) refuse the answer. Guessing between two
-  documents, or reading a fragment of a cut-off one, never happens.
+* otherwise the ONE JSON object in it, when the prose around it holds no
+  JSON structure at all (no ``{ } [ ]``): the prose is discarded (and
+  reported, so it is logged);
+* otherwise nothing: no object, two, one that does not parse (cut short
+  or broken), one inside other JSON (``[ {...} ]``), or prose with any
+  JSON structure left in it (a second object begun, ``{`` alone) refuse
+  the answer. Guessing between documents, reading a fragment of a cut-off
+  one, or lifting an object out of a larger value never happens.
 
 What is extracted is still validated in full; this only finds it.
 """
@@ -23,6 +26,8 @@ from dataclasses import dataclass
 _FENCED = re.compile(r"\A```(?:json)?\s*\n(?P<body>.*)\n```\Z", re.DOTALL)
 #: Where a JSON object (not a prose brace) begins: ``{`` then a key or ``}``.
 _OBJECT_START = re.compile(r"\{\s*(?:\"|\})")
+#: JSON structure: none may be left in the prose around the one object.
+_STRUCTURE = re.compile(r"[{}\[\]]")
 
 
 class AnswerNotExtractable(ValueError):
@@ -54,6 +59,12 @@ def extract_findings_answer(message: str) -> ExtractedAnswer:
         )
     start, end = objects[0]
     discarded = f"{stripped[:start]} {stripped[end:]}".strip()
+    structure = sorted(set(_STRUCTURE.findall(discarded)))
+    if structure:
+        raise AnswerNotExtractable(
+            f"the prose around the final message's JSON object holds JSON structure ({' '.join(structure)}):"
+            " it may be part of a larger value, or another document begun"
+        )
     return ExtractedAnswer(stripped[start:end] + "\n", discarded)
 
 

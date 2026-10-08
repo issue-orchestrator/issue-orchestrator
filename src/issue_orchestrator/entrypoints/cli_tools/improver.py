@@ -57,7 +57,12 @@ from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_variant import ImproverVariant
 from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
 from ...domain.improver_answer import AnswerNotExtractable, extract_findings_answer
-from ...domain.improver_champion import INVITATION_RATE, RUN_BUDGET_MINUTES, run_limits
+from ...domain.improver_champion import (
+    INVITATION_RATE,
+    RUN_BUDGET_MINUTES,
+    ChangeInvitation,
+    run_limits,
+)
 from ...domain.improver_findings_validation import (
     ImproverFindingsRejected,
     Rule,
@@ -86,7 +91,13 @@ from ...observation.engine_audit import Unavailable
 from ...ports.engine_activity import EngineInventory
 from ...ports.improver import ImproverStoreBusy, heat_file
 from ...ports.improver_investigation import ImproverInvestigation
-from ..improver_run import ChangePolicy, HeatPlan, ImproverRun, render_run
+from ..improver_run import (
+    CHANGE_INVITATION_FILE,
+    ChangePolicy,
+    HeatPlan,
+    ImproverRun,
+    render_run,
+)
 from ..improver_staging import (
     ImproverInputStager,
     ImproverInputsUnavailable,
@@ -467,8 +478,10 @@ def validate(run_dir: Path, *, heat: int | None = None) -> int:
         return EXIT_REJECTED
     if extracted.discarded:
         print(f"discarded {len(extracted.discarded)} character(s) of prose around the findings document")
+    invited = run_dir / CHANGE_INVITATION_FILE
+    invitation = ChangeInvitation.from_json(invited.read_text(encoding="utf-8")) if invited.is_file() else None
     try:
-        findings = validate_findings(extracted.text, evidence)
+        findings = validate_findings(extracted.text, evidence, invitation=invitation)
     except ImproverFindingsRejected as rejection:
         for violation in rejection.violations:
             print(violation.describe())

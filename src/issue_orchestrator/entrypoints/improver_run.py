@@ -89,6 +89,8 @@ FINAL_ANSWER_REMINDER = (
     "\n\nYour final message is the findings JSON object alone: no sentence, heading or note before or"
     " after it. Anything else around it is discarded, and two JSON objects, or one cut short, reject the answer.\n"
 )
+#: An invited run's invitation (the champion and its prompt), kept in its run dir.
+CHANGE_INVITATION_FILE = "change-invitation.json"
 #: The prose a heat's answer carried around its findings document, kept beside it.
 ANSWER_PROSE_FILE = "improver-answer-prose.txt"
 
@@ -246,8 +248,7 @@ class ImproverRun:
         started = self._clock()
         run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         run_dir = self._store.new_run_dir(run_id)
-        # A blind run files nothing, so it is never invited to propose a change.
-        invitation = None if request.blind or self._change_policy is None else self._change_policy.invitation(run_id)
+        invitation = self._invitation(request, run_id, run_dir)
         base = ImproverRunRecord(
             run_id=run_id,
             started_at=started,
@@ -339,6 +340,17 @@ class ImproverRun:
         owed = current.model_copy(update={"owed_by_earlier_runs": earlier})
         self._store.record(owed)
         return owed
+
+    def _invitation(self, request: ImproverRunRequest, run_id: str, run_dir: Path) -> ChangeInvitation | None:
+        """Whether this run is invited to propose a change (a blind run files
+        nothing, so never is); an invitation is kept with the run, so its
+        answers revalidate offline exactly as they were judged."""
+        if request.blind or self._change_policy is None:
+            return None
+        invitation = self._change_policy.invitation(run_id)
+        if invitation is not None:
+            (run_dir / CHANGE_INVITATION_FILE).write_text(invitation.to_json(), encoding="utf-8")
+        return invitation
 
     def _investigate(
         self, request: ImproverRunRequest, run_dir: Path, base: ImproverRunRecord, *, invited: bool

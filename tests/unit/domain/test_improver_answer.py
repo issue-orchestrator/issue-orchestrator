@@ -33,7 +33,7 @@ def test_a_message_that_is_the_document_is_taken_whole(message: str) -> None:
         # The first real porchpin run's heat 2 (2026-10-08): a sentence, then the file.
         (f"The latest exam run failed case H, so the exam trend is down. Below is the findings file.\n\n{BODY}",
          "The latest exam run failed case H, so the exam trend is down. Below is the findings file."),
-        (f"Here it is:\n```json\n{BODY}\n```\nDone {{as asked}}.", "Done {as asked}."),
+        (f"Here it is:\n```json\n{BODY}\n```\nDone, as asked.", "Done, as asked."),
     ],
 )
 def test_prose_around_one_document_is_discarded_and_reported(message: str, prose: str) -> None:
@@ -51,6 +51,12 @@ def test_prose_around_one_document_is_discarded_and_reported(message: str, prose
         (f"Below is the findings file.\n{BODY[:-40]}", "does not parse"),  # cut short
         (f"Below: {BODY}\nand a stray {{\"half\": ", "does not parse"),
         (f"Below: {BODY[:20]} oops {BODY}", "does not parse"),
+        # An object inside a larger value is not the answer.
+        (f"Here is the answer: [{BODY}]", "JSON structure"),
+        (f"Answers: [{BODY}, 3]", "JSON structure"),
+        # A second object begun and cut off at its brace.
+        (f"{BODY}\nAdditional: {{", "JSON structure"),
+        (f"Note {{see below}}: {BODY}", "JSON structure"),
     ],
 )
 def test_no_document_two_documents_or_a_broken_one_refuse_the_answer(message: str, why: str) -> None:
