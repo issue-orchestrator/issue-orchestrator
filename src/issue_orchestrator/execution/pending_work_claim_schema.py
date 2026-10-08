@@ -74,8 +74,12 @@ CREATE TABLE IF NOT EXISTS needs_human_generation (
     episode INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_number INTEGER NOT NULL UNIQUE CHECK (issue_number > 0),
     opened_at TEXT NOT NULL,
-    -- 1 when no acquisition was seen to open it (a hand-placed or older
-    -- label) and the triage owner adopted it when it first read it.
+    -- GitHub's event that applied the label standing in this generation, bound
+    -- when a health review first verifies it. A different standing event means
+    -- the label came off and went back on outside the owner: a new generation.
+    label_event_id INTEGER,
+    -- 1 when no acquisition was seen to open it (a hand-placed or re-applied
+    -- label): it was opened from GitHub's event instead, dated by it.
     adopted INTEGER NOT NULL DEFAULT 0
 );
 """

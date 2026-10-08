@@ -532,14 +532,20 @@ class NeedsHumanEpisodeReader(Protocol):
         """The recorded episode of each issue that has one (read only)."""
         ...
 
-    def adopt_needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
-        """Every issue's episode, opening one dated NOW for each that has none.
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
+        """Bind the issue's episode to GitHub's standing application of its
+        label (``event_id``, made at ``applied_at``) and return the episode.
 
-        For a label no acquisition was seen to open (put on by hand, or before
-        generations were recorded): its true onset is unknown, and now is the
-        latest it can be, so every triage decided before it is stale. Never
-        replaces a recorded generation. A row adopted for a label that is in
-        fact gone is retired by the stale-row reconcile.
+        The owner sees only its own writes; GitHub sees every one. An unbound
+        generation is bound to the event. A generation bound to a DIFFERENT
+        event is stale: the label was removed and re-applied outside the owner
+        (by hand, between owner observations), so it is replaced by a new one
+        dated by the event. A label no acquisition opened (put on by hand, or
+        before generations were recorded) gets one dated by the event. A
+        generation for a label that is in fact gone is retired by the owner's
+        stale-row reconcile.
         """
         ...
 

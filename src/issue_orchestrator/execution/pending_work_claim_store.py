@@ -57,7 +57,7 @@ from ..ports.pending_work_claim_store import (
     UnresolvedClaim,
 )
 from .needs_human_generation import (
-    adopt_generations, end_generation as _end_generation,
+    bind_generation, end_generation as _end_generation,
     open_generation as _open_generation, read_episodes,
 )
 from .pending_work_codec import (
@@ -593,10 +593,12 @@ class SqlitePendingWorkClaimStore:
     def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
         return read_episodes(self._get_connection(), issue_numbers)
 
-    def adopt_needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
         with self._write_lock, self._transaction() as conn:
-            adopt_generations(conn, issue_numbers)
-        return self.needs_human_episodes(issue_numbers)
+            bind_generation(conn, issue_number, event_id=event_id, applied_at=applied_at)
+        return self.needs_human_episodes([issue_number])[issue_number]
 
     # -- quarantine --------------------------------------------------------
 

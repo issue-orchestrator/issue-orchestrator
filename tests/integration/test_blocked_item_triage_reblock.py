@@ -4,7 +4,8 @@ and is owed a new triage.
 Real owners end to end: the shared needs-human block (:class:`NeedsHumanBlock`)
 over the real SQLite cause store, the triage owner's agenda and the health
 review's ``triage_owed`` rule, and the in-memory charter ledger the triage is
-recorded in. Only GitHub's labels are a dict.
+recorded in. Only GitHub is faked: its labels, and the ``labeled`` event that
+put each standing label on.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from issue_orchestrator.domain.human_block import (
     NeedsHumanCause,
 )
 from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.domain.tech_lead_approval import LabelEvent, StandingLabel
 from issue_orchestrator.domain.tech_lead_artifacts import TriageClass
 from issue_orchestrator.domain.tech_lead_charter import (
     CharterAuthority,
@@ -46,15 +48,30 @@ ITEM = 450
 ANCHOR = 900
 
 
-class _Labels:
+class _GitHub:
+    """Labels, and the event that applied each one standing now."""
+
     def __init__(self) -> None:
         self.live: dict[int, set[str]] = {}
+        self.applied: dict[tuple[int, str], LabelEvent] = {}
+        self._events = 0
 
     def add_label(self, issue_number: int, label: str) -> None:
-        self.live.setdefault(issue_number, set()).add(label)
+        if label not in self.live.setdefault(issue_number, set()):
+            self._events += 1
+            self.applied[(issue_number, label)] = LabelEvent(
+                event_id=self._events, actor_login="engine[bot]", actor_is_bot=True,
+                created_at=f"2026-10-0{self._events}T00:00:00Z",
+            )
+        self.live[issue_number].add(label)
 
     def remove_label(self, issue_number: int, label: str) -> None:
         self.live.setdefault(issue_number, set()).discard(label)
+        self.applied.pop((issue_number, label), None)
+
+    def standing_label(self, issue_number: int, label: str) -> StandingLabel | None:
+        event = self.applied.get((issue_number, label))
+        return None if event is None else StandingLabel((event,))
 
 
 def _explained(fingerprint: str, run: str, decided_at: str) -> TechLeadCharterDecision:
@@ -80,7 +97,7 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
     config.repo = "porchpin/porchpin"
     config.tech_lead_review_agent = "agent:tech-lead"
     labels = LabelManager(config)
-    github = _Labels()
+    github = _GitHub()
     github.live[ITEM] = {"agent:backend"}
     store = SqlitePendingWorkClaimStore.for_repo(tmp_path)
     block = NeedsHumanBlock(
@@ -105,7 +122,7 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         needs_human_causes=block.recorded_causes, charter_ledger=authority.charter_ledger,
         open_proposals=lambda: open_proposal_index(authority),
         timeline_reader=lambda number, limit: [], standing_rulings=lambda number: (),
-        episodes=store,
+        episodes=store, label_applications=github.standing_label,
     )
     question = HumanBlockRequest(
         target=ITEM, cause=NeedsHumanCause.AGENT_COMPLETION, reason="Agent requested human input",
@@ -143,6 +160,16 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         _explained(item.fingerprint, "run-2", "2026-10-08T01:11:17+00:00"),
     ])
     assert triage_owed(config, state, authority, store) is False
+    assert triage.agenda(anchor_issue_number=ANCHOR).in_force == (ITEM,)
+
+    # 5. An operator takes the label off and puts it back BY HAND, between the
+    # owner's observations: the owner never sees it, GitHub's events do.
+    github.remove_label(ITEM, labels.needs_human)
+    github.add_label(ITEM, labels.needs_human)
+    agenda = triage.agenda(anchor_issue_number=ANCHOR)
+    [again] = agenda.items
+    assert again.issue_number == ITEM and agenda.in_force == ()
+    assert again.fingerprint not in {granted.fingerprint, item.fingerprint}
 
 
 def test_a_self_recording_cause_still_dates_its_generation(tmp_path: Path) -> None:
@@ -160,6 +187,13 @@ def test_a_self_recording_cause_still_dates_its_generation(tmp_path: Path) -> No
     [second] = store.needs_human_episodes([ITEM]).values()
     assert second != first and store.needs_human_causes(ITEM) == frozenset()
     assert store.needs_human_cause_targets() == frozenset({ITEM})  # the reconcile retires it
-    assert store.adopt_needs_human_episodes([ITEM, 451]) == {
-        ITEM: second, 451: store.needs_human_episodes([451])[451],
-    }  # adoption never replaces a recorded generation
+    # Binding: an unbound generation keeps its episode; the same event keeps
+    # it again; a different event (a re-application) replaces it; a label
+    # with no generation gets one dated by its event.
+    assert store.bind_needs_human_episode(ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z") == second
+    assert store.bind_needs_human_episode(ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z") == second
+    third = store.bind_needs_human_episode(ITEM, event_id=6, applied_at="2026-10-06T00:00:00Z")
+    assert third != second and third.startswith("2026-10-06T00:00:00Z#")
+    assert store.bind_needs_human_episode(451, event_id=9, applied_at="2026-10-07T00:00:00Z").startswith(
+        "2026-10-07T00:00:00Z#"
+    )

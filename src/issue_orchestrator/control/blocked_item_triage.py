@@ -25,9 +25,12 @@ The blocking state includes the block's EPISODE (#8688): a needs-human block
 lifted and later re-raised under the same label and cause is a new episode,
 read from the generation its one owner records when it puts the label on
 afresh (:class:`~..ports.pending_work_claim_store.NeedsHumanEpisodeReader`),
-not from the best-effort timeline (#8697). A block with no recorded generation
-is owed a triage; the agenda then adopts one dated at that grant, so the triage
-it is granted covers it until the label next comes off.
+not from the best-effort timeline (#8697). The owner sees only its own writes,
+so a health review's agenda binds each episode to GitHub's standing
+application of the label (its complete issue events): a label removed and
+re-applied outside the owner, or put on by hand, opens a new episode dated by
+GitHub. A block whose episode is unrecorded or cannot be verified is owed a
+triage, never covered: the rule fails toward triaging again, not silence.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ if TYPE_CHECKING:
     from ..domain.human_block import NeedsHumanCause
     from ..domain.models import OrchestratorState
     from ..domain.standing_ruling import StandingRuling
+    from ..domain.tech_lead_approval import StandingLabel
     from ..domain.tech_lead_artifacts import TechLeadDecision
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..infra.config import Config
@@ -96,6 +100,7 @@ class StateBlockedItemTriage:
         timeline_reader: Callable[[int, int], Sequence["TimelineRecord"]],
         standing_rulings: Callable[[int], Sequence["StandingRuling"]],
         episodes: "NeedsHumanEpisodeReader",
+        label_applications: Callable[[int, str], "StandingLabel | None"],
     ) -> None:
         self._config = config
         self._state = state
@@ -106,6 +111,7 @@ class StateBlockedItemTriage:
         self._timeline = timeline_reader
         self._standing_rulings = standing_rulings
         self._episodes = episodes
+        self._label_applications = label_applications
 
     def agenda(self, *, anchor_issue_number: int) -> TriageAgenda:
         """Every blocked item owed a triage, oldest first, capped per run.
@@ -114,12 +120,11 @@ class StateBlockedItemTriage:
         required launch input, and guessing it would either churn items whose
         triage is in force or silently skip ones that are owed one.
         """
+        state = self._state()
         owed, in_force = owed_triages(
-            self._config, self._state(), self._labels, self._ledger,
+            self._config, state, self._labels, self._ledger,
             open_proposals=self._open_proposals(), exclude=frozenset({anchor_issue_number}),
-            # A grant pins the episode it was decided on, so one is adopted
-            # for a block whose generation was never recorded (#8688).
-            episodes=self._episodes.adopt_needs_human_episodes,
+            episodes=lambda numbers: self._verified_episodes(numbers, state),
         )
         causes = self._needs_human_causes([item.issue.number for item in owed])
         items = [
@@ -146,6 +151,44 @@ class StateBlockedItemTriage:
             in_force=in_force,
             deferred=tuple(item.issue.number for item in owed[MAX_TRIAGE_ITEMS_PER_RUN:]),
         )
+
+    def _verified_episodes(
+        self, issue_numbers: Sequence[int], state: "OrchestratorState"
+    ) -> dict[int, str]:
+        """Each item's needs-human episode, bound to GitHub's standing
+        application of its label before anything is granted (#8688).
+
+        Every triage is made on an episode bound here, so an application that
+        differs at a later review is a later episode. An item GitHub does not
+        show the label standing on, or whose events cannot be read completely,
+        is left out: its episode is unknown and it is owed a triage.
+        """
+        labels = {issue.number: issue.labels for issue in scope_issues(state)}
+        verified: dict[int, str] = {}
+        for number in issue_numbers:
+            label = self._episode_label(labels[number])
+            try:
+                standing = self._label_applications(number, label)
+            except Exception:
+                logger.warning(
+                    "[TRIAGE] %s events of #%d unreadable; its block episode is unverified",
+                    label, number, exc_info=True,
+                )
+                continue
+            if standing is None:
+                continue
+            verified[number] = self._episodes.bind_needs_human_episode(
+                number, event_id=standing.application.event_id,
+                applied_at=standing.application.created_at,
+            )
+        return verified
+
+    def _episode_label(self, issue_labels: Sequence[str]) -> str:
+        """The label whose application dates the episode: needs-human, else the marker."""
+        needs_human = self._labels.needs_human
+        if needs_human.casefold() in {label.casefold() for label in issue_labels}:
+            return needs_human
+        return self._labels.tech_lead_needs_human
 
     def _agent_question(self, issue_number: int) -> str | None:
         return latest_agent_question(self._timeline, issue_number)
@@ -253,8 +296,9 @@ def triage_owed(
 ) -> bool:
     """Whether any blocked work item in scope is owed a triage (#7593).
 
-    Reads the recorded episodes without adopting any: a block with none is
-    owed, and the agenda that grants it adopts one (#8688).
+    Reads the recorded episodes only (it runs on the tick, so it reads no
+    GitHub events): a block with none is owed, and the agenda that grants it
+    binds one to GitHub's label events (#8688).
     """
     from .label_manager import LabelManager
 
@@ -271,7 +315,7 @@ class _UnwiredEpisodes:
     def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
         raise RuntimeError("needs-human episodes are not wired (#8688)")
 
-    def adopt_needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+    def bind_needs_human_episode(self, issue_number: int, *, event_id: int, applied_at: str) -> str:
         raise RuntimeError("needs-human episodes are not wired (#8688)")
 
 
@@ -392,8 +436,9 @@ def _owed_reason(prior: PriorTriage | None, fingerprint: str) -> str:
         return "never triaged"
     if fingerprint.endswith(f"@{UNKNOWN_EPISODE}"):
         return (
-            f"its block's onset is not recorded, so its {prior.triage_class.value}"
-            " triage cannot be shown to cover this block"
+            f"its block's onset is not recorded or could not be verified against"
+            f" GitHub's label events, so its {prior.triage_class.value} triage cannot"
+            " be shown to cover this block"
         )
     if prior.fingerprint != fingerprint and (
         prior.fingerprint.partition("@")[0] == fingerprint.partition("@")[0]

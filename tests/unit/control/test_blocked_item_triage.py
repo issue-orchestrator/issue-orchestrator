@@ -11,7 +11,11 @@ import pytest
 from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
 from issue_orchestrator.domain.standing_ruling import StandingRuling
 from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
-from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
+from issue_orchestrator.domain.tech_lead_approval import (
+    AWAITING_APPROVAL_LABEL,
+    LabelEvent,
+    StandingLabel,
+)
 from issue_orchestrator.control.actions import (
     ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
@@ -160,26 +164,33 @@ EP = "2026-10-02T09:00:00+00:00#1"
 
 @dataclass
 class _Episodes:
-    """In-memory needs-human generations (#8688): ``adopt`` dates a missing one."""
+    """In-memory needs-human generations (#8688), bound as the store binds them."""
 
     recorded: dict[int, str] = field(default_factory=dict)
-    adopted: list[int] = field(default_factory=list)
+    bound: dict[int, int] = field(default_factory=dict)
 
     def needs_human_episodes(self, issue_numbers):
         return {n: self.recorded[n] for n in issue_numbers if n in self.recorded}
 
-    def adopt_needs_human_episodes(self, issue_numbers):
-        for number in issue_numbers:
-            if number not in self.recorded:
-                self.recorded[number] = f"adopted#{number}"
-                self.adopted.append(number)
-        return self.needs_human_episodes(issue_numbers)
+    def bind_needs_human_episode(self, issue_number, *, event_id, applied_at):
+        if issue_number not in self.recorded or self.bound.get(issue_number, event_id) != event_id:
+            self.recorded[issue_number] = f"{applied_at}#gh{event_id}"
+        self.bound[issue_number] = event_id
+        return self.recorded[issue_number]
+
+
+def _standing(event_id: int) -> StandingLabel:
+    return StandingLabel((LabelEvent(
+        event_id=event_id, actor_login="operator", actor_is_bot=False,
+        created_at=f"2026-10-0{event_id % 9 + 1}T00:00:00Z",
+    ),))
 
 
 def _owner(
     issues: list[Issue],
     *,
     episodes: _Episodes | None = None,
+    applications: dict[int, Any] | None = None,
     causes: dict[int, frozenset[NeedsHumanCause]] | None = None,
     ledger: _Ledger | None = None,
     timeline: dict[int, list[TimelineRecord]] | None = None,
@@ -199,7 +210,17 @@ def _owner(
         timeline_reader=lambda number, limit: (timeline or {}).get(number, []),
         standing_rulings=lambda number: (rulings or {}).get(number, ()),
         episodes=episodes if episodes is not None else _Episodes({i.number: EP for i in issues}),
+        label_applications=lambda number, label: _application(applications, number),
     )
+
+
+def _application(applications: dict[int, Any] | None, number: int) -> StandingLabel | None:
+    """GitHub's standing application of the label: event 1 unless a test says
+    otherwise (None: not standing; an exception: the read failed)."""
+    found = (applications or {}).get(number, 1)
+    if isinstance(found, Exception):
+        raise found
+    return None if found is None else _standing(found)
 
 
 def _porchpin_board() -> list[Issue]:
@@ -397,11 +418,12 @@ def test_a_triage_does_not_cover_a_later_episode_of_the_same_block() -> None:
     assert triage_owed(_config(), state, _Authority(ledger), episodes) is True
 
 
-def test_a_block_whose_episode_is_unrecorded_is_owed_then_adopted_at_its_grant() -> None:
+def test_a_block_whose_episode_is_unrecorded_is_owed_then_bound_at_its_grant() -> None:
     """#8688/#8697: with no recorded generation (a hand-placed label, or one
     older than the records) a re-block cannot be told from the triaged block,
-    so the item is owed a triage. The grant adopts an episode dated then, and
-    the triage made on it covers the item until the label next comes off."""
+    so the item is owed a triage. The grant binds an episode to GitHub's
+    standing application of the label, dated by it, and the triage made on it
+    covers the item while that application stands."""
     from issue_orchestrator.control.blocked_item_triage import triage_owed
 
     issue = _issue(450, "agent:backend", "needs-human")
@@ -410,14 +432,60 @@ def test_a_block_whose_episode_is_unrecorded_is_owed_then_adopted_at_its_grant()
     episodes = _Episodes()
     old = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, "needs-human", effect="applied")]})
     assert triage_owed(_config(), state, _Authority(old), episodes) is True
-    assert episodes.adopted == []  # the trigger's read adopts nothing
+    assert episodes.recorded == {}  # the tick's read binds nothing
 
-    [item] = _owner([issue], ledger=old, episodes=episodes).agenda(anchor_issue_number=ANCHOR).items
+    [item] = _owner(
+        [issue], ledger=old, episodes=episodes, applications={450: 41},
+    ).agenda(anchor_issue_number=ANCHOR).items
 
-    assert episodes.adopted == [450]
-    assert item.fingerprint == "needs-human@adopted#450"
+    assert item.fingerprint == f"needs-human@{_standing(41).application.created_at}#gh41"
     triaged = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, item.fingerprint, effect="applied")]})
     assert triage_owed(_config(), state, _Authority(triaged), episodes) is False
+
+
+def test_a_label_reapplied_outside_the_owner_is_a_new_episode() -> None:
+    """#8688 review r1: the operator removes needs-human and puts it back by
+    hand between the owner's observations. The owner's generation survives,
+    but GitHub's standing application of the label is a new event: the next
+    agenda opens a new episode and grants the item."""
+    issue = _issue(450, "agent:backend", "needs-human")
+    episodes = _Episodes({450: EP})
+    first = _owner([issue], episodes=episodes, applications={450: 7}).agenda(anchor_issue_number=ANCHOR)
+    [granted] = first.grants
+    ledger = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, granted.fingerprint, effect="applied")]})
+    assert _owner(
+        [issue], ledger=ledger, episodes=episodes, applications={450: 7},
+    ).agenda(anchor_issue_number=ANCHOR).in_force == (450,)
+
+    agenda = _owner(
+        [issue], ledger=ledger, episodes=episodes, applications={450: 8},
+    ).agenda(anchor_issue_number=ANCHOR)
+
+    [item] = agenda.items
+    assert item.fingerprint != granted.fingerprint and agenda.in_force == ()
+    assert item.reason.startswith("it was blocked again, under the same labels")
+
+
+@pytest.mark.parametrize("application", [None, RuntimeError("events API 502")])
+def test_an_unverifiable_episode_is_owed_and_never_covered(application: Any) -> None:
+    """GitHub does not show the label standing (a stale cache), or its events
+    cannot be read completely: the episode is unknown, so a triage in force on
+    the recorded episode does not cover it, and nothing is bound."""
+    issue = _issue(450, "agent:backend", "needs-human")
+    episodes = _Episodes({450: EP})
+    ledger = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, f"needs-human@{EP}", effect="applied")]})
+
+    [item] = _owner(
+        [issue], ledger=ledger, episodes=episodes, applications={450: application},
+    ).agenda(anchor_issue_number=ANCHOR).items
+
+    assert item.fingerprint == "needs-human@unknown"
+    assert item.reason.startswith("its block's onset is not recorded or could not be verified")
+    assert episodes.bound == {}
+    recorded = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, item.fingerprint, effect="applied")]})
+    assert _owner(
+        [issue], ledger=recorded, episodes=episodes, applications={450: application},
+    ).agenda(anchor_issue_number=ANCHOR).in_force == ()
 
 
 def test_a_block_without_needs_human_keys_on_its_labels_alone() -> None:
@@ -428,9 +496,10 @@ def test_a_block_without_needs_human_keys_on_its_labels_alone() -> None:
 
     agenda = _owner(
         [_issue(500, "agent:backend", "blocked-failed")], ledger=ledger, episodes=episodes,
+        applications={500: RuntimeError("no GitHub read is made for it")},
     ).agenda(anchor_issue_number=ANCHOR)
 
-    assert agenda.in_force == (500,) and episodes.adopted == []
+    assert agenda.in_force == (500,) and episodes.bound == {}
 
 
 def test_the_agenda_is_capped_per_run_oldest_first() -> None:

@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar, cast
 
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
 from ..domain.host_rate_limit import episode_key
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
     from ..infra.config import Config
     from .orchestrator_deps import OrchestratorDeps
+    from ..ports.approval_evidence import ApprovalEvidenceReader
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -547,4 +548,8 @@ def build_blocked_item_triage(
         timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
         standing_rulings=deps.standing_rulings.active,
         episodes=deps.pending_work_claims,
+        # The approval owner's evidence (#7763): GitHub's complete issue events.
+        label_applications=lambda number, label: cast(
+            "ApprovalEvidenceReader", deps.repository_host
+        ).standing_label(number, label),
     )

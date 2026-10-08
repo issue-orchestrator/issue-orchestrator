@@ -32,13 +32,31 @@ def open_generation(conn: sqlite3.Connection, issue_number: int) -> None:
     )
 
 
-def adopt_generations(conn: sqlite3.Connection, issue_numbers: Sequence[int]) -> None:
-    """Open a generation dated now for each issue that has none; keep the rest."""
-    conn.executemany(
-        "INSERT OR IGNORE INTO needs_human_generation (issue_number, opened_at, adopted)"
-        " VALUES (?, ?, 1)",
-        [(number, _now()) for number in issue_numbers],
-    )
+def bind_generation(
+    conn: sqlite3.Connection, issue_number: int, *, event_id: int, applied_at: str
+) -> None:
+    """Bind the generation to GitHub's standing application of its label.
+
+    No generation: one is opened from the event, dated by it. An unbound one
+    is bound. One bound to a DIFFERENT event is stale (the label was removed
+    and re-applied outside the owner), so it is replaced by a new generation.
+    """
+    row = conn.execute(
+        "SELECT label_event_id FROM needs_human_generation WHERE issue_number = ?",
+        (issue_number,),
+    ).fetchone()
+    if row is not None and row[0] is None:
+        conn.execute(
+            "UPDATE needs_human_generation SET label_event_id = ? WHERE issue_number = ?",
+            (event_id, issue_number),
+        )
+    elif row is None or row[0] != event_id:
+        conn.execute("DELETE FROM needs_human_generation WHERE issue_number = ?", (issue_number,))
+        conn.execute(
+            "INSERT INTO needs_human_generation (issue_number, opened_at, label_event_id, adopted)"
+            " VALUES (?, ?, ?, 1)",
+            (issue_number, applied_at, event_id),
+        )
 
 
 def read_episodes(conn: sqlite3.Connection, issue_numbers: Sequence[int]) -> dict[int, str]:
