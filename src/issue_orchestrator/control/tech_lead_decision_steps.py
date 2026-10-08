@@ -443,7 +443,11 @@ class DecisionStepsOwner:
         result = self.apply_action(RequestReworkAction(
             request=step.rework, proposal_id=context.proposal_id, finding_ids=context.finding_ids,
             anchor_issue_number=context.anchor_issue_number,
-            proposal_issue_number=context.proposal_issue_number,
+            # A nested rework, not an approved op of its own (#8691 r8): with no
+            # proposal number the applier neither re-checks a proposal's consent
+            # (the parent decision's was) nor finalizes it, so the parent keeps
+            # its proposal and stored op until every step is done.
+            proposal_issue_number=0,
             reason=f"decision approved on proposal #{context.proposal_issue_number}: rework PR #{step.number}",
             expected=build_expected_for_mutation(),
         ))

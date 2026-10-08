@@ -274,7 +274,8 @@ def test_approving_the_327_decision_routes_its_pr_with_no_hand_edits(tmp_path: P
     assert "needs-human" not in github.labels[PR]
     assert world.labels.needs_rework in github.labels[PR]
     [receipt] = world.authority.list_rework_receipts()
-    assert (receipt.status, receipt.proposal_issue_number) == ("queued", PROPOSAL)
+    # A nested rework: its receipt is not a proposal's, so the applier never finalizes the decision's.
+    assert (receipt.status, receipt.proposal_issue_number) == ("queued", 0)
     assert "Amend ruling m-55cb838d2f51" in receipt.request.feedback  # the decision is the brief
     assert "needs-human" not in github.labels[ITEM] and world.retried == [ITEM]
     assert all(github.marker_present(PROPOSAL, step_marker(str(PROPOSAL), index)) for index in (1, 2))
@@ -957,3 +958,34 @@ def test_a_retry_held_by_a_new_cause_after_the_steps_is_handed_back(tmp_path: Pa
 
     assert world.github.milestones[SUBJECT] == 1  # steps landed
     assert result.result_type is ActionResultType.FAILURE and "partly applied" in (result.error or "")
+
+
+# -- review round 8 ---------------------------------------------------------------
+
+
+def test_the_nested_rework_never_finalizes_the_parent_proposal(tmp_path: Path) -> None:
+    """r8 F1: the applier finalizes (closes, discards the op of) any approved op
+    carrying a proposal number. The rework a decision step dispatches carries
+    none, so the decision keeps its proposal open until its own finish."""
+    from issue_orchestrator.control.tech_lead_proposal_execution import finalize_tech_lead_op_execution
+
+    world = World(tmp_path)
+    _plant_327(world)
+    proposal = world.plan(_decision({"kind": "request_pr_rework", "number": PR}))
+    dispatched: list[RequestReworkAction] = []
+    real_apply = world.apply
+
+    def capture(act: Action) -> ActionResult:
+        if isinstance(act, RequestReworkAction):
+            dispatched.append(act)
+        return real_apply(act)
+
+    world.apply = capture  # type: ignore[method-assign]
+    world.executor().apply(world.approve(proposal))
+
+    [rework] = dispatched
+    host, ops = MagicMock(), MagicMock()
+    finalize_tech_lead_op_execution(ActionResult.ok(rework), rework, repository_host=host, ops=ops)
+    host.update_issue_state.assert_not_called()
+    host.add_comment.assert_not_called()
+    ops.discard_op.assert_not_called()
