@@ -476,7 +476,7 @@ class Orchestrator:
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
             tech_lead_authority=self.deps.services.tech_lead_authority, issue_run_ledger=self.deps.issue_run_ledger,
-            pending_work_claims=self.deps.pending_work_claims, needs_human_block=self.deps.needs_human_block,
+            pending_work_claims=self.deps.pending_work_claims, needs_human_block=self.deps.needs_human_block, standing_rulings=self.deps.standing_rulings,
         )
 
     @cached_property

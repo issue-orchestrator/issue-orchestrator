@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -143,3 +144,64 @@ def test_the_sqlite_index_survives_an_engine_restart(tmp_path: Path) -> None:
     assert restarted.load(365) == () and restarted.load(366) is None
     [(number, synced)] = restarted.synced().items()
     assert number == 364 and synced.rulings == (ruling,) and synced.synced_at.startswith("20")
+
+
+# -- #8347: rulings on the work a tech-lead run covers; the index backfill ------
+
+
+def test_a_tech_lead_run_is_bound_by_each_covered_issues_rulings_read_fresh() -> None:
+    """A batch review of PR #12 (issue 364) and PR #13 (issue 365, no rulings)
+    is told 364's ruling and which PR it binds; each body is read fresh."""
+    from issue_orchestrator.domain.standing_ruling import COVERED_RULINGS_HEADING, RULINGS_PROMPT_HEADING
+
+    ruling = a_ruling(files=("tools/walk",))
+    bodies = IssueBodies({364: body_with(ruling), 365: SPEC})
+    index = InMemoryStandingRulingsIndex()
+    owner = rulings_owner(bodies, index)
+
+    section = owner.covered_section({364: (12,), 365: (13,)})
+
+    assert section is not None and section.startswith(COVERED_RULINGS_HEADING)
+    assert f"{RULINGS_PROMPT_HEADING}364 (PR #12)" in section and ruling.text in section
+    assert "365" not in section and "#13" not in section
+    assert sorted(bodies.reads) == [364, 365] and index.rows == {364: (ruling,), 365: ()}
+    assert owner.covered_section({365: (13,)}) is None and owner.covered_section({}) is None
+
+
+def test_a_covered_issue_that_cannot_be_read_refuses_the_whole_section() -> None:
+    bodies = IssueBodies({364: body_with(a_ruling())})
+    bodies.unreadable.add(365)
+
+    with pytest.raises(StandingRulingsUnavailable, match="#365"):
+        rulings_owner(bodies).covered_section({364: (12,), 365: ()})
+
+
+def _listed(number: int, body: str | None) -> SimpleNamespace:
+    return SimpleNamespace(number=number, body=body)
+
+
+def test_backfill_indexes_rulings_recorded_before_the_index_existed() -> None:
+    """porchpin#364/#327: rulings on the body before the index was created never
+    reached the page until something read the issue again."""
+    ruling = a_ruling()
+    index = InMemoryStandingRulingsIndex()
+    owner = rulings_owner(IssueBodies(), index)
+
+    filled = owner.backfill([_listed(364, body_with(ruling)), _listed(327, body_with(ruling)), _listed(5, SPEC)])
+
+    assert filled == 2 and index.rows == {364: (ruling,), 327: (ruling,)}
+    assert set(owner.synced()) == {364, 327}
+
+
+def test_backfill_never_overwrites_a_synced_row_and_skips_a_damaged_block() -> None:
+    """A row the owner synced is kept current by its own reads and writes (a
+    ruling retired since the listing stays retired); a damaged block is left to the fresh
+    reads that refuse it, without stopping the rest."""
+    old, new = a_ruling("m-000000000001"), a_ruling("m-000000000002", "Newer.")
+    index = InMemoryStandingRulingsIndex({364: ()})
+    owner = rulings_owner(IssueBodies(), index)
+    damaged = body_with(old).replace("<!-- io:standing-rulings:end -->", "")
+
+    filled = owner.backfill([_listed(364, body_with(old)), _listed(9, damaged), _listed(10, body_with(new))])
+
+    assert filled == 1 and index.rows == {364: (), 10: (new,)}

@@ -16,11 +16,15 @@ Two seams:
 from __future__ import annotations
 
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..domain.session_kind import SessionKind
 from ..domain.standing_ruling import StandingRuling
+
+if TYPE_CHECKING:
+    from .issue import Issue
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,22 @@ class StandingRulings(Protocol):
         """The binding section a *kind* session on the issue is given, or None."""
         ...
 
+    def covered_section(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
+        """The binding section for a tech-lead run over other issues' work (#8347).
+
+        *covered* maps each issue the run covers to its PRs in the run. Each
+        issue's rulings are read fresh from its body; raises
+        :class:`StandingRulingsUnavailable` when any one cannot be read.
+        """
+        ...
+
+
+class StandingRulingsBackfill(Protocol):
+    """Fill the local index from issue bodies a listing just read (#8347)."""
+
+    def backfill(self, issues: Iterable["Issue"]) -> int:
+        """Index the rulings of each issue the index has never synced; how many."""
+        ...
 
 
 class NoStandingRulings:
@@ -75,6 +95,14 @@ class NoStandingRulings:
     def prompt_section(self, issue_number: int, kind: SessionKind) -> str | None:
         del issue_number, kind
         return None
+
+    def covered_section(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
+        del covered
+        return None
+
+    def backfill(self, issues: Iterable["Issue"]) -> int:
+        del issues
+        return 0
 
 
 

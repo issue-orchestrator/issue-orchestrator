@@ -88,8 +88,13 @@ claims it settles; no files means the whole issue).
   review, both review-exchange roles (read again before every turn), tech
   lead, and debug sessions. Every rework (conflict, CI, merge queue or review
   feedback) gets them as its brief. The triage agenda carries each item's
-  rulings in full, and the Tech lead page shows them as of the engine's last
-  read.
+  rulings in full. A tech-lead run is also told the rulings of every other
+  issue whose work it covers, read fresh from each body: a batch review's PRs'
+  issues (the manifest lists each PR's `issue_numbers`) and a health review's
+  problem cohort (#8347). A covered issue whose rulings cannot be read refuses
+  the launch. The Tech lead page shows rulings as of the engine's last read;
+  startup fills the index from the bodies of the issues it just synced, so
+  rulings recorded before the index existed show without another read.
 - **The review rule.** An approval of a diff that touches a ruling's scope must
   attest it: `reviewer-done approved ... --upholds-ruling <id>`, or
   `upheld_rulings` in a review exchange's decision JSON. If it does not, the

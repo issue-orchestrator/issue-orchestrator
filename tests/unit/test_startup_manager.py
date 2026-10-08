@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, call, patch
 from issue_orchestrator.control.session_launch_types import LaunchResult
 from issue_orchestrator.control.session_routing import orchestrator_launch_tech_lead_session
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -160,6 +161,7 @@ def startup_manager(
         startup_worktree_reconciler=_startup_worktree_reconciler(),
         label_store=mock_label_store,
         pending_work_claims=MagicMock(),
+        standing_rulings=NO_STANDING_RULINGS,
     )
 
 
@@ -383,6 +385,7 @@ class TestStartupManagerInProgressIssues:
             queue_cache_store=queue_cache_store,
             label_store=mock_label_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         mock_state = MagicMock()
@@ -569,6 +572,7 @@ class TestStartupManagerLabelStoreReconcile:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         # Warm cache snapshot captured before recovery: still in-progress.
@@ -642,6 +646,7 @@ class TestStartupManagerLabelStoreReconcile:
             queue_cache_store=queue_cache_store,
             label_store=store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
         return sm, store, mock_repository_host
 
@@ -1343,6 +1348,7 @@ class TestStartupManagerResumePartialWork:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await manager.run_startup(sample_state)
@@ -1404,6 +1410,7 @@ class TestStartupManagerResumePartialWork:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await manager.run_startup(sample_state)
@@ -1732,6 +1739,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1766,6 +1774,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1793,6 +1802,7 @@ class TestStartupGitHubCallBudget:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1847,6 +1857,7 @@ class TestStartupGitHubCallBudget:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1886,6 +1897,7 @@ class TestStartupGitHubCallBudget:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         state = OrchestratorState()
@@ -1919,6 +1931,7 @@ class TestStartupGitHubCallBudget:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         state = OrchestratorState()
@@ -1958,6 +1971,7 @@ class TestStartupGitHubCallBudget:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             queue_cache_store=mock_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         caplog.clear()
@@ -2063,6 +2077,7 @@ class TestStartupSweepsThePendingWorkLedger:
             startup_worktree_reconciler=_startup_worktree_reconciler(),
             label_store=mock_label_store,
             pending_work_claims=MagicMock(),
+            standing_rulings=NO_STANDING_RULINGS,
         )
 
         await manager.run_startup(sample_state)
@@ -2108,6 +2123,7 @@ def test_an_in_progress_issue_is_orphaned_only_when_no_claim_holder_is_live(
         startup_worktree_reconciler=_startup_worktree_reconciler(),
         label_store=mock_label_store,
         pending_work_claims=MagicMock(),
+        standing_rulings=NO_STANDING_RULINGS,
     )
     mock_action_applier.apply.return_value = MagicMock(success=True)
     issue = Issue(7, "Anchor", labels=["in-progress", "agent:tech-lead"], repo="owner/repo")
@@ -2123,3 +2139,61 @@ def test_an_in_progress_issue_is_orphaned_only_when_no_claim_holder_is_live(
     ]
     assert bool(removed) is cleared
     assert resume == []
+
+
+class TestStartupBackfillsTheStandingRulingsIndex:
+    """#8347: the tech-lead page reads only the rulings index, which held only
+    issues read since it was created; porchpin#364/#327's earlier rulings never
+    showed. Startup fills it, through the owner, from the bodies it just synced."""
+
+    def _manager(self, mock_config, mock_events, mock_runner, mock_issue_branches_fn, owner, refresh):
+        return StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=MagicMock(**{"list_issues.return_value": [], "get_prs_with_label.return_value": []}),
+            action_applier=MagicMock(), issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False, restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None, update_queue_cache_fn=refresh,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            startup_worktree_reconciler=_startup_worktree_reconciler(),
+            pending_work_claims=MagicMock(), standing_rulings=owner,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_synced_queue_fills_the_index_for_rulings_recorded_earlier(
+        self, mock_config, mock_events, mock_runner, mock_issue_branches_fn, sample_state,
+    ):
+        from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex, a_ruling, body_with, rulings_owner
+
+        ruling = a_ruling()
+        index = InMemoryStandingRulingsIndex()
+        owner = rulings_owner(index=index)
+
+        def refresh() -> None:
+            sample_state.cached_scope_issues = [Issue(number=364, title="Walk", labels=[], body=body_with(ruling))]
+            sample_state.cached_queue_issues = [Issue(number=327, title="Block", labels=[], body=body_with(ruling)),
+                                                Issue(number=5, title="Plain", labels=[], body="No rulings.")]
+
+        await self._manager(mock_config, mock_events, mock_runner, mock_issue_branches_fn, owner, refresh).run_startup(
+            sample_state
+        )
+
+        assert index.rows == {364: (ruling,), 327: (ruling,)}
+        assert set(owner.synced()) == {364, 327}
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_queue_sync_backfills_nothing_from_its_stale_snapshot(
+        self, mock_config, mock_events, mock_runner, mock_issue_branches_fn, sample_state,
+    ):
+        from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex, a_ruling, body_with, rulings_owner
+
+        index = InMemoryStandingRulingsIndex()
+        sample_state.cached_scope_issues = [Issue(number=364, title="Walk", labels=[], body=body_with(a_ruling()))]
+
+        def refresh() -> None:
+            raise RepositoryHostError("transient GitHub blip")
+
+        await self._manager(
+            mock_config, mock_events, mock_runner, mock_issue_branches_fn, rulings_owner(index=index), refresh
+        ).run_startup(sample_state)
+
+        assert index.rows == {}

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -41,6 +41,7 @@ from ..domain.standing_ruling import (
     RulingScope,
     StandingRuling,
     audience_for,
+    covered_rulings_prompt,
     parse_rulings_block,
     rulings_prompt,
     with_rulings_block,
@@ -153,6 +154,43 @@ class StandingRulingsOwner:
         if not rulings:
             return None
         return rulings_prompt(issue_number, rulings, audience_for(kind))
+
+    def covered_section(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
+        """What a tech-lead run over other issues' work is bound by (#8347): each
+        covered issue's rulings, one fresh body read each (as :meth:`active`)."""
+        return covered_rulings_prompt(covered, {number: self.active(number) for number in sorted(covered)})
+
+    def backfill(self, issues: Iterable["Issue"]) -> int:
+        """Index the rulings in *issues*' bodies (a listing just read) for each
+        issue the index has never synced; how many it indexed (#8347).
+
+        The index was created after rulings were already on issues, and the page
+        reads only the index, so a ruling recorded earlier stayed invisible until
+        something read that issue again. Only a never-synced issue is filled: a
+        synced row is kept current by this owner's own reads and writes, and a
+        listing may predate a ruling recorded or retired since. The check runs
+        under the writers' lock, so a write made meanwhile is never overwritten. An issue whose body holds none is left unsynced, so a
+        ruling added to it later is still found by the next backfill. A damaged
+        block is skipped: every prompt and review reads that body fresh and
+        refuses it there, where it matters.
+        """
+        filled = 0
+        for issue in issues:
+            try:
+                rulings = parse_rulings_block(issue.body)
+            except RulingsBlockError as error:
+                logger.warning(issue_log(issue.number, "Standing rulings not indexed: %s"), error)
+                continue
+            if not rulings:
+                continue
+            with self._lock:
+                if self.index.load(issue.number) is not None:
+                    continue
+                self.index.save(issue.number, rulings)
+            filled += 1
+        if filled:
+            logger.info("Standing rulings index backfilled for %d issue(s)", filled)
+        return filled
 
     def synced(self) -> dict[int, SyncedRulings]:
         """Every issue the index holds rulings for, as of its last sync (the

@@ -625,6 +625,7 @@ class SessionLauncher:
             ),
             board_snapshot_provider=self._board_snapshot_provider,
             blocked_item_triage=self._blocked_item_triage,
+            launch_prompt=self._launch_prompt,
             issue=issue,
             ctx=ctx,
             tech_lead_scope=tech_lead_scope,

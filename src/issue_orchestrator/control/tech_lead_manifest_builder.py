@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Sequence
 
 from ..domain.tech_lead_manifest import TechLeadManifest, PRToReview, PRFiles
 from ..ports import RepositoryHost
+from .review_scope import issues_of_pr
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -69,9 +70,11 @@ class TechLeadManifestBuilder:
         repository_host: RepositoryHost,
         watch_label: str = "code-reviewed",
         *,
+        repo_slug: str,
         candidate_policy: TechLeadCandidatePolicy,
     ):
         self._host = repository_host
+        self._repo_slug = repo_slug
         self._watch_label = watch_label
         self._policy = candidate_policy
 
@@ -100,6 +103,7 @@ class TechLeadManifestBuilder:
                 branch=pr.branch,
                 head_sha=pr.head_sha or "",
                 files=PRFiles(),
+                issue_numbers=tuple(sorted(issues_of_pr(pr, repo_slug=self._repo_slug))),
             )
             for pr in prs
             if self._policy.is_candidate(pr.labels)

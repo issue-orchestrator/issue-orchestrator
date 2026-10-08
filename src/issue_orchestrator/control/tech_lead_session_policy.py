@@ -78,6 +78,7 @@ from .tech_lead_run_inputs import (
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
     from ..ports.blocked_item_triage import BlockedItemTriageAgenda
+    from ..ports.launch_prompt import LaunchPromptProvider
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
     from ..ports import EventSink
@@ -385,6 +386,7 @@ def prepare_tech_lead_manifest(
     manifest_downloader: "ManifestDownloader",
     worktree_path: Path,
     run_dir: Path,
+    repo_slug: str,
 ) -> TechLeadManifest | None:
     """Build and download the batch PR manifest for a tech_lead session.
 
@@ -395,6 +397,7 @@ def prepare_tech_lead_manifest(
     builder = TechLeadManifestBuilder(
         repository_host=repository_host,
         watch_label=config.tech_lead_watch_label,
+        repo_slug=repo_slug,
         candidate_policy=TechLeadCandidatePolicy.from_config(config),
     )
 
@@ -501,6 +504,7 @@ def prepare_tech_lead_session_data(
     ),
     board_snapshot_provider: "BoardSnapshotProvider",
     blocked_item_triage: "BlockedItemTriageAgenda",
+    launch_prompt: "LaunchPromptProvider",
     issue: "Issue",
     ctx: "WorktreeContext",
     tech_lead_scope: "TechLeadLaunchScope | None",
@@ -541,6 +545,7 @@ def prepare_tech_lead_session_data(
             manifest_downloader=manifest_downloader,
             worktree_path=ctx.worktree_path,
             run_dir=run_dir,
+            repo_slug=issue.key.scope(),
         )
         if tech_lead_manifest:
             # Store manifest path in session for completion handling
@@ -578,6 +583,9 @@ def prepare_tech_lead_session_data(
         blocked_item_triage.agenda(anchor_issue_number=issue.number)
         if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         else TriageAgenda()
+    )
+    covered_rulings = launch_prompt.covered_rulings(
+        _covered_issues(tech_lead_manifest, problem_issue_numbers, triage_agenda, anchor=issue.number)
     )
     observed_session_generations = tuple(
         sorted(
@@ -676,8 +684,29 @@ def prepare_tech_lead_session_data(
             focus_issue_number=focus_issue,
             board_snapshot=board_snapshot,
         ),
-        prompt_addendum=render_triage_instructions(triage_agenda),
+        prompt_addendum="\n\n".join(
+            part for part in (covered_rulings, render_triage_instructions(triage_agenda)) if part
+        ),
     )
+
+
+def _covered_issues(
+    manifest: TechLeadManifest | None,
+    problem_issue_numbers: tuple[int, ...],
+    triage_agenda: TriageAgenda,
+    *,
+    anchor: int,
+) -> dict[int, tuple[int, ...]]:
+    """The other issues whose work a tech-lead run covers, with their PRs in it
+    (#8347): a batch's PRs' issues and a health review's problem cohort. The
+    anchor's own rulings come with its launch prompt, and a triage item's with
+    its agenda entry, so neither is repeated."""
+    covered = manifest.covered_issues() if manifest is not None else {}
+    for number in problem_issue_numbers:
+        covered.setdefault(number, ())
+    for number in (anchor, *(item.issue_number for item in triage_agenda.items)):
+        covered.pop(number, None)
+    return covered
 
 
 @dataclass(frozen=True)

@@ -11082,3 +11082,73 @@ class TestStandingRulingsReachEveryLaunch:
         result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
 
         assert result.success is True and RULINGS_PROMPT_HEADING not in result.session.original_prompt
+
+
+class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
+    """#8347: a batch review approved PRs against rulings it was never told
+    (porchpin#379's failure class). A tech-lead run is bound by the rulings of
+    every other issue whose work it covers, read fresh from each body: a batch
+    review's PRs' issues, and a health review's problem cohort."""
+
+    @pytest.fixture
+    def tech_lead_bundle(self, rulings_bundle, sample_config, tmp_path):
+        bundle, owner, bodies, ruling = rulings_bundle
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
+            prompt_path=tmp_path / "prompt.md", model="sonnet", timeout_minutes=45,
+        )
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        anchor = Issue(number=125, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo")
+        return bundle, owner, bodies, ruling, anchor
+
+    @staticmethod
+    def _batch_of(mock_repo_host, *prs: tuple[int, str, str]) -> None:
+        mock_repo_host.prs_with_label = [
+            PRInfo(number=number, title=f"PR {number}", url=f"https://github.com/test/repo/pull/{number}",
+                   branch=branch, body=body, state="open", labels=["code-reviewed"], head_sha=f"{number:040d}")
+            for number, branch, body in prs
+        ]
+
+    def test_a_batch_review_is_told_each_covered_prs_rulings(self, tech_lead_bundle, mock_repo_host) -> None:
+        from issue_orchestrator.domain.standing_ruling import COVERED_RULINGS_HEADING, RULINGS_PROMPT_HEADING
+
+        bundle, _owner, bodies, ruling, anchor = tech_lead_bundle
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"), (513, "feature", "Refs #400"))
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is True
+        prompt = result.session.original_prompt
+        assert COVERED_RULINGS_HEADING in prompt
+        assert f"{RULINGS_PROMPT_HEADING}365 (PR #512)" in prompt and ruling.text in prompt
+        assert "issue #400" not in prompt  # no ruling on it: nothing to bind
+        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+        assert {365, 400} <= set(bodies.reads)  # each covered body read fresh at launch
+
+    def test_a_health_review_is_told_its_problem_cohorts_rulings(self, tech_lead_bundle) -> None:
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+
+        bundle, _owner, _bodies, ruling, anchor = tech_lead_bundle
+
+        result = bundle.launcher.launch_issue_session(
+            anchor, active_sessions=[],
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW, problem_issue_numbers=(365,),
+            ),
+        )
+
+        assert result.success is True
+        assert f"{RULINGS_PROMPT_HEADING}365\n" in result.session.original_prompt
+        assert ruling.text in result.session.original_prompt
+
+    def test_a_covered_issue_whose_rulings_cannot_be_read_refuses_the_launch(
+        self, tech_lead_bundle, mock_repo_host
+    ) -> None:
+        bundle, _owner, bodies, _ruling, anchor = tech_lead_bundle
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+        bodies.unreadable.add(365)
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is False
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
+        assert bundle.create_session_calls == []

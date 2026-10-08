@@ -583,3 +583,43 @@ def ruling_in_full(ruling: StandingRuling) -> str:
         f" recorded {ruling.recorded_at})\n"
         f"Governs: {governs}" + (f"\nSettles:{settles}" if settles else "") + f"\n\n{ruling.text}"
     )
+
+
+#: How a tech lead's section of the rulings on the work it covers begins (#8347).
+COVERED_RULINGS_HEADING = "## BINDING: standing rulings on the work this run covers"
+
+_COVERED_PREAMBLE = (
+    "These are the maintainer's settled decisions for the issues whose work this run"
+    " reviews or may act on (a batch review's PRs, a health review's problem issues)."
+    " Judge each PR against its issue's rulings: one that contradicts a ruling (including"
+    " one that keeps, restores or extends what the ruling retires) is a finding to report"
+    " and act on, never work to pass as sound. Never propose or take an action that"
+    " contradicts a ruling: a ruling changes only when the maintainer changes it."
+)
+
+
+def covered_rulings_prompt(
+    covered: Mapping[int, tuple[int, ...]],
+    rulings: Mapping[int, tuple[StandingRuling, ...]],
+) -> str | None:
+    """The binding section for a tech-lead run over other issues' work (#8347).
+
+    *covered* maps each issue the run covers to its PRs in the run (none for an
+    issue it covers without a PR); *rulings* holds each one's rulings as its
+    body records them. None when no covered issue has a ruling.
+    """
+    sections = []
+    for issue_number in sorted(covered):
+        items = rulings[issue_number]
+        if not items:
+            continue
+        prs = covered[issue_number]
+        of_prs = f" (PR {', '.join(f'#{pr}' for pr in sorted(prs))})" if prs else ""
+        rendered = "\n\n".join(ruling_in_full(ruling) for ruling in items)
+        sections.append(
+            f"{RULINGS_PROMPT_HEADING}{issue_number}{of_prs}\n\n{rendered}"
+            f"\n\n(End of the standing rulings on issue #{issue_number}.)"
+        )
+    if not sections:
+        return None
+    return "\n\n".join((COVERED_RULINGS_HEADING, _COVERED_PREAMBLE, *sections))
