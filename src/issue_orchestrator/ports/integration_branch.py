@@ -14,7 +14,7 @@ from typing import Protocol
 from ..domain.integration_branch import (
     BranchComparison,
     BranchMergeOutcome,
-    MergedIntoBranch,
+    MergedIntoBranchListing,
     OpenPullRequestRef,
 )
 
@@ -63,8 +63,9 @@ class IntegrationBranchHost(Protocol):
         """Replace the PR's description."""
         ...
 
-    def merged_pull_requests_into(self, base: str) -> tuple[MergedIntoBranch, ...]:
-        """The most recently updated PRs merged into *base* (up to 100)."""
+    def merged_pull_requests_into(self, base: str) -> MergedIntoBranchListing:
+        """The PRs merged into *base*, most recently updated first, paged up to
+        a cap; the listing says whether it reached the last page."""
         ...
 
 

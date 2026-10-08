@@ -14,6 +14,7 @@ from issue_orchestrator.domain.integration_branch import (
     BranchComparison,
     BranchMergeOutcome,
     MergedIntoBranch,
+    MergedIntoBranchListing,
     OpenPullRequestRef,
 )
 from issue_orchestrator.ports.repository_host import RepositoryHostError
@@ -224,6 +225,34 @@ def test_merged_pull_requests_into_keeps_only_merged_ones(make_host) -> None:
              "merge_commit_sha": SHA_B},
         ])
 
-    assert make_host(handler).merged_pull_requests_into("integration") == (
-        MergedIntoBranch(number=3, title="Three", url="u3", merge_commit_sha=SHA_A),
+    assert make_host(handler).merged_pull_requests_into("integration") == MergedIntoBranchListing(
+        pulls=(MergedIntoBranch(number=3, title="Three", url="u3", merge_commit_sha=SHA_A),), complete=True,
     )
+
+
+def _merged_page(page: int) -> list[dict]:
+    return [
+        {"number": page * 1000 + i, "html_url": f"u{i}", "title": f"T{i}", "merged_at": "2026-10-08T00:00:00Z",
+         "merge_commit_sha": f"{page * 1000 + i:040x}"}
+        for i in range(100)
+    ]
+
+
+def test_merged_pull_requests_into_reads_every_page_to_the_last(make_host) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        return httpx.Response(200, json=_merged_page(page) if page < 3 else _merged_page(page)[:5])
+
+    listing = make_host(handler).merged_pull_requests_into("integration")
+
+    assert (len(listing.pulls), listing.complete) == (205, True)
+
+
+def test_merged_pull_requests_into_says_when_it_stopped_at_its_cap(make_host) -> None:
+    from issue_orchestrator.adapters.github.integration_branch import MERGED_PULLS_PAGE_CAP
+
+    listing = make_host(lambda request: httpx.Response(
+        200, json=_merged_page(int(request.url.params["page"])),
+    )).merged_pull_requests_into("integration")
+
+    assert (len(listing.pulls), listing.complete) == (100 * MERGED_PULLS_PAGE_CAP, False)

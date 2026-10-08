@@ -62,6 +62,7 @@ from issue_orchestrator.domain.integration_branch import (
     BranchComparison,
     BranchMergeOutcome,
     MergedIntoBranch,
+    MergedIntoBranchListing,
     OpenPullRequestRef,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
@@ -382,6 +383,7 @@ class MockGitHubAdapter:
         self.branch_merge_outcomes: dict[tuple[str, str], BranchMergeOutcome] = {}
         self.open_pr_refs: dict[tuple[str, str], OpenPullRequestRef] = {}  # (head, base)
         self.merged_into: dict[str, tuple[MergedIntoBranch, ...]] = {}
+        self.merged_listing_truncated: set[str] = set()  # bases whose listing hit its page cap
         # Seed a method name -> error to make that port call fail.
         self.integration_failures: dict[str, RepositoryHostError] = {}
         self.created_branches: list[tuple[str, str]] = []
@@ -672,9 +674,11 @@ class MockGitHubAdapter:
             if ref.number == pr_number:
                 self.open_pr_refs[key] = OpenPullRequestRef(number=ref.number, url=ref.url, body=body)
 
-    def merged_pull_requests_into(self, base: str) -> tuple[MergedIntoBranch, ...]:
+    def merged_pull_requests_into(self, base: str) -> MergedIntoBranchListing:
         self._integration_failure("merged_pull_requests_into")
-        return self.merged_into.get(base, ())
+        return MergedIntoBranchListing(
+            pulls=self.merged_into.get(base, ()), complete=base not in self.merged_listing_truncated,
+        )
 
     def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
         """The PR's seeded failed checks (mock)."""

@@ -627,7 +627,7 @@ def build_orchestrator(
     # the shared-block owner: the agent's typed needs_human outcome routes
     # through it (#6999 F2 round 4).
     repository_host = require_repository_host(github)
-    launch_prompt, standing_rulings = build_issue_prompt_owners(config, repository_host)  # #8141
+    launch_prompt, standing_rulings = build_issue_prompt_owners(config, repository_host, action_applier)  # #8141
     pending_work = build_pending_work_wiring(
         repo_root=config.repo_root,
         repository_host=repository_host,
@@ -1070,6 +1070,7 @@ def build_orchestrator_for_testing(
         action_applier.background_job_supervisor = background_job_supervisor
         action_applier.tech_lead_ops = tech_lead_authority_for_testing
         action_applier.promotion_target = tech_lead.promotion_target
+        action_applier.standing_rulings = standing_rulings  # integration merges re-judge by it (#8144)
 
     def _cancel_review_exchange_for_testing(issue_number: int, reason: str) -> ReviewExchangeCancellation:
         return action_applier.runtime_lifecycle.cancel_exchange(issue_number, reason)

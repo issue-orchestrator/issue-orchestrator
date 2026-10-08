@@ -82,6 +82,18 @@ class MergedIntoBranch:
 
 
 @dataclass(frozen=True)
+class MergedIntoBranchListing:
+    """The PRs merged into a branch, newest first, and whether that is all of them.
+
+    ``complete`` is False when the listing stopped at its page cap: older merged
+    PRs exist that it does not name.
+    """
+
+    pulls: tuple[MergedIntoBranch, ...]
+    complete: bool
+
+
+@dataclass(frozen=True)
 class OpenPullRequestRef:
     """An open PR found by its head and base branches."""
 
@@ -111,6 +123,8 @@ class MergeIntoIntegration:
     integration_branch: str
     integration_tip: str
     merge_method: str
+    #: The PR label ``merge_after`` requires; re-checked at the write.
+    gate_label: str
 
 
 @dataclass(frozen=True)
@@ -271,7 +285,8 @@ def render_delivery_body(
     else:
         lines.append(f"No pull request merged into `{head}` is listed: its commits came another way.")
     if not complete:
-        lines.extend(["", "_The list may be incomplete: GitHub compared at most 250 commits._"])
+        lines.extend(["", "_The list may be incomplete: GitHub listed only the most recent commits or merged"
+                          " pull requests._"])
     lines.extend([
         "",
         "### How to deliver",
@@ -327,6 +342,7 @@ __all__ = [
     "IntegrationStep",
     "MergeIntoIntegration",
     "MergedIntoBranch",
+    "MergedIntoBranchListing",
     "OpenDeliveryPullRequest",
     "OpenPullRequestRef",
     "PULL_REQUEST_STEPS",

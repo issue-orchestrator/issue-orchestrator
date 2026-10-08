@@ -39,7 +39,8 @@ issues only on default-branch merges).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from datetime import UTC, datetime
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Callable
@@ -76,7 +77,7 @@ if TYPE_CHECKING:
     from ..infra.config_models import IntegrationConfig
     from ..ports import EventSink
     from ..ports.issue import Issue
-    from ..ports.pull_request_tracker import PRInfo
+    from ..ports.pull_request_tracker import PRInfo, StatusCheckRollupRead
     from ..ports.repository_host import RepositoryHost
     from ..ports.standing_rulings import StandingRulings
     from .action_results import ActionResult
@@ -110,6 +111,88 @@ class IntegrationRouting:
 
 #: The routing that leaves the PR alone this pass.
 _NOTHING: PostApprovalAction = "UNKNOWN"
+
+
+class MergeGate(StrEnum):
+    """Whether io may merge a PR into integration NOW, and if not, why."""
+
+    OPEN = "open"
+    HELD = "held"  # needs-human of either scope on the issue or the PR (#7678)
+    GATE_NOT_PASSED = "gate_not_passed"  # the merge_after label is missing
+    CHECKS_FAILED = "checks_failed"
+    CHECKS_PENDING = "checks_pending"  # running, or none reported yet
+    CHECKS_UNREADABLE = "checks_unreadable"
+    RULED = "ruled"  # the issue carries a standing ruling (#8141)
+    RULINGS_UNREADABLE = "rulings_unreadable"
+
+
+@dataclass(frozen=True)
+class MergeEligibility:
+    gate: MergeGate
+    rollup: "StatusCheckRollupRead | None" = None
+    ruling_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MergeGatekeeper:
+    """THE rule for "may io merge this PR into integration now" (#8144).
+
+    Discovery and the write both ask it, so nothing that can change between
+    the two - a person's hold, the ``merge_after`` label, the checks on the
+    head, a standing ruling - is enforced on one path and not the other.
+    """
+
+    host: "RepositoryHost"
+    label_manager: "LabelManager"
+    standing_rulings: "StandingRulings"
+
+    def person_or_gate(self, *, issue_labels: "Sequence[str]", pr_labels: "Sequence[str]", gate_label: str) -> MergeGate:
+        """The label-only part (no reads): a person's hold, then the gate label."""
+        held = holds_merge(self.label_manager, issue_labels, pr_labels)
+        gated = gate_label in pr_labels
+        return MergeGate.HELD if held else MergeGate.OPEN if gated else MergeGate.GATE_NOT_PASSED
+
+    def judge(
+        self, *, issue_number: int, issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
+    ) -> MergeEligibility:
+        """Every gate, the checks on the PR's current head included (one rollup read)."""
+        first = self.person_or_gate(issue_labels=issue_labels, pr_labels=pr.labels, gate_label=gate_label)
+        if first is not MergeGate.OPEN:
+            return MergeEligibility(first)
+        try:
+            rollup = self.host.read_pr_status_check_rollup(pr.number)
+        except RepositoryHostError as error:
+            logger.warning("Integration: checks of PR #%d unreadable: %s", pr.number, error)
+            return MergeEligibility(MergeGate.CHECKS_UNREADABLE)
+        checks = _CHECK_GATES.get(rollup.state, MergeGate.CHECKS_PENDING)
+        if rollup.capability != "ok" or checks is not MergeGate.OPEN:
+            unreadable = rollup.capability != "ok"
+            return MergeEligibility(MergeGate.CHECKS_UNREADABLE if unreadable else checks, rollup=rollup)
+        try:
+            rulings = self.standing_rulings.active(issue_number)
+        except StandingRulingsUnavailable as error:
+            logger.warning(issue_log(issue_number, "Integration: rulings unreadable, PR #%d not merged: %s"),
+                           pr.number, error)
+            return MergeEligibility(MergeGate.RULINGS_UNREADABLE, rollup=rollup)
+        ids = tuple(ruling.ruling_id for ruling in rulings)
+        return MergeEligibility(MergeGate.RULED if ids else MergeGate.OPEN, rollup=rollup, ruling_ids=ids)
+
+
+#: Check rollup states and what they mean for a merge. ``None`` (no check
+#: reported on the head yet) is pending: a head io just updated has no checks
+#: for a moment, and a repository with none at all reaches the pending-checks
+#: timeout's escalation instead of merging unchecked work.
+_CHECK_GATES: dict[object, MergeGate] = {
+    "SUCCESS": MergeGate.OPEN,
+    "FAILURE": MergeGate.CHECKS_FAILED,
+    "ERROR": MergeGate.CHECKS_FAILED,
+}
+#: Gates the reconciler's own dispatch answers: a failed check is agent
+#: rework; pending checks run its timeout machine (an escalation at the end).
+_ROUTING_BY_GATE: dict[MergeGate, PostApprovalAction] = {
+    MergeGate.CHECKS_FAILED: "REWORK_CHECK_FAILED",
+    MergeGate.CHECKS_PENDING: "WAIT_FOR_CHECKS",
+}
 
 
 @dataclass
@@ -155,7 +238,10 @@ class IntegrationBranchOwner:
         if action in ("REWORK_CONFLICT", "REWORK_CHECK_FAILED"):
             # A real conflict or a failed check: only an agent can fix it.
             return IntegrationRouting(action)
-        if not self._io_may_act(pr, issue):
+        early = self.gatekeeper.person_or_gate(
+            issue_labels=issue.labels, pr_labels=pr.labels, gate_label=self.gate_label(),
+        )
+        if early is not MergeGate.OPEN:
             return IntegrationRouting(_NOTHING)  # a person decides first, or the gate is not passed
         if action == "BLOCKED_TERMINAL":
             return IntegrationRouting(action)  # protection on integration: a person
@@ -167,10 +253,9 @@ class IntegrationBranchOwner:
             return IntegrationRouting(_NOTHING)  # the upkeep creates the branch
         return self._route_against_tip(pr=pr, issue=issue, action=action, head=head, tip=tip)
 
-    def _io_may_act(self, pr: "PRInfo", issue: "Issue") -> bool:
-        """No person's hold on the issue or PR (#7678), and the PR passed ``merge_after``."""
-        held = holds_merge(self.label_manager, issue.labels, pr.labels)
-        return not held and self.gate_label() in pr.labels
+    @property
+    def gatekeeper(self) -> MergeGatekeeper:
+        return MergeGatekeeper(self.host, self.label_manager, self.standing_rulings)
 
     def _route_against_tip(
         self, *, pr: "PRInfo", issue: "Issue", action: PostApprovalAction, head: str, tip: str
@@ -194,27 +279,37 @@ class IntegrationBranchOwner:
         return self._merge_or_hand_over(pr=pr, issue=issue, head=head, tip=tip)
 
     def _merge_or_hand_over(self, *, pr: "PRInfo", issue: "Issue", head: str, tip: str) -> IntegrationRouting:
-        try:
-            rulings = self.standing_rulings.active(issue.number)
-        except StandingRulingsUnavailable as error:
-            logger.warning(issue_log(issue.number, "Integration: rulings unreadable, PR #%d not merged: %s"),
-                           pr.number, error)
-            return IntegrationRouting(_NOTHING)
-        if rulings:
-            ids = ", ".join(ruling.ruling_id for ruling in rulings)
+        verdict = self.gatekeeper.judge(
+            issue_number=issue.number, issue_labels=issue.labels, pr=pr, gate_label=self.gate_label(),
+        )
+        if verdict.rollup is not None:
+            pr.status_check_rollup = verdict.rollup.state  # the rework brief names it
+        routed = _ROUTING_BY_GATE.get(verdict.gate)
+        if routed is not None:
+            return IntegrationRouting(routed)
+        if verdict.gate is MergeGate.CHECKS_UNREADABLE and verdict.rollup is not None and verdict.rollup.permission_denied:
+            return IntegrationRouting(_NOTHING, escalation=build_escalation(
+                pr=pr, issue_number=issue.number, issue_key=issue.key.stable_id(), pr_number=pr.number,
+                label_manager=self.label_manager, kind="status_rollup_permission_denied",
+                reason="The engine's token cannot read the checks on this PR, so io cannot merge it into"
+                       f" `{self.branch}`: grant the token checks/commit-status read access.",
+            ))
+        if verdict.gate is MergeGate.RULED:
             return IntegrationRouting(_NOTHING, escalation=build_escalation(
                 pr=pr, issue_number=issue.number, issue_key=issue.key.stable_id(), pr_number=pr.number,
                 label_manager=self.label_manager, kind="integration_ruling_check",
                 reason=(
-                    f"Issue #{issue.number} carries standing ruling(s) {ids}. io never merges such a PR"
-                    f" into `{self.branch}` itself: check the diff against each ruling, then merge it"
-                    f" into `{self.branch}` yourself (a merge commit), or request changes."
+                    f"Issue #{issue.number} carries standing ruling(s) {', '.join(verdict.ruling_ids)}. io never"
+                    f" merges such a PR into `{self.branch}` itself: check the diff against each ruling, then"
+                    f" merge it into `{self.branch}` yourself (a merge commit), or request changes."
                 ),
             ))
+        if verdict.gate is not MergeGate.OPEN:
+            return IntegrationRouting(_NOTHING)  # transient: re-read next pass
         self._merge_candidates.append(MergeIntoIntegration(
             issue_number=issue.number, issue_key=issue.key.stable_id(), pr_number=pr.number,
             pr_url=pr.url, pr_title=pr.title, head_sha=head, integration_branch=self.branch,
-            integration_tip=tip, merge_method=self.config.merge_method,
+            integration_tip=tip, merge_method=self.config.merge_method, gate_label=self.gate_label(),
         ))
         return IntegrationRouting(_NOTHING)
 
@@ -290,9 +385,10 @@ class IntegrationBranchOwner:
             and known is not None and known.pr_number == delivery.number and known.integration_tip == tip
         ):
             return  # the body and the page are current
-        merged = merged_in_delivery(self.host.merged_pull_requests_into(self.branch), comparison_shas)
+        listing = self.host.merged_pull_requests_into(self.branch)
+        merged = merged_in_delivery(listing.pulls, comparison_shas)
         body = render_delivery_body(head=self.branch, base=default, tip=tip, ahead_by=ahead_by,
-                                    merged=merged, complete=complete)
+                                    merged=merged, complete=complete and listing.complete)
         if delivery is None:
             self.steps.append(OpenDeliveryPullRequest(
                 head=self.branch, base=default, title=delivery_title(head=self.branch, base=default),
@@ -335,6 +431,7 @@ def apply_integration_step(
     *,
     host: "RepositoryHost",
     labels: "LabelManager",
+    rulings: "StandingRulings",
     events: "EventSink",
     event_context: "EventContext | None" = None,
 ) -> "ActionResult":
@@ -343,7 +440,7 @@ def apply_integration_step(
 
     step = action.step
     assert step is not None, "an integration action carries its step"
-    refusal = _refusal(step, host=host, labels=labels)
+    refusal = _refusal(step, gatekeeper=MergeGatekeeper(host, labels, rulings))
     if refusal is not None:
         _publish(events, event_context, EventName.INTEGRATION_STEP_SKIPPED, step, reason=refusal)
         return ActionResult.skip(action, refusal, pr_number=action.pr_number or None)
@@ -362,19 +459,47 @@ def apply_integration_step(
     return ActionResult.ok(action, issue_number=action.issue_number or None, pr_number=action.pr_number or None)
 
 
-def _refusal(step: IntegrationStep, *, host: "RepositoryHost", labels: "LabelManager") -> str | None:
-    """Why *step* must not run now; None when it may."""
-    if isinstance(step, MergeIntoIntegration):
-        try:
-            current = [host.get_issue_labels_fresh(n) for n in (step.issue_number, step.pr_number)]
-        except RepositoryHostError as error:
-            return f"labels of #{step.issue_number}/PR #{step.pr_number} unreadable before the merge: {error}"
-        if holds_merge(labels, *current):
-            return f"issue #{step.issue_number} or PR #{step.pr_number} now awaits a person; not merged"
+def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | None:
+    """Why *step* must not run now; None when it may.
+
+    A merge is judged again, on fresh reads, by the same gatekeeper discovery
+    asked: the PR must still be open, into the integration branch, at the head
+    whose checks passed; every gate must still be open; and the tip it was
+    checked against must still be the tip.
+    """
+    if not isinstance(step, MergeIntoIntegration):
+        return None
+    host = gatekeeper.host
+    try:
+        pr = host.get_pr(step.pr_number)
+        issue_labels = host.get_issue_labels_fresh(step.issue_number)
+        pr_labels = host.get_issue_labels_fresh(step.pr_number)
         tip = host.branch_head(step.integration_branch)
-        if tip != step.integration_tip:
-            return (f"{step.integration_branch} moved ({step.integration_tip[:8]} -> {(tip or 'gone')[:8]})"
-                    f" since PR #{step.pr_number} was checked against it; re-checked next pass")
+    except RepositoryHostError as error:
+        return f"PR #{step.pr_number} could not be re-read before the merge: {error}"
+    moved = _moved_since_discovery(step, pr, tip)
+    if moved is not None:
+        return moved
+    assert pr is not None
+    verdict = gatekeeper.judge(
+        issue_number=step.issue_number, issue_labels=issue_labels,
+        pr=replace(pr, labels=list(pr_labels)), gate_label=step.gate_label,
+    )
+    if verdict.gate is not MergeGate.OPEN:
+        return f"PR #{step.pr_number} is no longer mergeable by io ({verdict.gate.value}); not merged"
+    return None
+
+
+def _moved_since_discovery(step: MergeIntoIntegration, pr: "PRInfo | None", tip: str | None) -> str | None:
+    if pr is None or (pr.state or "").strip().lower() != "open":
+        return f"PR #{step.pr_number} is no longer open"
+    if pr.base_branch != step.integration_branch:
+        return f"PR #{step.pr_number} now targets {pr.base_branch!r}, not {step.integration_branch!r}"
+    if pr.head_sha != step.head_sha:
+        return f"PR #{step.pr_number} head moved since its checks passed; re-checked next pass"
+    if tip != step.integration_tip:
+        return (f"{step.integration_branch} moved ({step.integration_tip[:8]} -> {(tip or 'gone')[:8]})"
+                f" since PR #{step.pr_number} was checked against it; re-checked next pass")
     return None
 
 
@@ -427,6 +552,9 @@ __all__ = [
     "IntegrationBranchOwner",
     "IntegrationConfigError",
     "IntegrationRouting",
+    "MergeEligibility",
+    "MergeGate",
+    "MergeGatekeeper",
     "apply_integration_step",
     "plan_integration_steps",
 ]

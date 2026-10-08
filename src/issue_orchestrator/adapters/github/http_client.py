@@ -2037,9 +2037,10 @@ class GitHubHttpClient:
         head: str | None = None,
         sort: str | None = None,
         direction: str | None = None,
+        page: int = 1,
     ) -> list[dict[str, Any]]:
         """One page (100) of PRs into *base*; *head* is a branch of this repo."""
-        params: dict[str, Any] = {"state": state, "base": base, "per_page": 100}
+        params: dict[str, Any] = {"state": state, "base": base, "per_page": 100, "page": page}
         if head is not None:
             owner = self._config.repo.split("/", 1)[0]
             params["head"] = f"{owner}:{head}"

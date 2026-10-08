@@ -102,12 +102,13 @@ class _Engine:
         self.labels = LabelManager(self.config)
         self.github = _GitHub()
         self.bodies = IssueBodies()
+        self.rulings = rulings_owner(self.bodies)
         self.now = 1_000_000.0
         self.workflow = GitHubWorkflow(
             config=self.config, events=InMemoryEventSink(), repository_host=self.github,
             fact_gatherer=MagicMock(), pr_scanner=MagicMock(), label_sync=None,
             event_context=EventContext(), label_manager=self.labels,
-            standing_rulings=rulings_owner(self.bodies), clock=lambda: self.now,
+            standing_rulings=self.rulings, clock=lambda: self.now,
         )
         self.state = OrchestratorState()
         self.events = InMemoryEventSink()
@@ -124,9 +125,11 @@ class _Engine:
             number=pr_number, title=f"Fix {issue_number}", url=f"https://github.com/owner/repo/pull/{pr_number}",
             branch=f"{issue_number}-fix", body=f"Fixes #{issue_number}", state="open",
             labels=[self.labels.code_reviewed], mergeable_state="clean", base_branch="integration",
+            status_check_rollup="SUCCESS",
             head_sha=self.github.commit(self.github.branches["integration"]),
         )
         self.github.prs.setdefault(pr.branch, []).append(pr)
+        self.github.labels[pr_number] = set(pr.labels)  # GitHub's fresh label read of the PR
         self.state.session_history.append(SessionHistoryEntry(
             issue_number=issue_number, title=f"Issue {issue_number}", agent_type="agent:backend",
             status="completed", runtime_minutes=0, pr_url=pr.url,
@@ -158,7 +161,8 @@ class _Engine:
             buffer.clear()
         plan = Planner(config=self.config, scheduler=Scheduler(self.config)).plan(snapshot)
         for action in plan.actions_of_type(ActionType.ADVANCE_INTEGRATION):
-            apply_integration_step(action, host=self.github, labels=self.labels, events=self.events)
+            apply_integration_step(action, host=self.github, labels=self.labels, rulings=self.rulings,
+                                   events=self.events)
         # A merged PR leaves the awaiting-merge history once reconciled.
         self.state.session_history = [
             entry for entry in self.state.session_history if entry.issue_number not in self.closed

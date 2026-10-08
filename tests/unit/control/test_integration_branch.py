@@ -91,7 +91,7 @@ class _World:
     def approved_pr(
         self, issue_number: int, pr_number: int, head: str, *, mergeable_state: str = "clean",
         current: bool = True, base: str = "integration", labels: list[str] | None = None,
-        rollup: str | None = None,
+        rollup: str | None = "SUCCESS",
     ) -> PRInfo:
         issue = Issue(number=issue_number, title=f"Issue {issue_number}",
                       labels=["agent:backend", "pr-pending"], state="open")
@@ -164,7 +164,7 @@ def test_a_current_green_pr_is_merged_at_its_head_and_tip() -> None:
     assert owner.discovered_steps() == [MergeIntoIntegration(
         issue_number=228, issue_key=owner.discovered_steps()[0].issue_key, pr_number=318,  # type: ignore[union-attr]
         pr_url="https://github.com/owner/repo/pull/318", pr_title="Fix 228", head_sha=HEAD_A,
-        integration_branch="integration", integration_tip=TIP, merge_method="merge",
+        integration_branch="integration", integration_tip=TIP, merge_method="merge", gate_label="code-reviewed",
     )]
 
 
@@ -449,19 +449,29 @@ def test_an_upkeep_read_failure_is_contained() -> None:
 
 def _apply(world: _World, step) -> object:
     [action] = plan_integration_steps([step])
-    return apply_integration_step(action, host=world.host, labels=world.labels, events=world.events)
+    return apply_integration_step(action, host=world.host, labels=world.labels, rulings=world.rulings,
+                                  events=world.events)
 
 
 def _merge_step(**overrides) -> MergeIntoIntegration:
     step = MergeIntoIntegration(
         issue_number=228, issue_key="owner/repo#228", pr_number=318, pr_url="u", pr_title="Fix 228",
         head_sha=HEAD_A, integration_branch="integration", integration_tip=TIP, merge_method="merge",
+        gate_label="code-reviewed",
     )
     return replace(step, **overrides)
 
 
-def test_the_merge_runs_at_the_checked_head_with_a_merge_commit() -> None:
+def _ready_world() -> _World:
+    """PR #318 approved, green, current: exactly what discovery made a merge step of."""
     world = _World()
+    world.approved_pr(228, 318, HEAD_A)
+    world.host.labels[318] = {world.labels.code_reviewed}
+    return world
+
+
+def test_the_merge_runs_at_the_checked_head_with_a_merge_commit() -> None:
+    world = _ready_world()
 
     result = _apply(world, _merge_step())
 
@@ -473,8 +483,8 @@ def test_the_merge_runs_at_the_checked_head_with_a_merge_commit() -> None:
 
 
 def test_a_hold_put_on_after_discovery_stops_the_merge() -> None:
-    world = _World()
-    world.host.labels[318] = {world.labels.needs_human}
+    world = _ready_world()
+    world.host.labels[318].add(world.labels.needs_human)
 
     result = _apply(world, _merge_step())
 
@@ -484,7 +494,7 @@ def test_a_hold_put_on_after_discovery_stops_the_merge() -> None:
 
 
 def test_a_tip_that_moved_after_discovery_stops_the_merge() -> None:
-    world = _World()
+    world = _ready_world()
     world.host.branches["integration"] = HEAD_C
 
     result = _apply(world, _merge_step())
@@ -494,7 +504,7 @@ def test_a_tip_that_moved_after_discovery_stops_the_merge() -> None:
 
 
 def test_a_refused_merge_is_a_failure_the_liveness_owner_bounds() -> None:
-    world = _World()
+    world = _ready_world()
     world.host.integration_failures["merge_pull_request"] = RepositoryHostError("405 not mergeable")
 
     result = _apply(world, _merge_step())
@@ -556,3 +566,99 @@ def test_each_step_becomes_one_action_naming_its_subject() -> None:
 
     assert [(a.issue_number, a.pr_number, a.step) for a in actions] == [(228, 318, update), (0, 0, create)]
     assert actions[0].liveness_facts() != actions[1].liveness_facts()
+
+
+# -- what may change between discovery and the write (review r1 F1-F3) ----------
+
+
+@pytest.mark.parametrize(("rollup", "routed"), [("PENDING", "wait"), (None, "wait"), ("FAILURE", "rework")])
+def test_a_clean_pr_merges_only_on_green_checks_for_its_head(rollup: str | None, routed: str) -> None:
+    """GitHub says ``clean`` on a branch without required checks even while
+    they run or fail: io reads the head's checks itself."""
+    world = _World()
+    world.approved_pr(228, 318, HEAD_A, rollup=rollup)
+    owner = world.owner()
+
+    result = world.discover(owner)
+
+    assert owner.discovered_steps() == []
+    if routed == "rework":
+        assert [rework.pr_number for rework in result.reworks] == [318]
+    else:
+        assert result.reworks == ()
+        assert 228 in world.state.awaiting_merge_checks_pending_since  # the timeout will escalate
+
+
+def test_unreadable_checks_for_lack_of_permission_go_to_a_person() -> None:
+    from issue_orchestrator.ports.pull_request_tracker import StatusCheckRollupRead
+
+    world = _World()
+    world.approved_pr(228, 318, HEAD_A)
+    world.host.read_pr_status_check_rollup = lambda number, **_: StatusCheckRollupRead(  # type: ignore[method-assign]
+        state=None, capability="permission_denied", primary_source_denied=True,
+    )
+    owner = world.owner()
+
+    result = world.discover(owner)
+
+    assert owner.discovered_steps() == []
+    assert [e.kind for e in result.escalations] == ["status_rollup_permission_denied"]
+
+
+def test_checks_that_turned_red_after_discovery_stop_the_merge() -> None:
+    world = _ready_world()
+    world.host.get_pr(318).status_check_rollup = "FAILURE"  # type: ignore[union-attr]
+
+    _apply(world, _merge_step())
+
+    assert world.host.pr_merges == []
+
+
+def test_a_pr_retargeted_after_discovery_is_not_merged() -> None:
+    world = _ready_world()
+    world.host.get_pr(318).base_branch = "main"  # type: ignore[union-attr]
+
+    result = _apply(world, _merge_step())
+
+    assert world.host.pr_merges == []
+    assert "now targets 'main'" in result.details["skip_reason"]  # type: ignore[attr-defined]
+
+
+def test_a_head_that_moved_after_discovery_is_not_merged() -> None:
+    world = _ready_world()
+    world.host.get_pr(318).head_sha = HEAD_C  # type: ignore[union-attr]
+
+    _apply(world, _merge_step())
+
+    assert world.host.pr_merges == []
+
+
+def test_a_ruling_recorded_after_discovery_stops_the_merge() -> None:
+    world = _ready_world()
+    world.bodies.bodies[228] = body_with(a_ruling())
+
+    result = _apply(world, _merge_step())
+
+    assert world.host.pr_merges == []
+    assert "ruled" in result.details["skip_reason"]  # type: ignore[attr-defined]
+
+
+def test_a_gate_label_removed_after_discovery_stops_the_merge() -> None:
+    world = _ready_world()
+    world.host.labels[318] = set()
+
+    _apply(world, _merge_step())
+
+    assert world.host.pr_merges == []
+
+
+def test_a_truncated_merged_listing_marks_the_delivery_body_incomplete() -> None:
+    world = _World()
+    world.host.comparisons[("main", TIP)] = BranchComparison(ahead_by=1, behind_by=0, commit_shas=(_sha(5),))
+    world.host.merged_listing_truncated.add("integration")
+    owner = world.owner()
+
+    owner.upkeep(world.state)
+
+    [step] = owner.discovered_steps()
+    assert isinstance(step, OpenDeliveryPullRequest) and "may be incomplete" in step.body

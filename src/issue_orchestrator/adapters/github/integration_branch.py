@@ -15,6 +15,7 @@ from ...domain.integration_branch import (
     BranchComparison,
     BranchMergeOutcome,
     MergedIntoBranch,
+    MergedIntoBranchListing,
     OpenPullRequestRef,
 )
 from .errors import GitHubHttpError
@@ -112,20 +113,28 @@ class GitHubIntegrationBranchMixin:
     def update_pull_request_body(self, pr_number: int, body: str) -> None:
         self._client.update_pr_body(pr_number, body)
 
-    def merged_pull_requests_into(self, base: str) -> tuple[MergedIntoBranch, ...]:
-        pulls = self._client.list_pulls(state="closed", base=base, sort="updated", direction="desc")
+    def merged_pull_requests_into(self, base: str) -> MergedIntoBranchListing:
         merged: list[MergedIntoBranch] = []
-        for pr in pulls:
-            if not pr.get("merged_at"):
-                continue
-            number, url, title = pr.get("number"), pr.get("html_url"), pr.get("title")
-            if type(number) is not int or not isinstance(url, str) or not isinstance(title, str):
-                raise GitHubHttpError("GitHub pull payload has no number, html_url or title")
-            merged.append(MergedIntoBranch(
-                number=number, title=title, url=url,
-                merge_commit_sha=_sha(pr.get("merge_commit_sha"), what="merged pull"),
-            ))
-        return tuple(merged)
+        for page in range(1, MERGED_PULLS_PAGE_CAP + 1):
+            pulls = self._client.list_pulls(
+                state="closed", base=base, sort="updated", direction="desc", page=page,
+            )
+            for pr in pulls:
+                if not pr.get("merged_at"):
+                    continue
+                number, url, title = pr.get("number"), pr.get("html_url"), pr.get("title")
+                if type(number) is not int or not isinstance(url, str) or not isinstance(title, str):
+                    raise GitHubHttpError("GitHub pull payload has no number, html_url or title")
+                merged.append(MergedIntoBranch(
+                    number=number, title=title, url=url,
+                    merge_commit_sha=_sha(pr.get("merge_commit_sha"), what="merged pull"),
+                ))
+            if len(pulls) < 100:
+                return MergedIntoBranchListing(pulls=tuple(merged), complete=True)
+        return MergedIntoBranchListing(pulls=tuple(merged), complete=False)
 
 
-__all__ = ["GitHubIntegrationBranchMixin"]
+#: Pages of 100 closed PRs the delivery listing reads at most (1000 PRs).
+MERGED_PULLS_PAGE_CAP = 10
+
+__all__ = ["GitHubIntegrationBranchMixin", "MERGED_PULLS_PAGE_CAP"]

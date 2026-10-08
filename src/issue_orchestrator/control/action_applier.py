@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from ..ports.promotion_target import PromotionTargetHost
+    from ..ports.standing_rulings import StandingRulings
     from .tech_lead_approval import TechLeadApprovals
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.pattern_registry import PatternCaseFileRegistry
@@ -236,6 +237,7 @@ class ActionApplier:
     # means promotion actions fail loudly instead of silently no-oping — the
     # lane is only ever planned when tech_lead.findings is enabled.
     promotion_target: Optional["PromotionTargetHost"] = None
+    standing_rulings: Optional["StandingRulings"] = None  # #8141's owner; integration merges re-judge by it (#8144)
     # Expedite-lane owner seam (#6870), wired post-construction; unwired = no-op.
     expedite_lane: Optional["ExpediteLane"] = None
     # Cross-engine tech-lead run ownership (#6994 R2 F3). Unwired means anchor
@@ -665,11 +667,12 @@ class ActionApplier:
     def _apply_advance_integration(self, action: Action) -> ActionResult:
         """One integration-branch step (#8144); a merge or update writes the issue's PR."""
         assert isinstance(action, AdvanceIntegrationAction)
-        assert self.repository_host is not None and self.label_manager is not None
+        host, labels, rulings = self.repository_host, self.label_manager, self.standing_rulings
+        assert host is not None and labels is not None and rulings is not None, "integration needs host, labels, rulings"
         if action.issue_number:
             self._verify_claim_before_write(action, action.issue_number)
         from .integration_branch import apply_integration_step
-        return apply_integration_step(action, host=self.repository_host, labels=self.label_manager, events=self.events)
+        return apply_integration_step(action, host=host, labels=labels, rulings=rulings, events=self.events)
 
     def _apply_rerun_failed_checks(self, action: Action) -> ActionResult:
         """Re-run a PR's transient CI failure (#8692): a GitHub write on the issue's PR."""
