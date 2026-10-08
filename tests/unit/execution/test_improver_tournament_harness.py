@@ -993,6 +993,29 @@ def test_a_grading_that_fails_after_its_call_returns_is_still_counted(stores, mo
     assert any("post-call processing broke" in p.read_text() for p in kept)
 
 
+def test_the_record_keeps_each_comparison_exactly_as_it_was_decided(stores) -> None:  # type: ignore[no-untyped-def]
+    """A gap of 0.97222 against a band of 0.97183 is a win; rounded to 0.972
+    each, the record would no longer show it."""
+    from issue_orchestrator.contracts.improver_tournament import TournamentResult
+    from issue_orchestrator.domain.improver_tournament import pool
+    from issue_orchestrator.execution.improver_tournament import _result
+
+    key = stores[1].get("20261004")
+    one = {"a1": 2.5, "a2": 1.5, "a3": 1.0, "b1": 0.0, "b2": 0.5, "b3": 0.0}
+    other = {"a1": 2.0, "a2": 1.5, "a3": 1.5, "b1": 0.5, "b2": 0.0, "b3": 0.5}
+    gradings = {"claude": [one, other, one], "codex": [other, one, other]}
+    arm_of = {label: label[0].upper() for label in one}
+    pooled = pool(gradings, arm_of, ungraded={}, resolution=0.5)
+    cost = TournamentCost(arm_heats={}, grader_calls={}, grader_seconds={})
+
+    result = _result("t", "20261004", key, (), 3, pooled, gradings, arm_of, {}, cost)
+    [comparison] = TournamentResult.model_validate_json(result.model_dump_json()).comparisons
+
+    assert comparison.gap == pooled.arms["A"].mean - pooled.arms["B"].mean
+    assert comparison.band == pooled.band("A", "B") and comparison.heat_p == pooled.heat_p("A", "B")
+    assert (comparison.gap > comparison.band) == comparison.distinguishable == pooled.distinguishable("A", "B")
+
+
 def test_a_tournament_never_touches_github(stores) -> None:  # type: ignore[no-untyped-def]
     from issue_orchestrator.execution.improver_tournament import _NoGitHub
 

@@ -576,8 +576,9 @@ def _result(
         ranking=rank(means, distinguishable=pooled.distinguishable),
         comparisons=tuple(
             ArmComparison(
-                higher=a, lower=b, gap=round(means[a] - means[b], 3), band=round(pooled.band(a, b), 3),
-                heat_p=round(pooled.heat_p(a, b), 4), distinguishable=pooled.distinguishable(a, b),
+                # Exact: the record must decide as the comparison did (only display rounds).
+                higher=a, lower=b, gap=means[a] - means[b], band=pooled.band(a, b),
+                heat_p=pooled.heat_p(a, b), distinguishable=pooled.distinguishable(a, b),
             )
             for i, a in enumerate(ordered) for b in ordered[i + 1:]
         ),
