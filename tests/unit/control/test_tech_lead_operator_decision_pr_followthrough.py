@@ -935,3 +935,25 @@ def test_a_pr_that_changed_owner_during_its_step_is_not_edited(tmp_path: Path) -
 
     assert world.github.bodies[PR].startswith("Closes #327")
     assert f"body:{PR}" not in world.github.writes
+
+
+# -- review round 7 ---------------------------------------------------------------
+
+
+def test_a_retry_held_by_a_new_cause_after_the_steps_is_handed_back(tmp_path: Path) -> None:
+    """r7 F1: the ruling and steps landed, then the retry finds the item held by
+    a cause it may not override: never closed as "no changes were made"."""
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    action = world.approve(world.plan(proposed))
+    executor = world.executor()
+    from dataclasses import replace as dc_replace
+
+    held = dc_replace(executor, retry_issue=lambda number: OperatorCommandOutcome(
+        intent=OperatorCommandIntent.RETRY, status=OperatorCommandStatus.STILL_BLOCKED,
+        issue_number=number, blocked="needs-human", held_by=("claim_quarantine",)))
+
+    result = held.apply(action)
+
+    assert world.github.milestones[SUBJECT] == 1  # steps landed
+    assert result.result_type is ActionResultType.FAILURE and "partly applied" in (result.error or "")

@@ -382,10 +382,6 @@ class TechLeadBlockResolutionExecutor:
         decision recorded as begun), or the outcome of a refusal."""
         verdict = self.verify(action)
         if isinstance(verdict, RefusedResolution):
-            partial = verdict.partial or self._begun_hand_back(action, verdict.describe())
-            if partial:  # the decision already changed things: the operator's, never stale
-                return ActionResult.fail(action, partial, issue_number=action.issue_number,
-                                         proposal_id=action.proposal_id)
             return self._refuse(action, verdict)
         self.steps.check_authority(self._steps(action), action.follow_through)
         begun = self.steps.begin(self._steps(action), action.follow_through)
@@ -487,6 +483,12 @@ class TechLeadBlockResolutionExecutor:
         )
 
     def _refuse(self, action: ResolveBlockAction, refused: RefusedResolution) -> ActionResult:
+        """Every refusal, one rule (#8691): once the decision has begun writing,
+        it is handed back partial (its proposal stays open), never stale."""
+        partial = refused.partial or self._begun_hand_back(action, refused.describe())
+        if partial:
+            return ActionResult.fail(action, partial, issue_number=action.issue_number,
+                                     proposal_id=action.proposal_id)
         stale = refused.describe()
         logger.warning(issue_log(action.issue_number, "Tech Lead %s %s refused: %s"),
                        OP_TYPE, action.proposal_id, stale)

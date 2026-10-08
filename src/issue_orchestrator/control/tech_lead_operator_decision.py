@@ -127,7 +127,20 @@ class OperatorDecisionExecutor:
             DecisionReplayStep.FINISH: self._finish_replay,
             DecisionReplayStep.HAND_BACK: self._hand_back,
         }
-        return handlers[step](action, target)
+        result = handlers[step](action, target)
+        return self._never_stale_once_begun(action, result)
+
+    def _never_stale_once_begun(self, action: ApplyOperatorDecisionAction, result: ActionResult) -> ActionResult:
+        """Every exit, one rule (#8691): a stale refusal of a decision that has
+        begun writing (its follow-ups, ruling or steps) is handed back partial,
+        so its proposal stays open and never says "No changes were made"."""
+        if result.details.get("mode") != STALE_DOWNGRADE_MODE:
+            return result
+        reason = str(result.details.get("skip_reason", "its preconditions no longer hold"))
+        classified = self.steps.classify(self._steps(action), action.follow_through, reason)
+        if not classified.partial:
+            return result
+        return ActionResult.fail(action, classified.hand_back(), issue_number=action.issue_number)
 
     def _carry_out(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
         proposal = action.proposal_issue_number
@@ -178,8 +191,9 @@ class OperatorDecisionExecutor:
         """The item's own refusal, else its steps'. Once the decision has begun
         writing, any refusal is handed back partial, never closed as stale."""
         item = self._refusal(action, target)
-        refusal = (self.steps.classify(self._steps(action), action.follow_through, item) if item is not None
-                   else self.steps.refusal(self._steps(action), action.follow_through))
+        if item is not None:
+            return _stale(action, item)  # apply() hands it back if the decision has begun
+        refusal = self.steps.refusal(self._steps(action), action.follow_through)
         if refusal is None:
             return None
         if refusal.partial:

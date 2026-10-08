@@ -1198,3 +1198,21 @@ def test_a_resolution_reports_a_step_refused_after_its_discharge(tmp_path: Path)
     assert result.success and result.details["steps_refused"] == ["step 1 (comment #290)"]
     [executed] = [e for e in world.events if e.event_type == EventName.TECH_LEAD_ACTION_EXECUTED]
     assert executed.data["boundary"]["steps_refused"] == ["step 1 (comment #290)"]
+
+
+def test_an_interrupted_discharge_of_a_begun_decision_is_handed_back(tmp_path: Path) -> None:
+    """#8691 r7 F2: the decision began (ruling, steps), its discharge was
+    interrupted: the replay hands it back, never closes it as stale."""
+    from issue_orchestrator.domain.decision_steps import decision_begun_marker
+
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    world.github.labels[290] = {AGENT}
+    action = _approved_with_steps(DecisionStep(DecisionStepKind.COMMENT, 290, text="one"))
+    world.github.comments[501] = [f"Applying.\n\n{decision_begun_marker('501')}"]
+    world.discharges.begin_block_resolution(
+        decision_id=action.decision_id, issue_number=ITEM, causes=frozenset({_AGENT.value}))
+
+    result = world.executor(_steps_owner(world)).apply(action)
+
+    assert result.result_type.value == "failure" and "partly applied" in (result.error or "")
