@@ -247,3 +247,26 @@ class TestARetryIsBoundOnlyByTheRulingsReadForIt:
 
         assert without_binding_sections("Work on issue #7.") == "Work on issue #7."
         assert without_binding_sections(f"{BINDING_BEGIN} tail") == f"{BINDING_BEGIN} tail"
+
+    def test_only_a_generated_section_is_dropped_and_task_text_stays_whole(self) -> None:
+        """codex r4 F1: an issue title is one line, so marker text it brings
+        cannot take a generated section's shape and is kept."""
+        from issue_orchestrator.domain.standing_ruling import without_binding_sections
+
+        title = f"Fix {BINDING_BEGIN} parsing {BINDING_END} for good"
+        section = rulings_prompt(7, (self.RULING,), RulingsAudience.CODER)
+
+        assert without_binding_sections(f"Work on: {title}\n\n{section}") == f"Work on: {title}\n\n"
+
+    def test_a_prompt_persisted_before_the_markers_drops_its_unmarked_section(self) -> None:
+        """codex r4 F3: a retry recovered from a #8141 run carries its issue's
+        section unmarked; a ruling retired since must not bind it."""
+        from issue_orchestrator.domain.launch_prompt import RULINGS_SEPARATOR
+        from issue_orchestrator.domain.standing_ruling import without_binding_sections
+
+        marked = rulings_prompt(7, (self.RULING,), RulingsAudience.CODER)
+        legacy = marked.removeprefix(f"{BINDING_BEGIN}\n").removesuffix(f"\n{BINDING_END}")
+
+        assert without_binding_sections(f"{legacy}{RULINGS_SEPARATOR}Work on issue #7.") == "Work on issue #7."
+        embedded = f"# Validation Retry\n\n{legacy}{RULINGS_SEPARATOR}Work on issue #7."
+        assert without_binding_sections(embedded) == "# Validation Retry\n\nWork on issue #7."

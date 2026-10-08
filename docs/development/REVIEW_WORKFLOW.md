@@ -91,7 +91,8 @@ claims it settles; no files means the whole issue).
   of every other issue whose work it covers, read fresh from each body: a
   batch review's PRs' issues (the manifest lists each PR's `issue_numbers`), a
   health review's problem cohort and the blocked items it triages (the triage
-  agenda points at them), again at every validation retry (#8347). Every
+  agenda points at them), again at every validation retry (#8347). Which
+  issues are covered is recorded once, in the run's launch authority. Every
   binding section sits between `<!-- io:standing-ruling:binding:begin/end -->`
   markers; a validation retry drops the sections its original prompt carried
   and is bound only by the rulings read for the retry. A covered issue

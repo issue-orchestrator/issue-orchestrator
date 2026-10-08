@@ -63,7 +63,7 @@ from .transition_log import log_transition
 from ..ports.event_sink import make_trace_event
 from .session_launch_types import LaunchResult
 from .scoped_rework_observation import observe_rework_targets
-from .tech_lead_covered_rulings import covered_issues
+from .tech_lead_covered_rulings import launch_covered_work
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_charter_prompt import stage_tech_lead_charter
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
@@ -585,12 +585,8 @@ def prepare_tech_lead_session_data(
         if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         else TriageAgenda()
     )
-    covered_rulings = launch_prompt.covered_rulings(covered_issues(
-        tech_lead_manifest.covered_issues() if tech_lead_manifest is not None else {},
-        problem_issue_numbers,
-        frozenset(item.issue_number for item in triage_agenda.items),
-        anchor=issue.number,
-    ))
+    covered_work = launch_covered_work(tech_lead_manifest, problem_issue_numbers, triage_agenda, anchor=issue.number)
+    covered_rulings = launch_prompt.covered_rulings(covered_work)
     observed_session_generations = tuple(
         sorted(
             (
@@ -666,6 +662,7 @@ def prepare_tech_lead_session_data(
             observed_validated_work_authorities=validated_work_authorities,
             recovery_tracker_numbers=tracker_grants,
             triage_grants=triage_agenda.grants,
+            covered_work=tuple(sorted(covered_work.items())),
         ),
     )
     if flavor is TechLeadSessionFlavor.HEALTH_REVIEW:

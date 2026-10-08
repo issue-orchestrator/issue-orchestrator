@@ -548,6 +548,10 @@ BINDING_BEGIN = "<!-- io:standing-ruling:binding:begin -->"
 BINDING_END = "<!-- io:standing-ruling:binding:end -->"
 
 
+#: What every binding section's heading starts with.
+_BINDING_HEADING_STEM = "## BINDING: standing rulings on "
+
+
 def _binding(section: str) -> str:
     return f"{BINDING_BEGIN}\n{section}\n{BINDING_END}"
 
@@ -558,19 +562,45 @@ def without_binding_sections(prompt: str) -> str:
     A validation retry embeds the original launch's prompt as its task; the
     rulings that prompt carried were read then. A ruling retired since must not
     bind the retry, and one recorded since must, so the retry drops the old
-    sections and binds itself with the rulings read now. A begin marker without
-    its end leaves the rest untouched (nothing a ruling wrote can cause it).
+    sections and binds itself with the rulings read now.
+
+    Only a section in the generated shape is dropped: the begin marker, a new
+    line and a binding heading, through a new line and the end marker. Task
+    text an issue title brings is one line, so it cannot take that shape, and
+    ruling text cannot hold a marker. A prompt persisted before the markers
+    existed (#8141) carries its issue's section unmarked; that is dropped too,
+    from its heading line through its own end line and separator.
     """
-    out = prompt
-    while (start := out.find(BINDING_BEGIN)) != -1:
-        end = out.find(BINDING_END, start)
+    out = _without_legacy_section(prompt)
+    opening = f"{BINDING_BEGIN}\n{_BINDING_HEADING_STEM}"
+    closing = f"\n{BINDING_END}"
+    search = 0
+    while (start := out.find(opening, search)) != -1:
+        end = out.find(closing, start)
         if end == -1:
             break
-        tail = out[end + len(BINDING_END):]
+        tail = out[end + len(closing):]
         # The separator a launch prompt puts between its rulings and its task.
-        tail = tail.removeprefix(RULINGS_SEPARATOR)
-        out = out[:start] + tail
+        out = out[:start] + tail.removeprefix(RULINGS_SEPARATOR)
+        search = start
     return out
+
+
+def _without_legacy_section(prompt: str) -> str:
+    """A #8141 prompt's unmarked sections of its issue's rulings, dropped:
+    each from its heading line through its own end line and separator."""
+    out = prompt
+    while (match := _LEGACY_HEADING.search(out)) is not None:
+        ending = f"(End of the standing rulings on issue #{match.group(1)}.){RULINGS_SEPARATOR}"
+        end = out.find(ending, match.end())
+        if end == -1:
+            break
+        out = out[:match.start()] + out[end + len(ending):]
+    return out
+
+
+#: An unmarked section's heading (a marked one follows its begin marker).
+_LEGACY_HEADING = re.compile(r"(?<!-->\n)^## BINDING: standing rulings on issue #(\d+)\n", re.MULTILINE)
 
 
 #: How a rework prompt opens the rulings it must implement (the brief).

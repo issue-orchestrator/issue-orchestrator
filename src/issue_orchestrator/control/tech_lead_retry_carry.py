@@ -20,7 +20,6 @@ from .tech_lead_session_policy import carry_launch_authority_forward
 if TYPE_CHECKING:
     from ..domain.models import PendingValidationRetry
     from ..domain.session_run import SessionRunAssets
-    from ..ports import RepositoryHost
     from ..ports.launch_prompt import LaunchPromptProvider
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .tech_lead_run_inputs import LaunchAuthorityTransfer
@@ -39,10 +38,8 @@ def carry_retry(
     *,
     tech_lead_authority: "TechLeadAuthorityStore",
     launch_prompt: "LaunchPromptProvider",
-    repository_host: "RepositoryHost",
     retry: "PendingValidationRetry",
     run: "SessionRunAssets",
-    repo_slug: str,
 ) -> CarriedRetry | LaunchResult:
     """The carried retry, or the launch's refusal: a lost authority refuses for
     good; rulings that cannot be read now keep the retry queued (a GitHub rate
@@ -51,7 +48,7 @@ def carry_retry(
     if isinstance(carried, str):
         return LaunchResult(None, False, carried)
     try:
-        covered = retried_covered_rulings(launch_prompt, repository_host, carried, repo_slug=repo_slug)
+        covered = retried_covered_rulings(launch_prompt, carried)
     except StandingRulingsUnavailable as error:
         return LaunchResult.required_input_unavailable(str(error))
     except RepositoryHostError as error:  # a rate limit stays a deferral

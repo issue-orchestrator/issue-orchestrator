@@ -1307,8 +1307,7 @@ class SessionLauncher:
         # every retry attempt adds another of (round 1 finding 5). With the
         # authority come the covered work's rulings, read fresh (#8347).
         carried = carry_retry(
-            tech_lead_authority=self._tech_lead_authority, launch_prompt=self._launch_prompt,
-            repository_host=self.repository_host, retry=retry, run=run, repo_slug=issue.key.scope(),
+            tech_lead_authority=self._tech_lead_authority, launch_prompt=self._launch_prompt, retry=retry, run=run,
         )
         if isinstance(carried, LaunchResult):
             self._release_claim_if_held(issue.number, claim)

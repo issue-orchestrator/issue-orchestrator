@@ -11131,7 +11131,9 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
             for number, branch, body in prs
         ]
 
-    def test_a_batch_review_is_told_each_covered_prs_rulings(self, tech_lead_bundle, mock_repo_host) -> None:
+    def test_a_batch_review_is_told_each_covered_prs_rulings(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
         from issue_orchestrator.domain.standing_ruling import COVERED_RULINGS_HEADING, RULINGS_PROMPT_HEADING
 
         bundle, _owner, bodies, ruling, anchor = tech_lead_bundle
@@ -11141,6 +11143,10 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
 
         assert result.success is True
         prompt = result.session.original_prompt
+        authority = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root).load(
+            run_id=result.session.run_assets.run_id, session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None and authority.covered_work == ((365, (512,)), (400, (513,)))
         assert COVERED_RULINGS_HEADING in prompt
         assert f"{RULINGS_PROMPT_HEADING}365 (PR #512)" in prompt and ruling.text in prompt
         assert "issue #400" not in prompt  # no ruling on it: nothing to bind
@@ -11202,6 +11208,7 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
             run_id=source.run_id, session_name=source.session_name,
             authority=TechLeadLaunchAuthority(
                 flavor=TechLeadSessionFlavor.HEALTH_REVIEW, anchor_issue_number=6410, problem_issue_numbers=(365,),
+                covered_work=((365, ()),),
             ),
         )
         data = carrier._seed_launch_inputs(checkout, source)

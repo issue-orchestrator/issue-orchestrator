@@ -237,24 +237,39 @@ def test_backfill_never_trusts_a_stale_listing_over_github() -> None:
     assert bodies.reads == [364, 9, 11]  # stopped at the failing read: 12 waits for the next startup
 
 
-def test_a_retried_health_review_reads_its_triage_items_rulings_fresh() -> None:
-    """codex r3 F2: a triage item outside the cohort is covered work too; a
-    ruling recorded on it after the launch binds the retry."""
+def test_a_retry_reads_the_recorded_covered_work_fresh() -> None:
+    """codex r3 F2 / r4 F2: the issues a retry is bound by are the ones its
+    launch recorded (a triage item's included, a PR's links edited since
+    notwithstanding); their rulings are read fresh, so one recorded since binds."""
     from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
-    from issue_orchestrator.control.tech_lead_covered_rulings import retried_covered_rulings
+    from issue_orchestrator.control.tech_lead_covered_rulings import covered_issues, retried_covered_rulings
+    from issue_orchestrator.domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
     from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
 
+    covered = covered_issues({364: (12,)}, (), frozenset({365, 950}), anchor=950)
+    assert covered == {364: (12,), 365: ()}  # the anchor's own come with its launch prompt
+    authority = TechLeadLaunchAuthority.from_dict(TechLeadLaunchAuthority(
+        flavor=TechLeadSessionFlavor.BATCH_REVIEW, anchor_issue_number=950, manifest_pr_numbers=(12,),
+        covered_work=tuple(sorted(covered.items())),
+    ).to_dict())
     since = a_ruling("m-00000000beef", "Recorded after the launch.")
-    bodies = IssueBodies({365: body_with(since), 6410: SPEC})
-    authority = SimpleNamespace(
-        manifest_pr_numbers=(), problem_issue_numbers=(7,), anchor_issue_number=6410,
-        triage_issue_numbers=lambda: frozenset({365, 6410}),
-    )
+    bodies = IssueBodies({364: body_with(since), 365: body_with(since)})
 
     section = retried_covered_rulings(
-        IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, rulings_owner(bodies)), SimpleNamespace(),
-        SimpleNamespace(authority=authority), repo_slug="test/repo",
+        IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, rulings_owner(bodies)), SimpleNamespace(authority=authority),
     )
 
-    assert section is not None and since.text in section
-    assert sorted(bodies.reads) == [7, 365]  # the anchor's own come with its launch prompt
+    assert authority.covered_work == ((364, (12,)), (365, ()))
+    assert section is not None and since.text in section and "issue #364 (PR #12)" in section
+    assert sorted(bodies.reads) == [364, 365]
+
+
+def test_covered_work_must_be_the_manifests_and_never_the_anchor() -> None:
+    from issue_orchestrator.domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
+
+    for covered_work in (((364, (13,)),), ((950, ()),), ((365, ()), (364, ()))):
+        with pytest.raises(ValueError, match="covered work"):
+            TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.BATCH_REVIEW, anchor_issue_number=950, manifest_pr_numbers=(12,),
+                covered_work=covered_work,
+            )
