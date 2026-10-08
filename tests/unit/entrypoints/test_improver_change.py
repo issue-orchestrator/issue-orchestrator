@@ -14,12 +14,18 @@ from issue_orchestrator.contracts.improver_variant import ImproverVariant
 from issue_orchestrator.domain.improver_champion import CHANGE_ID, ChangeInvitation, prompt_digest
 from issue_orchestrator.domain.improver_findings_validation import ImproverFindingsRejected, Rule, validate_findings
 from issue_orchestrator.domain.improver_heats import AcceptedHeat, merge_heats
-from issue_orchestrator.entrypoints.improver_run import FINAL_ANSWER_REMINDER, ChangePolicy, HeatPlan, ImproverRun
+from issue_orchestrator.entrypoints.improver_run import (
+    CONTRACT_ADDENDUM,
+    FINAL_ANSWER_REMINDER,
+    ChangePolicy,
+    HeatPlan,
+    ImproverRun,
+)
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
 from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
 from tests.unit.entrypoints.test_improver_run import NOW, FakeAgent, FakeStager, _request
-from tests.unit.improver_support import FakeIssueHost, MemoryRunStore, build_improver_data, example
+from tests.unit.improver_support import FakeIssueHost, KeyedIdentity, MemoryRunStore, build_improver_data, example
 
 PROMPT = "THE PROMPT: cite the staged evidence for every finding."
 CHAMPION = ImproverVariant(
@@ -91,7 +97,9 @@ def test_only_the_primary_heats_change_is_carried_and_another_is_shown(tmp_path:
         json.dumps(_with_change({"kind": "budget_minutes", "minutes": 90})), evidence, invitation=INVITED
     )
 
-    merged = merge_heats([AcceptedHeat(1, first), AcceptedHeat(2, other)], lambda f: f.id, lambda d: d.id)
+    merged = merge_heats(
+        [AcceptedHeat(1, first), AcceptedHeat(2, other)], KeyedIdentity(lambda f: f.id, lambda d: d.id)
+    )
 
     assert merged.findings.improver_change == first.improver_change
     [conflict] = [c for c in merged.conflicts if c.finding_id == CHANGE_ID]
@@ -119,7 +127,10 @@ def test_an_invited_run_is_asked_and_its_change_files_a_challenger_issue(tmp_pat
     record = _champion_run(store, host, agent, rate=1.0).run(_request())
 
     assert record.outcome is RunOutcome.ACCEPTED and record.change_invitation == CHAMPION.id
-    assert agent.prompts[0].endswith(f"INVITED to change `{CHAMPION.id}` ({CHAMPION.describe()}){FINAL_ANSWER_REMINDER}")
+    assert agent.prompts[0].endswith(
+        f"INVITED to change `{CHAMPION.id}` ({CHAMPION.describe()})"
+        f"{CONTRACT_ADDENDUM}{FINAL_ANSWER_REMINDER}"
+    )
     [receipt] = [e for e in record.effects if e.finding_id == CHANGE_ID]
     assert receipt.status is EffectStatus.FILED
     [issue] = [c for c in host.created if c["number"] == receipt.issue_number]

@@ -23,6 +23,8 @@ evidence, one per output kind.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -62,7 +64,9 @@ from issue_orchestrator.contracts.improver_inputs import (
     StagedInput,
     to_json,
 )
+from issue_orchestrator.contracts.improver_findings import DesignFinding, Finding
 from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
+from issue_orchestrator.domain.improver_defects import CodeSite, DefectProfile, design_profile, stall_profile
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.observation.engine_audit import Unavailable
 from issue_orchestrator.observation.engine_audit_diff import diff_reports
@@ -401,3 +405,50 @@ class FakeIssueHost:
 
 #: A stager's GitHub activity source, for a test that reads none.
 NO_ACTIVITY = Unavailable(SourceStatus.SKIPPED, "test")
+
+
+# -- one identity of findings, for a merge test (#8700) -------------------------
+
+
+@dataclass(frozen=True)
+class FakeEngineSource:
+    """The staged engine source as a merge sees it: the function each cited
+    ``(path, line)`` is in, and every definition, named in full. An owner
+    resolves as the real source resolves it: to the one definition whose
+    module and qualified name each end with what the owner wrote."""
+
+    functions: Mapping[tuple[str, int], CodeSite] = field(default_factory=dict)
+    defined: frozenset[CodeSite] = frozenset()
+
+    def enclosing_function(self, path: str, line: int, quote: str) -> CodeSite | None:
+        return self.functions.get((path, line))
+
+    def resolve(self, written: CodeSite) -> CodeSite | None:
+        def ends(path: tuple[str, ...], tail: tuple[str, ...]) -> bool:
+            return 0 < len(tail) <= len(path) and path[len(path) - len(tail):] == tail
+
+        modules = {s.module for s in self.defined if ends(s.module, written.module)}
+        found = [s for s in self.defined if s.module in modules and ends(s.symbol, written.symbol)]
+        return found[0] if len(modules) == 1 and len(found) == 1 else None
+
+
+@dataclass(frozen=True)
+class KeyedIdentity:
+    """A :class:`~issue_orchestrator.domain.improver_heats.FindingIdentity`
+    with the test's own effect keys and the production defect profiles."""
+
+    stall_keys: Callable[[Finding], str]
+    design_keys: Callable[[DesignFinding], str]
+    source: FakeEngineSource = FakeEngineSource()
+
+    def stall_key(self, finding: Finding) -> str:
+        return self.stall_keys(finding)
+
+    def design_key(self, design: DesignFinding) -> str:
+        return self.design_keys(design)
+
+    def stall_profile(self, finding: Finding) -> DefectProfile:
+        return stall_profile(finding, self.source)
+
+    def design_profile(self, design: DesignFinding) -> DefectProfile:
+        return design_profile(design, self.source)

@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from .improver_findings import AnomalyKeyRef, Trend
+from .improver_findings import AnomalyKeyRef, DesignFinding, Trend
 from .improver_toolbox import ImproverMode
 
 IMPROVER_RUN_SCHEMA_VERSION = 1
@@ -161,6 +161,16 @@ class HeatConflictRecord(_Closed):
     claim: str
 
 
+class SameDefectRecord(_Closed):
+    """A design finding folded into ``finding_id``, the finding about the
+    same defect (#8700): it filed no issue of its own; its claim is shown on
+    that finding's issue."""
+
+    finding_id: str
+    design: DesignFinding
+    heats: tuple[int, ...]
+
+
 class FindingSupport(_Closed):
     """How many of the run's heats found one merged finding."""
 
@@ -213,6 +223,9 @@ class ImproverRunRecord(_Closed):
     finding_support: tuple[FindingSupport, ...] = ()
     #: What the heats found that could not be merged (#8001).
     heat_conflicts: tuple[HeatConflictRecord, ...] = ()
+    #: The design findings folded into another finding about the same
+    #: defect (#8700); empty on a run recorded before folding existed.
+    same_defects: tuple[SameDefectRecord, ...] = ()
     #: The champion (variant id) this run was invited to propose one change
     #: to (#8001); None: not invited.
     change_invitation: str | None = None
@@ -251,6 +264,7 @@ __all__ = [
     "ExamScore",
     "FindingSupport",
     "HeatConflictRecord",
+    "SameDefectRecord",
     "HeatRecord",
     "FindingGrade",
     "ImproverAgentChoice",

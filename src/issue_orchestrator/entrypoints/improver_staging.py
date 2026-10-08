@@ -83,6 +83,7 @@ from ..ports.engine_audit import OpenIssueLabels, OpenWorkHost, TechLeadRunHisto
 from ..ports.pull_request_tracker import PRInfo
 from ..testing.exam.cases import EXAM_CASE_IDS
 from ..execution.improver_citations import RunDirCitations
+from ..execution.improver_engine_source import RunDirEngineSource
 from ..ports.operator_activity import OperatorActivitySource, RepoActivityRead
 from .engine_snapshot import EngineSnapshot, snapshot_engine, snapshot_tech_lead_runs
 
@@ -575,6 +576,7 @@ def load_staged_evidence(data_dir: Path) -> StagedEvidence:
             p.relative_to(source).as_posix() for p in source.rglob("*") if p.is_file()
         ),
         citations=RunDirCitations(data_dir.parent),
+        engine_source=RunDirEngineSource(data_dir.parent),
     )
 
 
