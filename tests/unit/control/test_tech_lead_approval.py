@@ -90,7 +90,7 @@ class TestVerification:
         from issue_orchestrator.domain.tech_lead_approval import LabelEvent
 
         evidence = FakeApprovalEvidence()
-        evidence.record(500, "approved", LabelEvent(77, MAINTAINER, True, "t"))
+        evidence.record(500, "approved", LabelEvent(77, MAINTAINER, True, "t", actor_id=7))
 
         assert make_approvals(evidence).verify(_issue(500, CLAIMED)).kind is ApprovalVerdictKind.BOT_ACTOR
 

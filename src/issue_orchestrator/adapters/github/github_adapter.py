@@ -62,29 +62,26 @@ def _label_event(issue_number: int, payload: dict[str, Any]) -> "LabelEvent":
 
     Automation is anything GitHub marks as such: a ``Bot`` account, a
     ``[bot]`` login, or an event performed through a GitHub App. A labeled
-    event without an id or actor is malformed and raises.
+    event without an id or an identified actor is malformed and raises.
     """
     from ...domain.tech_lead_approval import LabelEvent
 
     actor = payload.get("actor")
-    if not isinstance(actor, dict):
+    if not isinstance(actor, dict) or type(actor.get("id")) is not int:
         raise GitHubHttpError(
-            f"label event on #{issue_number} carries no actor; cannot attribute it"
+            f"label event on #{issue_number} carries no identified actor; cannot attribute it"
         )
     login = str(actor.get("login") or "")
-    app = payload.get("performed_via_github_app")
-    app = app if isinstance(app, dict) else {}
     return LabelEvent(
         event_id=int(payload.get("id") or 0),
         actor_login=login,
         actor_is_bot=(
             actor.get("type") == "Bot"
             or login.casefold().endswith("[bot]")
-            or bool(app)
+            or bool(payload.get("performed_via_github_app"))
         ),
         created_at=str(payload.get("created_at") or ""),
-        app_id=str(app.get("id") or ""),
-        app_client_id=str(app.get("client_id") or ""),
+        actor_id=actor["id"],
     )
 
 
@@ -1940,16 +1937,16 @@ class GitHubAdapter:
         return self._client.repository_role(login)
 
     def is_own_write(self, event: "LabelEvent") -> bool:
-        """Whether *event* was performed through this engine's own GitHub App.
+        """Whether *event* was written by this engine's own GitHub App.
 
-        Uses the same effective App identity that verifies server-authored
-        comment provenance. A personal-token engine has none: False.
+        GitHub records an installation token's issue event as its App's bot
+        account (``<slug>[bot]``, a ``Bot``) and leaves the event's
+        ``performed_via_github_app`` null (#8987), so the actor's account id
+        is matched against the App's bot account. A personal-token engine
+        writes as its user, indistinguishable from that user's hand: False.
         """
-        identity = self._client.app_identity()
-        if identity is None:
-            return False
-        observed = event.app_id if identity.field == "id" else event.app_client_id
-        return bool(observed) and observed == identity.value
+        account = self._client.app_bot_account()
+        return account is not None and event.actor_is_bot and event.actor_id == account.user_id
 
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.

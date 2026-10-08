@@ -129,7 +129,7 @@ class Issues:
 
     def approve(self, login: str, *, role: str, event_id: int = 101, bot: bool = False) -> None:
         self.labels = (*self.labels, "approved")
-        self.added = LabelEvent(event_id=event_id, actor_login=login, actor_is_bot=bot, created_at="2026-10-08T10:00:00Z")
+        self.added = LabelEvent(event_id=event_id, actor_login=login, actor_is_bot=bot, created_at="2026-10-08T10:00:00Z", actor_id=7)
         self.roles[login] = role
 
 
@@ -495,7 +495,7 @@ def test_the_store_promotes_only_against_the_champion_current_under_its_lock(tmp
 
 
 def _facts(**over: object) -> ChallengerIssueFacts:
-    added = LabelEvent(event_id=10, actor_login="bruce", actor_is_bot=False, created_at="2026-10-08T10:00:00Z")
+    added = LabelEvent(event_id=10, actor_login="bruce", actor_is_bot=False, created_at="2026-10-08T10:00:00Z", actor_id=7)
     fields = {"number": 5, "state": "open", "labels": frozenset({"improver", "approved"}), "approved_added": added,
               "approved_removed": None, "approver_role": "admin", "closed_since_approval": False,
               "carries_marker": True, **over}
@@ -509,11 +509,11 @@ def _facts(**over: object) -> ChallengerIssueFacts:
         ({"approver_role": "maintain"}, ApprovalVerdictKind.MAINTAINER),
         ({"approver_role": "write"}, ApprovalVerdictKind.NOT_A_MAINTAINER),
         ({"approver_role": None}, ApprovalVerdictKind.NOT_A_MAINTAINER),
-        ({"approved_added": LabelEvent(event_id=10, actor_login="io[bot]", actor_is_bot=True, created_at="x")},
+        ({"approved_added": LabelEvent(event_id=10, actor_login="io[bot]", actor_is_bot=True, created_at="x", actor_id=8)},
          ApprovalVerdictKind.BOT_ACTOR),
         ({"labels": frozenset({"improver"})}, ApprovalVerdictKind.NOT_CLAIMED),
         ({"approved_added": None}, ApprovalVerdictKind.NO_LABEL_EVENT),
-        ({"approved_removed": LabelEvent(event_id=11, actor_login="bruce", actor_is_bot=False, created_at="y")},
+        ({"approved_removed": LabelEvent(event_id=11, actor_login="bruce", actor_is_bot=False, created_at="y", actor_id=7)},
          ApprovalVerdictKind.NO_LABEL_EVENT),
         ({"state": "closed"}, ApprovalVerdictKind.CLOSED),
         ({"state": None}, ApprovalVerdictKind.CLOSED),
