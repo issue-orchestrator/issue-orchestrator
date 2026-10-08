@@ -290,6 +290,9 @@ EXAMPLES:
   Completed one slice of an issue that needs several PRs:
     coding-done completed --implementation "Split package A" --problems "None" --partial
 
+  Completed the last slice of an issue earlier PRs delivered in part:
+    coding-done completed --implementation "Split package C" --problems "None" --finishes-issue
+
   Completed with resume (debug session):
     coding-done completed --implementation "Fixed the bug" --problems "None" --resume
 
@@ -349,6 +352,15 @@ STATUSES:
             "Completed only: this PR delivers part of the issue, which needs "
             "more PRs. The PR body says 'Refs #N' instead of 'Closes #N', so "
             "merging it leaves the issue open for the next PR."
+        ),
+    )
+    parser.add_argument(
+        "--finishes-issue",
+        action="store_true",
+        help=(
+            "Completed only: this PR finishes an issue that earlier PRs "
+            "delivered in part ('Refs #N'). Without it, such an issue's next "
+            "PR is published as partial too, so its merge leaves the issue open."
         ),
     )
 

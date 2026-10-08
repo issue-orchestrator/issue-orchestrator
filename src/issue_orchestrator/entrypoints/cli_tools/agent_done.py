@@ -282,10 +282,12 @@ def get_issue_number() -> Optional[int]:
 
 
 #: Flags that only one status may carry. ``--partial`` declares a PR that
-#: delivers part of its issue, so only a completion can make it (#7288);
+#: delivers part of its issue, and ``--finishes-issue`` the PR that finishes
+#: one, so only a completion can make them (#7288, #8689);
 #: ``--upholds-ruling`` attests a standing ruling, which only an approval does (#8141).
 _FLAGS_OWNED_BY_ONE_STATUS: dict[str, str] = {
     "partial": AgentStatus.COMPLETED,
+    "finishes_issue": AgentStatus.COMPLETED,
     "upholds_ruling": AgentStatus.APPROVED,
 }
 
@@ -315,6 +317,9 @@ def validate_fields(status: str, args: argparse.Namespace) -> None:
         die(f"Status '{status}' requires: {', '.join(missing)}")
     for flag, owner in _flags_set_for_another_status(status, args):
         die(f"--{flag.replace('_', '-')} is only valid with '{owner}', not '{status}'")
+    if getattr(args, "partial", False) and getattr(args, "finishes_issue", False):
+        die("--partial and --finishes-issue contradict each other: a PR either "
+            "continues the issue or finishes it")
     if getattr(args, "partial", False):
         _refuse_closing_keyword_in_partial_text(args)
 
@@ -521,6 +526,7 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         pr_labels=getattr(args, 'pr_labels', None),
         follow_up_issues=follow_up_issues,
         partial_pr=bool(getattr(args, "partial", False)),
+        finishes_issue=bool(getattr(args, "finishes_issue", False)),
         upheld_rulings=_upheld_rulings(args),
         ),
     )

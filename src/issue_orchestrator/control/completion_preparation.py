@@ -9,6 +9,7 @@ from ..domain.registered_completion import CompletionProcessingPolicy, Registere
 from ..domain.completion_intake_policy import normalized_completion_artifact
 from .stack_base import StackBaseDecision
 
+from ..domain.issue_delivery import IssueDelivery
 from ..domain.models import CompletionRecord
 from ..domain.review_exchange import ReviewExchangeOutcome
 from .review_publish_pipeline import PublishPipelinePlan
@@ -44,7 +45,17 @@ class PreparedPullRequest:
     base_branch: str
     stack_decision: StackBaseDecision | None
     exchange_mode: str | None
-    partial_pr: bool
+    delivery: IssueDelivery
+
+    @property
+    def partial_pr(self) -> bool:
+        """Whether the PR refs its issue instead of closing it (#7288, #8689)."""
+        return self.delivery.partial
+
+    @property
+    def finishes_issue(self) -> bool:
+        """Whether the PR must close an issue earlier PRs delivered in part (#8689)."""
+        return self.delivery.finishes
 
 
 def record_from_prepared_evidence(

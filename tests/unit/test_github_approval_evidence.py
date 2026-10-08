@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -13,12 +14,17 @@ from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
 from tests.unit.test_github_http import _client_with_transport
 
 
+def _account_id(login: str) -> int:
+    """A stable stand-in for GitHub's account id of *login*."""
+    return zlib.crc32(login.encode()) or 1
+
+
 def _labeled(event_id: int, label: str, login: str, *, kind: str = "labeled", **extra) -> dict:
     return {
         "id": event_id,
         "event": kind,
         "label": {"name": label},
-        "actor": {"login": login, "type": "Bot" if login.endswith("[bot]") else "User"},
+        "actor": {"login": login, "id": _account_id(login), "type": "Bot" if login.endswith("[bot]") else "User"},
         "created_at": f"2026-10-03T00:00:{event_id:02d}Z",
         **extra,
     }
@@ -131,6 +137,37 @@ def test_a_block_label_kept_on_through_a_close_and_reopen_is_the_same_applicatio
     assert adapter.label_application(5, "needs-human") is None
 
 
+def test_one_events_read_dates_every_blocking_label_of_an_item() -> None:
+    """#8731: every blocking label of an item is dated from ONE scan of its
+    events, each by the first event of its own standing run: a label removed
+    and re-applied is a new application, one never applied is not standing,
+    and a close never ends a block label's run."""
+    events = [
+        _labeled(1, "Blocked-Failed", "io-bot[bot]"),
+        _labeled(2, "publish-failed", "io-bot[bot]"),
+        {"id": 3, "event": "closed", "actor": {"login": "lead", "type": "User"}},
+        {"id": 4, "event": "reopened", "actor": {"login": "lead", "type": "User"}},
+        _labeled(5, "publish-failed", "io-bot[bot]", kind="unlabeled"),
+        _labeled(6, "publish-failed", "io-bot[bot]"),
+        _labeled(7, "blocked-failed", "lead"),
+    ]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=events)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+
+    applications = adapter.label_applications(5, ("blocked-failed", "publish-failed", "recovery-pending"))
+
+    assert {label: event and event.event_id for label, event in applications.items()} == {
+        "blocked-failed": 1, "publish-failed": 6, "recovery-pending": None,
+    }
+    assert len(requests) == 1
+
+
 def test_no_matching_event_is_none_only_after_the_final_page() -> None:
     client = _client_with_transport(
         httpx.MockTransport(lambda request: httpx.Response(200, json=[_labeled(1, "bug", "lead")]))
@@ -176,7 +213,7 @@ def _adapter(payload: dict | None) -> GitHubAdapter:
     "payload",
     [
         _labeled(9, "approved", "io-bot[bot]"),
-        {**_labeled(9, "approved", "lead"), "actor": {"login": "lead", "type": "Bot"}},
+        {**_labeled(9, "approved", "lead"), "actor": {"login": "lead", "id": 5, "type": "Bot"}},
         {**_labeled(9, "approved", "lead"), "performed_via_github_app": {"slug": "io"}},
     ],
     ids=["bot-login", "bot-type", "via-app"],
@@ -195,11 +232,20 @@ def test_the_adapter_reads_a_person() -> None:
     assert (event.event_id, event.actor_login, event.actor_is_bot) == (9, "lead", False)
 
 
-def test_an_event_without_an_actor_fails_loud() -> None:
+@pytest.mark.parametrize(
+    "actor", [None, {"login": "lead", "type": "User"}, {"login": "lead", "id": "5", "type": "User"}],
+    ids=["no-actor", "no-account-id", "non-numeric-id"],
+)
+def test_an_event_without_an_identified_actor_fails_loud(actor) -> None:
+    """#8987: own-write attribution matches the actor's account id, so an
+    event that does not carry one cannot be attributed."""
     payload = _labeled(9, "approved", "lead")
-    del payload["actor"]
+    if actor is None:
+        del payload["actor"]
+    else:
+        payload["actor"] = actor
 
-    with pytest.raises(GitHubHttpError, match="no actor"):
+    with pytest.raises(GitHubHttpError, match="no identified actor"):
         _adapter(payload).standing_label(5, "approved")
 
 

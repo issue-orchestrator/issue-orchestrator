@@ -139,11 +139,11 @@ def wire_tech_lead_approvals(deps: "OrchestratorDeps") -> None:
     apply-time consent re-check and settlement writes (the applier), and the
     scheduler's admission rule. Every composition calls this, so no build can
     verify an approval with one owner and admit it with another. It also binds
-    the needs-human episodes the fact scan's triage check reads (#8688)."""
+    the block episodes the fact scan's triage check reads (#8688, #8731)."""
     fact_gatherer, applier, scheduler = deps.fact_gatherer, deps.action_applier, deps.planner.scheduler
-    from ..control.blocked_item_custody_reader import build_needs_human_episodes
+    from ..control.blocked_item_custody_reader import build_block_episodes
 
-    fact_gatherer.needs_human_episodes = build_needs_human_episodes(fact_gatherer.config, deps)
+    fact_gatherer.block_episodes = build_block_episodes(fact_gatherer.config, deps)
     approvals = fact_gatherer.approvals
     applier.tech_lead_approvals = approvals
     if approvals is not None:

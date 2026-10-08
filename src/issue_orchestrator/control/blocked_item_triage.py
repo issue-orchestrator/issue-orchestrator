@@ -21,12 +21,12 @@ proposal's own record), so a best-effort link of the issue number onto the
 charter record never decides it. An item whose blocking state changed, or whose
 last triage did not take effect, is owed another.
 
-The blocking state includes the block's EPISODE (#8688): a needs-human block
-lifted and later re-raised under the same label and cause is a new episode,
-read from the generation its one owner records when it puts the label on
-afresh (:class:`~..ports.pending_work_claim_store.NeedsHumanEpisodeReader`),
-not from the best-effort timeline (#8697), and bound to GitHub's label events
-by :class:`~.needs_human_episodes.NeedsHumanEpisodes`. A block whose episode is
+The blocking state includes the block's EPISODE (#8688, #8731): a block
+lifted and later re-raised under the same labels is a new episode, read by
+:class:`~.block_episodes.BlockEpisodes` from the onset of each blocking label,
+not from the best-effort timeline (#8697): the generation the needs-human
+block's one owner records when it puts that label on afresh, and GitHub's
+standing application of every other blocking label. A block whose episode is
 unrecorded or cannot be verified is owed a triage, never covered: the rule
 fails toward triaging again, not silence.
 """
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.tech_lead_charter_ledger import TechLeadCharterDecisionReader
-    from .needs_human_episodes import NeedsHumanEpisodes
+    from .block_episodes import BlockEpisodes
     from ..ports.timeline_store import TimelineRecord
     from .label_manager import LabelManager
 
@@ -96,7 +96,7 @@ class StateBlockedItemTriage:
         open_proposals: Callable[[], "OpenProposals"],
         timeline_reader: Callable[[int, int], Sequence["TimelineRecord"]],
         standing_rulings: Callable[[int], Sequence["StandingRuling"]],
-        episodes: "NeedsHumanEpisodes",
+        episodes: "BlockEpisodes",
     ) -> None:
         self._config = config
         self._state = state
@@ -118,7 +118,7 @@ class StateBlockedItemTriage:
         owed, in_force = owed_triages(
             self._config, self._state(), self._labels, self._ledger,
             open_proposals=self._open_proposals(), exclude=frozenset({anchor_issue_number}),
-            # Every grant pins an episode bound to GitHub's label events (#8688).
+            # Every grant pins an episode bound to GitHub's label events (#8688, #8731).
             episodes=self._episodes.verified,
         )
         causes = self._needs_human_causes([item.issue.number for item in owed])
@@ -213,8 +213,8 @@ def owed_triages(
     THE one rule both the agenda (who is granted) and the health-review
     trigger (is a review owed) read, so an item deferred by the per-run cap or
     whose triage did not take effect keeps a review due. ``episodes`` reads
-    the needs-human episode of each item whose block holds
-    that label or the hand-over marker (#8688).
+    the block episode of every blocked item; one it leaves out is unknown
+    (#8688, #8731).
     """
     blocked = [
         (issue, blocking)
@@ -222,14 +222,14 @@ def owed_triages(
         if issue.number not in exclude
         and (blocking := blocked_work_item(issue, labels, config.tech_lead_review_agent)) is not None
     ]
-    held = {issue.number: issue for issue, blocking in blocked if _holds_needs_human(blocking, labels)}
-    recorded = episodes(held) if held else {}
+    # Asked even when nothing is blocked: the owner sees every lift (#8731 r1 F1).
+    recorded = episodes({issue.number: issue for issue, _blocking in blocked})
     owed: list[OwedTriage] = []
     in_force: list[int] = []
     for issue, (names, marker) in blocked:
         fingerprint = block_fingerprint(
             names, tech_lead_marker=marker, needs_human_label=labels.needs_human,
-            episode=recorded.get(issue.number, UNKNOWN_EPISODE) if issue.number in held else None,
+            episode=recorded.get(issue.number, UNKNOWN_EPISODE),
         )
         prior = prior_triage(ledger, issue.number, open_proposals)
         if prior is not None and prior.covers(fingerprint):
@@ -239,22 +239,16 @@ def owed_triages(
     return owed, tuple(in_force)
 
 
-def _holds_needs_human(blocking: tuple[tuple[str, ...], bool], labels: "LabelManager") -> bool:
-    """The block is (in part) the shared needs-human block, whose episodes are recorded."""
-    names, marker = blocking
-    return marker or labels.needs_human.casefold() in {name.casefold() for name in names}
-
-
 def triage_owed(
     config: "Config",
     state: "OrchestratorState",
     authority: "TechLeadAuthorityStore",
-    episodes: "NeedsHumanEpisodes",
+    episodes: "BlockEpisodes",
 ) -> bool:
     """Whether any blocked work item in scope is owed a triage (#7593).
 
     It runs on the tick, so it reads the recorded episodes, re-verified
-    against GitHub at most once per recheck period (#8688).
+    against GitHub at most once per recheck period (#8688, #8731).
     """
     from .label_manager import LabelManager
 
@@ -358,7 +352,7 @@ def label_blocked_work_items(
     The health-review trigger folds these into its board fingerprint, so a new
     or changed block makes the board worth reviewing again. Labels only: a
     re-block under the same labels keeps a review due through
-    :func:`triage_owed`, which reads its episode (#8688).
+    :func:`triage_owed`, which reads its episode (#8688, #8731).
     """
     from .label_manager import LabelManager
 

@@ -46,9 +46,10 @@ class ApprovalEvidenceReader(Protocol):
     def is_own_write(self, event: LabelEvent) -> bool:
         """Whether *event* was produced by THIS engine's own credential.
 
-        Decidable only for a GitHub App identity (the event's
-        ``performed_via_github_app`` names the app); a personal-token engine
-        answers ``False``, so its writes are judged by the actor check alone.
+        Decidable only for a GitHub App identity: the event's actor is the
+        App's bot account (GitHub leaves ``performed_via_github_app`` null on
+        issue events, #8987). A personal-token engine answers ``False``, so
+        its writes are judged by the actor check alone.
         """
         ...
 
