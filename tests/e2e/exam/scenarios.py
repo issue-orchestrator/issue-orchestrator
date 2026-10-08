@@ -571,8 +571,11 @@ async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         )
         flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
         flow_cleanup.append(flow)
-        flow.ensure_labels([TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, APPROVED_LABEL])
         gated = [CODER_LABEL, E2E_DATA_LABEL, TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL]
+        # Every label once, up front: re-ensuring them per filing made seven
+        # label writes per issue, and a transient GitHub 500 on any of them
+        # aborted the run before the engine started (#8346).
+        flow.ensure_labels([*gated, APPROVED_LABEL, run.run_label])
         operator = _github_adapter(run.repo)
         bot_host = _bot_repository_host(run)
 
@@ -590,6 +593,7 @@ async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
                     f" filed under propose authority, then {what}."
                 ),
                 on_created=on_created,
+                ensure_labels=False,
             )
             return TrackedItem(role, number, external_id=external_id)
 

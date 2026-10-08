@@ -108,6 +108,17 @@ class TestCreateIssue:
 
         assert order == ["created 321", "wait"]
 
+    def test_ensure_labels_false_writes_no_labels(self):
+        """#8346: a caller that ensured its labels once skips the per-issue writes."""
+        client = Mock()
+        client.create_issue.return_value = {"number": 322, "html_url": "u"}
+
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
+            with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible"):
+                create_issue("owner/repo", "Test", ["label"], ensure_labels=False)
+
+        client.create_label.assert_not_called()
+
     def test_create_issue_skip_wait(self):
         """Test that wait_visible=False skips waiting."""
         client = Mock()

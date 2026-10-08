@@ -84,6 +84,7 @@ def create_issue(
     wait_visible: bool = True,
     timeout: int | None = None,
     on_created: Callable[[int], None] | None = None,
+    ensure_labels: bool = True,
 ) -> int:
     """Create a single GitHub issue with all constraints honored.
 
@@ -102,6 +103,9 @@ def create_issue(
         on_created: Called with the new issue's number the moment GitHub
             answers the create, before any visibility wait — for a write
             that must race what GitHub does right after filing (#8346).
+        ensure_labels: Create-or-update every label first (the default). A
+            caller that already ensured them passes False: each ensure is a
+            label write that GitHub can fail transiently (#8346).
 
     Returns:
         Issue number
@@ -112,9 +116,9 @@ def create_issue(
     """
     adapter = _adapter_for(repo)
 
-    # Ensure all labels exist
-    for label in labels:
-        _ensure_label(repo, label)
+    if ensure_labels:
+        for label in labels:
+            _ensure_label(repo, label)
 
     with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CREATE, scope=gh_audit.AuditScope.TEST):
         result = adapter.create_issue(title=title, body=body, labels=labels)
