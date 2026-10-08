@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ..ports.operator_issue_commands import OperatorIssueCommandFactory
     from ..ports.session_launcher_factory import SessionLauncherFactory
     from ..ports.label_store import LabelStore
-    from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader, PendingWorkClaimStore
+    from ..ports.pending_work_claim_store import PendingWorkLedger
     from ..ports.completion_intake import CompletionIntakeRuntime
     from .review_exchange_lifecycle import IssueRuntimeLifecycleOwners
     from ..ports.issue_run_evidence import IssueRunLedger
@@ -156,7 +156,9 @@ class OrchestratorDeps:
     runtime_lifecycle: "IssueRuntimeLifecycleOwners"
     issue_run_ledger: "IssueRunLedger"
     issue_run_allocator: "IssueRunAllocator"
-    pending_work_claims: "PendingWorkClaimStore"
+    # Also says which episode of the shared needs-human block each issue is
+    # in (#8688): the blocked-item triage keys a triage to it.
+    pending_work_claims: "PendingWorkLedger"
     # Owns what an unreadable claim means: its own durable per-run marker, its
     # own labels/comment, and the event only after those commit (#6999 F12/A5).
     claim_quarantine: "ClaimQuarantineOwner"
@@ -164,9 +166,6 @@ class OrchestratorDeps:
     # release and operator force-clear of that label routes through it, so a
     # block can never exist without a discoverable cause (#6999 F2 round 3).
     needs_human_block: "SharedNeedsHumanBlock"
-    # Which episode of that block each issue is in (#8688): the blocked-item
-    # triage keys a triage to it, so a lift and re-block owes a new one.
-    needs_human_episodes: "NeedsHumanEpisodeReader"
     # THE owner of each issue's standing rulings (#8141): its writers record
     # through it, and every prompt, review and the tech-lead page read it.
     standing_rulings: "StandingRulingsOwner"

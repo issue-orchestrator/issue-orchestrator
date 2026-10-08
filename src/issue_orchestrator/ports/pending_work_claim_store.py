@@ -544,6 +544,11 @@ class NeedsHumanEpisodeReader(Protocol):
         ...
 
 
+class PendingWorkLedger(PendingWorkClaimStore, NeedsHumanEpisodeReader, Protocol):
+    """The orchestrator-owned pending-work database as the deps hold it: the
+    claim lifecycle, and the needs-human episodes it records (#8688)."""
+
+
 class ClaimQuarantineStore(Protocol):
     """Durable record of runs whose claim could not be read (#6999 F12).
 

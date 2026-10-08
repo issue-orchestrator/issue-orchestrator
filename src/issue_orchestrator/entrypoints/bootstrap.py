@@ -849,7 +849,6 @@ def build_orchestrator(
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
-        needs_human_episodes=pending_work.claims,
         standing_rulings=standing_rulings, launch_prompt=launch_prompt,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
@@ -1282,7 +1281,6 @@ def build_orchestrator_for_testing(
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
-        needs_human_episodes=pending_work.claims,
         standing_rulings=standing_rulings, launch_prompt=launch_prompt,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
@@ -1314,7 +1312,5 @@ def build_orchestrator_for_testing(
         action_liveness=action_liveness,
         services=infra_services,
     )
-    wire_tech_lead_approvals(
-        deps.fact_gatherer, deps.action_applier, deps.planner.scheduler, deps.needs_human_episodes
-    )
+    wire_tech_lead_approvals(deps)
     return Orchestrator(config=config, deps=deps, state=runtime_state)

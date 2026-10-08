@@ -19,8 +19,9 @@ def _now() -> str:
 
 def end_generation(conn: sqlite3.Connection, issue_number: int) -> None:
     """Drop a generation's cause rows, removal intent and onset together."""
-    for table in ("needs_human_cause", "needs_human_removal_intent", "needs_human_generation"):
-        conn.execute(f"DELETE FROM {table} WHERE issue_number = ?", (issue_number,))
+    conn.execute("DELETE FROM needs_human_cause WHERE issue_number = ?", (issue_number,))
+    conn.execute("DELETE FROM needs_human_removal_intent WHERE issue_number = ?", (issue_number,))
+    conn.execute("DELETE FROM needs_human_generation WHERE issue_number = ?", (issue_number,))
 
 
 def open_generation(conn: sqlite3.Connection, issue_number: int) -> None:
