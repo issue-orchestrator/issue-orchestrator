@@ -10,7 +10,7 @@
         --observable-since ISO --observable-source TEXT --by NAME [--confirmed]
     improver_tournament key confirm --snapshot ID --id H-7999 --by NAME
     improver_tournament key observe --snapshot ID --id H-7999 --since ISO --source TEXT --by NAME
-    improver_tournament key move --snapshot ID --id H-8137 --to LATER-ID --by NAME
+    improver_tournament key move --snapshot ID --id H-8137 --to LATER-ID [--since ISO --source TEXT] --by NAME
     improver_tournament key show --snapshot ID
     improver_tournament run --snapshot ID --arm C=claude:opus:empowered --arm A=codex:gpt-5.6-sol:scripted \\
         [--heats 3 --parallel-heats 3 --budget-minutes 60 --agent-timeout-minutes 80] [--passes 3] [--seed N]
@@ -41,7 +41,7 @@ import random
 import re
 import secrets
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import cast
@@ -61,6 +61,7 @@ from ...contracts.improver_tournament import (
 )
 from ...contracts.improver_variant import ImproverVariant
 from ...domain.improver_champion import prompt_digest
+from ...domain.improver_tournament import Unobservable
 from ...execution.command_runner import LocalCommandRunner
 from ...execution.improver_agents import improver_agent
 from ...execution.improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
@@ -169,6 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--snapshot", required=True)
     move.add_argument("--id", required=True)
     move.add_argument("--to", required=True)
+    move.add_argument("--since", type=_aware, help="Record when it was observable as it moves (with --source)")
+    move.add_argument("--source")
     move.add_argument("--by", required=True)
     show = key.add_parser("show")
     show.add_argument("--snapshot", required=True)
@@ -408,9 +411,10 @@ def _key(args: argparse.Namespace, keys: FileAnswerKeyStore) -> int:
         unseen = keys.unobservable(key.snapshot_id)
     except (AnswerKeyError, SnapshotUnavailable) as refused:
         raise SystemExit(f"improver_tournament key {args.action}: {refused}") from refused
-    if args.action == "add" and args.id in unseen:
-        print(f"warning: {unseen[args.id]}; it stays a candidate here (key move attaches it to a later snapshot)",
-              file=sys.stderr)
+    for item in unseen:
+        if args.action == "add" and item.item_id == args.id:
+            print(f"warning: {item.reason}; it stays a candidate here (key move attaches it to a later snapshot)",
+                  file=sys.stderr)
     print(render_key(key, unseen))
     return 0
 
@@ -430,12 +434,16 @@ def _key_write(args: argparse.Namespace, keys: FileAnswerKeyStore) -> AnswerKey:
     if args.action == "observe":
         return keys.observe(args.snapshot, args.id, Observation(at=args.since, source=args.source), by=args.by)
     if args.action == "move":
-        return keys.move(args.snapshot, args.id, to=args.to, by=args.by)
+        if (args.since is None) != (args.source is None):
+            raise AnswerKeyError("--since and --source go together: when it was observable, and where that is read")
+        observation = None if args.since is None else Observation(at=args.since, source=args.source)
+        return keys.move(args.snapshot, args.id, to=args.to, by=args.by, observation=observation)
     return keys.get(args.snapshot)
 
 
-def render_key(key: AnswerKey, unseen: dict[str, str]) -> str:
+def render_key(key: AnswerKey, unseen: Sequence[Unobservable]) -> str:
     """Each item, with when it was observable: an item the snapshot could not show says why."""
+    why = {u.item_id: u.reason for u in unseen}
     lines = [f"key of snapshot {key.snapshot_id}:"]
     for item in key.items:
         links = f" [{', '.join(item.links)}]" if item.links else ""
@@ -445,8 +453,8 @@ def render_key(key: AnswerKey, unseen: dict[str, str]) -> str:
         )
         line = f"{item.id} ({item.weight}, {item.category}, {item.source}, {item.status}) {item.title}{links}"
         lines.append(f"{line}; observable since: {observable}")
-        if item.id in unseen:
-            lines.append(f"  NOT observable at the snapshot's time: {unseen[item.id]}")
+        if item.id in why:
+            lines.append(f"  NOT observable at the snapshot's time: {why[item.id]}")
     lines.append(f"scored: {len(key.scored)} item(s), max {key.max_score}")
     return "\n".join(lines)
 

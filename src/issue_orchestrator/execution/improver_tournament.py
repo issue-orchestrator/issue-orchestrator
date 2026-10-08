@@ -82,7 +82,7 @@ from ..entrypoints.improver_run import (
 )
 from ..entrypoints.improver_staging import ImproverStagingRequest, StagedImproverInputs
 from ..ports.improver import HeatSpace, ImproverAgent, heat_file
-from .improver_answer_keys import FileAnswerKeyStore
+from .improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
 from .improver_effect_applier import ImproverEffects
 from .improver_investigation import EmpoweredInvestigation, ScriptedInvestigation
 from .improver_run_store import FileImproverRunStore
@@ -97,6 +97,8 @@ DEFAULT_PASSES = 3
 _GRADING_RECORD = "grading.json"
 #: What was graded (outputs, seed, snapshot), sealed with the mapping, so a failed grading can be retried.
 _REQUEST = "sealed/request.json"
+#: The key as the graders read it: a result stands only while the key scores just this.
+_GRADED_KEY = "key/KEY.md"
 #: What the tournament's arms were run on (written by run_arms).
 _ARMS_RUN = "arms/run.json"
 #: What the tournament's arms were started with (a resume must match it).
@@ -223,6 +225,10 @@ DEFAULT_GRADERS = (
 )
 
 
+class GradedKeyChanged(RuntimeError):
+    """A tournament's result graded against a key that has changed since (#8972)."""
+
+
 class TournamentHarness:
     def __init__(
         self,
@@ -246,9 +252,24 @@ class TournamentHarness:
         return self._root / require_slug(tournament_id, "a tournament id")
 
     def result_of(self, tournament_id: str) -> TournamentResult | None:
-        """The tournament's result, if it was graded."""
+        """The tournament's result, if it was graded: one that still stands
+        (its snapshot's key scores now exactly what it was graded against),
+        else :class:`GradedKeyChanged`."""
         path = self.directory(tournament_id) / "result.json"
-        return TournamentResult.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+        if not path.is_file():
+            return None
+        result = TournamentResult.model_validate_json(path.read_text(encoding="utf-8"))
+        graded = (self.directory(tournament_id) / _GRADED_KEY).read_text(encoding="utf-8")
+        try:
+            current = render_key(self._keys.scoring(result.snapshot_id))
+        except AnswerKeyError as refused:
+            raise GradedKeyChanged(f"tournament {tournament_id}'s result no longer stands: {refused}") from refused
+        if graded != current:
+            raise GradedKeyChanged(
+                f"tournament {tournament_id} was graded against snapshot {result.snapshot_id}'s key as it was;"
+                " the key has changed since (an item confirmed, corrected or moved): its result no longer stands"
+            )
+        return result
 
     def arms_ran(self, tournament_id: str) -> bool:
         """Whether the tournament's arms ran to the end (their outputs recorded)."""
@@ -571,7 +592,7 @@ def _grading_inputs(
         {"seed": seed, "labels": {label: {"output": oid, "arm": by_id[oid].arm} for label, oid in labels.items()}},
         indent=2,
     ) + "\n"
-    files["key/KEY.md"] = render_key(key)
+    files[_GRADED_KEY] = render_key(key)
     files[_REQUEST] = json.dumps({
         "snapshot_id": snapshot_id, "seed": seed,
         "outputs": [{"arm": o.arm, "heat": o.heat, "text": o.text, "hide": list(o.hide)} for o in outputs],
@@ -720,6 +741,7 @@ __all__ = [
     "ArmSpec",
     "FrozenInputs",
     "FrozenToolbox",
+    "GradedKeyChanged",
     "Grader",
     "TournamentHarness",
     "render_key",

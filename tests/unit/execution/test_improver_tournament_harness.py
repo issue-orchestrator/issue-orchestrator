@@ -485,14 +485,14 @@ def test_an_item_observable_only_after_the_snapshot_is_never_confirmed_on_it(sto
 
     key = keys.get("20261004")
     assert [(i.id, i.status) for i in key.items if i.source == "hindsight"] == [("H-8137", "candidate")]
-    assert set(keys.unobservable("20261004")) == {"H-8137"}
+    assert [u.item_id for u in keys.unobservable("20261004")] == ["H-8137"]
 
 
 def test_an_item_observable_at_the_snapshots_very_time_is_confirmed(stores) -> None:  # type: ignore[no-untyped-def]
     _, keys, _ = stores
     keys.add(_hindsight("H-1", confirmed=False, seen=T0), snapshot_id="20261004")
 
-    assert keys.confirm("20261004", "H-1", by="coordinator").max_score == 10 and keys.unobservable("20261004") == {}
+    assert keys.confirm("20261004", "H-1", by="coordinator").max_score == 10 and keys.unobservable("20261004") == ()
 
 
 def test_a_hindsight_item_records_when_it_was_observable_before_it_is_confirmed(stores) -> None:  # type: ignore[no-untyped-def]
@@ -515,7 +515,7 @@ def test_a_hindsight_item_records_when_it_was_observable_before_it_is_confirmed(
 def test_a_confirmed_item_cannot_be_observed_later_than_its_snapshot(stores) -> None:  # type: ignore[no-untyped-def]
     _, keys, _ = stores
     keys.add(_hindsight("H-7999"), snapshot_id="20261004")
-    with pytest.raises(AnswerKeyError, match="move it to a snapshot frozen later"):
+    with pytest.raises(AnswerKeyError, match="`key move` attaches it to a snapshot frozen later"):
         keys.observe("20261004", "H-7999", Observation(at=_AFTER, source="x"), by="operator")
     with pytest.raises(AnswerKeyError, match="is sealed"):
         keys.observe("20261004", "1", Observation(at=T0, source="x"), by="operator")
@@ -560,6 +560,62 @@ def test_an_item_is_moved_to_a_snapshot_frozen_once_it_was_observable(stores, tm
     assert keys.confirm("20261005", "H-8137", by="coordinator").max_score == 10
     with pytest.raises(AnswerKeyError, match="no key item 'H-8137'"):
         keys.move("20261004", "H-8137", to="20261005", by="coordinator")
+
+
+def _later_snapshot(snapshots, keys, tmp_path: Path) -> str:  # type: ignore[no-untyped-def]
+    snapshots.import_("20261005", improver_data=_legacy_inputs(tmp_path / "later"), taken_at=T0 + timedelta(days=1),
+                      origin="x")
+    keys.seed_sealed("20261005", SEALED, sealed_at=T0 + timedelta(days=1), added_by="coordinator")
+    return "20261005"
+
+
+def test_a_move_interrupted_between_its_writes_is_finished_by_the_same_move(  # type: ignore[no-untyped-def]
+    stores, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshots, keys, _ = stores
+    later = _later_snapshot(snapshots, keys, tmp_path)
+    keys.add(_hindsight("H-8137", confirmed=False, seen=_AFTER), snapshot_id="20261004")
+    write = FileAnswerKeyStore._write
+    writes: list[str] = []
+
+    def crash_on_the_second(self, key):  # type: ignore[no-untyped-def]
+        writes.append(key.snapshot_id)
+        if len(writes) == 2:
+            raise OSError("killed")
+        return write(self, key)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(FileAnswerKeyStore, "_write", crash_on_the_second)
+        with pytest.raises(OSError, match="killed"):
+            keys.move("20261004", "H-8137", to=later, by="coordinator")
+    assert writes == [later, "20261004"] and "H-8137" in {i.id for i in keys.get("20261004").items}
+
+    moved = keys.move("20261004", "H-8137", to=later, by="coordinator")
+
+    assert [i.id for i in moved.items if i.source == "hindsight"] == ["H-8137"]
+    assert "H-8137" not in {i.id for i in keys.get("20261004").items}
+
+
+def test_a_confirmed_item_with_no_observable_since_is_moved_with_it(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A key confirmed before #8972 holds such items: one observable only
+    after its snapshot records that as it moves, and stops scoring there."""
+    snapshots, keys, _ = stores
+    later = _later_snapshot(snapshots, keys, tmp_path)
+    path = keys.path("20261004")
+    doc = json.loads(path.read_text())
+    doc["items"].append({**json.loads(_hindsight("H-8120").model_dump_json()), "observable_since": None})
+    path.write_text(json.dumps(doc))
+    seen = Observation(at=_AFTER, source="#7906 deploy, 2026-10-04 13:06Z")
+
+    with pytest.raises(AnswerKeyError, match="records no observable_since: give it"):
+        keys.move("20261004", "H-8120", to=later, by="coordinator")
+    with pytest.raises(AnswerKeyError, match="`key move` attaches it"):
+        keys.observe("20261004", "H-8120", seen, by="coordinator")
+    moved = keys.move("20261004", "H-8120", to=later, by="coordinator", observation=seen)
+
+    [item] = [i for i in moved.items if i.id == "H-8120"]
+    assert (item.status, item.observable_since) == ("candidate", seen)
+    assert keys.scoring("20261004").max_score == 8
 
 
 def test_a_key_is_seeded_only_for_a_frozen_snapshot(stores) -> None:  # type: ignore[no-untyped-def]

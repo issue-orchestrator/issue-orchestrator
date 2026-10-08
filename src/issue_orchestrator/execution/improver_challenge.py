@@ -51,7 +51,14 @@ from ..entrypoints.improver_run import HeatPlan
 from ..ports.improver_challenger import ChallengerIssueEvidence
 from .improver_champion_store import ChampionUnavailable, FileChampionStore
 from .improver_run_store import FileImproverRunStore
-from .improver_tournament import DEFAULT_GRADERS, DEFAULT_PASSES, ArmSpec, Grader, TournamentHarness
+from .improver_tournament import (
+    DEFAULT_GRADERS,
+    DEFAULT_PASSES,
+    ArmSpec,
+    GradedKeyChanged,
+    Grader,
+    TournamentHarness,
+)
 
 #: Whole improver runs per arm per snapshot: the fewest the heats' exact
 #: test can separate (two an arm never can).
@@ -137,7 +144,11 @@ class ImproverChallenges:
             except ChampionUnavailable as error:
                 raise ChallengeRefused(str(error)) from error
             if self._champions.has_challenge(challenge_id):
-                return self._champions.challenge(challenge_id)  # tried already, exactly so
+                tried = self._champions.challenge(challenge_id)  # tried already, exactly so
+                fallen = self._fallen_trials(tried)
+                if fallen:
+                    raise ChallengeRefused(f"challenge {challenge_id}'s trials no longer stand: " + "; ".join(fallen))
+                return tried
             specs = [
                 self._spec(CHAMPION_ARM, champion, champion_prompt, whole_runs),
                 self._spec(CHALLENGER_ARM, challenger, challenger_prompt, whole_runs),
@@ -164,13 +175,27 @@ class ImproverChallenges:
     def promote(self, challenge_id: str) -> Promoted:
         challenge = self._champions.challenge(challenge_id)
         verdict = self._approval(challenge)
-        refusals = promotion_refusals(challenge, current=self._champions.state().champion, approval=verdict)
+        refusals = [
+            *promotion_refusals(challenge, current=self._champions.state().champion, approval=verdict),
+            *self._fallen_trials(challenge),
+        ]
         if refusals:
             return Promoted(None, verdict, tuple(refusals))
         state = self._champions.promote(challenge, at=self._clock(), approved_by=verdict.actor)
         return Promoted(state, verdict, ())
 
     # -- parts ---------------------------------------------------------------
+
+    def _fallen_trials(self, challenge: ChallengeRecord) -> list[str]:
+        """Each trial whose tournament was graded against a key that has
+        changed since (#8972): its result no longer decides anything."""
+        fallen = []
+        for trial in challenge.trials:
+            try:
+                self._harness.result_of(trial.tournament_id)
+            except GradedKeyChanged as changed:
+                fallen.append(str(changed))
+        return fallen
 
     def _invited_run(self, run_id: str) -> ImproverRunRecord:
         run = next((r for r in self._runs.runs() if r.run_id == run_id), None)
@@ -205,7 +230,10 @@ class ImproverChallenges:
         """The snapshot's tournament: reused when graded (exactly as the
         challenge asked), regraded when its grading was prepared but did not
         finish, otherwise its arms run or resume, then graded."""
-        done = self._harness.result_of(tournament_id)
+        try:
+            done = self._harness.result_of(tournament_id)
+        except GradedKeyChanged as changed:
+            raise ChallengeRefused(str(changed)) from changed
         if done is None and self._harness.grading_prepared(tournament_id):
             done = self._harness.regrade(tournament_id, graders=graders, passes=request.passes)
         if done is None:

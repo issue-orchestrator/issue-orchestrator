@@ -224,9 +224,10 @@ data lives under `<git common dir>/io-improver/`:
   --observable-since/--observable-source`, or `key observe` later). An item
   first observable after the snapshot was frozen is never confirmed on it
   (`key add` warns for a candidate, `key confirm` refuses, and no tournament
-  grades a key that scores one); `key move` attaches it to a snapshot frozen
-  later instead, as a candidate there. `key show` prints each item's
-  `observable_since`. Only these commands write keys. No improver run can reach
+  grades a key that scores one, nor counts a tournament graded against a key
+  that has changed since); `key move` attaches it to a snapshot frozen later
+  instead, as a candidate there (recording `--since/--source` as it moves).
+  `key show` prints each item's `observable_since`. Only these commands write keys. No improver run can reach
   the key store, and no agent can read it.
 - `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats (an arm may set its own prompt, heats, budget
   and timeout: a challenger beside its champion) on the snapshot as ordinary improver runs, which never apply or touch GitHub,

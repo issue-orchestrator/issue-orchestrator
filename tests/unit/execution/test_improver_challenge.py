@@ -33,7 +33,7 @@ from issue_orchestrator.execution.improver_tournament import TournamentHarness
 from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.domain.test_improver_tournament import SEALED
 from tests.unit.entrypoints.test_improver_run import FakeStager, _request
-from tests.unit.execution.test_improver_tournament_harness import T0, _legacy_inputs
+from tests.unit.execution.test_improver_tournament_harness import T0, _hindsight, _legacy_inputs
 from tests.unit.improver_support import FakeIssueHost, example
 
 PROMPT = "You audit the tech lead. Cite the staged evidence for every finding."
@@ -204,6 +204,35 @@ def test_a_challenger_that_wins_and_is_approved_becomes_the_champion(cycle) -> N
     [promotion] = promoted.state.promotions
     assert (promotion.previous, promotion.approved_by, promotion.issue) == (_variant(), "bruce", record.issue)
     assert champions.prompt(record.challenger.prompt_sha256) == PROMPT.replace("Cite the", "Quote the")
+
+
+def test_a_challenge_graded_on_a_key_that_changed_since_neither_stands_nor_promotes(cycle) -> None:  # type: ignore[no-untyped-def]
+    """#8972: a trial is graded against its snapshot's key as it was. A key
+    found since to score an item its snapshot could not show, or changed
+    in what it scores, leaves the trial deciding nothing."""
+    root, champions, runs, _, issues, challenges = cycle
+    run_id = _invited_run(runs, host=issues.host)
+    won = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    issues.approve("bruce", role="admin")
+    path = root / "keys" / "20261004.json"
+    graded = path.read_text()
+    unseen = json.loads(_hindsight("H-8137", seen=T0 + timedelta(hours=2)).model_dump_json())
+    path.write_text(json.dumps({**json.loads(graded), "items": [*json.loads(graded)["items"], unseen]}))
+
+    with pytest.raises(ChallengeRefused, match="no longer stands.*H-8137.*after the snapshot was frozen"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    refused = challenges.promote(won.challenge_id)
+    assert refused.state is None and any("no longer stands" in r for r in refused.refusals)
+
+    path.write_text(graded)
+    FileAnswerKeyStore(root, FrozenSnapshotStore(root, LocalCommandRunner())).add(_hindsight("H-7999"), snapshot_id="20261004")
+    refused = challenges.promote(won.challenge_id)
+    assert refused.state is None and any("the key has changed since" in r for r in refused.refusals)
+    assert champions.state().champion == _variant()
+
+    path.write_text(graded)
+    assert challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5) == won
+    assert challenges.promote(won.challenge_id).state is not None
 
 
 def test_a_losing_challenger_is_never_promoted_whoever_approves_it(cycle) -> None:  # type: ignore[no-untyped-def]
