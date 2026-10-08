@@ -33,7 +33,7 @@ class RunDirEngineSource:
         if not target.is_relative_to(self._root):
             return None
         parsed = self._parse(target)
-        module = module_path(target.relative_to(self._root).as_posix())
+        module = self._module_of(target)
         if parsed is None or module is None:
             return None
         tree, lines = parsed
@@ -49,19 +49,26 @@ class RunDirEngineSource:
         return CodeSite(module=module, symbol=tuple(node.name for node in chain if isinstance(node, _SCOPE)))
 
     def resolve(self, written: CodeSite) -> CodeSite | None:
-        modules = [(dotted, path) for dotted, path in self._modules if _ends_with(dotted, written.module)]
-        if len(modules) != 1:
+        # A file staged under two names (a symlink) is one module (r2 F4).
+        files = {path for dotted, path in self._modules if _ends_with(dotted, written.module)}
+        if len(files) != 1:
             return None
-        [(module, path)] = modules
-        parsed = self._parse(path)
-        if parsed is None:
+        [path] = files
+        parsed, module = self._parse(path), self._module_of(path)
+        if parsed is None or module is None:
             return None
         symbols = [q for q in _defined_names(parsed[0]) if _ends_with(q, written.symbol)]
         return CodeSite(module=module, symbol=symbols[0]) if len(symbols) == 1 else None
 
+    def _module_of(self, resolved: Path) -> tuple[str, ...] | None:
+        """A staged file's one module identity: its RESOLVED path's, so a
+        symlink and its target are one module."""
+        return module_path(resolved.relative_to(self._root).as_posix())
+
     @cached_property
     def _modules(self) -> tuple[tuple[tuple[str, ...], Path], ...]:
-        """Every staged Python file inside the source tree, by dotted path."""
+        """Every staged Python file inside the source tree, under each name
+        it is staged as, with the file it resolves to."""
         found = []
         for path in self._root.rglob("*.py"):
             resolved = path.resolve()

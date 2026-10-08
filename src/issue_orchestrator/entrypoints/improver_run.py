@@ -85,6 +85,18 @@ class ImproverInputStaging(Protocol):
 
 logger = logging.getLogger(__name__)
 
+#: The findings contract's fields that the champion's prompt may predate:
+#: the orchestrator owns the contract, and the champion's prompt is frozen
+#: (#8001), so the orchestrator states them in every run's prompt.
+CONTRACT_ADDENDUM = (
+    "\n\n**Design finding `owner` (#8700).** When a design finding's defect lives in one place in the"
+    " engine source, give the design finding an `owner`, written as a stall finding's `root_cause.owner`"
+    ' is: `"owner": "<module>:<function>"`. The module must be one staged engine source file, and the'
+    " function must be defined there exactly once (write `Class.method` when two classes define the"
+    " method). Omit it, or write null, when the defect lives in no one function. An owner that names no"
+    " one definition rejects the whole answer. One defect is filed once: a design finding and another"
+    " finding on the same code site with shared evidence are merged before anything is filed.\n"
+)
 #: Always the last words of the improver's prompt, after every addendum.
 FINAL_ANSWER_REMINDER = (
     "\n\nYour final message is the findings JSON object alone: no sentence, heading or note before or"
@@ -430,7 +442,7 @@ class ImproverRun:
             invitation = self._change_policy.instructions() if invited and self._change_policy is not None else ""
             prompt = (
                 f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
-                f"{FINAL_ANSWER_REMINDER}"
+                f"{CONTRACT_ADDENDUM}{FINAL_ANSWER_REMINDER}"
             )
             evidence = ((root / IMPROVER_DATA_DIRNAME), *kit.evidence)
 

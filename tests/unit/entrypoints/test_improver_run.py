@@ -15,6 +15,7 @@ from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverAgen
 from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.entrypoints.improver_run import (
+    CONTRACT_ADDENDUM,
     FINAL_ANSWER_REMINDER,
     HeatPlan,
     ImproverRun,
@@ -458,7 +459,7 @@ def test_an_empowered_run_gives_the_agent_its_toolbox_and_instructions_and_recor
     [(repo, run_dir)] = empowered.opened
     assert repo == "porchpin/porchpin" and str(run_dir) == record.run_dir
     # The reminder that the answer is the JSON alone is always last.
-    assert agent.prompts[0].endswith(f"THE PROMPT\n\nEMPOWERED ADDENDUM{FINAL_ANSWER_REMINDER}")
+    assert agent.prompts[0].endswith(f"THE PROMPT\n\nEMPOWERED ADDENDUM{CONTRACT_ADDENDUM}{FINAL_ANSWER_REMINDER}")
     assert agent.toolboxes == [ToolboxEndpoint(url="http://127.0.0.1:1/mcp", token="t")]
     # The toolbox is served only while the agent runs.
     assert empowered.closed == 1
@@ -789,3 +790,16 @@ def test_a_design_finding_about_a_stall_findings_defect_is_filed_once_on_its_iss
         for claimed in (design["summary"], design["impact"], design["proposed_change"], design["owner"],
                         "parked work of #320 diverged"):
             assert claimed in body, claimed
+
+
+def test_every_run_states_the_contract_fields_its_prompt_may_predate(tmp_path: Path) -> None:
+    """r2 F1: the champion's prompt is frozen (#8001) and predates the design
+    owner; the orchestrator, which owns the contract, states it in every
+    run's prompt, just before the final-answer reminder."""
+    agent = FakeAgent(_findings("exam_case"))
+
+    _improver(MemoryRunStore(tmp_path), FakeIssueHost(), agent).run(_request(), apply=False)
+
+    [prompt] = agent.prompts
+    assert prompt.endswith(CONTRACT_ADDENDUM + FINAL_ANSWER_REMINDER)
+    assert '"owner": "<module>:<function>"' in CONTRACT_ADDENDUM

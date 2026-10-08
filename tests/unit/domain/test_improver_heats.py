@@ -112,6 +112,26 @@ def test_a_design_finding_is_one_across_heats_only_by_its_effect_key_and_claim()
     assert "Approval is a label removal." in conflict.claim
 
 
+def test_one_design_finding_backs_another_only_if_it_claims_all_the_same() -> None:
+    """r2 F3: the same id, summary and change, but another impact, owner or
+    evidence, is not support: it is a conflict, with all it claims."""
+    first = _findings("exam_case", designs=[_design("approval-by-label")])
+    variants = [
+        {**_design("approval-by-label"), "impact": "Merges run unapproved."},
+        {**_design("approval-by-label"), "owner": "control/approvals.py:approve"},
+        _design("approval-by-label", line=7),
+    ]
+
+    for variant in variants:
+        merged = _merge([AcceptedHeat(1, first), AcceptedHeat(2, _findings("exam_case", designs=[variant]))])
+
+        assert merged.support["approval-by-label"] == (1,), variant
+        [conflict] = merged.conflicts
+        assert conflict.heat == 2
+        assert variant["impact"] in conflict.claim and str(variant.get("owner")) in conflict.claim
+        assert f'"line":{variant["evidence"][0]["line"]}' in conflict.claim
+
+
 def test_a_renamed_design_keeps_its_original_id_for_its_effect_key() -> None:
     """r1 F3: renamed for this run's merge (its id taken by another kind), a
     design finding keeps the id its heat wrote, so its issue dedups the same

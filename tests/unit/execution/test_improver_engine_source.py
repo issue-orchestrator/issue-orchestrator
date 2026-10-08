@@ -130,6 +130,19 @@ def test_an_owner_naming_nothing_staged_resolves_to_nothing(run_dir: Path, owner
     assert _resolve(RunDirEngineSource(run_dir), owner) is None
 
 
+def test_a_file_staged_under_two_names_is_one_module(run_dir: Path) -> None:
+    """r2 F4: a symlink and its target are one module, cited or named."""
+    (run_dir / HANDLER).with_name("alias.py").symlink_to("completion_handler.py")
+    source = RunDirEngineSource(run_dir)
+    alias = HANDLER.replace("completion_handler.py", "alias.py")
+
+    cited = source.enclosing_function(alias, 12, "self._update()")
+
+    assert cited == CodeSite(MODULE, ("CompletionHandler", "finalize"))
+    assert _resolve(source, "control/alias.py:CompletionHandler.finalize") == cited
+    assert _resolve(source, "completion_handler:finalize") == cited
+
+
 def test_an_owner_two_definitions_answer_to_resolves_to_nothing(run_dir: Path) -> None:
     """r1 F1: a bare method name two classes define, or a module two staged
     files end with, names no one function."""

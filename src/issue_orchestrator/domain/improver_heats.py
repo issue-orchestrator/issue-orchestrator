@@ -179,7 +179,9 @@ class _Merge:
         self._conflicts.append(HeatConflict(
             finding_id=same.id, heat=heat,
             reason="the same design finding id with a different claim",
-            claim=f"{design.summary} Proposed change: {design.proposed_change}",
+            claim=f"{design.summary} Impact: {design.impact} Proposed change: {design.proposed_change}"
+            f" Owner: {design.owner}. Evidence: "
+            + "; ".join(c.model_dump_json() for c in design.evidence),
         ))
 
     def _back(self, finding_id: str, heat: int) -> None:
@@ -269,8 +271,15 @@ def _case_id(finding: Finding) -> str | None:
     return finding.reproduction.case_id if finding.reproduction else None
 
 
-def _claim(design: DesignFinding) -> tuple[str, str]:
-    return normalized(design.summary).casefold(), normalized(design.proposed_change).casefold()
+def _claim(design: DesignFinding) -> tuple[object, ...]:
+    """All a design finding claims (r2 F3): two heats back one claim only
+    if they say the same thing, cite the same evidence and name the same
+    owner; anything else is a conflict, shown, never dropped."""
+    return (
+        *(normalized(t).casefold() for t in (design.summary, design.impact, design.proposed_change)),
+        design.owner,
+        frozenset(c.model_dump_json() for c in design.evidence),
+    )
 
 
 __all__ = ["AcceptedHeat", "FindingIdentity", "HeatConflict", "MergedHeats", "SameDefect", "merge_heats"]

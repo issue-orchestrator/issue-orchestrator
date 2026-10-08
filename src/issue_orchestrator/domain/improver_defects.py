@@ -21,7 +21,8 @@ seen on:
 
 Two findings, at least one of them a design finding, are the SAME DEFECT
 (:func:`same_defect`) exactly when they share a code site AND overlap in
-evidence. Neither is enough alone: one function can hold two defects, and
+evidence (:meth:`DefectProfile.overlaps`: two design findings must cite one
+thing). Neither is enough alone: one function can hold two defects, and
 one item can show two. Two stall findings are never related here: a stall
 finding's identity is its effect key, and two stall findings asking for
 different things (an exam case and a fix) are two deliverables.
@@ -153,9 +154,16 @@ class DefectProfile:
         return bool(set(self.sites) & set(other.sites))
 
     def overlaps(self, other: DefectProfile) -> bool:
-        if self.items & other.items:
-            return True
+        """Evidence of one incident. Two design findings must cite one thing
+        (r2 F2: two defects of one function can show on one item); a design
+        finding and a stall finding share no citation form, so an item they
+        are both about, or a staged record the stall finding cites and the
+        design finding quotes, is their overlap."""
         if any(a.same_as(b) for a in self.cited for b in other.cited):
+            return True
+        if self.is_design and other.is_design:
+            return False
+        if self.items & other.items:
             return True
         return any(record in quote for record in self.records for quote in other.quotes) or any(
             record in quote for record in other.records for quote in self.quotes

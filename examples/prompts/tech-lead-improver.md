@@ -394,16 +394,8 @@ in `engine-source/examples/improver/findings/`.
   may be off by two, but the words must be there, and the quote needs 12
   characters besides whitespace. One quote that is not
   there rejects the whole file. Ids are unique across `findings` and
-  `design_findings`.
-
-  When the defect lives in one place in the engine source, name it as
-  `owner`, written as a `root_cause.owner` is (`<module>:<function>`); the
-  module must be a staged engine source file that defines the function.
-  Use `null` when it lives in no one function. **One defect is filed
-  once:** a design finding and another finding (of either kind) on the same
-  code site with overlapping evidence (an item both are about, a citation
-  both make) are merged before anything is filed, and the design finding's
-  claim is shown on the other's issue.
+  `design_findings`. (The orchestrator states the `owner` rule at the end
+  of this prompt.)
 
   An accepted design finding files an issue for the operator's decision;
   nothing is changed.

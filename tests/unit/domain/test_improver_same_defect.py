@@ -193,12 +193,20 @@ def test_an_owner_relates_only_the_one_definition_it_names() -> None:
     assert folded(f"{module}:Planner.run")
 
 
-def _chain_design(id: str, line: int, quote: str) -> dict:
+def _log(line: int, quote: str) -> dict:
+    return {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": line, "quote": quote}
+
+
+INCIDENT_1 = _log(10, "the tick crashed on issue #1 here")
+INCIDENT_2 = _log(900, "the tick crashed on issue #2 here")
+
+
+def _chain_design(id: str, *evidence: dict) -> dict:
     return {
         "id": id, "engine": {"id": ENGINE.engine_id, "repo": ENGINE.repo}, "kind": "silent_assumption",
         "summary": f"{id} summary.", "impact": "Ticks abort.", "proposed_change": "Guard it.",
         "owner": "control/completion_handler.py:_update_issue_machine",
-        "evidence": [{"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": line, "quote": quote}],
+        "evidence": list(evidence),
     }
 
 
@@ -212,9 +220,9 @@ def _chain_stall(id: str, item: int) -> dict:
 
 
 CHAIN = [
-    _chain_design("crash-on-1", 10, "the tick crashed on issue #1 here"),
-    _chain_design("crash-on-1-and-2", 500, "the tick crashed on issues #1 and #2"),
-    _chain_design("crash-on-2", 900, "the tick crashed on issue #2 here"),
+    _chain_design("crash-on-1", INCIDENT_1),
+    _chain_design("crash-on-1-and-2", INCIDENT_1, INCIDENT_2),
+    _chain_design("crash-on-2", INCIDENT_2),
 ]
 
 
@@ -232,6 +240,17 @@ def test_only_a_direct_relation_folds_never_one_through_a_third_finding() -> Non
         ("crash-on-1", "fix-1"), ("crash-on-2", "fix-2"),
     ]
     assert "crash-on-1-and-2" in _filed(with_stalls)
+
+
+def test_two_design_findings_about_one_item_but_no_one_incident_are_two_defects() -> None:
+    """r2 F2: two defects of one function can show on one item. Two design
+    findings must cite one thing to be one defect."""
+    one = _chain_design("crash-on-327-at-start", _log(10, "issue #327 crashed the tick at start"))
+    two = _chain_design("crash-on-327-at-merge", _log(900, "issue #327 crashed the tick at merge"))
+
+    merged = _merge({**_heat(1), "findings": [], "design_findings": [one, two]})
+
+    assert merged.same_defects == ()
 
 
 def test_an_owner_is_read_as_the_prompt_asks_it_written() -> None:
