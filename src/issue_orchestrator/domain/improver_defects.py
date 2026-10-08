@@ -119,8 +119,12 @@ def code_site(owner: str) -> CodeSite | None:
 
 @dataclass(frozen=True)
 class _Cited:
-    """A non-code citation, compared loosely: agents count lines inexactly
-    and quote more or less of one line."""
+    """A non-code citation: a file line (``path``, ``line``) or a toolbox
+    answer (``path`` None, ``line`` its call number; one run's heats share
+    one toolbox, so a call number names one answer). One file line is
+    compared loosely, since agents count lines inexactly and quote more or
+    less of a line; one answer is one call (r4 F3: two answers can hold the
+    same phrase)."""
 
     path: str | None
     line: int
@@ -129,9 +133,8 @@ class _Cited:
     def same_as(self, other: _Cited) -> bool:
         if self.path != other.path:
             return False
-        if self.path is not None and abs(self.line - other.line) > 2 * LINE_SLACK:
-            return False
-        return self.quote in other.quote or other.quote in self.quote
+        near = self.line == other.line if self.path is None else abs(self.line - other.line) <= 2 * LINE_SLACK
+        return near and (self.quote in other.quote or other.quote in self.quote)
 
 
 @dataclass(frozen=True)

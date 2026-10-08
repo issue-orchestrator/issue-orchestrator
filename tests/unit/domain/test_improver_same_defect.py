@@ -262,6 +262,34 @@ def test_two_design_findings_about_one_item_but_no_one_incident_are_two_defects(
     assert merged.same_defects == ()
 
 
+def test_a_finding_both_are_related_to_does_not_join_two_that_are_not() -> None:
+    """r4 F1: two design findings about two incidents on #327, each related
+    to a stall finding on #327 in their function, are not both its defect."""
+    start = _chain_design("crash-on-327-at-start", _log(10, "issue #327 crashed the tick at start"))
+    merge = _chain_design("crash-on-327-at-merge", _log(900, "issue #327 crashed the tick at merge"))
+
+    merged = _merge({**_heat(1), "findings": [_chain_stall("fix-327", 327)], "design_findings": [start, merge]})
+
+    assert [(s.design.id, s.finding_id) for s in merged.same_defects] == [("crash-on-327-at-start", "fix-327")]
+    assert "crash-on-327-at-merge" in _filed(merged)
+
+
+def _answer(call: int, quote: str) -> dict:
+    return {"kind": "tool", "call": call, "quote": quote}
+
+
+def test_one_toolbox_answer_is_one_call() -> None:
+    """r4 F3: two answers can hold the same phrase; one call is one answer."""
+    phrase = "Can't trigger event needs_human"
+    first = _chain_design("crash-seen-in-call-1", _answer(1, phrase))
+
+    for call, folded in ((2, False), (1, True)):
+        second = _chain_design("crash-seen-again", _answer(call, phrase))
+        merged = _merge({**_heat(1), "findings": [], "design_findings": [first, second]})
+
+        assert bool(merged.same_defects) is folded, call
+
+
 def test_an_owner_is_read_as_the_prompt_asks_it_written() -> None:
     assert code_site("control/completion_handler.py:CompletionHandler._update_issue_machine") == CodeSite(
         ("control", "completion_handler"), ("CompletionHandler", "_update_issue_machine")

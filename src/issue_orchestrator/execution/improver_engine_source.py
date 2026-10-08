@@ -11,6 +11,7 @@ every symlink), and only ``.py`` files that parse; anything else answers
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from functools import cache, cached_property
 from pathlib import Path
 
@@ -46,7 +47,10 @@ class RunDirEngineSource:
         # In a function's body, not a class's or the module's.
         if not chain or not isinstance(chain[-1], _FUNCTION):
             return None
-        return CodeSite(module=module, symbol=tuple(node.name for node in chain if isinstance(node, _SCOPE)))
+        symbol = tuple(node.name for node in chain if isinstance(node, _SCOPE))
+        # A name defined twice (r4 F2: `def run` in each branch of an `if`)
+        # names two functions: no one site.
+        return CodeSite(module=module, symbol=symbol) if _defined_names(tree)[symbol] == 1 else None
 
     def resolve(self, written: CodeSite) -> CodeSite | None:
         # A file staged under two names (a symlink) is one module (r2 F4).
@@ -57,7 +61,8 @@ class RunDirEngineSource:
         parsed, module = self._parse(path), self._module_of(path)
         if parsed is None or module is None:
             return None
-        symbols = [q for q in _defined_names(parsed[0]) if _ends_with(q, written.symbol)]
+        # Each definition counts: a name defined twice is two (r4 F2).
+        symbols = [q for q, n in _defined_names(parsed[0]).items() for _ in range(n) if _ends_with(q, written.symbol)]
         return CodeSite(module=module, symbol=symbols[0]) if len(symbols) == 1 else None
 
     def _module_of(self, resolved: Path) -> tuple[str, ...] | None:
@@ -114,14 +119,15 @@ def _child_scope(scope: ast.AST, line: int) -> ast.AST | None:
     return None
 
 
-def _defined_names(tree: ast.Module) -> set[tuple[str, ...]]:
-    """Every class's and function's qualified name, and each module-level name."""
-    names: set[tuple[str, ...]] = set()
+def _defined_names(tree: ast.Module) -> Counter[tuple[str, ...]]:
+    """How many times each class's and function's qualified name, and each
+    module-level name, is defined."""
+    names: Counter[tuple[str, ...]] = Counter()
 
     def visit(scope: ast.AST, prefix: tuple[str, ...]) -> None:
         for node in ast.iter_child_nodes(scope):
             if isinstance(node, _SCOPE):
-                names.add((*prefix, node.name))
+                names[(*prefix, node.name)] += 1
                 visit(node, (*prefix, node.name))
             else:
                 visit(node, prefix)

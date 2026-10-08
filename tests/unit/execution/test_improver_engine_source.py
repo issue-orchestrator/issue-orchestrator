@@ -130,6 +130,22 @@ def test_an_owner_naming_nothing_staged_resolves_to_nothing(run_dir: Path, owner
     assert _resolve(RunDirEngineSource(run_dir), owner) is None
 
 
+def test_a_name_defined_twice_is_no_one_site(run_dir: Path) -> None:
+    """r4 F2: a `def run` in each branch of an `if` is two functions."""
+    runner = run_dir / "improver-data" / "engine-source" / "src" / "issue_orchestrator" / "runner.py"
+    runner.write_text(
+        "import sys\n\nif sys.platform == 'win32':\n    def run() -> None:\n        start_windows()\n"
+        "else:\n    def run() -> None:\n        start_posix()\n\n\ndef stop() -> None:\n    halt()\n"
+    )
+    source = RunDirEngineSource(run_dir)
+    path = "improver-data/engine-source/src/issue_orchestrator/runner.py"
+
+    assert _resolve(source, "runner:run") is None
+    assert source.enclosing_function(path, 5, "start_windows()") is None
+    assert source.enclosing_function(path, 8, "start_posix()") is None
+    assert _resolve(source, "runner:stop") == source.enclosing_function(path, 12, "halt()") is not None
+
+
 def test_a_file_staged_under_two_names_is_one_module(run_dir: Path) -> None:
     """r2 F4: a symlink and its target are one module, cited or named."""
     (run_dir / HANDLER).with_name("alias.py").symlink_to("completion_handler.py")

@@ -247,29 +247,29 @@ def _same_defect_folds(
 
     Only a DIRECT relation folds (r1 F2): one design finding related to
     another only through a third may be about another defect. In order
-    (the primary heat's first), a design finding related to exactly one
-    stall finding folds into it; one related to no stall finding folds into
-    the one earlier design finding that still files its own issue and that
-    it is related to together with every design finding already folded
-    there (r3 F1: so no order of the findings joins two that are not
-    related). Related to two of either, it folds into none: which one
-    carries it is not known."""
-    stall_profiles = [identity.stall_profile(f) for f in stalls]
+    (the primary heat's first), a design finding folds into a finding only
+    if it is related to that finding AND to every design finding already
+    folded into it (r3 F1, r4 F1: so no order of the findings, and no
+    finding both are related to, joins two that are not related): into the
+    one stall finding it is related to, or, related to none, into the one
+    earlier design finding that still files its own issue. Related to two
+    of either, or not to all already folded there, it folds into none:
+    which one carries it is not known."""
+    #: Each finding that files its own issue (stall findings, then the
+    #: design findings that fold into nothing), with those folded into it.
+    stall_groups = [[identity.stall_profile(f)] for f in stalls]
+    design_groups: list[list[DefectProfile]] = []
     folds: dict[str, str] = {}
-    #: Each design finding that files its own issue, with those folded into it.
-    kept: list[list[DefectProfile]] = []
     for design in designs:
         profile = identity.design_profile(design)
-        related = [s.finding_id for s in stall_profiles if same_defect(profile, s)]
-        if len(related) == 1:
-            folds[design.id] = related[0]
-            continue
-        groups = [] if related else [g for g in kept if all(same_defect(profile, m) for m in g)]
-        if len(groups) == 1:
-            folds[design.id] = groups[0][0].finding_id
-            groups[0].append(profile)
+        related = [g for g in stall_groups if same_defect(profile, g[0])] or [
+            g for g in design_groups if same_defect(profile, g[0])
+        ]
+        if len(related) == 1 and all(same_defect(profile, m) for m in related[0][1:]):
+            folds[design.id] = related[0][0].finding_id
+            related[0].append(profile)
         else:
-            kept.append([profile])
+            design_groups.append([profile])
     return folds
 
 
