@@ -43,6 +43,7 @@ from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import Any, cast
 
+from .launch_prompt import RULINGS_SEPARATOR
 from .session_kind import SandboxRole, SessionKind
 
 #: The block that carries an issue's standing rulings at the top of its body.
@@ -538,6 +539,40 @@ _PREAMBLE: Mapping[RulingsAudience, str] = {
 }
 
 
+#: Around every binding section of rulings a prompt carries (#8347). Ruling
+#: text, sources and scope entries may not contain the marker stem, so no ruling
+#: can forge or truncate one; :func:`without_binding_sections` drops what they
+#: enclose when a later prompt embeds an earlier one (a validation retry), so
+#: only the rulings read for THAT launch bind it.
+BINDING_BEGIN = "<!-- io:standing-ruling:binding:begin -->"
+BINDING_END = "<!-- io:standing-ruling:binding:end -->"
+
+
+def _binding(section: str) -> str:
+    return f"{BINDING_BEGIN}\n{section}\n{BINDING_END}"
+
+
+def without_binding_sections(prompt: str) -> str:
+    """*prompt* without the binding sections of rulings it embeds.
+
+    A validation retry embeds the original launch's prompt as its task; the
+    rulings that prompt carried were read then. A ruling retired since must not
+    bind the retry, and one recorded since must, so the retry drops the old
+    sections and binds itself with the rulings read now. A begin marker without
+    its end leaves the rest untouched (nothing a ruling wrote can cause it).
+    """
+    out = prompt
+    while (start := out.find(BINDING_BEGIN)) != -1:
+        end = out.find(BINDING_END, start)
+        if end == -1:
+            break
+        tail = out[end + len(BINDING_END):]
+        # The separator a launch prompt puts between its rulings and its task.
+        tail = tail.removeprefix(RULINGS_SEPARATOR)
+        out = out[:start] + tail
+    return out
+
+
 #: How a rework prompt opens the rulings it must implement (the brief).
 REWORK_BRIEF_OPENING = "YOUR BRIEF FOR THIS REWORK"
 #: How every prompt section of standing rulings begins.
@@ -567,7 +602,7 @@ def rulings_prompt(
         return None
     preamble = _rework_brief(items) if audience is RulingsAudience.REWORK_BRIEF else _PREAMBLE[audience]
     rendered = "\n\n".join(ruling_in_full(ruling) for ruling in items)
-    return (
+    return _binding(
         f"{RULINGS_PROMPT_HEADING}{issue_number}\n\n"
         f"{preamble}\n\n{rendered}\n\n(End of the standing rulings on issue #{issue_number}.)"
     )
@@ -590,7 +625,9 @@ COVERED_RULINGS_HEADING = "## BINDING: standing rulings on the work this run cov
 
 _COVERED_PREAMBLE = (
     "These are the maintainer's settled decisions for the issues whose work this run"
-    " reviews or may act on (a batch review's PRs, a health review's problem issues)."
+    " reviews or may act on (a batch review's PRs, a health review's problem issues and"
+    " the blocked items it triages), read for this launch: they supersede any ruling text"
+    " in this run's data files."
     " Judge each PR against its issue's rulings: one that contradicts a ruling (including"
     " one that keeps, restores or extends what the ruling retires) is a finding to report"
     " and act on, never work to pass as sound. Never propose or take an action that"
@@ -622,4 +659,4 @@ def covered_rulings_prompt(
         )
     if not sections:
         return None
-    return "\n\n".join((COVERED_RULINGS_HEADING, _COVERED_PREAMBLE, *sections))
+    return _binding("\n\n".join((COVERED_RULINGS_HEADING, _COVERED_PREAMBLE, *sections)))

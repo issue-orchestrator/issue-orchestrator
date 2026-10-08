@@ -161,7 +161,7 @@ def test_a_tech_lead_run_is_bound_by_each_covered_issues_rulings_read_fresh() ->
 
     section = owner.covered_section({364: (12,), 365: (13,)})
 
-    assert section is not None and section.startswith(COVERED_RULINGS_HEADING)
+    assert section is not None and COVERED_RULINGS_HEADING in section
     assert f"{RULINGS_PROMPT_HEADING}364 (PR #12)" in section and ruling.text in section
     assert "365" not in section and "#13" not in section
     assert sorted(bodies.reads) == [364, 365] and index.rows == {364: (ruling,), 365: ()}
@@ -235,3 +235,26 @@ def test_backfill_never_trusts_a_stale_listing_over_github() -> None:
 
     assert filled == 1 and index.rows == {364: ()}
     assert bodies.reads == [364, 9, 11]  # stopped at the failing read: 12 waits for the next startup
+
+
+def test_a_retried_health_review_reads_its_triage_items_rulings_fresh() -> None:
+    """codex r3 F2: a triage item outside the cohort is covered work too; a
+    ruling recorded on it after the launch binds the retry."""
+    from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+    from issue_orchestrator.control.tech_lead_covered_rulings import retried_covered_rulings
+    from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
+
+    since = a_ruling("m-00000000beef", "Recorded after the launch.")
+    bodies = IssueBodies({365: body_with(since), 6410: SPEC})
+    authority = SimpleNamespace(
+        manifest_pr_numbers=(), problem_issue_numbers=(7,), anchor_issue_number=6410,
+        triage_issue_numbers=lambda: frozenset({365, 6410}),
+    )
+
+    section = retried_covered_rulings(
+        IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, rulings_owner(bodies)), SimpleNamespace(),
+        SimpleNamespace(authority=authority), repo_slug="test/repo",
+    )
+
+    assert section is not None and since.text in section
+    assert sorted(bodies.reads) == [7, 365]  # the anchor's own come with its launch prompt

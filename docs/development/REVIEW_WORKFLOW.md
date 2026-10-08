@@ -87,11 +87,14 @@ claims it settles; no files means the whole issue).
   covers coding, validation retry, rework of every kind, review, retrospective
   review, both review-exchange roles (read again before every turn), tech
   lead, and debug sessions. Every rework (conflict, CI, merge queue or review
-  feedback) gets them as its brief. The triage agenda carries each item's
-  rulings in full. A tech-lead run is also told the rulings of every other
-  issue whose work it covers, read fresh from each body: a batch review's PRs'
-  issues (the manifest lists each PR's `issue_numbers`) and a health review's
-  problem cohort (#8347), again at every validation retry. A covered issue
+  feedback) gets them as its brief. A tech-lead run is also told the rulings
+  of every other issue whose work it covers, read fresh from each body: a
+  batch review's PRs' issues (the manifest lists each PR's `issue_numbers`), a
+  health review's problem cohort and the blocked items it triages (the triage
+  agenda points at them), again at every validation retry (#8347). Every
+  binding section sits between `<!-- io:standing-ruling:binding:begin/end -->`
+  markers; a validation retry drops the sections its original prompt carried
+  and is bound only by the rulings read for the retry. A covered issue
   whose read fails or whose block is damaged refuses the launch; a number
   GitHub has no issue for binds nothing. The Tech lead page shows rulings as
   of the engine's last read; at startup the owner compares the bodies the

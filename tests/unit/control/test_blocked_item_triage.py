@@ -1489,6 +1489,9 @@ def test_the_triage_agenda_names_each_items_standing_rulings() -> None:
 
     [item] = agenda.items
     assert item.to_dict()["standing_rulings"] == list(item.standing_rulings)
+    assert "Never extend the walk checker." in item.standing_rulings[0]  # the full text, not a summary line
     rendered = render_triage_instructions(agenda)
-    assert "standing rulings (binding" in rendered and f"`{ruling.ruling_id}`" in rendered
-    assert "Never extend the walk checker." in rendered  # the full text, not a summary line
+    # #8347: the prompt points at the binding section of the covered work's
+    # rulings (read for each launch, a retry's too); it never copies them.
+    assert "it has standing rulings: see the binding section on issue #262" in rendered
+    assert "Never extend the walk checker." not in rendered

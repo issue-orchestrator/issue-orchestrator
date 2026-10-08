@@ -29,14 +29,13 @@ def covered_issues(
     anchor: int,
 ) -> dict[int, tuple[int, ...]]:
     """The other issues whose work a tech-lead run covers, with their PRs in it:
-    a batch's PRs' issues (*pr_issues*) and a health review's problem cohort.
-    The anchor's own rulings come with its launch prompt, and a triage item's
-    with its agenda entry, so neither is repeated."""
+    a batch's PRs' issues (*pr_issues*), a health review's problem cohort and
+    the blocked items it triages. The anchor's own rulings come with its launch
+    prompt, so they are not repeated."""
     covered = dict(pr_issues)
-    for number in problem_issue_numbers:
+    for number in (*problem_issue_numbers, *sorted(triaged)):
         covered.setdefault(number, ())
-    for number in (anchor, *triaged):
-        covered.pop(number, None)
+    covered.pop(anchor, None)
     return covered
 
 

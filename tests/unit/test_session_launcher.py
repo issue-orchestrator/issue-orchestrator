@@ -10992,7 +10992,7 @@ class TestStandingRulingsReachEveryLaunch:
     standing rulings, framed for what the session does."""
 
     def test_a_coding_session_is_told_to_build_to_the_ruling(self, rulings_bundle, sample_issue) -> None:
-        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+        from issue_orchestrator.domain.standing_ruling import BINDING_BEGIN, RULINGS_PROMPT_HEADING
 
         bundle, _owner, _bodies, ruling = rulings_bundle
 
@@ -11000,7 +11000,7 @@ class TestStandingRulingsReachEveryLaunch:
 
         assert result.success is True
         prompt = result.session.original_prompt
-        assert prompt.startswith(f"{RULINGS_PROMPT_HEADING}123")  # binding, before the task
+        assert prompt.startswith(f"{BINDING_BEGIN}\n{RULINGS_PROMPT_HEADING}123")  # binding, before the task
         assert f"`{ruling.ruling_id}`" in prompt and ruling.text in prompt and "Build to these rulings" in prompt
         assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
 
@@ -11021,6 +11021,29 @@ class TestStandingRulingsReachEveryLaunch:
         command = bundle.create_session_calls[0]["cmd"]
         assert REWORK_BRIEF_OPENING in command and ruling.ruling_id in command
         assert command.index(REWORK_BRIEF_OPENING) < command.index("Merge conflict against base branch")
+
+    def test_a_validation_retry_drops_a_ruling_retired_since_its_launch(self, rulings_bundle) -> None:
+        """#8347 (codex r3 F1): the retry embeds its original prompt, whose rulings
+        were read then; only the rulings read for the retry bind it."""
+        from tests.standing_ruling_helpers import a_ruling, body_with
+        from issue_orchestrator.domain.launch_prompt import RULINGS_SEPARATOR
+        from issue_orchestrator.domain.standing_ruling import RulingsAudience, rulings_prompt
+
+        bundle, _owner, bodies, ruling = rulings_bundle
+        retired = a_ruling("m-0000000dead0", "Retired since the launch.")
+        original = f"{rulings_prompt(123, (retired,), RulingsAudience.CODER)}{RULINGS_SEPARATOR}Work on issue #123"
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Fix checkout", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-fix-checkout",
+            original_prompt=original, validation_error="dirty worktree",
+            validation_error_file=None, retry_count=1, source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+        bodies.bodies[123] = body_with(ruling)
+
+        assert bundle.launcher.launch_validation_retry_session(retry, active_sessions=[]).success is True
+        command = bundle.create_session_calls[0]["cmd"]
+        assert ruling.ruling_id in command and "Work on issue #123" in command
+        assert retired.ruling_id not in command and retired.text not in command
 
     def test_a_validation_retry_is_bound_too(self, rulings_bundle) -> None:
         bundle, _owner, _bodies, ruling = rulings_bundle
@@ -11198,8 +11221,15 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
         from tests.standing_ruling_helpers import a_ruling, body_with
 
-        bundle, _owner, bodies, _ruling, _anchor = tech_lead_bundle
+        from dataclasses import replace
+
+        from issue_orchestrator.domain.standing_ruling import covered_rulings_prompt
+
+        bundle, _owner, bodies, retired, _anchor = tech_lead_bundle
+        # The original launch was bound by a ruling the maintainer has retired since.
         retry = self._health_retry(sample_config, tmp_path)
+        launched_with = covered_rulings_prompt({365: ()}, {365: (retired,)})
+        retry = replace(retry, original_prompt=f"Run the health review.\n\n{launched_with}")
         since = a_ruling("m-00000000beef", "Recorded after the original launch.")
         bodies.bodies[365] = body_with(since)
 
@@ -11208,6 +11238,8 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         assert result.success is True, result.reason
         prompt = bundle.create_session_calls[0]["cmd"]
         assert f"{RULINGS_PROMPT_HEADING}365" in prompt and since.text in prompt
+        assert retired.ruling_id not in prompt and retired.text not in prompt  # codex r3 F1
+        assert "Run the health review." in prompt
 
     def test_a_failed_github_read_keeps_the_retry_queued_and_releases_its_claim(
         self, tech_lead_bundle, sample_config, tmp_path
