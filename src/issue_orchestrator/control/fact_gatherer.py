@@ -39,7 +39,7 @@ from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReview
 from .published_review_release import held_investigation_subjects
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds, recovery_held_reviews
 from .blocked_item_triage import triage_owed
-from .needs_human_episodes import UNWIRED_EPISODES, NeedsHumanEpisodes
+from .block_episodes import UNWIRED_EPISODES, BlockEpisodes
 from .health_review_trigger import (
     health_review_decision,
     health_review_interval_minutes,
@@ -111,10 +111,10 @@ class FactGatherer:
     # tests need not wire it; without it the anchor scan classifies no
     # approved ops (gate-labeled proposals are still excluded from anchors).
     tech_lead_authority: Optional["TechLeadAuthorityStore"] = None
-    # The needs-human block's episodes (#8688), so a re-blocked item keeps a
-    # triage owed. Bound post-construction by ``wire_tech_lead_approvals``;
+    # Blocked items' block episodes (#8688, #8731), so a re-blocked item keeps
+    # a triage owed. Bound post-construction by ``wire_tech_lead_approvals``;
     # unbound, a triage check raises rather than reading no episodes.
-    needs_human_episodes: NeedsHumanEpisodes = UNWIRED_EPISODES
+    block_episodes: BlockEpisodes = UNWIRED_EPISODES
     # Fire-and-forget projection sink for tech_lead facts (#6781): like the
     # event sink, it observes gathered facts (retaining the latest case-file
     # projection + refreshing the tech_lead board file) and makes no decisions.
@@ -486,7 +486,7 @@ class FactGatherer:
         authority = self.tech_lead_authority
         health_decision = health_review_decision(self.config, state, now_ts, triage_owed=lambda: (
             authority is not None
-            and triage_owed(self.config, state, authority, self.needs_human_episodes)))
+            and triage_owed(self.config, state, authority, self.block_episodes)))
         due = health_decision.due
 
         existing_tech_lead_issue: Optional[int] = None

@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from .orchestrator_deps import OrchestratorDeps
     from ..ports.label_application import LabelApplicationReader
-    from .needs_human_episodes import NeedsHumanEpisodes
+    from .block_episodes import BlockEpisodes
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -549,22 +549,29 @@ def build_blocked_item_triage(
         open_proposals=lambda: open_proposal_index(deps.tech_lead_authority),
         timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
         standing_rulings=deps.standing_rulings.active,
-        episodes=build_needs_human_episodes(config, deps),
+        episodes=build_block_episodes(config, deps),
     )
 
 
-def build_needs_human_episodes(config: "Config", deps: "OrchestratorDeps") -> "NeedsHumanEpisodes":
-    """The needs-human episode owner (#8688) over the deps' pending-work ledger,
+def build_block_episodes(config: "Config", deps: "OrchestratorDeps") -> "BlockEpisodes":
+    """The block-episode owner (#8688, #8731): the needs-human generations of
+    the deps' pending-work ledger and every other blocking label's application,
     verified against GitHub's issue events and rechecked on the tick once per
     health-review interval."""
+    from .block_episodes import BlockEpisodes
     from .health_review_trigger import health_review_interval_minutes
     from .needs_human_episodes import NeedsHumanEpisodes
 
-    return NeedsHumanEpisodes(
-        store=deps.pending_work_claims,
-        label_applications=lambda number, label: cast(
-            "LabelApplicationReader", deps.repository_host
-        ).label_application(number, label),
+    def host() -> "LabelApplicationReader":
+        return cast("LabelApplicationReader", deps.repository_host)
+
+    return BlockEpisodes(
+        needs_human=NeedsHumanEpisodes(
+            store=deps.pending_work_claims,
+            label_applications=lambda number, labels: host().label_applications(number, labels),
+            labels=deps.label_manager,
+        ),
+        label_applications=lambda number, labels: host().label_applications(number, labels),
         labels=deps.label_manager,
         clock=time.time,
         recheck_seconds=lambda: health_review_interval_minutes(config) * 60,

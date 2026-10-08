@@ -1934,8 +1934,18 @@ class GitHubAdapter:
     def label_application(self, issue_number: int, label: str) -> "LabelEvent | None":
         """Block-episode evidence (#8688): the event that put ``label`` on, while
         it stands. Only the label's own transitions end it, never a close."""
-        run = self._client.standing_label_events(issue_number, label, close_voids=False)
-        return _label_event(issue_number, run[0]) if run else None
+        return self.label_applications(issue_number, (label,))[label.casefold()]
+
+    def label_applications(
+        self, issue_number: int, labels: Sequence[str]
+    ) -> "dict[str, LabelEvent | None]":
+        """:meth:`label_application` of each of ``labels``, from one read of
+        the issue's events, keyed by casefolded name (#8731)."""
+        runs = self._client.standing_label_runs(issue_number, labels, close_voids=False)
+        return {
+            folded: _label_event(issue_number, run[0]) if run else None
+            for folded, run in runs.items()
+        }
 
     def latest_label_removal(self, issue_number: int, label: str) -> "LabelEvent | None":
         """Who last took ``label`` off, while it is still off."""

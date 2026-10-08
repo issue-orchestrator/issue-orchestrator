@@ -1,5 +1,6 @@
-"""#8688 scenario: a triaged item is unblocked, re-blocked with the SAME cause,
-and is owed a new triage.
+"""#8688/#8731 scenarios: a triaged item is unblocked, re-blocked with the SAME
+cause, and is owed a new triage, whether its block is the shared needs-human
+block or another blocking label.
 
 Real owners end to end: the shared needs-human block (:class:`NeedsHumanBlock`)
 over the real SQLite cause store, the triage owner's agenda and the health
@@ -10,8 +11,10 @@ put each standing label on.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from issue_orchestrator.control.block_episodes import BlockEpisodes
 from issue_orchestrator.control.blocked_item_triage import (
     StateBlockedItemTriage,
     open_proposal_index,
@@ -73,6 +76,28 @@ class _GitHub:
     def label_application(self, issue_number: int, label: str) -> LabelEvent | None:
         return self.applied.get((issue_number, label))
 
+    def label_applications(self, issue_number: int, labels: Sequence[str]) -> dict[str, LabelEvent | None]:
+        return {label: self.label_application(issue_number, label) for label in labels}
+
+
+def _episodes(
+    store: SqlitePendingWorkClaimStore,
+    github: _GitHub,
+    labels: LabelManager,
+    *,
+    recheck_seconds: float,
+    needs_human_reads: Callable[[int, Sequence[str]], dict[str, LabelEvent | None]] | None = None,
+) -> BlockEpisodes:
+    """The block-episode owner as the composition builds it, over *github*."""
+    return BlockEpisodes(
+        needs_human=NeedsHumanEpisodes(
+            store=store, label_applications=needs_human_reads or github.label_applications,
+            labels=labels,
+        ),
+        label_applications=github.label_applications, labels=labels,
+        clock=lambda: 0.0, recheck_seconds=lambda: recheck_seconds,
+    )
+
 
 def _explained(fingerprint: str, run: str, decided_at: str) -> TechLeadCharterDecision:
     """The charter record an applied ``explained`` triage of #450 leaves."""
@@ -122,17 +147,11 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         needs_human_causes=block.recorded_causes, charter_ledger=authority.charter_ledger,
         open_proposals=lambda: open_proposal_index(authority),
         timeline_reader=lambda number, limit: [], standing_rulings=lambda number: (),
-        episodes=NeedsHumanEpisodes(
-            store=store, label_applications=github.label_application, labels=labels,
-            clock=lambda: 0.0, recheck_seconds=lambda: 3600,
-        ),
+        episodes=_episodes(store, github, labels, recheck_seconds=3600),
     )
     # The tick's check verifies against GitHub on every call here (a zero
     # recheck period), as it does once per interval in production.
-    episodes = NeedsHumanEpisodes(
-        store=store, label_applications=github.label_application, labels=labels,
-        clock=lambda: 0.0, recheck_seconds=lambda: 0,
-    )
+    episodes = _episodes(store, github, labels, recheck_seconds=0)
     question = HumanBlockRequest(
         target=ITEM, cause=NeedsHumanCause.AGENT_COMPLETION, reason="Agent requested human input",
     )
@@ -210,15 +229,12 @@ def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: 
     [opened] = store.needs_human_episodes([ITEM]).values()
     during: list[BlockOutcome] = []
 
-    def read_then_race(number: int, label: str) -> LabelEvent | None:
-        standing = github.label_application(number, label)
+    def read_then_race(number: int, labels: Sequence[str]) -> dict[str, LabelEvent | None]:
+        standing = github.label_applications(number, labels)
         during.append(block.release(question))  # the owner tries to lift it now
         return standing
 
-    episodes = NeedsHumanEpisodes(
-        store=store, label_applications=read_then_race, labels=labels,
-        clock=lambda: 0.0, recheck_seconds=lambda: 0,
-    )
+    episodes = _episodes(store, github, labels, recheck_seconds=0, needs_human_reads=read_then_race)
     issue = Issue(number=ITEM, title="t", labels=[labels.needs_human], repo="r/r", state="open")
     assert episodes.verified({ITEM: issue}) == {ITEM: opened}
     assert during == [BlockOutcome.FAILED]  # the owner was held off
@@ -250,3 +266,67 @@ def test_a_self_recording_cause_still_dates_its_generation(tmp_path: Path) -> No
     assert store.bind_needs_human_episode(451, event_id=9, applied_at="2026-10-07T00:00:00Z").startswith(
         "2026-10-07T00:00:00Z#"
     )
+
+
+def test_a_publish_failed_block_that_recurs_after_a_successful_retry_is_owed_a_new_triage(
+    tmp_path: Path,
+) -> None:
+    """#8731 scenario: ``publish-failed`` with no needs-human beside it. The
+    block is triaged; a retry publishes and lifts the label; the next publish
+    fails and the label comes back alone. Same labels, a new episode: the
+    item is owed a triage, by the agenda and by the tick's own recheck."""
+    config = Config()
+    config.repo = "porchpin/porchpin"
+    config.tech_lead_review_agent = "agent:tech-lead"
+    labels = LabelManager(config)
+    github = _GitHub()
+    github.live[ITEM] = {"agent:backend"}
+    store = SqlitePendingWorkClaimStore.for_repo(tmp_path)
+    authority = InMemoryTechLeadAuthorityStore()
+    state = OrchestratorState()
+
+    def observe() -> None:
+        state.cached_scope_issues = [Issue(
+            number=ITEM, title="Publish the share page", labels=sorted(github.live[ITEM]),
+            repo=config.repo, state="open",
+        )]
+
+    triage = StateBlockedItemTriage(
+        config=config, state=lambda: state, labels=labels,
+        needs_human_causes=lambda numbers: {}, charter_ledger=authority.charter_ledger,
+        open_proposals=lambda: open_proposal_index(authority),
+        timeline_reader=lambda number, limit: [], standing_rulings=lambda number: (),
+        episodes=_episodes(store, github, labels, recheck_seconds=3600),
+    )
+    episodes = _episodes(store, github, labels, recheck_seconds=0)
+
+    # 1. The publish fails; the block is granted and triaged.
+    github.add_label(ITEM, "publish-failed")
+    observe()
+    [granted] = triage.agenda(anchor_issue_number=ANCHOR).grants
+    authority.charter_ledger.record_decisions([
+        _explained(granted.fingerprint, "run-1", "2026-10-04T14:50:00+00:00"),
+    ])
+    assert triage.agenda(anchor_issue_number=ANCHOR).in_force == (ITEM,)
+    assert triage_owed(config, state, authority, episodes) is False
+
+    # 2. A retry publishes and lifts the block; 3. the next publish fails again.
+    github.remove_label(ITEM, "publish-failed")
+    observe()
+    assert triage.agenda(anchor_issue_number=ANCHOR).items == ()
+    github.add_label(ITEM, "publish-failed")
+    observe()
+
+    assert triage_owed(config, state, authority, episodes) is True
+    agenda = triage.agenda(anchor_issue_number=ANCHOR)
+    [item] = agenda.items
+    assert item.issue_number == ITEM and agenda.in_force == ()
+    assert item.fingerprint != granted.fingerprint
+    assert item.reason.startswith("it was blocked again, under the same labels")
+
+    # 4. The triage of the new episode covers it again, with no store row.
+    authority.charter_ledger.record_decisions([
+        _explained(item.fingerprint, "run-2", "2026-10-08T01:11:17+00:00"),
+    ])
+    assert triage_owed(config, state, authority, episodes) is False
+    assert store.needs_human_episodes([ITEM]) == {}

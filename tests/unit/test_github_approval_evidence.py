@@ -137,6 +137,37 @@ def test_a_block_label_kept_on_through_a_close_and_reopen_is_the_same_applicatio
     assert adapter.label_application(5, "needs-human") is None
 
 
+def test_one_events_read_dates_every_blocking_label_of_an_item() -> None:
+    """#8731: every blocking label of an item is dated from ONE scan of its
+    events, each by the first event of its own standing run: a label removed
+    and re-applied is a new application, one never applied is not standing,
+    and a close never ends a block label's run."""
+    events = [
+        _labeled(1, "Blocked-Failed", "io-bot[bot]"),
+        _labeled(2, "publish-failed", "io-bot[bot]"),
+        {"id": 3, "event": "closed", "actor": {"login": "lead", "type": "User"}},
+        {"id": 4, "event": "reopened", "actor": {"login": "lead", "type": "User"}},
+        _labeled(5, "publish-failed", "io-bot[bot]", kind="unlabeled"),
+        _labeled(6, "publish-failed", "io-bot[bot]"),
+        _labeled(7, "blocked-failed", "lead"),
+    ]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=events)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+
+    applications = adapter.label_applications(5, ("blocked-failed", "publish-failed", "recovery-pending"))
+
+    assert {label: event and event.event_id for label, event in applications.items()} == {
+        "blocked-failed": 1, "publish-failed": 6, "recovery-pending": None,
+    }
+    assert len(requests) == 1
+
+
 def test_no_matching_event_is_none_only_after_the_final_page() -> None:
     client = _client_with_transport(
         httpx.MockTransport(lambda request: httpx.Response(200, json=[_labeled(1, "bug", "lead")]))
