@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.human_block import BlockOutcome, NeedsHumanCause
 from ..domain.decision_steps import (
+    DECISION_STEP_RULING_PREFIX,
     DecisionFollowThrough,
     DecisionStep,
     DecisionStepKind,
@@ -347,7 +348,7 @@ class DecisionStepsOwner:
     def _step_ruling(self, context: DecisionStepContext, index: int, step: DecisionStep) -> "StandingRuling":
         proposal = context.proposal_issue_number
         return self.rulings.ruling(
-            ruling_id=f"ds-{proposal}-{index}",
+            ruling_id=f"{DECISION_STEP_RULING_PREFIX}{proposal}-{index}",
             text=step.text,
             authority=RulingAuthority.APPROVED_DECISION,
             source=f"tech-lead decision on #{context.subject}, approved on proposal #{proposal} (step {index})",

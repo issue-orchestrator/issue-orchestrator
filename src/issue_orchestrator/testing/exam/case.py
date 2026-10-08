@@ -15,7 +15,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
-from ...domain.decision_steps import DECISION_STEP_MARKER_PREFIX, OPERATOR_CHECKLIST_HEADING
+from ...domain.decision_steps import (
+    DECISION_STEP_MARKER_PREFIX,
+    DECISION_STEP_RULING_PREFIX,
+    OPERATOR_CHECKLIST_HEADING,
+)
 from ...domain.standing_ruling import REWORK_BRIEF_OPENING, RULINGS_PROMPT_HEADING
 from ...domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION_TYPES
 from .observation import ExamObservation, PullRequestState, TriageFact, WorkItemFact
@@ -817,12 +821,14 @@ def no_hand_steps_in_prose(role: str) -> Goal:
 
 def body_ruling_states(role: str, text: str, *, authority: str) -> Goal:
     """The item's body carries ``text`` word for word in a standing ruling of
-    ``authority`` (#8691: a decision step's note, not just the decision itself)."""
+    ``authority`` that a decision STEP recorded (#8691), not the decision itself."""
 
     def check(item: WorkItemFact) -> GoalCheck:
         if item.body_rulings_error:
             return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
-        stating = [r.ruling_id for r in item.body_rulings if r.authority == authority and text in r.text]
+        # A decision STEP's ruling (``ds-<proposal>-<step>``), never the decision's own.
+        stating = [r.ruling_id for r in item.body_rulings
+                   if r.authority == authority and r.ruling_id.startswith(DECISION_STEP_RULING_PREFIX) and text in r.text]
         listed = [r.ruling_id for r in item.body_rulings] or "none"
         return GoalCheck(bool(stating), f"#{item.issue_number}: rulings {listed}; stating the note: {stating or 'none'}")
 

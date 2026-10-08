@@ -135,3 +135,10 @@ def test_each_missing_note_fails_on_its_own() -> None:
     assert _failed(*_with(only_decision)) == {"decided.body_ruling_states_note"}
     noted = replace(_right()[2], body_rulings=(BodyRulingFact("pd-1", "approved_decision", "other"),))
     assert _failed(_right()[0], _right()[1], noted, _right()[3]) == {"noted.body_ruling_states_note"}
+
+
+def test_the_decisions_own_ruling_never_stands_in_for_the_delivery_plan_step() -> None:
+    """r4 F2: the note must come from a decision STEP's ruling (ds-...)."""
+    decided = _right()[0]
+    own_only = replace(decided, body_rulings=(BodyRulingFact("pd-930", "approved_decision", DELIVERY_PLAN_NOTE),))
+    assert _failed(*_with(own_only)) == {"decided.body_ruling_states_note"}

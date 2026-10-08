@@ -791,3 +791,16 @@ def test_a_refused_rework_keeps_the_prs_merge_hold(tmp_path: Path) -> None:
     assert "needs-human" in world.github.labels[PR]
     assert "Refused at write time: step 1" in "".join(world.github.comments[PROPOSAL])
     assert result.success  # the item was released; the refused step is on the record
+
+
+# -- review round 4 ---------------------------------------------------------------
+
+
+def test_steps_run_in_the_order_listed_so_a_rework_must_come_last() -> None:
+    """r4 F1: a PR rework runs after the item's release; listing it before
+    another step would run them out of the order the operator approved."""
+    with pytest.raises(ValueError, match="must come after every other step"):
+        _decision({"kind": "request_pr_rework", "number": PR},
+                  {"kind": "comment", "number": ITEM, "text": "routed"})
+    _decision({"kind": "comment", "number": ITEM, "text": "routed"},
+              {"kind": "request_pr_rework", "number": PR})

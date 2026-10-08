@@ -606,7 +606,7 @@ Compact `tech-lead-decision.json` example:
   `{"kind": "request_pr_rework", "number": PR}` (the decided issue's PR, as
   listed in `scoped-rework-targets.json`, goes back for rework with the
   decision as its brief; its merge-decision `needs-human` comes off; it runs
-  after the item is released), and `{"kind": "comment", "number": N, "text":
+  after the item is released, so list it last), and `{"kind": "comment", "number": N, "text":
   "...", "on_pr": false}` (a link or pointer). Anything else (a workflow-file
   edit the bot may not push, a repository setting, a credential) goes in
   `operator_steps`, shown to the operator as a checklist. The engine re-checks

@@ -214,6 +214,10 @@ class DecisionFollowThrough:
         for kind in PR_STEP_KINDS:
             prs = [step.number for step in self.steps if step.kind is kind]
             _require(len(prs) <= 1, f"at most one {kind.value} step, got PRs {prs}")
+        phases = [step.after_release for step in self.steps]
+        _require(phases == sorted(phases),
+                 "a step that runs after the item's release (request_pr_rework) must come after every"
+                 " other step: steps run in the order listed")
         closes = [step.number for step in self.steps if step.kind is DecisionStepKind.CLOSE_SUPERSEDED_PROPOSAL]
         _require(len(closes) == len(set(closes)), f"a proposal is closed once, got {closes}")
 
@@ -307,7 +311,7 @@ DECISION_STEPS_PROMPT_RULES = """- **A decision's consequences beyond its item a
   `{"kind": "request_pr_rework", "number": PR}` (the decided issue's PR, as
   listed in `scoped-rework-targets.json`, goes back for rework with the
   decision as its brief; its merge-decision `needs-human` comes off; it runs
-  after the item is released), and `{"kind": "comment", "number": N, "text":
+  after the item is released, so list it last), and `{"kind": "comment", "number": N, "text":
   "...", "on_pr": false}` (a link or pointer). Anything else (a workflow-file
   edit the bot may not push, a repository setting, a credential) goes in
   `operator_steps`, shown to the operator as a checklist. The engine re-checks
@@ -337,6 +341,9 @@ def follow_through_section(follow_through: DecisionFollowThrough, *, subject: in
         parts.append(f"{OPERATOR_CHECKLIST_HEADING}\n\n" + checklist + "\n")
     return "\n" + "\n".join(parts)
 
+
+#: Every ruling a decision step records starts its id with this (``ds-<proposal>-<step>``).
+DECISION_STEP_RULING_PREFIX = "ds-"
 
 #: The proposal-body heading of the operator's own checklist.
 OPERATOR_CHECKLIST_HEADING = "### You do by hand (io cannot)"
