@@ -88,6 +88,8 @@ _MAX_CHECK_RUN_PAGES = 20
 # Pages of 100 status-check contexts read for one PR head before the read is
 # refused as incomplete (#8692): far more than any real head carries.
 _MAX_CHECK_CONTEXT_PAGES = 10
+# Pages of 100 jobs read for one workflow-run attempt (#8692).
+_MAX_ATTEMPT_JOB_PAGES = 5
 
 # Why one REST rollup source did (not) yield a trustworthy reading. ``ok`` =
 # read in full; ``permission_denied`` = the token lacks the read scope;
@@ -2917,20 +2919,40 @@ class GitHubHttpClient:
                 return tail, received
         raise AssertionError("unreachable: the second request always returns")
 
-    def get_actions_job_attempt(self, job_id: int) -> int:
-        """An Actions job's ``run_attempt`` (#8692); a job without one fails loudly."""
-        return self._run_attempt(f"/repos/{self._config.repo}/actions/jobs/{job_id}", "get_actions_job_attempt")
+    def get_actions_run_latest_attempt(self, run_id: int) -> dict[str, Any]:
+        """A workflow run's current ``run_attempt`` and the job ids of that attempt.
 
-    def get_actions_run_attempt(self, run_id: int) -> int:
-        """A workflow run's current ``run_attempt`` (#8692)."""
-        return self._run_attempt(f"/repos/{self._config.repo}/actions/runs/{run_id}", "get_actions_run_attempt")
-
-    def _run_attempt(self, path: str, caller: str) -> int:
-        payload = self._request_json("GET", path, use_cache=False, caller=caller)
-        attempt = payload.get("run_attempt") if isinstance(payload, dict) else None
+        ``GET /actions/runs/{id}`` for the attempt, then the attempt's own job
+        listing (``/attempts/{n}/jobs``, up to ``_MAX_ATTEMPT_JOB_PAGES`` pages).
+        Returns ``{"attempt", "job_ids"}``; an unreadable or partial answer raises.
+        """
+        base = f"/repos/{self._config.repo}/actions/runs/{run_id}"
+        run = self._request_json("GET", base, use_cache=False, caller="get_actions_run_latest_attempt")
+        attempt = run.get("run_attempt") if isinstance(run, dict) else None
         if type(attempt) is not int or attempt < 1:
-            raise GitHubHttpError(f"GitHub {path} has no run_attempt", method="GET", url=path)
-        return attempt
+            raise GitHubHttpError(f"GitHub {base} has no run_attempt", method="GET", url=base)
+        job_ids: list[int] = []
+        for page in range(1, _MAX_ATTEMPT_JOB_PAGES + 1):
+            listing = self._request_json(
+                "GET", f"{base}/attempts/{attempt}/jobs", params={"per_page": 100, "page": page},
+                use_cache=False, caller="get_actions_run_latest_attempt",
+            )
+            jobs = listing.get("jobs") if isinstance(listing, dict) else None
+            total = listing.get("total_count") if isinstance(listing, dict) else None
+            if not isinstance(jobs, list) or type(total) is not int:
+                raise GitHubHttpError(f"GitHub {base} attempt {attempt} jobs unreadable", method="GET", url=base)
+            job_ids.extend(job["id"] for job in jobs if isinstance(job, dict) and type(job.get("id")) is int)
+            if len(job_ids) >= total or len(jobs) < 100:
+                if len(job_ids) < total:
+                    raise GitHubScanIncompleteError(
+                        f"GitHub {base} attempt {attempt} listed {len(job_ids)} of {total} jobs",
+                        method="GET", url=base,
+                    )
+                return {"attempt": attempt, "job_ids": job_ids}
+        raise GitHubScanIncompleteError(
+            f"GitHub {base} attempt {attempt} has more than {100 * _MAX_ATTEMPT_JOB_PAGES} jobs",
+            method="GET", url=base,
+        )
 
     def rerun_failed_workflow_jobs(self, run_id: int) -> None:
         """Re-run the failed jobs of one Actions workflow run (#8692)."""

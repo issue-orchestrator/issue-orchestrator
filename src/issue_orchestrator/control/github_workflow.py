@@ -244,6 +244,7 @@ class GitHubWorkflow:
         state.discovered_awaiting_merge_drifts.extend(result.drifts)
         state.discovered_reworks.extend(triaged.reworks)
         state.discovered_ci_reruns.extend(triaged.reruns)
+        state.discovered_awaiting_merge_escalations.extend(triaged.escalations)
         state.discovered_awaiting_merge_escalations.extend(result.escalations)
         state.discovered_merge_queue_enqueues.extend(result.enqueues)
         if result.discovered:

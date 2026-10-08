@@ -1667,9 +1667,8 @@ class DiscoveredCiRerun:
     head_sha: str
     run_ids: tuple[int, ...]
     job_ids: tuple[int, ...]
-    #: The PR comment recording the re-run (marker, jobs, signatures); None
-    #: when an earlier request's record is already on the PR.
-    comment: str | None
+    #: The PR comment recording the re-run: marker, jobs and signatures.
+    comment: str
 
 
 @dataclass(frozen=True)
@@ -1691,6 +1690,7 @@ PostPublishEscalationKind = Literal[
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
     "status_rollup_permission_denied",  # token cannot read check status to decide
     "merge_queue_failed",  # GitHub merge queue rejected the PR; failure_action=needs_human
+    "ci_rerun_unconfirmed",  # io asked GitHub to re-run a transient CI failure; it never restarted
 ]
 
 

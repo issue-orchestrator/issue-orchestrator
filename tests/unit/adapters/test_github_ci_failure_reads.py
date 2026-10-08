@@ -133,12 +133,30 @@ def test_failed_contexts_keep_only_completed_failures_with_their_actions_ids() -
     )
 
 
-def test_job_attempt_is_read_and_a_missing_one_fails_loudly(make_client) -> None:
-    answers = iter([{"id": 77, "run_attempt": 2}, {"id": 77}])
-    client = make_client(lambda request: httpx.Response(200, json=next(answers)))
-    assert client.get_actions_job_attempt(77) == 2
-    with pytest.raises(GitHubHttpError, match="no run_attempt"):
-        client.get_actions_job_attempt(77)
+def test_run_latest_attempt_lists_the_jobs_of_that_attempt(make_client) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/actions/runs/900"):
+            return httpx.Response(200, json={"id": 900, "run_attempt": 2})
+        return httpx.Response(200, json={"total_count": 2, "jobs": [{"id": 31}, {"id": 32}]})
+
+    assert make_client(handler).get_actions_run_latest_attempt(900) == {"attempt": 2, "job_ids": [31, 32]}
+    assert paths == ["/repos/owner/repo/actions/runs/900", "/repos/owner/repo/actions/runs/900/attempts/2/jobs"]
+
+
+def test_a_partial_attempt_job_listing_fails_loudly(make_client) -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubScanIncompleteError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/actions/runs/900"):
+            return httpx.Response(200, json={"id": 900, "run_attempt": 1})
+        return httpx.Response(200, json={"total_count": 3, "jobs": [{"id": 31}]})
+
+    with pytest.raises(GitHubScanIncompleteError, match="listed 1 of 3"):
+        make_client(handler).get_actions_run_latest_attempt(900)
+
 
 
 def test_checks_of_a_commit_that_is_not_the_head_are_refused(make_client) -> None:

@@ -49,6 +49,7 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import (
+    CheckRunAttempt,
     FailedChecksRead,
     MergeQueueEntry,
     MergeQueueRead,
@@ -367,7 +368,7 @@ class MockGitHubAdapter:
         self.failed_checks: dict[int, FailedChecksRead] = {}
         self.job_logs: dict[int, str] = {}
         self.job_log_reads: list[int] = []
-        self.job_attempts: dict[int, int] = {}
+        self.run_attempts: dict[int, CheckRunAttempt] = {}
         self.rerun_calls: list[int] = []
 
     # IssueRepository methods
@@ -567,13 +568,9 @@ class MockGitHubAdapter:
         self.job_log_reads.append(job_id)
         return self.job_logs[job_id][-max_bytes:]
 
-    def read_check_job_attempt(self, job_id: int) -> int:
-        """The seeded job attempt (mock); a first run unless seeded."""
-        return self.job_attempts.get(job_id, 1)
-
-    def read_check_run_attempt(self, run_id: int) -> int:
-        """1, or 2 once a re-run of the run was recorded (mock)."""
-        return 2 if run_id in self.rerun_calls else 1
+    def read_check_run_latest_attempt(self, run_id: int) -> CheckRunAttempt:
+        """The seeded run attempt (mock): attempt 1 with no jobs unless seeded."""
+        return self.run_attempts.get(run_id, CheckRunAttempt(attempt=1, job_ids=frozenset()))
 
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Record a re-run request (mock)."""

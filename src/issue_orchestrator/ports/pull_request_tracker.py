@@ -201,6 +201,14 @@ class FailedChecksRead:
     checks: tuple[FailedCheck, ...]
 
 
+@dataclass(frozen=True)
+class CheckRunAttempt:
+    """A workflow run's current attempt (1 until re-run) and the job ids of it."""
+
+    attempt: int
+    job_ids: frozenset[int]
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
@@ -507,19 +515,11 @@ class PullRequestTracker(Protocol):
         """
         ...
 
-    def read_check_job_attempt(self, job_id: int) -> int:
-        """The run attempt a GitHub Actions job belongs to (1 = the first run).
+    def read_check_run_latest_attempt(self, run_id: int) -> "CheckRunAttempt":
+        """A GitHub Actions workflow run's current attempt and that attempt's jobs.
 
         Raises:
-            RepositoryHostError: If the job cannot be read.
-        """
-        ...
-
-    def read_check_run_attempt(self, run_id: int) -> int:
-        """A GitHub Actions workflow run's current attempt (1 until re-run).
-
-        Raises:
-            RepositoryHostError: If the run cannot be read.
+            RepositoryHostError: If the run or its jobs cannot be read in full.
         """
         ...
 

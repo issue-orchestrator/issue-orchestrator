@@ -23,6 +23,7 @@ from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import (
+    CheckRunAttempt,
     FailedCheck,
     FailedChecksRead,
     PRInfo,
@@ -67,16 +68,13 @@ class _Engine:
             body for n, body in self.comments if n == number and needle in body
         )
         host.read_check_job_log_tail.side_effect = lambda job_id, max_bytes: self.logs[job_id][-max_bytes:]
-        self.attempts: dict[int, int] = {}  # job id -> run attempt (1 unless a re-run)
-        host.read_check_job_attempt.side_effect = lambda job_id: self.attempts.get(job_id, 1)
-        # GitHub bumps a run's attempt the moment it accepts a re-run of it.
-        self.accepted_runs: set[int] = set()
+        # GitHub's runs: each run's current attempt and that attempt's job ids.
+        # Accepting a re-run starts a new attempt whose jobs have not run yet.
+        self.runs: dict[int, CheckRunAttempt] = {}
         self.refused_runs: set[int] = set()
         self.attempts_visible = True  # GitHub may show an accepted re-run's attempt late
         host.rerun_failed_check_jobs.side_effect = self._rerun
-        host.read_check_run_attempt.side_effect = (
-            lambda run_id: 2 if self.attempts_visible and run_id in self.accepted_runs else 1
-        )
+        host.read_check_run_latest_attempt.side_effect = lambda run_id: self.runs[run_id]
         self.host = host
         self.state = OrchestratorState(session_history=[SessionHistoryEntry(
             issue_number=228, title="Process tree", agent_type="agent:backend", status="completed",
@@ -93,7 +91,8 @@ class _Engine:
 
         if run_id in self.refused_runs:
             raise RepositoryHostError("403 Resource not accessible by integration")
-        self.accepted_runs.add(run_id)
+        if self.attempts_visible:
+            self.runs[run_id] = CheckRunAttempt(attempt=self.runs[run_id].attempt + 1, job_ids=frozenset())
 
     def apply(self, action) -> bool:
         """The applier's write, with this engine's GitHub."""
@@ -107,12 +106,22 @@ class _Engine:
             (n, re.sub(r"at=\S+ -->", "at=2026-01-01T00:00:00+00:00 -->", body)) for n, body in self.comments
         ]
 
-    def fail(self, job_id: int, log: str) -> None:
-        """The PR's one required check failed as Actions job ``job_id``."""
-        self.logs[job_id] = log
-        self.host.read_failed_checks.return_value = FailedChecksRead(
-            head_sha=HEAD, checks=(FailedCheck(CHECK, "FAILURE", True, job_id, 900),),
-        )
+    def fail(self, job_id: int, log: str, *, attempt: int = 1) -> None:
+        """The PR's one required check failed as Actions job ``job_id`` of run 900's ``attempt``."""
+        self.fail_jobs({job_id: log}, attempt=attempt, names={job_id: CHECK})
+
+    def fail_jobs(self, logs: dict[int, str], *, attempt: int = 1, names=None, runs=None) -> None:
+        """These required jobs failed, each in its run's ``attempt``."""
+        self.logs.update(logs)
+        runs = runs or {job: 900 for job in logs}
+        names = names or {job: f"shard {job}" for job in logs}
+        self.host.read_failed_checks.return_value = FailedChecksRead(head_sha=HEAD, checks=tuple(
+            FailedCheck(names[job], "FAILURE", True, job, runs[job]) for job in logs
+        ))
+        for run in set(runs.values()):
+            self.runs[run] = CheckRunAttempt(
+                attempt=attempt, job_ids=frozenset(job for job in logs if runs[job] == run),
+            )
 
     def tick(self):
         """Discover and plan, as one engine tick does; the facts are consumed."""
@@ -123,10 +132,12 @@ class _Engine:
             pending_tech_lead=(), paused=False,
             discovered_reworks=tuple(self.state.discovered_reworks),
             discovered_ci_reruns=tuple(self.state.discovered_ci_reruns),
+            discovered_awaiting_merge_escalations=tuple(self.state.discovered_awaiting_merge_escalations),
         )
         reworks, reruns = list(self.state.discovered_reworks), list(self.state.discovered_ci_reruns)
         self.state.discovered_reworks.clear()
         self.state.discovered_ci_reruns.clear()
+        self.state.discovered_awaiting_merge_escalations.clear()
         plan = Planner(config=self.config, scheduler=Scheduler(self.config)).plan(snapshot)
         return reworks, reruns, plan
 
@@ -153,8 +164,7 @@ def test_transient_failure_is_rerun_once_without_spending_a_rework_cycle() -> No
 
     # The re-run (job 12) fails transiently again on the same head: no second
     # re-run - it goes to rework, and that rework is the FIRST cycle.
-    engine.fail(12, RUNNER_LOST)
-    engine.attempts[12] = 2
+    engine.fail(12, RUNNER_LOST, attempt=2)
     reworks, reruns, plan = engine.tick()
     assert reruns == []
     (rework,) = reworks
@@ -213,12 +223,6 @@ def test_a_rerun_retried_after_a_failed_write_spends_one_liveness_budget() -> No
 
 
 
-def _fail_jobs(engine: _Engine, logs: dict[int, str]) -> None:
-    engine.logs.update(logs)
-    engine.host.read_failed_checks.return_value = FailedChecksRead(head_sha=HEAD, checks=tuple(
-        FailedCheck(f"shard {job}", "FAILURE", True, job, 900) for job in logs
-    ))
-
 
 def test_an_unreadable_failed_check_list_defers_the_rework_a_bounded_number_of_scans() -> None:
     from issue_orchestrator.control.ci_failure_triage import MAX_READ_DEFERRALS
@@ -250,7 +254,7 @@ def test_every_failed_required_job_is_read_before_a_rerun_is_decided() -> None:
 
     engine = _Engine()
     jobs = {40 + n: RUNNER_LOST for n in range(MAX_LOG_READS_PER_SCAN + 2)}
-    _fail_jobs(engine, jobs)
+    engine.fail_jobs(jobs)
     assert engine.tick()[:2] == ([], [])  # this scan's read budget ran out
     reworks, (rerun,), _ = engine.tick()
     assert reworks == [] and rerun.job_ids == tuple(sorted(jobs))
@@ -259,7 +263,7 @@ def test_every_failed_required_job_is_read_before_a_rerun_is_decided() -> None:
 
 def test_a_genuine_failure_decides_without_reading_every_log() -> None:
     engine = _Engine()
-    _fail_jobs(engine, {50: TEST_FAILED, **{51 + n: RUNNER_LOST for n in range(6)}})
+    engine.fail_jobs({50: TEST_FAILED, **{51 + n: RUNNER_LOST for n in range(6)}})
     (rework,), reruns, _ = engine.tick()
     assert reruns == []
     assert "AssertionError: expected 3 children, saw 2" in (rework.feedback or "")
@@ -283,7 +287,7 @@ def test_an_unreadable_attempt_keeps_the_log_for_the_brief() -> None:
 
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
-    engine.host.read_check_job_attempt.side_effect = RepositoryHostError("502 Bad Gateway")
+    engine.host.read_check_run_latest_attempt.side_effect = RepositoryHostError("502 Bad Gateway")
     for _ in range(MAX_READ_DEFERRALS):
         assert engine.tick()[:2] == ([], [])
     (rework,), reruns, _ = engine.tick()
@@ -291,26 +295,6 @@ def test_an_unreadable_attempt_keeps_the_log_for_the_brief() -> None:
     assert "lost communication with the server" in (rework.feedback or "")
     assert engine.host.read_check_job_log_tail.call_count == 1  # the log is not re-read
 
-
-def test_a_refused_rerun_is_asked_again_after_the_grace_and_never_becomes_a_rework() -> None:
-    """A credential without Actions write: the record (intent) is on the PR, the
-    request is refused; after the start grace it is asked again, without a
-    second record and with the same liveness facts, for the liveness owner to
-    bound and escalate. No rework cycle is spent."""
-    engine = _Engine()
-    engine.fail(11, RUNNER_LOST)
-    engine.refused_runs.add(900)
-    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    assert not engine.apply(rerun)
-    assert len(engine.comments) == 1
-
-    assert engine.tick()[:2] == ([], [])  # within the grace: the request may be in flight
-    engine.age_records()
-    reworks, _, plan = engine.tick()
-    assert reworks == [] and plan.actions_of_type(ActionType.QUEUE_REWORK) == []
-    (again,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    assert again.comment is None  # the record is not written twice
-    assert again.liveness_facts() == rerun.liveness_facts()  # one liveness budget
 
 
 def test_a_failed_record_write_asks_github_nothing() -> None:
@@ -324,41 +308,73 @@ def test_a_failed_record_write_asks_github_nothing() -> None:
     engine.host.rerun_failed_check_jobs.assert_not_called()
 
 
-def test_an_accepted_rerun_github_does_not_show_yet_is_not_asked_again() -> None:
-    """GitHub accepted the re-run but its new attempt is not visible yet, and the
-    engine restarted: io's record (written first) holds the second request back."""
+def test_a_refused_rerun_is_never_asked_twice_and_goes_to_a_person() -> None:
+    """A credential without Actions write: io's record (its intent) is on the PR
+    and the request was refused. io never asks twice for a head: after the start
+    grace a person is asked, and no coding rework is queued."""
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.refused_runs.add(900)
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert not engine.apply(rerun)
+    assert len(engine.comments) == 1
+
+    assert engine.tick()[:2] == ([], [])  # within the grace: the request may be in flight
+    engine.age_records()
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], [])
+    assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+    (escalation,) = plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN)
+    assert "ci_rerun_unconfirmed" in escalation.escalation_reason
+    engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
+
+    # Once the person holds it, the engine neither re-escalates nor reworks it.
+    engine.workflow.fact_gatherer.human_gates = None
+    pr = engine.host.get_pr.return_value
+    engine.host.get_pr.return_value = replace(pr, labels=[*pr.labels, LabelManager(engine.config).needs_human])
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], [])
+    assert plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
+    assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+
+
+def test_an_accepted_rerun_github_does_not_show_is_never_asked_again() -> None:
+    """GitHub accepted the re-run but shows no new attempt, and the engine
+    restarted: io's record (written first) means exactly one request."""
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
     engine.attempts_visible = False
     (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert engine.apply(rerun)
     engine.state = OrchestratorState(session_history=engine.state.session_history)  # restart
-    reworks, reruns, plan = engine.tick()
-    assert (reworks, reruns) == ([], [])
+    assert engine.tick()[:2] == ([], [])
+    engine.age_records()
+    _, reruns, plan = engine.tick()
+    assert reruns == [] and plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS) == []
     engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
 
 
-def test_a_rerun_github_shows_accepted_is_never_asked_again_even_unrecorded() -> None:
-    """No record on the PR (a person re-ran it, or the record was lost), but
-    GitHub's run attempt shows the re-run: no request, whatever the grace."""
+def test_a_rerun_github_shows_is_waited_for_even_unrecorded() -> None:
+    """No record on the PR (a person re-ran it), and the re-run's jobs have not
+    failed yet: no request and no rework, while the old failure is still shown."""
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
-    engine.accepted_runs.add(900)
-    reworks, reruns, plan = engine.tick()
-    assert (reworks, reruns) == ([], [])
+    engine.runs[900] = CheckRunAttempt(attempt=2, job_ids=frozenset({31}))
+    for _ in range(6):  # more scans than any deferral bound
+        reworks, reruns, plan = engine.tick()
+        assert (reworks, reruns) == ([], [])
+        assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
     engine.host.rerun_failed_check_jobs.assert_not_called()
 
 
-def test_only_the_runs_github_has_not_re_run_are_asked_again() -> None:
+def test_a_partly_refused_rerun_is_never_asked_twice() -> None:
     engine = _Engine()
-    engine.logs.update({11: RUNNER_LOST, 12: RUNNER_LOST})
-    engine.host.read_failed_checks.return_value = FailedChecksRead(head_sha=HEAD, checks=(
-        FailedCheck("linux", "FAILURE", True, 11, 900), FailedCheck("windows", "FAILURE", True, 12, 901),
-    ))
+    engine.fail_jobs({11: RUNNER_LOST, 12: RUNNER_LOST}, runs={11: 900, 12: 901})
     engine.refused_runs.add(901)
     (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert rerun.run_ids == (900, 901)
     assert not engine.apply(rerun)
     engine.age_records()
-    (again,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    assert again.run_ids == (901,)
+    _, reruns, plan = engine.tick()
+    assert reruns == [] and plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS) == []
+    assert [c.args[0] for c in engine.host.rerun_failed_check_jobs.call_args_list] == [900, 901]
