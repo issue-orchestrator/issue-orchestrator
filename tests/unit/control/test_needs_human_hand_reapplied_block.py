@@ -63,6 +63,7 @@ def _owner(github: LabelEvents, store: SqlitePendingWorkClaimStore) -> NeedsHuma
         quarantined_issue_numbers=frozenset,
         causes=store,
         label_application=github.label_application,
+        own_write_verdict=github.own_write_verdict,
     )
 
 
@@ -534,3 +535,36 @@ def test_a_cause_row_from_before_generations_does_not_lift_a_block(
     assert _owner(github, store).release(session) is BlockOutcome.HELD_BY_ANOTHER_CAUSE
     assert NEEDS_HUMAN in github.live[ITEM]
     assert store.needs_human_causes(ITEM) == frozenset()
+
+
+def test_a_reapplication_racing_the_owners_write_is_not_bound_as_its_own(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    """r5 F1: a person re-applies the label between the owner's write and its
+    read back. An App engine knows its own writes by their actor, so the
+    person's application is not adopted as the owner's, and the stale
+    release leaves it on."""
+    block = _owner(github, store)
+    session = ROW_BACKED[2]
+    github.person_reapplies_after_next_add = True
+    assert block.acquire(session) is BlockOutcome.HELD
+
+    assert block.release(session) is BlockOutcome.HELD_BY_ANOTHER_CAUSE
+    assert NEEDS_HUMAN in github.live[ITEM]
+
+
+def test_a_personal_token_engine_adopts_its_own_write(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    """A personal-token engine cannot tell its write from its user's, so it
+    binds what stands right after its write, and its release lifts it."""
+    block = NeedsHumanBlock(
+        needs_human_label=NEEDS_HUMAN, tech_lead_marker="tech-lead-needs-human", labels=github,
+        read_labels=github.read_labels, quarantined_issue_numbers=frozenset, causes=store,
+        label_application=github.label_application,
+        own_write_verdict=lambda _event: None,
+    )
+    session = ROW_BACKED[2]
+    assert block.acquire(session) is BlockOutcome.HELD
+
+    assert block.release(session) is BlockOutcome.CLEARED

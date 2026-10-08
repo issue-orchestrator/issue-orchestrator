@@ -257,6 +257,9 @@ class NeedsHumanBlock(BlockResolutionCommand, StandingGenerationGuard):
     #: GitHub's standing ``labeled`` event for a label, from a complete read
     #: of the issue's events: what binds each generation (#8774).
     label_application: Callable[[int, str], "LabelEvent | None"]
+    #: Whether a label event is this engine's own write; None when its
+    #: identity cannot tell (a personal-token engine), as by default.
+    own_write_verdict: Callable[["LabelEvent"], bool | None] = lambda _event: None
     #: When each merge-scoped hold was last checked as standing (hold_causes).
     merge_scope_checked: dict[int, float] = field(default_factory=dict, compare=False, repr=False)
 

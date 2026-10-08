@@ -17,11 +17,20 @@ from datetime import datetime, timedelta, timezone
 from issue_orchestrator.domain.tech_lead_approval import LabelEvent
 
 
-def label_event(event_id: int, created_at: str | None = None) -> LabelEvent:
+#: The account the engine's own label writes are made as (an App's bot).
+ENGINE_ACCOUNT = 9
+#: A person's account.
+PERSON_ACCOUNT = 7
+
+
+def label_event(event_id: int, created_at: str | None = None, *, by_person: bool = False) -> LabelEvent:
     """A ``labeled`` event with GitHub's required fields."""
     return LabelEvent(
-        event_id=event_id, actor_login="engine[bot]", actor_is_bot=True,
-        created_at=created_at or f"2026-10-08T00:00:{event_id % 60:02d}Z", actor_id=9,
+        event_id=event_id,
+        actor_login="operator" if by_person else "engine[bot]",
+        actor_is_bot=not by_person,
+        created_at=created_at or f"2026-10-08T00:00:{event_id % 60:02d}Z",
+        actor_id=PERSON_ACCOUNT if by_person else ENGINE_ACCOUNT,
     )
 
 
@@ -36,13 +45,19 @@ class LabelEvents:
         self.events_unreadable = False
         #: How much later than now the next label write is dated.
         self.later = timedelta()
+        #: A person takes the label off and puts it back right after the
+        #: next write, before its writer reads anything back.
+        self.person_reapplies_after_next_add = False
 
-    def add_label(self, issue_number: int, label: str) -> None:
+    def add_label(self, issue_number: int, label: str, *, by_person: bool = False) -> None:
         if label not in self.live.setdefault(issue_number, set()):
             self._events += 1
             dated = (datetime.now(timezone.utc) + self.later).isoformat().replace("+00:00", "Z")
-            self.applied[(issue_number, label)] = label_event(self._events, dated)
+            self.applied[(issue_number, label)] = label_event(self._events, dated, by_person=by_person)
         self.live[issue_number].add(label)
+        if self.person_reapplies_after_next_add:
+            self.person_reapplies_after_next_add = False
+            self.reapply_by_hand(issue_number, label)
 
     def remove_label(self, issue_number: int, label: str) -> None:
         self.live.setdefault(issue_number, set()).discard(label)
@@ -51,7 +66,11 @@ class LabelEvents:
     def reapply_by_hand(self, issue_number: int, label: str) -> None:
         """A person takes ``label`` off and puts it back between observations."""
         self.remove_label(issue_number, label)
-        self.add_label(issue_number, label)
+        self.add_label(issue_number, label, by_person=True)
+
+    def own_write_verdict(self, event: LabelEvent) -> bool | None:
+        """An App engine's answer: its bot account is the actor of its writes."""
+        return event.actor_id == ENGINE_ACCOUNT
 
     def read_labels(self, issue_number: int) -> list[str]:
         return sorted(self.live.get(issue_number, set()))

@@ -439,6 +439,11 @@ class MockGitHubAdapter:
         """Get fresh labels for an issue."""
         return self.get_issue_labels(issue_number)
 
+    def own_write_verdict(self, event) -> bool | None:
+        """A personal-token engine's answer: it cannot tell its own writes."""
+        del event
+        return None
+
     def label_application(self, issue_number: int, label: str):
         """GitHub's standing application of ``label``: one event per number
         while it stands (no test of this fake re-applies a label by hand)."""

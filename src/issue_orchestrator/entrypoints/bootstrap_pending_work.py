@@ -90,6 +90,7 @@ def build_pending_work_wiring(
         # The host reads GitHub's issue events too (as the episode owners'
         # wiring does): a generation is bound to its standing label event.
         label_application=cast("LabelApplicationReader", repository_host).label_application,
+        own_write_verdict=cast("LabelApplicationReader", repository_host).own_write_verdict,
     )
     # The applier is the single seam every label mutation passes through, so it
     # is where an acquisition records its cause and a removal withdraws one

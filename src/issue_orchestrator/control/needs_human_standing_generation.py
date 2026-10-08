@@ -91,6 +91,7 @@ class StandingGenerationGuard:
         label_application: Callable[[int, str], "LabelEvent | None"]
         causes: NeedsHumanCauseStore
         merge_scope_checked: dict[int, float]
+        own_write_verdict: Callable[["LabelEvent"], bool | None]
 
         def _label_present_now(self, issue_number: int) -> bool | None: ...
         def _forget(self, target: int) -> None: ...
@@ -172,6 +173,8 @@ class StandingGenerationGuard:
                 "labels do; which generation stands is unknown", self.needs_human_label, target,
             )
             return None
+        if own_write and self._not_own_write(target, application):
+            return None  # left unbound: its next binding ends it, failing closed
         try:
             return self.causes.bind_needs_human_generation(
                 target, event_id=application.event_id, applied_at=application.created_at,
@@ -180,6 +183,27 @@ class StandingGenerationGuard:
         except Exception:
             logger.exception("[BLOCK] Could not bind #%d's needs-human generation", target)
             return None
+
+    def _not_own_write(self, target: int, application: "LabelEvent") -> bool:
+        """The standing application is provably someone else's (r5 F1).
+
+        A person may take the label off and put it back between the owner's
+        write and this read. An App engine knows its own writes by their
+        actor, so it refuses to adopt one that is not; a personal-token
+        engine writes as its user and cannot tell (None), so it adopts.
+        """
+        try:
+            verdict = self.own_write_verdict(application)
+        except Exception:
+            logger.exception("[BLOCK] Could not tell whether #%d's label write is the owner's", target)
+            return True
+        if verdict is False:
+            logger.warning(
+                "[BLOCK] #%d's standing %s was applied by @%s, not this engine; "
+                "leaving its new generation unbound", target, self.needs_human_label,
+                application.actor_login,
+            )
+        return verdict is False
 
     def _bind_applied_generation(self, target: int) -> None:
         """Bind a generation this owner just opened to its own label write.
