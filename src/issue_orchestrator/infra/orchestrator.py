@@ -1,6 +1,7 @@
 """Main orchestrator - ties everything together."""
 
 from ..control.background_job_supervisor import drain_background_jobs
+from ..control.completion_containment import CompletionContainment
 
 import asyncio, logging, os, threading, time
 from dataclasses import dataclass, field
@@ -705,6 +706,7 @@ class Orchestrator:
                 provider_resilience=self.deps.provider_resilience,
                 publish_recovery=self.deps.publish_recovery,
                 pending_work_claims=self.deps.pending_work_claims,
+                containment=CompletionContainment(self.deps.action_liveness.owner),
             )
             # Check lease renewals for active sessions
             self._check_lease_renewals()

@@ -2259,16 +2259,10 @@ class SessionLauncher:
         timeout_minutes: int,
     ) -> None:
         """Trigger state machine transitions for issue session launch."""
-        from ..domain.state_machines.issue_machine import IssueState
         from ..domain.state_machines.session_machine import SessionState
 
         logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue.number}")
-        issue_machine = self._get_issue_machine(issue)
-        if issue_machine.state == IssueState.AVAILABLE.value:
-            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: AVAILABLE -> CLAIMED")
-            issue_machine.claim()
-            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: CLAIMED -> IN_PROGRESS")
-            issue_machine.start()
+        self._get_issue_machine(issue).custody_work_started()
 
         session_machine = self._get_session_machine(session_name, issue.number, timeout_minutes)
         if session_machine.state != SessionState.PENDING.value:
