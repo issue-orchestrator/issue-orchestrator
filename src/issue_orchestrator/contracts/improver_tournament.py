@@ -66,7 +66,7 @@ class Observation(_Closed):
 
     at: AwareDatetime
     #: Where ``at`` is read from: an event, a log line, a PR's or issue's created_at.
-    source: str = Field(min_length=1)
+    source: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class AnswerKeyItem(_Closed):
