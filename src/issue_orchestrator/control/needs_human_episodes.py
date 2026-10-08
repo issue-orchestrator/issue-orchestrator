@@ -15,6 +15,9 @@ to GitHub's standing ``labeled`` event, read from the complete issue events
   without a GitHub event scan on every tick;
 * an item verified before whose GitHub ``updated_at`` and recorded episode
   are both unchanged is not read again: a label write bumps ``updated_at``.
+  That is proof only once the verifying read came in a later second than
+  ``updated_at`` (GitHub keeps whole seconds, so a write in that same second
+  would not change it), so a verification is remembered only then.
 
 An item whose events cannot be read, that GitHub does not show the label
 standing on, or whose block is being changed by its owner right now (the
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
@@ -37,6 +41,10 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
+
+#: How long after an issue's ``updated_at`` a verifying read must come before
+#: it is remembered: GitHub's whole-second timestamps, plus clock skew.
+_SETTLED_SECONDS = 5.0
 
 
 class NeedsHumanEpisodes:
@@ -81,9 +89,19 @@ class NeedsHumanEpisodes:
                 self._verified.pop(number, None)
                 continue
             verified[number] = episode
-            if issue.updated_at is not None:
-                self._verified[number] = (issue.updated_at, episode)
+            if self._settled(issue.updated_at):
+                self._verified[number] = (str(issue.updated_at), episode)
         return verified
+
+    def _settled(self, updated_at: str | None) -> bool:
+        """No write can still share ``updated_at``'s second (see the module doc)."""
+        if updated_at is None:
+            return False
+        try:
+            stamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return False
+        return self._clock() >= stamp + _SETTLED_SECONDS
 
     def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """The recorded episodes, re-verified once per recheck period.

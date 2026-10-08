@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -558,15 +559,26 @@ def test_an_unchanged_issue_is_not_read_from_github_again() -> None:
     """#8688 review r3 F2: an item verified before whose GitHub updated_at
     and recorded episode are unchanged is not read again (a label write bumps
     updated_at); a change to either is."""
-    store, reads = _Episodes({450: EP}), []
-    episodes = _episode_owner(store, {450: 7}, reads=reads)
+    store, reads, applications = _Episodes({450: EP}), [], {450: 7}
+    written = datetime(2026, 10, 8, tzinfo=timezone.utc).timestamp()
+    now = [written + 2]  # still within the second the issue was last written
+    episodes = _episode_owner(store, applications, clock=lambda: now[0], reads=reads)
     issue = Issue(
         number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
         updated_at="2026-10-08T00:00:00Z",
     )
 
+    # r4 F1: a read this close to updated_at proves nothing (a hand
+    # re-application in the same second keeps updated_at): read again.
     first = episodes.verified({450: issue})
-    assert episodes.verified({450: issue}) == first and reads == [450]
+    applications[450] = 8
+    second = episodes.verified({450: issue})
+    assert second != first and reads == [450, 450]
+
+    now[0] = written + 60  # settled: an unchanged updated_at now proves it
+    episodes.verified({450: issue})
+    assert episodes.verified({450: issue}) == second and reads == [450, 450, 450]
+    del reads[:2]
 
     issue.updated_at = "2026-10-08T01:00:00Z"  # something was written to it
     episodes.verified({450: issue})
