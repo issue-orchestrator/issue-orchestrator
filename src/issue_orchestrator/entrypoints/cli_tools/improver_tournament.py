@@ -6,8 +6,11 @@
     improver_tournament snapshot list
     improver_tournament key seed --snapshot ID --sealed-key KEY.md --sealed-at ISO --by NAME
     improver_tournament key add --snapshot ID --id H-7999 --weight 2 --category stall \\
-        --title T --description D --link owner/repo#N --filed-at YYYY-MM-DD --by NAME [--confirmed]
+        --title T --description D --link owner/repo#N --filed-at YYYY-MM-DD \\
+        --observable-since ISO --observable-source TEXT --by NAME [--confirmed]
     improver_tournament key confirm --snapshot ID --id H-7999 --by NAME
+    improver_tournament key observe --snapshot ID --id H-7999 --since ISO --source TEXT --by NAME
+    improver_tournament key move --snapshot ID --id H-8137 --to LATER-ID --by NAME
     improver_tournament key show --snapshot ID
     improver_tournament run --snapshot ID --arm C=claude:opus:empowered --arm A=codex:gpt-5.6-sol:scripted \\
         [--heats 3 --parallel-heats 3 --budget-minutes 60 --agent-timeout-minutes 80] [--passes 3] [--seed N]
@@ -50,7 +53,9 @@ from ...contracts.improver_run import (
 )
 from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_tournament import (
+    AnswerKey,
     AnswerKeyItem,
+    Observation,
     TournamentArm,
     TournamentResult,
 )
@@ -58,7 +63,7 @@ from ...contracts.improver_variant import ImproverVariant
 from ...domain.improver_champion import prompt_digest
 from ...execution.command_runner import LocalCommandRunner
 from ...execution.improver_agents import improver_agent
-from ...execution.improver_answer_keys import FileAnswerKeyStore
+from ...execution.improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
 from ...execution.improver_challenge import (
     DEFAULT_WHOLE_RUNS,
     ChallengeRefused,
@@ -67,7 +72,7 @@ from ...execution.improver_challenge import (
 from ...execution.improver_champion_store import FileChampionStore
 from ...execution.improver_investigation import EMPOWERED_ADDENDUM
 from ...execution.improver_run_store import FileImproverRunStore, improver_root
-from ...execution.improver_snapshots import FrozenSnapshotStore
+from ...execution.improver_snapshots import FrozenSnapshotStore, SnapshotUnavailable
 from ...execution.improver_tournament import (
     DEFAULT_GRADERS,
     DEFAULT_PASSES,
@@ -144,12 +149,27 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--description", required=True)
     add.add_argument("--link", action="append", default=[])
     add.add_argument("--filed-at", type=date.fromisoformat)
+    add.add_argument("--observable-since", required=True, type=_aware,
+                     help="When its evidence first existed (ISO, with a zone): it scores only on snapshots frozen since")
+    add.add_argument("--observable-source", required=True,
+                     help="Where that time is read: an event, a log line, a PR's or issue's created_at")
     add.add_argument("--by", required=True)
     add.add_argument("--confirmed", action="store_true", help="Score it now (else a candidate)")
     confirm = key.add_parser("confirm")
     confirm.add_argument("--snapshot", required=True)
     confirm.add_argument("--id", required=True)
     confirm.add_argument("--by", required=True)
+    observe = key.add_parser("observe", help="Record when a hindsight item's evidence first existed")
+    observe.add_argument("--snapshot", required=True)
+    observe.add_argument("--id", required=True)
+    observe.add_argument("--since", required=True, type=_aware)
+    observe.add_argument("--source", required=True)
+    observe.add_argument("--by", required=True)
+    move = key.add_parser("move", help="Attach a hindsight item to a snapshot frozen once it was observable")
+    move.add_argument("--snapshot", required=True)
+    move.add_argument("--id", required=True)
+    move.add_argument("--to", required=True)
+    move.add_argument("--by", required=True)
     show = key.add_parser("show")
     show.add_argument("--snapshot", required=True)
     run = sub.add_parser("run")
@@ -210,6 +230,13 @@ def _champion_commands(sub: argparse._SubParsersAction) -> None:
     promote.add_argument("--challenge", required=True)
 
 
+def _aware(text: str) -> datetime:
+    when = datetime.fromisoformat(text)
+    if when.tzinfo is None:
+        raise argparse.ArgumentTypeError(f"a time with its zone (e.g. 2026-10-04T09:02:00+00:00), not {text!r}")
+    return when
+
+
 def parse_arm(text: str) -> ArmRequest:
     match = _ARM.match(text)
     if match is None:
@@ -251,7 +278,7 @@ def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     root = improver_root(Path.cwd(), LocalCommandRunner())
     snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
-    keys = FileAnswerKeyStore(root)
+    keys = FileAnswerKeyStore(root, snapshots)
     if args.command == "snapshot":
         return _snapshot(args, snapshots)
     if args.command == "key":
@@ -376,23 +403,52 @@ def _snapshot(args: argparse.Namespace, snapshots: FrozenSnapshotStore) -> int:
 
 
 def _key(args: argparse.Namespace, keys: FileAnswerKeyStore) -> int:
+    try:
+        key = _key_write(args, keys)
+        unseen = keys.unobservable(key.snapshot_id)
+    except (AnswerKeyError, SnapshotUnavailable) as refused:
+        raise SystemExit(f"improver_tournament key {args.action}: {refused}") from refused
+    if args.action == "add" and args.id in unseen:
+        print(f"warning: {unseen[args.id]}; it stays a candidate here (key move attaches it to a later snapshot)",
+              file=sys.stderr)
+    print(render_key(key, unseen))
+    return 0
+
+
+def _key_write(args: argparse.Namespace, keys: FileAnswerKeyStore) -> AnswerKey:
     if args.action == "seed":
-        key = keys.seed_sealed(args.snapshot, args.sealed_key.read_text(encoding="utf-8"), sealed_at=args.sealed_at, added_by=args.by)
-    elif args.action == "add":
-        key = keys.add(AnswerKeyItem(
+        return keys.seed_sealed(args.snapshot, args.sealed_key.read_text(encoding="utf-8"), sealed_at=args.sealed_at, added_by=args.by)
+    if args.action == "add":
+        return keys.add(AnswerKeyItem(
             id=args.id, weight=args.weight, title=args.title, description=args.description,
             category=args.category, source="hindsight", status="confirmed" if args.confirmed else "candidate",
             links=tuple(args.link), filed_at=args.filed_at, added_at=_now(), added_by=args.by,
+            observable_since=Observation(at=args.observable_since, source=args.observable_source),
         ), snapshot_id=args.snapshot)
-    elif args.action == "confirm":
-        key = keys.confirm(args.snapshot, args.id, by=args.by)
-    else:
-        key = keys.get(args.snapshot)
+    if args.action == "confirm":
+        return keys.confirm(args.snapshot, args.id, by=args.by)
+    if args.action == "observe":
+        return keys.observe(args.snapshot, args.id, Observation(at=args.since, source=args.source), by=args.by)
+    if args.action == "move":
+        return keys.move(args.snapshot, args.id, to=args.to, by=args.by)
+    return keys.get(args.snapshot)
+
+
+def render_key(key: AnswerKey, unseen: dict[str, str]) -> str:
+    """Each item, with when it was observable: an item the snapshot could not show says why."""
+    lines = [f"key of snapshot {key.snapshot_id}:"]
     for item in key.items:
         links = f" [{', '.join(item.links)}]" if item.links else ""
-        print(f"{item.id} ({item.weight}, {item.category}, {item.source}, {item.status}) {item.title}{links}")
-    print(f"scored: {len(key.scored)} item(s), max {key.max_score}")
-    return 0
+        seen = item.observable_since
+        observable = "sealed with the snapshot" if item.source == "sealed_key" else (
+            "not recorded" if seen is None else f"{seen.at.isoformat()} ({seen.source})"
+        )
+        line = f"{item.id} ({item.weight}, {item.category}, {item.source}, {item.status}) {item.title}{links}"
+        lines.append(f"{line}; observable since: {observable}")
+        if item.id in unseen:
+            lines.append(f"  NOT observable at the snapshot's time: {unseen[item.id]}")
+    lines.append(f"scored: {len(key.scored)} item(s), max {key.max_score}")
+    return "\n".join(lines)
 
 
 def read_recorded(directory: Path) -> list[ArmOutput]:

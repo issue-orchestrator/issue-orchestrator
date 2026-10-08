@@ -8,7 +8,9 @@ the arms. These models are the files it reads and writes.
 Answer keys come from hindsight and are never written by the improver:
 the sealed key written before a tournament's results, plus problems found
 LATER (by the operator, the tech lead or the coordinator) that the evidence
-already showed at snapshot time. Only ``confirmed`` items score.
+already showed at snapshot time. Only ``confirmed`` items score, and a
+hindsight item scores only on a snapshot frozen once it was observable
+(its ``observable_since``, #8972).
 """
 
 from __future__ import annotations
@@ -59,6 +61,14 @@ class FrozenSnapshot(_Closed):
     has_toolbox: bool
 
 
+class Observation(_Closed):
+    """When a hindsight item's evidence first existed, and the record that shows it (#8972)."""
+
+    at: AwareDatetime
+    #: Where ``at`` is read from: an event, a log line, a PR's or issue's created_at.
+    source: str = Field(min_length=1)
+
+
 class AnswerKeyItem(_Closed):
     id: Slug
     weight: Annotated[int, Field(ge=1, le=3)]
@@ -76,6 +86,17 @@ class AnswerKeyItem(_Closed):
     added_at: AwareDatetime
     #: Who added it: a person or the coordinator, never the improver.
     added_by: str = Field(min_length=1)
+    #: A hindsight item's earliest evidence: it scores only on a snapshot
+    #: frozen at or after ``observable_since.at``. None on a sealed item (the
+    #: snapshot itself is its evidence) and on a hindsight item added before
+    #: it was recorded (which cannot be confirmed until it is).
+    observable_since: Observation | None = None
+
+    @model_validator(mode="after")
+    def _a_sealed_item_is_observed_by_its_snapshot(self) -> AnswerKeyItem:
+        if self.source == "sealed_key" and self.observable_since is not None:
+            raise ValueError("a sealed key item is written from its snapshot; it records no observable_since")
+        return self
 
 
 class AnswerKey(_Closed):
@@ -248,6 +269,7 @@ __all__ = [
     "FrozenSnapshot",
     "GraderRun",
     "ItemGrade",
+    "Observation",
     "OutputGrades",
     "TournamentArm",
     "TournamentCost",

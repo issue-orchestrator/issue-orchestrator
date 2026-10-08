@@ -138,12 +138,12 @@ def cycle(tmp_path: Path):  # type: ignore[no-untyped-def]
     root = tmp_path / "io-improver"
     snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
     snapshots.import_("20261004", improver_data=_legacy_inputs(tmp_path / "src"), taken_at=T0, origin="test")
-    FileAnswerKeyStore(root).seed_sealed("20261004", SEALED, sealed_at=T0, added_by="coordinator")
+    FileAnswerKeyStore(root, snapshots).seed_sealed("20261004", SEALED, sealed_at=T0, added_by="coordinator")
     champions = FileChampionStore(root)
     champions.seed(_variant(), PROMPT, at=T0, by="operator")
     runs = FileImproverRunStore(root)
     agents, issues = Agents(), Issues()
-    harness = TournamentHarness(root=root, snapshots=snapshots, keys=FileAnswerKeyStore(root),
+    harness = TournamentHarness(root=root, snapshots=snapshots, keys=FileAnswerKeyStore(root, snapshots),
                                 agent_for=lambda choice, minutes: agents.agent_for(choice, minutes),
                                 grader_prompt=GRADER_PROMPT, clock=lambda: T0)
     challenges = ImproverChallenges(harness=harness, champions=champions, runs=runs, issues_for=lambda repo: issues,
@@ -319,8 +319,9 @@ def test_a_tournament_graded_otherwise_than_the_challenge_asked_never_counts(cyc
     agents.broken_gradings = 1
     with pytest.raises(RuntimeError, match="not every grading was complete"):
         challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
-    harness = TournamentHarness(root=root, snapshots=FrozenSnapshotStore(root, LocalCommandRunner()),
-                                keys=FileAnswerKeyStore(root), agent_for=agents.agent_for,
+    snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
+    harness = TournamentHarness(root=root, snapshots=snapshots,
+                                keys=FileAnswerKeyStore(root, snapshots), agent_for=agents.agent_for,
                                 grader_prompt=GRADER_PROMPT, clock=lambda: T0)
     harness.regrade(f"{run_id}-vs-{_variant().id}-s1", passes=2)
 

@@ -4,6 +4,9 @@
   markdown: ``N. (W) **title** text`` under a "Stalls" or "Design" section)
   into an :class:`~..contracts.improver_tournament.AnswerKey`, keeping its
   preamble (what was audited, how to grade) for the graders.
+* :func:`unobservable` says why a hindsight item could not have been seen
+  in a snapshot frozen before its evidence existed (#8972): confirming it
+  would score arms as missing what their evidence could not show.
 * :func:`anonymize` labels the outputs ``S10``..``S99`` in a seeded random
   order, so graders cannot tell which arm wrote which.
 * :func:`read_grades` accepts a grader's answer only if it grades every
@@ -91,6 +94,24 @@ def parse_sealed_key(markdown: str, *, snapshot_id: str, added_at: datetime, add
     if len(set(ids)) != len(ids):
         raise ValueError(f"key item ids repeat: {ids}")
     return AnswerKey(snapshot_id=snapshot_id, preamble="\n".join(preamble).strip(), items=tuple(items))
+
+
+def unobservable(item: AnswerKeyItem, frozen_at: datetime) -> str | None:
+    """Why a snapshot frozen at ``frozen_at`` could not show ``item``; None
+    if it could. A sealed item was written from the snapshot itself; a
+    hindsight item needs its ``observable_since`` recorded, at or before
+    ``frozen_at``."""
+    if item.source == "sealed_key":
+        return None
+    seen = item.observable_since
+    if seen is None:
+        return f"key item {item.id!r} has no observable_since recorded (when its evidence first existed, and where)"
+    if seen.at > frozen_at:
+        return (
+            f"key item {item.id!r} is observable only since {seen.at.isoformat()} ({seen.source}),"
+            f" after the snapshot was frozen at {frozen_at.isoformat()}"
+        )
+    return None
 
 
 def anonymize(output_ids: Sequence[str], *, seed: int) -> dict[str, str]:
@@ -409,4 +430,4 @@ def rank(means: Mapping[str, float], *, distinguishable: Callable[[str, str], bo
     return tuple(tuple(t) for t in tiers)
 
 
-__all__ = ["ALPHA", "NOISE_BAND_SES", "GradesRejected", "NoiseComponents", "PooledArm", "PooledScores", "anonymize", "finding_ids", "parse_sealed_key", "pool", "rank", "read_grades", "score"]
+__all__ = ["ALPHA", "NOISE_BAND_SES", "GradesRejected", "NoiseComponents", "PooledArm", "PooledScores", "anonymize", "finding_ids", "parse_sealed_key", "pool", "rank", "read_grades", "score", "unobservable"]

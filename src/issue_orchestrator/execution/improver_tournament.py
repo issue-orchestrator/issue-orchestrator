@@ -260,13 +260,14 @@ class TournamentHarness:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none).
 
         The snapshot's answer key must exist first: a key is written before
-        any result is seen, never after reading the arms' answers.
+        any result is seen, never after reading the arms' answers. And it
+        must score only what the snapshot could show (#8972).
 
         ``resume``: arms interrupted before they all finished are resumed
         (the same snapshot and arm specifications only): every finished run
         is reused, only the unfinished ones run.
         """
-        self._keys.get(snapshot_id)
+        self._keys.scoring(snapshot_id)
         names = [spec.arm.name for spec in specs]
         if len(set(names)) != len(names):
             raise ValueError(f"arm names repeat: {names}")
@@ -408,7 +409,7 @@ class TournamentHarness:
         require_cross_model(graders)
         if passes < 1:
             raise ValueError(f"each grader grades at least once, not {passes} time(s)")
-        key = self._keys.get(snapshot_id)
+        key = self._keys.scoring(snapshot_id)
         root = self.directory(tournament_id).resolve()
         if (root / "result.json").exists():
             raise RuntimeError(f"tournament {tournament_id} already has a result")
