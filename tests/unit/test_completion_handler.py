@@ -702,6 +702,78 @@ class TestStateMachineTransitions:
 
         assert issue_machine.get_state() == IssueState.NEEDS_HUMAN
 
+    @pytest.mark.parametrize(
+        ("status", "held"),
+        [(SessionStatus.NEEDS_HUMAN, IssueState.NEEDS_HUMAN), (SessionStatus.BLOCKED, IssueState.BLOCKED)],
+    )
+    @pytest.mark.parametrize(
+        "state", [IssueState.AVAILABLE, IssueState.CLAIMED, IssueState.NEEDS_HUMAN, IssueState.BLOCKED]
+    )
+    def test_custody_hold_from_a_cache_behind_the_session_is_defined(
+        self,
+        config: Config,
+        agent_config: AgentConfig,
+        tmp_worktree: Path,
+        status: SessionStatus,
+        held: IssueState,
+        state: IssueState,
+    ) -> None:
+        """A coding session's hold when the cached lifecycle never saw it working (#8693 r1 F2).
+
+        A session restored after a restart meets a fresh AVAILABLE machine; a
+        relaunch after a cleared hold meets the old hold. Either way the
+        session WAS working the issue, so its hold lands.
+        """
+        issue = make_issue()
+        issue_machine = IssueStateMachine(issue, initial_state=state)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config, issue_machine=issue_machine)
+
+        handler.finalize_terminal_outcome(
+            session, status, None, None,
+            work_outcome=SettlementOutcome.CONSUMED,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type, handler.config.tech_lead_review_agent
+            ),
+        )
+
+        assert issue_machine.get_state() is held
+
+    @pytest.mark.parametrize("status", [SessionStatus.NEEDS_HUMAN, SessionStatus.BLOCKED])
+    @pytest.mark.parametrize("state", [IssueState.PR_PENDING, IssueState.AVAILABLE])
+    def test_rework_hold_leaves_the_issue_it_does_not_hold(
+        self,
+        config: Config,
+        agent_config: AgentConfig,
+        tmp_worktree: Path,
+        status: SessionStatus,
+        state: IssueState,
+    ) -> None:
+        """A rework runs beside the issue's open PR, which holds the issue (#8693).
+
+        Its needs_human or block is recorded by the shared block owner / left to
+        the PR workflow, so it never moves the issue's lifecycle: not from
+        PR_PENDING (porchpin #450, iteration 187), and not from the AVAILABLE
+        machine a restarted engine creates on first use.
+        """
+        issue = make_issue()
+        issue_machine = IssueStateMachine(issue, initial_state=state)
+        session = create_test_session(
+            issue, agent_config, tmp_worktree, terminal_id="rework-1",
+            task_kind=SessionKind.REWORK,
+        )
+        handler = make_handler(config, issue_machine=issue_machine)
+
+        handler.finalize_terminal_outcome(
+            session, status, None, None,
+            work_outcome=SettlementOutcome.CONSUMED,
+            processing_policy=CompletionProcessingPolicy.for_unprocessed_session(
+                session.issue.agent_type, handler.config.tech_lead_review_agent
+            ),
+        )
+
+        assert issue_machine.get_state() is state
+
     def test_session_machine_transitions_on_completion(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

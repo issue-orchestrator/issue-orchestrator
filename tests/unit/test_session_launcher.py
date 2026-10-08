@@ -10,7 +10,7 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
-from tests.unit.control.liveness_doubles import gated
+from tests.unit.control.liveness_doubles import gated, liveness_owner
 from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
 from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
@@ -56,8 +56,8 @@ from issue_orchestrator.domain.repository_launch_selection import (
 from issue_orchestrator.control.provider_circuit_effects import (
     record_provider_resilience_effects,
 )
+from issue_orchestrator.control.completion_containment import CompletionContainment
 from issue_orchestrator.control.session_completion import (
-    _apply_completed_decisions,
     unprocessed_session_policy,
     _terminate_finished_session,
     handle_session_completion,
@@ -1685,6 +1685,22 @@ class TestLaunchIssueSession:
         assert any(part.endswith("__coding-1") for part in completion_parts)
         assert payload["completion_path_absolute"] == str((worktree_path / completion_path).resolve())
         SessionStartedPayload.model_validate(payload)
+
+    @pytest.mark.parametrize("held", [IssueState.NEEDS_HUMAN, IssueState.BLOCKED])
+    def test_relaunch_after_a_cleared_hold_puts_the_issue_back_in_progress(
+        self, launcher_bundle, sample_issue, held
+    ):
+        """A relaunch means a person cleared the hold, so the next hold is defined (#8693).
+
+        Left in the held state, the relaunched session's own needs_human or
+        block had no transition and raised in the completion pass.
+        """
+        launcher_bundle.issue_machines[123] = IssueStateMachine(sample_issue, initial_state=held)
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert launcher_bundle.issue_machines[123].get_state() is IssueState.IN_PROGRESS
 
     def test_triggers_state_machine_transitions(self, launcher_bundle, sample_issue):
         """Verify state machine transitions are triggered."""
@@ -6285,16 +6301,18 @@ class TestRestoreRunningSessions:
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
 
-    def test_completed_decision_batch_applies_siblings_before_raising(self):
-        """One failed completed decision must not discard the rest of the drain batch."""
+    def test_completed_decision_batch_confines_a_failed_decision_to_its_session(
+        self, sample_agent_config, tmp_path
+    ):
+        """One failed completed decision is that session's: siblings apply, nothing raises (#8000)."""
         observed_at = datetime.fromisoformat("2026-08-26T00:20:00+00:00")
         first = CompletedDecision(
-            session=MagicMock(terminal_id="issue-1"),
+            session=_completion_session(sample_agent_config, tmp_path, 1),
             decision=None,
             error=RuntimeError("decide failed"),
         )
         second = CompletedDecision(
-            session=MagicMock(terminal_id="issue-2"),
+            session=_completion_session(sample_agent_config, tmp_path, 2),
             decision=SessionDecision(
                 status=SessionStatus.RUNNING,
                 provider_success=ProviderSuccessDecision(
@@ -6317,14 +6335,18 @@ class TestProcessActiveSessions:
                 provider_resilience,
             )
 
-        with pytest.raises(RuntimeError, match="decide failed"):
-            _apply_completed_decisions([first, second], apply)
+        containment = _containment()
+        containment.apply_each([first, second], apply, in_pass=lambda session: True)
 
         assert applied == ["issue-1", "issue-2"]
         provider_resilience.record_success.assert_called_once_with(
             "codex",
             observed_at=observed_at,
         )
+        # The decide failure is recorded against its session (retried next tick).
+        failed = containment.owner.admit(CompletionContainment.key(first.session)).row
+        assert failed is not None and "decide failed" in failed.last_reason
+        assert containment.owner.admit(CompletionContainment.key(second.session)).row is None
 
     def test_provider_resilience_effects_are_recorded_on_apply_thread(self):
         """Provider-circuit mutations happen when the drained decision is applied."""
@@ -6420,6 +6442,7 @@ class TestProcessActiveSessions:
             kill_session_fn=lambda x: None,
             config=config,
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         # Session should still be in active list
@@ -6468,6 +6491,7 @@ class TestProcessActiveSessions:
             kill_session_fn=MagicMock(),
             config=MagicMock(),
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         assert state.active_sessions == [session]
@@ -6522,6 +6546,7 @@ class TestProcessActiveSessions:
             kill_session_fn=MagicMock(),
             config=MagicMock(),
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         assert captured_phase["value"] == "active_sessions:#392"
@@ -6603,6 +6628,7 @@ class TestProcessActiveSessions:
                 kill_session_fn=MagicMock(),
                 config=MagicMock(),
                 pending_work_claims=_test_claim_store(),
+                containment=_containment(),
             )
 
         # Session stayed active because the controller deferred…
@@ -6692,6 +6718,7 @@ class TestProcessActiveSessions:
             kill_session_fn=kill_session_fn,
             config=MagicMock(),
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         assert state.active_sessions == []
@@ -6818,6 +6845,7 @@ class TestProcessActiveSessions:
                 config=MagicMock(),
                 completion_dispatcher=dispatcher,
                 pending_work_claims=_test_claim_store(),
+                containment=_containment(),
             )
 
         # Tick 1: the decision is offloaded to the runner, NOT run inline — the
@@ -6965,6 +6993,7 @@ class TestProcessActiveSessions:
                 config=MagicMock(),
                 completion_dispatcher=dispatcher,
                 pending_work_claims=_test_claim_store(),
+                containment=_containment(),
             )
 
         # Tick 1: dispatch the decision (submit #1); nothing is decided yet.
@@ -8141,6 +8170,23 @@ class TestStackRelaunchGate:
         assert result.success is False
         assert mock_worktree_manager.create_calls == []
         assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+
+def _containment() -> CompletionContainment:
+    return CompletionContainment(liveness_owner())
+
+
+def _completion_session(agent_config: Any, tmp_path: Path, number: int) -> Session:
+    worktree = tmp_path / f"worktree-{number}"
+    return Session(
+        key=SessionKey(issue=FakeIssueKey(str(number)), kind=SessionKind.CODE),
+        issue=Issue(number=number, title="Test", labels=["agent:web"]),
+        agent_config=agent_config,
+        terminal_id=f"issue-{number}",
+        worktree_path=worktree,
+        branch_name=f"{number}-feature",
+        run_assets=make_session_run_assets(worktree, session_name=f"issue-{number}"),
+    )
 
 
 def _test_claim_store(tmp_path=None):
