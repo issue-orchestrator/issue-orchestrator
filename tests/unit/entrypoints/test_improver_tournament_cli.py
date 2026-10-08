@@ -20,8 +20,8 @@ def test_an_arm_and_a_grader_are_named_by_provider_model_and_mode() -> None:
         ("C", "claude", "opus", "empowered"), ("A", "codex", "gpt-5.6-sol", "scripted"),
     ]
     assert args.grader[0].name == "g2" and args.grader[0].choice.describe() == "codex:gpt-5.6-sol"
-    # Modest defaults: Claude heats and gradings count against the operator's subscription.
-    assert (args.heats, args.parallel_heats, args.passes) == (2, 2, 3)
+    # The fewest heats that can separate arms, and three gradings per grader.
+    assert (args.heats, args.parallel_heats, args.passes) == (3, 3, 3)
 
 
 @pytest.mark.parametrize("arm", [
@@ -61,7 +61,7 @@ def test_a_challenger_arm_sets_its_own_prompt_heats_and_minutes(tmp_path: Path) 
 
     a, b = (request.spec(args, prompt=champion, addendum="ADD") for request in args.arm)
 
-    assert (a.prompt, a.heats.count, a.heats.parallel, a.budget_minutes, a.agent_timeout_minutes) == ("CHAMPION", 2, 2, 60, 80)
+    assert (a.prompt, a.heats.count, a.heats.parallel, a.budget_minutes, a.agent_timeout_minutes) == ("CHAMPION", 3, 3, 60, 80)
     assert (b.prompt, b.heats.count, b.heats.parallel, b.budget_minutes, b.agent_timeout_minutes) == ("CHALLENGER", 2, 1, 45, 55)
     over = cli.build_parser().parse_args(["run", "--snapshot", "s", "--arm", "C=claude:opus:empowered,budget=90"])
     with pytest.raises(ValueError, match="budget must be below"):

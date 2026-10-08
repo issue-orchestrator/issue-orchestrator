@@ -10,7 +10,7 @@
     improver_tournament key confirm --snapshot ID --id H-7999 --by NAME
     improver_tournament key show --snapshot ID
     improver_tournament run --snapshot ID --arm C=claude:opus:empowered --arm A=codex:gpt-5.6-sol:scripted \\
-        [--heats 2 --parallel-heats 2 --budget-minutes 60 --agent-timeout-minutes 80] [--passes 3] [--seed N]
+        [--heats 3 --parallel-heats 3 --budget-minutes 60 --agent-timeout-minutes 80] [--passes 3] [--seed N]
     improver_tournament grade-recorded --snapshot ID --recorded DIR [--seed N]
     improver_tournament regrade --tournament ID    # a tournament whose grading failed
 
@@ -142,8 +142,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm", action="append", required=True, type=parse_arm,
         help="NAME=provider:model:scripted|empowered[,prompt=P,heats=N,parallel=N,budget=MIN,timeout=MIN]",
     )
-    run.add_argument("--heats", type=int, default=2)
-    run.add_argument("--parallel-heats", type=int, default=2)
+    # Three heats: the fewest with which an arm can be told apart (two heats
+    # an arm can never pass the heats' exact test: its smallest p is 1/6).
+    run.add_argument("--heats", type=int, default=3, help="Heats per arm (default: %(default)s; fewer can never separate arms)")
+    run.add_argument("--parallel-heats", type=int, default=3)
     run.add_argument("--budget-minutes", type=int, default=60)
     run.add_argument("--agent-timeout-minutes", type=int, default=80)
     run.add_argument("--grader", action="append", type=parse_grader, help="NAME=provider:model (default: Claude and Codex)")

@@ -219,7 +219,7 @@ class PooledScores:
       extreme split has p = 1/6); three heats each, wholly separated, give
       p = 1/20.
     * **Noise band.** The gap exceeds twice the standard error of the
-      difference: the heats' spread, plus the larger of the graders'
+      difference: each arm's heats' spread on its own heat count, plus the larger of the graders'
       disagreement on the difference and its pass-to-pass noise (both
       paired: a grader's bias shared by both arms cancels). Each component
       is the larger of its estimate on the two arms and on the whole
@@ -236,13 +236,18 @@ class PooledScores:
     resolution: float
 
     def difference_se(self, a: str, b: str) -> float:
-        pair_heat = _pooled_variance([list(self.arms[a].output_means), list(self.arms[b].output_means)])
-        heat = max(pair_heat or 0.0, self.noise.heat or 0.0)
+        # Each arm's heats on its own count (arms may run different numbers),
+        # never below the tournament's heat noise.
+        heat = sum(
+            max(_pooled_variance([list(self.arms[x].output_means)]) or 0.0, self.noise.heat or 0.0)
+            / len(self.arms[x].output_means)
+            for x in (a, b)
+        )
         grader = max(_grader_term(self.arms[a], self.arms[b], self.graders), self.noise.grader)
         pass_ = max(_pass_term(self.arms[a], self.arms[b], self.graders, self.passes), self.noise.pass_)
         n_a, n_b = len(self.arms[a].output_means), len(self.arms[b].output_means)
         floor = self.resolution ** 2 / (4 * len(self.graders)) * (1 / n_a + 1 / n_b)
-        return math.sqrt(max(heat * (1 / n_a + 1 / n_b) + max(grader, pass_), floor))
+        return math.sqrt(max(heat + max(grader, pass_), floor))
 
     def band(self, a: str, b: str) -> float:
         """How far apart two arms' means must be to tell them apart (with the heats' test)."""

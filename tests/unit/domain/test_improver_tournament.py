@@ -205,7 +205,8 @@ def test_noise_is_pooled_over_every_arm() -> None:
 
     assert pooled.noise.heat == pytest.approx(4.0)  # X: 8 on 1 degree of freedom, Y: 0 on 1
     assert pooled.arms["X"].output_means == (0.0, 4.0) and pooled.arms["Y"].output_means == (1.5, 1.5)
-    assert pooled.difference_se("X", "Y") == pytest.approx((4.0 / 2 * 2) ** 0.5)
+    # X on its own heats (8 / 2); Y's agree, so the tournament's heat noise (4 / 2).
+    assert pooled.difference_se("X", "Y") == pytest.approx((8.0 / 2 + 4.0 / 2) ** 0.5)
     assert not pooled.distinguishable("X", "Y") and not pooled.distinguishable("Y", "Z")
 
 
@@ -403,3 +404,25 @@ def test_an_arms_shown_error_is_never_below_its_own_heats() -> None:
 
     # X's own heats: variance 8 over 2 -> se 2, whatever the others show.
     assert alone.arms["X"].se >= 2.0 and crowded.arms["X"].se >= 2.0
+
+
+def test_an_arm_with_few_noisy_heats_is_not_steadied_by_a_steady_arms_many() -> None:
+    """A's three heats (1, 1, 7) are noisy: its own standard error is 2,
+    whatever twenty steady B heats show."""
+    runs = [{**{f"a{i}": v for i, v in enumerate((1.0, 1.0, 7.0))}, **{f"b{i}": 0.0 for i in range(20)}}] * 3
+    arm_of = {**{f"a{i}": "A" for i in range(3)}, **{f"b{i}": "B" for i in range(20)}}
+
+    pooled = pool({"claude": runs, "codex": runs}, arm_of, ungraded={}, resolution=STEP)
+
+    assert pooled.arms["A"].mean == 3.0 and pooled.heat_p("A", "B") < 0.001
+    assert pooled.band("A", "B") >= 4.0 and not pooled.distinguishable("A", "B")
+
+
+def test_the_default_heats_can_separate_a_clear_winner() -> None:
+    from issue_orchestrator.entrypoints.cli_tools import improver_tournament as cli
+
+    heats = cli.build_parser().parse_args(["run", "--snapshot", "s", "--arm", "A=claude:opus:scripted"]).heats
+    runs = [{**{f"a{i}": 10.0 for i in range(heats)}, **{f"b{i}": 0.0 for i in range(heats)}}] * 3
+    arm_of = {**{f"a{i}": "A" for i in range(heats)}, **{f"b{i}": "B" for i in range(heats)}}
+
+    assert pool({"claude": runs, "codex": runs}, arm_of, ungraded={}, resolution=STEP).distinguishable("A", "B")

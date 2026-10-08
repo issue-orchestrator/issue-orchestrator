@@ -236,9 +236,10 @@ data lives under `<git common dir>/io-improver/`:
   are told apart only when both hold: (1) **heats**, the arms' independent
   samples: an exact one-sided permutation test over their per-heat scores
   reaches p <= 0.05 (two heats an arm can never pass it, since the most extreme
-  split has p = 1/6; three heats each, wholly separated, give p = 1/20); and
+  split has p = 1/6; three heats each, wholly separated, give p = 1/20, so `run`
+  defaults to three heats); and
   (2) **the noise band**: the gap exceeds twice the standard error of the
-  difference, from the heats' spread plus the larger of the graders'
+  difference, from each arm's heats' spread on its own heat count plus the larger of the graders'
   disagreement on the difference and its pass-to-pass noise (paired, so a
   grader's bias shared by both arms cancels). Each component is the larger of
   its estimate on the pair and on the whole tournament (never zero by a
