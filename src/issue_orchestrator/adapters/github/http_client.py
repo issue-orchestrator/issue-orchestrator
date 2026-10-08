@@ -85,6 +85,11 @@ _RollupSignal = tuple[bool, bool, bool]
 # runaway-loop backstop, not an expected limit.
 _MAX_CHECK_RUN_PAGES = 20
 
+# How much of an Actions job log the CI-failure triage streams before it stops
+# (#8692). Only a ring buffer of the caller's ``max_bytes`` is ever held; this
+# bounds the time and bandwidth one log read can cost.
+_MAX_JOB_LOG_STREAM_BYTES = 32 * 1024 * 1024
+
 # Why one REST rollup source did (not) yield a trustworthy reading. ``ok`` =
 # read in full; ``permission_denied`` = the token lacks the read scope;
 # ``transient_error`` = a retryable GitHub blip (5xx / rate-limit / timeout);
@@ -2756,6 +2761,136 @@ class GitHubHttpClient:
             mutation,
             {"pullRequestId": node_id},
             caller="enqueue_pull_request",
+        )
+
+    def get_failed_check_contexts(self, pr_number: int) -> dict[str, Any]:
+        """The head commit and its status-check contexts, required-ness included.
+
+        One GraphQL call (#8692). Returns ``{"head_sha", "contexts"}`` with the
+        raw context nodes; the adapter decides which of them failed.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    headRefOid
+                    commits(last: 1) { nodes { commit { oid statusCheckRollup {
+                        contexts(first: 100) { nodes {
+                            __typename
+                            ... on CheckRun {
+                                databaseId name status conclusion
+                                isRequired(pullRequestNumber: $number)
+                                checkSuite { workflowRun { databaseId } }
+                            }
+                            ... on StatusContext {
+                                context state
+                                isRequired(pullRequestNumber: $number)
+                            }
+                        } }
+                    } } } }
+                }
+            }
+        }
+        """
+        result = self._graphql(
+            query,
+            {"owner": owner, "repo": repo, "number": pr_number},
+            caller="get_failed_check_contexts",
+        )
+        pr_data = ((result.get("data") or {}).get("repository") or {}).get("pullRequest")
+        if not isinstance(pr_data, dict) or not isinstance(pr_data.get("headRefOid"), str):
+            raise GitHubHttpError(
+                f"GitHub returned no head commit for PR #{pr_number}",
+                method="POST",
+                url="/graphql",
+            )
+        nodes = (pr_data.get("commits") or {}).get("nodes") or []
+        commit = nodes[0].get("commit") if nodes and isinstance(nodes[0], dict) else None
+        rollup = (commit or {}).get("statusCheckRollup") or {}
+        contexts = (rollup.get("contexts") or {}).get("nodes") or []
+        return {"head_sha": pr_data["headRefOid"], "contexts": contexts}
+
+    def get_actions_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The last ``max_bytes`` of an Actions job's log (#8692).
+
+        GitHub answers the log endpoint with a redirect to a short-lived,
+        pre-signed download URL. That URL is fetched WITHOUT the engine's
+        credential and streamed through a ring buffer, so memory stays bounded
+        by ``max_bytes`` whatever the log's size; streaming stops after
+        ``_MAX_JOB_LOG_STREAM_BYTES``, and the text then says so.
+        """
+        path = f"/repos/{self._config.repo}/actions/jobs/{job_id}/logs"
+        start = time.monotonic()
+        error: str | None = None
+        received = 0
+        try:
+            try:
+                redirect = self._client.request(
+                    "GET", path, headers=self._auth_headers(), follow_redirects=False
+                )
+                location = redirect.headers.get("Location")
+                if redirect.status_code not in (301, 302, 303, 307) or not location:
+                    error = f"{redirect.status_code} {redirect.text.strip()[:280]}"
+                    raise github_http_failure(
+                        f"GitHub GET {path} failed: {redirect.status_code}",
+                        method="GET",
+                        url=str(redirect.url),
+                        status_code=redirect.status_code,
+                        headers=redirect.headers,
+                        response_text=redirect.text,
+                    )
+                tail = bytearray()
+                with self._client.stream("GET", location, follow_redirects=True) as blob:
+                    if blob.status_code != 200:
+                        error = f"{blob.status_code} log download"
+                        raise GitHubHttpError(
+                            f"Actions job {job_id} log download failed: {blob.status_code}",
+                            method="GET",
+                            url=path,
+                            status_code=blob.status_code,
+                        )
+                    for chunk in blob.iter_bytes():
+                        received += len(chunk)
+                        tail += chunk
+                        if len(tail) > max_bytes:
+                            del tail[: len(tail) - max_bytes]
+                        if received >= _MAX_JOB_LOG_STREAM_BYTES:
+                            break
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                error = f"transport_error: {exc}"
+                raise GitHubTransportError(
+                    f"GitHub transport error for GET {path}", method="GET", url=path, original=exc
+                ) from exc
+            text = tail.decode("utf-8", errors="replace")
+            if received >= _MAX_JOB_LOG_STREAM_BYTES:
+                text = (
+                    f"[io: log is longer than {_MAX_JOB_LOG_STREAM_BYTES} bytes; this is the "
+                    f"tail of its first {_MAX_JOB_LOG_STREAM_BYTES} bytes]\n" + text
+                )
+            return text
+        finally:
+            gh_audit.record_live_call(command=f"GET {path}", caller="get_actions_job_log_tail", error=error, rate_limit=None)
+            gh_audit.record(
+                args=["GET", path],
+                repo=self._config.repo,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error=error,
+                caller="get_actions_job_log_tail",
+                bytes_returned=received,
+                items_returned=0,
+                full_scan=False,
+                rate_limit=None,
+            )
+
+    def rerun_failed_workflow_jobs(self, run_id: int) -> None:
+        """Re-run the failed jobs of one Actions workflow run (#8692)."""
+        self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/actions/runs/{run_id}/rerun-failed-jobs",
+            json_body={},
+            use_cache=False,
+            caller="rerun_failed_workflow_jobs",
         )
 
     def list_branches(self) -> list[str]:

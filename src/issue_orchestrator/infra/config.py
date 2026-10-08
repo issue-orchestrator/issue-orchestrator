@@ -28,6 +28,7 @@ from .config_models import (
     IsolationConfig,
     MergeQueueConfig,
     ValidatedWorkConfig,
+    CiFailureTriageConfig,
     MilestoneStrategyConfig as MilestoneStrategyConfig,
     ProviderCircuitBreakerConfig as ProviderCircuitBreakerConfig,
     ProviderResilienceConfig,
@@ -375,6 +376,8 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     # Optional GitHub Merge Queue integration (disabled by default)
     merge_queue: MergeQueueConfig = field(default_factory=MergeQueueConfig)
     validated_work: ValidatedWorkConfig = field(default_factory=ValidatedWorkConfig)
+    # How a failed required check is read and answered (#8692)
+    ci_failure_triage: CiFailureTriageConfig = field(default_factory=CiFailureTriageConfig)
     # SQLite backup configuration
     sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
     # Timeline retention configuration
@@ -752,6 +755,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
                     },
             },
             "validated_work": asdict(self.validated_work),
+            "ci_failure_triage": asdict(self.ci_failure_triage),
             "merge_queue": {
                 "enabled": self.merge_queue.enabled,
                 "provider": self.merge_queue.provider,
@@ -786,6 +790,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             worktrees_section,
         )
 
+        from .config_ci_failure import ci_failure_triage_section
         from .config_validated_work import validated_work_section
 
         # Build agents section
@@ -1035,6 +1040,8 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
 
         if retained_work := validated_work_section(self):
             result["validated_work"] = retained_work
+        if ci_triage := ci_failure_triage_section(self):
+            result["ci_failure_triage"] = ci_triage
 
         # Worktrees section
         if worktrees_dict := worktrees_section(self):

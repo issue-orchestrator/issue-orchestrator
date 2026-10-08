@@ -49,6 +49,7 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import (
+    FailedChecksRead,
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
@@ -362,6 +363,11 @@ class MockGitHubAdapter:
         self.get_prs_calls: list[dict] = []
         self.search_pr_refs_calls: list[int] = []
         self.enqueue_merge_queue_calls: list[int] = []
+        # CI-failure triage (#8692): pr_number -> failed checks, job_id -> log
+        self.failed_checks: dict[int, FailedChecksRead] = {}
+        self.job_logs: dict[int, str] = {}
+        self.job_log_reads: list[int] = []
+        self.rerun_calls: list[int] = []
 
     # IssueRepository methods
     def list_issues(
@@ -550,6 +556,26 @@ class MockGitHubAdapter:
         """Record an enqueue and mark the PR as QUEUED (mock)."""
         self.enqueue_merge_queue_calls.append(pr_number)
         self.merge_queue_entries[pr_number] = MergeQueueEntry(state="QUEUED")
+
+    def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
+        """The PR's seeded failed checks (mock)."""
+        return self.failed_checks[pr_number]
+
+    def read_check_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The seeded job log's tail (mock); records the read."""
+        self.job_log_reads.append(job_id)
+        return self.job_logs[job_id][-max_bytes:]
+
+    def rerun_failed_check_jobs(self, run_id: int) -> None:
+        """Record a re-run request (mock)."""
+        self.rerun_calls.append(run_id)
+
+    def issue_comment_bodies_containing(self, issue_number: int, needle: str) -> tuple[str, ...]:
+        """Every recorded comment body on the issue/PR containing ``needle`` (mock)."""
+        return tuple(
+            c["body"] for c in self.comments
+            if c["number"] == issue_number and needle in c["body"]
+        )
 
     def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
         """Return the PR's typed merge queue read (mock).

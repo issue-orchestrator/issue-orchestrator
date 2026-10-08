@@ -12,6 +12,7 @@ via Field() + json_schema_extra. This single source of truth drives:
 from __future__ import annotations
 
 import functools
+import re
 from pathlib import Path
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
@@ -32,6 +33,7 @@ from ..domain.tech_lead_findings import (
 )
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
 from ..domain.blocked_item_custody import CustodyState
+from ..domain.ci_failure import DEFAULT_GENUINE_SIGNATURES, DEFAULT_TRANSIENT_SIGNATURES
 from ..domain.tech_lead_charter import CharterRole
 from .config_models_tech_lead_custody import (
     DEFAULT_CUSTODY_STALE_MINUTES,
@@ -2095,6 +2097,75 @@ class ValidatedWorkSettings(BaseModel):
     )
 
 
+def _signature_lines_compile(value: str) -> str:
+    for line in value.split("\n"):
+        if line.strip():
+            try:
+                re.compile(line.strip())
+            except re.error as error:
+                raise ValueError(f"invalid regular expression {line.strip()!r}: {error}") from error
+    return value
+
+
+class CiFailureTriageSettings(BaseModel):
+    """Settings for reading and answering a failed required check (#8692)."""
+
+    ci_failure_triage_enabled: bool = Field(
+        True,
+        title="Triage failed checks",
+        description="Read a failed check's job log with the engine's credential, re-run a transient failure once per head commit, and attach the log excerpt to any other failure's rework brief",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.enabled",
+            "yaml_path": "ci_failure_triage.enabled",
+            "doc_examples": ["true", "false"],
+            "doc_notes": "A re-run never spends a rework cycle. A second transient failure on the same head commit goes to rework like any other failure.",
+        },
+    )
+    ci_failure_triage_transient_signatures: str = Field(
+        "\n".join(DEFAULT_TRANSIENT_SIGNATURES),
+        title="Transient signatures",
+        description="Regular expressions (one per line, case-insensitive) that mark a failed job's log as a runner, infrastructure or known-flaky failure worth one re-run",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.transient_signatures",
+            "yaml_path": "ci_failure_triage.transient_signatures",
+            "ui_transform": "newline_separated_list",
+            "doc_examples": ["The runner has received a shutdown signal", "workspace watch .* windows process tree"],
+            "doc_notes": "Checked before the genuine signatures. A TIMED_OUT or STARTUP_FAILURE check conclusion is transient on its own.",
+        },
+    )
+    ci_failure_triage_genuine_signatures: str = Field(
+        "\n".join(DEFAULT_GENUINE_SIGNATURES),
+        title="Genuine signatures",
+        description="Regular expressions (one per line, case-insensitive) that mark a failed job's log as a test, assertion or build failure",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.genuine_signatures",
+            "yaml_path": "ci_failure_triage.genuine_signatures",
+            "ui_transform": "newline_separated_list",
+            "doc_examples": ["AssertionError", "^FAILED \\S"],
+            "doc_notes": "A failure matching neither list is unknown; genuine and unknown failures both go to rework with the log excerpt attached.",
+        },
+    )
+    ci_failure_triage_log_tail_bytes: int = Field(
+        65536, ge=1024, le=1048576, strict=True,
+        title="Log tail (bytes)",
+        description="How much of each failed job's log the engine keeps, from the end",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.log_tail_bytes",
+            "yaml_path": "ci_failure_triage.log_tail_bytes",
+            "doc_examples": ["65536"],
+        },
+    )
+
+    @field_validator("ci_failure_triage_transient_signatures", "ci_failure_triage_genuine_signatures")
+    @classmethod
+    def _signatures_compile(cls, value: str) -> str:
+        return _signature_lines_compile(value)
+
+
 class MergeQueueSettings(BaseModel):
     """Settings for the Merge Queue tab."""
 
@@ -2753,6 +2824,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "review", "label": "Review", "model": ReviewSettings},
     {"key": "merge_queue", "label": "Merge Queue", "model": MergeQueueSettings},
     {"key": "validated_work", "label": "Validated Work", "model": ValidatedWorkSettings},
+    {"key": "ci_failure_triage", "label": "CI Failure Triage", "model": CiFailureTriageSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},

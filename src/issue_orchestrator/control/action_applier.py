@@ -102,6 +102,7 @@ from .actions import (
     StopSessionAction,
     QueueReviewAction,
     EnqueueToMergeQueueAction,
+    RerunFailedChecksAction,
     EscalateToHumanAction,
     AddCommentAction,
     SupersedePullRequestAction,
@@ -319,6 +320,7 @@ class ActionApplier:
             ActionType.DROP_TECH_LEAD: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
+            ActionType.RERUN_FAILED_CHECKS: self._apply_rerun_failed_checks,
             ActionType.RELEASE_PUBLISHED_REVIEW: lambda action: apply_release_published_review(action, self),
             # Every tech-lead action type -> its extracted apply-time owner.
             **tech_lead_action_handlers(
@@ -657,6 +659,14 @@ class ActionApplier:
         return apply_enqueue_to_merge_queue(
             action, host=self.repository_host, labels=self.label_manager, events=self.events
         )
+
+    def _apply_rerun_failed_checks(self, action: Action) -> ActionResult:
+        """Re-run a PR's transient CI failure (#8692): a GitHub write on the issue's PR."""
+        assert isinstance(action, RerunFailedChecksAction)
+        assert self.repository_host is not None, "repository_host required for rerun_failed_checks"
+        self._verify_claim_before_write(action, action.issue_number)
+        from .ci_failure_triage import apply_rerun_failed_checks
+        return apply_rerun_failed_checks(action, self.repository_host)
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
         """Close an issue through the repository host."""

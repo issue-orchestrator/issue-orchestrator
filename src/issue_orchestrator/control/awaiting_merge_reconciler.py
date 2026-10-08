@@ -735,7 +735,7 @@ class AwaitingMergeReconciler:
             rework_cycle=next_rework_cycle(pr.labels, self.label_manager),
             source=POST_PUBLISH_VALIDATION_SOURCE,
             feedback=build_rework_feedback(pr, action),
-            clear_needs_human=clear_needs_human,
+            clear_needs_human=clear_needs_human, failed_check=action == "REWORK_CHECK_FAILED",
             feedback_comment_already_posted=self._post_publish_comment_present(
                 pr_number
             ),

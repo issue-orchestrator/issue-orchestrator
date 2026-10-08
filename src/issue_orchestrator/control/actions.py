@@ -500,6 +500,29 @@ class EnqueueToMergeQueueAction(Action):
 
 
 @dataclass(frozen=True)
+class RerunFailedChecksAction(Action):
+    """Re-run a PR's transient CI failure, once per head commit (#8692).
+
+    From a ``DiscoveredCiRerun``; applied by ``ci_failure_triage``: the PR
+    comment recording the re-run first, then GitHub's re-run of each run.
+    """
+
+    issue_number: int = 0
+    pr_number: int = 0
+    head_sha: str = ""
+    run_ids: tuple[int, ...] = ()
+    job_ids: tuple[int, ...] = ()
+    comment: str = ""
+    action_type: ActionType = field(default=ActionType.RERUN_FAILED_CHECKS, init=False)
+
+    def liveness_facts(self) -> object | None:
+        """The PR, head and jobs: the comment carries the request time, which
+        would give every retry of the same re-run a fresh budget."""
+        return {"pr_number": self.pr_number, "head_sha": self.head_sha,
+                "run_ids": self.run_ids, "job_ids": self.job_ids}
+
+
+@dataclass(frozen=True)
 class ReleasePublishedReviewAction(Action):
     """Release the review of an issue whose open PR carries its published work.
 

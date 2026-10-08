@@ -631,6 +631,20 @@ claims:
 state:
   # file: ".issue-orchestrator/state.json"
 
+# How a reviewer-approved PR's failed required check is answered (#8692).
+# The engine reads the failed jobs' log tails with its own credential:
+# a transient failure (runner/infrastructure/known-flaky) is re-run once per
+# head commit, without spending a rework cycle; any other failure goes to
+# rework with the log excerpt in the agent's brief.
+ci_failure_triage:
+  enabled: true
+  log_tail_bytes: 65536
+  # transient_signatures:   # case-insensitive regexes; replaces the built-in list
+  #   - "The runner has received a shutdown signal"
+  #   - "workspace watch .* windows process tree"   # a known flaky test
+  # genuine_signatures:     # replaces the built-in test/assertion list
+  #   - "AssertionError"
+
 # Retained recovery evidence is stored outside disposable worktrees.
 validated_work:
   escrow_retention_days: 30  # Resolved work only; unresolved evidence is always retained.

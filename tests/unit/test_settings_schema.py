@@ -609,7 +609,7 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 11
+        assert len(tabs) == 12
         assert tabs["validated_work"].validated_work_escrow_retention_days == 30
         assert "validation" in tabs
         assert "merge_queue" in tabs

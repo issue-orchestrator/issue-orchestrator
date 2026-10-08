@@ -71,6 +71,7 @@ from .actions import (
     SessionType,
     SyncLabelsAction,
 )
+from .ci_failure_triage import plan_ci_reruns
 from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
@@ -284,6 +285,7 @@ class Planner:
         # the planner just turns each fact into the protected enqueue action.
         merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
         actions.extend(merge_queue_actions)
+        actions.extend(plan_ci_reruns(snapshot.discovered_ci_reruns))  # transient CI failures (#8692)
 
         # 1e+1f2. Reactive tech_lead (tech-lead reaction, ADR-0031): the storm
         # cohort escalates to one unscheduled health-review anchor OR the

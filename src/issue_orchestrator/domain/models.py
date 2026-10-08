@@ -11,7 +11,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from collections import OrderedDict
+
 from .blocked_open_pr import BlockedOpenPRLedger
+from .ci_failure import CiJobAssessment
 from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
@@ -1645,6 +1648,27 @@ class DiscoveredRework:
     # rework itself is still queued (idempotency is owned by labels/pending
     # state, not the comment).
     feedback_comment_already_posted: bool = False
+    # True when a required/blocking check FAILED on the approved PR's head
+    # (post-publish REWORK_CHECK_FAILED). Only such a rework passes through the
+    # CI-failure triage, which may re-run a transient failure instead (#8692).
+    failed_check: bool = False
+
+
+@dataclass(frozen=True)
+class DiscoveredCiRerun:
+    """A PR's failed CI jobs read as transient; re-run them once (#8692).
+
+    A "fact" from the CI-failure triage. The planner turns it into a
+    ``RerunFailedChecksAction``; the applier records the re-run on the PR
+    (the durable once-per-head marker) and then asks GitHub to re-run.
+    """
+    issue_number: int
+    pr_number: int
+    head_sha: str
+    run_ids: tuple[int, ...]
+    job_ids: tuple[int, ...]
+    #: The PR comment recording the re-run: marker, jobs and signatures.
+    comment: str
 
 
 @dataclass(frozen=True)
@@ -2196,6 +2220,10 @@ class OrchestratorState:
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
     discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
+    discovered_ci_reruns: list[DiscoveredCiRerun] = field(default_factory=list)  # Transient CI failures to re-run once (#8692)
+    # Each failed Actions job's assessment, by job id: a job's log is read once
+    # (#8692). Job ids are per attempt, so a re-run's new failure is read anew.
+    ci_job_assessments: OrderedDict[int, CiJobAssessment] = field(default_factory=OrderedDict)
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for tech_lead
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)

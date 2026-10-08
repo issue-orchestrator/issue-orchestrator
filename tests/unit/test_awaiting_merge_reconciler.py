@@ -1381,6 +1381,7 @@ def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
     feedback = rework.feedback or ""
     assert "Required check failed" in feedback
     assert "Status checks: FAILURE" in feedback
+    assert rework.failed_check  # the CI-failure triage reads it next (#8692)
     # Legacy header is gone
     assert "POST-PUBLISH VALIDATION FAILURE" not in feedback
 

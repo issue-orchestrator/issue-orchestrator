@@ -36,6 +36,7 @@ from ..domain.models import (
 )
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
+from .ci_failure_triage import CiFailureTriage
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
 from .review_scope import ReviewScopeChecker
@@ -236,9 +237,13 @@ class GitHubWorkflow:
             dependency_evaluator=self.dependency_evaluator,
             gates=self.fact_gatherer.human_gates,
         ).discover(state)
+        triaged = CiFailureTriage(self.repository_host, self.config.ci_failure_triage).screen(
+            state, result.reworks
+        )
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
         state.discovered_awaiting_merge_drifts.extend(result.drifts)
-        state.discovered_reworks.extend(result.reworks)
+        state.discovered_reworks.extend(triaged.reworks)
+        state.discovered_ci_reruns.extend(triaged.reruns)
         state.discovered_awaiting_merge_escalations.extend(result.escalations)
         state.discovered_merge_queue_enqueues.extend(result.enqueues)
         if result.discovered:

@@ -173,6 +173,34 @@ class MergeQueueRead:
         return self.status == "PRESENT"
 
 
+@dataclass(frozen=True)
+class FailedCheck:
+    """One failed check context on a PR's head commit (#8692).
+
+    ``job_id``/``run_id`` name the GitHub Actions job and workflow run behind a
+    check run; both are ``None`` for a check the engine can neither read a log
+    for nor re-run (a commit status, or a check run from another app).
+    """
+
+    name: str
+    conclusion: str
+    required: bool
+    job_id: int | None
+    run_id: int | None
+
+    def __post_init__(self) -> None:
+        if (self.job_id is None) != (self.run_id is None):
+            raise ValueError("a failed check names both its job and its run, or neither")
+
+
+@dataclass(frozen=True)
+class FailedChecksRead:
+    """The failed check contexts of a PR's current head commit."""
+
+    head_sha: str
+    checks: tuple[FailedCheck, ...]
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
@@ -456,6 +484,34 @@ class PullRequestTracker(Protocol):
             RepositoryError: If there's an error reaching the provider. Callers
                 that must not act on an unknown queue state (the coordinator)
                 map this to ``INDETERMINATE`` rather than to ``ABSENT``.
+        """
+        ...
+
+    def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
+        """Read the failed check contexts on a PR's head commit (one GraphQL call).
+
+        Only the CI-failure triage (#8692) calls this, and only for a PR whose
+        failed check already sent it to rework.
+
+        Raises:
+            RepositoryHostError: If the provider cannot be read.
+        """
+        ...
+
+    def read_check_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The last ``max_bytes`` of a GitHub Actions job's log, read with the
+        engine's own credential and never held whole in memory.
+
+        Raises:
+            RepositoryHostError: If the log cannot be read.
+        """
+        ...
+
+    def rerun_failed_check_jobs(self, run_id: int) -> None:
+        """Re-run the failed jobs of one GitHub Actions workflow run.
+
+        Raises:
+            RepositoryHostError: If the provider refuses or cannot be reached.
         """
         ...
 

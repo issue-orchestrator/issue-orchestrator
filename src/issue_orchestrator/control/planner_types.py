@@ -14,6 +14,7 @@ from ..domain.models import (
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
+    DiscoveredCiRerun,
     DiscoveredMergeQueueEnqueue,
     DiscoveredReview,
     DiscoveredRetrospectiveReview,
@@ -92,6 +93,7 @@ class OrchestratorSnapshot:
     discovered_merge_queue_enqueues: tuple[
         DiscoveredMergeQueueEnqueue, ...
     ] = field(default_factory=tuple)
+    discovered_ci_reruns: tuple[DiscoveredCiRerun, ...] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     # Unacknowledged stuck-sweep escalations to (re-)label needs-human; the
     # planner emits the idempotent label via the Applier (#6824 R1, label-only).
@@ -177,6 +179,7 @@ class OrchestratorSnapshot:
         discovered_merge_queue_enqueues: Sequence[
             DiscoveredMergeQueueEnqueue
         ] = (),
+        discovered_ci_reruns: Sequence[DiscoveredCiRerun] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
         tech_lead_facts: Optional[TechLeadFacts] = None,
         tech_lead_subjects: tuple["Issue", ...] = (),
@@ -231,6 +234,7 @@ class OrchestratorSnapshot:
             discovered_merge_queue_enqueues=tuple(
                 discovered_merge_queue_enqueues
             ),
+            discovered_ci_reruns=tuple(discovered_ci_reruns),
             discovered_failures=tuple(discovered_failures),
             tech_lead_facts=tech_lead_facts,
             tech_lead_subjects=tech_lead_subjects,
