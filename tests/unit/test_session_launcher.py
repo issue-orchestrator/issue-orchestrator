@@ -11166,17 +11166,11 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
 
         assert result.success is True and ruling.text in result.session.original_prompt
 
-    def test_a_retried_run_is_bound_by_the_rulings_standing_now(
-        self, tech_lead_bundle, sample_config, tmp_path
-    ) -> None:
-        """codex r1 F1: a ruling recorded on a covered issue after the original
-        launch binds the validation retry; the retry reads it fresh."""
+    @staticmethod
+    def _health_retry(sample_config, tmp_path):
+        """A health review over issue 365, as its validation retry finds it."""
         from dataclasses import replace
 
-        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
-        from tests.standing_ruling_helpers import a_ruling, body_with
-
-        bundle, _owner, bodies, _ruling, _anchor = tech_lead_bundle
         carrier = TestAValidationRetryCarriesItsLaunchAuthority()
         checkout = tmp_path / "worktree-6410"
         checkout.mkdir()
@@ -11194,12 +11188,40 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         BoardSnapshot(
             generated_at="2026-09-18T00:00:00", orchestrator_paused=False, recent_failures=[], problem_cohort=[365],
         ).write(data / "board-snapshot.json")
+        return replace(carrier._retry(source, worktree_path=str(checkout)), branch_name="6410-health-review")
+
+    def test_a_retried_run_is_bound_by_the_rulings_standing_now(
+        self, tech_lead_bundle, sample_config, tmp_path
+    ) -> None:
+        """codex r1 F1: a ruling recorded on a covered issue after the original
+        launch binds the validation retry; the retry reads it fresh."""
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+        from tests.standing_ruling_helpers import a_ruling, body_with
+
+        bundle, _owner, bodies, _ruling, _anchor = tech_lead_bundle
+        retry = self._health_retry(sample_config, tmp_path)
         since = a_ruling("m-00000000beef", "Recorded after the original launch.")
         bodies.bodies[365] = body_with(since)
-        retry = replace(carrier._retry(source, worktree_path=str(checkout)), branch_name="6410-health-review")
 
         result = bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
 
         assert result.success is True, result.reason
         prompt = bundle.create_session_calls[0]["cmd"]
         assert f"{RULINGS_PROMPT_HEADING}365" in prompt and since.text in prompt
+
+    def test_a_failed_github_read_keeps_the_retry_queued_and_releases_its_claim(
+        self, tech_lead_bundle, sample_config, tmp_path
+    ) -> None:
+        """codex r2 F1: a GitHub failure reading the covered work's rulings is a
+        retryable refusal that releases the claim, never an escaped exception."""
+        bundle, _owner, bodies, _ruling, _anchor = tech_lead_bundle
+        retry = self._health_retry(sample_config, tmp_path)
+        bodies.failing.add(365)
+
+        with patch.object(SessionLauncher, "_release_claim_if_held", autospec=True) as release:
+            result = bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
+        assert "GitHub read of #365 failed" in result.reason
+        assert release.call_count == 1 and bundle.create_session_calls == []
