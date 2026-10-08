@@ -46,49 +46,63 @@ class NeedsHumanEpisodes:
         self,
         *,
         store: "NeedsHumanEpisodeReader",
-        label_applications: Callable[[int, str], "LabelEvent | None"],
+        label_applications: Callable[[int, Sequence[str]], Mapping[str, "LabelEvent | None"]],
         labels: "LabelManager",
     ) -> None:
         self._store = store
         self._label_applications = label_applications
         self._labels = labels
-        #: Items the last verification could not verify: unknown until one does.
+        #: Items a verification could not verify: unknown until one does.
         self._unverified: set[int] = set()
 
-    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
-        """Each item's episode, bound to GitHub's standing label application.
+    def verified(
+        self, issues: Mapping[int, "Issue"], also: Mapping[int, Sequence[str]],
+    ) -> tuple[dict[int, str], dict[int, Mapping[str, "LabelEvent | None"]]]:
+        """``(episodes, applications)``: each item's episode, bound to GitHub's
+        standing label application, and the standing application of each of
+        the item's ``also`` labels, read in the SAME scan of its events
+        (#8731), under the owner's gate.
 
-        An item whose episode cannot be verified is left out: its episode is
-        unknown.
+        An item whose episode cannot be verified is left out of ``episodes``:
+        its episode is unknown. An item whose events were not read (the gate
+        busy, the read failed) is left out of ``applications`` too.
         """
         verified: dict[int, str] = {}
+        applications: dict[int, Mapping[str, "LabelEvent | None"]] = {}
         for number, issue in issues.items():
+            episode = None
             with self._store.mutate_needs_human(number) as status:
-                if status is IssueDispositionGateStatus.BUSY:
-                    episode = None  # the owner is changing this block right now
-                else:
-                    episode = self._bind(number, self._episode_label(issue.labels))
+                # BUSY: the owner is changing this block right now.
+                if status is not IssueDispositionGateStatus.BUSY:
+                    label = self._episode_label(issue.labels).casefold()
+                    read = self._read(number, (label, *also.get(number, ())))
+                    if read is not None:
+                        applications[number] = read
+                        episode = self._bind(number, read[label])
             if episode is not None:
                 verified[number] = episode
-        self._unverified = set(issues) - set(verified)
-        return verified
+        self._unverified = (self._unverified - set(issues)) | (set(issues) - set(verified))
+        return verified, applications
 
     def recorded(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """The recorded episodes, with no GitHub read: what the tick reads
-        between rechecks. An item the last verification could not verify
-        stays unknown (owed) until one does."""
+        between rechecks. An item a verification could not verify stays
+        unknown (owed) until one does; one no longer held is forgotten."""
+        self._unverified &= set(issues)
         recorded = self._store.needs_human_episodes(sorted(issues))
         return {number: episode for number, episode in recorded.items() if number not in self._unverified}
 
-    def _bind(self, number: int, label: str) -> str | None:
+    def _read(self, number: int, labels: Sequence[str]) -> Mapping[str, "LabelEvent | None"] | None:
         try:
-            application = self._label_applications(number, label)
+            return self._label_applications(number, labels)
         except Exception:
             logger.warning(
-                "[TRIAGE] %s events of #%d unreadable; its block episode is unverified",
-                label, number, exc_info=True,
+                "[TRIAGE] events of #%d unreadable; its block episode is unverified",
+                number, exc_info=True,
             )
             return None
+
+    def _bind(self, number: int, application: "LabelEvent | None") -> str | None:
         if application is None:
             return None  # GitHub does not show it standing: the cache is stale
         return self._store.bind_needs_human_episode(

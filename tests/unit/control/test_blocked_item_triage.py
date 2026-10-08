@@ -211,11 +211,6 @@ def _episode_owner(
     """The block-episode owner over *store*, GitHub's applications faked;
     *reads* records each event read it makes (one per item per read)."""
 
-    def standing(number: int, label: str) -> LabelEvent | None:
-        if reads is not None:
-            reads.append(number)
-        return _application(applications, number, label)
-
     def standing_all(number: int, labels: Sequence[str]) -> dict[str, LabelEvent | None]:
         if reads is not None:
             reads.append(number)
@@ -223,7 +218,7 @@ def _episode_owner(
 
     return BlockEpisodes(
         needs_human=NeedsHumanEpisodes(
-            store=store, label_applications=standing, labels=LabelManager(_config()),
+            store=store, label_applications=standing_all, labels=LabelManager(_config()),
         ),
         label_applications=standing_all, labels=LabelManager(_config()),
         clock=clock, recheck_seconds=lambda: 3600,
@@ -813,18 +808,81 @@ def test_the_ticks_recheck_finds_a_reraised_label_on_an_unchanged_board() -> Non
     assert triage_owed(config, state, authority, episodes) is False
 
 
-def test_a_label_added_between_rechecks_is_unknown_until_verified() -> None:
-    """#8731: between rechecks the tick reads only onsets a recheck proved; a
-    blocking label put on since has none, so the item is owed rather than
-    covered by a triage of an older block."""
+def test_a_label_added_between_rechecks_is_read_at_once() -> None:
+    """#8731: between rechecks the tick has no proven onset for a blocking
+    label put on since; it reads that item's events at once (one scan) rather
+    than covering it with a triage of an older block."""
     issue = _issue(500, "agent:backend", "blocked-failed")
-    now = [0.0]
-    episodes = _episode_owner(_Episodes(), clock=lambda: now[0])
-    assert episodes.current({500: issue}) == {500: f"blocked-failed={_application_event(1).created_at}#1"}
+    now, reads, applications = [0.0], [], {(500, "blocked-failed"): 1, (500, "publish-failed"): 2}
+    episodes = _episode_owner(_Episodes(), applications, clock=lambda: now[0], reads=reads)
+    assert episodes.current({500: issue}) == {500: _onset("blocked-failed")}
 
     now[0] = 60.0
     grown = _issue(500, "agent:backend", "blocked-failed", "publish-failed")
-    assert episodes.current({500: grown}) == {}
+    assert episodes.current({500: grown}) == {
+        500: f"{_onset('blocked-failed')};{_onset('publish-failed', 2)}",
+    }
+    assert reads == [500, 500]
+    now[0] = 120.0
+    assert episodes.current({500: grown}) and reads == [500, 500]  # proven: no further read
+
+
+def test_a_lift_and_reraise_the_tick_sees_is_owed_before_the_next_recheck() -> None:
+    """#8731 review r1 F1: the tick's snapshot shows ``publish-failed`` lifted
+    (by a successful retry), and a later snapshot shows it back, all before
+    the next recheck. The onset proven before the lift is forgotten when the
+    lift is seen, so the re-raise is read afresh and owed at once."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    blocked = _issue(500, "agent:backend", "publish-failed")
+    state = OrchestratorState()
+    state.cached_scope_issues = [blocked]
+    now, applications = [0.0], {500: 7}
+    episodes = _episode_owner(_Episodes(), applications, clock=lambda: now[0])
+    [granted] = _owner([blocked], applications=applications).agenda(anchor_issue_number=ANCHOR).grants
+    authority = _Authority(_Ledger({500: [_triage_record(
+        500, TriageClass.EXPLAINED, granted.fingerprint, effect="applied",
+    )]}))
+    assert triage_owed(_config(), state, authority, episodes) is False
+
+    now[0] = 600.0
+    state.cached_scope_issues = [_issue(500, "agent:backend")]  # the retry lifted it
+    assert triage_owed(_config(), state, authority, episodes) is False
+    applications[500] = 8  # the next publish failed: put on again
+    now[0] = 1200.0
+    state.cached_scope_issues = [blocked]
+
+    assert triage_owed(_config(), state, authority, episodes) is True
+
+
+def test_an_item_a_tick_read_could_not_verify_waits_for_the_next_recheck() -> None:
+    """#8731: an unproven item whose read fails is owed, and is not re-read on
+    every tick: it waits for the next recheck."""
+    issue = _issue(500, "agent:backend", "blocked-failed")
+    now, reads, applications = [0.0], [], {500: RuntimeError("events API 502")}
+    episodes = _episode_owner(_Episodes(), applications, clock=lambda: now[0], reads=reads)
+    assert episodes.current({}) == {}  # the first recheck: nothing blocked
+
+    now[0] = 60.0
+    assert episodes.current({500: issue}) == {} and reads == [500]
+    now[0] = 120.0
+    assert episodes.current({500: issue}) == {} and reads == [500]
+    applications[500] = 1
+    now[0] = 3600.0
+    assert episodes.current({500: issue}) == {500: _onset("blocked-failed")} and reads == [500, 500]
+
+
+def test_a_mixed_block_is_verified_by_one_events_scan() -> None:
+    """#8731 review r1 F2: needs-human and the labels beside it are dated by
+    ONE read of the item's events, made under the needs-human owner's gate."""
+    issue = _issue(500, "agent:backend", "needs-human", "blocked-failed", "publish-failed")
+    reads: list[int] = []
+    store = _Episodes({500: EP})
+
+    episodes = _episode_owner(store, reads=reads).verified({500: issue})
+
+    assert episodes == {500: f"{EP};{_onset('blocked-failed')};{_onset('publish-failed')}"}
+    assert reads == [500] and store.bound == {500: 1}
 
 
 def test_the_agenda_is_capped_per_run_oldest_first() -> None:

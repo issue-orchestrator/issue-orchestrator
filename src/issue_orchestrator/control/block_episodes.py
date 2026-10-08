@@ -15,16 +15,21 @@ episode is the onset of each of its parts:
   them from many paths, and an operator by hand), but GitHub records every
   write: the first ``labeled`` event of the label's standing run is its onset
   whoever put it on, and a removal and re-application is a new event. One read
-  of the issue's events dates all of an item's labels.
+  of the issue's events dates all of an item's labels, the needs-human one
+  included (under that block owner's gate).
 
 This owner reads them on one schedule:
 
 * a health review's agenda verifies every item (:meth:`BlockEpisodes.verified`)
   before granting any, so every triage is made on the episode standing then;
 * the tick's "is a triage owed" check (:meth:`BlockEpisodes.current`) re-reads
-  GitHub at most once per health-review interval and, between rechecks, reads
-  what the last recheck verified, so a re-raised block makes a review due by
-  the next recheck without an event scan on every tick.
+  every item at most once per health-review interval. Between rechecks it
+  reads the onsets it proved, forgets one as soon as the tick's snapshot shows
+  its label (or its item's block) gone, and reads GitHub at once for an item
+  carrying a label it has no proven onset for (a new block, or one re-raised
+  since it was seen lifted), so a re-raised block makes a review due on the
+  tick that sees it, and a re-raise the snapshot never saw lifted by the next
+  recheck, without an event scan of every item on every tick.
 
 A part whose onset cannot be verified (events unreadable, the label not
 standing on GitHub, the needs-human owner's gate busy) makes the item's whole
@@ -70,9 +75,12 @@ class BlockEpisodes:
         self._clock = clock
         self._recheck_seconds = recheck_seconds
         self._checked_at: float | None = None
-        #: The label onsets the last verification proved, per item. An item
-        #: (or a label) missing here is unknown until a verification proves it.
+        #: The label onsets proven per item. An item (or a label) missing here
+        #: is unknown until a verification proves it.
         self._onsets: dict[int, _Onsets] = {}
+        #: Items whose last verification failed: unknown, and not re-read
+        #: until the next recheck (no GitHub read on every tick for them).
+        self._failed: set[int] = set()
 
     def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """Each blocked item's episode, every part read from GitHub now.
@@ -80,27 +88,60 @@ class BlockEpisodes:
         An item any part of whose episode cannot be verified is left out: its
         episode is unknown.
         """
-        needs_human = self._needs_human.verified(self._holding_needs_human(issues))
-        self._onsets = {}
-        for number, issue in issues.items():
-            onsets = self._read_onsets(number, self._dated_labels(issue))
-            if onsets is not None:
-                self._onsets[number] = onsets
-        return self._compose(issues, needs_human)
+        self._onsets, self._failed = {}, set()
+        return self._compose(issues, self._verify(issues))
 
     def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
-        """The episodes, re-verified once per recheck period.
+        """The episodes, every item re-verified once per recheck period.
 
-        The tick reads this, so it makes no GitHub read between rechecks. A
-        recheck that finds a new application is a new episode, and the triage
-        made on the old one no longer covers the item. An item the last
-        recheck could not verify stays unknown (owed) until one does.
+        The tick reads this. Between rechecks it reads GitHub only for an item
+        carrying a label with no proven onset. A recheck that finds a new
+        application is a new episode, and the triage made on the old one no
+        longer covers the item. An item a verification could not verify stays
+        unknown (owed) until the next recheck verifies it.
         """
         now = self._clock()
         if self._checked_at is None or now - self._checked_at >= self._recheck_seconds():
             self._checked_at = now
             return self.verified(issues)
+        self._forget_lifted(issues)
+        unproven = {
+            number: issue for number, issue in issues.items()
+            if number not in self._failed
+            and any(label not in self._onsets.get(number, {}) for label in self._dated_labels(issue))
+        }
+        if unproven:
+            self._verify(unproven)
         return self._compose(issues, self._needs_human.recorded(self._holding_needs_human(issues)))
+
+    def _verify(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+        """Read *issues* from GitHub (one events scan each), record each one's
+        proven label onsets, and return the needs-human episodes verified."""
+        held = self._holding_needs_human(issues)
+        needs_human, read = self._needs_human.verified(
+            held, {number: self._dated_labels(issue) for number, issue in held.items()},
+        )
+        for number, issue in issues.items():
+            dated = self._dated_labels(issue)
+            applications = read.get(number) if number in held else self._read(number, dated)
+            onsets = None if applications is None else _proven(applications, dated)
+            if onsets is None:
+                self._onsets.pop(number, None)
+                self._failed.add(number)
+            else:
+                self._onsets[number] = onsets
+                self._failed.discard(number)
+        return needs_human
+
+    def _forget_lifted(self, issues: Mapping[int, "Issue"]) -> None:
+        """Forget every onset whose label the snapshot no longer shows on its
+        blocked item, so a re-raise seen later is read afresh (#8731 r1 F1)."""
+        for number in set(self._onsets) - set(issues):
+            del self._onsets[number]
+        self._failed &= set(issues)
+        for number, onsets in self._onsets.items():
+            dated = set(self._dated_labels(issues[number]))
+            self._onsets[number] = {label: onset for label, onset in onsets.items() if label in dated}
 
     def _compose(self, issues: Mapping[int, "Issue"], needs_human: Mapping[int, str]) -> dict[int, str]:
         episodes: dict[int, str] = {}
@@ -117,24 +158,17 @@ class BlockEpisodes:
             )
         return episodes
 
-    def _read_onsets(self, number: int, labels: Sequence[str]) -> _Onsets | None:
+    def _read(self, number: int, labels: Sequence[str]) -> Mapping[str, "LabelEvent | None"] | None:
         if not labels:
             return {}
         try:
-            applications = self._label_applications(number, labels)
+            return self._label_applications(number, labels)
         except Exception:
             logger.warning(
                 "[TRIAGE] events of #%d unreadable; its block episode is unverified",
                 number, exc_info=True,
             )
             return None
-        onsets: _Onsets = {}
-        for label in labels:
-            application = applications[label]
-            if application is None:
-                return None  # GitHub does not show it standing: the cache is stale
-            onsets[label] = f"{application.created_at}#{application.event_id}"
-        return onsets
 
     def _dated_labels(self, issue: "Issue") -> tuple[str, ...]:
         """The casefolded blocking labels this owner dates: every one but the
@@ -154,6 +188,18 @@ class BlockEpisodes:
 
     def _holding_needs_human(self, issues: Mapping[int, "Issue"]) -> dict[int, "Issue"]:
         return {number: issue for number, issue in issues.items() if self._holds_needs_human(issue)}
+
+
+def _proven(applications: Mapping[str, "LabelEvent | None"], labels: Sequence[str]) -> _Onsets | None:
+    """Each label's onset, or None when GitHub does not show one standing (the
+    cached snapshot is stale): the item's episode is then unknown."""
+    onsets: _Onsets = {}
+    for label in labels:
+        application = applications[label]
+        if application is None:
+            return None
+        onsets[label] = f"{application.created_at}#{application.event_id}"
+    return onsets
 
 
 class _UnwiredEpisodes(BlockEpisodes):

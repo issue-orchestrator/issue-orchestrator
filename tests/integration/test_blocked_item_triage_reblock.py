@@ -86,12 +86,12 @@ def _episodes(
     labels: LabelManager,
     *,
     recheck_seconds: float,
-    needs_human_reads: Callable[[int, str], LabelEvent | None] | None = None,
+    needs_human_reads: Callable[[int, Sequence[str]], dict[str, LabelEvent | None]] | None = None,
 ) -> BlockEpisodes:
     """The block-episode owner as the composition builds it, over *github*."""
     return BlockEpisodes(
         needs_human=NeedsHumanEpisodes(
-            store=store, label_applications=needs_human_reads or github.label_application,
+            store=store, label_applications=needs_human_reads or github.label_applications,
             labels=labels,
         ),
         label_applications=github.label_applications, labels=labels,
@@ -229,8 +229,8 @@ def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: 
     [opened] = store.needs_human_episodes([ITEM]).values()
     during: list[BlockOutcome] = []
 
-    def read_then_race(number: int, label: str) -> LabelEvent | None:
-        standing = github.label_application(number, label)
+    def read_then_race(number: int, labels: Sequence[str]) -> dict[str, LabelEvent | None]:
+        standing = github.label_applications(number, labels)
         during.append(block.release(question))  # the owner tries to lift it now
         return standing
 

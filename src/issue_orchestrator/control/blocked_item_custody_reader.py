@@ -568,7 +568,7 @@ def build_block_episodes(config: "Config", deps: "OrchestratorDeps") -> "BlockEp
     return BlockEpisodes(
         needs_human=NeedsHumanEpisodes(
             store=deps.pending_work_claims,
-            label_applications=lambda number, label: host().label_application(number, label),
+            label_applications=lambda number, labels: host().label_applications(number, labels),
             labels=deps.label_manager,
         ),
         label_applications=lambda number, labels: host().label_applications(number, labels),

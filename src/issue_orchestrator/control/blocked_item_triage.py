@@ -222,7 +222,8 @@ def owed_triages(
         if issue.number not in exclude
         and (blocking := blocked_work_item(issue, labels, config.tech_lead_review_agent)) is not None
     ]
-    recorded = episodes({issue.number: issue for issue, _blocking in blocked}) if blocked else {}
+    # Asked even when nothing is blocked: the owner sees every lift (#8731 r1 F1).
+    recorded = episodes({issue.number: issue for issue, _blocking in blocked})
     owed: list[OwedTriage] = []
     in_force: list[int] = []
     for issue, (names, marker) in blocked:
