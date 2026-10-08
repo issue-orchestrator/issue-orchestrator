@@ -1133,6 +1133,7 @@ class TestEscalationReachesTheHumanThroughTheProductionGate:
 
             label_adapter = Mock()
             pr_adapter = Mock()
+            pr_adapter.merged_prs_referencing_issues.return_value = frozenset()
 
             config = Config()
             config.validation.publish.dirty_check = "tracked"
