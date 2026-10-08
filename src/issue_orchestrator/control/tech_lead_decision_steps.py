@@ -37,7 +37,13 @@ from typing import TYPE_CHECKING, Any
 
 from ..domain.host_rate_limit import rate_limit_cause
 from ..domain.human_block import BlockOutcome, NeedsHumanCause
-from ..domain.decision_steps import DecisionFollowThrough, DecisionStep, DecisionStepKind, step_marker
+from ..domain.decision_steps import (
+    DecisionFollowThrough,
+    DecisionStep,
+    DecisionStepKind,
+    step_marker,
+    step_started_marker,
+)
 from ..domain.pr_issue_reference import body_links_issue, refs_in_place_of_closes
 from ..domain.scoped_rework import ReworkRequest, ReworkTarget
 from ..domain.standing_ruling import RulingAuthority, RulingScope
@@ -107,6 +113,9 @@ class DecisionStepContext:
     anchor_issue_number: int
     proposal_id: str
     finding_ids: tuple[str, ...]
+    #: The rulings the decision itself records on its item, preflighted with
+    #: every ruling its steps add there (#8691 r3 F2).
+    subject_rulings: tuple["StandingRuling", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,17 +172,33 @@ class DecisionStepsOwner:
 
         A refusal after some step already applied (a race broke a later one) is
         PARTIAL: the decision changed things and cannot be closed as stale."""
-        applied: list[int] = []
+        if not follow_through.steps:
+            return None
+        touched: list[int] = []
+        rulings: dict[int, list["StandingRuling"]] = {context.subject: list(context.subject_rulings)}
         for index, step in enumerate(follow_through.steps, start=1):
             if self._applied(context, index):
-                applied.append(index)
+                touched.append(index)
                 continue
+            if self._started(context, index):
+                # Its write may have landed before its marker failed: changed, maybe.
+                touched.append(index)
             why = self._precondition(context, index, step)
             if why is not None:
                 return StepRefusal(
                     f"step {index} ({step.kind.value} #{step.number}) cannot be carried out: {why}",
-                    applied=tuple(applied),
+                    applied=tuple(touched),
                 )
+            if step.kind is DecisionStepKind.RECORD_RULING:
+                rulings.setdefault(step.number, []).append(self._step_ruling(context, index, step))
+        for number, wanted in rulings.items():
+            # Every ruling the decision adds to one body, together (#8691 r3 F2).
+            stepped = any(s.kind is DecisionStepKind.RECORD_RULING and s.number == number
+                          for s in follow_through.steps)
+            why = self.rulings.unrecordable_all(number, tuple(wanted)) if stepped else None
+            if why is not None:
+                return StepRefusal(f"the rulings this decision records on #{number} cannot all be"
+                                   f" recorded: {why}", applied=tuple(touched))
         return None
 
     def check_authority(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> None:
@@ -217,8 +242,6 @@ class DecisionStepsOwner:
             return f"#{number} is {issue.state}"
         if step.kind is DecisionStepKind.SET_MILESTONE and self._milestone_number(step.milestone) is None:
             return f"no open milestone is named {step.milestone!r}"
-        if step.kind is DecisionStepKind.RECORD_RULING:
-            return self.rulings.unrecordable(number, self._step_ruling(context, index, step))
         return None
 
     # -- execution ------------------------------------------------------------------
@@ -263,6 +286,27 @@ class DecisionStepsOwner:
                 refused.append(f"step {index}: {refusal}")
         return StepsApplied(applied=tuple(applied), refused=tuple(refused))
 
+    def _start(self, context: DecisionStepContext, index: int) -> str | None:
+        """Record, before its first write, that step *index* is under way, so a
+        write that lands while its applied marker fails is never read as "no
+        changes" (#8691 r3 F1). Every step's write is idempotent, so a replay
+        that finds it started runs it again."""
+        proposal = context.proposal_issue_number
+        marker = step_started_marker(str(proposal), index)
+        if self.comment_marker_present(proposal, marker):
+            return None
+        posted = self.apply_action(AddCommentAction(
+            number=proposal, comment=f"Step {index} started.\n\n{marker}",
+            reason=f"decision step {index} of proposal #{proposal} started",
+            expected=build_expected_for_mutation(),
+        ))
+        return None if posted.success else f"step {index} start not recorded: {posted.error}"
+
+    def _started(self, context: DecisionStepContext, index: int) -> bool:
+        return self.comment_marker_present(
+            context.proposal_issue_number, step_started_marker(str(context.proposal_issue_number), index)
+        )
+
     def _applied(self, context: DecisionStepContext, index: int) -> bool:
         return self.comment_marker_present(
             context.proposal_issue_number, step_marker(str(context.proposal_issue_number), index)
@@ -273,6 +317,9 @@ class DecisionStepsOwner:
         why = self._precondition(context, index, step)
         if why is not None:
             return why
+        started = self._start(context, index)
+        if started is not None:
+            raise RuntimeError(started)
         writes: dict[DecisionStepKind, Callable[[DecisionStepContext, int, DecisionStep], str | None]] = {
             DecisionStepKind.SET_MILESTONE: self._set_milestone,
             DecisionStepKind.RECORD_RULING: self._record_ruling,
@@ -334,7 +381,6 @@ class DecisionStepsOwner:
 
     def _request_rework(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         assert step.rework is not None  # bound at planning
-        self._release_merge_hold(context, step.number)
         result = self.apply_action(RequestReworkAction(
             request=step.rework, proposal_id=context.proposal_id, finding_ids=context.finding_ids,
             anchor_issue_number=context.anchor_issue_number,
@@ -343,6 +389,8 @@ class DecisionStepsOwner:
             expected=build_expected_for_mutation(),
         ))
         if result.success:
+            # Only once the rework is queued: a refused rework keeps the hold (#8691 r3 F3).
+            self._release_merge_hold(context, step.number)
             return None
         if result.result_type is ActionResultType.SKIPPED:  # the rework owner refused a stale target
             return f"the rework owner refused PR #{step.number}: {result.details['skip_reason']}"

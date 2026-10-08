@@ -350,6 +350,11 @@ def step_marker(decision_key: str, index: int) -> str:
     return f"{DECISION_STEP_MARKER_PREFIX}{decision_key}:{index} -->"
 
 
+def step_started_marker(decision_key: str, index: int) -> str:
+    """The marker posted before a step's first write: its write may have landed."""
+    return f"<!-- io:decision-step-started:{decision_key}:{index} -->"
+
+
 def _preview(text: str, limit: int = 160) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"

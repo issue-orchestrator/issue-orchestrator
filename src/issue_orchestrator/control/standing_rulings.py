@@ -94,15 +94,18 @@ class StandingRulingsOwner:
             source=source, scope=scope, recorded_at=self.clock().isoformat(),
         )
 
-    def unrecordable(self, issue_number: int, ruling: StandingRuling) -> str | None:
-        """Why :meth:`record` would fail for *ruling* now (an unreadable issue, a
-        malformed rulings block, a block that would not fit), else None. Reads only:
-        a caller with several writes checks this before its first (#8691)."""
+    def unrecordable_all(self, issue_number: int, rulings: tuple[StandingRuling, ...]) -> str | None:
+        """Why recording *rulings* on the issue, in order, would fail now (an
+        unreadable issue, a malformed rulings block, a body that would not fit
+        them all), else None. Reads only: a caller with several writes checks
+        them together before its first (#8691)."""
         try:
             issue = self._read(issue_number)
             current = self._parse(issue_number, issue.body)
-            if not any(existing.ruling_id == ruling.ruling_id for existing in current):
-                with_rulings_block(issue.body, (*current, ruling))
+            present = {existing.ruling_id for existing in current}
+            added = tuple(ruling for ruling in rulings if ruling.ruling_id not in present)
+            if added:
+                with_rulings_block(issue.body, (*current, *added))
         except (StandingRulingsUnavailable, RulingsBlockError) as error:
             return str(error)
         return None

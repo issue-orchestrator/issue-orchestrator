@@ -684,7 +684,8 @@ def test_an_unwritable_rulings_block_refuses_before_any_write(tmp_path: Path) ->
 
     result = world.executor().apply(world.approve(world.plan(proposed)))
 
-    assert result.result_type is ActionResultType.SKIPPED and "step 4 (record_ruling #262)" in result.details["skip_reason"]
+    assert result.result_type is ActionResultType.SKIPPED
+    assert "the rulings this decision records on #262 cannot all be recorded" in result.details["skip_reason"]
     assert world.github.writes == before and world.github.milestones[SUBJECT] == 3
 
 
@@ -715,3 +716,78 @@ def test_a_closing_split_cannot_rework_its_pr() -> None:
                            "children": [{"title": "child", "body": "rest"}]},
             "steps": [{"kind": "request_pr_rework", "number": PR}],
         }, index=1)
+
+
+# -- review round 3 ---------------------------------------------------------------
+
+
+def test_a_step_whose_marker_failed_is_never_read_as_no_changes(tmp_path: Path) -> None:
+    """r3 F1: step 1 moves #326 and its applied marker fails; #327 then closes.
+    The replay must hand the decision back as partial, never close it stale."""
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    action = world.approve(world.plan(proposed))
+    real_apply = world.apply
+
+    def marker_fails(act: Action) -> ActionResult:
+        if isinstance(act, AddCommentAction) and step_marker(str(PROPOSAL), 1) in act.comment:
+            world.github.states[SIBLING] = "closed"
+            return ActionResult.fail(act, "502")
+        return real_apply(act)
+
+    world.apply = marker_fails  # type: ignore[method-assign]
+    executor = world.executor()
+
+    first = executor.apply(action)
+    world.apply = real_apply  # type: ignore[method-assign]
+    replay = world.executor().apply(action)
+
+    assert not first.success and world.github.milestones[SUBJECT] == 1
+    assert replay.result_type is ActionResultType.FAILURE and "partly applied: step(s) 1" in (replay.error or "")
+
+
+def test_rulings_that_fit_one_by_one_but_not_together_refuse_before_any_write(tmp_path: Path) -> None:
+    """r3 F2: two notes on one body are preflighted together."""
+    from issue_orchestrator.domain.standing_ruling import with_rulings_block
+
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    note = "x" * 9_000
+    steps = [{"kind": "record_ruling", "number": PARENT, "text": note},
+             {"kind": "record_ruling", "number": PARENT, "text": note + "y"},
+             {"kind": "set_milestone", "number": SIBLING, "milestone": "M1 - Surfaces"}]
+    proposed = ProposedTechLeadAction.from_mapping({**proposed.to_dict(), "steps": steps}, index=1)
+    # Fill the body so one note fits and two do not (GitHub's 65 536-character cap).
+    base = world.github.bodies[PARENT]
+    probe = len(with_rulings_block(base, ()))
+    world.github.bodies[PARENT] = base + "\n" + "p" * (65_536 - probe - 9_000 - 2_000)
+    before = list(world.github.writes)
+
+    result = world.executor().apply(world.approve(world.plan(proposed)))
+
+    assert result.result_type is ActionResultType.SKIPPED, result
+    assert "cannot all be recorded" in result.details["skip_reason"]
+    assert world.github.writes == before
+
+
+def test_a_refused_rework_keeps_the_prs_merge_hold(tmp_path: Path) -> None:
+    """r3 F3: the PR head moves after the check: the rework owner refuses it,
+    and the merge hold stays on, since nothing was queued."""
+    world = World(tmp_path)
+    _plant_327(world)
+    proposal = world.plan(_decision({"kind": "request_pr_rework", "number": PR}))
+    real_apply = world.apply
+
+    def head_moves_first(act: Action) -> ActionResult:
+        if isinstance(act, RequestReworkAction):
+            world.github.get_pr = lambda n, _g=world.github.get_pr: (  # type: ignore[method-assign]
+                None if (pr := _g(n)) is None else PRInfo(pr.number, pr.title, pr.url, pr.branch, pr.body,
+                                                        pr.state, pr.labels, draft=True, head_sha="f" * 40))
+        return real_apply(act)
+
+    world.apply = head_moves_first  # type: ignore[method-assign]
+    result = world.executor().apply(world.approve(proposal))
+
+    assert "needs-human" in world.github.labels[PR]
+    assert "Refused at write time: step 1" in "".join(world.github.comments[PROPOSAL])
+    assert result.success  # the item was released; the refused step is on the record

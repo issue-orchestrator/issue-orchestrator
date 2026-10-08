@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from .needs_human_block import SharedNeedsHumanBlock
     from .published_review_custody import PublishedReviewHolds
     from .review_exchange_lifecycle import IssueRuntimeActivity
+    from ..domain.standing_ruling import StandingRuling
     from .standing_rulings import StandingRulingsOwner
     from .tech_lead_decision_steps import DecisionStepsOwner
 
@@ -231,7 +232,7 @@ class TechLeadBlockResolutionExecutor:
             cause = NeedsHumanCause(value)
             priors[cause] = priors.get(cause, frozenset()) | decisions
         refusal = self._block_refusal(action, issue, priors)
-        if refusal is None and (step := self.steps.refusal(_step_context(action), action.follow_through)):
+        if refusal is None and (step := self.steps.refusal(self._steps(action), action.follow_through)):
             refusal = RefusedResolution(BlockResolutionRefusal.STEP_NOT_APPLICABLE, step.reason,
                                         partial=step.hand_back() if step.partial else "")
         return refusal or ResolvableBlock(issue)
@@ -384,7 +385,7 @@ class TechLeadBlockResolutionExecutor:
                 return ActionResult.fail(action, verdict.partial, issue_number=action.issue_number,
                                          proposal_id=action.proposal_id)
             return self._refuse(action, verdict)
-        self.steps.check_authority(_step_context(action), action.follow_through)
+        self.steps.check_authority(self._steps(action), action.follow_through)
         return verdict
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
@@ -622,8 +623,22 @@ class TechLeadBlockResolutionExecutor:
 
     def _record_ruling(self, action: ResolveBlockAction) -> ActionResult | None:
         """The decision as a standing ruling in the item's body (create-once), before
-        the discharge: the item is never unblocked without it. A lift decides no
-        design and a closing split leaves nothing to build, so neither records one."""
+        the discharge: the item is never unblocked without it."""
+        ruling = self._resolution_ruling(action)
+        if ruling is None:
+            return None
+        try:
+            self.rulings.record(action.issue_number, ruling)
+        except (ReconciliationRequired, ClaimLostError):
+            raise
+        except Exception as error:  # the item stays blocked; a replay records it
+            return ActionResult.fail_limited(action, str(error), host_rate_limit_of(error),
+                                             issue_number=action.issue_number, proposal_id=action.proposal_id)
+        return None
+
+    def _resolution_ruling(self, action: ResolveBlockAction) -> "StandingRuling | None":
+        """The ruling the decision records on its item. A lift decides no design
+        and a closing split leaves nothing to build, so neither records one."""
         resolution = action.resolution
         binds = resolution.kind is ResolutionKind.ANSWER or (
             resolution.kind is ResolutionKind.SPLIT and resolution.parent is ParentDisposition.NARROW
@@ -632,20 +647,18 @@ class TechLeadBlockResolutionExecutor:
             return None
         approved = (f", approved on proposal #{action.proposal_issue_number}"
                     if action.proposal_issue_number else ", under the operator's resolve_block: execute")
-        try:
-            self.rulings.record(action.issue_number, self.rulings.ruling(
-                ruling_id=resolution_ruling_id(action.decision_id),
-                text=f"## {resolution.title}\n\n{resolution.body}",
-                authority=RulingAuthority.APPROVED_RESOLUTION,
-                source=f"tech-lead resolve_block {resolution.kind.value} {action.decision_id}{approved}",
-                scope=RulingScope(),
-            ))
-        except (ReconciliationRequired, ClaimLostError):
-            raise
-        except Exception as error:  # the item stays blocked; a replay records it
-            return ActionResult.fail_limited(action, str(error), host_rate_limit_of(error),
-                                             issue_number=action.issue_number, proposal_id=action.proposal_id)
-        return None
+        return self.rulings.ruling(
+            ruling_id=resolution_ruling_id(action.decision_id),
+            text=f"## {resolution.title}\n\n{resolution.body}",
+            authority=RulingAuthority.APPROVED_RESOLUTION,
+            source=f"tech-lead resolve_block {resolution.kind.value} {action.decision_id}{approved}",
+            scope=RulingScope(),
+        )
+
+    def _steps(self, action: ResolveBlockAction) -> DecisionStepContext:
+        """The decision as its steps see it, with the ruling it records on the item (#8691)."""
+        ruling = self._resolution_ruling(action)
+        return replace(_step_context(action), subject_rulings=() if ruling is None else (ruling,))
 
     def _post_discharge(self, action: ResolveBlockAction) -> ActionResult | None:
         """The durable record of what was discharged, once it COMMITTED."""

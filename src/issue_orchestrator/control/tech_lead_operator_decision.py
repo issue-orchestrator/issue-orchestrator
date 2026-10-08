@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from ..events import EventName
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from ..ports.operator_decision_retries import DecisionRetryLedger
     from ..ports.issue import Issue
     from .label_manager import LabelManager
+    from ..domain.standing_ruling import StandingRuling
     from .standing_rulings import StandingRulingsOwner
     from .tech_lead_decision_steps import DecisionStepsOwner
 
@@ -134,12 +135,12 @@ class OperatorDecisionExecutor:
         if refusal is not None:
             return _stale(action, refusal)
         assert target is not None  # a missing issue is a refusal
-        steps_refused = self.steps.refusal(_step_context(action), action.follow_through)
+        steps_refused = self.steps.refusal(self._steps(action), action.follow_through)
         if steps_refused is not None:
             # A partial one already changed other items: the operator's, never stale.
             return (ActionResult.fail(action, steps_refused.hand_back(), issue_number=action.issue_number)
                     if steps_refused.partial else _stale(action, steps_refused.reason))
-        self.steps.check_authority(_step_context(action), action.follow_through)
+        self.steps.check_authority(self._steps(action), action.follow_through)
         try:
             follow_ups = tuple(
                 self._file_follow_up(action, target, index, follow_up)
@@ -258,18 +259,26 @@ class OperatorDecisionExecutor:
 
     def _record_ruling(self, action: ApplyOperatorDecisionAction) -> str | None:
         """The approved decision as a standing ruling on the item (create-once); the failure, else None."""
-        decision = action.decision
         try:
-            self.rulings.record(action.issue_number, self.rulings.ruling(
-                ruling_id=decision_ruling_id(action.proposal_issue_number),
-                text=f"## {decision.title}\n\n{decision.body}",
-                authority=RulingAuthority.APPROVED_DECISION,
-                source=f"tech-lead decision approved on proposal #{action.proposal_issue_number}",
-                scope=RulingScope(),
-            ))
+            self.rulings.record(action.issue_number, self._decision_ruling(action))
         except Exception as error:  # the item stays blocked; a replay records it
             return f"standing ruling not recorded on #{action.issue_number}: {error}"
         return None
+
+    def _decision_ruling(self, action: ApplyOperatorDecisionAction) -> "StandingRuling":
+        decision = action.decision
+        return self.rulings.ruling(
+            ruling_id=decision_ruling_id(action.proposal_issue_number),
+            text=f"## {decision.title}\n\n{decision.body}",
+            authority=RulingAuthority.APPROVED_DECISION,
+            source=f"tech-lead decision approved on proposal #{action.proposal_issue_number}",
+            scope=RulingScope(),
+        )
+
+    def _steps(self, action: ApplyOperatorDecisionAction) -> DecisionStepContext:
+        """The decision as its steps see it, with the ruling it records on the item,
+        so the steps' rulings are preflighted together with it (#8691)."""
+        return replace(_step_context(action), subject_rulings=(self._decision_ruling(action),))
 
     def _comment_once(self, number: int, marker: str, body: str, *, reason: str) -> str | None:
         """Post *body* on *number* unless *marker* is already there; the failure, else None."""
