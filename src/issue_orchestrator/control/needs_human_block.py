@@ -127,6 +127,10 @@ class SharedNeedsHumanBlock(Protocol):
         """
         ...
 
+    def standing_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
+        """:meth:`recorded_causes` of the generation GitHub shows standing (#8774)."""
+        ...
+
     def owns(self, label: str) -> bool:
         """Whether ``label`` is the shared block this owner governs."""
         ...
@@ -728,6 +732,10 @@ class _NoOtherCauses:
         self, issue_numbers: Sequence[int]
     ) -> dict[int, frozenset[NeedsHumanCause]]:
         return {number: frozenset() for number in issue_numbers}
+
+    def standing_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
+        del issue_number
+        return frozenset()
 
     def owns(self, label: str) -> bool:
         del label

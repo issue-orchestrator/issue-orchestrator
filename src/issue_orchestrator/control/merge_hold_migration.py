@@ -23,10 +23,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
 from typing import TYPE_CHECKING
 
 from ..domain.human_block import BlockOutcome, HumanBlockRequest, NeedsHumanCause
 from .human_gates import merge_decision_request
+from .needs_human_standing_generation import StandingGenerationUnknown
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -94,6 +96,7 @@ class MergeHoldMigration:
         issue = self.read_issue(issue_number)
         pr = self.read_pr(pr_number)
         needs_human = self.labels.needs_human
+        causes = cache(lambda: self._causes(issue_number))  # one events read
         checks: tuple[tuple[Callable[[], bool], Callable[[], str]], ...] = (
             (lambda: issue is not None and issue.state == "open",
              lambda: f"issue #{issue_number} is not open"),
@@ -101,9 +104,9 @@ class MergeHoldMigration:
              lambda: f"issue #{issue_number} carries no {needs_human}"),
             (lambda: not _carries(issue, self.labels.tech_lead_needs_human),
              lambda: f"issue #{issue_number} is handed over by the tech lead, not held by an agent's question"),
-            (lambda: self._causes(issue_number) == _AGENT_QUESTION_ONLY,
+            (lambda: causes() == _AGENT_QUESTION_ONLY,
              lambda: f"issue #{issue_number}'s {needs_human} is held by"
-                     f" {_named(self._causes(issue_number))}, not only an agent's question"),
+                     f" {_named(causes())}, not only an agent's question"),
             (lambda: pr is not None and pr.state.lower() == "open",
              lambda: f"PR #{pr_number} is not open"),
             (lambda: pr is not None and self.pr_issue_number(pr) == issue_number,
@@ -111,8 +114,13 @@ class MergeHoldMigration:
         )
         return next((why() for holds, why in checks if not holds()), None)
 
-    def _causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
-        return self.block.recorded_causes([issue_number]).get(issue_number, frozenset())
+    def _causes(self, issue_number: int) -> frozenset[NeedsHumanCause] | None:
+        """The causes on the generation standing: a person who put the label
+        back by hand ended the agent's question (#8774). None: unreadable."""
+        try:
+            return self.block.standing_causes(issue_number)
+        except StandingGenerationUnknown:
+            return None
 
 
 _AGENT_QUESTION_ONLY = frozenset({NeedsHumanCause.AGENT_COMPLETION})
@@ -122,7 +130,9 @@ def _carries(issue: "Issue | None", name: str) -> bool:
     return issue is not None and any(label.casefold() == name.casefold() for label in issue.labels)
 
 
-def _named(causes: frozenset[NeedsHumanCause]) -> str:
+def _named(causes: frozenset[NeedsHumanCause] | None) -> str:
+    if causes is None:
+        return "causes that cannot be verified against GitHub's label events"
     return ", ".join(sorted(cause.value for cause in causes)) or "no recorded cause"
 
 

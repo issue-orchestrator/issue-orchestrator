@@ -29,17 +29,27 @@ internals, so it is the same owner, not a second one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
-from ..domain.human_block import BlockOutcome, HumanBlockRequest
+from ..domain.human_block import BlockOutcome, HumanBlockRequest, NeedsHumanCause
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_approval import LabelEvent
     from ..ports.pending_work_claim_store import NeedsHumanCauseStore
 
+T = TypeVar("T")
+
 logger = logging.getLogger(__name__)
+
+
+class StandingGenerationUnknown(RuntimeError):
+    """Which generation of the shared block stands could not be read."""
+
+    def __init__(self, issue_number: int) -> None:
+        super().__init__(f"which needs-human generation stands on #{issue_number} is unknown")
+        self.issue_number = issue_number
 
 
 class GenerationJoin(Enum):
@@ -66,6 +76,34 @@ class StandingGenerationGuard:
 
         def _label_present_now(self, issue_number: int) -> bool | None: ...
         def _forget(self, target: int) -> None: ...
+        def _mutate(self, target: int, operation: Callable[[], T], *, busy: T) -> T: ...
+        def recorded_causes(
+            self, issue_numbers: Sequence[int]
+        ) -> dict[int, frozenset[NeedsHumanCause]]: ...
+
+    def standing_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
+        """The causes recorded on the generation GitHub shows standing now.
+
+        For a decision that acts on a cause's ownership of the block (r1 F3):
+        the raw record may still hold the causes of a generation a person
+        ended by re-applying the label by hand. Binding first retires them.
+        Raises :class:`StandingGenerationUnknown` when that cannot be read.
+        """
+        if not self._mutate(
+            issue_number, lambda: self._bind_live_generation(issue_number), busy=False
+        ):
+            raise StandingGenerationUnknown(issue_number)
+        return self.recorded_causes([issue_number])[issue_number]
+
+    def _bind_live_generation(self, target: int) -> bool:
+        """Bind the generation standing, or retire the rows of an absent label."""
+        present = self._label_present_now(target)
+        if present is None:
+            return False
+        if not present:
+            self._forget(target)
+            return True
+        return self._bind_standing_generation(target)
 
     def _bind_standing_generation(self, target: int) -> bool:
         """Bind the block's generation to the label application GitHub shows.
@@ -162,4 +200,4 @@ class StandingGenerationGuard:
         return BlockOutcome.HELD_BY_ANOTHER_CAUSE
 
 
-__all__ = ["GenerationJoin", "StandingGenerationGuard"]
+__all__ = ["GenerationJoin", "StandingGenerationGuard", "StandingGenerationUnknown"]

@@ -12,15 +12,16 @@ about re-application.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from datetime import datetime, timedelta, timezone
 
 from issue_orchestrator.domain.tech_lead_approval import LabelEvent
 
 
-def label_event(event_id: int) -> LabelEvent:
+def label_event(event_id: int, created_at: str | None = None) -> LabelEvent:
     """A ``labeled`` event with GitHub's required fields."""
     return LabelEvent(
         event_id=event_id, actor_login="engine[bot]", actor_is_bot=True,
-        created_at=f"2026-10-08T00:00:{event_id % 60:02d}Z", actor_id=9,
+        created_at=created_at or f"2026-10-08T00:00:{event_id % 60:02d}Z", actor_id=9,
     )
 
 
@@ -33,11 +34,14 @@ class LabelEvents:
         self._events = 0
         #: Set to make the events read fail, as an unreadable timeline does.
         self.events_unreadable = False
+        #: How much later than now the next label write is dated.
+        self.later = timedelta()
 
     def add_label(self, issue_number: int, label: str) -> None:
         if label not in self.live.setdefault(issue_number, set()):
             self._events += 1
-            self.applied[(issue_number, label)] = label_event(self._events)
+            dated = (datetime.now(timezone.utc) + self.later).isoformat().replace("+00:00", "Z")
+            self.applied[(issue_number, label)] = label_event(self._events, dated)
         self.live[issue_number].add(label)
 
     def remove_label(self, issue_number: int, label: str) -> None:

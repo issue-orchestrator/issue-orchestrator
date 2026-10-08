@@ -9,6 +9,7 @@ of them must leave the person's new block on.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from issue_orchestrator.control.needs_human_block import (
     ValidatedWorkBlockSource,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.merge_hold_migration import MergeHoldMigration, MergeHoldMoveStatus
 from issue_orchestrator.control.needs_human_episodes import NeedsHumanEpisodes
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
@@ -321,3 +323,87 @@ def test_a_stale_snapshot_dated_by_the_marker_does_not_end_the_standing_causes(
 
     assert ITEM not in episodes, "a stale snapshot leaves the episode unknown"
     assert store.needs_human_causes(ITEM) == frozenset({session.cause_key})
+
+
+def test_an_owner_generation_left_unbound_does_not_adopt_a_later_reapplication(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    """r1 F1: the owner's own write could not be bound (events unreadable right
+    after it). A person's re-application, well after the owner opened the
+    generation, is not that write: the stale cause leaves it on."""
+    block = _owner(github, store)
+    session = ROW_BACKED[2]
+    github.events_unreadable = True
+    assert block.acquire(session) is BlockOutcome.HELD
+    github.events_unreadable = False
+
+    github.later = timedelta(minutes=30)
+    github.reapply_by_hand(ITEM, NEEDS_HUMAN)
+
+    assert block.release(session) is BlockOutcome.HELD_BY_ANOTHER_CAUSE
+    assert NEEDS_HUMAN in github.live[ITEM]
+    assert store.needs_human_causes(ITEM) == frozenset()
+
+
+def test_an_owner_generation_left_unbound_still_binds_its_own_write(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    block = _owner(github, store)
+    session = ROW_BACKED[2]
+    github.events_unreadable = True
+    assert block.acquire(session) is BlockOutcome.HELD
+    github.events_unreadable = False
+
+    assert block.release(session) is BlockOutcome.CLEARED
+    assert NEEDS_HUMAN not in github.live[ITEM]
+
+
+def test_an_agent_question_a_person_ended_is_not_moved_to_a_pr_merge_hold(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    """r1 F3: the issue's agent_completion row belongs to a generation a person
+    ended by putting the label back by hand. The move acts on that row's
+    ownership, so it reads the standing generation and refuses."""
+    pr = 8775
+    block = _owner(github, store)
+    assert block.acquire(ROW_BACKED[0]) is BlockOutcome.HELD
+    github.reapply_by_hand(ITEM, NEEDS_HUMAN)
+    github.live[pr] = {"code-reviewed"}
+
+    def item(number: int) -> Issue:
+        return Issue(number=number, title="item", labels=github.read_labels(number), repo="o/r", state="open")
+
+    migration = MergeHoldMigration(
+        block=block, labels=LabelManager(Config()), read_issue=item, read_pr=item,
+        pr_issue_number=lambda _pr: ITEM,
+    )
+
+    moved = migration.move(ITEM, pr, apply=True)
+
+    assert moved.status is MergeHoldMoveStatus.REFUSED, moved.detail
+    assert "no recorded cause" in moved.detail
+    assert NEEDS_HUMAN in github.live[ITEM] and NEEDS_HUMAN not in github.live[pr]
+
+
+def test_an_unreadable_generation_refuses_the_move(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    pr = 8775
+    block = _owner(github, store)
+    assert block.acquire(ROW_BACKED[0]) is BlockOutcome.HELD
+    github.live[pr] = {"code-reviewed"}
+    github.events_unreadable = True
+
+    def item(number: int) -> Issue:
+        return Issue(number=number, title="item", labels=github.read_labels(number), repo="o/r", state="open")
+
+    migration = MergeHoldMigration(
+        block=block, labels=LabelManager(Config()), read_issue=item, read_pr=item,
+        pr_issue_number=lambda _pr: ITEM,
+    )
+
+    moved = migration.move(ITEM, pr, apply=True)
+
+    assert moved.status is MergeHoldMoveStatus.REFUSED
+    assert "cannot be verified" in moved.detail
+    assert NEEDS_HUMAN not in github.live[pr]
