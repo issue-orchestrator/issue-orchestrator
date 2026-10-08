@@ -44,10 +44,14 @@ def _terminal_outcome_comment(
     result: ActionResult, op_type: str, target: int
 ) -> str | None:
     if result.success:
+        # A decision step refused at write time, after the item moved (#8691):
+        # said here, so "executed" never hides a step that did not run.
+        refused = "".join(f"\n- Not applied: {item}" for item in result.details.get("steps_refused") or ())
         return (
             "## ✅ Approved tech_lead operation executed\n\n"
             f"`{op_type}` for #{target} was executed after re-validating its"
-            " preconditions. Closing this proposal."
+            f" preconditions.{refused and chr(10) + chr(10) + 'Refused at write time (do these by hand):' + refused}"
+            " Closing this proposal."
         )
     if result.details.get("mode") == STALE_DOWNGRADE_MODE:
         stale = result.details.get("skip_reason", "preconditions no longer hold")

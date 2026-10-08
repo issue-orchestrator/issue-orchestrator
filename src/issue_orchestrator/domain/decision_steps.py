@@ -357,6 +357,17 @@ def step_marker(decision_key: str, index: int) -> str:
     return f"{DECISION_STEP_MARKER_PREFIX}{decision_key}:{index} -->"
 
 
+def step_refused_marker(decision_key: str, index: int) -> str:
+    """Beside a step's marker when the step was refused at write time, after the release."""
+    return f"<!-- io:decision-step-refused:{decision_key}:{index} -->"
+
+
+def decision_begun_marker(decision_key: str) -> str:
+    """Posted before a decision with follow-through makes its first write (its
+    follow-ups, its comment, its ruling): from then on a refusal is partial."""
+    return f"<!-- io:decision-begun:{decision_key} -->"
+
+
 def step_started_marker(decision_key: str, index: int) -> str:
     """The marker posted before a step's first write: its write may have landed."""
     return f"<!-- io:decision-step-started:{decision_key}:{index} -->"

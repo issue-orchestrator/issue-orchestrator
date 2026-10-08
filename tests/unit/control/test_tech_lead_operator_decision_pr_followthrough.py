@@ -591,7 +591,7 @@ def _with_steps_authority(executor: OperatorDecisionExecutor, check) -> Operator
 
 def test_a_precondition_broken_at_write_time_stops_unmarked_and_unreleased(tmp_path: Path) -> None:
     """r1 F4: PR #525 closes between the check and the retarget: nothing after
-    it runs, the step is not marked, #327 is not released; the replay closes stale."""
+    it runs, the step is not marked, #327 is not released; the replay hands it back."""
     world = World(tmp_path)
     _plant_327(world)
     proposal = world.plan(_decision({"kind": "retarget_pr", "number": PR},
@@ -616,7 +616,9 @@ def test_a_precondition_broken_at_write_time_stops_unmarked_and_unreleased(tmp_p
     assert not world.github.marker_present(PROPOSAL, step_marker(str(PROPOSAL), 1))
     assert "routed" not in "".join(world.github.comments.get(ITEM, []))
     assert world.retried == [] and "needs-human" in world.github.labels[ITEM]
-    assert replay.result_type is ActionResultType.SKIPPED and "PR #525 is closed" in replay.details["skip_reason"]
+    # The decision's own comment and ruling already landed (r5 F1): handed back, never "no changes".
+    assert replay.result_type is ActionResultType.FAILURE
+    assert "partly applied: its own writes" in (replay.error or "") and "PR #525 is closed" in (replay.error or "")
 
 
 def test_an_approved_proposal_is_never_closed_as_superseded(tmp_path: Path) -> None:
@@ -804,3 +806,63 @@ def test_steps_run_in_the_order_listed_so_a_rework_must_come_last() -> None:
                   {"kind": "comment", "number": ITEM, "text": "routed"})
     _decision({"kind": "comment", "number": ITEM, "text": "routed"},
               {"kind": "request_pr_rework", "number": PR})
+
+
+
+# -- review round 5 ---------------------------------------------------------------
+
+
+def test_a_refusal_after_the_decisions_own_writes_is_partial_not_stale(tmp_path: Path) -> None:
+    """r5 F1: the decision ruling landed, step 1's start marker failed, and its
+    target closed before the replay: never "No changes were made"."""
+    from issue_orchestrator.domain.decision_steps import step_started_marker
+
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    action = world.approve(world.plan(proposed))
+    real_apply = world.apply
+
+    def start_fails(act: Action) -> ActionResult:
+        if isinstance(act, AddCommentAction) and step_started_marker(str(PROPOSAL), 1) in act.comment:
+            world.github.states[SUBJECT] = "closed"
+            return ActionResult.fail(act, "502")
+        return real_apply(act)
+
+    world.apply = start_fails  # type: ignore[method-assign]
+    first = world.executor().apply(action)
+    world.apply = real_apply  # type: ignore[method-assign]
+    world.github.states[SUBJECT] = "open"
+    world.github.states[SIBLING] = "closed"
+    replay = world.executor().apply(action)
+
+    assert not first.success and parse_rulings_block(world.github.bodies[SUBJECT])  # the decision's ruling landed
+    assert replay.result_type is ActionResultType.FAILURE
+    assert "partly applied: its own writes" in (replay.error or "")
+
+
+def test_a_rework_refused_after_the_release_is_reported_not_hidden(tmp_path: Path) -> None:
+    """r5 F2: the refused step is in the result (and so the proposal's closing
+    comment), on the first run and on a replay, from its durable marker."""
+    from issue_orchestrator.control.tech_lead_proposal_execution import _terminal_outcome_comment
+
+    world = World(tmp_path)
+    _plant_327(world)
+    proposal = world.plan(_decision({"kind": "request_pr_rework", "number": PR}))
+    real_apply = world.apply
+
+    def head_moves_first(act: Action) -> ActionResult:
+        if isinstance(act, RequestReworkAction):
+            world.github.get_pr = lambda n, _g=world.github.get_pr: (  # type: ignore[method-assign]
+                None if (pr := _g(n)) is None else PRInfo(pr.number, pr.title, pr.url, pr.branch, pr.body,
+                                                        pr.state, pr.labels, draft=True, head_sha="f" * 40))
+        return real_apply(act)
+
+    world.apply = head_moves_first  # type: ignore[method-assign]
+    action = world.approve(proposal)
+    first = world.executor().apply(action)
+    replay = world.executor().apply(action)
+
+    for result in (first, replay):
+        assert result.details["steps_refused"] == ["step 1 (request_pr_rework #525)"]
+        comment = _terminal_outcome_comment(result, "propose_decision", ITEM)
+        assert comment is not None and "Not applied: step 1 (request_pr_rework #525)" in comment

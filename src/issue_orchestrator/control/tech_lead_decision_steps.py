@@ -43,6 +43,8 @@ from ..domain.decision_steps import (
     DecisionStep,
     DecisionStepKind,
     step_marker,
+    decision_begun_marker,
+    step_refused_marker,
     step_started_marker,
 )
 from ..domain.pr_issue_reference import body_links_issue, refs_in_place_of_closes
@@ -125,15 +127,18 @@ class StepRefusal:
 
     reason: str
     applied: tuple[int, ...] = ()
+    #: The decision already made its own writes (follow-ups, comment, ruling).
+    begun: bool = False
 
     @property
     def partial(self) -> bool:
-        return bool(self.applied)
+        return self.begun or bool(self.applied)
 
     def hand_back(self) -> str:
         """The operator's message for a partial refusal: nothing is closed as stale."""
         done = ", ".join(str(index) for index in self.applied)
-        return (f"approved decision partly applied: step(s) {done} were carried out, but {self.reason}."
+        what = f"step(s) {done}" if done else "its own writes (follow-ups, decision, ruling)"
+        return (f"approved decision partly applied: {what} were carried out, but {self.reason}."
                 " The proposal stays open: finish the rest by hand, or close it.")
 
 
@@ -175,6 +180,8 @@ class DecisionStepsOwner:
         PARTIAL: the decision changed things and cannot be closed as stale."""
         if not follow_through.steps:
             return None
+        begun = self.comment_marker_present(
+            context.proposal_issue_number, decision_begun_marker(str(context.proposal_issue_number)))
         touched: list[int] = []
         rulings: dict[int, list["StandingRuling"]] = {context.subject: list(context.subject_rulings)}
         for index, step in enumerate(follow_through.steps, start=1):
@@ -188,7 +195,7 @@ class DecisionStepsOwner:
             if why is not None:
                 return StepRefusal(
                     f"step {index} ({step.kind.value} #{step.number}) cannot be carried out: {why}",
-                    applied=tuple(touched),
+                    applied=tuple(touched), begun=begun,
                 )
             if step.kind is DecisionStepKind.RECORD_RULING:
                 rulings.setdefault(step.number, []).append(self._step_ruling(context, index, step))
@@ -199,8 +206,34 @@ class DecisionStepsOwner:
             why = self.rulings.unrecordable_all(number, tuple(wanted)) if stepped else None
             if why is not None:
                 return StepRefusal(f"the rulings this decision records on #{number} cannot all be"
-                                   f" recorded: {why}", applied=tuple(touched))
+                                   f" recorded: {why}", applied=tuple(touched), begun=begun)
         return None
+
+    def begin(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> str | None:
+        """Record, before the decision's first write, that it has begun: a later
+        step refusal is then partial, never "no changes" (#8691 r5 F1). The
+        failure, else None; a decision without follow-through records nothing."""
+        if not follow_through:
+            return None
+        proposal = context.proposal_issue_number
+        marker = decision_begun_marker(str(proposal))
+        if self.comment_marker_present(proposal, marker):
+            return None
+        posted = self.apply_action(AddCommentAction(
+            number=proposal, comment=f"Applying the approved decision.\n\n{marker}",
+            reason=f"decision of proposal #{proposal} begun", expected=build_expected_for_mutation(),
+        ))
+        return None if posted.success else f"decision start not recorded: {posted.error}"
+
+    def refused_steps(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> tuple[str, ...]:
+        """The steps refused at write time after the release, from their durable
+        markers, so a replay reports them as the first run did."""
+        proposal = str(context.proposal_issue_number)
+        return tuple(
+            f"step {index} ({step.kind.value} #{step.number})"
+            for index, step in enumerate(follow_through.steps, start=1)
+            if self.comment_marker_present(context.proposal_issue_number, step_refused_marker(proposal, index))
+        )
 
     def check_authority(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> None:
         """The applier's mutation-authority check on every step's target, before
@@ -273,9 +306,11 @@ class DecisionStepsOwner:
                 f"Step {index} applied: {step.describe(context.subject)}" if refusal is None
                 else f"Step {index} not applied: {refusal}"
             )
+            proposal = str(context.proposal_issue_number)
+            refused_marker = "" if refusal is None else f"\n{step_refused_marker(proposal, index)}"
             marked = self.apply_action(AddCommentAction(
                 number=context.proposal_issue_number,
-                comment=f"{outcome}\n\n{step_marker(str(context.proposal_issue_number), index)}",
+                comment=f"{outcome}\n\n{step_marker(proposal, index)}{refused_marker}",
                 reason=f"decision step {index} of proposal #{context.proposal_issue_number}",
                 expected=build_expected_for_mutation(),
             ))

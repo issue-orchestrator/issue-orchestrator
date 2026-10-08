@@ -141,6 +141,9 @@ class OperatorDecisionExecutor:
             return (ActionResult.fail(action, steps_refused.hand_back(), issue_number=action.issue_number)
                     if steps_refused.partial else _stale(action, steps_refused.reason))
         self.steps.check_authority(self._steps(action), action.follow_through)
+        begun = self.steps.begin(self._steps(action), action.follow_through)
+        if begun is not None:
+            return ActionResult.fail(action, begun, issue_number=action.issue_number)
         try:
             follow_ups = tuple(
                 self._file_follow_up(action, target, index, follow_up)
@@ -215,7 +218,8 @@ class OperatorDecisionExecutor:
         if after.failed is not None:  # the retry committed; a replay finishes the steps only
             return ActionResult.fail(action, f"decision step not applied: {after.failed}",
                                      issue_number=action.issue_number)
-        refused = "".join(f"\n- Refused at write time: {item}" for item in after.refused)
+        steps_refused = self.steps.refused_steps(_step_context(action), action.follow_through)
+        refused = "".join(f"\n- Refused at write time: {item}" for item in steps_refused)
         marked = self._comment_once(
             proposal, applied_marker(proposal),
             f"Applied: #{action.issue_number} was retried with the decision posted on it."
@@ -231,7 +235,7 @@ class OperatorDecisionExecutor:
             "target_number": action.issue_number,
             "finding_ids": list(action.finding_ids),
             "boundary": {"retried": list(removed), "follow_ups": list(follow_ups), "replayed": replayed,
-                         "steps": len(action.follow_through.steps), "steps_refused": list(after.refused)},
+                         "steps": len(action.follow_through.steps), "steps_refused": list(steps_refused)},
         }))
         logger.info(issue_log(action.issue_number,
             "Operator approved decision %s (proposal #%d): retried, follow-ups %s"),
@@ -239,6 +243,7 @@ class OperatorDecisionExecutor:
         return ActionResult.ok(
             action, issue_number=action.issue_number, replayed=replayed,
             follow_up_issues=[str(number) for number in follow_ups],
+            steps_refused=list(steps_refused),
         )
 
     def _refusal(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> str | None:

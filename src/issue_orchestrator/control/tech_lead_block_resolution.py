@@ -378,7 +378,8 @@ class TechLeadBlockResolutionExecutor:
         return self._settle(action, issue, outcome, filed=filed)
 
     def _verified(self, action: ResolveBlockAction) -> ResolvableBlock | ActionResult:
-        """The block to decide, its steps' targets authority-checked, or the outcome of a refusal."""
+        """The block to decide (its steps' targets authority-checked and the
+        decision recorded as begun), or the outcome of a refusal."""
         verdict = self.verify(action)
         if isinstance(verdict, RefusedResolution):
             if verdict.partial:  # some steps already changed other items: the operator's, never stale
@@ -386,6 +387,9 @@ class TechLeadBlockResolutionExecutor:
                                          proposal_id=action.proposal_id)
             return self._refuse(action, verdict)
         self.steps.check_authority(self._steps(action), action.follow_through)
+        begun = self.steps.begin(self._steps(action), action.follow_through)
+        if begun is not None:  # nothing written yet
+            return ActionResult.fail(action, begun, issue_number=action.issue_number, proposal_id=action.proposal_id)
         return verdict
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
@@ -449,6 +453,7 @@ class TechLeadBlockResolutionExecutor:
         outcome: BlockOutcome, still_blocked: tuple[str, ...],
     ) -> ActionResult:
         causes = sorted(cause.value for cause in action.resolution.causes)
+        steps_refused = self.steps.refused_steps(_step_context(action), action.follow_through)
         self.events.publish(make_trace_event(EventName.TECH_LEAD_ACTION_EXECUTED, {
             "issue_number": action.anchor_issue_number,
             "action_id": action.proposal_id,
@@ -461,6 +466,7 @@ class TechLeadBlockResolutionExecutor:
                 "block": outcome.value,
                 "children": list(children),
                 "still_blocked_by": list(still_blocked),
+                "steps_refused": list(steps_refused),
             },
         }))
         logger.info(issue_log(action.issue_number,
@@ -471,6 +477,7 @@ class TechLeadBlockResolutionExecutor:
             action, issue_number=action.issue_number, proposal_id=action.proposal_id,
             causes=causes, block=outcome.value, children=[str(n) for n in children],
             still_blocked_by=list(still_blocked),
+            steps_refused=list(steps_refused),
         )
 
     def _refuse(self, action: ResolveBlockAction, refused: RefusedResolution) -> ActionResult:

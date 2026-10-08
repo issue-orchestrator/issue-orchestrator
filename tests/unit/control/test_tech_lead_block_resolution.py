@@ -1179,3 +1179,22 @@ def test_an_answer_whose_later_step_broke_after_an_earlier_applied_is_handed_bac
 
     assert result.result_type.value == "failure" and "partly applied: step(s) 1" in (result.error or "")
     assert "needs-human" in world.github.labels[ITEM]
+
+
+
+def test_a_resolution_reports_a_step_refused_after_its_discharge(tmp_path: Path) -> None:
+    """#8691 r5 F2 on resolve_block: a step refused at write time after the
+    discharge is in the result and the event, never a silent success."""
+    from issue_orchestrator.domain.decision_steps import step_marker, step_refused_marker
+
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    world.github.comments[501] = [f"Step 1 not applied: moved\n\n{step_marker('501', 1)}\n{step_refused_marker('501', 1)}"]
+    world.github.labels[290] = {AGENT}
+    action = _approved_with_steps(DecisionStep(DecisionStepKind.COMMENT, 290, text="one"))
+
+    result = world.executor(_steps_owner(world)).apply(action)
+
+    assert result.success and result.details["steps_refused"] == ["step 1 (comment #290)"]
+    [executed] = [e for e in world.events if e.event_type == EventName.TECH_LEAD_ACTION_EXECUTED]
+    assert executed.data["boundary"]["steps_refused"] == ["step 1 (comment #290)"]
