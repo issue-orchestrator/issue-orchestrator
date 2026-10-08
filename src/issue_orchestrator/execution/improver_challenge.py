@@ -45,6 +45,7 @@ from ..domain.improver_champion import (
     outcome_of,
     promotion_refusals,
 )
+from ..control.improver_effects import change_key, finding_marker
 from ..domain.tech_lead_approval import APPROVED_LABEL, ApprovalVerdict
 from ..entrypoints.improver_run import HeatPlan
 from ..ports.improver_challenger import ChallengerIssueEvidence
@@ -160,7 +161,7 @@ class ImproverChallenges:
 
     def promote(self, challenge_id: str) -> Promoted:
         challenge = self._champions.challenge(challenge_id)
-        verdict = self._approval(challenge.issue)
+        verdict = self._approval(challenge)
         refusals = promotion_refusals(challenge, current=self._champions.state().champion, approval=verdict)
         if refusals:
             return Promoted(None, verdict, tuple(refusals))
@@ -206,7 +207,8 @@ class ImproverChallenges:
         if done is None and self._harness.arms_ran(tournament_id):
             done = self._harness.regrade(tournament_id, graders=graders, passes=request.passes)
         if done is None:
-            outputs = self._harness.run_arms(tournament_id, snapshot_id, specs)
+            # Arms interrupted mid-way resume: finished runs are kept.
+            outputs = self._harness.run_arms(tournament_id, snapshot_id, specs, resume=True)
             done = self._harness.grade(
                 tournament_id, snapshot_id, outputs, graders=graders, passes=request.passes, seed=request.seed
             )
@@ -219,12 +221,14 @@ class ImproverChallenges:
             )
         return done
 
-    def _approval(self, issue: str) -> ApprovalVerdict:
-        match = _ISSUE.match(issue)
+    def _approval(self, challenge: ChallengeRecord) -> ApprovalVerdict:
+        match = _ISSUE.match(challenge.issue)
         if match is None:
-            raise ChallengeRefused(f"{issue!r} names no issue")
+            raise ChallengeRefused(f"{challenge.issue!r} names no issue")
         number, evidence = int(match["number"]), self._issues_for(match["repo"])
         found = evidence.get_issue(number)
+        # The improver's own issue for this change, by the marker it filed it with.
+        marker = finding_marker(change_key(challenge.change, challenge.champion.id))
         added = evidence.latest_label_event(number, APPROVED_LABEL)
         removed = evidence.latest_label_event(number, APPROVED_LABEL, removed=True)
         person = added is not None and not added.actor_is_bot
@@ -236,6 +240,7 @@ class ImproverChallenges:
             approved_removed=removed,
             approver_role=evidence.repository_role(added.actor_login) if person and added is not None else None,
             closed_since_approval=added is not None and evidence.issue_closed_on_or_after(number, added.created_at),
+            carries_marker=found is not None and marker in (found.body or ""),
         ))
 
 

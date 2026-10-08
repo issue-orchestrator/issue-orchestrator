@@ -63,6 +63,8 @@ class Agents:
         self.calls: list[str] = []
         #: Grader calls that answer nothing gradeable, before graders work.
         self.broken_gradings = 0
+        #: The arm call (1-based) at which the process is killed, once.
+        self.kill_at_arm_call: int | None = None
         self._lock = threading.Lock()
 
     def agent_for(self, choice: ImproverAgentChoice, minutes: int):  # type: ignore[no-untyped-def]
@@ -75,6 +77,9 @@ class Agents:
             def run(self, *, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
                 with agents._lock:
                     agents.calls.append("grader" if "Improver tournament grader" in prompt else "arm")
+                    if agents.kill_at_arm_call == agents.calls.count("arm") and "grader" not in agents.calls[-1]:
+                        agents.kill_at_arm_call = None
+                        raise Killed()
                 if "Improver tournament grader" not in prompt:
                     return ImproverAgentResult(_answer("Quote the staged evidence" in prompt), "done")
                 with agents._lock:
@@ -92,6 +97,10 @@ class Agents:
         return Agent()
 
 
+class Killed(BaseException):
+    """The process dies mid-run (nothing the run catches)."""
+
+
 @dataclass
 class Issues:
     """A challenger issue on GitHub, as the approval reads it."""
@@ -102,9 +111,12 @@ class Issues:
     removed: LabelEvent | None = None
     roles: dict[str, str] = field(default_factory=dict)
     closed_after: bool = False
+    #: Where the improver filed its issues (their bodies).
+    host: FakeIssueHost = field(default_factory=FakeIssueHost)
 
     def get_issue(self, issue_number: int):  # type: ignore[no-untyped-def]
-        return type("Issue", (), {"state": self.state, "labels": self.labels})()
+        body = next((c["body"] for c in self.host.created if c["number"] == issue_number), "")
+        return type("Issue", (), {"state": self.state, "labels": self.labels, "body": body})()
 
     def latest_label_event(self, issue_number: int, label: str, *, removed: bool = False) -> LabelEvent | None:
         return self.removed if removed else self.added
@@ -138,7 +150,9 @@ def cycle(tmp_path: Path):  # type: ignore[no-untyped-def]
     return root, champions, runs, agents, issues, challenges
 
 
-def _invited_run(runs: FileImproverRunStore, change: dict | None = QUOTE, *, rate: float = 1.0) -> str:
+def _invited_run(
+    runs: FileImproverRunStore, change: dict | None = QUOTE, *, rate: float = 1.0, host: FakeIssueHost | None = None
+) -> str:
     """An invited champion run proposing ``change``, its issue filed."""
     doc = json.loads(_answer(False))
     if change is not None:
@@ -154,8 +168,8 @@ def _invited_run(runs: FileImproverRunStore, change: dict | None = QUOTE, *, rat
     clock = iter(T0 + timedelta(minutes=n) for n in range(100))
     run = ImproverRun(
         store=runs, stager=FakeStager(), agent=Agent(), investigation=ScriptedInvestigation(),
-        effects=ImproverEffects(store=runs, host=FakeIssueHost(), outputs_repo="issue-orchestrator/issue-orchestrator",
-                                clock=lambda: T0),
+        effects=ImproverEffects(store=runs, host=host or FakeIssueHost(),
+                                outputs_repo="issue-orchestrator/issue-orchestrator", clock=lambda: T0),
         prompt=PROMPT, heats=HeatPlan(1, 1), clock=lambda: next(clock),
         change_policy=ChangePolicy(_variant(), PROMPT, addendum="<<CHAMPION>>", rate=rate),
     )
@@ -166,7 +180,7 @@ def _invited_run(runs: FileImproverRunStore, change: dict | None = QUOTE, *, rat
 
 def test_a_challenger_that_wins_and_is_approved_becomes_the_champion(cycle) -> None:  # type: ignore[no-untyped-def]
     root, champions, runs, agents, issues, challenges = cycle
-    run_id = _invited_run(runs)
+    run_id = _invited_run(runs, host=issues.host)
 
     record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
 
@@ -194,7 +208,8 @@ def test_a_challenger_that_wins_and_is_approved_becomes_the_champion(cycle) -> N
 def test_a_losing_challenger_is_never_promoted_whoever_approves_it(cycle) -> None:  # type: ignore[no-untyped-def]
     _, champions, runs, _, issues, challenges = cycle
     # A change that does not make the improver quote: the challenger answers as the champion does.
-    run_id = _invited_run(runs, {"kind": "prompt", "find": "You audit the tech lead.", "replace": "Audit the tech lead."})
+    run_id = _invited_run(runs, {"kind": "prompt", "find": "You audit the tech lead.", "replace": "Audit the tech lead."},
+                          host=issues.host)
 
     record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
     issues.approve("bruce", role="admin")
@@ -206,7 +221,8 @@ def test_a_losing_challenger_is_never_promoted_whoever_approves_it(cycle) -> Non
 
 def test_a_challenge_tried_against_an_old_champion_is_not_promoted(cycle) -> None:  # type: ignore[no-untyped-def]
     _, champions, runs, _, issues, challenges = cycle
-    first, second = _invited_run(runs), _invited_run(runs, {"kind": "budget_minutes", "minutes": 90})
+    first = _invited_run(runs, host=issues.host)
+    second = _invited_run(runs, {"kind": "budget_minutes", "minutes": 90}, host=issues.host)
     won = challenges.challenge(first, ["20261004"], whole_runs=3, passes=1, seed=5)
     issues.approve("bruce", role="maintain")
     assert challenges.promote(won.challenge_id).state is not None
@@ -311,6 +327,51 @@ def test_a_tournament_graded_otherwise_than_the_challenge_asked_never_counts(cyc
     assert not champions.has_challenge(f"{run_id}-vs-{_variant().id}")
 
 
+def test_an_issue_that_only_names_the_challengers_token_is_never_its_issue(cycle) -> None:  # type: ignore[no-untyped-def]
+    """An open issue titled with the change's token (and approved by a
+    maintainer) is not the challenger's: the change files its own issue,
+    and an approval on another issue never promotes."""
+    from issue_orchestrator.control.improver_effects import change_key, title_token
+    from issue_orchestrator.contracts.improver_findings import ImproverChange
+    from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+
+    _, champions, runs, _, issues, challenges = cycle
+    change = ImproverChange.model_validate_json(json.dumps(
+        {"edit": QUOTE, "why": "the improver paraphrases evidence", "expected_effect": "graders find the quotes",
+         "motivated_by": ["x"]}
+    ))
+    token = title_token(change_key(change, _variant().id))
+    issues.host.open.append(OpenIssueLabels(number=777, title=f"{token} anything", labels=("improver",)))
+    issues.host.open.append(OpenIssueLabels(number=778, title=token, labels=("improver",)))
+
+    run_id = _invited_run(runs, host=issues.host)
+
+    receipt = next(e for e in next(r for r in runs.runs() if r.run_id == run_id).effects if e.finding_id == CHANGE_ID)
+    assert receipt.status is EffectStatus.FILED and receipt.issue_number not in (777, 778)
+    assert issues.host.comments == []
+    record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    # The record names the improver's own issue; were it pointed at the spoof, its approval would not count.
+    spoof = record.model_copy(update={"issue": "issue-orchestrator/issue-orchestrator#777"})
+    champions.save_challenge(spoof.model_copy(update={"challenge_id": "spoof"}))
+    issues.approve("bruce", role="admin")
+    refused = challenges.promote("spoof")
+    assert refused.state is None and "is not approved" in refused.refusals[0]
+    assert champions.state().champion == _variant()
+
+
+def test_a_challenge_killed_mid_arms_resumes_keeping_its_finished_runs(cycle) -> None:  # type: ignore[no-untyped-def]
+    _, _, runs, agents, issues, challenges = cycle
+    run_id = _invited_run(runs, host=issues.host)
+    agents.kill_at_arm_call = 2  # the champion's second whole run
+    with pytest.raises(Killed):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    # Six whole runs in all, plus the killed one again: the finished first run was kept.
+    assert record.outcome == "won" and agents.calls.count("arm") == 7
+
+
 def test_the_champion_changes_only_by_a_winning_promotion(tmp_path: Path) -> None:
     champions = FileChampionStore(tmp_path)
     with pytest.raises(ChampionUnavailable, match="no improver champion"):
@@ -353,7 +414,8 @@ def test_the_store_promotes_only_against_the_champion_current_under_its_lock(tmp
 def _facts(**over: object) -> ChallengerIssueFacts:
     added = LabelEvent(event_id=10, actor_login="bruce", actor_is_bot=False, created_at="2026-10-08T10:00:00Z")
     fields = {"number": 5, "state": "open", "labels": frozenset({"improver", "approved"}), "approved_added": added,
-              "approved_removed": None, "approver_role": "admin", "closed_since_approval": False, **over}
+              "approved_removed": None, "approver_role": "admin", "closed_since_approval": False,
+              "carries_marker": True, **over}
     return ChallengerIssueFacts(**fields)  # type: ignore[arg-type]
 
 
@@ -373,6 +435,8 @@ def _facts(**over: object) -> ChallengerIssueFacts:
         ({"state": "closed"}, ApprovalVerdictKind.CLOSED),
         ({"state": None}, ApprovalVerdictKind.CLOSED),
         ({"closed_since_approval": True}, ApprovalVerdictKind.CLOSED),
+        # Not the challenger's own issue: its approval approves something else.
+        ({"carries_marker": False}, ApprovalVerdictKind.NOT_CLAIMED),
     ],
 )
 def test_only_a_standing_maintainers_approved_label_on_an_open_issue_approves(over: dict, kind: ApprovalVerdictKind) -> None:

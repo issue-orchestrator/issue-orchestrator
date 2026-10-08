@@ -164,8 +164,15 @@ class ImproverEffects:
         receipt: EffectReceipt,
         open_issues: dict[int, OpenIssueLabels],
         persist: Callable[[EffectReceipt], None],
+        *,
+        proven: dict[int, OpenIssueLabels] | None = None,
     ) -> EffectReceipt:
-        command = plan_effect(run, finding, receipt.key, open_issues)
+        # A challenger's issue is identified only by its body marker (proven
+        # below before any POST), never by the listing's titles: an approval
+        # on it can replace the champion (#8001).
+        marker_only = isinstance(finding, ImproverChange)
+        listing = proven if proven is not None else ({} if marker_only else open_issues)
+        command = plan_effect(run, finding, receipt.key, listing)
         if isinstance(command, CommentImproverEvidence):
             if not self._host.issue_comment_marker_present(command.issue_number, command.marker):
                 self._host.add_comment(command.issue_number, command.body)
@@ -189,7 +196,10 @@ class ImproverEffects:
             # open issue's body settles it before any POST.
             number = self._host.find_open_issue_by_marker(marker=command.marker)
             if number is not None:
-                return self._apply(run, finding, receipt, {**open_issues, number: _carrying(number, receipt.key)}, persist)
+                carrying = {number: _carrying(number, receipt.key)}
+                if marker_only:
+                    return self._apply(run, finding, receipt, open_issues, persist, proven=carrying)
+                return self._apply(run, finding, receipt, {**open_issues, **carrying}, persist)
         if number is None:
             persist(receipt.model_copy(update={"create_attempted_at": self._clock()}))
             created = self._host.create_issue(

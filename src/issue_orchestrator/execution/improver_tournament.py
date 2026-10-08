@@ -42,7 +42,12 @@ from typing import Any
 
 from ..contracts.improver_findings import FINDINGS_FILE
 from ..contracts.improver_inputs import INPUTS_FILE, InputsManifest
-from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider, RunOutcome
+from ..contracts.improver_run import (
+    ImproverAgentChoice,
+    ImproverProvider,
+    ImproverRunRecord,
+    RunOutcome,
+)
 from ..contracts.improver_toolbox import ToolboxManifest
 from ..contracts.improver_tournament import (
     GRADE_CREDIT,
@@ -94,6 +99,8 @@ _GRADING_RECORD = "grading.json"
 _REQUEST = "sealed/request.json"
 #: What the tournament's arms were run on (written by run_arms).
 _ARMS_RUN = "arms/run.json"
+#: What the tournament's arms were started with (a resume must match it).
+_ARMS_PLAN = "plan.json"
 
 
 class FrozenInputs:
@@ -163,6 +170,16 @@ class ArmSpec:
     #: each run's merged findings is one graded output: how a challenger to
     #: the improver is tried, since heats change what a run files (#8001).
     whole_runs: int | None = None
+
+    def describe(self) -> dict[str, object]:
+        """What the arm runs, as a resumed arm must find it unchanged."""
+        return {
+            **self.arm.model_dump(mode="json"),
+            "prompt_sha256": hashlib.sha256(self.prompt.encode("utf-8")).hexdigest(),
+            "addendum_sha256": hashlib.sha256(self.empowered_addendum.encode("utf-8")).hexdigest(),
+            "heats": self.heats.count, "parallel_heats": self.heats.parallel, "budget_minutes": self.budget_minutes,
+            "agent_timeout_minutes": self.agent_timeout_minutes, "whole_runs": self.whole_runs,
+        }
 
     @property
     def agent_runs(self) -> int:
@@ -237,11 +254,17 @@ class TournamentHarness:
         """Whether the tournament's arms ran to the end (their outputs recorded)."""
         return (self.directory(tournament_id) / _ARMS_RUN).is_file()
 
-    def run_arms(self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec]) -> list[ArmOutput]:
+    def run_arms(
+        self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec], *, resume: bool = False
+    ) -> list[ArmOutput]:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none).
 
         The snapshot's answer key must exist first: a key is written before
         any result is seen, never after reading the arms' answers.
+
+        ``resume``: arms interrupted before they all finished are resumed
+        (the same snapshot and arm specifications only): every finished run
+        is reused, only the unfinished ones run.
         """
         self._keys.get(snapshot_id)
         names = [spec.arm.name for spec in specs]
@@ -251,10 +274,17 @@ class TournamentHarness:
         engine = self._snapshots.engine(snapshot_id)
         # A tournament's arms run once: a second run in the same tournament
         # (or a tournament id two runs share) is refused before any agent starts.
+        plan = json.dumps({"snapshot_id": snapshot_id, "arms": [s.describe() for s in specs]}, indent=2) + "\n"
+        arms_dir = self.directory(tournament_id) / "arms"
         try:
-            (self.directory(tournament_id) / "arms").mkdir(parents=True)
+            arms_dir.mkdir(parents=True)
+            _write_atomic(arms_dir / _ARMS_PLAN, plan)
         except FileExistsError:
-            raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
+            planned = arms_dir / _ARMS_PLAN
+            if not resume or self.arms_ran(tournament_id):
+                raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
+            if not planned.is_file() or planned.read_text(encoding="utf-8") != plan:
+                raise RuntimeError(f"tournament {tournament_id}'s arms were started otherwise; it cannot resume") from None
         heats_by_provider: dict[str, int] = {}
         for spec in specs:
             provider = spec.arm.provider
@@ -278,16 +308,14 @@ class TournamentHarness:
             for n in range(1, spec.whole_runs + 1):
                 # Its own store: a run staged beside an earlier one would diff
                 # against that run's audit, and the samples would differ.
-                record = self._improver_run(FileImproverRunStore(arm_dir / f"run{n}"), snapshot_id, spec).run(
-                    request, apply=False
-                )
+                record = self._finished_or_run(FileImproverRunStore(arm_dir / f"run{n}"), snapshot_id, spec, request)
                 run_dir = Path(record.run_dir)
                 # A run io did not accept files nothing: it scores 0.
                 accepted = record.outcome is RunOutcome.ACCEPTED
                 text = (run_dir / FINDINGS_FILE).read_text(encoding="utf-8") if accepted else None
                 outputs.append(ArmOutput(arm.name, n, text, hide=(str(run_dir.resolve()),)))
             return outputs
-        record = self._improver_run(FileImproverRunStore(arm_dir), snapshot_id, spec).run(request, apply=False)
+        record = self._finished_or_run(FileImproverRunStore(arm_dir), snapshot_id, spec, request)
         run_dir = Path(record.run_dir)
         outputs = []
         for heat in range(1, spec.heats.count + 1):
@@ -298,6 +326,15 @@ class TournamentHarness:
             text = (run_dir / heat_file(FINDINGS_FILE, heat)).read_text(encoding="utf-8") if accepted else None
             outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
         return outputs
+
+    def _finished_or_run(
+        self, store: FileImproverRunStore, snapshot_id: str, spec: ArmSpec, request: ImproverRunRequest
+    ) -> ImproverRunRecord:
+        """The store's finished run (an arm resumed), or a new one."""
+        finished = store.runs()
+        if finished:
+            return finished[0]
+        return self._improver_run(store, snapshot_id, spec).run(request, apply=False)
 
     def _improver_run(self, store: FileImproverRunStore, snapshot_id: str, spec: ArmSpec) -> ImproverRun:
         arm = spec.arm

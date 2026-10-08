@@ -197,6 +197,9 @@ class ChallengerIssueFacts:
     approver_role: str | None
     #: The issue was closed at or after the approval (a reopen voids it).
     closed_since_approval: bool
+    #: Its body carries the challenger's own marker: it is the issue the
+    #: improver filed for THIS change, not one that merely names its token.
+    carries_marker: bool
 
 
 def judge_challenger_issue(facts: ChallengerIssueFacts) -> ApprovalVerdict:
@@ -206,6 +209,9 @@ def judge_challenger_issue(facts: ChallengerIssueFacts) -> ApprovalVerdict:
     n = facts.number
     if facts.state != "open" or facts.closed_since_approval:
         return ApprovalVerdict(n, ApprovalVerdictKind.CLOSED)
+    if not facts.carries_marker:
+        # Not the challenger's issue: an approval there approves something else.
+        return ApprovalVerdict(n, ApprovalVerdictKind.NOT_CLAIMED)
     if APPROVED_LABEL not in {label.casefold() for label in facts.labels}:
         return ApprovalVerdict(n, ApprovalVerdictKind.NOT_CLAIMED)
     added, removed = facts.approved_added, facts.approved_removed
