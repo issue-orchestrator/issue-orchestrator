@@ -249,21 +249,27 @@ def _same_defect_folds(
     another only through a third may be about another defect. In order
     (the primary heat's first), a design finding related to exactly one
     stall finding folds into it; one related to no stall finding folds into
-    the one earlier design finding it is related to that still files its own
-    issue. Related to two of either, it folds into none: which one carries
-    it is not known."""
+    the one earlier design finding that still files its own issue and that
+    it is related to together with every design finding already folded
+    there (r3 F1: so no order of the findings joins two that are not
+    related). Related to two of either, it folds into none: which one
+    carries it is not known."""
     stall_profiles = [identity.stall_profile(f) for f in stalls]
     folds: dict[str, str] = {}
-    kept: list[DefectProfile] = []
+    #: Each design finding that files its own issue, with those folded into it.
+    kept: list[list[DefectProfile]] = []
     for design in designs:
         profile = identity.design_profile(design)
         related = [s.finding_id for s in stall_profiles if same_defect(profile, s)]
-        if not related:
-            related = [k.finding_id for k in kept if same_defect(profile, k)]
         if len(related) == 1:
             folds[design.id] = related[0]
+            continue
+        groups = [] if related else [g for g in kept if all(same_defect(profile, m) for m in g)]
+        if len(groups) == 1:
+            folds[design.id] = groups[0][0].finding_id
+            groups[0].append(profile)
         else:
-            kept.append(profile)
+            kept.append([profile])
     return folds
 
 

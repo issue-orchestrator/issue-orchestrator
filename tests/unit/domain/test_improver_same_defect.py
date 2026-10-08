@@ -242,6 +242,15 @@ def test_only_a_direct_relation_folds_never_one_through_a_third_finding() -> Non
     assert "crash-on-1-and-2" in _filed(with_stalls)
 
 
+def test_no_order_of_the_findings_joins_two_that_are_not_related() -> None:
+    """r3 F1: with the design finding naming both incidents first, the two
+    that each name one may not both fold into it: they are not related."""
+    broad_first = _merge({**_heat(1), "findings": [], "design_findings": [CHAIN[1], CHAIN[0], CHAIN[2]]})
+
+    assert [(s.design.id, s.finding_id) for s in broad_first.same_defects] == [("crash-on-1", "crash-on-1-and-2")]
+    assert {"crash-on-1-and-2", "crash-on-2"} <= set(_filed(broad_first))
+
+
 def test_two_design_findings_about_one_item_but_no_one_incident_are_two_defects() -> None:
     """r2 F2: two defects of one function can show on one item. Two design
     findings must cite one thing to be one defect."""
