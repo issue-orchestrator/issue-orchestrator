@@ -204,6 +204,54 @@ most 5 heats; their waves (`ceil(heats / parallel-heats)`) times
 `--agent-timeout-minutes` must fit `--run-budget-minutes` (default 105,
 inside the suite's 120).
 
+**The improver tournament** (#8001;
+`python -m issue_orchestrator.entrypoints.cli_tools.improver_tournament`)
+compares improver arms (a provider, model and mode) on equal ground. All its
+data lives under `<git common dir>/io-improver/`:
+
+- `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
+  `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
+  A snapshot is imported once (`snapshot import`) and never changed. It links
+  to nothing outside itself and holds nothing from after it: the clone is
+  rebuilt as a new repository from its refs (nothing else of its `.git` is
+  kept), no ref may reach a later commit, and the checkout is its commit's. An old bundle is upgraded to today's contracts
+  with each change named.
+- `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
+  written before results (`key seed`; no arm runs until it exists), then problems found later that the
+  snapshot's evidence already showed (`key add`, a `candidate` until
+  `key confirm`). Only these commands write keys. No improver run can reach
+  the key store, and no agent can read it.
+- `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats (an arm may set its own prompt, heats, budget
+  and timeout: a challenger beside its champion) on the snapshot as ordinary improver runs, which never apply or touch GitHub,
+  and read no live GitHub, since that would show what was found later.
+  `grade-recorded` grades answers an earlier tournament recorded. Either way
+  the outputs are anonymized (`anon/`, mapping sealed in `sealed/`), graded by
+  cross-model graders (default one Claude, one Codex) that read only `anon/`
+  and `key/` (every grader must grade every output, or there is no result;
+  `regrade --tournament ID` grades the same outputs again), and ranked: weight × (full 1, half ½, miss 0), less 1 per
+  unsupported finding. Each grader grades every output `--passes` times
+  (default 3; graders side by side, a grader's passes in turn); a grader's
+  passes are averaged first, since repeating one grader's opinion is not more
+  evidence. An arm's score is the mean over its outputs and graders. Two arms
+  are told apart only when both hold: (1) **heats**, the arms' independent
+  samples: an exact one-sided permutation test over their per-heat scores
+  reaches p <= 0.05 (two heats an arm can never pass it, since the most extreme
+  split has p = 1/6; three heats each, wholly separated, give p = 1/20, so `run`
+  defaults to three heats); and
+  (2) **the noise band**: the gap exceeds twice the standard error of the
+  difference, from each arm's heats' spread on its own heat count plus the larger of the graders'
+  disagreement on the difference and its pass-to-pass noise (paired, so a
+  grader's bias shared by both arms cancels). Each component is the larger of
+  its estimate on the pair and on the whole tournament (never zero by a
+  pair's chance agreement, never diluted by quiet arms), and never below what
+  a grading resolves (half credit on the lightest key item). The ranking is
+  in tiers: `>` between tiers means every arm above is told apart from every
+  arm below; a tier lists any pair inside it that is told apart
+  (`{A, B, C: B>C}`); arms not told apart are reported indistinguishable,
+  which is a result, not a failure. `result.json` records each grading,
+  the pass noise, the distinguishable pairs and the cost (arm heats and every
+  grader call, retries included, per provider; Claude's count against the operator's subscription).
+
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits

@@ -1,4 +1,4 @@
-.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-tech-lead-exam test-improver-exam test-improver-escape tech-lead-improver test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: test-agent-live agent-test-status agent-test-check help venv venv-fast semgrep-venv worktree-create worktree-setup install upgrade-deps deps-batch release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale lane-preflight sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-tech-lead-exam test-improver-exam test-improver-escape test-improver-tournament tech-lead-improver test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl _validate-pr-flat-impl FORCE ensure-uv test-integration-agent-claude test-integration-agent-codex test-integration-agent-chain clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -760,6 +760,12 @@ test-improver-exam: sync-deps
 # dir, the audited repository and the toolbox. Every vector must leave no trace.
 test-improver-escape: sync-deps
 	E2E_IMPROVER_ESCAPE=1 $(PYTEST) tests/unit/testing/exam/test_improver_escape_live.py -m live_agent -v -s --tb=short $(PYTEST_TIMINGS)
+
+# Live tournament acceptance (#8001): io's anonymizer and cross-model graders
+# (one Claude, one Codex) re-grade the 2026-10-04 improver tournament's
+# recorded answers; the ranking must be its C > B > A ≈ D.
+test-improver-tournament: sync-deps
+	E2E_IMPROVER_TOURNAMENT=1 $(PYTEST) tests/unit/testing/exam/test_improver_tournament_live.py -m live_agent -v -s --tb=short $(PYTEST_TIMINGS)
 
 # The tech-lead improver (#7490, #7567): audit every engine Control Center
 # runs (or ran within IMPROVER_RECENT_HOURS), run the improver prompt read-only

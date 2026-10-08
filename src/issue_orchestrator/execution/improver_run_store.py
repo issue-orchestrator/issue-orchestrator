@@ -25,6 +25,20 @@ LOCK_FILE = "lock"
 STORE_DIRNAME = "io-improver"
 
 
+def improver_root(checkout: Path, runner: CommandRunner) -> Path:
+    """``<git common dir>/io-improver`` of the repository ``checkout``
+    belongs to: one per repository, shared by every worktree of it. Runs,
+    frozen snapshots, answer keys and tournaments all live under it."""
+    result = runner.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=checkout,
+        timeout_seconds=60,
+    )
+    if result.returncode:
+        raise RuntimeError(f"{checkout} is not a Git checkout: {result.stderr.strip()}")
+    return Path(result.stdout.strip()) / STORE_DIRNAME
+
+
 class FileImproverRunStore:
     def __init__(self, root: Path) -> None:
         self._runs = root / "runs"
@@ -32,14 +46,7 @@ class FileImproverRunStore:
     @classmethod
     def for_checkout(cls, checkout: Path, runner: CommandRunner) -> "FileImproverRunStore":
         """The store of the repository ``checkout`` belongs to (any worktree of it)."""
-        result = runner.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=checkout,
-            timeout_seconds=60,
-        )
-        if result.returncode:
-            raise RuntimeError(f"{checkout} is not a Git checkout: {result.stderr.strip()}")
-        return cls(Path(result.stdout.strip()) / STORE_DIRNAME)
+        return cls(improver_root(checkout, runner))
 
     @contextmanager
     def exclusive(self) -> Iterator[None]:
@@ -83,4 +90,4 @@ class FileImproverRunStore:
         return stored_findings((self._runs / run.run_id / FINDINGS_FILE).read_text(encoding="utf-8"))
 
 
-__all__ = ["FileImproverRunStore", "RUN_RECORD", "STORE_DIRNAME"]
+__all__ = ["FileImproverRunStore", "improver_root", "RUN_RECORD", "STORE_DIRNAME"]
