@@ -124,6 +124,9 @@ class ActionType(Enum):
     # Merge queue (optional GitHub Merge Queue integration)
     ENQUEUE_TO_MERGE_QUEUE = "enqueue_to_merge_queue"
 
+    # Re-run a PR's transient CI failure once per head commit (#8692)
+    RERUN_FAILED_CHECKS = "rerun_failed_checks"
+
     # Cleanup operations
     CLEANUP_SESSION = "cleanup_session"
 

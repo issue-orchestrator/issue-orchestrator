@@ -186,6 +186,21 @@ def test_a_merge_held_pr_with_a_conflict_is_still_reworked() -> None:
     assert followup.rework is not None and followup.enqueue is None
 
 
+def test_only_a_failed_check_rework_goes_to_ci_failure_triage() -> None:
+    """A failed-check rework is flagged for the CI-failure triage (#8692); a conflict is not."""
+    coordinator, _ = _coordinator(MagicMock())
+    failed = coordinator.classify(
+        pr=_pr("unstable", labels=["code-reviewed"], status_check_rollup="FAILURE"),
+        issue=_issue(), issue_number=228, pr_number=318, entry=None,
+    )
+    conflict = coordinator.classify(
+        pr=_pr("dirty", labels=["code-reviewed"]), issue=_issue(),
+        issue_number=228, pr_number=318, entry=None,
+    )
+    assert failed.rework is not None and failed.rework.failed_check
+    assert conflict.rework is not None and not conflict.rework.failed_check
+
+
 def test_pr_without_gate_label_is_not_enqueued() -> None:
     """A PR that has not cleared the enqueue_after gate is never enqueued."""
     repo = MagicMock()

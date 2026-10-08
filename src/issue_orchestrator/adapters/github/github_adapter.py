@@ -9,11 +9,14 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 import logging
 import os
 import time
+from datetime import datetime
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
+    CheckRunAttempt,
+    FailedChecksRead,
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
@@ -26,6 +29,7 @@ from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostErro
 from ...ports.comment_receipt import IssueCommentReceipt
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
+from .failed_checks import failed_checks_from_contexts
 from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubAuth,
@@ -1135,6 +1139,26 @@ class GitHubAdapter:
         except GitHubHttpError as e:
             logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
             raise
+
+    def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
+        """Failed check contexts on the PR's head commit (#8692)."""
+        return failed_checks_from_contexts(self._client.get_failed_check_contexts(pr_number))
+
+    def read_check_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The bounded tail of an Actions job's log (#8692)."""
+        return self._client.get_actions_job_log_tail(job_id, max_bytes=max_bytes)
+
+    def read_check_run_latest_attempt(self, run_id: int) -> CheckRunAttempt:
+        """A workflow run's current attempt and its jobs (#8692)."""
+        raw = self._client.get_actions_run_latest_attempt(run_id)
+        return CheckRunAttempt(
+            attempt=raw["attempt"], job_ids=frozenset(raw["job_ids"]),
+            started_at=datetime.fromisoformat(raw["started_at"]),
+        )
+
+    def rerun_failed_check_jobs(self, run_id: int) -> None:
+        """Re-run one workflow run's failed jobs (#8692)."""
+        self._client.rerun_failed_workflow_jobs(run_id)
 
     def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
         """Read a PR's merge queue entry (GraphQL) as a typed three-valued read.

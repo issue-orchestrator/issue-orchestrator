@@ -5121,3 +5121,30 @@ def test_validated_work_drain_rejects_invalid_numbers(tmp_path, name, value):
     path.write_text(f"repo:\n  name: owner/repo\nvalidated_work:\n  {name}: {value}\n")
     with pytest.raises(ValueError, match=f"validated_work.{name}"):
         Config.load(path)
+
+
+def test_ci_failure_triage_defaults_and_round_trip(tmp_path):
+    """The CI-failure triage section (#8692): defaults, YAML round trip, bad regex."""
+    from issue_orchestrator.domain.ci_failure import DEFAULT_TRANSIENT_SIGNATURES
+
+    assert Config().ci_failure_triage.enabled is True
+    assert tuple(Config().ci_failure_triage.transient_signatures) == DEFAULT_TRANSIENT_SIGNATURES
+    assert "ci_failure_triage" not in Config().to_dict()
+    path = tmp_path / ".issue-orchestrator/config/modes/default/default.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "repo:\n  name: owner/repo\nci_failure_triage:\n  log_tail_bytes: 4096\n"
+        "  transient_signatures:\n    - 'windows process tree'\n"
+    )
+    config = Config.load(path)
+    assert config.ci_failure_triage.transient_signatures == ["windows process tree"]
+    assert config.ci_failure_triage.log_tail_bytes == 4096
+    serialized = config.to_dict()
+    assert serialized["ci_failure_triage"] == {
+        "transient_signatures": ["windows process tree"], "log_tail_bytes": 4096,
+    }
+    path.write_text(yaml.safe_dump(serialized))
+    assert Config.load(path).ci_failure_triage.transient_signatures == ["windows process tree"]
+    path.write_text("repo:\n  name: owner/repo\nci_failure_triage:\n  genuine_signatures: ['(']\n")
+    with pytest.raises(ValueError, match="ci_failure_triage.genuine_signatures"):
+        Config.load(path)

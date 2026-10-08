@@ -208,6 +208,7 @@ class MergeQueueCoordinator:
                     issue_number=issue_number,
                     pr_number=pr_number,
                     feedback=build_rework_feedback(pr, decision),
+                    failed_check=decision == "REWORK_CHECK_FAILED",
                 )
             )
         if decision == "ROUTE_FAILURE":
@@ -281,6 +282,7 @@ class MergeQueueCoordinator:
         issue_number: int,
         pr_number: int,
         feedback: str,
+        failed_check: bool = False,
     ) -> DiscoveredRework:
         assert issue.agent_type is not None
         return DiscoveredRework(
@@ -292,6 +294,7 @@ class MergeQueueCoordinator:
             source=POST_PUBLISH_VALIDATION_SOURCE,
             feedback=feedback,
             feedback_comment_already_posted=self._comment_marker_present(pr_number),
+            failed_check=failed_check,
         )
 
     def _comment_marker_present(self, pr_number: int) -> bool:

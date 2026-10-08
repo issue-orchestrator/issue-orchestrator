@@ -1,9 +1,11 @@
 """Configuration sub-model dataclasses."""
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..domain.budgeted_validation import BudgetedValidationSuite
+from ..domain.ci_failure import DEFAULT_GENUINE_SIGNATURES, DEFAULT_TRANSIENT_SIGNATURES
 
 # Tech-lead sub-models live in their own module for cohesion and line budget
 # (mirroring the ``config_sections_tech_lead`` parsing split). Re-exported here
@@ -466,6 +468,40 @@ class MergeQueueConfig:
     provider: str = "github"  # see MERGE_QUEUE_PROVIDERS
     enqueue_after: str = "code-reviewed"  # orchestrator gate; see MERGE_QUEUE_GATES
     failure_action: str = "rework"  # rework | needs_human; see MERGE_QUEUE_FAILURE_ACTIONS
+
+
+@dataclass
+class CiFailureTriageConfig:
+    """How the engine reads and answers a failed required check (#8692).
+
+    When a reviewer-approved PR's check fails, the engine reads the failed
+    jobs' log tails with its own credential and classifies them: a transient
+    (runner/infrastructure/known-flaky) failure is re-run once per head commit;
+    any other failure goes to rework with the log excerpt in the brief.
+    Signatures are case-insensitive regular expressions matched per log line.
+    """
+
+    enabled: bool = True
+    transient_signatures: list[str] = field(
+        default_factory=lambda: list(DEFAULT_TRANSIENT_SIGNATURES)
+    )
+    genuine_signatures: list[str] = field(
+        default_factory=lambda: list(DEFAULT_GENUINE_SIGNATURES)
+    )
+    #: How much of each failed job's log the engine keeps (the tail).
+    log_tail_bytes: int = 65536
+
+    def __post_init__(self) -> None:
+        if type(self.log_tail_bytes) is not int or not 1024 <= self.log_tail_bytes <= 1048576:
+            raise ValueError("ci_failure_triage.log_tail_bytes must be an integer in [1024, 1048576]")
+        for name in ("transient_signatures", "genuine_signatures"):
+            for pattern in getattr(self, name):
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    raise ValueError(
+                        f"ci_failure_triage.{name}: invalid regular expression {pattern!r}: {error}"
+                    ) from error
 
 
 @dataclass

@@ -17,6 +17,18 @@ if TYPE_CHECKING:
     from .config import Config
 
 
+def retained_sections(config: "Config") -> dict:
+    """The validated-work and CI-failure-triage sections that differ from default."""
+    from .config_ci_failure import ci_failure_triage_section
+    from .config_validated_work import validated_work_section
+
+    sections = (
+        ("validated_work", validated_work_section(config)),
+        ("ci_failure_triage", ci_failure_triage_section(config)),
+    )
+    return {name: section for name, section in sections if section}
+
+
 def observability_section(config: "Config") -> dict:
     section: dict = {}
     if config.session_no_output_seconds != 120:

@@ -184,6 +184,36 @@ _Auto-generated from settings schema._
 | `validated_work.drain_batch_size` | integer | `5` | Maximum retained records considered per recovery batch. Stalled records do not prevent later records from being considered. | `5`, `1` |  |
 | `validated_work.drain_interval_seconds` | integer | `60` | Minimum time between completed recovery batches, bounding repeated checks during outages. | `60`, `300` |  |
 
+## CI Failure Triage
+
+| Field | Type | Default | Description | Examples | Notes |
+|-------|------|---------|-------------|----------|-------|
+| `ci_failure_triage.enabled` | boolean | `True` | Read a failed check's job log with the engine's credential, re-run a transient failure once per head commit, and attach the log excerpt to any other failure's rework brief | `true`, `false` | A re-run never spends a rework cycle. A second transient failure on the same head commit goes to rework like any other failure. |
+| `ci_failure_triage.transient_signatures` | string | `The runner has received a shutdown signal
+lost communication with the server
+The hosted runner encountered an error
+has exceeded the maximum execution time
+The job was not acquired by Runner
+No space left on device
+Failed to download action
+Could not resolve host
+\b(?:502 Bad Gateway|503 Service Unavailable|504 Gateway Time-?out)\b
+API rate limit exceeded
+The operation was canceled` | Regular expressions (one per line, case-insensitive) that mark a failed job's log as a runner, infrastructure or known-flaky failure worth one re-run | `The runner has received a shutdown signal`, `workspace watch .* windows process tree` | Checked before the genuine signatures. A TIMED_OUT or STARTUP_FAILURE check conclusion is transient on its own. |
+| `ci_failure_triage.genuine_signatures` | string | `AssertionError
+^FAILED \S
+^=+ .*\b\d+ failed\b
+^--- FAIL:
+^\s*FAIL\s
+\bTests?:\s+\d+ failed\b
+npm ERR! Test failed
+error\[E\d{4}\]
+error TS\d+:
+\bpanicked at\b
+Traceback \(most recent call last\)
+^E\s+\S` | Regular expressions (one per line, case-insensitive) that mark a failed job's log as a test, assertion or build failure | `AssertionError`, `^FAILED \S` | A failure matching neither list is unknown; genuine and unknown failures both go to rework with the log excerpt attached. |
+| `ci_failure_triage.log_tail_bytes` | integer | `65536` | How much of each failed job's log the engine keeps, from the end | `65536` |  |
+
 ## Goal Pilot
 
 | Field | Type | Default | Description | Examples | Notes |

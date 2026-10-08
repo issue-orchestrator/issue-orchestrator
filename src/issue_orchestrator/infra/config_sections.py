@@ -1,5 +1,6 @@
 """Config section parsing and application helpers."""
 
+from .config_ci_failure import parse_ci_failure_triage_config
 from .config_validated_work import parse_validated_work_config
 
 import logging
@@ -65,7 +66,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "tech_lead", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
     "ai_systems", "retry",
     "sqlite_backup",
-    "merge_queue", "validated_work",
+    "merge_queue", "validated_work", "ci_failure_triage",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -329,6 +330,7 @@ _OPTIONAL_SECTION_PARSERS: dict[str, Callable[[dict], object]] = {
     "goal_pilot": parse_goal_pilot_config,
     "merge_queue": parse_merge_queue_config,
     "validated_work": parse_validated_work_config,
+    "ci_failure_triage": parse_ci_failure_triage_config,
     "claims": parse_claims_config,
     "hooks": parse_hooks_config,
     "provider_resilience": parse_provider_resilience_config,

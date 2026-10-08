@@ -69,6 +69,7 @@ class TestSettingsEndpoints:
                 "merge_queue",
                 "validation",
                 "validated_work",
+                "ci_failure_triage",
                 "hooks",
                 "advanced",
                 "goal_pilot",
