@@ -97,6 +97,8 @@ class _RecordedCauses:
     def recorded_causes(self, issue_numbers):
         return {n: self.causes.get(n, frozenset()) for n in issue_numbers}
 
+    hold_causes = recorded_causes  # every record here is the standing one
+
     def held_by_another_cause(self, issue_number, *, excluding):
         return bool(self.causes.get(issue_number, frozenset()) - {excluding})
 

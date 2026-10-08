@@ -105,4 +105,4 @@ def test_every_review_and_rework_path_reads_the_one_owner(orchestrator) -> None:
 
     for gates in composed:
         assert isinstance(gates, HumanGates)
-        assert gates.causes == block.recorded_causes
+        assert gates.causes == block.hold_causes

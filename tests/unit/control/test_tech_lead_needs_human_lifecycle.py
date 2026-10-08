@@ -1816,9 +1816,9 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
                     raise RuntimeError("sqlite write failed")
                 real.clear_needs_human_causes(issue_number)
 
-            def bind_needs_human_episode(self, issue_number, *, event_id, applied_at):
-                return real.bind_needs_human_episode(
-                    issue_number, event_id=event_id, applied_at=applied_at
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
                 )
 
         causes = _RefusingClear()
@@ -1880,9 +1880,9 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
             def clear_needs_human_causes(self, issue_number):
                 real.clear_needs_human_causes(issue_number)
 
-            def bind_needs_human_episode(self, issue_number, *, event_id, applied_at):
-                return real.bind_needs_human_episode(
-                    issue_number, event_id=event_id, applied_at=applied_at
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
                 )
 
         class _RefusingAdd(_LiveLabelWriter):
@@ -1947,9 +1947,9 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
             def clear_needs_human_causes(self, issue_number):
                 raise RuntimeError("sqlite write failed")
 
-            def bind_needs_human_episode(self, issue_number, *, event_id, applied_at):
-                return real.bind_needs_human_episode(
-                    issue_number, event_id=event_id, applied_at=applied_at
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
                 )
 
         labels, block, _ = self._block(

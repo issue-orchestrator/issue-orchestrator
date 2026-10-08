@@ -46,7 +46,8 @@ class HumanGates:
 
     @classmethod
     def over(cls, block: "SharedNeedsHumanBlock", labels: "LabelManager") -> "HumanGates":
-        return cls(labels=labels, causes=block.recorded_causes)
+        # A merge-scoped record is checked against the standing generation (#8774).
+        return cls(labels=labels, causes=block.hold_causes)
 
     @classmethod
     def unrecorded(cls, labels: "LabelManager") -> "HumanGates":

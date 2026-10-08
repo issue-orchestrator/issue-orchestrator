@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, TypeVar
 from ..domain.block_resolution import is_resolvable_work_block
 from ..domain.human_block import BlockOutcome, HumanBlockRequest, NeedsHumanCause, ResolutionOutcome
 
+if TYPE_CHECKING:
+    from ..ports.pending_work_claim_store import GenerationBinding
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
@@ -39,7 +42,9 @@ class BlockResolutionCommand:
     if TYPE_CHECKING:  # the owner's own gate and internals
         def _mutate(self, target: int, operation: Callable[[], T], *, busy: T) -> T: ...
         def _label_present_now(self, issue_number: int) -> bool | None: ...
-        def _bind_standing_generation(self, target: int) -> bool: ...
+        def _bind_standing_generation(
+            self, target: int, *, own_write: bool = False
+        ) -> GenerationBinding | None: ...
         def _recorded_cause_holds(self, cause: NeedsHumanCause, issue_number: int) -> bool: ...
         def _holds(self, cause: NeedsHumanCause, issue_number: int) -> bool: ...
         def _withdraw(self, request: HumanBlockRequest) -> None: ...
@@ -54,7 +59,7 @@ class BlockResolutionCommand:
     def _resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> ResolutionOutcome:
         if not self._label_present_now(target):  # unreadable, or already cleared: not ours
             return _NOTHING
-        if not self._bind_standing_generation(target):  # which generation stands is unknown
+        if self._bind_standing_generation(target) is None:  # which generation stands is unknown
             return _NOTHING
         if not all(self._recorded_cause_holds(cause, target) for cause in causes):
             return _NOTHING  # all of the decision, or none of it

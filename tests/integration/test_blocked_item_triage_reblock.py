@@ -258,16 +258,25 @@ def test_a_self_recording_cause_still_dates_its_generation(tmp_path: Path) -> No
     [second] = store.needs_human_episodes([ITEM]).values()
     assert second != first and store.needs_human_causes(ITEM) == frozenset()
     assert store.needs_human_cause_targets() == frozenset({ITEM})  # the reconcile retires it
-    # Binding: an unbound generation keeps its episode; the same event keeps
-    # it again; a different event (a re-application) replaces it; a label
-    # with no generation gets one dated by its event.
-    assert store.bind_needs_human_episode(ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z") == second
+    # Binding: the owner's own write binds an unbound generation, keeping its
+    # episode; the same event keeps it again; a different event (a
+    # re-application) replaces it; a label with no generation gets one dated
+    # by its event.
+    store.bind_needs_human_generation(
+        ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z", own_write=True,
+    )
+    assert store.needs_human_episodes([ITEM])[ITEM] == second
     assert store.bind_needs_human_episode(ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z") == second
     third = store.bind_needs_human_episode(ITEM, event_id=6, applied_at="2026-10-06T00:00:00Z")
     assert third != second and third.startswith("2026-10-06T00:00:00Z#")
     assert store.bind_needs_human_episode(451, event_id=9, applied_at="2026-10-07T00:00:00Z").startswith(
         "2026-10-07T00:00:00Z#"
     )
+    # An unbound generation whose own write was never bound is ended by any
+    # other binding: a person's re-application would look the same (#8774).
+    store.open_needs_human_generation(452)
+    [unbound] = store.needs_human_episodes([452]).values()
+    assert store.bind_needs_human_episode(452, event_id=10, applied_at="2026-10-08T00:00:00Z") != unbound
 
 
 def test_a_publish_failed_block_that_recurs_after_a_successful_retry_is_owed_a_new_triage(

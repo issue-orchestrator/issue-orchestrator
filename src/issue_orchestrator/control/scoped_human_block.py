@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from typing import TYPE_CHECKING
 
-from ..ports.pending_work_claim_store import NeedsHumanCauseStore
+from ..ports.pending_work_claim_store import GenerationBinding, NeedsHumanCauseStore
 from ..ports.synchronous_effects import SynchronousEffectScope
 
 if TYPE_CHECKING:
@@ -67,12 +67,12 @@ class _ScopedCauses:
     def clear_needs_human_causes(self, issue_number: int) -> None:
         self.scope.perform(lambda: self.causes.clear_needs_human_causes(issue_number))
 
-    def bind_needs_human_episode(
-        self, issue_number: int, *, event_id: int, applied_at: str
-    ) -> str:
+    def bind_needs_human_generation(
+        self, issue_number: int, *, event_id: int, applied_at: str, own_write: bool
+    ) -> GenerationBinding:
         return self.scope.perform(
-            lambda: self.causes.bind_needs_human_episode(
-                issue_number, event_id=event_id, applied_at=applied_at
+            lambda: self.causes.bind_needs_human_generation(
+                issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
             )
         )
 

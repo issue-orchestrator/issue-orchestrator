@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-#: How long after the owner opens a generation its own label write may land
-#: (#8774 r1 F1). The write follows the open at once; a standing application
-#: dated later than this is a person's re-application, not the owner's write.
-OWN_WRITE_WINDOW = timedelta(minutes=5)
+from ..ports.pending_work_claim_store import GenerationBinding
 
 
 def _now() -> str:
@@ -38,34 +35,36 @@ def open_generation(conn: sqlite3.Connection, issue_number: int) -> None:
 
 
 def bind_generation(
-    conn: sqlite3.Connection, issue_number: int, *, event_id: int, applied_at: str
-) -> None:
+    conn: sqlite3.Connection,
+    issue_number: int,
+    *,
+    event_id: int,
+    applied_at: str,
+    own_write: bool,
+) -> GenerationBinding:
     """Bind the generation to GitHub's standing application of its label.
 
-    No generation: one is opened from the event, dated by it. An unbound one
-    is bound. One bound to a DIFFERENT event is stale: the label was removed
-    and re-applied outside the owner. The person who cleared it ended every
-    cause of that generation, so its cause rows and removal intent are retired
-    with it, in this transaction, and a new generation is opened (#8774). A
-    release of a retired cause then finds no row and leaves the person's new
-    block alone. An unbound generation the owner opened is bound only to an
-    application dated within :data:`OWN_WRITE_WINDOW` of its opening: its own
-    write, whose binding could not be read at the time. A later one is a
-    re-application, and retires it the same way.
+    No generation: one is opened from the event, dated by it (``ADOPTED``).
+    One bound to this event stands (``CURRENT``), as does an unbound one the
+    owner binds to its OWN write (``own_write``: the read right after the
+    owner put the label on, under its gate). Any other binding ENDS the
+    generation: one bound to a different event was removed and re-applied
+    outside the owner, and an unbound one whose own write was never verified
+    cannot be told apart from that (#8774 r2 F1), so it fails closed. The
+    person who cleared the label ended every cause of that generation, so its
+    cause rows and removal intent are retired with it, in this transaction,
+    and a new generation is opened from the event (#8774).
     """
     row = conn.execute(
-        "SELECT label_event_id, opened_at, adopted FROM needs_human_generation"
-        " WHERE issue_number = ?",
+        "SELECT label_event_id FROM needs_human_generation WHERE issue_number = ?",
         (issue_number,),
     ).fetchone()
-    if row is not None and row[0] == event_id:
-        return
-    if row is not None and row[0] is None and _own_write(row[1], bool(row[2]), applied_at):
+    if row is not None and (row[0] == event_id or (row[0] is None and own_write)):
         conn.execute(
             "UPDATE needs_human_generation SET label_event_id = ? WHERE issue_number = ?",
             (event_id, issue_number),
         )
-        return
+        return GenerationBinding.CURRENT
     if row is not None:
         end_generation(conn, issue_number)  # re-applied by hand: every old cause ended
     conn.execute(
@@ -73,17 +72,7 @@ def bind_generation(
         " VALUES (?, ?, ?, 1)",
         (issue_number, applied_at, event_id),
     )
-
-
-def _own_write(opened_at: str, adopted: bool, applied_at: str) -> bool:
-    """Whether the application dated ``applied_at`` can be the write that put
-    the label on for a generation opened at ``opened_at``. An adopted
-    generation was opened from an application, so any binds it."""
-    if adopted:
-        return True
-    opened = datetime.fromisoformat(opened_at)
-    applied = datetime.fromisoformat(applied_at)
-    return applied <= opened + OWN_WRITE_WINDOW
+    return GenerationBinding.ADOPTED if row is None else GenerationBinding.ENDED
 
 
 def read_episodes(conn: sqlite3.Connection, issue_numbers: Sequence[int]) -> dict[int, str]:

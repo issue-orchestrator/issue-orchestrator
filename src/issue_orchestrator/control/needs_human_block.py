@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from .needs_human_resolution import BlockResolutionCommand
@@ -129,6 +129,10 @@ class SharedNeedsHumanBlock(Protocol):
 
     def standing_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
         """:meth:`recorded_causes` of the generation GitHub shows standing (#8774)."""
+        ...
+
+    def hold_causes(self, issue_numbers: Sequence[int]) -> dict[int, frozenset[NeedsHumanCause]]:
+        """:meth:`recorded_causes`, a merge-scoped one checked as standing (#8774)."""
         ...
 
     def owns(self, label: str) -> bool:
@@ -253,6 +257,8 @@ class NeedsHumanBlock(BlockResolutionCommand, StandingGenerationGuard):
     #: GitHub's standing ``labeled`` event for a label, from a complete read
     #: of the issue's events: what binds each generation (#8774).
     label_application: Callable[[int, str], "LabelEvent | None"]
+    #: When each merge-scoped hold was last checked as standing (hold_causes).
+    merge_scope_checked: dict[int, float] = field(default_factory=dict, compare=False, repr=False)
 
     def with_effects(self, scope: SynchronousEffectScope) -> SharedNeedsHumanBlock:
         return scoped_human_block(self, scope, _ScopedLabels(self.labels, scope))
@@ -381,12 +387,11 @@ class NeedsHumanBlock(BlockResolutionCommand, StandingGenerationGuard):
         # only once it is actually gone (#6999 F4 round 4): withdrawing first
         # meant a failed removal returned FAILED with the label still on the
         # issue and its last cause already erased - the unowned live block this
-        # owner exists to make impossible. A row-backed cause first proves its
-        # row is on the generation GitHub shows standing (#8774).
-        if request.cause.is_row_backed:
-            refusal = self._stale_generation_refusal(request)
-            if refusal is not None:
-                return refusal
+        # owner exists to make impossible. Any cause first proves the
+        # generation GitHub shows standing is the one it held (#8774).
+        refusal = self._stale_generation_refusal(request)
+        if refusal is not None:
+            return refusal
         return self._take_label_off(request.target, request.reason)
 
     def clear_observed_operator_block(
@@ -540,26 +545,6 @@ class NeedsHumanBlock(BlockResolutionCommand, StandingGenerationGuard):
         self._forget(target)
         return BlockOutcome.CLEARED
 
-    def _cause_already_recorded(self, request: HumanBlockRequest) -> bool:
-        """This cause's row already stands on the LIVE label generation.
-
-        A row under an absent label is stale (a person cleared the label); the
-        acquisition restarts the generation, so it is this call's row after
-        all. Fail closed: an unreadable label or cause store counts as yes.
-        """
-        present = self._label_present_now(request.target)
-        if present is None:
-            return True
-        if not present:
-            return False
-        try:
-            return request.cause_key in self.causes.needs_human_causes(request.target)
-        except Exception:
-            logger.exception(
-                "[BLOCK] Could not read needs-human causes for #%d", request.target
-            )
-            return True
-
     def _recorded(self, request: HumanBlockRequest) -> GenerationJoin:
         """Record this cause against the CURRENT generation of the label.
 
@@ -592,7 +577,7 @@ class NeedsHumanBlock(BlockResolutionCommand, StandingGenerationGuard):
             if present:
                 if request.cause_key not in self.causes.needs_human_causes(
                     request.target
-                ) and not self._bind_standing_generation(request.target):
+                ) and self._bind_standing_generation(request.target) is None:
                     return GenerationJoin.UNKNOWN
                 self.causes.record_needs_human_cause(
                     request.target, request.cause_key, reason=request.reason
@@ -736,6 +721,9 @@ class _NoOtherCauses:
     def standing_causes(self, issue_number: int) -> frozenset[NeedsHumanCause]:
         del issue_number
         return frozenset()
+
+    def hold_causes(self, issue_numbers: Sequence[int]) -> dict[int, frozenset[NeedsHumanCause]]:
+        return self.recorded_causes(issue_numbers)
 
     def owns(self, label: str) -> bool:
         del label

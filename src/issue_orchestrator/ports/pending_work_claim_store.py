@@ -414,6 +414,20 @@ class PendingWorkClaimStore(Protocol):
         ...
 
 
+class GenerationBinding(Enum):
+    """What binding a needs-human generation to GitHub's standing label
+    application did (#8774)."""
+
+    #: The generation standing is the one recorded: nothing changed.
+    CURRENT = "current"
+    #: No generation was recorded: one was opened from the application.
+    ADOPTED = "adopted"
+    #: The label was re-applied outside the owner (or the owner's own write
+    #: was never verified): the recorded generation, its causes and removal
+    #: intent were retired, and a new one opened from the application.
+    ENDED = "ended"
+
+
 class NeedsHumanCauseStore(Protocol):
     """Durable provenance for the shared ``needs-human`` block (#6999 F2 r2).
 
@@ -515,13 +529,14 @@ class NeedsHumanCauseStore(Protocol):
         """Drop every cause, and the generation, of an issue whose shared label is gone."""
         ...
 
-    def bind_needs_human_episode(
-        self, issue_number: int, *, event_id: int, applied_at: str
-    ) -> str:
+    def bind_needs_human_generation(
+        self, issue_number: int, *, event_id: int, applied_at: str, own_write: bool
+    ) -> GenerationBinding:
         """Bind the generation to GitHub's standing application of the label
-        (see :meth:`NeedsHumanEpisodeReader.bind_needs_human_episode`). The
-        owner binds a generation it opens, a cause it joins to one, and the
-        generation a release would end (#8774)."""
+        and say what that did (#8774). ``own_write``: the application is the
+        owner's own label write, read right after it under the owner's gate.
+        See :meth:`NeedsHumanEpisodeReader.bind_needs_human_episode`, which
+        is the same binding without that claim."""
         ...
 
 
@@ -563,7 +578,9 @@ class NeedsHumanEpisodeReader(Protocol):
         cause of it (#8774). A label no acquisition opened (put on by hand, or
         before generations were recorded) gets one dated by the event. A
         generation for a label that is in fact gone is retired by the owner's
-        stale-row reconcile.
+        stale-row reconcile. An unbound generation the owner opened is
+        ended too: only the owner's own write may bind it
+        (:meth:`NeedsHumanCauseStore.bind_needs_human_generation`).
         """
         ...
 
@@ -651,6 +668,7 @@ class ClaimQuarantineStore(Protocol):
 
 
 __all__ = [
+    "GenerationBinding",
     "ClaimLookup",
     "ClaimQuarantineStore",
     "ClaimState",
