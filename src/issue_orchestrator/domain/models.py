@@ -1667,8 +1667,9 @@ class DiscoveredCiRerun:
     head_sha: str
     run_ids: tuple[int, ...]
     job_ids: tuple[int, ...]
-    #: The PR comment recording the re-run: marker, jobs and signatures.
-    comment: str
+    #: The PR comment recording the re-run (marker, jobs, signatures); None
+    #: when an earlier request's record is already on the PR.
+    comment: str | None
 
 
 @dataclass(frozen=True)

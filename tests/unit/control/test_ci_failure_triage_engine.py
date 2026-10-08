@@ -7,6 +7,7 @@ is a mock at the port boundary; everything above it is production code.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -71,8 +72,11 @@ class _Engine:
         # GitHub bumps a run's attempt the moment it accepts a re-run of it.
         self.accepted_runs: set[int] = set()
         self.refused_runs: set[int] = set()
+        self.attempts_visible = True  # GitHub may show an accepted re-run's attempt late
         host.rerun_failed_check_jobs.side_effect = self._rerun
-        host.read_check_run_attempt.side_effect = lambda run_id: 2 if run_id in self.accepted_runs else 1
+        host.read_check_run_attempt.side_effect = (
+            lambda run_id: 2 if self.attempts_visible and run_id in self.accepted_runs else 1
+        )
         self.host = host
         self.state = OrchestratorState(session_history=[SessionHistoryEntry(
             issue_number=228, title="Process tree", agent_type="agent:backend", status="completed",
@@ -90,6 +94,18 @@ class _Engine:
         if run_id in self.refused_runs:
             raise RepositoryHostError("403 Resource not accessible by integration")
         self.accepted_runs.add(run_id)
+
+    def apply(self, action) -> bool:
+        """The applier's write, with this engine's GitHub."""
+        return apply_rerun_failed_checks(
+            action, rerun=self.host.rerun_failed_check_jobs, post_comment=self.host.add_comment,
+        ).success
+
+    def age_records(self) -> None:
+        """io's re-run records were written longer ago than the start grace."""
+        self.comments = [
+            (n, re.sub(r"at=\S+ -->", "at=2026-01-01T00:00:00+00:00 -->", body)) for n, body in self.comments
+        ]
 
     def fail(self, job_id: int, log: str) -> None:
         """The PR's one required check failed as Actions job ``job_id``."""
@@ -125,9 +141,7 @@ def test_transient_failure_is_rerun_once_without_spending_a_rework_cycle() -> No
     assert plan.actions_of_type(ActionType.ADD_LABEL) == []  # no needs-rework, no cycle label
     (rerun,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert (rerun.pr_number, rerun.head_sha, rerun.run_ids) == (318, HEAD, (900,))
-    assert apply_rerun_failed_checks(
-        rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
-    ).success
+    assert engine.apply(rerun)
     engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
     (_, record), = engine.comments
     assert "lost communication with the server" in record  # the signature is recorded
@@ -198,25 +212,6 @@ def test_a_rerun_retried_after_a_failed_write_spends_one_liveness_budget() -> No
     assert retried.liveness_facts() == rerun.liveness_facts()
 
 
-def test_a_refused_rerun_records_nothing_and_never_becomes_a_rework() -> None:
-    """A credential without Actions write: no record, the re-run is planned again
-    (for the liveness owner to bound and escalate), and no rework cycle is spent."""
-
-    engine = _Engine()
-    engine.fail(11, RUNNER_LOST)
-    engine.refused_runs.add(900)
-    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    result = apply_rerun_failed_checks(
-        rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
-    )
-    assert not result.success
-    assert engine.comments == []
-
-    reworks, _, plan = engine.tick()
-    assert reworks == [] and plan.actions_of_type(ActionType.QUEUE_REWORK) == []
-    (again,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    assert again.liveness_facts() == rerun.liveness_facts()  # one liveness budget
-
 
 def _fail_jobs(engine: _Engine, logs: dict[int, str]) -> None:
     engine.logs.update(logs)
@@ -272,27 +267,6 @@ def test_a_genuine_failure_decides_without_reading_every_log() -> None:
     assert [c.args[0] for c in engine.host.read_check_job_log_tail.call_args_list] == [50]
 
 
-def test_a_rerun_whose_record_was_lost_is_still_spent() -> None:
-    """GitHub accepted the re-run but the record comment failed: GitHub's own
-    run attempt still says the head was re-run, so there is no second re-run."""
-    from issue_orchestrator.ports.repository_host import RepositoryHostError
-
-    engine = _Engine()
-    engine.fail(11, RUNNER_LOST)
-    engine.host.add_comment.side_effect = RepositoryHostError("502 Bad Gateway")
-    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    assert not apply_rerun_failed_checks(
-        rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
-    ).success
-    assert engine.comments == []
-
-    engine.fail(12, RUNNER_LOST)  # the re-run's job failed the same way
-    engine.attempts[12] = 2
-    (rework,), reruns, plan = engine.tick()
-    assert reruns == [] and plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS) == []
-    assert "already failed on a re-run of this head" in (rework.feedback or "")
-    engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
-
 
 def test_a_new_head_without_a_failed_check_is_not_reworked() -> None:
     """The rollup failed on the old head; a push since leaves nothing failed."""
@@ -318,22 +292,61 @@ def test_an_unreadable_attempt_keeps_the_log_for_the_brief() -> None:
     assert engine.host.read_check_job_log_tail.call_count == 1  # the log is not re-read
 
 
-def test_an_accepted_rerun_whose_record_failed_is_never_posted_again() -> None:
-    """GitHub accepted the re-run, the record failed, the old failed job is still
-    visible (and the engine restarted): GitHub's run attempt stops a second POST."""
+def test_a_refused_rerun_is_asked_again_after_the_grace_and_never_becomes_a_rework() -> None:
+    """A credential without Actions write: the record (intent) is on the PR, the
+    request is refused; after the start grace it is asked again, without a
+    second record and with the same liveness facts, for the liveness owner to
+    bound and escalate. No rework cycle is spent."""
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.refused_runs.add(900)
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert not engine.apply(rerun)
+    assert len(engine.comments) == 1
+
+    assert engine.tick()[:2] == ([], [])  # within the grace: the request may be in flight
+    engine.age_records()
+    reworks, _, plan = engine.tick()
+    assert reworks == [] and plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+    (again,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert again.comment is None  # the record is not written twice
+    assert again.liveness_facts() == rerun.liveness_facts()  # one liveness budget
+
+
+def test_a_failed_record_write_asks_github_nothing() -> None:
     from issue_orchestrator.ports.repository_host import RepositoryHostError
 
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
     engine.host.add_comment.side_effect = RepositoryHostError("502 Bad Gateway")
     (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
-    apply_rerun_failed_checks(rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment)
+    assert not engine.apply(rerun)
+    engine.host.rerun_failed_check_jobs.assert_not_called()
 
+
+def test_an_accepted_rerun_github_does_not_show_yet_is_not_asked_again() -> None:
+    """GitHub accepted the re-run but its new attempt is not visible yet, and the
+    engine restarted: io's record (written first) holds the second request back."""
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.attempts_visible = False
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert engine.apply(rerun)
     engine.state = OrchestratorState(session_history=engine.state.session_history)  # restart
     reworks, reruns, plan = engine.tick()
     assert (reworks, reruns) == ([], [])
-    assert plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS) == []
     engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
+
+
+def test_a_rerun_github_shows_accepted_is_never_asked_again_even_unrecorded() -> None:
+    """No record on the PR (a person re-ran it, or the record was lost), but
+    GitHub's run attempt shows the re-run: no request, whatever the grace."""
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.accepted_runs.add(900)
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], [])
+    engine.host.rerun_failed_check_jobs.assert_not_called()
 
 
 def test_only_the_runs_github_has_not_re_run_are_asked_again() -> None:
@@ -345,6 +358,7 @@ def test_only_the_runs_github_has_not_re_run_are_asked_again() -> None:
     engine.refused_runs.add(901)
     (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert rerun.run_ids == (900, 901)
-    apply_rerun_failed_checks(rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment)
+    assert not engine.apply(rerun)
+    engine.age_records()
     (again,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert again.run_ids == (901,)

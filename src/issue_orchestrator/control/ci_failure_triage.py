@@ -14,11 +14,12 @@ that rework is queued this owner, with the engine's own credential:
    rework cycle - and otherwise keeps the rework, with the log excerpts and
    the classification appended to its brief.
 
-The once-per-head bound is durable: once GitHub accepts the re-run the applier
-posts the re-run marker on the PR, so a second transient failure on the same
+The once-per-head bound is durable: GitHub's own run attempts say whether a
+head was re-run, and io's PR record (written before the request) covers the
+moments GitHub does not show it yet. A second transient failure on the same
 head - after a restart too - goes to rework like any other failure. A refused
-re-run posts nothing and is bounded by the action liveness owner, which parks
-and escalates it. Nothing here loops.
+re-run is asked again, bounded by the action liveness owner, which parks and
+escalates it. Nothing here loops.
 """
 
 from __future__ import annotations
@@ -157,69 +158,47 @@ class CiFailureTriage:
         head_sha: str,
         assessments: Sequence[CiJobAssessment],
     ) -> DiscoveredRework | DiscoveredCiRerun | None:
-        """Re-run a head's transient failure once; a re-run already spent sends it to rework.
+        """Re-run a head's transient failure once; a spent re-run sends it to rework.
 
-        Spent means GitHub itself shows a job of a later attempt (a re-run by io
-        or by a person, whether or not its record was posted), or io's record
-        names this head.
+        GitHub is the truth for "spent": a failed job of a later attempt means
+        the head was already re-run (by io or a person), and a run past attempt
+        1 already has an accepted re-run, so it is never asked again. io's PR
+        record is written BEFORE the request: while it is younger than the start
+        grace the request may be in flight or accepted-but-not-yet-visible, so
+        nothing is asked. Past the grace with no new attempt on GitHub, the
+        request was not accepted: it is asked again (without a second record),
+        and the action liveness owner bounds a GitHub that keeps refusing.
         """
+        if any(a.run_attempt is not None and a.run_attempt > 1 for a in assessments):
+            return self._decided(state, rework, _report(
+                assessments, CiFailureKind.TRANSIENT, head_sha, (), reran=True,
+                note="These jobs already failed on a re-run of this head.",
+            ))
         try:
             records = self._head_records(rework.pr_number, head_sha)
-        except (RepositoryHostError, ValueError) as error:
-            logger.warning("CI triage: re-run record of PR #%d unreadable: %s", rework.pr_number, error)
-            return self._defer(state, rework, _report(
-                assessments, CiFailureKind.TRANSIENT, head_sha, (),
-                note=f"The re-run record could not be read ({error}), so no re-run was requested.",
-            ))
-        reran = any(a.run_attempt is not None and a.run_attempt > 1 for a in assessments)
-        if not records and not reran:
-            return self._rerun_unaccepted(state, rework, head_sha, assessments)
-        note = "These jobs already failed on a re-run of this head." if reran else None
-        if records and not reran:
-            latest = max(records, key=lambda record: record.requested_at)
-            if {a.job_id for a in assessments if a.job_id is not None} <= latest.job_ids:
-                if self.clock() - latest.requested_at < RERUN_START_GRACE:
-                    logger.info("CI triage: PR #%d re-run requested %s; waiting for it to start",
-                                rework.pr_number, latest.requested_at.isoformat())
-                    return None
-                note = (f"The re-run GitHub accepted at {latest.requested_at.isoformat()} has not "
-                        f"restarted these jobs within {int(RERUN_START_GRACE.total_seconds() // 60)} minutes.")
-        return self._decided(state, rework, _report(
-            assessments, CiFailureKind.TRANSIENT, head_sha, records, note=note, reran=reran,
-        ))
-
-    def _rerun_unaccepted(
-        self,
-        state: "OrchestratorState",
-        rework: DiscoveredRework,
-        head_sha: str,
-        assessments: Sequence[CiJobAssessment],
-    ) -> DiscoveredRework | DiscoveredCiRerun | None:
-        """Re-run the runs GitHub has not already re-run.
-
-        With no record on the PR, GitHub's own run attempt is the truth: a run
-        whose current attempt is past its failed jobs' attempt (1) already has
-        an accepted re-run - io's record comment failed, the engine restarted,
-        or one of several runs was accepted before another was refused. Those
-        runs are never asked again; the rest are.
-        """
-        runs = sorted({a.run_id for a in assessments if a.run_id is not None})
-        try:
+            runs = sorted({a.run_id for a in assessments if a.run_id is not None})
             accepted = {run for run in runs if self.host.read_check_run_attempt(run) > 1}
-        except RepositoryHostError as error:
-            logger.warning("CI triage: run attempts of PR #%d unreadable: %s", rework.pr_number, error)
+        except (RepositoryHostError, ValueError) as error:
+            logger.warning("CI triage: re-run state of PR #%d unreadable: %s", rework.pr_number, error)
             return self._defer(state, rework, _report(
                 assessments, CiFailureKind.TRANSIENT, head_sha, (),
-                note=f"The workflow runs' attempts could not be read ({error}), so no re-run was requested.",
+                note=f"The re-run state could not be read ({error}), so no re-run was requested.",
             ))
         remaining = tuple(run for run in runs if run not in accepted)
+        job_ids = {a.job_id for a in assessments if a.job_id is not None}
+        recorded = [r for r in records if job_ids <= r.job_ids]
+        latest = max(recorded, key=lambda record: record.requested_at) if recorded else None
         if not remaining:
             return self._defer(state, rework, _report(
-                assessments, CiFailureKind.TRANSIENT, head_sha, (), reran=True,
+                assessments, CiFailureKind.TRANSIENT, head_sha, records, reran=True,
                 note="GitHub accepted a re-run of these jobs that has not restarted them.",
             ))
+        if latest is not None and self.clock() - latest.requested_at < RERUN_START_GRACE:
+            logger.info("CI triage: PR #%d re-run requested %s; waiting for it to start",
+                        rework.pr_number, latest.requested_at.isoformat())
+            return None
         state.ci_triage_deferrals.pop(rework.pr_number, None)
-        return _rerun(rework, head_sha, assessments, self.clock(), run_ids=remaining)
+        return _rerun(rework, head_sha, assessments, self.clock(), run_ids=remaining, record=latest is None)
 
     def _defer(
         self, state: "OrchestratorState", rework: DiscoveredRework, report: str
@@ -335,7 +314,9 @@ def _rerun(
     now: datetime,
     *,
     run_ids: tuple[int, ...],
+    record: bool,
 ) -> DiscoveredCiRerun:
+    """The re-run fact; ``record`` is False when io's record of it is already on the PR."""
     job_ids = tuple(sorted(a.job_id for a in assessments if a.job_id is not None))
     lines = [
         rerun_marker(head_sha, job_ids, now),
@@ -347,7 +328,7 @@ def _rerun(
     lines += [f"- `{a.name}` (job {a.job_id}, {a.conclusion}): `{a.signature}`" for a in assessments]
     return DiscoveredCiRerun(
         issue_number=rework.issue_number, pr_number=rework.pr_number, head_sha=head_sha,
-        run_ids=run_ids, job_ids=job_ids, comment="\n".join(lines),
+        run_ids=run_ids, job_ids=job_ids, comment="\n".join(lines) if record else None,
     )
 
 
@@ -407,27 +388,26 @@ def apply_rerun_failed_checks(
     rerun: Callable[[int], None],
     post_comment: Callable[[int, str], object],
 ) -> "ActionResult":
-    """Ask GitHub to re-run, THEN record the re-run on the PR.
+    """Record the re-run on the PR, THEN ask GitHub to re-run each run.
 
-    A refused re-run (say, a credential without Actions write) posts no record,
-    so the triage plans the same re-run again and the action liveness owner
-    backs it off, parks it and escalates it to a person - it never turns into
-    a coding rework the agent cannot fix. Once GitHub accepted the re-run the
-    record is what keeps it to one per head; a record that fails to post after
-    an accepted re-run fails the action loudly.
+    The record is the intent, written first so a restart or a lost response
+    never asks twice: the triage waits out the start grace behind it, and
+    after that trusts GitHub's run attempts. A refused request is planned
+    again without a second record, bounded by the action liveness owner,
+    which parks and escalates it - it never becomes a coding rework.
     """
     from .action_results import ActionResult
 
+    if action.comment is not None:
+        try:
+            post_comment(action.pr_number, action.comment)
+        except RepositoryHostError as error:
+            return ActionResult.fail_from(action, error, pr_number=action.pr_number)
     for run_id in action.run_ids:
         try:
             rerun(run_id)
         except RepositoryHostError as error:
             logger.error("CI re-run of run %d (PR #%d) failed: %s", run_id, action.pr_number, error)
             return ActionResult.fail_from(action, error, pr_number=action.pr_number, run_id=run_id)
-    try:
-        post_comment(action.pr_number, action.comment)
-    except RepositoryHostError as error:
-        logger.error("CI re-run of PR #%d accepted but its record was not posted: %s", action.pr_number, error)
-        return ActionResult.fail_from(action, error, pr_number=action.pr_number)
     logger.info("Re-ran failed CI jobs %s of PR #%d (head %s)", action.job_ids, action.pr_number, action.head_sha[:12])
     return ActionResult.ok(action, issue_number=action.issue_number, pr_number=action.pr_number)

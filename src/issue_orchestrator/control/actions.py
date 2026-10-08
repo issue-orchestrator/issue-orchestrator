@@ -512,7 +512,7 @@ class RerunFailedChecksAction(Action):
     head_sha: str = ""
     run_ids: tuple[int, ...] = ()
     job_ids: tuple[int, ...] = ()
-    comment: str = ""
+    comment: str | None = None
     action_type: ActionType = field(default=ActionType.RERUN_FAILED_CHECKS, init=False)
 
     def liveness_facts(self) -> object | None:
