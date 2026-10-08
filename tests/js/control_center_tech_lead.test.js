@@ -334,3 +334,24 @@ test('an item with no steps renders neither list', () => {
     const html = view().renderPage(page([repo(section([item(7)]))])).waiting;
     assert.doesNotMatch(html, /Approving also|by hand/);
 });
+
+test('the integration delivery PR is a labelled card linking the PR, with what to do and no buttons (#8144)', () => {
+    const delivery = item(600, {
+        kind: 'delivery_pr', operation: 'deliver', title: 'Deliver integration to main',
+        recommendation: 'Delivers 3 pull request(s) merged into integration to main.',
+        approval_effect: 'Merge this PR on GitHub with a merge commit (not squash or rebase); io then fast-forwards integration to main. Never delete integration.',
+        link: 'https://github.com/o/a/pull/600', status: 'delivery_ready', status_label: 'Ready for you to merge',
+        can_approve: false, can_decline: false,
+        details: [{ label: 'Pull requests', value: '#476, #479, #511' }],
+    });
+    const html = view().renderPage(page([repo(section([delivery]))]));
+    assert.equal(html.waitingHeading, 'Waiting on you (1)');
+    const card = html.waiting;
+    assert.match(card, /<article class="tl-card tl-kind-delivery_pr"[^>]*aria-labelledby="tl-card-[^"]+-600"/);
+    assert.match(card, /<span class="tl-kind">Delivery PR<\/span>/);
+    assert.match(card, /<a href="https:\/\/github.com\/o\/a\/pull\/600"[^>]*>#600 Deliver integration to main<\/a>/);
+    assert.match(card, /<strong>What to do:<\/strong> Merge this PR on GitHub with a merge commit/);
+    assert.match(card, /<strong>Status:<\/strong> Ready for you to merge/);
+    assert.match(card, /#476, #479, #511/);
+    assert.doesNotMatch(card, /<button/);
+});

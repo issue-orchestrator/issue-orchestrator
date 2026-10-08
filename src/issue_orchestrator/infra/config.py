@@ -27,6 +27,7 @@ from .config_models import (
     InterruptedSessionRetryConfig as InterruptedSessionRetryConfig,
     IsolationConfig,
     MergeQueueConfig,
+    IntegrationConfig,
     ValidatedWorkConfig,
     CiFailureTriageConfig,
     MilestoneStrategyConfig as MilestoneStrategyConfig,
@@ -375,6 +376,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
     # Optional GitHub Merge Queue integration (disabled by default)
     merge_queue: MergeQueueConfig = field(default_factory=MergeQueueConfig)
+    integration: IntegrationConfig = field(default_factory=IntegrationConfig)  # #8144
     validated_work: ValidatedWorkConfig = field(default_factory=ValidatedWorkConfig)
     ci_failure_triage: CiFailureTriageConfig = field(default_factory=CiFailureTriageConfig)
     # SQLite backup configuration
@@ -756,6 +758,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             "validated_work": asdict(self.validated_work),
             "ci_failure_triage": asdict(self.ci_failure_triage),
             "merge_queue": asdict(self.merge_queue),
+            "integration": asdict(self.integration),
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),

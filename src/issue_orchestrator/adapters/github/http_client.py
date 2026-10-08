@@ -1962,6 +1962,113 @@ class GitHubHttpClient:
             caller="delete_git_ref",
         )
 
+    # -------------------- Integration-branch mode (#8144) --------------------
+
+    def compare_commits(self, base: str, head: str) -> dict[str, Any]:
+        """GitHub's ``base...head`` comparison (first page of commits).
+
+        ETag-revalidated: a branch name's comparison changes as it moves, so the
+        cache only ever answers a 304 GitHub itself confirmed.
+        """
+        basehead = f"{quote(base, safe='')}...{quote(head, safe='')}"
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/compare/{basehead}",
+            params={"per_page": 250},
+            caller="compare_commits",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub compare payload was not an object")
+        return payload
+
+    def merge_branch(self, *, base: str, head: str, message: str) -> dict[str, Any]:
+        """POST /merges: merge *head* into *base*; ``{}`` when nothing to merge (204).
+
+        A conflict raises :class:`GitHubHttpError` with status 409.
+        """
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/merges",
+            json_body={"base": base, "head": head, "commit_message": message},
+            use_cache=False,
+            caller="merge_branch",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub merge payload was not an object")
+        return payload
+
+    def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
+        """PUT /pulls/{n}/update-branch, guarded by the expected head (202 accepted)."""
+        self._request_json(
+            "PUT",
+            f"/repos/{self._config.repo}/pulls/{pr_number}/update-branch",
+            json_body={"expected_head_sha": expected_head_sha},
+            use_cache=False,
+            caller="update_pull_request_branch",
+        )
+        self.invalidate_pr_etag(pr_number)
+
+    def merge_pull_request(
+        self, pr_number: int, *, head_sha: str, method: str, title: str, message: str
+    ) -> dict[str, Any]:
+        """PUT /pulls/{n}/merge, only at *head_sha*; 405/409 raise."""
+        payload = self._request_json(
+            "PUT",
+            f"/repos/{self._config.repo}/pulls/{pr_number}/merge",
+            json_body={
+                "sha": head_sha,
+                "merge_method": method,
+                "commit_title": title,
+                "commit_message": message,
+            },
+            use_cache=False,
+            caller="merge_pull_request",
+        )
+        self.invalidate_pr_etag(pr_number)
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub PR merge payload was not an object")
+        return payload
+
+    def list_pulls(
+        self,
+        *,
+        state: str,
+        base: str,
+        head: str | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One page (100) of PRs into *base*; *head* is a branch of this repo."""
+        params: dict[str, Any] = {"state": state, "base": base, "per_page": 100}
+        if head is not None:
+            owner = self._config.repo.split("/", 1)[0]
+            params["head"] = f"{owner}:{head}"
+        if sort is not None:
+            params["sort"] = sort
+        if direction is not None:
+            params["direction"] = direction
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/pulls",
+            params=params,
+            use_cache=False,
+            caller="list_pulls",
+        )
+        if not isinstance(payload, list):
+            raise GitHubHttpError("GitHub pulls payload was not a list")
+        return payload
+
+    def update_pr_body(self, pr_number: int, body: str) -> None:
+        """PATCH /pulls/{n}: replace the PR's description."""
+        self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/pulls/{pr_number}",
+            json_body={"body": body},
+            use_cache=False,
+            caller="update_pr_body",
+        )
+        self.invalidate_pr_etag(pr_number)
+
     def get_git_commit(self, sha: str) -> dict[str, Any]:
         encoded = quote(sha, safe="")
         payload = self._request_json(

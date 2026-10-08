@@ -3354,6 +3354,7 @@ class TestClaimGateAudit:
         ActionType.QUEUE_REVIEW,
         ActionType.ENQUEUE_TO_MERGE_QUEUE,
         ActionType.RERUN_FAILED_CHECKS,
+        ActionType.ADVANCE_INTEGRATION,
     }
 
     # Action types that legitimately skip claim verification:
@@ -3518,6 +3519,7 @@ class TestClaimGateAudit:
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
             ActionType.ENQUEUE_TO_MERGE_QUEUE: "_apply_enqueue_to_merge_queue",
             ActionType.RERUN_FAILED_CHECKS: "_apply_rerun_failed_checks",
+            ActionType.ADVANCE_INTEGRATION: "_apply_advance_integration",
         }
 
         for action_type in self.GITHUB_WRITE_ACTIONS:

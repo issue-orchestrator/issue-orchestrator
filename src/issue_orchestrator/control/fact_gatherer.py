@@ -293,6 +293,7 @@ class FactGatherer:
                 state.discovered_merge_queue_enqueues
             ),
             discovered_ci_reruns=tuple(state.discovered_ci_reruns),
+            discovered_integration_steps=tuple(state.discovered_integration_steps),
             discovered_failures=tuple(state.discovered_failures),
             stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
             stuck_sweep_review_releases=tuple(state.stuck_sweep_review_releases),

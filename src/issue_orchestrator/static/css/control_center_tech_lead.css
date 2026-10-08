@@ -100,6 +100,7 @@
 .tl-kind-proposal { border-left-color: var(--accent-purple); }
 .tl-kind-merge_ready_pr { border-left-color: var(--accent-yellow); }
 .tl-kind-hand_over { border-left-color: var(--accent-red); }
+.tl-kind-delivery_pr { border-left-color: var(--accent-green); }
 
 .tl-card h3 {
     margin: 4px 0 8px;

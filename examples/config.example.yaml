@@ -232,6 +232,22 @@ merge_queue:
   # enqueue_after: "code-reviewed"  # gate that must pass first: code-reviewed | tech-lead-reviewed
   # failure_action: "rework"        # how to route a failed queue entry: rework | needs_human
 
+# Optional integration-branch mode (#8144). When enabled, agents' worktrees and
+# PRs target `branch` (it implies worktrees.base_branch_override; io creates the
+# branch from the default branch if it is missing). io merges each approved PR
+# into it itself once its checks are green on a head that contains the
+# integration tip, brings a behind PR up to date mechanically before any agent
+# rework, and keeps ONE delivery PR (branch -> default branch) open: merge that
+# with a merge commit and io fast-forwards the branch to the default branch.
+# A PR held by needs-human, or whose issue carries a standing ruling, is never
+# auto-merged. Cannot be combined with merge_queue.enabled.
+integration:
+  enabled: false
+  # branch: "integration"           # never deleted by io
+  # deliver: "manual"               # only manual today (#9062)
+  # merge_method: "merge"           # merge | squash | rebase
+  # merge_after: "code-reviewed"    # code-reviewed | tech-lead-reviewed
+
 cleanup:
   # Orchestrator-owned issue worktrees are removed only after the applicable
   # review gate. Timing is independent of the action flags below: disabling

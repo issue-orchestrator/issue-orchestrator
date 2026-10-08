@@ -205,14 +205,17 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
-        """Get commits that are ahead of main branch.
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
+        """Get commits that are ahead of the worktree's base branch.
 
         Args:
             worktree: Path to the worktree directory.
+            base_branch: The branch the worktree is based on (``origin/<base>``
+                is compared): the stack predecessor, the configured base
+                (integration mode's branch, #8144) or the default branch.
 
         Returns:
-            List of CommitInfo for commits in HEAD but not in main.
+            List of CommitInfo for commits in HEAD but not in origin/<base>.
             Empty list if none or on error.
         """
         ...

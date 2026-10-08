@@ -148,6 +148,7 @@ class TestOrchestratorWiring:
         mock_worktree_manager.create.return_value = WorktreeInfo(
             path=worktree_path,
             branch_name="456-test-feature",
+            base_branch="main",
         )
 
         working_copy = MagicMock()

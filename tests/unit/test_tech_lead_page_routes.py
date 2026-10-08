@@ -181,7 +181,9 @@ def _page_engine(approvals):
     return _WeakReferenceable(
         state_lock=threading.RLock(),
         config=Config(repo=REPO),
-        state=SimpleNamespace(cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0),
+        state=SimpleNamespace(
+            cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0, integration_delivery=None,
+        ),
         tech_lead_run_history=history,
         deps=SimpleNamespace(
             action_applier=SimpleNamespace(tech_lead_approvals=approvals, request_rework=None),
@@ -198,7 +200,10 @@ def _page_engine(approvals):
 
 
 def test_page_facade_reads_engine_state_only() -> None:
-    """The page makes no GitHub call: the repository host is never touched."""
+    """The page makes no GitHub call: the repository host is never touched.
+
+    The delivery PR comes from the integration owner's engine-held observation."""
+    from issue_orchestrator.domain.integration_branch import IntegrationDeliveryView
     from issue_orchestrator.control.label_manager import LabelManager
     from issue_orchestrator.infra.config import Config
 
@@ -214,7 +219,14 @@ def test_page_facade_reads_engine_state_only() -> None:
     orchestrator = _WeakReferenceable(
         state_lock=threading.RLock(),
         config=Config(repo=REPO),
-        state=SimpleNamespace(cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0),
+        state=SimpleNamespace(
+            cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0,
+            # The integration owner's last observation of the delivery PR (#8144).
+            integration_delivery=IntegrationDeliveryView(
+                pr_number=700, url=f"https://github.com/{REPO}/pull/700", head="integration", base="main",
+                integration_tip="b" * 40, ahead_by=2, merged_pr_numbers=(650,), observed_at="2026-10-03T00:00:00+00:00",
+            ),
+        ),
         tech_lead_run_history=history,
         deps=SimpleNamespace(
             action_applier=SimpleNamespace(tech_lead_approvals=approvals, request_rework=None),
@@ -229,7 +241,7 @@ def test_page_facade_reads_engine_state_only() -> None:
         ),
     )
     section = tech_lead_page_section(orchestrator)
-    assert [item.number for item in section.waiting] == [600]
+    assert [(item.number, item.kind) for item in section.waiting] == [(600, "proposal"), (700, "delivery_pr")]
     assert host.mock_calls == []
 
 

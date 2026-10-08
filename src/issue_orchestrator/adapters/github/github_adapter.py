@@ -43,6 +43,7 @@ from .marker_recovery import find_marker_issue, prove_marker_issue, prove_open_m
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from .adapter_cache import GitHubAdapterCacheSupport
+from .integration_branch import GitHubIntegrationBranchMixin
 from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
@@ -171,7 +172,7 @@ def _pr_state_from_api(pr: dict[str, Any]) -> str:
     return raw_state
 
 
-class GitHubAdapter:
+class GitHubAdapter(GitHubIntegrationBranchMixin):
     """Adapter for GitHub operations via HTTP API.
 
     This adapter implements the IssueTracker, LabelSet, and PullRequestTracker

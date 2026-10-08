@@ -31,7 +31,8 @@ from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from ..ports.session_output import SessionOutput
 from ..ports.launch_prompt import LaunchPromptProvider
 from ..ports.command_runner import CommandRunner
-from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
+from ..ports.worktree_manager import WorktreeInfo, WorktreeManager, WorktreeReuseOptions
+from .session_worktree_briefing import rebase_conflict_warning
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .scoped_rework_launch import ScopedReworkLaunch
 from .scoped_rework import note_scoped_rework_started
@@ -445,7 +446,7 @@ def launch_rework_session(
             claude_project_dir.exists(),
         )
 
-        existing_work = build_rework_existing_work(worktree_info.rebase_failed)
+        existing_work = build_rework_existing_work(worktree_info)
         if existing_work:
             logger.warning("[launch] Rebase failed for rework - agent will need to resolve merge conflicts")
 
@@ -670,16 +671,10 @@ def resolve_rework_pr_details(repository_host: RepositoryHost, issue_number: int
     return pr.number, pr.branch
 
 
-def build_rework_existing_work(rebase_failed: bool) -> str | None:
-    if not rebase_failed:
+def build_rework_existing_work(worktree_info: WorktreeInfo) -> str | None:
+    if not worktree_info.rebase_failed:
         return None
-    return (
-        "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-        "The code is out of date. You should resolve the conflicts by running: "
-        "git fetch origin main && git rebase origin/main. "
-        "If conflicts occur, resolve them and continue with: git rebase --continue. "
-        "This is critical to ensure tests pass with the latest code."
-    )
+    return rebase_conflict_warning(worktree_info.base_branch)
 
 
 def update_rework_cycle_label(

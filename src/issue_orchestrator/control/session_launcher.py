@@ -140,6 +140,7 @@ from .launch_guards import (
 from .session_env import completion_capability_export, build_session_env_exports
 from .provider_command_wrapper import ProviderCommandWrapper
 from .session_worktree_briefing import (
+    rebase_conflict_warning,
     describe_worktree_state,
     detect_existing_work as detect_existing_work,
 )
@@ -1003,6 +1004,7 @@ class SessionLauncher:
                 self._working_copy,
                 seed_ref=self.config.worktree_seed_ref,
                 rebase_failed=worktree_info.rebase_failed,
+                base_branch=worktree_info.base_branch,
             )
 
             # Build command
@@ -2010,9 +2012,9 @@ class SessionLauncher:
             existing_work = build_retrospective_review_existing_work(review)
             if worktree_info.rebase_failed:
                 existing_work = (
-                    f"{existing_work}\n\nWARNING: This review worktree could not be "
-                    "rebased onto main due to merge conflicts. Include that risk in "
-                    "your verdict."
+                    f"{existing_work}\n\n"
+                    f"{rebase_conflict_warning(worktree_info.base_branch, subject='This review worktree')}"
+                    " Include that risk in your verdict."
                 )
             prompt_pr_number = review.prior_pr_number or review.issue_number
             issue_title = (

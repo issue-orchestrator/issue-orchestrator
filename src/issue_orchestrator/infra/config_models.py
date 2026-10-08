@@ -470,6 +470,57 @@ class MergeQueueConfig:
     failure_action: str = "rework"  # rework | needs_human; see MERGE_QUEUE_FAILURE_ACTIONS
 
 
+#: Delivery cadences integration mode supports. Only ``manual`` has defined
+#: semantics (io keeps the delivery PR current; the operator merges it when
+#: they choose); ``cadence`` and ``milestone`` are deferred to #9062.
+INTEGRATION_DELIVER_MODES = ("manual",)
+#: GitHub's merge methods; io merges each approved PR into integration with one.
+INTEGRATION_MERGE_METHODS = ("merge", "squash", "rebase")
+
+
+@dataclass
+class IntegrationConfig:
+    """Integration-branch mode (#8144), off by default.
+
+    When ``enabled``, agents' worktrees and PRs use ``branch`` as their base
+    (it implies ``worktrees.base_branch_override``), io merges each approved PR
+    into it itself once every gate holds, brings approved PRs up to its tip
+    mechanically before any agent rework, and maintains one delivery PR from
+    ``branch`` into the default branch for the operator to merge.
+    """
+
+    enabled: bool = False
+    branch: str = "integration"
+    deliver: str = "manual"  # see INTEGRATION_DELIVER_MODES
+    merge_method: str = "merge"  # see INTEGRATION_MERGE_METHODS
+    #: The PR label required before io merges: reviewer approval
+    #: (``code-reviewed``) or the batch tech-lead review (``tech-lead-reviewed``).
+    merge_after: str = "code-reviewed"  # see MERGE_QUEUE_GATES
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("integration.enabled must be true or false")
+        branch = self.branch
+        if (
+            not isinstance(branch, str)
+            or not branch.strip()
+            or branch != branch.strip()
+            or branch.startswith(("origin/", "refs/"))
+        ):
+            raise ValueError(
+                "integration.branch must be a plain branch name (no 'origin/' or 'refs/' prefix),"
+                f" got {branch!r}"
+            )
+        for name, allowed in (
+            ("deliver", INTEGRATION_DELIVER_MODES),
+            ("merge_method", INTEGRATION_MERGE_METHODS),
+            ("merge_after", MERGE_QUEUE_GATES),
+        ):
+            value = getattr(self, name)
+            if value not in allowed:
+                raise ValueError(f"integration.{name} must be one of {list(allowed)}, got {value!r}")
+
+
 @dataclass
 class CiFailureTriageConfig:
     """How the engine reads and answers a failed required check (#8692).

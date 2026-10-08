@@ -7,6 +7,7 @@ from ..domain.host_rate_limit import RateLimitEpisode
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
+from ..domain.integration_branch import IntegrationStep
 from ..domain.models import (
     CleanupFacts,
     DiscoveredAwaitingMergeDrift,
@@ -94,6 +95,7 @@ class OrchestratorSnapshot:
         DiscoveredMergeQueueEnqueue, ...
     ] = field(default_factory=tuple)
     discovered_ci_reruns: tuple[DiscoveredCiRerun, ...] = field(default_factory=tuple)
+    discovered_integration_steps: tuple[IntegrationStep, ...] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     # Unacknowledged stuck-sweep escalations to (re-)label needs-human; the
     # planner emits the idempotent label via the Applier (#6824 R1, label-only).
@@ -180,6 +182,7 @@ class OrchestratorSnapshot:
             DiscoveredMergeQueueEnqueue
         ] = (),
         discovered_ci_reruns: Sequence[DiscoveredCiRerun] = (),
+        discovered_integration_steps: Sequence[IntegrationStep] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
         tech_lead_facts: Optional[TechLeadFacts] = None,
         tech_lead_subjects: tuple["Issue", ...] = (),
@@ -235,6 +238,7 @@ class OrchestratorSnapshot:
                 discovered_merge_queue_enqueues
             ),
             discovered_ci_reruns=tuple(discovered_ci_reruns),
+            discovered_integration_steps=tuple(discovered_integration_steps),
             discovered_failures=tuple(discovered_failures),
             tech_lead_facts=tech_lead_facts,
             tech_lead_subjects=tech_lead_subjects,

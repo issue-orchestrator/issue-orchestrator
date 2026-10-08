@@ -1,0 +1,71 @@
+"""Port: the branch and PR operations integration-branch mode needs (#8144).
+
+A component of :class:`~.repository_host.RepositoryHost` (like the issue, label
+and PR trackers), named on its own so the integration owner depends on exactly
+these operations. Every failure raises
+:class:`~.repository_host.RepositoryHostError`; nothing here returns a default
+for a read it could not make.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+from ..domain.integration_branch import (
+    BranchComparison,
+    BranchMergeOutcome,
+    MergedIntoBranch,
+    OpenPullRequestRef,
+)
+
+
+class IntegrationBranchHost(Protocol):
+    """Branch refs, comparisons and PR merges on the managed repository."""
+
+    def branch_head(self, branch: str) -> str | None:
+        """The branch's head commit SHA; None when the branch does not exist."""
+        ...
+
+    def create_branch(self, branch: str, sha: str) -> None:
+        """Create *branch* at *sha*; fails when it already exists."""
+        ...
+
+    def fast_forward_branch(self, branch: str, sha: str) -> None:
+        """Move *branch* to *sha*; fails unless that is a fast-forward."""
+        ...
+
+    def compare_commits(self, base: str, head: str) -> BranchComparison:
+        """How *head* (a branch or SHA) relates to *base* (``base...head``)."""
+        ...
+
+    def merge_branch(self, *, base: str, head: str, message: str) -> BranchMergeOutcome:
+        """Merge *head* into the branch *base* server-side (a merge commit)."""
+        ...
+
+    def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
+        """Merge the PR's base into its branch server-side, only from that head.
+
+        Fails when the head moved or the merge conflicts.
+        """
+        ...
+
+    def merge_pull_request(
+        self, pr_number: int, *, head_sha: str, method: str, title: str, message: str
+    ) -> str:
+        """Merge the PR, only at *head_sha*; returns the merge commit SHA."""
+        ...
+
+    def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
+        """The open PR from branch *head* into *base*, if there is one."""
+        ...
+
+    def update_pull_request_body(self, pr_number: int, body: str) -> None:
+        """Replace the PR's description."""
+        ...
+
+    def merged_pull_requests_into(self, base: str) -> tuple[MergedIntoBranch, ...]:
+        """The most recently updated PRs merged into *base* (up to 100)."""
+        ...
+
+
+__all__ = ["IntegrationBranchHost"]

@@ -8191,7 +8191,8 @@
                     "enum": [
                         "proposal",
                         "merge_ready_pr",
-                        "hand_over"
+                        "hand_over",
+                        "delivery_pr"
                     ],
                     "type": "string"
                 },
@@ -8222,7 +8223,8 @@
                         "approval_not_accepted",
                         "executing",
                         "merge_held",
-                        "handed_over"
+                        "handed_over",
+                        "delivery_ready"
                     ],
                     "type": "string"
                 },

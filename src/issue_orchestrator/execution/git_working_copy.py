@@ -397,15 +397,15 @@ class GitWorkingCopy:
     def _branch_content(self) -> GitBranchContentReader:
         return GitBranchContentReader(self._run_git_output_exact, self._run_git_nul_paths)
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
-        """Get commits that are ahead of main branch."""
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
+        """Get commits that are ahead of the worktree's base branch."""
         try:
-            # Get commits in HEAD but not in origin/main
+            # Get commits in HEAD but not in origin/<base>
             result = self._run_git(
                 worktree,
                 [
                     "log",
-                    "origin/main..HEAD",
+                    f"origin/{base_branch}..HEAD",
                     "--format=%H|%s|%an|%h",
                 ],
             )
@@ -426,7 +426,7 @@ class GitWorkingCopy:
                     )
             return commits
         except GitError:
-            logger.warning("Failed to get commits ahead of main in %s", worktree)
+            logger.warning("Failed to get commits ahead of %s in %s", base_branch, worktree)
             return []
 
     def fetch(self, worktree: Path, remote: str = "origin") -> bool:
