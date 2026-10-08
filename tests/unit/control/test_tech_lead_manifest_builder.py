@@ -305,6 +305,38 @@ class TestTechLeadManifestBuilder:
         assert manifest.to_dict()["prs"][0]["issue_numbers"] == [364]
 
 
+    def test_no_pr_is_tied_to_issue_zero(self):
+        """codex r6 F2: ``Refs #0`` names no issue; it must not wedge the batch."""
+        prs = [MockPR(number=12, title="W", url="u", branch="0-wip", labels=["code-reviewed"],
+                      body="Refs #0\nCloses #365")]
+        builder = TechLeadManifestBuilder(
+            MockRepositoryHost(prs=prs), repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy()
+        )
+
+        assert builder.build(data_dir="data").prs[0].issue_numbers == (365,)
+
+    def test_links_are_re_derived_from_the_metadata_snapshot_the_agent_reads(self, tmp_path):
+        """codex r6 F1: the PR text the agent is given decides whose rulings bind it."""
+        import json
+
+        from issue_orchestrator.domain.tech_lead_manifest import PRFiles
+
+        prs = [MockPR(number=n, title="P", url="u", branch="feature", labels=["code-reviewed"], body="Closes #400")
+               for n in (12, 13, 14)]
+        builder = TechLeadManifestBuilder(
+            MockRepositoryHost(prs=prs), repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy()
+        )
+        manifest = builder.build(data_dir="data")
+        (tmp_path / "pr-12-meta.json").write_text(json.dumps({"branch": "365-walk", "body": "Refs #327"}))
+        (tmp_path / "pr-13-meta.json").write_text(json.dumps({"error": "PR #13 not found"}))
+        manifest.prs[0].files = PRFiles(metadata="pr-12-meta.json")
+        manifest.prs[1].files = PRFiles(metadata="pr-13-meta.json")
+
+        builder.relink_from_metadata(manifest, tmp_path)
+
+        assert [pr.issue_numbers for pr in manifest.prs] == [(327, 365), (), (400,)]
+
+
 class TestTechLeadCandidatePolicy:
     """The single candidate-eligibility owner shared by facts + manifest (#6768 r5)."""
 

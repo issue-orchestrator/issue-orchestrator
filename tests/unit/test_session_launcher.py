@@ -622,6 +622,7 @@ def _build_launcher_bundle(
     recovery_holds: Any = None,
     needs_human_block: Any = None,
     blocked_item_triage: Any = None,
+    manifest_downloader: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -710,7 +711,7 @@ def _build_launcher_bundle(
         working_copy=mock_working_copy,
         command_runner=mock_command_runner,
         session_output=FileSystemSessionOutput(),
-        manifest_downloader=NullManifestDownloader(),
+        manifest_downloader=manifest_downloader or NullManifestDownloader(),
         tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
         session_exists_fn=mock_session_exists,
         create_session_fn=mock_create_session,
@@ -11152,6 +11153,48 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         assert "issue #400" not in prompt  # no ruling on it: nothing to bind
         assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
         assert {365, 400} <= set(bodies.reads)  # each covered body read fresh at launch
+
+    def test_the_links_come_from_the_pr_text_the_agent_is_given(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+        mock_command_runner, ruled_bodies, tmp_path,
+    ) -> None:
+        """codex r6 F1: the listing linked #400, the PR text downloaded for the
+        agent links #365: the agent reviews against #365's ruling."""
+        from issue_orchestrator.domain.tech_lead_manifest import PRFiles
+        from tests.standing_ruling_helpers import rulings_owner
+
+        class EditedSinceListing:
+            def download(self, manifest, worktree_path):
+                data = worktree_path / manifest.data_dir
+                data.mkdir(parents=True, exist_ok=True)
+                for pr in manifest.prs:
+                    (data / f"pr-{pr.number}-meta.json").write_text(json.dumps(
+                        {"number": pr.number, "branch": "feature", "body": "Closes #365"}
+                    ))
+                    pr.files = PRFiles(diff="", metadata=f"pr-{pr.number}-meta.json")
+                return manifest
+
+        bodies, ruling = ruled_bodies
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+            mock_command_runner, standing_rulings=rulings_owner(bodies), manifest_downloader=EditedSinceListing(),
+        )
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
+            prompt_path=tmp_path / "prompt.md", model="sonnet", timeout_minutes=45,
+        )
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        self._batch_of(mock_repo_host, (512, "feature", "Closes #400"))
+
+        result = bundle.launcher.launch_issue_session(
+            Issue(number=125, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"), active_sessions=[],
+        )
+
+        assert result.success is True, result.reason
+        assert ruling.text in result.session.original_prompt
+        authority = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root).load(
+            run_id=result.session.run_assets.run_id, session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None and authority.covered_work == ((365, (512,)),)
 
     def test_a_health_review_is_told_its_problem_cohorts_rulings(self, tech_lead_bundle) -> None:
         from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING

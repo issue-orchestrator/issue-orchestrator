@@ -414,6 +414,7 @@ def prepare_tech_lead_manifest(
     manifest = manifest_downloader.download(manifest, worktree_path)
     for pr in manifest.prs:
         pr.head_sha = expected_heads[pr.number]
+    builder.relink_from_metadata(manifest, worktree_path / data_dir)
 
     manifest_path = worktree_path / data_dir / "manifest.json"
     manifest.write(manifest_path)
