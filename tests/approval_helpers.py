@@ -31,9 +31,12 @@ ADMITTED: tuple[str, ...] = (TECH_LEAD_PROPOSAL_LABEL, APPROVED_LABEL)
 MAINTAINER = "octo-maintainer"
 CONTRIBUTOR = "octo-contributor"
 BOT = "io-bot[bot]"
-#: The engine's own GitHub App: its writes carry ``performed_via_github_app``.
+#: The engine's own GitHub App: GitHub names its bot account as the actor of
+#: its writes (``performed_via_github_app`` stays null, #8987).
 ENGINE = "io-engine[bot]"
-ENGINE_APP_ID = "4250697"
+#: GitHub's account id for each login the fakes use; ENGINE's is the App bot's.
+ACCOUNT_IDS: dict[str, int] = {MAINTAINER: 101, CONTRIBUTOR: 102, BOT: 201, ENGINE: 301493143}
+ENGINE_BOT_ID = ACCOUNT_IDS[ENGINE]
 
 
 @dataclass
@@ -66,7 +69,7 @@ class FakeApprovalEvidence:
             actor_login=by,
             actor_is_bot=by.endswith("[bot]"),
             created_at=f"2026-10-03T00:00:{self._next_id % 60:02d}Z",
-            app_id=ENGINE_APP_ID if by == ENGINE else "",
+            actor_id=ACCOUNT_IDS.get(by, 999),
         )
         self.record(issue_number, label, event, removed=removed)
         return event
@@ -104,7 +107,7 @@ class FakeApprovalEvidence:
         return self.roles.get(login)
 
     def is_own_write(self, event: LabelEvent) -> bool:
-        return event.app_id == ENGINE_APP_ID
+        return event.actor_is_bot and event.actor_id == ENGINE_BOT_ID
 
     def engine_write(self, issue_number: int, label: str = APPROVED_LABEL) -> LabelEvent:
         """The event the engine's own App write produces."""
@@ -139,7 +142,7 @@ __all__ = [
     "CLAIMED",
     "CONTRIBUTOR",
     "ENGINE",
-    "ENGINE_APP_ID",
+    "ENGINE_BOT_ID",
     "FakeApprovalEvidence",
     "GATED",
     "MAINTAINER",

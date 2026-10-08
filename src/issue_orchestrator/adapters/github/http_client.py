@@ -20,6 +20,7 @@ from ...infra import gh_audit
 from ... import __version__
 from ...domain.issue_delivery import MergedPullRequest
 from ...ports.comment_receipt import IssueCommentReceipt
+from .app_bot_account import GitHubAppBotAccount
 from .auth import (
     GitHubAppInstallationTokenProvider,
     GitHubAuth,
@@ -38,7 +39,6 @@ from .rate_limit import github_http_failure, graphql_rate_limit
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
-    GitHubAppIdentity,
     GitHubTokenProvider,
     StaticGitHubTokenProvider,
     TokenValidationResult,
@@ -541,6 +541,7 @@ class GitHubHttpClient:
     def __init__(self, config: GitHubHttpConfig) -> None:
         self._config = config
         self._etag_cache = _ETagCache()
+        self._app_bot_account: GitHubAppBotAccount | None = None
         if config.auth is not None:
             self._auth = config.auth
         elif config.token_provider is not None:
@@ -1769,9 +1770,19 @@ class GitHubHttpClient:
                     run = [*run, event] if event.get("event") == kind else []
         return run
 
-    def app_identity(self) -> GitHubAppIdentity | None:
-        """This client's effective GitHub App identity, or None for a token."""
-        return self._auth.comment_app_identity()
+    def app_bot_account(self) -> GitHubAppBotAccount | None:
+        """The engine App's bot account, the actor of its installation writes,
+        or None for a personal token (#8987). Read once: ``GET /app`` names the
+        slug, ``GET /users/<slug>[bot]`` the account's immutable id."""
+        if self._app_bot_account is None:
+            login = self._auth.app_bot_login()
+            if login is None:
+                return None
+            payload = self._request_json(
+                "GET", f"/users/{quote(login, safe='')}", use_cache=False, caller="app_bot_account"
+            )
+            self._app_bot_account = GitHubAppBotAccount.from_user_payload(login, payload)
+        return self._app_bot_account
 
     def repository_role(self, login: str) -> str | None:
         """``login``'s repository role, or None when GitHub knows no such user.

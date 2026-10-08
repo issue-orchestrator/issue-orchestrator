@@ -62,7 +62,7 @@ class _GitHub:
             self._events += 1
             self.applied[(issue_number, label)] = LabelEvent(
                 event_id=self._events, actor_login="engine[bot]", actor_is_bot=True,
-                created_at=f"2026-10-0{self._events}T00:00:00Z",
+                created_at=f"2026-10-0{self._events}T00:00:00Z", actor_id=9,
             )
         self.live[issue_number].add(label)
 
