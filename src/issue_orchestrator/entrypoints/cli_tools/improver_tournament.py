@@ -321,10 +321,10 @@ def _champion(args: argparse.Namespace, champions: FileChampionStore) -> int:
 
 
 def _challenge(challenges: ImproverChallenges, args: argparse.Namespace, graders: tuple[Grader, ...]) -> int:
-    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
     try:
+        # No --seed: a retry reuses the challenge's own; a new one draws one.
         record = challenges.challenge(
-            args.run, args.snapshot, whole_runs=args.whole_runs, passes=args.passes, graders=graders, seed=seed
+            args.run, args.snapshot, whole_runs=args.whole_runs, passes=args.passes, graders=graders, seed=args.seed
         )
     except ChallengeRefused as refused:
         raise SystemExit(f"improver_tournament challenge: {refused}") from refused

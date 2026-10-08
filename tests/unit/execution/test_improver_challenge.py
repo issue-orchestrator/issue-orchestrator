@@ -61,6 +61,8 @@ class Agents:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        #: Grader calls that answer nothing gradeable, before graders work.
+        self.broken_gradings = 0
         self._lock = threading.Lock()
 
     def agent_for(self, choice: ImproverAgentChoice, minutes: int):  # type: ignore[no-untyped-def]
@@ -75,6 +77,10 @@ class Agents:
                     agents.calls.append("grader" if "Improver tournament grader" in prompt else "arm")
                 if "Improver tournament grader" not in prompt:
                     return ImproverAgentResult(_answer("Quote the staged evidence" in prompt), "done")
+                with agents._lock:
+                    if agents.broken_gradings:
+                        agents.broken_gradings -= 1
+                        return ImproverAgentResult("not a grading", "broken")
                 anon = space.run_dir / "anon"
                 grades = {}
                 for path in sorted(anon.glob("*.json")):
@@ -272,6 +278,37 @@ def test_a_finished_challenge_retried_is_the_same_record(cycle) -> None:  # type
 
     assert challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5) == first
     assert len(agents.calls) == calls
+
+
+def test_an_interrupted_challenge_retried_without_a_seed_resumes_with_its_own(cycle) -> None:  # type: ignore[no-untyped-def]
+    _, _, runs, agents, _, challenges = cycle
+    run_id = _invited_run(runs)
+    agents.broken_gradings = 1
+    with pytest.raises(RuntimeError, match="not every grading was complete"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1)
+    arm_calls = agents.calls.count("arm")
+
+    record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1)
+
+    assert record.outcome == "won" and agents.calls.count("arm") == arm_calls
+
+
+def test_a_tournament_graded_otherwise_than_the_challenge_asked_never_counts(cycle) -> None:  # type: ignore[no-untyped-def]
+    """Its grading interrupted, the challenge's tournament is regraded by
+    hand with other passes: that result is not the challenge's trial."""
+    root, champions, runs, agents, _, challenges = cycle
+    run_id = _invited_run(runs)
+    agents.broken_gradings = 1
+    with pytest.raises(RuntimeError, match="not every grading was complete"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    harness = TournamentHarness(root=root, snapshots=FrozenSnapshotStore(root, LocalCommandRunner()),
+                                keys=FileAnswerKeyStore(root), agent_for=agents.agent_for,
+                                grader_prompt=GRADER_PROMPT, clock=lambda: T0)
+    harness.regrade(f"{run_id}-vs-{_variant().id}-s1", passes=2)
+
+    with pytest.raises(ChallengeRefused, match="graded otherwise than challenge"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    assert not champions.has_challenge(f"{run_id}-vs-{_variant().id}")
 
 
 def test_the_champion_changes_only_by_a_winning_promotion(tmp_path: Path) -> None:

@@ -90,9 +90,14 @@ class FileChampionStore:
             _write_atomic(self._root / "state.json", state.model_dump_json(indent=2) + "\n")
         return state
 
+    def challenge_request(self, challenge_id: str) -> ChallengeRequest | None:
+        """The request a challenge was fixed with, if it was."""
+        path = self._request_path(challenge_id)
+        return ChallengeRequest.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
     def fix_challenge_request(self, request: ChallengeRequest) -> None:
         """Record what the challenge tries, once; a later call must ask for exactly the same."""
-        path = self._root / "challenges" / f"{require_slug(request.challenge_id, 'a challenge id')}.request.json"
+        path = self._request_path(request.challenge_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._locked():
             if path.exists():
@@ -136,6 +141,9 @@ class FileChampionStore:
                                                 "promotions": (*state.promotions, promotion)})
             _write_atomic(self._root / "state.json", updated.model_dump_json(indent=2) + "\n")
         return updated
+
+    def _request_path(self, challenge_id: str) -> Path:
+        return self._root / "challenges" / f"{require_slug(challenge_id, 'a challenge id')}.request.json"
 
     def _challenge_path(self, challenge_id: str) -> Path:
         return self._root / "challenges" / f"{require_slug(challenge_id, 'a challenge id')}.json"

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -95,8 +96,9 @@ class ImproverChallenges:
         whole_runs: int = DEFAULT_WHOLE_RUNS,
         passes: int = DEFAULT_PASSES,
         graders: Sequence[Grader] = DEFAULT_GRADERS,
-        seed: int,
+        seed: int | None = None,
     ) -> ChallengeRecord:
+        """Try the run's change. ``seed`` None: a retry's fixed one, else a new one."""
         if not snapshots or len(set(snapshots)) != len(snapshots):
             raise ChallengeRefused(f"a challenge is tried on one or more distinct snapshots, not {list(snapshots)}")
         run = self._invited_run(run_id)
@@ -117,6 +119,9 @@ class ImproverChallenges:
             raise ChallengeRefused(f"run {run_id}'s change does not apply to the champion: {error}") from error
         self._champions.store_prompt(challenger_prompt)
         challenge_id = f"{run_id}-vs-{champion.id}"
+        if seed is None:
+            fixed = self._champions.challenge_request(challenge_id)
+            seed = fixed.seed if fixed is not None else random.SystemRandom().randrange(1 << 30)
         request = ChallengeRequest(
             challenge_id=challenge_id, run_id=run_id, issue=issue, champion=champion, challenger=challenger,
             snapshots=tuple(snapshots), whole_runs=whole_runs, passes=passes,
@@ -137,7 +142,7 @@ class ImproverChallenges:
         trials = []
         for index, snapshot_id in enumerate(request.snapshots, 1):
             tournament_id = f"{challenge_id}-s{index}"
-            result = self._tournament(tournament_id, snapshot_id, specs, passes, graders, seed)
+            result = self._tournament(tournament_id, snapshot_id, specs, request, graders)
             comparison = next(
                 c for c in result.comparisons if {c.higher, c.lower} == {CHAMPION_ARM, CHALLENGER_ARM}
             )
@@ -191,21 +196,28 @@ class ImproverChallenges:
         tournament_id: str,
         snapshot_id: str,
         specs: Sequence[ArmSpec],
-        passes: int,
+        request: ChallengeRequest,
         graders: Sequence[Grader],
-        seed: int,
     ) -> TournamentResult:
-        """The snapshot's tournament: reused when graded, regraded when its
-        arms ran but its grading did not finish, run otherwise."""
+        """The snapshot's tournament: reused when graded (exactly as the
+        challenge asked), regraded when its arms ran but its grading did not
+        finish, run otherwise."""
         done = self._harness.result_of(tournament_id)
-        if done is not None:
-            if done.snapshot_id != snapshot_id:
-                raise ChallengeRefused(f"tournament {tournament_id} was on {done.snapshot_id}, not {snapshot_id}")
-            return done
-        if self._harness.arms_ran(tournament_id):
-            return self._harness.regrade(tournament_id, graders=graders, passes=passes)
-        outputs = self._harness.run_arms(tournament_id, snapshot_id, specs)
-        return self._harness.grade(tournament_id, snapshot_id, outputs, graders=graders, passes=passes, seed=seed)
+        if done is None and self._harness.arms_ran(tournament_id):
+            done = self._harness.regrade(tournament_id, graders=graders, passes=request.passes)
+        if done is None:
+            outputs = self._harness.run_arms(tournament_id, snapshot_id, specs)
+            done = self._harness.grade(
+                tournament_id, snapshot_id, outputs, graders=graders, passes=request.passes, seed=request.seed
+            )
+        graded_by = {(g.name, g.provider, g.model) for g in done.graders}
+        asked = {(g.name, g.provider, g.model) for g in request.graders}
+        if done.snapshot_id != snapshot_id or done.passes != request.passes or graded_by != asked:
+            raise ChallengeRefused(
+                f"tournament {tournament_id} was graded otherwise than challenge {request.challenge_id} asks"
+                f" (snapshot {done.snapshot_id}, {done.passes} pass(es), graders {sorted(graded_by)})"
+            )
+        return done
 
     def _approval(self, issue: str) -> ApprovalVerdict:
         match = _ISSUE.match(issue)
