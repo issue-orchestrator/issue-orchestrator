@@ -1,9 +1,9 @@
 """Adapter protocols used by completion processing."""
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..domain.issue_delivery import MergedPullRequest
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import (
     BranchCommitMessagesResult,
@@ -35,7 +35,7 @@ class PRAdapter(Protocol):
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]: ...
     def set_pr_base(self, pr_number: int, base: str) -> None: ...
     def get_pr(self, pr_number: int) -> PRInfo | None: ...
-    def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]: ...
+    def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]: ...
 
 
 @runtime_checkable

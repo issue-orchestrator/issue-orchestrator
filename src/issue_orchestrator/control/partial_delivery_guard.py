@@ -18,9 +18,8 @@ partial PR's reference line without repeating ``--partial``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -65,8 +64,7 @@ class DeliveryPullRequests(Protocol):
     merged PRs with their bodies."""
 
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]: ...
-    def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]: ...
-    def get_pr(self, pr_number: int) -> PRInfo | None: ...
+    def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]: ...
 
 
 class PartialDeliveryGuard:
@@ -97,14 +95,11 @@ class PartialDeliveryGuard:
         if stated is not None:
             return stated
         try:
-            merged = self._prs.merged_prs_referencing_issues([issue_number])
-            if not merged:
+            history = self._prs.merged_pr_history(issue_number)
+            if not history:
                 # Nothing merged: no slug is needed to know the issue is whole.
                 return IssueDelivery(DeliveryBasis.WHOLE)
-            return delivery_from_history(
-                issue_number, [self._merged(number) for number in sorted(merged)],
-                repo_slug=self._repo_slug(),
-            )
+            return delivery_from_history(issue_number, history, repo_slug=self._repo_slug())
         except Exception as exc:
             return PartialDeliveryRefusal(
                 f"could not read the merged PRs of #{issue_number} to tell whether it "
@@ -112,17 +107,6 @@ class PartialDeliveryGuard:
                 retryable=True,
                 host_rate_limit=host_rate_limit_of(exc),
             )
-
-    def _merged(self, pr_number: int) -> MergedPullRequest:
-        """One merged PR of the history; unreadable or undated is a failed read."""
-        pr = self._prs.get_pr(pr_number)
-        if pr is None:
-            raise LookupError(f"merged PR #{pr_number} could not be read")
-        if not pr.merged_at:
-            raise LookupError(f"merged PR #{pr_number} has no merge time")
-        return MergedPullRequest(
-            pr_number, pr.body, datetime.fromisoformat(pr.merged_at.replace("Z", "+00:00"))
-        )
 
     def refusal(
         self,

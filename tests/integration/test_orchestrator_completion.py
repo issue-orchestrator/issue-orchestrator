@@ -94,7 +94,7 @@ def mock_pr_adapter():
     adapter = MagicMock()
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
-    adapter.merged_prs_referencing_issues = Mock(return_value=frozenset())
+    adapter.merged_pr_history = Mock(return_value=())
     adapter.create_pr = Mock(return_value=PRInfo(
         number=42, title="Test PR", url="https://github.com/owner/repo/pull/42",
         branch="issue-123", body="Test body", state="open", labels=[],

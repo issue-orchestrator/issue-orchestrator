@@ -13,6 +13,7 @@ fake GitHub host and drive that owner.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -21,7 +22,12 @@ import pytest
 from issue_orchestrator.control.completion_ports import GitAdapter, LabelAdapter
 from issue_orchestrator.control.completion_preparation import PreparedPullRequest
 from issue_orchestrator.control.pull_request_preparation import PullRequestPreparationRefusal
-from issue_orchestrator.domain.issue_delivery import DeliveryBasis, IssueDelivery, stated_delivery
+from issue_orchestrator.domain.issue_delivery import (
+    DeliveryBasis,
+    IssueDelivery,
+    MergedPullRequest,
+    stated_delivery,
+)
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from issue_orchestrator.domain.pr_issue_reference import declares_partial_delivery
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -54,17 +60,21 @@ class FakeGitHubHost:
     """Answers the issue's merged-PR history and the branch's open PRs."""
 
     def __init__(self, merged: list[PRInfo], open_on_branch: list[PRInfo] | None = None) -> None:
-        self.merged: dict[int, PRInfo | None] = {pr.number: pr for pr in merged}
+        self.merged = {pr.number: pr for pr in merged}
         self.open_on_branch = open_on_branch or []
         self.history_reads = 0
 
-    def merged_prs_referencing_issues(self, issue_numbers):
+    def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]:
+        """One read answers the bodies and merge times; no per-PR GET (codex r3 F2)."""
         self.history_reads += 1
-        assert list(issue_numbers) == [ISSUE]
-        return frozenset(self.merged)
+        assert issue_number == ISSUE
+        return tuple(
+            MergedPullRequest(pr.number, pr.body, datetime.fromisoformat(pr.merged_at.replace("Z", "+00:00")))
+            for pr in self.merged.values()
+        )
 
-    def get_pr(self, pr_number: int) -> PRInfo | None:
-        return self.merged[pr_number]
+    def get_pr(self, pr_number: int) -> PRInfo | None:  # pragma: no cover
+        raise AssertionError("the delivery history needs no per-PR read")
 
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         return [pr for pr in self.open_on_branch if pr.branch == branch]
@@ -193,7 +203,7 @@ def test_the_latest_merged_pr_that_links_the_issue_decides(merged, partial) -> N
 
 
 class _RateLimitedHistory(FakeGitHubHost):
-    def merged_prs_referencing_issues(self, issue_numbers):
+    def merged_pr_history(self, issue_number: int):
         import httpx
 
         from issue_orchestrator.adapters.github.rate_limit import github_http_failure
@@ -215,16 +225,6 @@ def test_an_unreadable_history_is_a_retryable_refusal_with_the_reset() -> None:
     assert isinstance(prepared, PullRequestPreparationRefusal)
     assert "could not read the merged PRs of #327" in prepared.message
     assert prepared.rate_limit is not None
-
-
-def test_a_merged_pr_whose_body_cannot_be_read_is_a_refusal() -> None:
-    host = FakeGitHubHost(SLICES_MERGED_AS_PARTIAL)
-    host.merged[516] = None  # named by the history, gone on read
-
-    prepared = _prepare(host, _record())
-
-    assert isinstance(prepared, PullRequestPreparationRefusal)
-    assert "merged PR #516 could not be read" in prepared.message
 
 
 def test_an_inferred_partial_delivery_refuses_a_commit_that_closes_the_issue() -> None:
@@ -277,16 +277,6 @@ def test_merge_time_not_pr_number_orders_the_history() -> None:
 
     assert isinstance(prepared, PreparedPullRequest)
     assert prepared.delivery == IssueDelivery(DeliveryBasis.INFERRED_PARTIAL, evidence_pr=511)
-
-
-def test_a_merged_pr_without_a_merge_time_is_a_refusal() -> None:
-    host = FakeGitHubHost([_pr(515, f"Refs #{ISSUE}", state="closed")])
-    host.merged[515].state = "merged"
-
-    prepared = _prepare(host, _record())
-
-    assert isinstance(prepared, PullRequestPreparationRefusal)
-    assert "merged PR #515 has no merge time" in prepared.message
 
 
 def test_a_finishing_completion_refuses_an_open_pr_that_only_refs_the_issue() -> None:

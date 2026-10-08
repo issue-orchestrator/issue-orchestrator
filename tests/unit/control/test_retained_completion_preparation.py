@@ -54,7 +54,7 @@ def prepare(rig, *, changed_validator=False, raw=None):
     config.validation.quick.timeout_seconds = 30
     exchange, prs, labels = Mock(spec=ReviewExchangeRunner), Mock(spec=PRAdapter), Mock(spec=LabelAdapter)
     # No merged PR refs the issue: an unclaimed completion is a whole delivery (#8689).
-    prs.merged_prs_referencing_issues.return_value = frozenset()
+    prs.merged_pr_history.return_value = ()
     processor = make_completion_processor(label_adapter=labels, pr_adapter=prs, git_adapter=rig.wc,
         session_output=FileSystemSessionOutput(), config=config, review_exchange_runner=exchange,
         agent_callback_endpoint=ready_callback_endpoint())
@@ -67,7 +67,7 @@ def prepare(rig, *, changed_validator=False, raw=None):
 def assert_no_effects(rig):
     assert rig.exchange.mock_calls == []
     # Preparation may READ the issue's merged history (#8689); it never writes.
-    assert {call[0] for call in rig.prs.mock_calls} <= {"merged_prs_referencing_issues"}
+    assert {call[0] for call in rig.prs.mock_calls} <= {"merged_pr_history"}
     assert rig.labels.mock_calls == []
 
 
@@ -320,16 +320,15 @@ def test_recovery_publishes_refs_for_an_unclaimed_record_on_an_issue_delivered_i
     """#8689, the porchpin #525 path: recovery prepares a forced receipt that
     omitted --partial. Merged PR #7 already refs #42, so the recovered PR
     refs it too, and publication verification carries the typed claim."""
-    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.domain.issue_delivery import MergedPullRequest
 
     rig = prepare(retained)
-    rig.prs.merged_prs_referencing_issues.return_value = frozenset({7})
-    rig.prs.get_prs_for_branch.return_value = []
-    rig.prs.get_pr.return_value = PRInfo(
-        number=7, title="#42: slice 1", url="https://github.com/owner/repo/pull/7",
-        branch="42-slice-1", body="Refs #42\n\nSlice 1", state="merged", labels=[],
-        merged_at="2026-10-05T04:13:20Z",
+    rig.prs.merged_pr_history.return_value = (
+        MergedPullRequest(7, "Refs #42\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
     )
+    rig.prs.get_prs_for_branch.return_value = []
 
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
 
@@ -337,4 +336,5 @@ def test_recovery_publishes_refs_for_an_unclaimed_record_on_an_issue_delivered_i
     assert result.command.content.partial_pr is True
     assert result.command.content.body.splitlines()[0] == "Refs #42"
     assert "Partial delivery (inferred)" in result.command.content.body
-    rig.prs.get_pr.assert_called_once_with(7)
+    rig.prs.merged_pr_history.assert_called_with(42)
+    rig.prs.get_pr.assert_not_called()

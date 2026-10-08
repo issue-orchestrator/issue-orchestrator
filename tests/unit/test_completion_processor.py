@@ -37,6 +37,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, call, patch
 
+from issue_orchestrator.domain.issue_delivery import MergedPullRequest
 from issue_orchestrator.domain.models import (
     CompletionRecord,
     CompletionOutcome,
@@ -244,7 +245,7 @@ def mock_pr_adapter():
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
     # No merged PR refs the issue: an unclaimed completion is a whole delivery (#8689).
-    adapter.merged_prs_referencing_issues = Mock(return_value=frozenset())
+    adapter.merged_pr_history = Mock(return_value=())
     adapter.create_pr = Mock(
         return_value=PRInfo(
             number=42,
@@ -807,10 +808,8 @@ class TestPartialPRReference:
     ):
         """#8689: merged PR #98 refs #123. A completion that forgot --partial
         opens a "Refs" PR, and its result says why."""
-        mock_pr_adapter.merged_prs_referencing_issues.return_value = frozenset({98})
-        mock_pr_adapter.get_pr.return_value = dataclasses.replace(
-            self._pr("Refs #123\n\nSlice 1"), number=98, state="merged",
-            merged_at="2026-10-05T04:13:20Z",
+        mock_pr_adapter.merged_pr_history.return_value = (
+            MergedPullRequest(98, "Refs #123\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
         )
         mock_pr_adapter.create_pr.side_effect = lambda **kwargs: self._pr(kwargs["body"])
 
@@ -820,7 +819,7 @@ class TestPartialPRReference:
         assert mock_pr_adapter.create_pr.call_args.kwargs["body"].startswith("Refs #123\n")
         assert any("Partial delivery (inferred)" in action and "#98" in action
                    for action in result.actions_taken)
-        mock_pr_adapter.merged_prs_referencing_issues.assert_called_with([123])
+        mock_pr_adapter.merged_pr_history.assert_called_with(123)
 
     def test_a_finishing_completion_never_reuses_a_pr_that_only_refs_the_issue(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
@@ -1099,7 +1098,7 @@ class TestReviewExchangeModeResolution:
         return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter, **{"merged_prs_referencing_issues.return_value": frozenset()}),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=FileSystemSessionOutput(),
             event_bus=EventBus(),
@@ -1164,7 +1163,7 @@ class TestReviewExchangeExecution:
         return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter, **{"merged_prs_referencing_issues.return_value": frozenset()}),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=session_output,
             review_exchange_runner=PersistentReviewExchangeRunner(
@@ -2706,7 +2705,7 @@ class TestReviewExchangeExecution:
         allocator = allocation_for(output)
         processor = make_completion_processor(
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter, **{"merged_prs_referencing_issues.return_value": frozenset()}),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=output,
             issue_run_allocator=allocator,

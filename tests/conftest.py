@@ -524,6 +524,20 @@ class MockGitHubAdapter:
             if pr.state.lower() == "merged"
         )
 
+    def merged_pr_history(self, issue_number: int):
+        """The merged PRs keyed under ``issue_number``, with body and merge time (#8689)."""
+        from datetime import datetime
+
+        from issue_orchestrator.domain.issue_delivery import MergedPullRequest
+
+        merged = [pr for pr in self.prs.get(issue_number, []) if pr.state.lower() == "merged"]
+        if any(not pr.merged_at for pr in merged):
+            raise ValueError("a merged PR in the fake needs merged_at, as GitHub always gives it")
+        return tuple(
+            MergedPullRequest(pr.number, pr.body, datetime.fromisoformat(pr.merged_at.replace("Z", "+00:00")))
+            for pr in merged
+        )
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR, as the complete listing contract promises."""
         return [

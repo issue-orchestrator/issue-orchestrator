@@ -1189,7 +1189,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
 
         adapter = MagicMock()
         pr_adapter = MagicMock()
-        pr_adapter.merged_prs_referencing_issues.return_value = frozenset()
+        pr_adapter.merged_pr_history.return_value = ()
         # A real PR comes back, so the label-applying path is genuinely reached.
         pr_adapter.create_pr.return_value = PRInfo(
             number=77,

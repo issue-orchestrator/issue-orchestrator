@@ -188,7 +188,7 @@ def _processor(tmp_path: Path, *, approval: CompletionRecord, labels: Mock, pr=N
         success=True, paths=("tools/walk/check.py",)
     )
     pr_adapter = Mock(spec=PRAdapter)
-    pr_adapter.merged_prs_referencing_issues.return_value = frozenset()
+    pr_adapter.merged_pr_history.return_value = ()
     pr_adapter.get_pr.return_value = pr if pr is not None else _pr()
     owner = rulings_owner(IssueBodies({ISSUE: body_with(WALK)}))
     processor = make_completion_processor(
