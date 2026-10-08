@@ -78,6 +78,9 @@ class BlockEpisodes:
         #: The label onsets proven per item. An item (or a label) missing here
         #: is unknown until a verification proves it.
         self._onsets: dict[int, _Onsets] = {}
+        #: Items whose needs-human part was verified while the snapshot showed
+        #: it held: one seen lifted and put back is read afresh (#8731 r2 F1).
+        self._held: set[int] = set()
         #: Items whose last verification failed: unknown, and not re-read
         #: until the next recheck (no GitHub read on every tick for them).
         self._failed: set[int] = set()
@@ -88,7 +91,7 @@ class BlockEpisodes:
         An item any part of whose episode cannot be verified is left out: its
         episode is unknown.
         """
-        self._onsets, self._failed = {}, set()
+        self._onsets, self._held, self._failed = {}, set(), set()
         return self._compose(issues, self._verify(issues))
 
     def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
@@ -107,8 +110,7 @@ class BlockEpisodes:
         self._forget_lifted(issues)
         unproven = {
             number: issue for number, issue in issues.items()
-            if number not in self._failed
-            and any(label not in self._onsets.get(number, {}) for label in self._dated_labels(issue))
+            if number not in self._failed and not self._proven(number, issue)
         }
         if unproven:
             self._verify(unproven)
@@ -125,20 +127,33 @@ class BlockEpisodes:
             dated = self._dated_labels(issue)
             applications = read.get(number) if number in held else self._read(number, dated)
             onsets = None if applications is None else _proven(applications, dated)
-            if onsets is None:
+            if onsets is None or (number in held and number not in needs_human):
                 self._onsets.pop(number, None)
+                self._held.discard(number)
                 self._failed.add(number)
             else:
                 self._onsets[number] = onsets
+                if number in held:
+                    self._held.add(number)
                 self._failed.discard(number)
         return needs_human
 
+    def _proven(self, number: int, issue: "Issue") -> bool:
+        """Every part of the item's block was verified since the snapshot last
+        showed it lifted: each dated label, and the needs-human part."""
+        if self._holds_needs_human(issue) and number not in self._held:
+            return False
+        proven = self._onsets.get(number, {})
+        return all(label in proven for label in self._dated_labels(issue))
+
     def _forget_lifted(self, issues: Mapping[int, "Issue"]) -> None:
-        """Forget every onset whose label the snapshot no longer shows on its
-        blocked item, so a re-raise seen later is read afresh (#8731 r1 F1)."""
+        """Forget every part the snapshot no longer shows on its blocked item
+        (a label, the needs-human part, the whole block), so a re-raise seen
+        later is read afresh (#8731 r1 F1, r2 F1)."""
         for number in set(self._onsets) - set(issues):
             del self._onsets[number]
         self._failed &= set(issues)
+        self._held &= set(self._holding_needs_human(issues))
         for number, onsets in self._onsets.items():
             dated = set(self._dated_labels(issues[number]))
             self._onsets[number] = {label: onset for label, onset in onsets.items() if label in dated}

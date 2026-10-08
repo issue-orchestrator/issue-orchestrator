@@ -855,6 +855,38 @@ def test_a_lift_and_reraise_the_tick_sees_is_owed_before_the_next_recheck() -> N
     assert triage_owed(_config(), state, authority, episodes) is True
 
 
+def test_needs_human_seen_lifted_and_put_back_by_hand_is_read_at_once() -> None:
+    """#8731 review r2 F1: a mixed block's ``needs-human`` is taken off while
+    ``blocked-failed`` stays (the tick sees it), then put back by hand, all
+    before the next recheck. The owner never sees the hand write, so the
+    re-application must be read from GitHub when the tick sees it come back."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    mixed = _issue(500, "agent:backend", "needs-human", "blocked-failed")
+    state = OrchestratorState()
+    state.cached_scope_issues = [mixed]
+    store, now, reads = _Episodes({500: EP}), [0.0], []
+    applications: dict[Any, Any] = {(500, "needs-human"): 4, (500, "blocked-failed"): 5}
+    episodes = _episode_owner(store, applications, clock=lambda: now[0], reads=reads)
+    [granted] = _owner([mixed], episodes=store, applications=applications).agenda(
+        anchor_issue_number=ANCHOR,
+    ).grants
+    authority = _Authority(_Ledger({500: [_triage_record(
+        500, TriageClass.EXPLAINED, granted.fingerprint, effect="applied",
+    )]}))
+    assert triage_owed(_config(), state, authority, episodes) is False and reads == [500]
+
+    now[0] = 600.0
+    state.cached_scope_issues = [_issue(500, "agent:backend", "blocked-failed")]
+    triage_owed(_config(), state, authority, episodes)
+    applications[(500, "needs-human")] = 9  # put back by hand, unseen by the owner
+    now[0] = 1200.0
+    state.cached_scope_issues = [mixed]
+
+    assert triage_owed(_config(), state, authority, episodes) is True
+    assert reads == [500, 500]
+
+
 def test_an_item_a_tick_read_could_not_verify_waits_for_the_next_recheck() -> None:
     """#8731: an unproven item whose read fails is owed, and is not re-read on
     every tick: it waits for the next recheck."""
