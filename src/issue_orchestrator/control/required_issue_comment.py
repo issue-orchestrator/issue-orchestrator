@@ -65,6 +65,7 @@ def _same_remedy_generation(
         stored.validated_work_authority,
         stored.decision,
         stored.resolution,
+        stored.follow_through.identity(),
     ) == (
         required.op_type,
         required.target_issue_number,
@@ -74,6 +75,7 @@ def _same_remedy_generation(
         required.validated_work_authority,
         required.decision,
         required.resolution,
+        required.follow_through.identity(),
     )
 
 

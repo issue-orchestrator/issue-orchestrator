@@ -246,6 +246,20 @@ class DecisionFollowThrough:
     def to_dict(self) -> dict[str, Any]:
         return {"steps": [step.to_dict() for step in self.steps], "operator_steps": list(self.operator_steps)}
 
+    def identity(self) -> dict[str, Any] | None:
+        """What approving it would DO, for proposal identity: the steps and the
+        checklist, a PR rework by its bound head (never its run-specific report
+        text). None when empty, so a decision without steps keeps its old key."""
+        if not self:
+            return None
+        steps = []
+        for step in self.steps:
+            payload = step.to_dict()
+            if step.rework is not None:
+                payload["rework"] = step.rework.target.head_sha
+            steps.append(payload)
+        return {"steps": steps, "operator_steps": list(self.operator_steps)}
+
     @classmethod
     def from_agent(cls, steps: Any, operator_steps: Any, *, context: str) -> "DecisionFollowThrough":
         if steps is not None and not isinstance(steps, list):

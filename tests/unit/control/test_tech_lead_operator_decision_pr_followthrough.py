@@ -523,3 +523,109 @@ def test_both_prompts_teach_every_step_kind_and_forbid_before_you_approve_prose(
             assert f'"kind": "{kind.value}"' in prompt, kind
         assert "`operator_steps`" in prompt
         assert 'Never write "Before you approve"' in prompt
+
+
+# -- review round 1 ---------------------------------------------------------------
+
+
+def test_the_same_decision_with_other_steps_is_a_new_proposal(tmp_path: Path) -> None:
+    """r1 F1: approval runs the stored steps, so different steps are a different
+    proposal, never a reuse of one that would run the old steps."""
+    from issue_orchestrator.control.tech_lead_proposals import build_op_ledger, proposal_ledger_key
+
+    world = World(tmp_path)
+    _plant_327(world)
+    first = world.plan(_decision({"kind": "retarget_pr", "number": PR}))
+    other = world.plan(_decision({"kind": "comment", "number": PR, "on_pr": True, "text": "see #327"}))
+    bare = world.plan(_decision())
+    ledger = build_op_ledger([(PROPOSAL, first.op)])
+
+    def key(op):
+        return proposal_ledger_key(op.op_type, op.target_issue_number, decision=op.decision,
+                                   follow_through=op.follow_through)
+
+    assert key(first.op) in ledger and key(other.op) not in ledger and key(bare.op) not in ledger
+    assert key(bare.op) == proposal_ledger_key("propose_decision", ITEM, decision=bare.op.decision)
+
+
+def test_a_pr_owned_by_another_issue_is_never_retargeted(tmp_path: Path) -> None:
+    """r1 F2: a later 'Closes #327' in #999's PR does not make it #327's PR."""
+    world = World(tmp_path)
+    _plant_327(world)
+    proposal = world.plan(_decision({"kind": "retarget_pr", "number": PR}))
+    world.github.bodies[PR] = "Closes #999\n\nAlso Closes #327"
+    world.github.get_pr = lambda n, _g=world.github.get_pr: (  # type: ignore[method-assign]
+        None if (pr := _g(n)) is None else PRInfo(pr.number, pr.title, pr.url, "999-other", pr.body, pr.state,
+                                                pr.labels, draft=True, head_sha=HEAD))
+    before = list(world.github.writes)
+
+    result = world.executor().apply(world.approve(proposal))
+
+    assert "PR #525 belongs to #999, not #327" in result.details["skip_reason"]
+    assert world.github.writes == before
+
+
+def test_a_ruling_step_is_behind_the_mutation_authority_check(tmp_path: Path) -> None:
+    """r1 F3: another issue's body is written only after its authority check."""
+    from issue_orchestrator.control.claim_gate import ClaimLostError
+
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    executor = world.executor()
+
+    def refuse(action: Action, number: int) -> None:
+        if number == PARENT:
+            raise ClaimLostError(number, "record_ruling")
+
+    executor = _with_steps_authority(executor, refuse)
+    with pytest.raises(ClaimLostError):
+        executor.apply(world.approve(world.plan(proposed)))
+    assert parse_rulings_block(world.github.bodies[PARENT]) == ()
+
+
+def _with_steps_authority(executor: OperatorDecisionExecutor, check) -> OperatorDecisionExecutor:
+    from dataclasses import replace as dc_replace
+
+    return dc_replace(executor, steps=dc_replace(executor.steps, require_authority=check))
+
+
+def test_a_precondition_broken_at_write_time_stops_unmarked_and_unreleased(tmp_path: Path) -> None:
+    """r1 F4: PR #525 closes between the check and the retarget: nothing after
+    it runs, the step is not marked, #327 is not released; the replay closes stale."""
+    world = World(tmp_path)
+    _plant_327(world)
+    proposal = world.plan(_decision({"kind": "retarget_pr", "number": PR},
+                                    {"kind": "comment", "number": ITEM, "text": "routed"}))
+    reads = {"n": 0}
+    real = world.github.get_pr
+
+    def closes_on_second_read(number: int) -> PRInfo | None:
+        reads["n"] += 1
+        if reads["n"] >= 2:
+            world.github.states[PR] = "closed"
+        return real(number)
+
+    world.github.get_pr = closes_on_second_read  # type: ignore[method-assign]
+    executor = world.executor()
+    action = world.approve(proposal)
+
+    first = executor.apply(action)
+    replay = executor.apply(action)
+
+    assert not first.success and "no longer applies" in (first.error or "")
+    assert not world.github.marker_present(PROPOSAL, step_marker(str(PROPOSAL), 1))
+    assert "routed" not in "".join(world.github.comments.get(ITEM, []))
+    assert world.retried == [] and "needs-human" in world.github.labels[ITEM]
+    assert replay.result_type is ActionResultType.SKIPPED and "PR #525 is closed" in replay.details["skip_reason"]
+
+
+def test_an_approved_proposal_is_never_closed_as_superseded(tmp_path: Path) -> None:
+    """r1 F5: a proposal carrying a maintainer's `approved` is the operator's."""
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    world.github.labels[SUPERSEDED].add("approved")
+
+    result = world.executor().apply(world.approve(world.plan(proposed)))
+
+    assert "#445 is not a tech-lead proposal awaiting approval" in result.details["skip_reason"]
+    assert world.github.states[SUPERSEDED] == "open"

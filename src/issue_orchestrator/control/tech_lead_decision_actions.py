@@ -425,6 +425,7 @@ class _DecisionActionPlanner:
             proposed.action_type, proposed.target_number, rework_request=request,
             decision=_operator_decision(proposed),
             resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
+            follow_through=follow_through,
         )
         existing = self.op_ledger.get(key)
         if existing is not None:

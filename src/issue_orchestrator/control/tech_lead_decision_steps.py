@@ -21,7 +21,10 @@ module is their one owner, used by both decision executors
   check before each repository write). A durable marker on the proposal
   records each applied step, so a replay never runs one twice. The PR rework
   runs only after the item is released: the engine refuses a blocked issue's
-  rework.
+  rework. A step whose precondition breaks between the check and its write
+  (a race) stops the phase unmarked and the item unreleased; the replay's
+  check then closes the proposal stale, naming the step. Only a step after
+  the release, when the item already moved, is recorded as refused instead.
 """
 
 from __future__ import annotations
@@ -38,12 +41,13 @@ from ..domain.decision_steps import DecisionFollowThrough, DecisionStep, Decisio
 from ..domain.pr_issue_reference import body_links_issue, refs_in_place_of_closes
 from ..domain.scoped_rework import ReworkRequest, ReworkTarget
 from ..domain.standing_ruling import RulingAuthority, RulingScope
-from ..domain.tech_lead_approval import proposal_state
+from ..domain.tech_lead_approval import ProposalLabelState, proposal_state
 from .action_results import ActionResultType
 from .actions import Action, ActionResult, AddCommentAction, CloseIssueAction, RequestReworkAction
 from .claim_gate import ClaimLostError
 from .human_gates import merge_decision_request
 from .reconciliation import ReconciliationRequired, build_expected_for_mutation
+from .review_scope import extract_issue_number_from_pr
 from .scoped_rework_eligibility import rework_target_stale_reason
 
 if TYPE_CHECKING:
@@ -163,8 +167,10 @@ class DecisionStepsOwner:
         if step.kind is DecisionStepKind.CLOSE_SUPERSEDED_PROPOSAL:
             if issue.state != "open":
                 return None  # already closed: nothing left to do
-            if not proposal_state(issue.labels, issue.body).gate_closed:
-                return f"#{number} is not a tech-lead proposal awaiting approval"
+            # Only a proposal nobody has approved: one carrying a maintainer's
+            # `approved` (claimed or admitted) is the operator's, never closed here.
+            if proposal_state(issue.labels, issue.body) is not ProposalLabelState.AWAITING:
+                return f"#{number} is not a tech-lead proposal awaiting approval (unapproved)"
             return None
         if step.kind is DecisionStepKind.COMMENT:
             return None
@@ -192,6 +198,12 @@ class DecisionStepsOwner:
                 raise
             except Exception as error:  # a replay resumes at this step
                 return StepsApplied(failed=f"step {index} ({step.kind.value} #{step.number}): {error}")
+            if refusal is not None and not after_release:
+                # Its precondition broke after the decision's check: stop before
+                # this step, mark nothing and release nothing. The op's replay
+                # re-checks every step and closes the proposal stale, naming it.
+                return StepsApplied(failed=f"step {index} ({step.kind.value} #{step.number}) no longer"
+                                           f" applies: {refusal}")
             outcome = (
                 f"Step {index} applied: {step.describe(context.subject)}" if refusal is None
                 else f"Step {index} not applied: {refusal}"
@@ -241,6 +253,7 @@ class DecisionStepsOwner:
 
     def _record_ruling(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         proposal = context.proposal_issue_number
+        self.require_authority(context.action, step.number)
         self.rulings.record(step.number, self.rulings.ruling(
             ruling_id=f"ds-{proposal}-{index}",
             text=step.text,
@@ -333,6 +346,11 @@ class DecisionStepsOwner:
 def _retarget_precondition(pr: "PRInfo", subject: int, repo_slug: str) -> str | None:
     if pr.state != "open":
         return f"PR #{pr.number} is {pr.state}"
+    owner = extract_issue_number_from_pr(pr, repo_slug=repo_slug)
+    if owner != subject:
+        # The PR's own issue (its branch, else its first link) must be the
+        # decided one: a later "Closes #N" in another issue's PR is not ours.
+        return f"PR #{pr.number} belongs to #{owner}, not #{subject}"
     if not body_links_issue(pr.body or "", (subject,), repo_slug=repo_slug):
         return f"PR #{pr.number}'s body does not link #{subject}"
     return None

@@ -393,6 +393,7 @@ def proposal_ledger_key(
     rework_request: ReworkRequest | None = None,
     decision: OperatorDecision | None = None,
     resolution: "BlockResolution | None" = None,
+    follow_through: DecisionFollowThrough | None = None,
 ) -> tuple[str, int | str]:
     """The identity one open proposal owns: the op and what it would do.
 
@@ -405,6 +406,10 @@ def proposal_ledger_key(
     if rework_request is not None:
         return (op_type, rework_request.key)
     payload = decision.to_dict() if decision is not None else resolution.to_dict() if resolution is not None else None
+    steps = follow_through.identity() if follow_through is not None else None
+    if payload is not None and steps is not None:
+        # The steps are part of what approval runs (#8691); none keeps the old key.
+        payload = {**payload, "follow_through": steps}
     if payload is not None:
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
         return (op_type, f"{target_issue_number}:{digest}")
@@ -425,6 +430,7 @@ def build_op_ledger(
         proposal_ledger_key(
             op.op_type, op.target_issue_number,
             rework_request=op.rework_request, decision=op.decision, resolution=op.resolution,
+            follow_through=op.follow_through,
         ): issue_number
         for issue_number, op in ops
     }
