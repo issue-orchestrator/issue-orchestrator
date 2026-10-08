@@ -201,13 +201,14 @@ class ImproverChallenges:
         graders: Sequence[Grader],
     ) -> TournamentResult:
         """The snapshot's tournament: reused when graded (exactly as the
-        challenge asked), regraded when its arms ran but its grading did not
-        finish, run otherwise."""
+        challenge asked), regraded when its grading was prepared but did not
+        finish, otherwise its arms run or resume, then graded."""
         done = self._harness.result_of(tournament_id)
-        if done is None and self._harness.arms_ran(tournament_id):
+        if done is None and self._harness.grading_prepared(tournament_id):
             done = self._harness.regrade(tournament_id, graders=graders, passes=request.passes)
         if done is None:
-            # Arms interrupted mid-way resume: finished runs are kept.
+            # Arms interrupted mid-way resume (finished runs kept); arms that
+            # all finished give back their outputs to grade.
             outputs = self._harness.run_arms(tournament_id, snapshot_id, specs, resume=True)
             done = self._harness.grade(
                 tournament_id, snapshot_id, outputs, graders=graders, passes=request.passes, seed=request.seed

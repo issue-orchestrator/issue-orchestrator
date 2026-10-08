@@ -275,27 +275,51 @@ class TournamentHarness:
         # A tournament's arms run once: a second run in the same tournament
         # (or a tournament id two runs share) is refused before any agent starts.
         plan = json.dumps({"snapshot_id": snapshot_id, "arms": [s.describe() for s in specs]}, indent=2) + "\n"
-        arms_dir = self.directory(tournament_id) / "arms"
-        try:
-            arms_dir.mkdir(parents=True)
-            _write_atomic(arms_dir / _ARMS_PLAN, plan)
-        except FileExistsError:
-            planned = arms_dir / _ARMS_PLAN
-            if not resume or self.arms_ran(tournament_id):
-                raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
-            if not planned.is_file() or planned.read_text(encoding="utf-8") != plan:
-                raise RuntimeError(f"tournament {tournament_id}'s arms were started otherwise; it cannot resume") from None
+        if not self._start_arms(tournament_id, plan):
+            # Started before: only a resume, of exactly that plan, goes on.
+            planned = self.directory(tournament_id) / "arms" / _ARMS_PLAN
+            if not resume:
+                raise RuntimeError(f"tournament {tournament_id} has already run its arms")
+            if planned.read_text(encoding="utf-8") != plan:
+                raise RuntimeError(f"tournament {tournament_id}'s arms were started otherwise; it cannot resume")
         heats_by_provider: dict[str, int] = {}
         for spec in specs:
             provider = spec.arm.provider
             heats_by_provider[provider] = heats_by_provider.get(provider, 0) + spec.agent_runs
+            # Finished runs are reused (a resume launches only unfinished ones).
             outputs += self._run_arm(tournament_id, snapshot_id, engine, spec)
+        record = self.directory(tournament_id) / _ARMS_RUN
+        if record.is_file():
+            # All the arms had finished: their outputs, rebuilt, must be what was recorded.
+            if json.loads(record.read_text(encoding="utf-8"))["outputs"] != _digests(outputs):
+                raise RuntimeError(f"tournament {tournament_id}'s finished arms no longer give their recorded outputs")
+            return outputs
         # What these outputs were run on: grading them under another snapshot is refused.
-        _write_atomic(self.directory(tournament_id) / _ARMS_RUN, json.dumps(
+        _write_atomic(record, json.dumps(
             {"snapshot_id": snapshot_id, "outputs": _digests(outputs), "heats_by_provider": heats_by_provider},
             indent=2,
         ) + "\n")
         return outputs
+
+    def _start_arms(self, tournament_id: str, plan: str) -> bool:
+        """Publish ``arms/`` with its plan already in it (one rename: never an
+        arms directory without a plan); False if the arms were started before."""
+        root = self.directory(tournament_id)
+        root.mkdir(parents=True, exist_ok=True)
+        if (root / "arms").exists():
+            return False
+        staging = Path(tempfile.mkdtemp(dir=root, prefix=".arms-"))
+        _write_atomic(staging / _ARMS_PLAN, plan)
+        try:
+            os.rename(staging, root / "arms")
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
+        return True
+
+    def grading_prepared(self, tournament_id: str) -> bool:
+        """Whether the tournament's grading inputs were sealed (a regrade can run)."""
+        return (self.directory(tournament_id) / _REQUEST).is_file()
 
     def _run_arm(self, tournament_id: str, snapshot_id: str, engine: EngineRef, spec: ArmSpec) -> list[ArmOutput]:
         arm = spec.arm

@@ -372,6 +372,48 @@ def test_a_challenge_killed_mid_arms_resumes_keeping_its_finished_runs(cycle) ->
     assert record.outcome == "won" and agents.calls.count("arm") == 7
 
 
+def test_a_challenge_killed_between_its_arms_and_its_grading_grades_them_without_rerunning(
+    cycle, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]
+    _, _, runs, agents, issues, challenges = cycle
+    run_id = _invited_run(runs, host=issues.host)
+    real_grade = TournamentHarness.grade
+
+    def killed(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise Killed()
+
+    monkeypatch.setattr(TournamentHarness, "grade", killed)
+    with pytest.raises(Killed):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    arm_calls = agents.calls.count("arm")
+    assert arm_calls == 6
+    monkeypatch.setattr(TournamentHarness, "grade", real_grade)
+
+    record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    assert record.outcome == "won" and agents.calls.count("arm") == arm_calls
+
+
+def test_a_challenge_killed_while_starting_its_arms_starts_them_again(cycle, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    import issue_orchestrator.execution.improver_tournament as module
+
+    _, _, runs, agents, issues, challenges = cycle
+    run_id = _invited_run(runs, host=issues.host)
+    real_rename = module.os.rename
+
+    def killed(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise Killed()
+
+    monkeypatch.setattr(module.os, "rename", killed)
+    with pytest.raises(Killed):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    monkeypatch.setattr(module.os, "rename", real_rename)
+
+    record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    assert record.outcome == "won" and agents.calls.count("arm") == 6
+
+
 def test_the_champion_changes_only_by_a_winning_promotion(tmp_path: Path) -> None:
     champions = FileChampionStore(tmp_path)
     with pytest.raises(ChampionUnavailable, match="no improver champion"):
