@@ -35,24 +35,38 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import random
-import secrets
 import re
+import secrets
 import sys
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import cast
 
-from ...contracts.improver_run import ImproverAgentChoice, ImproverProvider
+from ...contracts.improver_run import (
+    DEFAULT_IMPROVER_AGENT,
+    ImproverAgentChoice,
+    ImproverProvider,
+)
+from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_tournament import (
     AnswerKeyItem,
     TournamentArm,
     TournamentResult,
 )
+from ...contracts.improver_variant import ImproverVariant
+from ...domain.improver_champion import prompt_digest
 from ...execution.command_runner import LocalCommandRunner
 from ...execution.improver_agents import improver_agent
 from ...execution.improver_answer_keys import FileAnswerKeyStore
+from ...execution.improver_challenge import (
+    DEFAULT_WHOLE_RUNS,
+    ChallengeRefused,
+    ImproverChallenges,
+)
+from ...execution.improver_champion_store import FileChampionStore
 from ...execution.improver_investigation import EMPOWERED_ADDENDUM
-from ...execution.improver_run_store import improver_root
+from ...execution.improver_run_store import FileImproverRunStore, improver_root
 from ...execution.improver_snapshots import FrozenSnapshotStore
 from ...execution.improver_tournament import (
     DEFAULT_GRADERS,
@@ -64,6 +78,8 @@ from ...execution.improver_tournament import (
     require_cross_model,
 )
 from ...execution.process_group_command_runner import ProcessGroupCommandRunner
+from ...execution.providers import create_repository_host
+from ...ports.improver_challenger import ChallengerIssueEvidence
 from ..improver_run import HeatPlan
 
 PROMPT = Path("examples/prompts/tech-lead-improver.md")
@@ -164,7 +180,34 @@ def build_parser() -> argparse.ArgumentParser:
     regrade.add_argument("--grader", action="append", type=parse_grader)
     regrade.add_argument("--grader-timeout-minutes", type=int, default=40)
     regrade.add_argument("--passes", type=int, default=DEFAULT_PASSES)
+    _champion_commands(sub)
     return parser
+
+
+def _champion_commands(sub: argparse._SubParsersAction) -> None:
+    champion = sub.add_parser("champion", help="The improver configuration that runs (#8001)").add_subparsers(
+        dest="action", required=True
+    )
+    seed = champion.add_parser("seed", help="The first champion: today's improver defaults unless set")
+    seed.add_argument("--by", required=True)
+    seed.add_argument("--prompt", type=Path, default=PROMPT)
+    seed.add_argument("--provider", choices=("claude", "codex"), default=DEFAULT_IMPROVER_AGENT.provider.value)
+    seed.add_argument("--model")
+    seed.add_argument("--mode", choices=("scripted", "empowered"), default=DEFAULT_IMPROVER_MODE.value)
+    seed.add_argument("--heats", type=int, default=2)
+    seed.add_argument("--budget-minutes", type=int, default=60)
+    champion.add_parser("show")
+    challenge = sub.add_parser("challenge", help="Try an invited run's change against the champion")
+    challenge.add_argument("--run", required=True, help="The improver run that proposed the change")
+    challenge.add_argument("--snapshot", action="append", required=True, help="A frozen snapshot (repeatable)")
+    challenge.add_argument("--whole-runs", type=int, default=DEFAULT_WHOLE_RUNS,
+                           help="Whole improver runs per arm per snapshot (default: %(default)s)")
+    challenge.add_argument("--passes", type=int, default=DEFAULT_PASSES)
+    challenge.add_argument("--grader", action="append", type=parse_grader)
+    challenge.add_argument("--grader-timeout-minutes", type=int, default=40)
+    challenge.add_argument("--seed", type=int)
+    promote = sub.add_parser("promote", help="Make a winning, maintainer-approved challenger the champion")
+    promote.add_argument("--challenge", required=True)
 
 
 def parse_arm(text: str) -> ArmRequest:
@@ -213,6 +256,8 @@ def main(argv: list[str]) -> int:
         return _snapshot(args, snapshots)
     if args.command == "key":
         return _key(args, keys)
+    if args.command == "champion":
+        return _champion(args, FileChampionStore(root))
     harness = TournamentHarness(
         root=root, snapshots=snapshots, keys=keys,
         agent_for=lambda choice, minutes: improver_agent(
@@ -221,10 +266,19 @@ def main(argv: list[str]) -> int:
         grader_prompt=GRADER_PROMPT.read_text(encoding="utf-8"),
         clock=_now,
     )
+    challenges = ImproverChallenges(
+        harness=harness, champions=FileChampionStore(root), runs=FileImproverRunStore(root),
+        issues_for=lambda repo: cast("ChallengerIssueEvidence", create_repository_host(repo)),
+        empowered_addendum=EMPOWERED_ADDENDUM.read_text(encoding="utf-8"), clock=_now,
+    )
+    if args.command == "promote":
+        return _promote(challenges, args.challenge)
     graders = tuple(
         dataclasses.replace(g, timeout_minutes=args.grader_timeout_minutes) for g in (args.grader or DEFAULT_GRADERS)
     )
     require_cross_model(graders)
+    if args.command == "challenge":
+        return _challenge(challenges, args, graders)
     if args.command == "regrade":
         tournament_id = args.tournament
         result = _graded(lambda: harness.regrade(tournament_id, graders=graders, passes=args.passes), tournament_id)
@@ -243,6 +297,56 @@ def main(argv: list[str]) -> int:
         lambda: harness.grade(tournament_id, args.snapshot, outputs, graders=graders, passes=args.passes, seed=seed), tournament_id
     )
     print(render_result(result, harness.directory(tournament_id)))
+    return 0
+
+
+def _champion(args: argparse.Namespace, champions: FileChampionStore) -> int:
+    if args.action == "show":
+        state = champions.state()
+        print(f"champion {state.champion.id}: {state.champion.describe()}"
+              f" (seeded {state.seeded_at.isoformat()} by {state.seeded_by})")
+        for p in state.promotions:
+            print(f"  {p.at.isoformat()}: {p.previous.id} -> {p.champion.id} by challenge {p.challenge_id}"
+                  f" ({p.issue}, approved by @{p.approved_by})")
+        return 0
+    prompt = args.prompt.read_text(encoding="utf-8")
+    variant = ImproverVariant(
+        agent=ImproverAgentChoice.for_provider(ImproverProvider(args.provider), args.model),
+        mode=ImproverMode(args.mode), heats=args.heats, budget_minutes=args.budget_minutes,
+        prompt_sha256=prompt_digest(prompt),
+    )
+    state = champions.seed(variant, prompt, at=_now(), by=args.by)
+    print(f"seeded champion {state.champion.id}: {state.champion.describe()}")
+    return 0
+
+
+def _challenge(challenges: ImproverChallenges, args: argparse.Namespace, graders: tuple[Grader, ...]) -> int:
+    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(1 << 30)
+    try:
+        record = challenges.challenge(
+            args.run, args.snapshot, whole_runs=args.whole_runs, passes=args.passes, graders=graders, seed=seed
+        )
+    except ChallengeRefused as refused:
+        raise SystemExit(f"improver_tournament challenge: {refused}") from refused
+    print(f"challenge {record.challenge_id}: {record.outcome}"
+          f" ({record.challenger.describe()} against champion {record.champion.id})")
+    for t in record.trials:
+        c = t.comparison
+        print(f"  {t.snapshot_id} ({t.tournament_id}): {c.higher} above {c.lower} by {c.gap:.2f}, band {c.band:.2f},"
+              f" heat p {c.heat_p:.3f}: {'challenger won' if t.challenger_won else 'not a win'}")
+    print(f"  approval: a maintainer labels {record.issue} `approved`; then promote --challenge {record.challenge_id}")
+    return 0 if record.outcome == "won" else 1
+
+
+def _promote(challenges: ImproverChallenges, challenge_id: str) -> int:
+    promoted = challenges.promote(challenge_id)
+    if promoted.state is None:
+        print(f"challenge {challenge_id} not promoted ({promoted.verdict.describe()}):")
+        for refusal in promoted.refusals:
+            print(f"  - {refusal}")
+        return 1
+    print(f"promoted: champion {promoted.state.champion.id} ({promoted.state.champion.describe()}),"
+          f" {promoted.verdict.describe()}")
     return 0
 
 

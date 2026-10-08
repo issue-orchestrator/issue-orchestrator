@@ -351,6 +351,10 @@ EVIDENCE_CASE_RULES = {
     Rule.NOT_NOTICED_UNREFERENCED,
     # Design findings' citations: test_improver_design_findings.py.
     Rule.DESIGN_CITATION_RESOLVES,
+    # A change to the improver, against the run's invitation: test_improver_change.py.
+    Rule.IMPROVER_CHANGE_INVITED,
+    Rule.IMPROVER_CHANGE_MOTIVATED,
+    Rule.IMPROVER_CHANGE_APPLIES,
 }
 
 

@@ -139,3 +139,29 @@ def test_two_tournaments_started_in_one_second_get_their_own_ids() -> None:
     ids = {cli.new_tournament_id("20261004", now) for _ in range(20)}
 
     assert len(ids) == 20 and all(i.startswith("20261007T200000Z-20261004-") for i in ids)
+
+
+def test_the_champion_is_seeded_once_and_shown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    store = tmp_path / "io-improver"
+    monkeypatch.setattr(cli, "improver_root", lambda checkout, runner: store)
+    monkeypatch.chdir(Path(__file__).resolve().parents[3])
+
+    assert cli.main(["champion", "seed", "--by", "operator"]) == 0
+    seeded = capsys.readouterr().out
+    assert cli.main(["champion", "show"]) == 0
+    shown = capsys.readouterr().out
+
+    assert "seeded champion" in seeded and "claude:opus empowered, 2 heat(s), 60 min" in seeded
+    assert "(seeded " in shown and "by operator" in shown
+    with pytest.raises(Exception, match="seeded already"):
+        cli.main(["champion", "seed", "--by", "operator"])
+
+
+def test_a_challenge_that_cannot_be_tried_ends_the_command_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = tmp_path / "io-improver"
+    monkeypatch.setattr(cli, "improver_root", lambda checkout, runner: store)
+    monkeypatch.chdir(Path(__file__).resolve().parents[3])
+    assert cli.main(["champion", "seed", "--by", "operator"]) == 0
+
+    with pytest.raises(SystemExit, match="improver_tournament challenge: no improver run 'nope'"):
+        cli.main(["challenge", "--run", "nope", "--snapshot", "20261004"])

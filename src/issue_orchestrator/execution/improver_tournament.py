@@ -158,8 +158,20 @@ class ArmSpec:
     budget_minutes: int
     #: When one heat's agent is stopped.
     agent_timeout_minutes: int
+    #: None: each heat is one graded output (an arm's answers, heat by heat).
+    #: N: the arm runs N whole improver runs, each its heats merged, and
+    #: each run's merged findings is one graded output: how a challenger to
+    #: the improver is tried, since heats change what a run files (#8001).
+    whole_runs: int | None = None
+
+    @property
+    def agent_runs(self) -> int:
+        """How many agent runs the arm costs."""
+        return self.heats.count * (self.whole_runs or 1)
 
     def __post_init__(self) -> None:
+        if self.whole_runs is not None and self.whole_runs < 1:
+            raise ValueError(f"arm {self.arm.name}: at least one whole run, not {self.whole_runs}")
         if self.arm.mode == "empowered" and not 0 < self.budget_minutes < self.agent_timeout_minutes:
             raise ValueError(
                 f"arm {self.arm.name}: its {self.budget_minutes}-minute budget must be below its"
@@ -216,6 +228,15 @@ class TournamentHarness:
     def directory(self, tournament_id: str) -> Path:
         return self._root / require_slug(tournament_id, "a tournament id")
 
+    def result_of(self, tournament_id: str) -> TournamentResult | None:
+        """The tournament's result, if it was graded."""
+        path = self.directory(tournament_id) / "result.json"
+        return TournamentResult.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def arms_ran(self, tournament_id: str) -> bool:
+        """Whether the tournament's arms ran to the end (their outputs recorded)."""
+        return (self.directory(tournament_id) / _ARMS_RUN).is_file()
+
     def run_arms(self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec]) -> list[ArmOutput]:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none).
 
@@ -236,44 +257,63 @@ class TournamentHarness:
             raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
         heats_by_provider: dict[str, int] = {}
         for spec in specs:
-            arm, heats = spec.arm, spec.heats
-            heats_by_provider[arm.provider] = heats_by_provider.get(arm.provider, 0) + heats.count
-            store = FileImproverRunStore(self.directory(tournament_id) / "arms" / arm.name)
-            run = ImproverRun(
-                store=store,
-                stager=FrozenInputs(self._snapshots, snapshot_id),
-                agent=self._agent_for(
-                    ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model),
-                    spec.agent_timeout_minutes,
-                ),
-                investigation=self._investigation(spec, snapshot_id),
-                effects=ImproverEffects(store=store, host=_NoGitHub(), outputs_repo=NO_OUTPUTS_REPO, clock=self._clock),  # type: ignore[arg-type]
-                prompt=spec.prompt,
-                heats=heats,
-                clock=self._clock,
-            )
-            record = run.run(
-                ImproverRunRequest(
-                    engine=engine, outputs_repo=NO_OUTPUTS_REPO, exam_dir=None,
-                    window=timedelta(hours=24), log_tail_bytes=1,
-                ),
-                apply=False,
-            )
-            run_dir = Path(record.run_dir)
-            for heat in range(1, heats.count + 1):
-                answer = run_dir / heat_file(FINDINGS_FILE, heat)
-                heat_record = next((h for h in record.heats if h.heat == heat), None)
-                # Only an answer io accepted is graded: one it rejected would
-                # file nothing, so it is worth nothing (it scores 0).
-                accepted = heat_record is not None and heat_record.outcome is RunOutcome.ACCEPTED
-                text = answer.read_text(encoding="utf-8") if accepted else None
-                outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
+            provider = spec.arm.provider
+            heats_by_provider[provider] = heats_by_provider.get(provider, 0) + spec.agent_runs
+            outputs += self._run_arm(tournament_id, snapshot_id, engine, spec)
         # What these outputs were run on: grading them under another snapshot is refused.
         _write_atomic(self.directory(tournament_id) / _ARMS_RUN, json.dumps(
             {"snapshot_id": snapshot_id, "outputs": _digests(outputs), "heats_by_provider": heats_by_provider},
             indent=2,
         ) + "\n")
         return outputs
+
+    def _run_arm(self, tournament_id: str, snapshot_id: str, engine: EngineRef, spec: ArmSpec) -> list[ArmOutput]:
+        arm = spec.arm
+        request = ImproverRunRequest(
+            engine=engine, outputs_repo=NO_OUTPUTS_REPO, exam_dir=None, window=timedelta(hours=24), log_tail_bytes=1,
+        )
+        arm_dir = self.directory(tournament_id) / "arms" / arm.name
+        if spec.whole_runs is not None:
+            outputs = []
+            for n in range(1, spec.whole_runs + 1):
+                # Its own store: a run staged beside an earlier one would diff
+                # against that run's audit, and the samples would differ.
+                record = self._improver_run(FileImproverRunStore(arm_dir / f"run{n}"), snapshot_id, spec).run(
+                    request, apply=False
+                )
+                run_dir = Path(record.run_dir)
+                # A run io did not accept files nothing: it scores 0.
+                accepted = record.outcome is RunOutcome.ACCEPTED
+                text = (run_dir / FINDINGS_FILE).read_text(encoding="utf-8") if accepted else None
+                outputs.append(ArmOutput(arm.name, n, text, hide=(str(run_dir.resolve()),)))
+            return outputs
+        record = self._improver_run(FileImproverRunStore(arm_dir), snapshot_id, spec).run(request, apply=False)
+        run_dir = Path(record.run_dir)
+        outputs = []
+        for heat in range(1, spec.heats.count + 1):
+            heat_record = next((h for h in record.heats if h.heat == heat), None)
+            # Only an answer io accepted is graded: one it rejected would
+            # file nothing, so it is worth nothing (it scores 0).
+            accepted = heat_record is not None and heat_record.outcome is RunOutcome.ACCEPTED
+            text = (run_dir / heat_file(FINDINGS_FILE, heat)).read_text(encoding="utf-8") if accepted else None
+            outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
+        return outputs
+
+    def _improver_run(self, store: FileImproverRunStore, snapshot_id: str, spec: ArmSpec) -> ImproverRun:
+        arm = spec.arm
+        return ImproverRun(
+            store=store,
+            stager=FrozenInputs(self._snapshots, snapshot_id),
+            agent=self._agent_for(
+                ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model),
+                spec.agent_timeout_minutes,
+            ),
+            investigation=self._investigation(spec, snapshot_id),
+            effects=ImproverEffects(store=store, host=_NoGitHub(), outputs_repo=NO_OUTPUTS_REPO, clock=self._clock),  # type: ignore[arg-type]
+            prompt=spec.prompt,
+            heats=spec.heats,
+            clock=self._clock,
+        )
 
     def _investigation(self, spec: ArmSpec, snapshot_id: str) -> Any:
         if spec.arm.mode == "scripted":

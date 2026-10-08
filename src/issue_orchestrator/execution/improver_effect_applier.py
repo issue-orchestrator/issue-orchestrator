@@ -19,14 +19,20 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
-from ..contracts.improver_findings import DesignFinding, Finding
-from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord, RunOutcome
+from ..contracts.improver_findings import DesignFinding, Finding, ImproverChange
+from ..contracts.improver_run import (
+    EffectReceipt,
+    EffectStatus,
+    ImproverRunRecord,
+    RunOutcome,
+)
 from ..control.improver_effects import (
     IMPROVER_LABEL,
     CommentImproverEvidence,
     plan_effect,
     title_token,
 )
+from ..domain.improver_champion import CHANGE_ID
 from ..ports.engine_audit import OpenIssueLabels
 from ..ports.improver import ImproverRunStore
 from ..ports.repository_host import host_rate_limit_of
@@ -114,9 +120,10 @@ class ImproverEffects:
     ) -> tuple[ImproverRunRecord, bool]:
         accepted = self._store.accepted_findings(run)
         # Ids are unique across both lists (the validator's rule).
-        findings: dict[str, Finding | DesignFinding] = {
+        findings: dict[str, Finding | DesignFinding | ImproverChange] = {
             **{f.id: f for f in accepted.findings},
             **{d.id: d for d in accepted.design_findings},
+            **({CHANGE_ID: accepted.improver_change} if accepted.improver_change is not None else {}),
         }
         for index, receipt in enumerate(run.effects):
             if receipt.status is not EffectStatus.PENDING:
@@ -153,7 +160,7 @@ class ImproverEffects:
     def _apply(
         self,
         run: ImproverRunRecord,
-        finding: Finding | DesignFinding,
+        finding: Finding | DesignFinding | ImproverChange,
         receipt: EffectReceipt,
         open_issues: dict[int, OpenIssueLabels],
         persist: Callable[[EffectReceipt], None],
@@ -189,7 +196,7 @@ class ImproverEffects:
                 title=command.title, body=command.body, labels=list(command.labels)
             )
             if not created or not isinstance(created.get("number"), int):
-                raise RuntimeError(f"creating the improver issue for {finding.id} returned no issue number")
+                raise RuntimeError(f"creating the improver issue for {receipt.finding_id} returned no issue number")
             number = created["number"]
         open_issues[number] = OpenIssueLabels(number=number, title=command.title, labels=command.labels)
         return receipt.model_copy(

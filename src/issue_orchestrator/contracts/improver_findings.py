@@ -23,7 +23,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 #: Bump when a field is added, removed or changes meaning. The prompt's
 #: ``schema_version`` must match.
-IMPROVER_FINDINGS_SCHEMA_VERSION = 5
+IMPROVER_FINDINGS_SCHEMA_VERSION = 6
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
 FINDINGS_FILE = "improver-findings.json"
@@ -256,8 +256,62 @@ class BlockedItemAccount(_Closed):
     downstream: tuple[DownstreamStall, ...] = ()
 
 
+class PromptEdit(_Closed):
+    """Replace one exact passage of the improver's prompt."""
+
+    kind: Literal["prompt"]
+    #: Text that must occur exactly once in the champion's prompt.
+    find: Annotated[str, StringConstraints(min_length=12, max_length=4000)]
+    replace: Annotated[str, StringConstraints(max_length=4000)]
+
+
+class AgentEdit(_Closed):
+    """Run the improver on another provider or model."""
+
+    kind: Literal["agent"]
+    provider: Literal["claude", "codex"]
+    model: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")]
+
+
+class ModeEdit(_Closed):
+    kind: Literal["mode"]
+    mode: Literal["scripted", "empowered"]
+
+
+class HeatsEdit(_Closed):
+    kind: Literal["heats"]
+    heats: Annotated[int, Field(ge=1, le=5)]
+
+
+class BudgetEdit(_Closed):
+    """The empowered investigation's budget, in minutes."""
+
+    kind: Literal["budget_minutes"]
+    minutes: Annotated[int, Field(ge=10, le=240)]
+
+
+#: The only things a challenger may change: never the answer keys, the
+#: graders, the scoring or the harness.
+ImproverEdit = Annotated[PromptEdit | AgentEdit | ModeEdit | HeatsEdit | BudgetEdit, Field(discriminator="kind")]
+
+
+class ImproverChange(_Closed):
+    """One change to the improver itself, proposed by an invited run (#8001).
+
+    It is a challenger, not a decision: it is tested against the champion on
+    frozen snapshots and promoted only on a win and a maintainer's approval.
+    """
+
+    edit: ImproverEdit
+    why: Stated
+    #: What should score better if the change works.
+    expected_effect: Stated
+    #: The run's own findings (stall or design ids) that motivate it.
+    motivated_by: Annotated[tuple[Slug, ...], Field(min_length=1)]
+
+
 class ImproverFindings(_Closed):
-    schema_version: Literal[5]
+    schema_version: Literal[6]
     engine_commit: NonEmpty
     engine_started_at: Timestamp
     findings: tuple[Finding, ...]
@@ -266,24 +320,37 @@ class ImproverFindings(_Closed):
     #: Every staged blocked item, each exactly once.
     blocked_items: tuple[BlockedItemAccount, ...]
     trend: Trend
+    #: One change to the improver, only when the run was invited to propose one.
+    improver_change: ImproverChange | None = None
 
 
 def stored_findings(raw: str | bytes) -> ImproverFindings:
     """An ACCEPTED run's stored findings file, in the current form.
 
-    A run accepted under schema v4 (before design findings, #8001) may still
-    owe effects; it is read as v5 with no design findings. A NEW submission
+    A run accepted under schema v4 (before design findings, #8001) or v5
+    (before improver changes) may still owe effects; it is read as v6 with
+    no design findings or change. A NEW submission
     is never read through here: the validator accepts only the current
     version.
     """
     document = json.loads(raw)
     if isinstance(document, dict) and document.get("schema_version") == 4:
         document = {**document, "schema_version": 5, "design_findings": []}
+    if isinstance(document, dict) and document.get("schema_version") == 5:
+        # v5 (before invited improver changes) carries none.
+        document = {**document, "schema_version": 6}
     return ImproverFindings.model_validate_json(json.dumps(document))
 
 
 __all__ = [
     "FINDINGS_FILE",
+    "AgentEdit",
+    "BudgetEdit",
+    "HeatsEdit",
+    "ImproverChange",
+    "ImproverEdit",
+    "ModeEdit",
+    "PromptEdit",
     "IMPROVER_FINDINGS_SCHEMA_VERSION",
     "AnomalyKeyRef",
     "BlockedItemAccount",

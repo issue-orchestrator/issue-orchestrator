@@ -41,47 +41,58 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
-from ...execution.engine_inventory import control_center_engine_inventory, engine_at
-from ...execution.engine_source_archive import GitEngineSourceArchive
-from ...ports.engine_activity import EngineInventory
 from ...contracts.engine_audit import SourceStatus
 from ...contracts.improver_findings import FINDINGS_FILE
 from ...contracts.improver_inputs import IMPROVER_DATA_DIRNAME
+from ...contracts.improver_run import (
+    DEFAULT_IMPROVER_AGENT,
+    ImproverAgentChoice,
+    ImproverProvider,
+)
+from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
+from ...contracts.improver_variant import ImproverVariant
+from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
+from ...domain.improver_champion import INVITATION_RATE
 from ...domain.improver_findings_validation import (
     ImproverFindingsRejected,
     Rule,
     validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
+from ...execution.engine_inventory import control_center_engine_inventory, engine_at
+from ...execution.engine_source_archive import GitEngineSourceArchive
+from ...execution.improver_agents import improver_agent
+from ...execution.improver_champion_store import FileChampionStore
+from ...execution.improver_effect_applier import ImproverEffects
+from ...execution.improver_investigation import (
+    EMPOWERED_ADDENDUM,
+    EmpoweredInvestigation,
+    ScriptedInvestigation,
+)
+from ...execution.improver_run_store import FileImproverRunStore, improver_root
+from ...execution.improver_toolbox_staging import ImproverToolboxStager
+from ...execution.process_group_command_runner import ProcessGroupCommandRunner
 from ...execution.providers import (
     create_audited_repo_reads,
     create_operator_activity_source,
     create_repository_host,
 )
 from ...observation.engine_audit import Unavailable
-from ...execution.improver_effect_applier import ImproverEffects
-from ...contracts.improver_run import DEFAULT_IMPROVER_AGENT, ImproverAgentChoice, ImproverProvider
-from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
-from ...execution.improver_agents import improver_agent
-from ...execution.improver_investigation import EMPOWERED_ADDENDUM, EmpoweredInvestigation, ScriptedInvestigation
-from ...execution.improver_toolbox_staging import ImproverToolboxStager
-from ...ports.improver_investigation import ImproverInvestigation
-from ...execution.improver_run_store import FileImproverRunStore
+from ...ports.engine_activity import EngineInventory
 from ...ports.improver import ImproverStoreBusy
-from ...execution.process_group_command_runner import ProcessGroupCommandRunner
-from ..improver_run import HeatPlan, ImproverRun, render_run
-from ..improver_sweep import ImproverSweep, ImproverSweepRequest
+from ...ports.improver_investigation import ImproverInvestigation
+from ..improver_run import ChangePolicy, HeatPlan, ImproverRun, render_run
 from ..improver_staging import (
     ImproverInputStager,
     ImproverInputsUnavailable,
     ImproverStagingRequest,
     load_staged_evidence,
 )
-
+from ..improver_sweep import ImproverSweep, ImproverSweepRequest
 
 EXIT_OK = 0
 EXIT_REJECTED = 1
@@ -97,6 +108,9 @@ DEFAULT_RUN_BUDGET_MINUTES = 105
 
 #: The prompt, relative to the io checkout the command runs in.
 DEFAULT_PROMPT = Path("examples/prompts/tech-lead-improver.md")
+#: The invitation a champion run sometimes gets: propose one change (#8001).
+CHANGE_ADDENDUM = Path("examples/prompts/improver-change-addendum.md")
+DEFAULT_BUDGET_MINUTES = 60
 
 
 def _engine_arguments(parser: argparse.ArgumentParser, *, one_engine: bool) -> None:
@@ -136,32 +150,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--recent-hours", type=float, default=24.0,
         help="Sweep: an engine never audited before that stopped longer ago than this is not audited",
     )
+    # Unset, these are the improver champion's (#8001), or with no champion
+    # yet the defaults below; a run that sets none of them runs the champion.
     run.add_argument(
         "--provider", type=ImproverProvider, choices=list(ImproverProvider),
-        default=DEFAULT_IMPROVER_AGENT.provider,
-        help="The agent CLI the improver runs on (default: %(default)s, the latest tournament's winner)",
+        help=f"The agent CLI the improver runs on (default: the champion's, else {DEFAULT_IMPROVER_AGENT.provider})",
     )
-    run.add_argument("--model", help="The model the improver runs on (default: the provider's default)")
+    run.add_argument("--model", help="The model the improver runs on (default: the champion's, else the provider's)")
     run.add_argument("--agent-timeout-minutes", type=int, default=90)
-    run.add_argument("--prompt", type=Path, default=DEFAULT_PROMPT)
+    run.add_argument("--prompt", type=Path, help=f"default: the champion's, else {DEFAULT_PROMPT}")
     run.add_argument(
-        "--mode", type=ImproverMode, choices=list(ImproverMode), default=DEFAULT_IMPROVER_MODE,
+        "--mode", type=ImproverMode, choices=list(ImproverMode),
         help="empowered: the staged bundle plus the read-only toolbox; scripted: the bundle alone"
-        " (default: %(default)s)",
+        f" (default: the champion's, else {DEFAULT_IMPROVER_MODE})",
     )
     run.add_argument(
-        "--budget-minutes", type=int, default=60,
-        help="Empowered: the investigation budget the agent is given (below the agent timeout)",
+        "--budget-minutes", type=int,
+        help="Empowered: the investigation budget the agent is given (below the agent timeout;"
+        f" default: the champion's, else {DEFAULT_BUDGET_MINUTES})",
     )
+    run.add_argument(
+        "--change-invitation-rate", type=float, default=INVITATION_RATE,
+        help="The share of champion runs invited to propose one change to the improver (default: %(default)s;"
+        " 0: never)",
+    )
+    run.add_argument("--change-addendum", type=Path, default=CHANGE_ADDENDUM)
     run.add_argument("--empowered-addendum", type=Path, default=EMPOWERED_ADDENDUM)
     run.add_argument(
-        "--heats", type=int, default=DEFAULT_HEATS,
-        help="Independent agent runs per engine, merged (default: %(default)s). Each is a whole"
-        " agent run on the provider: a Claude heat counts against the subscription",
+        "--heats", type=int,
+        help=f"Independent agent runs per engine, merged (default: the champion's, else {DEFAULT_HEATS})."
+        " Each is a whole agent run on the provider: a Claude heat counts against the subscription",
     )
     run.add_argument(
-        "--parallel-heats", type=int, default=DEFAULT_PARALLEL_HEATS,
-        help="Heats run at once (default: %(default)s)",
+        "--parallel-heats", type=int,
+        help=f"Heats run at once (default: {DEFAULT_PARALLEL_HEATS}, or all of fewer heats)",
     )
     run.add_argument(
         "--run-budget-minutes", type=int, default=DEFAULT_RUN_BUDGET_MINUTES,
@@ -261,8 +283,38 @@ def _investigation(args: argparse.Namespace) -> ImproverInvestigation:
 
 
 def agent_choice(args: argparse.Namespace) -> ImproverAgentChoice:
-    """The provider and model ``run`` launches the improver on."""
+    """The provider and model ``run`` launches the improver on (settled args)."""
     return ImproverAgentChoice.for_provider(args.provider, args.model)
+
+
+@dataclass(frozen=True)
+class Champion:
+    variant: ImproverVariant
+    prompt: str
+
+
+def settle(args: argparse.Namespace, champion: Champion | None) -> argparse.Namespace:
+    """``run``'s arguments with every unset improver setting filled: the
+    champion's when there is one, else the defaults. ``runs_champion``: the
+    run is exactly the champion (only such a run may be invited to change it)."""
+    chosen = {name: getattr(args, name) for name in ("provider", "model", "prompt", "mode", "budget_minutes", "heats")}
+    if champion is not None:
+        v = champion.variant
+        defaults = {"provider": v.agent.provider, "model": v.agent.model, "mode": v.mode,
+                    "budget_minutes": v.budget_minutes, "heats": v.heats}
+        prompt = chosen["prompt"].read_text(encoding="utf-8") if chosen["prompt"] is not None else champion.prompt
+    else:
+        defaults = {"provider": DEFAULT_IMPROVER_AGENT.provider, "model": None, "mode": DEFAULT_IMPROVER_MODE,
+                    "budget_minutes": DEFAULT_BUDGET_MINUTES, "heats": DEFAULT_HEATS}
+        prompt = (chosen["prompt"] or DEFAULT_PROMPT).read_text(encoding="utf-8")
+    settled = {name: defaults[name] if value is None else value for name, value in chosen.items() if name != "prompt"}
+    if chosen["provider"] is not None and chosen["model"] is None:
+        settled["model"] = None  # another provider: its own default model
+    runs_champion = champion is not None and all(value is None for value in chosen.values())
+    parallel = args.parallel_heats if args.parallel_heats is not None else min(DEFAULT_PARALLEL_HEATS, settled["heats"])
+    return argparse.Namespace(**{
+        **vars(args), **settled, "parallel_heats": parallel, "prompt_text": prompt, "runs_champion": runs_champion,
+    })
 
 
 def _refuse_contradictions(args: argparse.Namespace) -> None:
@@ -282,10 +334,23 @@ def _refuse_contradictions(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    root = improver_root(Path.cwd(), LocalCommandRunner())
+    champions = FileChampionStore(root)
+    champion = None
+    if champions.seeded():
+        variant = champions.state().champion
+        champion = Champion(variant, champions.prompt(variant.prompt_sha256))
+    args = settle(args, champion)
     _refuse_contradictions(args)
     store = _store()
-    prompt = args.prompt.read_text(encoding="utf-8")
+    prompt = args.prompt_text
     investigation = _investigation(args)
+    policy = (
+        ChangePolicy(champion.variant, champion.prompt, args.change_addendum.read_text(encoding="utf-8"),
+                     rate=args.change_invitation_rate)
+        if champion is not None and args.runs_champion and args.change_invitation_rate > 0
+        else None
+    )
 
     def improver_for(engine: EngineRef) -> ImproverRun:
         return ImproverRun(
@@ -301,6 +366,7 @@ def run(args: argparse.Namespace) -> int:
             prompt=prompt,
             heats=HeatPlan(count=args.heats, parallel=args.parallel_heats),
             clock=_now,
+            change_policy=policy,
         )
 
     request = ImproverSweepRequest(

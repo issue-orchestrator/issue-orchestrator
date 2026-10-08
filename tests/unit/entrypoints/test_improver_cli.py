@@ -68,7 +68,7 @@ def test_staging_an_engine_without_a_start_record_exits_unavailable(
     ],
 )
 def test_run_launches_the_chosen_provider_and_model(argv: list[str], expected: str) -> None:
-    args = improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", *argv])
+    args = improver.settle(improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", *argv]), None)
 
     assert improver.agent_choice(args).describe() == expected
 
@@ -79,7 +79,7 @@ def test_an_unknown_provider_is_refused() -> None:
 
 
 def test_a_run_is_empowered_and_dry_by_default() -> None:
-    args = improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"])
+    args = improver.settle(improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"]), None)
 
     assert args.mode is improver.ImproverMode.EMPOWERED
     assert args.apply is False
@@ -107,7 +107,7 @@ def test_contradictory_run_options_are_refused(argv: list[str], message: str) ->
 
 def test_a_run_sends_two_heats_at_once_by_default_and_refuses_none() -> None:
     """#8001: modest by default; each heat costs a whole agent run."""
-    args = improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"])
+    args = improver.settle(improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"]), None)
 
     assert (args.heats, args.parallel_heats, args.run_budget_minutes) == (2, 2, 105)
     for argv in (["--heats", "0"], ["--parallel-heats", "0"], ["--heats", "6"], ["--heats", "2", "--parallel-heats", "3"]):
@@ -122,3 +122,42 @@ def test_queued_heats_must_fit_the_run_budget() -> None:
     with pytest.raises(SystemExit, match="exceeds the 105-minute run budget"):
         improver.main(["run", "--outputs-repo", "o/r", "--state-dir", "/x/.issue-orchestrator/state",
                        "--audited-repo", "o/r", "--heats", "4", "--parallel-heats", "2"])
+
+
+
+def _champion(tmp_path: Path) -> improver.Champion:
+    from issue_orchestrator.contracts.improver_variant import ImproverVariant
+    from issue_orchestrator.domain.improver_champion import prompt_digest
+
+    prompt = "THE CHAMPION'S PROMPT"
+    return improver.Champion(ImproverVariant(
+        agent=improver.ImproverAgentChoice(provider=improver.ImproverProvider.CODEX, model="gpt-5.6-sol"),
+        mode=improver.ImproverMode.SCRIPTED, heats=1, budget_minutes=45, prompt_sha256=prompt_digest(prompt),
+    ), prompt)
+
+
+def test_an_unset_run_runs_the_champion(tmp_path: Path) -> None:
+    champion = _champion(tmp_path)
+
+    args = improver.settle(improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"]), champion)
+
+    assert improver.agent_choice(args).describe() == "codex:gpt-5.6-sol"
+    assert (args.mode, args.heats, args.parallel_heats, args.budget_minutes) == (
+        improver.ImproverMode.SCRIPTED, 1, 1, 45,
+    )
+    assert args.prompt_text == "THE CHAMPION'S PROMPT" and args.runs_champion
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--provider", "claude"], "claude:opus"),  # another provider: its own default model
+        (["--model", "gpt-5.5"], "codex:gpt-5.5"),
+        (["--heats", "2"], "codex:gpt-5.6-sol"),
+    ],
+)
+def test_a_run_that_sets_any_improver_setting_is_not_the_champion(argv: list[str], expected: str, tmp_path: Path) -> None:
+    args = improver.settle(improver.build_parser().parse_args(["run", "--outputs-repo", "o/r", *argv]), _champion(tmp_path))
+
+    assert improver.agent_choice(args).describe() == expected
+    assert not args.runs_champion

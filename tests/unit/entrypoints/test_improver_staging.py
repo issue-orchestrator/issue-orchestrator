@@ -316,7 +316,7 @@ def test_what_was_staged_reads_back_as_the_validators_evidence(state: Path, tmp_
         engine_at(state, "porchpin/porchpin").engine_id, "porchpin/porchpin"
     )
     empty = {
-        "schema_version": 5, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
+        "schema_version": 6, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
         "findings": [], "blocked_items": [],
         "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},
     }
