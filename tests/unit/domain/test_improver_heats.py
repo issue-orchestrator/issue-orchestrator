@@ -119,6 +119,8 @@ def test_one_design_finding_backs_another_only_if_it_claims_all_the_same() -> No
     variants = [
         {**_design("approval-by-label"), "impact": "Merges run unapproved."},
         {**_design("approval-by-label"), "owner": "control/approvals.py:approve"},
+        # r9 F1: case can name another symbol.
+        {**_design("approval-by-label"), "proposed_change": "A positive APPROVAL act."},
         _design("approval-by-label", line=7),
     ]
 
@@ -129,6 +131,7 @@ def test_one_design_finding_backs_another_only_if_it_claims_all_the_same() -> No
         [conflict] = merged.conflicts
         assert conflict.heat == 2
         assert variant["impact"] in conflict.claim and str(variant.get("owner")) in conflict.claim
+        assert variant["proposed_change"] in conflict.claim
         assert f'"line":{variant["evidence"][0]["line"]}' in conflict.claim
 
 

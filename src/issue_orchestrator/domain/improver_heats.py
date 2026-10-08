@@ -284,9 +284,10 @@ def _case_id(finding: Finding) -> str | None:
 def _claim(design: DesignFinding) -> tuple[object, ...]:
     """All a design finding claims (r2 F3): two heats back one claim only
     if they say the same thing, cite the same evidence and name the same
-    owner; anything else is a conflict, shown, never dropped."""
+    owner; anything else is a conflict, shown, never dropped. Only
+    whitespace may differ (r9 F1: case can name another symbol)."""
     return (
-        *(normalized(t).casefold() for t in (design.summary, design.impact, design.proposed_change)),
+        *(normalized(t) for t in (design.summary, design.impact, design.proposed_change)),
         design.owner,
         frozenset(c.model_dump_json() for c in design.evidence),
     )
