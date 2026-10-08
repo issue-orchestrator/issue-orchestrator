@@ -75,6 +75,7 @@ class ManualCompletionPreparation:
             return ProcessingResult(False, "PR preparation refused manual publication", errors=errors,
                                     processing_policy=prepared.processing_policy,
                                     intake_receipt=receipt)
+        actions.extend(filter(None, [publication.delivery.explanation(locators.issue_number)]))
         # Review/pre-push preparation may have changed the source. Its new HEAD
         # is never substituted for the receipt's immutable validated target.
         if prepared.branch != branch or not self._source_matches(worktree, branch, target):

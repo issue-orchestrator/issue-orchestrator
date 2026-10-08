@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from issue_orchestrator.control.queue_cache import QueueCache, QueueMutationStatus
+from issue_orchestrator.domain.issue_delivery import DeliveryBasis, IssueDelivery
 from issue_orchestrator.domain.models import (
     AgentConfig,
     CompletionOutcome,
@@ -211,6 +212,55 @@ def test_coding_done_refuses_partial_on_an_escalation() -> None:
         agent_done.validate_fields("blocked", args)
 
 
+# --- the finishing declaration (#8689) --------------------------------------
+
+
+def test_the_record_round_trips_a_finishing_declaration_and_defaults_to_unstated() -> None:
+    finishing = CompletionRecord.from_dict(_record_data(finishes_issue=True))
+    assert finishing.finishes_issue is True
+    assert CompletionRecord.from_dict(finishing.to_dict()).finishes_issue is True
+    assert CompletionRecord.from_dict(_record_data()).finishes_issue is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"finishes_issue": "true"}, "finishes_issue must be a boolean"),
+        ({"finishes_issue": True, "partial_pr": True}, "contradicts partial_pr"),
+        ({"finishes_issue": True, "outcome": "blocked", "requested_actions": []},
+         "only valid for a completed outcome"),
+    ],
+)
+def test_the_record_refuses_an_invalid_finishing_declaration(overrides, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        CompletionRecord.from_dict(_record_data(**overrides))
+
+
+def test_coding_done_finishes_issue_reaches_the_record_the_orchestrator_reads() -> None:
+    args = _completed_args("--finishes-issue")
+    agent_done.validate_fields("completed", args)
+    with patch.object(agent_done, "get_session_id", return_value="s"):
+        written = agent_done.build_completion_record("completed", args)
+
+    read = CompletionRecord.from_dict(json.loads(json.dumps(written.to_dict())))
+
+    assert read.finishes_issue is True
+    assert read.partial_pr is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["completed", "--implementation", "i", "--problems", "None", "--partial", "--finishes-issue"],
+        ["blocked", "--reason", "r", "--attempted", "a", "--finishes-issue"],
+    ],
+)
+def test_coding_done_refuses_a_finishing_declaration_it_cannot_carry(argv) -> None:
+    args = coding_done.build_parser().parse_args(argv)
+    with pytest.raises(SystemExit):
+        agent_done.validate_fields(argv[0], args)
+
+
 # --- the session-history gate -----------------------------------------------
 
 
@@ -300,7 +350,7 @@ def test_a_rate_limited_open_pr_read_is_a_retryable_refusal_not_the_agents_fault
 
     refusal = guard.refusal(
         Path("/tmp/wt"), issue_number=123, branch="123-feature",
-        claimed=True, claim_body="Refs #123\n\nOne slice",
+        delivery=IssueDelivery(DeliveryBasis.CLAIMED_PARTIAL), claim_body="Refs #123\n\nOne slice",
     )
 
     assert refusal is not None
@@ -319,7 +369,7 @@ def test_a_closing_claim_stays_a_nonretryable_refusal() -> None:
 
     refusal = guard.refusal(
         Path("/tmp/wt"), issue_number=123, branch="123-feature",
-        claimed=True, claim_body="Closes #123\n\nOne slice",
+        delivery=IssueDelivery(DeliveryBasis.CLAIMED_PARTIAL), claim_body="Closes #123\n\nOne slice",
     )
 
     assert refusal is not None and refusal.retryable is False
@@ -342,7 +392,7 @@ def test_unreadable_branch_commits_are_a_retryable_refusal() -> None:
 
     refusal = guard.refusal(
         Path("/tmp/wt"), issue_number=123, branch="123-feature",
-        claimed=True, claim_body="Refs #123\n\nOne slice",
+        delivery=IssueDelivery(DeliveryBasis.CLAIMED_PARTIAL), claim_body="Refs #123\n\nOne slice",
     )
 
     assert refusal is not None and refusal.retryable is True

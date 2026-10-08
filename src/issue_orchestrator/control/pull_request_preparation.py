@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..domain.host_rate_limit import HostRateLimit, require_limit_only_on_failure
+from ..domain.issue_delivery import IssueDelivery
 from ..domain.models import CompletionRecord
 from ..domain.publication_remote import attributed_publication_body
 from ..domain.runtime_identity import RuntimeIdentity
@@ -22,7 +23,7 @@ from .completion_preparation import PreparedPullRequest
 from .completion_result_artifacts import build_pr_body
 from .completion_review_exchange import CompletionReviewExchange
 from .completion_types import ERROR_PREFIX_CREATE_PR, REVIEW_EXCHANGE_ERROR_PREFIX
-from .partial_delivery_guard import PartialDeliveryGuard
+from .partial_delivery_guard import PartialDeliveryGuard, PartialDeliveryRefusal
 
 if TYPE_CHECKING:
     from .stack_base import StackBaseDecision
@@ -102,18 +103,19 @@ class PullRequestPreparation:
         # the base an existing PR must already target before it can be reused.
         expected_base = base_branch_resolver()
 
+        delivery = self._checked_delivery(
+            record=record, worktree=worktree, issue_number=issue_number, branch=branch,
+        )
+        if isinstance(delivery, PullRequestPreparationRefusal):
+            return delivery
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = build_pr_body(
             record,
             issue_number,
+            delivery=delivery,
             runtime_identity=self._runtime_identity,
         )
         pr_body = attributed_publication_body(pr_body, issue_number, branch)
-        partial = self.partial_delivery_refusal(
-            record=record, worktree=worktree, issue_number=issue_number, branch=branch,
-        )
-        if partial is not None:
-            return partial
         errors: list[str] = []
         exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
             exchange_mode=exchange_mode,
@@ -128,24 +130,51 @@ class PullRequestPreparation:
             )
 
         return PreparedPullRequest(
-            pr_title, pr_body, expected_base, stack_decision, exchange_mode, record.partial_pr
+            pr_title, pr_body, expected_base, stack_decision, exchange_mode, delivery
         )
 
     def partial_delivery_refusal(
         self, *, record: CompletionRecord, worktree: Path, issue_number: int, branch: str,
     ) -> PullRequestPreparationRefusal | None:
-        """Run the partial-delivery guard before a branch write; report a refusal.
-
-        Not retryable when the agent's words, or the existing PR's reference
-        line, have to change first (#7288). Retryable when the guard only failed
-        to read GitHub (a rate limit, #7297): the delivery itself is not at fault.
-        """
-        refusal = self._partial_delivery.refusal(
-            worktree, issue_number=issue_number, branch=branch,
-            claimed=record.partial_pr, claim_body=build_pr_body(record, issue_number),
+        """Run the partial-delivery guard before a branch write; report a refusal."""
+        checked = self._checked_delivery(
+            record=record, worktree=worktree, issue_number=issue_number, branch=branch,
         )
-        if refusal is None:
-            return None
+        return checked if isinstance(checked, PullRequestPreparationRefusal) else None
+
+    def _checked_delivery(
+        self, *, record: CompletionRecord, worktree: Path, issue_number: int, branch: str,
+    ) -> IssueDelivery | PullRequestPreparationRefusal:
+        """Resolve the delivery this publication makes, then guard the branch write.
+
+        Every path that writes a branch or prepares a PR comes through here, so
+        the live push, manual publication and retained recovery agree on
+        ``Refs`` or ``Closes`` (#8689). Not retryable when the agent's words, or
+        the existing PR's reference line, have to change first (#7288).
+        Retryable when the guard only failed to read GitHub (a rate limit,
+        #7297): the delivery itself is not at fault.
+        """
+        delivery = self._partial_delivery.delivery(
+            issue_number, partial_pr=record.partial_pr, finishes_issue=record.finishes_issue,
+        )
+        if isinstance(delivery, PartialDeliveryRefusal):
+            return self._refused(delivery, issue_number=issue_number, branch=branch)
+        refusal = self._partial_delivery.refusal(
+            worktree, issue_number=issue_number, branch=branch, delivery=delivery,
+            claim_body=build_pr_body(record, issue_number, delivery=delivery),
+        )
+        if refusal is not None:
+            return self._refused(refusal, issue_number=issue_number, branch=branch)
+        if delivery.inferred:
+            logger.warning(
+                "#%d publishes as a partial delivery although the completion did not "
+                "claim one: merged PR #%s already refs it", issue_number, delivery.evidence_pr,
+            )
+        return delivery
+
+    def _refused(
+        self, refusal: PartialDeliveryRefusal, *, issue_number: int, branch: str,
+    ) -> PullRequestPreparationRefusal:
         logger.error("Partial publication refused for #%d: %s", issue_number, refusal.reason)
         self._emit_publish_failed(
             issue_number=issue_number, stage=ERROR_PREFIX_CREATE_PR,

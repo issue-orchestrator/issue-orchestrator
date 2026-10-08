@@ -2183,6 +2183,7 @@ class CompletionProcessor:
         expected_base, stack_decision = publication.base_branch, publication.stack_decision
         exchange_mode = publication.exchange_mode
         pr_title, pr_body = publication.title, publication.body
+        actions_taken.extend(filter(None, [publication.delivery.explanation(issue_number)]))
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
 
         # Check for existing PR to reuse after review exchange succeeds.

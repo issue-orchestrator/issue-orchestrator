@@ -116,6 +116,8 @@ class CompletionRecord:
     validation_record_path: str | None = None
     follow_up_issues: list[ProposedFollowUpIssue] | None = None
     partial_pr: bool = False
+    #: The PR finishes an issue earlier PRs delivered in part (#8689).
+    finishes_issue: bool = False
     #: An approval's attestation that the diff upholds these standing rulings (#8141).
     upheld_rulings: list[str] | None = None
 
@@ -148,5 +150,6 @@ class CompletionRecord:
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
             "partial_pr": self.partial_pr,
+            "finishes_issue": self.finishes_issue,
             "upheld_rulings": self.upheld_rulings,
         }

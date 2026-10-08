@@ -66,6 +66,9 @@ class StubPrAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list:
         return []
 
+    def merged_prs_referencing_issues(self, issue_numbers) -> frozenset[int]:
+        return frozenset()
+
 
 class StubGitAdapter:
     def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True,

@@ -263,6 +263,9 @@ class _RecordingPRAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[object]:
         return []
 
+    def merged_prs_referencing_issues(self, issue_numbers) -> frozenset[int]:
+        return frozenset()
+
     def create_pr(
         self,
         title: str,

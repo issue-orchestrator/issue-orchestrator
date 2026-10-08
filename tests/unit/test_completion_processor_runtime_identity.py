@@ -64,6 +64,7 @@ def _make_pr_adapter() -> Mock:
     adapter = Mock(spec=PRAdapter)
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
+    adapter.merged_prs_referencing_issues = Mock(return_value=frozenset())
     adapter.create_pr = Mock(
         return_value=PRInfo(
             number=42,

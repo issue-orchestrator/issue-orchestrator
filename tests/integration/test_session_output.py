@@ -53,6 +53,9 @@ class DummyPRAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         return []
 
+    def merged_prs_referencing_issues(self, issue_numbers) -> frozenset[int]:
+        return frozenset()
+
 
 class DummyGitAdapter:
     def push(
