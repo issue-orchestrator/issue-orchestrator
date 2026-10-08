@@ -3162,6 +3162,68 @@ def test_merged_prs_referencing_issues_refuses_a_next_page_without_a_cursor() ->
         client.merged_prs_referencing_issues([5])
 
 
+def _history_ref(number: int, *, merged_at: str | None, body: str | None, merged: bool = True,
+                 cross_repo: bool = False) -> dict:
+    return {"isCrossRepository": cross_repo, "source": {
+        "__typename": "PullRequest", "number": number, "merged": merged,
+        "mergedAt": merged_at, "body": body}}
+
+
+def test_merged_pr_history_reads_bodies_and_merge_times_in_the_timeline_walk() -> None:
+    """#8689 codex r3 F2: the delivery rule's whole history is the timeline
+    walk itself; no per-PR GET follows, however many PRs reference the issue."""
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/graphql"
+        body = _graphql_body(request)
+        requests.append(body)
+        assert "mergedAt body" in body["query"]
+        if body["variables"].get("after") is None:
+            page = _references(
+                _history_ref(511, merged_at="2026-10-05T04:13:20Z", body="Refs #327"),
+                _history_ref(600, merged_at=None, body="open", merged=False),
+                _history_ref(700, merged_at="2026-10-06T00:00:00Z", body="x", cross_repo=True),
+                _issue_ref(), more=True, cursor="c1")
+        else:
+            page = _references(_history_ref(515, merged_at="2026-10-07T23:13:06Z", body="Refs #327"))
+        return httpx.Response(200, json={"data": {"repository": {"i327": page}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    history = client.merged_pr_history(327)
+
+    assert [(pr.number, pr.body, pr.merged_at.isoformat()) for pr in history] == [
+        (511, "Refs #327", "2026-10-05T04:13:20+00:00"),
+        (515, "Refs #327", "2026-10-07T23:13:06+00:00"),
+    ]
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param(_history_ref(9, merged_at=None, body="Refs #5"), id="no-merge-time"),
+        pytest.param(_history_ref(9, merged_at="2026-10-05T04:13:20Z", body=None), id="no-body"),
+    ],
+)
+def test_merged_pr_history_refuses_a_merged_pr_it_cannot_order(node) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"i5": _references(node)}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="without its body or merge time"):
+        client.merged_pr_history(5)
+
+
+def test_merged_pr_history_of_a_missing_issue_is_empty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"i5": None}}})
+
+    assert _client_with_transport(httpx.MockTransport(handler)).merged_pr_history(5) == ()
+
+
 def test_list_open_prs_complete_refuses_a_page_without_page_info() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {"repository": {"pullRequests": {

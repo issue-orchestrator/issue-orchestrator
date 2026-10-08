@@ -13,6 +13,7 @@ from datetime import datetime
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from ...domain.issue_delivery import MergedPullRequest
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
     CheckRunAttempt,
@@ -1297,6 +1298,15 @@ class GitHubAdapter:
     def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
         """Merged PRs that reference one of ``issue_numbers`` (closing or partial)."""
         return self._client.merged_prs_referencing_issues(issue_numbers)
+
+    def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]:
+        """Merged PRs that reference ``issue_number``, with body and merge time (#8689)."""
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_READ,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            return self._client.merged_pr_history(issue_number)
 
     def create_pr(
         self,

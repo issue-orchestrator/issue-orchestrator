@@ -18,6 +18,7 @@ import httpx
 from ...events import EventName
 from ...infra import gh_audit
 from ... import __version__
+from ...domain.issue_delivery import MergedPullRequest
 from ...ports.comment_receipt import IssueCommentReceipt
 from .app_bot_account import GitHubAppBotAccount
 from .auth import (
@@ -2546,8 +2547,10 @@ class GitHubHttpClient:
         "timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100{after}) "
         "{{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on CrossReferencedEvent "
         "{{ isCrossRepository source {{ __typename ... on PullRequest "
-        "{{ number merged }} }} }} }} }}"
+        "{{ {pr_fields} }} }} }} }} }}"
     )
+    _REFERENCE_PR_NUMBERS = "number merged"
+    _REFERENCE_PR_HISTORY = "number merged mergedAt body"
 
     def merged_prs_referencing_issues(
         self,
@@ -2576,7 +2579,7 @@ class GitHubHttpClient:
             batch = numbers[offset:offset + batch_size]
             fields = "\n".join(
                 f"i{n}: issue(number: {int(n)}) {{ "
-                + self._REFERENCE_TIMELINE.format(after="")
+                + self._REFERENCE_TIMELINE.format(after="", pr_fields=self._REFERENCE_PR_NUMBERS)
                 + " }"
                 for n in batch
             )
@@ -2585,19 +2588,54 @@ class GitHubHttpClient:
                 timeline = self._reference_timeline_of(repository, n)
                 if timeline is None:  # explicitly null: no such issue, so no PRs
                     continue
-                merged.update(self._merged_reference_prs(owner, repo, n, timeline, page_cap))
+                for source in self._merged_reference_prs(
+                    owner, repo, n, timeline, page_cap, self._REFERENCE_PR_NUMBERS
+                ):
+                    merged.add(source["number"])
         return frozenset(merged)
 
+    def merged_pr_history(self, issue_number: int, *, page_cap: int = 10) -> tuple[MergedPullRequest, ...]:
+        """Every merged same-repository PR that references ``issue_number``,
+        with its body and merge time (#8689).
+
+        The same timeline walk as :meth:`merged_prs_referencing_issues`, with
+        the same completeness rules, but each node carries what the delivery
+        rule reads, so no per-PR fetch follows. A missing issue has no PRs.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        n = int(issue_number)
+        fields = f"i{n}: issue(number: {n}) {{ " + self._REFERENCE_TIMELINE.format(
+            after="", pr_fields=self._REFERENCE_PR_HISTORY
+        ) + " }"
+        timeline = self._reference_timeline_of(
+            self._reference_query(owner, repo, fields, variables={}), n
+        )
+        if timeline is None:
+            return ()
+        history: list[MergedPullRequest] = []
+        for source in self._merged_reference_prs(
+            owner, repo, n, timeline, page_cap, self._REFERENCE_PR_HISTORY
+        ):
+            merged_at, body = source.get("mergedAt"), source.get("body")
+            if not isinstance(merged_at, str) or not merged_at or not isinstance(body, str):
+                raise self._incomplete_reference_prs(f"returned a merged PR without its body or merge time for #{n}")
+            history.append(MergedPullRequest(
+                source["number"], body, datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+            ))
+        return tuple(history)
+
     def _merged_reference_prs(
-        self, owner: str, repo: str, n: int, timeline: dict[str, Any], page_cap: int
-    ) -> set[int]:
-        """Walk one issue's reference timeline to its end, starting from page one."""
-        merged: set[int] = set()
+        self, owner: str, repo: str, n: int, timeline: dict[str, Any], page_cap: int,
+        pr_fields: str,
+    ) -> list[dict[str, Any]]:
+        """Walk one issue's reference timeline to its end, starting from page
+        one; the merged same-repository PR sources, each read once."""
+        merged: dict[int, dict[str, Any]] = {}
         for page in range(1, page_cap + 1):
-            merged.update(self._merged_prs_on_page(timeline, n))
+            merged.update((source["number"], source) for source in self._merged_prs_on_page(timeline, n))
             page_info = timeline["pageInfo"]
             if not page_info["hasNextPage"]:
-                return merged
+                return list(merged.values())
             if page == page_cap:
                 break
             cursor = page_info.get("endCursor")
@@ -2606,7 +2644,7 @@ class GitHubHttpClient:
                     f"reported another page without a cursor for #{n}"
                 )
             fields = f"i{n}: issue(number: {int(n)}) {{ " + self._REFERENCE_TIMELINE.format(
-                after=", after: $after"
+                after=", after: $after", pr_fields=pr_fields
             ) + " }"
             repository = self._reference_query(
                 owner, repo, fields, variables={"after": cursor}, cursor=True
@@ -2660,8 +2698,8 @@ class GitHubHttpClient:
             raise self._incomplete_reference_prs(f"returned no pageInfo for #{n}")
         return timeline
 
-    def _merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> set[int]:
-        merged: set[int] = set()
+    def _merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
         for node in timeline["nodes"]:
             if not isinstance(node, dict) or type(node.get("isCrossRepository")) is not bool:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
@@ -2675,7 +2713,7 @@ class GitHubHttpClient:
             if type(source.get("number")) is not int or type(source.get("merged")) is not bool:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
             if source["merged"]:
-                merged.add(source["number"])
+                merged.append(source)
         return merged
 
     def _incomplete_reference_prs(self, why: str) -> GitHubScanIncompleteError:

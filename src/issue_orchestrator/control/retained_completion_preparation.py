@@ -80,7 +80,8 @@ class RetainedCompletionPreparation:
             source_workspace=workspace.checkout, pr_number=observation.pr_number,
             pr_base_branch=publication.base_branch,
             content=PublicationContent(
-                publication.title, publication.body, True, publication.partial_pr
+                publication.title, publication.body, True, publication.partial_pr,
+                publication.finishes_issue,
             ),
         )
         return PreparedRecoveryPublication(command, workspace, completion, prepared.processing_policy,

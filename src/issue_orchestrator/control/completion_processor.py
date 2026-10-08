@@ -137,6 +137,7 @@ from ..ports.working_copy import PushResult
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from ..domain.issue_delivery import IssueDelivery
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
     from ..ports.review_exchange_approval_gate import ReviewExchangeApprovalGate
@@ -2183,11 +2184,12 @@ class CompletionProcessor:
         expected_base, stack_decision = publication.base_branch, publication.stack_decision
         exchange_mode = publication.exchange_mode
         pr_title, pr_body = publication.title, publication.body
+        actions_taken.extend(filter(None, [publication.delivery.explanation(issue_number)]))
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
 
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
-            issue_number=issue_number, record=record,
+            issue_number=issue_number, record=record, delivery=publication.delivery,
             branch=branch,
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
@@ -2231,6 +2233,8 @@ class CompletionProcessor:
 
         if pr:
             branch = pr.branch
+            if self._pull_requests.adopted_pr_refused(pr, issue_number=issue_number, delivery=publication.delivery, errors=errors):
+                return self._ActionResult(branch=branch, halt=True)
             settle_failure = self._settle_created_pr(
                 pr=pr,
                 record=record,
@@ -2274,7 +2278,7 @@ class CompletionProcessor:
     def _reuse_existing_pr_if_available(
         self,
         *,
-        issue_number: int, record: CompletionRecord,
+        issue_number: int, record: CompletionRecord, delivery: "IssueDelivery",
         branch: str,
         exchange_mode: str | None,
         exchange_result: Any | None,
@@ -2292,6 +2296,8 @@ class CompletionProcessor:
         )
         if not existing_pr:
             return None
+        if self._pull_requests.adopted_pr_refused(existing_pr, issue_number=issue_number, delivery=delivery, errors=errors):
+            return self._ActionResult(branch=branch, halt=True)
         # Stack invariant (ADR-0029 / #6596): an existing PR may only be reused
         # if it already targets the base the stack publish gate requires. A
         # successor PR opened against ``main`` (or still on a now-merged
@@ -2509,8 +2515,7 @@ class CompletionProcessor:
         * its LABELS, because the record that produced it is agent-authored and
           may have asked for the shared human block (#6999 F2).
 
-        (An earlier "Closes #N" PR for a partial completion is refused before
-        any write by the partial-delivery guard in ``prepare_pull_request``.)
+        (Its issue reference line is checked against the delivery by the caller, #8689.)
         """
         base_failure = self._enforce_created_pr_base(
             pr=pr,
