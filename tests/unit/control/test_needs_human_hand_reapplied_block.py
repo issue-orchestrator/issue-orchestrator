@@ -312,16 +312,19 @@ def test_a_stale_snapshot_dated_by_the_marker_does_not_end_the_standing_causes(
 ) -> None:
     """A snapshot from before the block went back on shows only the tech-lead
     marker. Binding the marker's event would read as a hand re-application of
-    needs-human and retire causes GitHub shows still standing."""
+    needs-human and retire causes GitHub shows still standing: the episode is
+    dated by the needs-human application GitHub shows."""
     marker = "tech-lead-needs-human"
     github.add_label(ITEM, marker)
     block = _owner(github, store)
     session = ROW_BACKED[2]
     assert block.acquire(session) is BlockOutcome.HELD
 
+    before = store.needs_human_episodes([ITEM])[ITEM]
+
     episodes, _ = _episodes(github, store).verified(_snapshot(marker), {})
 
-    assert ITEM not in episodes, "a stale snapshot leaves the episode unknown"
+    assert episodes[ITEM] == before
     assert store.needs_human_causes(ITEM) == frozenset({session.cause_key})
 
 

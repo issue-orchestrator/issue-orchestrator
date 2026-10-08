@@ -74,19 +74,12 @@ class NeedsHumanEpisodes:
             with self._store.mutate_needs_human(number) as status:
                 # BUSY: the owner is changing this block right now.
                 if status is not IssueDispositionGateStatus.BUSY:
-                    label = self._episode_label(issue.labels).casefold()
-                    needs_human = self._labels.needs_human.casefold()
                     read = self._read(number, tuple(dict.fromkeys(
-                        (label, needs_human, *also.get(number, ())),
+                        (*self._block_labels(), *also.get(number, ())),
                     )))
                     if read is not None:
                         applications[number] = read
-                        if label == needs_human or read[needs_human] is None:
-                            episode = self._bind(number, read[label])
-                        # else: the snapshot dates the episode by the marker, but
-                        # GitHub shows needs-human standing: the snapshot is stale,
-                        # and binding the marker's event would read as a hand
-                        # re-application and retire the block's causes (#8774).
+                        episode = self._bind(number, self._dating(issue.labels, read))
             if episode is not None:
                 verified[number] = episode
         self._unverified = (self._unverified - set(issues)) | (set(issues) - set(verified))
@@ -117,9 +110,22 @@ class NeedsHumanEpisodes:
             number, event_id=application.event_id, applied_at=application.created_at,
         )
 
-    def _episode_label(self, issue_labels: Sequence[str]) -> str:
-        """The label whose application dates the episode: needs-human, else the marker."""
-        needs_human = self._labels.needs_human
-        if needs_human.casefold() in {label.casefold() for label in issue_labels}:
-            return needs_human
-        return self._labels.tech_lead_needs_human
+    def _block_labels(self) -> tuple[str, str]:
+        """The casefolded needs-human label and the tech-lead marker."""
+        return self._labels.needs_human.casefold(), self._labels.tech_lead_needs_human.casefold()
+
+    def _dating(
+        self, issue_labels: Sequence[str], read: Mapping[str, "LabelEvent | None"]
+    ) -> "LabelEvent | None":
+        """The application that dates the episode, as GitHub shows it: the
+        needs-human label's while it stands, else the marker's.
+
+        A snapshot that shows needs-human the events do not is stale: the
+        episode is unknown (None). One that shows only the marker while the
+        events show needs-human standing is stale the other way, and the
+        needs-human application dates it: binding the marker's event would
+        read as a hand re-application and retire the block's causes (#8774).
+        """
+        needs_human, marker = self._block_labels()
+        shown = needs_human in {label.casefold() for label in issue_labels}
+        return read[needs_human] or (None if shown else read[marker])
