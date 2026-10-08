@@ -420,11 +420,13 @@ class GenerationBinding(Enum):
 
     #: The generation standing is the one recorded: nothing changed.
     CURRENT = "current"
-    #: No generation was recorded: one was opened from the application.
+    #: No generation (nor any cause or removal intent) was recorded: one was
+    #: opened from the application.
     ADOPTED = "adopted"
     #: The label was re-applied outside the owner (or the owner's own write
-    #: was never verified): the recorded generation, its causes and removal
-    #: intent were retired, and a new one opened from the application.
+    #: was never verified, or causes were recorded with no generation): what
+    #: was recorded was retired, and a new generation opened from the
+    #: application.
     ENDED = "ended"
 
 

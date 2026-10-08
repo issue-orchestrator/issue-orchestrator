@@ -19,11 +19,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def end_generation(conn: sqlite3.Connection, issue_number: int) -> None:
-    """Drop a generation's cause rows, removal intent and onset together."""
-    conn.execute("DELETE FROM needs_human_cause WHERE issue_number = ?", (issue_number,))
-    conn.execute("DELETE FROM needs_human_removal_intent WHERE issue_number = ?", (issue_number,))
-    conn.execute("DELETE FROM needs_human_generation WHERE issue_number = ?", (issue_number,))
+def end_generation(conn: sqlite3.Connection, issue_number: int) -> bool:
+    """Drop a generation's cause rows, removal intent and onset together.
+
+    True when anything of a previous generation was there to drop.
+    """
+    dropped = (
+        conn.execute("DELETE FROM needs_human_cause WHERE issue_number = ?", (issue_number,)).rowcount
+        + conn.execute(
+            "DELETE FROM needs_human_removal_intent WHERE issue_number = ?", (issue_number,)
+        ).rowcount
+        + conn.execute(
+            "DELETE FROM needs_human_generation WHERE issue_number = ?", (issue_number,)
+        ).rowcount
+    )
+    return dropped > 0
 
 
 def open_generation(conn: sqlite3.Connection, issue_number: int) -> None:
@@ -44,7 +54,9 @@ def bind_generation(
 ) -> GenerationBinding:
     """Bind the generation to GitHub's standing application of its label.
 
-    No generation: one is opened from the event, dated by it (``ADOPTED``).
+    No generation: one is opened from the event, dated by it (``ADOPTED``),
+    and any cause rows or removal intent left without one (written before
+    generations were recorded) are retired: nothing places them on it.
     One bound to this event stands (``CURRENT``), as does an unbound one the
     owner binds to its OWN write (``own_write``: the read right after the
     owner put the label on, under its gate). Any other binding ENDS the
@@ -65,14 +77,16 @@ def bind_generation(
             (event_id, issue_number),
         )
         return GenerationBinding.CURRENT
-    if row is not None:
-        end_generation(conn, issue_number)  # re-applied by hand: every old cause ended
+    # Re-applied by hand: every old cause ended. With no generation at all,
+    # rows written before generations were recorded cannot be placed on this
+    # application either, so they fail closed the same way (r3 F2).
+    ended = end_generation(conn, issue_number)
     conn.execute(
         "INSERT INTO needs_human_generation (issue_number, opened_at, label_event_id, adopted)"
         " VALUES (?, ?, ?, 1)",
         (issue_number, applied_at, event_id),
     )
-    return GenerationBinding.ADOPTED if row is None else GenerationBinding.ENDED
+    return GenerationBinding.ENDED if ended else GenerationBinding.ADOPTED
 
 
 def read_episodes(conn: sqlite3.Connection, issue_numbers: Sequence[int]) -> dict[int, str]:

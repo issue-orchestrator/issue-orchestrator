@@ -517,3 +517,20 @@ def test_a_standing_merge_hold_is_rechecked_at_most_once_per_period(
     for _ in range(3):
         assert gates.needs_human_scope(ITEM, github.read_labels(ITEM)) is HumanHoldScope.MERGE
     assert reads == [ITEM]
+
+
+def test_a_cause_row_from_before_generations_does_not_lift_a_block(
+    github: LabelEvents, store: SqlitePendingWorkClaimStore
+) -> None:
+    """r3 F2: a row written before generations were recorded has none, so a
+    binding cannot place it on the application standing now; it is retired
+    and its release leaves the label to a person."""
+    github.add_label(ITEM, NEEDS_HUMAN)
+    session = ROW_BACKED[2]
+    store.record_needs_human_cause(ITEM, session.cause_key, reason="before generations")
+    assert store.needs_human_episodes([ITEM]) == {}
+    github.reapply_by_hand(ITEM, NEEDS_HUMAN)
+
+    assert _owner(github, store).release(session) is BlockOutcome.HELD_BY_ANOTHER_CAUSE
+    assert NEEDS_HUMAN in github.live[ITEM]
+    assert store.needs_human_causes(ITEM) == frozenset()
