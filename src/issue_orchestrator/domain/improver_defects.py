@@ -14,8 +14,8 @@ seen on:
   module, named in full): a stall finding's ``root_cause.owner`` and a
   design finding's ``owner``, each resolved in the staged engine source
   (an owner naming no one function there, e.g. a bare method name two
-  classes define, is no site); and the function enclosing each line of the
-  engine source a design finding cites;
+  classes define, is no site); a design finding without an owner is placed
+  by the function enclosing each line of the engine source it cites;
 * its **evidence**: the items (``#N``) it is about, the staged records it
   cites, and, for a design finding, its citations other than engine source.
 
@@ -216,7 +216,9 @@ def design_profile(design: DesignFinding, source: EngineSource) -> DefectProfile
         if module is None:
             cited.append(_Cited(path=path, line=citation.line, quote=quote))
             continue
-        function = source.enclosing_function(path, citation.line, citation.quote)
+        # A declared owner is where the defect lives; cited source is
+        # context (r8 F1). Only without one does cited source place it.
+        function = source.enclosing_function(path, citation.line, citation.quote) if declared is None else None
         if function is not None:
             sites.append(function)
     return DefectProfile(

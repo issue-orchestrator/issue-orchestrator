@@ -27,6 +27,7 @@ ENGINE = EngineRef(
 _HANDLER = "improver-data/engine-source/src/issue_orchestrator/control/completion_handler.py"
 _HANDLER_MODULE = ("issue_orchestrator", "control", "completion_handler")
 UPDATE = CodeSite(_HANDLER_MODULE, ("CompletionHandler", "_update_issue_machine"))
+FINALIZE = CodeSite(_HANDLER_MODULE, ("CompletionHandler", "finalize_terminal_outcome"))
 OPERATOR_DECISION = CodeSite(("issue_orchestrator", "control", "tech_lead_operator_decision"), ("OperatorDecisionExecutor",))
 REFUSAL = CodeSite(("issue_orchestrator", "control", "partial_delivery_guard"), ("PartialDeliveryGuard", "refusal"))
 #: What the run's staged engine source answers for every engine source line
@@ -36,13 +37,13 @@ SOURCE = FakeEngineSource(
     functions={
         (_HANDLER, 819): UPDATE,
         (_HANDLER, 799): UPDATE,
-        (_HANDLER, 600): CodeSite(_HANDLER_MODULE, ("CompletionHandler", "finalize_terminal_outcome")),
+        (_HANDLER, 600): FINALIZE,
         (
             "improver-data/engine-source/src/issue_orchestrator/domain/state_machines/issue_machine.py",
             114,
         ): CodeSite(("issue_orchestrator", "domain", "state_machines", "issue_machine"), ("IssueStateMachine", "__init__")),
     },
-    defined=frozenset({UPDATE, OPERATOR_DECISION, REFUSAL}),
+    defined=frozenset({UPDATE, FINALIZE, OPERATOR_DECISION, REFUSAL}),
 )
 IDENTITY = EffectIdentity(ENGINE, SOURCE)
 
@@ -316,6 +317,23 @@ def test_one_file_cited_by_two_spellings_of_its_path_is_one_citation() -> None:
     merged = _merge({**_heat(1), "findings": [], "design_findings": [first, second]})
 
     assert [(s.design.id, s.finding_id) for s in merged.same_defects] == [("crash-dotted-path", "crash-plain-path")]
+
+
+def test_a_declared_owner_is_where_the_defect_lives_and_cited_source_is_context() -> None:
+    """r8 F1: the crash finding names `_update_issue_machine` and cites
+    `finalize_terminal_outcome` as context: it is not the defect of a stall
+    finding owned by `finalize_terminal_outcome`."""
+    finalize = {**_chain_stall("fix-finalize", 450), "stall_evidence": []}
+    finalize["root_cause"]["owner"] = "control/completion_handler.py:CompletionHandler.finalize_terminal_outcome"
+    crash = _chain_design(
+        "crash-in-update", _log(10, "rework of #450 ended needs_human"),
+        {"kind": "file", "path": _HANDLER, "line": 600, "quote": "from .scoped_rework import note_scoped_rework_finished"},
+    )
+
+    for owner, folded in (("control/completion_handler.py:_update_issue_machine", False), (None, True)):
+        merged = _merge({**_heat(1), "findings": [finalize], "design_findings": [{**crash, "owner": owner}]})
+
+        assert bool(merged.same_defects) is folded, owner
 
 
 def _answer(call: int, quote: str) -> dict:
