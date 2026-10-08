@@ -22,6 +22,7 @@ from issue_orchestrator.contracts.improver_run import (
 )
 from issue_orchestrator.contracts.improver_tournament import (
     AnswerKeyItem,
+    Observation,
     TournamentArm,
     TournamentCost,
 )
@@ -87,7 +88,7 @@ def stores(tmp_path: Path) -> tuple[FrozenSnapshotStore, FileAnswerKeyStore, Pat
     state, clone = _engine_files(tmp_path)
     snapshots.import_("20261004", improver_data=_legacy_inputs(tmp_path / "src"), taken_at=T0,
                       origin="test", state_dir=state, clone=clone)
-    keys = FileAnswerKeyStore(root)
+    keys = FileAnswerKeyStore(root, snapshots)
     keys.seed_sealed("20261004", SEALED, sealed_at=T0, added_by="coordinator")
     return snapshots, keys, root
 
@@ -271,7 +272,7 @@ def test_no_arm_runs_before_its_snapshot_has_a_key(tmp_path: Path) -> None:
     snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
     snapshots.import_("keyless", improver_data=_legacy_inputs(tmp_path / "src"), taken_at=T0, origin="x")
     agents = Agents({"m": "{}"}, {})
-    harness = _harness(root, (snapshots, FileAnswerKeyStore(root), root), agents)
+    harness = _harness(root, (snapshots, FileAnswerKeyStore(root, snapshots), root), agents)
     arm = TournamentArm(name="A", provider="claude", model="m", mode="scripted")
 
     with pytest.raises(AnswerKeyError, match="no answer key"):
@@ -396,11 +397,14 @@ def test_a_clone_with_no_commit_is_refused(stores, tmp_path: Path) -> None:  # t
 # -- answer keys ---------------------------------------------------------------
 
 
-def _hindsight(item_id: str = "H-7999", *, by: str = "coordinator", confirmed: bool = True) -> AnswerKeyItem:
+def _hindsight(
+    item_id: str = "H-7999", *, by: str = "coordinator", confirmed: bool = True, seen: datetime = T0 - timedelta(hours=2)
+) -> AnswerKeyItem:
     return AnswerKeyItem(
         id=item_id, weight=2, title="Review admitted onto a PR whose rework is live", description="d",
         category="stall", source="hindsight", status="confirmed" if confirmed else "candidate",
         links=("issue-orchestrator/issue-orchestrator#7999",), filed_at=T0.date(), added_at=T0, added_by=by,
+        observable_since=Observation(at=seen, source="porchpin/porchpin#470 created_at"),
     )
 
 
@@ -436,7 +440,10 @@ def test_a_key_is_seeded_once_and_an_item_added_once(stores) -> None:  # type: i
 
 def test_two_seeds_at_once_publish_exactly_one_key(tmp_path: Path) -> None:
     """A sealed key is never replaced, even by a seed racing it."""
-    keys = FileAnswerKeyStore(tmp_path / "io-improver")
+    root = tmp_path / "io-improver"
+    snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
+    snapshots.import_("race", improver_data=_legacy_inputs(tmp_path / "src"), taken_at=T0, origin="x")
+    keys = FileAnswerKeyStore(root, snapshots)
     other = SEALED.replace("#364 ruling", "#365 ruling")
     barrier = threading.Barrier(2)
     outcomes: list[str] = []
@@ -458,6 +465,164 @@ def test_two_seeds_at_once_publish_exactly_one_key(tmp_path: Path) -> None:
     assert sorted(outcomes) in (["one", "refused"], ["refused", "two"])
     winner = next(o for o in outcomes if o != "refused")
     assert all(i.added_by == winner for i in keys.get("race").items)
+
+
+# -- a hindsight item is observable at the snapshot's time (#8972) -------------
+
+#: 20261004 was frozen at T0; #8137's PR was created ~1.5 h later.
+_AFTER = T0 + timedelta(hours=1, minutes=26)
+
+
+def test_an_item_observable_only_after_the_snapshot_is_never_confirmed_on_it(stores) -> None:  # type: ignore[no-untyped-def]
+    """Confirming it would score arms as missing what their evidence could not show."""
+    _, keys, _ = stores
+    keys.add(_hindsight("H-8137", confirmed=False, seen=_AFTER), snapshot_id="20261004")
+
+    with pytest.raises(AnswerKeyError, match=r"observable only since 2026-10-04T09:02:00\+00:00 .*after the snapshot was frozen"):
+        keys.confirm("20261004", "H-8137", by="coordinator")
+    with pytest.raises(AnswerKeyError, match="observable only since"):
+        keys.add(_hindsight("H-8120", seen=_AFTER), snapshot_id="20261004")
+
+    key = keys.get("20261004")
+    assert [(i.id, i.status) for i in key.items if i.source == "hindsight"] == [("H-8137", "candidate")]
+    assert [u.item_id for u in keys.unobservable("20261004")] == ["H-8137"]
+
+
+def test_an_item_observable_at_the_snapshots_very_time_is_confirmed(stores) -> None:  # type: ignore[no-untyped-def]
+    _, keys, _ = stores
+    keys.add(_hindsight("H-1", confirmed=False, seen=T0), snapshot_id="20261004")
+
+    assert keys.confirm("20261004", "H-1", by="coordinator").max_score == 10 and keys.unobservable("20261004") == ()
+
+
+def test_a_hindsight_item_records_when_it_was_observable_before_it_is_confirmed(stores) -> None:  # type: ignore[no-untyped-def]
+    _, keys, root = stores
+    with pytest.raises(AnswerKeyError, match="records observable_since"):
+        keys.add(_hindsight().model_copy(update={"observable_since": None}), snapshot_id="20261004")
+    # A key written before #8972 holds hindsight items with none.
+    path = keys.path("20261004")
+    doc = json.loads(path.read_text())
+    doc["items"].append({**json.loads(_hindsight("H-old", confirmed=False).model_dump_json()), "observable_since": None})
+    path.write_text(json.dumps(doc))
+
+    with pytest.raises(AnswerKeyError, match="no observable_since recorded"):
+        keys.confirm("20261004", "H-old", by="coordinator")
+    keys.observe("20261004", "H-old", Observation(at=T0 - timedelta(days=1), source="timeline event 4411"), by="operator")
+
+    assert keys.confirm("20261004", "H-old", by="operator").max_score == 10
+
+
+def test_a_confirmed_item_cannot_be_observed_later_than_its_snapshot(stores) -> None:  # type: ignore[no-untyped-def]
+    _, keys, _ = stores
+    keys.add(_hindsight("H-7999"), snapshot_id="20261004")
+    with pytest.raises(AnswerKeyError, match="`key move` attaches it to a snapshot frozen later"):
+        keys.observe("20261004", "H-7999", Observation(at=_AFTER, source="x"), by="operator")
+    with pytest.raises(AnswerKeyError, match="is sealed"):
+        keys.observe("20261004", "1", Observation(at=T0, source="x"), by="operator")
+    assert keys.get("20261004").items[-1].observable_since == _hindsight().observable_since
+
+
+def test_a_key_that_scores_an_unobservable_item_is_not_graded(stores) -> None:  # type: ignore[no-untyped-def]
+    """Whatever wrote it (a key edited by hand, or confirmed before #8972),
+    the key a tournament grades scores only what the snapshot showed."""
+    snapshots, keys, root = stores
+    path = keys.path("20261004")
+    doc = json.loads(path.read_text())
+    doc["items"].append(json.loads(_hindsight("H-8219", seen=_AFTER).model_dump_json()))
+    doc["items"].append({**json.loads(_hindsight("H-7999").model_dump_json()), "observable_since": None})
+    path.write_text(json.dumps(doc))
+    agents = Agents({"m": "{}"}, {})
+    harness = _harness(root, stores, agents)
+
+    with pytest.raises(AnswerKeyError, match=r"H-8219.*after the snapshot.*H-7999.*no observable_since"):
+        harness.run_arms("t-unseen", "20261004", [_spec(TournamentArm(name="A", provider="claude", model="m",
+                                                                       mode="scripted"))])
+    with pytest.raises(AnswerKeyError, match="evidence could not show"):
+        harness.grade("t-unseen", "20261004", [ArmOutput("A", 1, "{}")], seed=1)
+    assert agents.spaces == [] and not harness.directory("t-unseen").exists()
+
+
+def test_an_item_is_moved_to_a_snapshot_frozen_once_it_was_observable(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    snapshots, keys, _ = stores
+    for snapshot_id, taken_at in (("20261005", T0 + timedelta(days=1)), ("20261004b", T0 + timedelta(minutes=30))):
+        snapshots.import_(snapshot_id, improver_data=_legacy_inputs(tmp_path / snapshot_id), taken_at=taken_at, origin="x")
+        keys.seed_sealed(snapshot_id, SEALED, sealed_at=taken_at, added_by="coordinator")
+    keys.add(_hindsight("H-8137", confirmed=False, seen=_AFTER), snapshot_id="20261004")
+
+    with pytest.raises(AnswerKeyError, match="20261004b.*after the snapshot was frozen"):
+        keys.move("20261004", "H-8137", to="20261004b", by="coordinator")
+    with pytest.raises(AnswerKeyError, match="is sealed with snapshot"):
+        keys.move("20261004", "1", to="20261005", by="coordinator")
+    moved = keys.move("20261004", "H-8137", to="20261005", by="coordinator")
+
+    assert [(i.id, i.status) for i in moved.items if i.source == "hindsight"] == [("H-8137", "candidate")]
+    assert "H-8137" not in {i.id for i in keys.get("20261004").items}
+    assert keys.confirm("20261005", "H-8137", by="coordinator").max_score == 10
+    with pytest.raises(AnswerKeyError, match="no key item 'H-8137'"):
+        keys.move("20261004", "H-8137", to="20261005", by="coordinator")
+
+
+def _later_snapshot(snapshots, keys, tmp_path: Path) -> str:  # type: ignore[no-untyped-def]
+    snapshots.import_("20261005", improver_data=_legacy_inputs(tmp_path / "later"), taken_at=T0 + timedelta(days=1),
+                      origin="x")
+    keys.seed_sealed("20261005", SEALED, sealed_at=T0 + timedelta(days=1), added_by="coordinator")
+    return "20261005"
+
+
+def test_a_move_interrupted_between_its_writes_is_finished_by_the_same_move(  # type: ignore[no-untyped-def]
+    stores, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshots, keys, _ = stores
+    later = _later_snapshot(snapshots, keys, tmp_path)
+    keys.add(_hindsight("H-8137", confirmed=False, seen=_AFTER), snapshot_id="20261004")
+    write = FileAnswerKeyStore._write
+    writes: list[str] = []
+
+    def crash_on_the_second(self, key):  # type: ignore[no-untyped-def]
+        writes.append(key.snapshot_id)
+        if len(writes) == 2:
+            raise OSError("killed")
+        return write(self, key)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(FileAnswerKeyStore, "_write", crash_on_the_second)
+        with pytest.raises(OSError, match="killed"):
+            keys.move("20261004", "H-8137", to=later, by="coordinator")
+    assert writes == [later, "20261004"] and "H-8137" in {i.id for i in keys.get("20261004").items}
+
+    moved = keys.move("20261004", "H-8137", to=later, by="coordinator")
+
+    assert [i.id for i in moved.items if i.source == "hindsight"] == ["H-8137"]
+    assert "H-8137" not in {i.id for i in keys.get("20261004").items}
+
+
+def test_a_confirmed_item_with_no_observable_since_is_moved_with_it(stores, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A key confirmed before #8972 holds such items: one observable only
+    after its snapshot records that as it moves, and stops scoring there."""
+    snapshots, keys, _ = stores
+    later = _later_snapshot(snapshots, keys, tmp_path)
+    path = keys.path("20261004")
+    doc = json.loads(path.read_text())
+    doc["items"].append({**json.loads(_hindsight("H-8120").model_dump_json()), "observable_since": None})
+    path.write_text(json.dumps(doc))
+    seen = Observation(at=_AFTER, source="#7906 deploy, 2026-10-04 13:06Z")
+
+    with pytest.raises(AnswerKeyError, match="records no observable_since: give it"):
+        keys.move("20261004", "H-8120", to=later, by="coordinator")
+    with pytest.raises(AnswerKeyError, match="`key move` attaches it"):
+        keys.observe("20261004", "H-8120", seen, by="coordinator")
+    moved = keys.move("20261004", "H-8120", to=later, by="coordinator", observation=seen)
+
+    [item] = [i for i in moved.items if i.id == "H-8120"]
+    assert (item.status, item.observable_since) == ("candidate", seen)
+    assert keys.scoring("20261004").max_score == 8
+
+
+def test_a_key_is_seeded_only_for_a_frozen_snapshot(stores) -> None:  # type: ignore[no-untyped-def]
+    _, keys, _ = stores
+    with pytest.raises(SnapshotUnavailable, match="no frozen snapshot 'nowhere'"):
+        keys.seed_sealed("nowhere", SEALED, sealed_at=T0, added_by="coordinator")
+    assert not keys.path("nowhere").exists()
 
 
 def test_hindsight_items_added_at_once_are_all_kept(stores) -> None:  # type: ignore[no-untyped-def]
