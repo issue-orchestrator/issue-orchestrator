@@ -73,6 +73,7 @@ from .improver_citations import (
     CitationIndex,
     normalized,
 )
+from .improver_defects import EngineSource, resolved_owner
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -145,6 +146,11 @@ class Rule(StrEnum):
     #: of a staged file (``improver-data/`` or ``toolbox/``, never outside
     #: them), or an answer the toolbox served. No citation, no finding.
     DESIGN_CITATION_RESOLVES = "design_citation_resolves"
+    #: A design finding's ``owner``, when it names one, is exactly one
+    #: function (or class, or name) of exactly one staged engine source
+    #: module, written ``<module>:<function>`` (#8700): it decides which
+    #: findings are one defect.
+    DESIGN_OWNER_RESOLVES = "design_owner_resolves"
     #: A change to the improver is proposed only by a run the orchestrator
     #: invited to propose one (#8001): the agent never chooses to.
     IMPROVER_CHANGE_INVITED = "improver_change_invited"
@@ -213,6 +219,8 @@ class StagedEvidence:
     engine_source_files: frozenset[str]
     #: The run directory's citable evidence, for design findings (#8001).
     citations: CitationIndex
+    #: The staged engine source read as Python: where a defect lives (#8700).
+    engine_source: EngineSource
 
     def decisions_by_id(self) -> dict[str, StagedDecision]:
         """Every staged decision: the window's (``charter-decisions.json``)
@@ -327,6 +335,12 @@ class _Checker:
                 Rule.ENGINE_TAG_MATCHES_INPUTS,
                 f"tagged {design.engine.id}/{design.engine.repo}, but the run staged"
                 f" {self._evidence.engine_id}/{self._evidence.audited_repo}",
+            )
+        if design.owner is not None and resolved_owner(design.owner, self._evidence.engine_source) is None:
+            yield (
+                Rule.DESIGN_OWNER_RESOLVES,
+                f"owner {design.owner!r} does not name, as <module>:<function>, exactly one definition in"
+                " exactly one staged engine source module",
             )
         index = self._evidence.citations
         for n, citation in enumerate(design.evidence):

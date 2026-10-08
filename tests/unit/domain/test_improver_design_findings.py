@@ -311,3 +311,49 @@ def test_a_stored_schema_value_is_evidence(run_dir: Path) -> None:
                json.dumps({"columns": ["sql"], "rows": [[ddl]], "truncated": False}))
 
     _validate(run_dir, _doc(_design({"kind": "tool", "call": 13, "quote": ddl})))
+
+
+def _stage_source(run_dir: Path, relative: str, text: str) -> None:
+    path = run_dir / "improver-data" / "engine-source" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "control/approvals.py:ApprovalGate.approve",
+        "issue_orchestrator.control.approvals:approve",
+        "src/issue_orchestrator/control/approvals.py:APPROVAL_LABEL",
+        None,
+    ],
+)
+def test_a_design_finding_names_where_its_defect_lives_or_nothing(run_dir: Path, owner: str | None) -> None:
+    """#8700: its owner relates it to other findings about that code."""
+    _stage_source(
+        run_dir, "src/issue_orchestrator/control/approvals.py",
+        'APPROVAL_LABEL = "approved"\n\n\nclass ApprovalGate:\n    def approve(self) -> None:\n        pass\n',
+    )
+
+    [design] = _validate(run_dir, _doc({**_design(LOG_CITATION), "owner": owner})).design_findings
+
+    assert design.owner == owner
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "control/approvals.py:ApprovalGate.reject",  # not defined there
+        "control/missing.py:approve",  # no such staged module
+        "approvals:approve",  # two staged modules end so: which is not known
+        "issue_orchestrator.control.approvals.approve",  # not <module>:<function>
+        "control/approvals.py:approve and its callers",
+    ],
+)
+def test_a_design_owner_that_is_not_staged_code_rejects_the_file(run_dir: Path, owner: str) -> None:
+    for root in ("control", "domain"):
+        _stage_source(run_dir, f"src/issue_orchestrator/{root}/approvals.py", "def approve() -> None:\n    pass\n")
+
+    rejections = _rejections(run_dir, _doc({**_design(LOG_CITATION), "owner": owner}))
+
+    assert rejections == [(Rule.DESIGN_OWNER_RESOLVES.value, "approval-by-label-removal")]

@@ -47,10 +47,11 @@ from ..contracts.improver_run import (
     HeatRecord,
     ImproverRunRecord,
     RunOutcome,
+    SameDefectRecord,
     StallPointMove,
 )
 from ..contracts.improver_variant import ImproverVariant
-from ..control.improver_effects import design_finding_key, finding_key, planned_effects
+from ..control.improver_effects import EffectIdentity, design_finding_key, finding_key, planned_effects
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_answer import AnswerNotExtractable, extract_findings_answer
 from ..domain.improver_champion import INVITATION_RATE, ChangeInvitation, invited
@@ -84,6 +85,18 @@ class ImproverInputStaging(Protocol):
 
 logger = logging.getLogger(__name__)
 
+#: The findings contract's fields that the champion's prompt may predate:
+#: the orchestrator owns the contract, and the champion's prompt is frozen
+#: (#8001), so the orchestrator states them in every run's prompt.
+CONTRACT_ADDENDUM = (
+    "\n\n**Design finding `owner` (#8700).** When a design finding's defect lives in one place in the"
+    " engine source, give the design finding an `owner`, written as a stall finding's `root_cause.owner`"
+    ' is: `"owner": "<module>:<function>"`. The module must be one staged engine source file, and the'
+    " function must be defined there exactly once (write `Class.method` when two classes define the"
+    " method). Omit it, or write null, when the defect lives in no one function. An owner that names no"
+    " one definition rejects the whole answer. One defect is filed once: a design finding and another"
+    " finding on the same code site with shared evidence are merged before anything is filed.\n"
+)
 #: Always the last words of the improver's prompt, after every addendum.
 FINAL_ANSWER_REMINDER = (
     "\n\nYour final message is the findings JSON object alone: no sentence, heading or note before or"
@@ -346,11 +359,7 @@ class ImproverRun:
         accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
         if not accepted:
             return self._finish_unaccepted(base, records)
-        merged = merge_heats(
-            accepted,
-            lambda f: finding_key(f, request.engine),
-            lambda d: design_finding_key(d, request.engine),
-        )
+        merged = merge_heats(accepted, EffectIdentity(request.engine, evidence.engine_source))
         text = merged.findings.model_dump_json(indent=2, by_alias=True) + "\n"
         (run_dir / FINDINGS_FILE).write_text(text, encoding="utf-8")
         try:
@@ -377,6 +386,10 @@ class ImproverRun:
             heat_conflicts=tuple(
                 HeatConflictRecord(finding_id=c.finding_id, heat=c.heat, reason=c.reason, claim=c.claim)
                 for c in merged.conflicts
+            ),
+            same_defects=tuple(
+                SameDefectRecord(finding_id=s.finding_id, design=s.design, heats=s.heats)
+                for s in merged.same_defects
             ),
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),
@@ -429,7 +442,7 @@ class ImproverRun:
             invitation = self._change_policy.instructions() if invited and self._change_policy is not None else ""
             prompt = (
                 f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
-                f"{FINAL_ANSWER_REMINDER}"
+                f"{CONTRACT_ADDENDUM}{FINAL_ANSWER_REMINDER}"
             )
             evidence = ((root / IMPROVER_DATA_DIRNAME), *kit.evidence)
 
@@ -582,6 +595,11 @@ def render_run(record: ImproverRunRecord) -> str:
     ]
     lines += [
         f"  {c.finding_id}: heat {c.heat} not merged: {c.reason}" for c in record.heat_conflicts
+    ]
+    lines += [
+        f"  {s.design.id}: the same defect as {s.finding_id}, filed with it (heat(s)"
+        f" {', '.join(map(str, s.heats))})"
+        for s in record.same_defects
     ]
     lines += [f"  rejected: {reason}" for reason in record.rejections]
     lines += [
