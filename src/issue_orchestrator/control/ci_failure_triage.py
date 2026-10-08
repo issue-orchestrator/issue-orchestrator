@@ -197,15 +197,14 @@ class CiFailureTriage:
         if latest is None and remaining:
             state.ci_triage_deferrals.pop(rework.pr_number, None)
             return _rerun(rework, head_sha, assessments, self.clock(), run_ids=remaining)
-        # Waiting on GitHub: io asked (latest), or GitHub shows a re-run nobody
-        # recorded. Both are bounded, then go to a person - never asked twice.
-        if latest is not None and self.clock() - latest.requested_at < RERUN_START_GRACE:
+        # Waiting on GitHub: since io asked (its record), or since GitHub started
+        # a re-run nobody recorded (the run's own start time). Both clocks are
+        # durable, so the wait is bounded across restarts; then a person.
+        since = latest.requested_at if latest is not None else max(
+            attempts[run].started_at for run in runs if attempts[run].attempt > 1
+        )
+        if self.clock() - since < RERUN_START_GRACE:
             return None
-        if latest is None:
-            waits = state.ci_triage_deferrals.get(rework.pr_number, 0)
-            if waits < MAX_READ_DEFERRALS:
-                state.ci_triage_deferrals[rework.pr_number] = waits + 1
-                return None
         return self._unconfirmed(state, rework, head_sha, None if latest is None else latest.requested_at)
 
     def _unconfirmed(

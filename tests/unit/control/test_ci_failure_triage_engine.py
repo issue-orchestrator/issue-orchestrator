@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.actions import ActionType
@@ -31,6 +32,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
 )
 
 HEAD = "c0ffee" + "0" * 34
+LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
 CHECK = "workspace watch · windows process tree"
 RUNNER_LOST = (
     "2026-10-08T06:31:40.0000000Z Running tests...\n"
@@ -92,7 +94,9 @@ class _Engine:
         if run_id in self.refused_runs:
             raise RepositoryHostError("403 Resource not accessible by integration")
         if self.attempts_visible:
-            self.runs[run_id] = CheckRunAttempt(attempt=self.runs[run_id].attempt + 1, job_ids=frozenset())
+            self.runs[run_id] = CheckRunAttempt(
+                attempt=self.runs[run_id].attempt + 1, job_ids=frozenset(), started_at=datetime.now(UTC),
+            )
 
     def apply(self, action) -> bool:
         """The applier's write, with this engine's GitHub."""
@@ -120,7 +124,7 @@ class _Engine:
         ))
         for run in set(runs.values()):
             self.runs[run] = CheckRunAttempt(
-                attempt=attempt, job_ids=frozenset(job for job in logs if runs[job] == run),
+                attempt=attempt, job_ids=frozenset(job for job in logs if runs[job] == run), started_at=LONG_AGO,
             )
 
     def tick(self):
@@ -358,15 +362,17 @@ def test_an_accepted_rerun_github_does_not_show_is_never_asked_again() -> None:
 
 def test_a_rerun_github_shows_is_waited_for_then_handed_to_a_person() -> None:
     """No record on the PR (a person re-ran it) and the re-run's jobs never ran:
-    no request and no rework; a bounded wait, then one escalation."""
-    from issue_orchestrator.control.ci_failure_triage import MAX_READ_DEFERRALS
-
+    no request and no rework; the wait is timed by GitHub's own run start (so a
+    restart does not reset it), then one escalation that holds the head."""
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
-    engine.runs[900] = CheckRunAttempt(attempt=2, job_ids=frozenset())
-    for _ in range(MAX_READ_DEFERRALS):
+    engine.runs[900] = CheckRunAttempt(attempt=2, job_ids=frozenset(), started_at=datetime.now(UTC))
+    for _ in range(5):
+        engine.state = OrchestratorState(session_history=engine.state.session_history)  # restart
         reworks, reruns, plan = engine.tick()
         assert (reworks, reruns) == ([], []) and plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
+    engine.runs[900] = replace(engine.runs[900], started_at=LONG_AGO)
+    engine.state = OrchestratorState(session_history=engine.state.session_history)  # restart
     (escalation,) = engine.tick()[2].actions_of_type(ActionType.ESCALATE_TO_HUMAN)
     engine.comments.append((318, escalation.comment_override))
     for _ in range(2):

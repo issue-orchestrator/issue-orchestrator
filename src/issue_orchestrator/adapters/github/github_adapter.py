@@ -9,6 +9,7 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 import logging
 import os
 import time
+from datetime import datetime
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -1150,7 +1151,10 @@ class GitHubAdapter:
     def read_check_run_latest_attempt(self, run_id: int) -> CheckRunAttempt:
         """A workflow run's current attempt and its jobs (#8692)."""
         raw = self._client.get_actions_run_latest_attempt(run_id)
-        return CheckRunAttempt(attempt=raw["attempt"], job_ids=frozenset(raw["job_ids"]))
+        return CheckRunAttempt(
+            attempt=raw["attempt"], job_ids=frozenset(raw["job_ids"]),
+            started_at=datetime.fromisoformat(raw["started_at"]),
+        )
 
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Re-run one workflow run's failed jobs (#8692)."""

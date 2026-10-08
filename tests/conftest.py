@@ -569,8 +569,8 @@ class MockGitHubAdapter:
         return self.job_logs[job_id][-max_bytes:]
 
     def read_check_run_latest_attempt(self, run_id: int) -> CheckRunAttempt:
-        """The seeded run attempt (mock): attempt 1 with no jobs unless seeded."""
-        return self.run_attempts.get(run_id, CheckRunAttempt(attempt=1, job_ids=frozenset()))
+        """The seeded run attempt (mock)."""
+        return self.run_attempts[run_id]
 
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Record a re-run request (mock)."""

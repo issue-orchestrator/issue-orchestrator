@@ -2924,13 +2924,15 @@ class GitHubHttpClient:
 
         ``GET /actions/runs/{id}`` for the attempt, then the attempt's own job
         listing (``/attempts/{n}/jobs``, up to ``_MAX_ATTEMPT_JOB_PAGES`` pages).
-        Returns ``{"attempt", "job_ids"}``; an unreadable or partial answer raises.
+        Returns ``{"attempt", "job_ids", "started_at"}`` (``run_started_at``: when the
+        current attempt started); an unreadable or partial answer raises.
         """
         base = f"/repos/{self._config.repo}/actions/runs/{run_id}"
         run = self._request_json("GET", base, use_cache=False, caller="get_actions_run_latest_attempt")
         attempt = run.get("run_attempt") if isinstance(run, dict) else None
-        if type(attempt) is not int or attempt < 1:
-            raise GitHubHttpError(f"GitHub {base} has no run_attempt", method="GET", url=base)
+        started = run.get("run_started_at") if isinstance(run, dict) else None
+        if type(attempt) is not int or attempt < 1 or not isinstance(started, str):
+            raise GitHubHttpError(f"GitHub {base} has no run_attempt/run_started_at", method="GET", url=base)
         job_ids: list[int] = []
         for page in range(1, _MAX_ATTEMPT_JOB_PAGES + 1):
             listing = self._request_json(
@@ -2948,7 +2950,7 @@ class GitHubHttpClient:
                         f"GitHub {base} attempt {attempt} listed {len(job_ids)} of {total} jobs",
                         method="GET", url=base,
                     )
-                return {"attempt": attempt, "job_ids": job_ids}
+                return {"attempt": attempt, "job_ids": job_ids, "started_at": started}
         raise GitHubScanIncompleteError(
             f"GitHub {base} attempt {attempt} has more than {100 * _MAX_ATTEMPT_JOB_PAGES} jobs",
             method="GET", url=base,

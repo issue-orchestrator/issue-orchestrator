@@ -8,6 +8,7 @@ This is an execution-layer interface.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol
@@ -203,10 +204,11 @@ class FailedChecksRead:
 
 @dataclass(frozen=True)
 class CheckRunAttempt:
-    """A workflow run's current attempt (1 until re-run) and the job ids of it."""
+    """A workflow run's current attempt (1 until re-run), when it started, and its job ids."""
 
     attempt: int
     job_ids: frozenset[int]
+    started_at: datetime
 
 
 @dataclass
