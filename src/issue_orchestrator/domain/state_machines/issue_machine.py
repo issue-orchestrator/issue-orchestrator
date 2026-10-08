@@ -329,6 +329,24 @@ class IssueStateMachine:
         )
         logger.info(f"Issue {self.issue_number} released back to available")
 
+    def custody_work_started(self) -> None:
+        """A session holding this issue's custody is working it (#8693).
+
+        Brings the cached lifecycle up to that fact: IN_PROGRESS from AVAILABLE
+        or CLAIMED (a cache created after a restart, or a restored session that
+        never passed the launcher) and from BLOCKED or NEEDS_HUMAN (a relaunch
+        after a person cleared the hold). PR_PENDING stays: the session works
+        beside the pending PR. The launcher calls it at launch and the
+        completion handler before a custody session's hold, so that hold is
+        always a defined transition.
+        """
+        if self.get_state() is IssueState.AVAILABLE:
+            self.claim()
+        if self.get_state() is IssueState.CLAIMED:
+            self.start()
+        elif self.get_state() in (IssueState.BLOCKED, IssueState.NEEDS_HUMAN):
+            self.unblock()
+
     def get_state(self) -> IssueState:
         """Get the current state as an enum."""
         return IssueState(self.state)

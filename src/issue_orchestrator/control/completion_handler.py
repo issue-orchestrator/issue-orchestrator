@@ -846,6 +846,9 @@ class CompletionHandler:
                 session.issue.number, before, session.key.kind.value, status.value, owner,
             )
             return
+        # The session was working the issue; a cache behind that fact (a
+        # restored session, a relaunch after a cleared hold) is brought up first.
+        issue_machine.custody_work_started()
         if status is SessionStatus.BLOCKED:
             issue_machine.block()
         else:

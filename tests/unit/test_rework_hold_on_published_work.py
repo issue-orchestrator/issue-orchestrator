@@ -147,3 +147,37 @@ def test_the_tick_goes_on_to_planning_after_a_confined_completion(engine):
         orchestrator.tick()
 
     assert planned, "the tick aborted before planning"
+
+
+def test_a_decision_that_raises_is_confined_in_a_synchronous_tick(engine):
+    """r1 F1: the inline dispatcher hands a decide error back to the apply boundary.
+
+    It used to raise straight out of ``dispatch``, before any containment, so
+    the next terminated session was never dispatched and planning never ran.
+    """
+    orchestrator, owner, escalation, rework, coding = engine
+    controller = orchestrator.deps.session_controller
+    real_decide = controller.decide_outcome.side_effect
+    planned: list[bool] = []
+
+    def decide_outcome(obs, worktree, number, title, terminal_id, *args, **kwargs):
+        if terminal_id == rework.terminal_id:
+            raise FileNotFoundError("run dir missing")
+        return real_decide(obs, worktree, number, title, terminal_id, *args, **kwargs)
+
+    controller.decide_outcome.side_effect = decide_outcome
+    with patch.object(
+        orchestrator._plan_applier,
+        "clear_discovered_facts",
+        side_effect=lambda _tick: planned.append(True),
+    ):
+        orchestrator.tick()
+
+    assert planned, "the tick aborted before planning"
+    machines = orchestrator.deps.state_machine_manager
+    assert machines.get_issue_machine(coding.issue).get_state() is IssueState.BLOCKED
+    # The failed decision's session stays active and is retried after its backoff.
+    assert orchestrator.state.active_sessions == [rework]
+    row = owner.admit(CompletionContainment.key(rework)).row
+    assert row is not None and "run dir missing" in row.last_reason and not row.parked
+    assert escalation.blocks == []
