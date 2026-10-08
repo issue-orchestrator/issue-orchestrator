@@ -131,3 +131,11 @@ def test_failed_contexts_keep_only_completed_failures_with_their_actions_ids() -
         FailedCheck("external", "TIMED_OUT", False, None, None),
         FailedCheck("ci/legacy", "ERROR", True, None, None),
     )
+
+
+def test_job_attempt_is_read_and_a_missing_one_fails_loudly(make_client) -> None:
+    answers = iter([{"id": 77, "run_attempt": 2}, {"id": 77}])
+    client = make_client(lambda request: httpx.Response(200, json=next(answers)))
+    assert client.get_actions_job_attempt(77) == 2
+    with pytest.raises(GitHubHttpError, match="no run_attempt"):
+        client.get_actions_job_attempt(77)

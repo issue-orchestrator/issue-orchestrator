@@ -101,6 +101,8 @@ class CiJobAssessment:
     excerpt: str
     #: Why the log could not be read, when it could not.
     unreadable: str | None = None
+    #: The job's run attempt (1 = first run); read only for a transient job.
+    run_attempt: int | None = None
 
 
 def normalize_log(text: str) -> str:

@@ -1146,6 +1146,10 @@ class GitHubAdapter:
         """The bounded tail of an Actions job's log (#8692)."""
         return self._client.get_actions_job_log_tail(job_id, max_bytes=max_bytes)
 
+    def read_check_job_attempt(self, job_id: int) -> int:
+        """The run attempt of an Actions job (#8692)."""
+        return self._client.get_actions_job_attempt(job_id)
+
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Re-run one workflow run's failed jobs (#8692)."""
         self._client.rerun_failed_workflow_jobs(run_id)

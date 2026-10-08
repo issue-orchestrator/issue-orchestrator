@@ -2913,6 +2913,22 @@ class GitHubHttpClient:
                 return tail, received
         raise AssertionError("unreachable: the second request always returns")
 
+    def get_actions_job_attempt(self, job_id: int) -> int:
+        """An Actions job's ``run_attempt`` (#8692); a job without one fails loudly."""
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/actions/jobs/{job_id}",
+            use_cache=False,
+            caller="get_actions_job_attempt",
+        )
+        attempt = payload.get("run_attempt") if isinstance(payload, dict) else None
+        if type(attempt) is not int or attempt < 1:
+            raise GitHubHttpError(
+                f"Actions job {job_id} has no run_attempt", method="GET",
+                url=f"/repos/{self._config.repo}/actions/jobs/{job_id}",
+            )
+        return attempt
+
     def rerun_failed_workflow_jobs(self, run_id: int) -> None:
         """Re-run the failed jobs of one Actions workflow run (#8692)."""
         self._request_json(

@@ -367,6 +367,7 @@ class MockGitHubAdapter:
         self.failed_checks: dict[int, FailedChecksRead] = {}
         self.job_logs: dict[int, str] = {}
         self.job_log_reads: list[int] = []
+        self.job_attempts: dict[int, int] = {}
         self.rerun_calls: list[int] = []
 
     # IssueRepository methods
@@ -565,6 +566,10 @@ class MockGitHubAdapter:
         """The seeded job log's tail (mock); records the read."""
         self.job_log_reads.append(job_id)
         return self.job_logs[job_id][-max_bytes:]
+
+    def read_check_job_attempt(self, job_id: int) -> int:
+        """The seeded job attempt (mock); a first run unless seeded."""
+        return self.job_attempts.get(job_id, 1)
 
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Record a re-run request (mock)."""

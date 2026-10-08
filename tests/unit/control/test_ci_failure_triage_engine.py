@@ -66,6 +66,8 @@ class _Engine:
             body for n, body in self.comments if n == number and needle in body
         )
         host.read_check_job_log_tail.side_effect = lambda job_id, max_bytes: self.logs[job_id][-max_bytes:]
+        self.attempts: dict[int, int] = {}  # job id -> run attempt (1 unless a re-run)
+        host.read_check_job_attempt.side_effect = lambda job_id: self.attempts.get(job_id, 1)
         self.host = host
         self.state = OrchestratorState(session_history=[SessionHistoryEntry(
             issue_number=228, title="Process tree", agent_type="agent:backend", status="completed",
@@ -126,6 +128,7 @@ def test_transient_failure_is_rerun_once_without_spending_a_rework_cycle() -> No
     # The re-run (job 12) fails transiently again on the same head: no second
     # re-run - it goes to rework, and that rework is the FIRST cycle.
     engine.fail(12, RUNNER_LOST)
+    engine.attempts[12] = 2
     reworks, reruns, plan = engine.tick()
     assert reruns == []
     (rework,) = reworks
@@ -256,3 +259,34 @@ def test_a_genuine_failure_decides_without_reading_every_log() -> None:
     assert "AssertionError: expected 3 children, saw 2" in (rework.feedback or "")
     assert "Logs not read" in (rework.feedback or "")
     assert [c.args[0] for c in engine.host.read_check_job_log_tail.call_args_list] == [50]
+
+
+def test_a_rerun_whose_record_was_lost_is_still_spent() -> None:
+    """GitHub accepted the re-run but the record comment failed: GitHub's own
+    run attempt still says the head was re-run, so there is no second re-run."""
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.host.add_comment.side_effect = RepositoryHostError("502 Bad Gateway")
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert not apply_rerun_failed_checks(
+        rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
+    ).success
+    assert engine.comments == []
+
+    engine.fail(12, RUNNER_LOST)  # the re-run's job failed the same way
+    engine.attempts[12] = 2
+    (rework,), reruns, plan = engine.tick()
+    assert reruns == [] and plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS) == []
+    assert "already failed on a re-run of this head" in (rework.feedback or "")
+    engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
+
+
+def test_a_new_head_without_a_failed_check_is_not_reworked() -> None:
+    """The rollup failed on the old head; a push since leaves nothing failed."""
+    engine = _Engine()
+    engine.host.read_failed_checks.return_value = FailedChecksRead(head_sha="b" * 40, checks=())
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], [])
+    assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []

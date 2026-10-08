@@ -126,7 +126,9 @@ class CiFailureTriage:
             return self._defer(state, rework, f"CI failure triage could not read the PR's failed checks: {error}")
         targets = [c for c in failed.checks if c.required] or list(failed.checks)
         if not targets:
-            return self._decided(state, rework, (
+            # A new commit (or a restarted check) since the rollup was read: the
+            # next reconciliation classifies the head as it now is.
+            return self._defer(state, rework, (
                 f"CI failure triage found no failed check on head {failed.head_sha[:12]}; "
                 "check the PR's checks before changing code."
             ))
@@ -140,35 +142,51 @@ class CiFailureTriage:
                 assessments, kind, failed.head_sha, (),
                 note="Not every failed job's log could be read: " + "; ".join(unread.values()),
             ))
-        records: tuple[CiRerunRecord, ...] = ()
         if kind is CiFailureKind.TRANSIENT:
-            try:
-                records = self._head_records(rework.pr_number, failed.head_sha)
-            except (RepositoryHostError, ValueError) as error:
-                logger.warning("CI triage: re-run record of PR #%d unreadable: %s", rework.pr_number, error)
-                return self._defer(state, rework, _report(
-                    assessments, kind, failed.head_sha, (),
-                    note=f"The re-run record could not be read ({error}), so no re-run was requested.",
-                ))
-            if not records:
-                state.ci_triage_deferrals.pop(rework.pr_number, None)
-                return _rerun(rework, failed.head_sha, assessments, self.clock())
+            return self._answer_transient(state, rework, failed.head_sha, assessments)
+        not_read = ", ".join(f"`{name}`" for name in unread)
+        return self._decided(state, rework, _report(
+            assessments, kind, failed.head_sha, (),
+            note=f"Logs not read (a genuine failure already decides this): {not_read}" if unread else None,
+        ))
+
+    def _answer_transient(
+        self,
+        state: "OrchestratorState",
+        rework: DiscoveredRework,
+        head_sha: str,
+        assessments: Sequence[CiJobAssessment],
+    ) -> DiscoveredRework | DiscoveredCiRerun | None:
+        """Re-run a head's transient failure once; a re-run already spent sends it to rework.
+
+        Spent means GitHub itself shows a job of a later attempt (a re-run by io
+        or by a person, whether or not its record was posted), or io's record
+        names this head.
+        """
+        try:
+            records = self._head_records(rework.pr_number, head_sha)
+        except (RepositoryHostError, ValueError) as error:
+            logger.warning("CI triage: re-run record of PR #%d unreadable: %s", rework.pr_number, error)
+            return self._defer(state, rework, _report(
+                assessments, CiFailureKind.TRANSIENT, head_sha, (),
+                note=f"The re-run record could not be read ({error}), so no re-run was requested.",
+            ))
+        reran = any(a.run_attempt is not None and a.run_attempt > 1 for a in assessments)
+        if not records and not reran:
+            state.ci_triage_deferrals.pop(rework.pr_number, None)
+            return _rerun(rework, head_sha, assessments, self.clock())
+        note = "These jobs already failed on a re-run of this head." if reran else None
+        if records and not reran:
             latest = max(records, key=lambda record: record.requested_at)
-            job_ids = {a.job_id for a in assessments if a.job_id is not None}
-            if job_ids <= latest.job_ids:
+            if {a.job_id for a in assessments if a.job_id is not None} <= latest.job_ids:
                 if self.clock() - latest.requested_at < RERUN_START_GRACE:
                     logger.info("CI triage: PR #%d re-run requested %s; waiting for it to start",
                                 rework.pr_number, latest.requested_at.isoformat())
                     return None
-                return self._decided(state, rework, _report(
-                    assessments, kind, failed.head_sha, records,
-                    note=f"The re-run GitHub accepted at {latest.requested_at.isoformat()} has not "
-                    f"restarted these jobs within {int(RERUN_START_GRACE.total_seconds() // 60)} minutes.",
-                ))
-        not_read = ", ".join(f"`{name}`" for name in unread)
+                note = (f"The re-run GitHub accepted at {latest.requested_at.isoformat()} has not "
+                        f"restarted these jobs within {int(RERUN_START_GRACE.total_seconds() // 60)} minutes.")
         return self._decided(state, rework, _report(
-            assessments, kind, failed.head_sha, records,
-            note=f"Logs not read (a genuine failure already decides this): {not_read}" if unread else None,
+            assessments, CiFailureKind.TRANSIENT, head_sha, records, note=note, reran=reran,
         ))
 
     def _defer(
@@ -239,9 +257,18 @@ class CiFailureTriage:
             return _unreadable(check, f"log unreadable: {error}")
         log = normalize_log(raw)
         kind, signature = classify_job_log(check.conclusion, log, signatures)
+        attempt = None
+        if kind is CiFailureKind.TRANSIENT:
+            # Only a transient failure asks whether it already is a re-run.
+            try:
+                attempt = self.host.read_check_job_attempt(check.job_id)
+            except RepositoryHostError as error:
+                logger.warning("CI triage: attempt of job %d unreadable: %s", check.job_id, error)
+                return _unreadable(check, f"run attempt unreadable: {error}")
         assessment = CiJobAssessment(
             name=check.name, conclusion=check.conclusion, job_id=check.job_id,
             run_id=check.run_id, kind=kind, signature=signature, excerpt=log_excerpt(log),
+            run_attempt=attempt,
         )
         memo[check.job_id] = assessment
         while len(memo) > ASSESSMENT_MEMO_LIMIT:
@@ -287,12 +314,13 @@ def _report(
     records: Sequence[CiRerunRecord],
     *,
     note: str | None = None,
+    reran: bool = False,
 ) -> str:
     lines = [f"CI failure triage of head {head_sha[:12]} (the engine read these job logs for you):",
              f"- Classification: {kind.value}"]
-    if records:
+    if records or reran:
         lines.append(
-            f"- CI re-runs already spent on this head: {len(records)} (re-runs are not rework "
+            f"- CI re-runs already spent on this head: {max(len(records), 1)} (re-runs are not rework "
             "cycles). The failure persisted, so it is treated as real: fix it, or if it is a "
             "known flake, say so in your completion."
         )
