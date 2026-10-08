@@ -1312,5 +1312,5 @@ def build_orchestrator_for_testing(
         action_liveness=action_liveness,
         services=infra_services,
     )
-    wire_tech_lead_approvals(deps.fact_gatherer, deps.action_applier, deps.planner.scheduler)
+    wire_tech_lead_approvals(deps)
     return Orchestrator(config=config, deps=deps, state=runtime_state)

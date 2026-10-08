@@ -27,8 +27,6 @@ from ..ports.provider_readiness import (
 )
 
 if TYPE_CHECKING:
-    from ..control.action_applier import ActionApplier
-    from ..control.scheduler import Scheduler
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..control.fact_gatherer import FactGatherer
     from ..control.pr_scanner import PRScanner
@@ -37,6 +35,7 @@ if TYPE_CHECKING:
     from ..control.retry_history_state import ExpediteEligibility, ExpediteLane
     from ..control.tech_lead_run_activity import TechLeadRunActivity
     from ..ports import Issue
+    from ..control.orchestrator_deps import OrchestratorDeps
     from ..control.tech_lead_board import TechLeadBoardPublisher
     from ..domain.board_snapshot import (
         BoardE2EHealth,
@@ -135,13 +134,16 @@ def create_open_issue_corpus_store(config: "Config") -> "OpenIssueCorpusStore":
     return SqliteOpenIssueCorpusStore.for_repo(config.repo_root)
 
 
-def wire_tech_lead_approvals(
-    fact_gatherer: "FactGatherer", applier: "ActionApplier", scheduler: "Scheduler"
-) -> None:
+def wire_tech_lead_approvals(deps: "OrchestratorDeps") -> None:
     """ONE approval owner (#7763) for verification (the fact scan), the
     apply-time consent re-check and settlement writes (the applier), and the
     scheduler's admission rule. Every composition calls this, so no build can
-    verify an approval with one owner and admit it with another."""
+    verify an approval with one owner and admit it with another. It also binds
+    the needs-human episodes the fact scan's triage check reads (#8688)."""
+    fact_gatherer, applier, scheduler = deps.fact_gatherer, deps.action_applier, deps.planner.scheduler
+    from ..control.blocked_item_custody_reader import build_needs_human_episodes
+
+    fact_gatherer.needs_human_episodes = build_needs_human_episodes(fact_gatherer.config, deps)
     approvals = fact_gatherer.approvals
     applier.tech_lead_approvals = approvals
     if approvals is not None:
@@ -167,7 +169,7 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     )
 
     applier = orchestrator.deps.action_applier
-    wire_tech_lead_approvals(orchestrator.deps.fact_gatherer, applier, orchestrator.deps.planner.scheduler)
+    wire_tech_lead_approvals(orchestrator.deps)
     applier.tech_lead_reset_retry = build_tech_lead_reset_retry_executor(orchestrator)
     applier.tech_lead_kill_session = build_tech_lead_kill_session_executor(orchestrator)
     applier.recover_validated_work = (

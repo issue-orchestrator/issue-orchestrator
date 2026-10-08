@@ -1900,6 +1900,12 @@ class GitHubAdapter:
             return None
         return StandingLabel(tuple(_label_event(issue_number, payload) for payload in run))
 
+    def label_application(self, issue_number: int, label: str) -> "LabelEvent | None":
+        """Block-episode evidence (#8688): the event that put ``label`` on, while
+        it stands. Only the label's own transitions end it, never a close."""
+        run = self._client.standing_label_events(issue_number, label, close_voids=False)
+        return _label_event(issue_number, run[0]) if run else None
+
     def latest_label_removal(self, issue_number: int, label: str) -> "LabelEvent | None":
         """Who last took ``label`` off, while it is still off."""
         run = self._client.standing_label_events(issue_number, label, removed=True)

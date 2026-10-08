@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
@@ -11,7 +13,7 @@ import pytest
 from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
 from issue_orchestrator.domain.standing_ruling import StandingRuling
 from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
-from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, LabelEvent
 from issue_orchestrator.control.actions import (
     ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
@@ -22,6 +24,8 @@ from issue_orchestrator.control.blocked_item_triage import (
     triage_coverage_violation,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.needs_human_episodes import NeedsHumanEpisodes
+from issue_orchestrator.domain.issue_disposition_gate import IssueDispositionGateStatus
 from issue_orchestrator.control.proposal_dedup_gate import DuplicateTargetGrant, OpenIssueCorpus
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
 from issue_orchestrator.control.tech_lead_charter_records import CharterDecisionLog
@@ -154,9 +158,68 @@ class _Authority:
         return self.ops
 
 
+#: The needs-human episode every issue is in, unless a test says otherwise.
+EP = "2026-10-02T09:00:00+00:00#1"
+
+
+@dataclass
+class _Episodes:
+    """In-memory needs-human generations (#8688), bound as the store binds them."""
+
+    recorded: dict[int, str] = field(default_factory=dict)
+    bound: dict[int, int] = field(default_factory=dict)
+    busy: set[int] = field(default_factory=set)
+
+    @contextmanager
+    def mutate_needs_human(self, issue_number):
+        yield (
+            IssueDispositionGateStatus.BUSY if issue_number in self.busy
+            else IssueDispositionGateStatus.ACQUIRED
+        )
+
+    def needs_human_episodes(self, issue_numbers):
+        return {n: self.recorded[n] for n in issue_numbers if n in self.recorded}
+
+    def bind_needs_human_episode(self, issue_number, *, event_id, applied_at):
+        if issue_number not in self.recorded or self.bound.get(issue_number, event_id) != event_id:
+            self.recorded[issue_number] = f"{applied_at}#gh{event_id}"
+        self.bound[issue_number] = event_id
+        return self.recorded[issue_number]
+
+
+def _application_event(event_id: int) -> LabelEvent:
+    return LabelEvent(
+        event_id=event_id, actor_login="operator", actor_is_bot=False,
+        created_at=f"2026-10-0{event_id % 9 + 1}T00:00:00Z",
+    )
+
+
+def _episode_owner(
+    store: _Episodes,
+    applications: dict[int, Any] | None = None,
+    *,
+    clock: Callable[[], float] = lambda: 0.0,
+    reads: list[int] | None = None,
+) -> NeedsHumanEpisodes:
+    """The episode owner over *store*, GitHub's applications faked; *reads*
+    records each event read it makes."""
+
+    def standing(number: int, label: str) -> LabelEvent | None:
+        if reads is not None:
+            reads.append(number)
+        return _application(applications, number)
+
+    return NeedsHumanEpisodes(
+        store=store, label_applications=standing, labels=LabelManager(_config()),
+        clock=clock, recheck_seconds=lambda: 3600,
+    )
+
+
 def _owner(
     issues: list[Issue],
     *,
+    episodes: _Episodes | None = None,
+    applications: dict[int, Any] | None = None,
     causes: dict[int, frozenset[NeedsHumanCause]] | None = None,
     ledger: _Ledger | None = None,
     timeline: dict[int, list[TimelineRecord]] | None = None,
@@ -175,7 +238,20 @@ def _owner(
         open_proposals=lambda: open_proposals or _NO_OPEN_PROPOSALS,
         timeline_reader=lambda number, limit: (timeline or {}).get(number, []),
         standing_rulings=lambda number: (rulings or {}).get(number, ()),
+        episodes=_episode_owner(
+            episodes if episodes is not None else _Episodes({i.number: EP for i in issues}),
+            applications,
+        ),
     )
+
+
+def _application(applications: dict[int, Any] | None, number: int) -> LabelEvent | None:
+    """GitHub's standing application of the label: event 1 unless a test says
+    otherwise (None: not standing; an exception: the read failed)."""
+    found = (applications or {}).get(number, 1)
+    if isinstance(found, Exception):
+        raise found
+    return None if found is None else _application_event(found)
 
 
 def _porchpin_board() -> list[Issue]:
@@ -213,8 +289,8 @@ def test_every_blocked_work_item_is_on_the_agenda_with_its_facts() -> None:
     assert by_number[262].needs_human_causes == ("agent_completion", "session_lifecycle")
     assert by_number[262].reason == "never triaged"
     # The tech lead's own hand-over marker does not count as a block change.
-    assert by_number[179].fingerprint == ""
-    assert by_number[326].fingerprint == "blocked-cross-milestone,needs-human"
+    assert by_number[179].fingerprint == f"@{EP}"
+    assert by_number[326].fingerprint == f"blocked-cross-milestone,needs-human@{EP}"
     assert agenda.grants == tuple(TriageGrant(i.issue_number, i.fingerprint) for i in agenda.items)
 
 
@@ -239,7 +315,7 @@ def test_an_unchanged_item_is_not_triaged_again_while_its_triage_is_in_force(
         if effect in {"applied", "failed", "withheld", "parked"}
         else TriageClass.OPERATOR_DECISION
     )
-    ledger = _Ledger({262: [_triage_record(262, triage_class, "needs-human", effect=effect)]})
+    ledger = _Ledger({262: [_triage_record(262, triage_class, f"needs-human@{EP}", effect=effect)]})
     owner = _owner(
         [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
         open_proposals=_filed_by(("run", "A1"), 950) if effect == "awaiting_approval" else None,
@@ -255,7 +331,7 @@ def test_a_proposal_that_never_got_filed_is_not_a_triage_in_force() -> None:
     """Awaiting approval only counts once the proposal issue exists: a creation
     that failed left the record routed to the gate with nothing to approve."""
     ledger = _Ledger({262: [_triage_record(
-        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval", filed=False,
+        262, TriageClass.OPERATOR_DECISION, f"needs-human@{EP}", effect="awaiting_approval", filed=False,
     )]})
     owner = _owner([_issue(262, "agent:backend", "needs-human")], ledger=ledger)
 
@@ -270,7 +346,7 @@ def test_a_filed_proposal_is_in_force_by_its_open_op_whatever_the_link(linked: b
     its number onto the charter record failed (or did not). The open op this
     decision filed is the durable fact: no second health review triages it."""
     ledger = _Ledger({262: [_triage_record(
-        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval", filed=linked,
+        262, TriageClass.OPERATOR_DECISION, f"needs-human@{EP}", effect="awaiting_approval", filed=linked,
     )]})
     owner = _owner(
         [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
@@ -286,7 +362,7 @@ def test_a_reused_proposal_is_in_force_by_its_link_while_it_is_open() -> None:
     """A re-proposal that joined an open proposal by reuse names it on its
     record; it is in force while that proposal is open."""
     ledger = _Ledger({262: [_triage_record(
-        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval",
+        262, TriageClass.OPERATOR_DECISION, f"needs-human@{EP}", effect="awaiting_approval",
     )]})
     owner = _owner(
         [_issue(262, "agent:backend", "needs-human")], ledger=ledger,
@@ -301,7 +377,7 @@ def test_an_older_proposal_never_stands_in_for_a_newer_decision_that_was_not_fil
     changed, the tech lead proposed a different decision, and filing it
     failed. The newer decision has no proposal: #262 is owed a triage."""
     ledger = _Ledger({262: [_triage_record(
-        262, TriageClass.OPERATOR_DECISION, "blocked-failed,needs-human",
+        262, TriageClass.OPERATOR_DECISION, f"blocked-failed,needs-human@{EP}",
         effect="awaiting_approval", filed=False,
     )]})
     owner = _owner(
@@ -319,7 +395,7 @@ def test_a_linked_proposal_whose_op_is_gone_is_not_in_force() -> None:
     """The record still says awaiting approval, but no proposal is open for
     the item any more: nothing waits on the operator, so it is owed again."""
     ledger = _Ledger({262: [_triage_record(
-        262, TriageClass.OPERATOR_DECISION, "needs-human", effect="awaiting_approval",
+        262, TriageClass.OPERATOR_DECISION, f"needs-human@{EP}", effect="awaiting_approval",
     )]})
     owner = _owner([_issue(262, "agent:backend", "needs-human")], ledger=ledger)
 
@@ -331,7 +407,7 @@ def test_a_linked_proposal_whose_op_is_gone_is_not_in_force() -> None:
 
 def test_a_changed_block_is_triaged_again() -> None:
     ledger = _Ledger({326: [_triage_record(
-        326, TriageClass.HUMAN_HAND_OVER, "blocked-cross-milestone,needs-human", effect="applied",
+        326, TriageClass.HUMAN_HAND_OVER, f"blocked-cross-milestone,needs-human@{EP}", effect="applied",
     )]})
     # The engine fix took the stale dependency label off (#7333).
     owner = _owner([_issue(326, "agent:backend", "needs-human")], ledger=ledger)
@@ -341,6 +417,242 @@ def test_a_changed_block_is_triaged_again() -> None:
     assert item.issue_number == 326
     assert item.reason.startswith("its block changed since it was triaged human_hand_over")
     assert item.prior is not None and item.prior.effect == "applied"
+
+
+def test_a_triage_does_not_cover_a_later_episode_of_the_same_block() -> None:
+    """#8688 (porchpin #450): a triage of one needs-human block stayed "in
+    force" after the block was lifted (the operator approved its proposal) and
+    the engine re-blocked the item under the same label for a new agent
+    question. A triage covers the block EPISODE it was decided on, not every
+    later block that happens to carry the same labels."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    first, second = "2026-10-04T11:55:04+00:00#7", "2026-10-08T00:54:00+00:00#9"
+    ledger = _Ledger({450: [_triage_record(
+        450, TriageClass.EXPLAINED, f"needs-human@{first}", effect="applied",
+    )]})
+    issue = _issue(450, "agent:backend", "needs-human")
+    episodes = _Episodes({450: first})
+    assert _owner([issue], ledger=ledger, episodes=episodes).agenda(
+        anchor_issue_number=ANCHOR,
+    ).in_force == (450,)
+
+    episodes.recorded[450] = second  # lifted, then blocked again
+    agenda = _owner([issue], ledger=ledger, episodes=episodes).agenda(anchor_issue_number=ANCHOR)
+
+    [item] = agenda.items
+    assert (item.issue_number, item.fingerprint) == (450, f"needs-human@{second}")
+    assert item.reason.startswith("it was blocked again, under the same labels")
+    assert agenda.in_force == ()
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    assert triage_owed(_config(), state, _Authority(ledger), _episode_owner(episodes)) is True
+
+
+def test_a_block_whose_episode_is_unrecorded_is_owed_then_bound_at_its_grant() -> None:
+    """#8688/#8697: with no recorded generation (a hand-placed label, or one
+    older than the records) a re-block cannot be told from the triaged block,
+    so the item is owed a triage. The grant binds an episode to GitHub's
+    standing application of the label, dated by it, and the triage made on it
+    covers the item while that application stands."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    issue = _issue(450, "agent:backend", "needs-human")
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    episodes = _Episodes()
+    old = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, "needs-human", effect="applied")]})
+    assert triage_owed(_config(), state, _Authority(old), _episode_owner(episodes, {450: 41})) is True
+
+    [item] = _owner(
+        [issue], ledger=old, episodes=episodes, applications={450: 41},
+    ).agenda(anchor_issue_number=ANCHOR).items
+
+    assert item.fingerprint == f"needs-human@{_application_event(41).created_at}#gh41"
+    triaged = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, item.fingerprint, effect="applied")]})
+    assert triage_owed(
+        _config(), state, _Authority(triaged), _episode_owner(episodes, {450: 41}),
+    ) is False
+
+
+def test_a_label_reapplied_outside_the_owner_is_a_new_episode() -> None:
+    """#8688 review r1: the operator removes needs-human and puts it back by
+    hand between the owner's observations. The owner's generation survives,
+    but GitHub's standing application of the label is a new event: the next
+    agenda opens a new episode and grants the item."""
+    issue = _issue(450, "agent:backend", "needs-human")
+    episodes = _Episodes({450: EP})
+    first = _owner([issue], episodes=episodes, applications={450: 7}).agenda(anchor_issue_number=ANCHOR)
+    [granted] = first.grants
+    ledger = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, granted.fingerprint, effect="applied")]})
+    assert _owner(
+        [issue], ledger=ledger, episodes=episodes, applications={450: 7},
+    ).agenda(anchor_issue_number=ANCHOR).in_force == (450,)
+
+    agenda = _owner(
+        [issue], ledger=ledger, episodes=episodes, applications={450: 8},
+    ).agenda(anchor_issue_number=ANCHOR)
+
+    [item] = agenda.items
+    assert item.fingerprint != granted.fingerprint and agenda.in_force == ()
+    assert item.reason.startswith("it was blocked again, under the same labels")
+
+
+def test_a_hand_reapplication_makes_a_review_due_at_the_next_recheck() -> None:
+    """#8688 review r2 F1: the board and the recorded episode are unchanged
+    after a hand re-application, so only GitHub can tell. The tick's check
+    reads no events between rechecks, and at the recheck (once per review
+    interval) finds the new application: a review is due on the same board."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+    from issue_orchestrator.control.health_review_trigger import health_review_decision
+
+    config = _config()
+    config.tech_lead.health_review.interval_minutes = 60
+    issue = _issue(450, "agent:backend", "needs-human")
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    store, now, reads = _Episodes({450: EP}), [0.0], []
+    applications = {450: 7}
+    episodes = _episode_owner(store, applications, clock=lambda: now[0], reads=reads)
+    [granted] = _owner([issue], episodes=store, applications=applications).agenda(
+        anchor_issue_number=ANCHOR,
+    ).grants
+    authority = _Authority(_Ledger({450: [_triage_record(
+        450, TriageClass.EXPLAINED, granted.fingerprint, effect="applied",
+    )]}))
+    assert triage_owed(config, state, authority, episodes) is False and reads == [450]
+    reviewed = health_review_decision(config, state, 0.0).fingerprint
+    state.last_reviewed_board_fingerprint = reviewed
+
+    applications[450] = 8  # taken off and put back by hand, unseen by the owner
+    now[0] = 1800.0
+    assert triage_owed(config, state, authority, episodes) is False
+    assert reads == [450]  # no GitHub read between rechecks
+
+    now[0] = 3600.0
+    decision = health_review_decision(
+        config, state, 1000.0 + 3600 * 24,
+        triage_owed=lambda: triage_owed(config, state, authority, episodes),
+    )
+    assert decision.fingerprint == reviewed and decision.due is True
+    assert reads == [450, 450]
+
+
+def test_a_binding_waits_for_the_block_owners_gate() -> None:
+    """#8688 review r2 F2: while the block's owner holds its per-issue gate it
+    may be opening a new generation, so no GitHub event read then is bound to
+    it: the episode is unknown, and the item owed."""
+    issue = _issue(450, "agent:backend", "needs-human")
+    store = _Episodes({450: EP}, busy={450})
+    ledger = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, f"needs-human@{EP}", effect="applied")]})
+    reads: list[int] = []
+
+    agenda = _owner([issue], ledger=ledger, episodes=store).agenda(anchor_issue_number=ANCHOR)
+    assert _episode_owner(store, reads=reads).verified({450: issue}) == {}
+
+    [item] = agenda.items
+    assert item.fingerprint == "needs-human@unknown" and store.bound == {} and reads == []
+
+
+def test_every_recheck_reads_github_whatever_the_cached_snapshot_says() -> None:
+    """#8688 review r6 F1: the cached issue snapshot can be hours old (an
+    incremental refresh that skips it), so an unchanged snapshot proves
+    nothing: each verification reads the standing application again."""
+    store, reads, applications = _Episodes({450: EP}), [], {450: 7}
+    # Long after the snapshot's updated_at: nothing about its age is suspect.
+    episodes = _episode_owner(store, applications, reads=reads, clock=lambda: 4e9)
+    issue = Issue(
+        number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
+        updated_at="2026-10-08T00:00:00Z",
+    )
+
+    first = episodes.verified({450: issue})
+    applications[450] = 8  # re-applied by hand; the snapshot still says 00:00:00
+
+    assert episodes.verified({450: issue}) != first and reads == [450, 450]
+
+
+def test_an_item_a_recheck_could_not_verify_stays_owed_until_one_does() -> None:
+    """#8688 review r5 F1: the recheck after a hand re-application fails to
+    read GitHub. The item must stay owed on every tick until a later recheck
+    verifies it, not only on the tick of the failed read."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    issue = _issue(450, "agent:backend", "needs-human")
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    store, now, applications = _Episodes({450: EP}), [0.0], {450: 7}
+    episodes = _episode_owner(store, applications, clock=lambda: now[0])
+    [granted] = _owner([issue], episodes=store, applications=applications).agenda(
+        anchor_issue_number=ANCHOR,
+    ).grants
+    authority = _Authority(_Ledger({450: [_triage_record(
+        450, TriageClass.EXPLAINED, granted.fingerprint, effect="applied",
+    )]}))
+    assert triage_owed(_config(), state, authority, episodes) is False
+
+    applications[450] = RuntimeError("events API 502")  # re-applied by hand; the read fails
+    now[0] = 3600.0
+    assert triage_owed(_config(), state, authority, episodes) is True
+    now[0] = 3660.0
+    assert triage_owed(_config(), state, authority, episodes) is True  # still owed between rechecks
+
+    applications[450] = 7  # GitHub reads again: the same application after all
+    now[0] = 7200.0
+    assert triage_owed(_config(), state, authority, episodes) is False
+
+
+def test_a_verified_item_still_waits_for_the_owners_gate() -> None:
+    """#8688 review r5 F2: every verification, including one of an item
+    verified before, waits for the owner's gate; while the owner is changing
+    the block the episode is unknown."""
+    store = _Episodes({450: EP})
+    episodes = _episode_owner(store, {450: 7})
+    issue = Issue(
+        number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
+        updated_at="2026-10-08T00:00:00Z",
+    )
+    assert episodes.verified({450: issue}) == {450: EP}
+
+    store.busy.add(450)
+
+    assert episodes.verified({450: issue}) == {}
+
+
+@pytest.mark.parametrize("application", [None, RuntimeError("events API 502")])
+def test_an_unverifiable_episode_is_owed_and_never_covered(application: Any) -> None:
+    """GitHub does not show the label standing (a stale cache), or its events
+    cannot be read completely: the episode is unknown, so a triage in force on
+    the recorded episode does not cover it, and nothing is bound."""
+    issue = _issue(450, "agent:backend", "needs-human")
+    episodes = _Episodes({450: EP})
+    ledger = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, f"needs-human@{EP}", effect="applied")]})
+
+    [item] = _owner(
+        [issue], ledger=ledger, episodes=episodes, applications={450: application},
+    ).agenda(anchor_issue_number=ANCHOR).items
+
+    assert item.fingerprint == "needs-human@unknown"
+    assert item.reason.startswith("its block's onset is not recorded or could not be verified")
+    assert episodes.bound == {}
+    recorded = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, item.fingerprint, effect="applied")]})
+    assert _owner(
+        [issue], ledger=recorded, episodes=episodes, applications={450: application},
+    ).agenda(anchor_issue_number=ANCHOR).in_force == ()
+
+
+def test_a_block_without_needs_human_keys_on_its_labels_alone() -> None:
+    """Only the shared needs-human block records generations; another blocking
+    label's fingerprint carries no episode, so its triage is not churned."""
+    ledger = _Ledger({500: [_triage_record(500, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]})
+    episodes = _Episodes()
+
+    agenda = _owner(
+        [_issue(500, "agent:backend", "blocked-failed")], ledger=ledger, episodes=episodes,
+        applications={500: RuntimeError("no GitHub read is made for it")},
+    ).agenda(anchor_issue_number=ANCHOR)
+
+    assert agenda.in_force == (500,) and episodes.bound == {}
 
 
 def test_the_agenda_is_capped_per_run_oldest_first() -> None:
@@ -365,9 +677,11 @@ def test_an_unreadable_ledger_fails_the_agenda_rather_than_guessing() -> None:
 
 def test_fingerprint_ignores_order_and_case() -> None:
     assert block_fingerprint(
-        ["Needs-Human", "blocked-failed"], tech_lead_marker=False, needs_human_label="needs-human"
+        ["Needs-Human", "blocked-failed"], tech_lead_marker=False, needs_human_label="needs-human",
+        episode=EP,
     ) == block_fingerprint(
-        ["blocked-failed", "needs-human"], tech_lead_marker=False, needs_human_label="needs-human"
+        ["blocked-failed", "needs-human"], tech_lead_marker=False, needs_human_label="needs-human",
+        episode=EP,
     )
 
 
@@ -826,18 +1140,18 @@ def test_an_owed_triage_keeps_a_review_due_on_an_unchanged_board() -> None:
         n: [_triage_record(n, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]
         for n in range(100, 100 + MAX_TRIAGE_ITEMS_PER_RUN)
     })
-    assert triage_owed(config, state, _Authority(ledger)) is True  # the three deferred ones
+    assert triage_owed(config, state, _Authority(ledger), _episode_owner(_Episodes())) is True  # the three deferred ones
     assert health_review_decision(
-        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, _Authority(ledger)),
+        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, _Authority(ledger), _episode_owner(_Episodes())),
     ).due is True
 
     everything = _Ledger({
         n: [_triage_record(n, TriageClass.EXPLAINED, "blocked-failed", effect="applied")]
         for n in range(100, 111)
     })
-    assert triage_owed(config, state, _Authority(everything)) is False
+    assert triage_owed(config, state, _Authority(everything), _episode_owner(_Episodes())) is False
     assert health_review_decision(
-        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, _Authority(everything)),
+        config, state, 1000.0 + 3600, triage_owed=lambda: triage_owed(config, state, _Authority(everything), _episode_owner(_Episodes())),
     ).due is False
 
 
