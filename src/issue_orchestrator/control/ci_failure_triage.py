@@ -190,32 +190,42 @@ class CiFailureTriage:
                 assessments, CiFailureKind.TRANSIENT, head_sha, records, reran=True,
                 note="These jobs already failed on a re-run of this head.",
             ))
+        if head_sha in escalated_heads(bodies):
+            return None  # already handed to a person; they re-run it or it waits
         remaining = tuple(run for run in runs if attempts[run].attempt == 1)
-        if not remaining:
-            logger.info("CI triage: PR #%d re-run accepted; waiting for its jobs", rework.pr_number)
+        latest = max(records, key=lambda record: record.requested_at) if records else None
+        if latest is None and remaining:
+            state.ci_triage_deferrals.pop(rework.pr_number, None)
+            return _rerun(rework, head_sha, assessments, self.clock(), run_ids=remaining)
+        # Waiting on GitHub: io asked (latest), or GitHub shows a re-run nobody
+        # recorded. Both are bounded, then go to a person - never asked twice.
+        if latest is not None and self.clock() - latest.requested_at < RERUN_START_GRACE:
             return None
-        if records:
-            latest = max(records, key=lambda record: record.requested_at)
-            if self.clock() - latest.requested_at < RERUN_START_GRACE or head_sha in escalated_heads(bodies):
-                return None  # in flight, or already handed to a person
-            return self._unconfirmed(state, rework, head_sha, latest.requested_at)
-        state.ci_triage_deferrals.pop(rework.pr_number, None)
-        return _rerun(rework, head_sha, assessments, self.clock(), run_ids=remaining)
+        if latest is None:
+            waits = state.ci_triage_deferrals.get(rework.pr_number, 0)
+            if waits < MAX_READ_DEFERRALS:
+                state.ci_triage_deferrals[rework.pr_number] = waits + 1
+                return None
+        return self._unconfirmed(state, rework, head_sha, None if latest is None else latest.requested_at)
 
     def _unconfirmed(
-        self, state: "OrchestratorState", rework: DiscoveredRework, head_sha: str, asked_at: datetime
+        self, state: "OrchestratorState", rework: DiscoveredRework, head_sha: str, asked_at: datetime | None
     ) -> DiscoveredAwaitingMergeEscalation:
-        """io asked once and GitHub never re-ran: a person decides, not a coding agent."""
+        """A re-run that never restarted the failed jobs: a person decides, not a coding agent."""
         state.ci_triage_deferrals.pop(rework.pr_number, None)
+        asked = (
+            f"io asked GitHub at {asked_at.isoformat()} to re-run this PR's transient CI failure"
+            if asked_at is not None else "GitHub shows a re-run of this PR's transient CI failure"
+        )
         return DiscoveredAwaitingMergeEscalation(
             issue_number=rework.issue_number, pr_number=rework.pr_number,
             pr_url="", issue_key=str(rework.issue_number),
             rework_cycle=rework.rework_cycle, kind="ci_rerun_unconfirmed",
             reason=(
-                f"io asked GitHub at {asked_at.isoformat()} to re-run this PR's transient CI failure "
-                f"on head {head_sha[:12]} (its one re-run for this head), and GitHub has not re-run "
-                "it. Check that the engine's GitHub credential can write Actions, then re-run the "
-                f"failed jobs; io follows the new attempt from there. {rerun_escalated_marker(head_sha)}"
+                f"{asked} on head {head_sha[:12]} (its one re-run for this head), and the failed "
+                "jobs have not run again. Check that the engine's GitHub credential can write "
+                "Actions and that runners are available, then re-run the failed jobs; io follows "
+                f"the new attempt from there. {rerun_escalated_marker(head_sha)}"
             ),
         )
 

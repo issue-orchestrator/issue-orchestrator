@@ -356,17 +356,41 @@ def test_an_accepted_rerun_github_does_not_show_is_never_asked_again() -> None:
     engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
 
 
-def test_a_rerun_github_shows_is_waited_for_even_unrecorded() -> None:
-    """No record on the PR (a person re-ran it), and the re-run's jobs have not
-    failed yet: no request and no rework, while the old failure is still shown."""
+def test_a_rerun_github_shows_is_waited_for_then_handed_to_a_person() -> None:
+    """No record on the PR (a person re-ran it) and the re-run's jobs never ran:
+    no request and no rework; a bounded wait, then one escalation."""
+    from issue_orchestrator.control.ci_failure_triage import MAX_READ_DEFERRALS
+
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
-    engine.runs[900] = CheckRunAttempt(attempt=2, job_ids=frozenset({31}))
-    for _ in range(6):  # more scans than any deferral bound
+    engine.runs[900] = CheckRunAttempt(attempt=2, job_ids=frozenset())
+    for _ in range(MAX_READ_DEFERRALS):
+        reworks, reruns, plan = engine.tick()
+        assert (reworks, reruns) == ([], []) and plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
+    (escalation,) = engine.tick()[2].actions_of_type(ActionType.ESCALATE_TO_HUMAN)
+    engine.comments.append((318, escalation.comment_override))
+    for _ in range(2):
         reworks, reruns, plan = engine.tick()
         assert (reworks, reruns) == ([], [])
+        assert plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
         assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
     engine.host.rerun_failed_check_jobs.assert_not_called()
+
+
+def test_an_accepted_rerun_that_never_starts_goes_to_a_person_once() -> None:
+    """io asked, GitHub opened attempt 2 but never ran a job: after the start
+    grace one escalation; no rework, no second request, no re-escalation."""
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert engine.apply(rerun)  # attempt 2 opened with no jobs
+    assert engine.tick()[:2] == ([], [])
+    engine.age_records()
+    (escalation,) = engine.tick()[2].actions_of_type(ActionType.ESCALATE_TO_HUMAN)
+    engine.comments.append((318, escalation.comment_override))
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], []) and plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
+    engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
 
 
 def test_a_partly_refused_rerun_is_never_asked_twice() -> None:
