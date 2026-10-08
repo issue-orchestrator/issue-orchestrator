@@ -30,9 +30,11 @@ awaiting the operator) is not triaged again.
 
 "Unchanged" means the same block EPISODE, not only the same labels (#8688): a
 block lifted and later re-raised under the same label and cause is a new
-episode and owes a new triage. The fingerprint of a needs-human block carries
-the episode (its generation's onset, recorded by the block's one owner), and a
-block whose episode cannot be determined is never covered by a prior triage.
+episode and owes a new triage. The fingerprint carries the episode of every
+blocking label: the needs-human block's generation (recorded by the block's one
+owner) and, for each other blocking label, GitHub's standing application of it
+(#8731). A block whose episode cannot be determined is never covered by a
+prior triage.
 """
 
 from __future__ import annotations
@@ -57,11 +59,28 @@ TRIAGE_IN_FORCE_EFFECTS = frozenset({"applied", "approved_applied", "declined"})
 MAX_TRIAGE_ITEMS_PER_RUN = 8
 
 
-#: The episode of a needs-human block whose generation is not recorded. A
-#: fingerprint carrying it is never covered by a prior triage (#8688): without
-#: an onset a re-block cannot be told from the block that was triaged, so the
-#: rule fails toward triaging again rather than toward silence.
+#: The episode of a block whose onset is not known: a needs-human generation
+#: not recorded, or a blocking label's application not verified. A fingerprint
+#: carrying it is never covered by a prior triage (#8688, #8731): without an
+#: onset a re-block cannot be told from the block that was triaged, so the rule
+#: fails toward triaging again rather than toward silence.
 UNKNOWN_EPISODE = "unknown"
+
+
+def block_episode(needs_human: str | None, label_onsets: Mapping[str, str]) -> str:
+    """The episode of a whole block, from the onset of each of its parts (#8731).
+
+    ``needs_human`` is the needs-human block's generation when the block holds
+    that label or the hand-over marker, else None; ``label_onsets`` dates every
+    OTHER blocking label (casefolded name -> its standing application). Lifting
+    and re-raising any one part changes it. A block of needs-human alone keeps
+    the episode #8688 recorded, so its triages stay comparable.
+    """
+    parts = [] if needs_human is None else [needs_human]
+    parts.extend(f"{label}={onset}" for label, onset in sorted(label_onsets.items()))
+    if not parts:
+        raise ValueError("a block episode needs at least one dated part")
+    return ";".join(parts)
 
 
 def block_fingerprint(
@@ -76,10 +95,11 @@ def block_fingerprint(
     The casefolded, sorted blocking labels. The shared ``needs-human`` label is
     left out while the tech-lead hand-over marker is on the item: that block is
     the tech lead's own hand-over, so placing it is not a change that calls for
-    another triage. ``episode`` is the needs-human block's generation
-    (``@<episode>``, :data:`UNKNOWN_EPISODE` when unrecorded) when the block
-    holds that label or the marker, else None: a lift and re-block changes it
-    even when the labels come back the same (#8688).
+    another triage. ``episode`` is the block's :func:`block_episode`
+    (``@<episode>``, :data:`UNKNOWN_EPISODE` when any part of it is not
+    known), or None for a labels-only view: a lift and re-block of any
+    blocking label changes it even when the labels come back the same (#8688,
+    #8731).
     """
     folded = {label.casefold() for label in blocking_labels}
     if tech_lead_marker:

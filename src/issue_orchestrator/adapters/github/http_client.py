@@ -1737,9 +1737,23 @@ class GitHubHttpClient:
         author, so a later labeled event of a standing label is not who
         applied it.
         """
-        folded = label.casefold()
+        return self.standing_label_runs(
+            issue_number, (label,), removed=removed, close_voids=close_voids,
+        )[label.casefold()]
+
+    def standing_label_runs(
+        self,
+        issue_number: int,
+        labels: Sequence[str],
+        *,
+        removed: bool = False,
+        close_voids: bool = True,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """:meth:`standing_label_events` for several labels from ONE scan of
+        the issue's events, keyed by casefolded label name (#8731): a blocked
+        item's every blocking label is dated by one read, not one per label."""
         kind = "unlabeled" if removed else "labeled"
-        run: list[dict[str, Any]] = []
+        runs: dict[str, list[dict[str, Any]]] = {label.casefold(): [] for label in labels}
         for batch in self._paginate_fresh(
             f"/repos/{self._config.repo}/issues/{issue_number}/events",
             params={"per_page": 100},
@@ -1753,7 +1767,8 @@ class GitHubHttpClient:
                     # standing answer exists (#7763 review r26 F2).
                     raise GitHubScanIncompleteError(f"issue #{issue_number} events: a malformed event row")
                 if event.get("event") in ("closed", "reopened"):
-                    run = [] if close_voids else run
+                    if close_voids:
+                        runs = {folded: [] for folded in runs}
                     continue
                 if event.get("event") not in ("labeled", "unlabeled"):
                     continue
@@ -1765,9 +1780,10 @@ class GitHubHttpClient:
                     raise GitHubScanIncompleteError(
                         f"issue #{issue_number} events: a {event.get('event')} event names no label"
                     )
-                if str(named["name"]).casefold() == folded:
-                    run = [*run, event] if event.get("event") == kind else []
-        return run
+                folded = str(named["name"]).casefold()
+                if folded in runs:
+                    runs[folded] = [*runs[folded], event] if event.get("event") == kind else []
+        return runs
 
     def app_identity(self) -> GitHubAppIdentity | None:
         """This client's effective GitHub App identity, or None for a token."""

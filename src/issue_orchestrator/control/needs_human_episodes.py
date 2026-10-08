@@ -9,12 +9,12 @@ to GitHub's standing ``labeled`` event, read from the complete issue events
 
 * a health review's agenda verifies every item before granting any, so every
   triage is made on an episode bound to the label application standing then;
-* the tick's "is a triage owed" check reads the recorded episodes, and
-  re-verifies them at most once per health-review interval, so a label taken
-  off and put back by hand, unseen by the owner, still makes a review due
-  without a GitHub event scan on every tick. A recheck reads every item:
-  the cached issue snapshot may be hours old, so nothing local can prove an
-  item unchanged (#8688 review r6).
+* the tick's "is a triage owed" check reads the recorded episodes between the
+  rechecks :class:`~.block_episodes.BlockEpisodes` schedules (once per
+  health-review interval), so a label taken off and put back by hand, unseen
+  by the owner, still makes a review due without a GitHub event scan on every
+  tick. A recheck reads every item: the cached issue snapshot may be hours
+  old, so nothing local can prove an item unchanged (#8688 review r6).
 
 An item whose events cannot be read, that GitHub does not show the label
 standing on, or whose block is being changed by its owner right now (the
@@ -48,15 +48,10 @@ class NeedsHumanEpisodes:
         store: "NeedsHumanEpisodeReader",
         label_applications: Callable[[int, str], "LabelEvent | None"],
         labels: "LabelManager",
-        clock: Callable[[], float],
-        recheck_seconds: Callable[[], float],
     ) -> None:
         self._store = store
         self._label_applications = label_applications
         self._labels = labels
-        self._clock = clock
-        self._recheck_seconds = recheck_seconds
-        self._checked_at: float | None = None
         #: Items the last verification could not verify: unknown until one does.
         self._unverified: set[int] = set()
 
@@ -78,18 +73,10 @@ class NeedsHumanEpisodes:
         self._unverified = set(issues) - set(verified)
         return verified
 
-    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
-        """The recorded episodes, re-verified once per recheck period.
-
-        The tick reads this, so it makes no GitHub read between rechecks. A
-        recheck that finds a new application opens a new episode, and the
-        triage made on the old one no longer covers the item. An item the last
-        recheck could not verify stays unknown (owed) until one does.
-        """
-        now = self._clock()
-        if self._checked_at is None or now - self._checked_at >= self._recheck_seconds():
-            self._checked_at = now
-            return self.verified(issues)
+    def recorded(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+        """The recorded episodes, with no GitHub read: what the tick reads
+        between rechecks. An item the last verification could not verify
+        stays unknown (owed) until one does."""
         recorded = self._store.needs_human_episodes(sorted(issues))
         return {number: episode for number, episode in recorded.items() if number not in self._unverified}
 
@@ -114,19 +101,3 @@ class NeedsHumanEpisodes:
         if needs_human.casefold() in {label.casefold() for label in issue_labels}:
             return needs_human
         return self._labels.tech_lead_needs_human
-
-
-class _UnwiredEpisodes(NeedsHumanEpisodes):
-    """Stands in until the composition binds the real owner: reading raises."""
-
-    def __init__(self) -> None:
-        pass
-
-    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
-        raise RuntimeError("needs-human episodes are not wired (#8688)")
-
-    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
-        raise RuntimeError("needs-human episodes are not wired (#8688)")
-
-
-UNWIRED_EPISODES: NeedsHumanEpisodes = _UnwiredEpisodes()
