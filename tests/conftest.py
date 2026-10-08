@@ -62,6 +62,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, Is
 from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from tests.label_application_helpers import standing_while_present
 
 TEST_ADMIN_TOKEN = "test-admin-token"
 TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
@@ -437,6 +438,11 @@ class MockGitHubAdapter:
     def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
         """Get fresh labels for an issue."""
         return self.get_issue_labels(issue_number)
+
+    def label_application(self, issue_number: int, label: str):
+        """GitHub's standing application of ``label``: one event per number
+        while it stands (no test of this fake re-applies a label by hand)."""
+        return standing_while_present(self.get_issue_labels_fresh)(issue_number, label)
 
     # LabelManager methods
     def add_label(self, issue_number: int, label: str) -> None:
@@ -1319,6 +1325,7 @@ def build_test_orchestrator_deps(
         # The RAW writer: the owner is the one holder that may write this label.
         labels=repo_host,
         read_labels=repo_host.get_issue_labels_fresh,
+        label_application=repo_host.label_application,
         quarantined_issue_numbers=pending_work_claims.quarantined_issue_numbers,
         causes=pending_work_claims,
     )

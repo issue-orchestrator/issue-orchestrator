@@ -515,6 +515,15 @@ class NeedsHumanCauseStore(Protocol):
         """Drop every cause, and the generation, of an issue whose shared label is gone."""
         ...
 
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
+        """Bind the generation to GitHub's standing application of the label
+        (see :meth:`NeedsHumanEpisodeReader.bind_needs_human_episode`). The
+        owner binds a generation it opens, a cause it joins to one, and the
+        generation a release would end (#8774)."""
+        ...
+
 
 class NeedsHumanEpisodeReader(Protocol):
     """Which generation (episode) of the shared block each issue is in (#8688).
@@ -549,7 +558,9 @@ class NeedsHumanEpisodeReader(Protocol):
         generation is bound to the event. A generation bound to a DIFFERENT
         event is stale: the label was removed and re-applied outside the owner
         (by hand, between owner observations), so it is replaced by a new one
-        dated by the event. A label no acquisition opened (put on by hand, or
+        dated by the event, and the old one's cause rows and removal intent
+        are retired in the same transaction: the person's clear ended every
+        cause of it (#8774). A label no acquisition opened (put on by hand, or
         before generations were recorded) gets one dated by the event. A
         generation for a label that is in fact gone is retired by the owner's
         stale-row reconcile.

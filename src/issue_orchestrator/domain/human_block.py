@@ -62,15 +62,21 @@ class NeedsHumanCause(Enum):
         return HumanHoldScope.MERGE if self is NeedsHumanCause.MERGE_DECISION else HumanHoldScope.WORK
 
     @property
-    def releases_only_its_recorded_block(self) -> bool:
-        """A withdrawal of this cause may take the label off ONLY while its row is recorded.
+    def is_row_backed(self) -> bool:
+        """The block owner records this cause as a row of the block's generation.
 
-        The liveness owner's releases are durable debts replayed later (#7350).
-        By then a force-clear may have ended the block, and a person may have
-        put a new one on: a replayed withdrawal whose cause is no longer
-        recorded must leave that label alone.
+        The other two keep their provenance in their own lifecycles: the
+        tech-lead marker label and the quarantine ledger.
+
+        A row-backed withdrawal may take the label off ONLY while its row is
+        recorded on the generation standing now (#8774). A release can arrive
+        long after its acquisition: a liveness debt is replayed later (#7350),
+        an agent's question is answered days on. By then a person may have
+        cleared the block and put a new one on by hand, which ends every cause
+        of the old generation, so a release whose row is gone must leave that
+        person's label alone.
         """
-        return self is NeedsHumanCause.ACTION_LIVENESS
+        return self not in {NeedsHumanCause.TECH_LEAD_ESCALATION, NeedsHumanCause.CLAIM_QUARANTINE}
 
     def matches_key(self, key: str) -> bool:
         if self is NeedsHumanCause.VALIDATED_WORK_DISPOSITION:

@@ -67,6 +67,15 @@ class _ScopedCauses:
     def clear_needs_human_causes(self, issue_number: int) -> None:
         self.scope.perform(lambda: self.causes.clear_needs_human_causes(issue_number))
 
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
+        return self.scope.perform(
+            lambda: self.causes.bind_needs_human_episode(
+                issue_number, event_id=event_id, applied_at=applied_at
+            )
+        )
+
 
 def scoped_human_block(
     owner: "NeedsHumanBlock", scope: SynchronousEffectScope, labels: "BlockLabelWriter"
@@ -75,6 +84,9 @@ def scoped_human_block(
         owner,
         labels=labels,
         read_labels=lambda number: scope.perform(lambda: owner.read_labels(number)),
+        label_application=lambda number, label: scope.perform(
+            lambda: owner.label_application(number, label)
+        ),
         quarantined_issue_numbers=lambda: scope.perform(
             owner.quarantined_issue_numbers
         ),

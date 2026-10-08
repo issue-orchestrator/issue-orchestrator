@@ -75,10 +75,18 @@ class NeedsHumanEpisodes:
                 # BUSY: the owner is changing this block right now.
                 if status is not IssueDispositionGateStatus.BUSY:
                     label = self._episode_label(issue.labels).casefold()
-                    read = self._read(number, (label, *also.get(number, ())))
+                    needs_human = self._labels.needs_human.casefold()
+                    read = self._read(number, tuple(dict.fromkeys(
+                        (label, needs_human, *also.get(number, ())),
+                    )))
                     if read is not None:
                         applications[number] = read
-                        episode = self._bind(number, read[label])
+                        if label == needs_human or read[needs_human] is None:
+                            episode = self._bind(number, read[label])
+                        # else: the snapshot dates the episode by the marker, but
+                        # GitHub shows needs-human standing: the snapshot is stale,
+                        # and binding the marker's event would read as a hand
+                        # re-application and retire the block's causes (#8774).
             if episode is not None:
                 verified[number] = episode
         self._unverified = (self._unverified - set(issues)) | (set(issues) - set(verified))

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ..control.claim_quarantine import ClaimQuarantineOwner, build_claim_quarantine_owner
 from ..control.needs_human_block import NeedsHumanBlock
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from ..control.governed_label_set import LabelWriter
     from ..control.label_manager import LabelManager
     from ..ports import EventSink
+    from ..ports.label_application import LabelApplicationReader
     from ..ports.repository_host import RepositoryHost
 
 
@@ -86,6 +87,9 @@ def build_pending_work_wiring(
         read_labels=repository_host.get_issue_labels_fresh,
         quarantined_issue_numbers=claims.quarantined_issue_numbers,
         causes=claims,
+        # The host reads GitHub's issue events too (as the episode owners'
+        # wiring does): a generation is bound to its standing label event.
+        label_application=cast("LabelApplicationReader", repository_host).label_application,
     )
     # The applier is the single seam every label mutation passes through, so it
     # is where an acquisition records its cause and a removal withdraws one

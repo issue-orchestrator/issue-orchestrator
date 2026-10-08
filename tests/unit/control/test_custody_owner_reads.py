@@ -25,6 +25,7 @@ from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.provider_lane import BillingMode, ProviderLane
 from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+from tests.label_application_helpers import standing_while_present
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 HOUR = timedelta(hours=1)
@@ -49,6 +50,7 @@ def _block(
         labels=_NoLabels(),
         tech_lead_marker="tech-lead-needs-human",
         read_labels=no_fresh_read,
+        label_application=standing_while_present(no_fresh_read),
         quarantined_issue_numbers=quarantined,
         causes=store,
     )

@@ -15,6 +15,7 @@ from issue_orchestrator.control.needs_human_block import (
 from issue_orchestrator.execution.pending_work_claim_store import (
     SqlitePendingWorkClaimStore,
 )
+from tests.label_application_helpers import standing_while_present
 
 
 @dataclass
@@ -59,6 +60,7 @@ def owner(labels: Labels, path: Path) -> NeedsHumanBlock:
         labels.read,
         frozenset,
         SqlitePendingWorkClaimStore(path),
+        standing_while_present(labels.read),
     )
 
 

@@ -8,8 +8,9 @@ not a second one.
 
 A resolution discharges, in a human's stead, exactly the work-block causes a
 tech lead decided (:func:`~..domain.block_resolution.is_resolvable_work_block`),
-all or nothing: every named cause must stand on the LIVE label, and the label
-comes off only when no other cause holds it. Otherwise nothing is touched,
+all or nothing: every named cause must stand on the LIVE label, in the
+generation GitHub shows standing (a hand re-application ends them, #8774), and
+the label comes off only when no other cause holds it. Otherwise nothing is touched,
 and the outcome says whether any write was attempted (only the owner knows),
 which is what the caller's write-ahead record of the discharge needs.
 """
@@ -38,6 +39,7 @@ class BlockResolutionCommand:
     if TYPE_CHECKING:  # the owner's own gate and internals
         def _mutate(self, target: int, operation: Callable[[], T], *, busy: T) -> T: ...
         def _label_present_now(self, issue_number: int) -> bool | None: ...
+        def _bind_standing_generation(self, target: int) -> bool: ...
         def _recorded_cause_holds(self, cause: NeedsHumanCause, issue_number: int) -> bool: ...
         def _holds(self, cause: NeedsHumanCause, issue_number: int) -> bool: ...
         def _withdraw(self, request: HumanBlockRequest) -> None: ...
@@ -51,6 +53,8 @@ class BlockResolutionCommand:
 
     def _resolve(self, target: int, causes: frozenset[NeedsHumanCause], reason: str) -> ResolutionOutcome:
         if not self._label_present_now(target):  # unreadable, or already cleared: not ours
+            return _NOTHING
+        if not self._bind_standing_generation(target):  # which generation stands is unknown
             return _NOTHING
         if not all(self._recorded_cause_holds(cause, target) for cause in causes):
             return _NOTHING  # all of the decision, or none of it

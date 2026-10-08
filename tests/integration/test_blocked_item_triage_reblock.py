@@ -130,6 +130,7 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         tech_lead_marker=labels.tech_lead_needs_human,
         labels=github,
         read_labels=lambda number: sorted(github.live.get(number, set())),
+        label_application=github.label_application,
         quarantined_issue_numbers=frozenset,
         causes=store,
     )
@@ -220,6 +221,7 @@ def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: 
     block = NeedsHumanBlock(
         needs_human_label=labels.needs_human, tech_lead_marker=labels.tech_lead_needs_human,
         labels=github, read_labels=lambda number: sorted(github.live.get(number, set())),
+        label_application=github.label_application,
         quarantined_issue_numbers=frozenset, causes=store,
     )
     question = HumanBlockRequest(
