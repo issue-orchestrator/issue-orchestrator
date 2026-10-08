@@ -11140,15 +11140,66 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         assert f"{RULINGS_PROMPT_HEADING}365\n" in result.session.original_prompt
         assert ruling.text in result.session.original_prompt
 
-    def test_a_covered_issue_whose_rulings_cannot_be_read_refuses_the_launch(
+    def test_a_covered_issue_with_a_damaged_rulings_block_refuses_the_launch(
         self, tech_lead_bundle, mock_repo_host
     ) -> None:
         bundle, _owner, bodies, _ruling, anchor = tech_lead_bundle
         self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
-        bodies.unreadable.add(365)
+        bodies.bodies[365] = bodies.bodies[365].replace("<!-- io:standing-rulings:end -->", "")
 
         result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
 
         assert result.success is False
         assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
         assert bundle.create_session_calls == []
+
+    def test_a_branch_number_github_has_no_issue_for_does_not_wedge_the_batch(
+        self, tech_lead_bundle, mock_repo_host
+    ) -> None:
+        """codex r1 F2: branch ``999-feature`` with no issue #999 and ``Closes
+        #365``: the batch still starts, bound by #365's ruling."""
+        bundle, _owner, bodies, ruling, anchor = tech_lead_bundle
+        self._batch_of(mock_repo_host, (512, "999-feature", "Closes #365"))
+        bodies.unreadable.add(999)
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is True and ruling.text in result.session.original_prompt
+
+    def test_a_retried_run_is_bound_by_the_rulings_standing_now(
+        self, tech_lead_bundle, sample_config, tmp_path
+    ) -> None:
+        """codex r1 F1: a ruling recorded on a covered issue after the original
+        launch binds the validation retry; the retry reads it fresh."""
+        from dataclasses import replace
+
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+        from tests.standing_ruling_helpers import a_ruling, body_with
+
+        bundle, _owner, bodies, _ruling, _anchor = tech_lead_bundle
+        carrier = TestAValidationRetryCarriesItsLaunchAuthority()
+        checkout = tmp_path / "worktree-6410"
+        checkout.mkdir()
+        source = SessionRunIdentity(session_name="tech-lead-1", run_id="run-original", started_at="2026-09-18")
+        SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root).record(
+            run_id=source.run_id, session_name=source.session_name,
+            authority=TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW, anchor_issue_number=6410, problem_issue_numbers=(365,),
+            ),
+        )
+        data = carrier._seed_launch_inputs(checkout, source)
+        (data / "tech-lead-assignment.json").write_text(
+            json.dumps(TechLeadAssignment(flavor=TechLeadSessionFlavor.HEALTH_REVIEW).to_dict())
+        )
+        BoardSnapshot(
+            generated_at="2026-09-18T00:00:00", orchestrator_paused=False, recent_failures=[], problem_cohort=[365],
+        ).write(data / "board-snapshot.json")
+        since = a_ruling("m-00000000beef", "Recorded after the original launch.")
+        bodies.bodies[365] = body_with(since)
+        retry = replace(carrier._retry(source, worktree_path=str(checkout)), branch_name="6410-health-review")
+
+        result = bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        prompt = bundle.create_session_calls[0]["cmd"]
+        assert f"{RULINGS_PROMPT_HEADING}365" in prompt and since.text in prompt

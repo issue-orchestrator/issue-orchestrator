@@ -71,8 +71,9 @@ class StandingRulings(Protocol):
         """The binding section for a tech-lead run over other issues' work (#8347).
 
         *covered* maps each issue the run covers to its PRs in the run. Each
-        issue's rulings are read fresh from its body; raises
-        :class:`StandingRulingsUnavailable` when any one cannot be read.
+        issue's rulings are read fresh from its body (a number GitHub has no
+        issue for binds nothing); raises :class:`StandingRulingsUnavailable` on
+        a damaged block, and the read's own error when a read fails.
         """
         ...
 
@@ -81,7 +82,7 @@ class StandingRulingsBackfill(Protocol):
     """Fill the local index from issue bodies a listing just read (#8347)."""
 
     def backfill(self, issues: Iterable["Issue"]) -> int:
-        """Index the rulings of each issue the index has never synced; how many."""
+        """Re-read, fresh, each listed issue whose rulings differ from the index; how many."""
         ...
 
 

@@ -91,10 +91,13 @@ claims it settles; no files means the whole issue).
   rulings in full. A tech-lead run is also told the rulings of every other
   issue whose work it covers, read fresh from each body: a batch review's PRs'
   issues (the manifest lists each PR's `issue_numbers`) and a health review's
-  problem cohort (#8347). A covered issue whose rulings cannot be read refuses
-  the launch. The Tech lead page shows rulings as of the engine's last read;
-  startup fills the index from the bodies of the issues it just synced, so
-  rulings recorded before the index existed show without another read.
+  problem cohort (#8347), again at every validation retry. A covered issue
+  whose read fails or whose block is damaged refuses the launch; a number
+  GitHub has no issue for binds nothing. The Tech lead page shows rulings as
+  of the engine's last read; at startup the owner compares the bodies the
+  queue sync just read with the index and re-reads, fresh, each issue that
+  differs, so rulings recorded before the index existed (or edited by hand)
+  show without waiting for a launch.
 - **The review rule.** An approval of a diff that touches a ruling's scope must
   attest it: `reviewer-done approved ... --upholds-ruling <id>`, or
   `upheld_rulings` in a review exchange's decision JSON. If it does not, the

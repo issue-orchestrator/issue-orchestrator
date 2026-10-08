@@ -63,6 +63,7 @@ from .transition_log import log_transition
 from ..ports.event_sink import make_trace_event
 from .session_launch_types import LaunchResult
 from .scoped_rework_observation import observe_rework_targets
+from .review_scope import issues_of_pr
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_charter_prompt import stage_tech_lead_charter
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
@@ -584,9 +585,12 @@ def prepare_tech_lead_session_data(
         if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         else TriageAgenda()
     )
-    covered_rulings = launch_prompt.covered_rulings(
-        _covered_issues(tech_lead_manifest, problem_issue_numbers, triage_agenda, anchor=issue.number)
-    )
+    covered_rulings = launch_prompt.covered_rulings(_covered_issues(
+        tech_lead_manifest.covered_issues() if tech_lead_manifest is not None else {},
+        problem_issue_numbers,
+        frozenset(item.issue_number for item in triage_agenda.items),
+        anchor=issue.number,
+    ))
     observed_session_generations = tuple(
         sorted(
             (
@@ -691,22 +695,51 @@ def prepare_tech_lead_session_data(
 
 
 def _covered_issues(
-    manifest: TechLeadManifest | None,
+    pr_issues: dict[int, tuple[int, ...]],
     problem_issue_numbers: tuple[int, ...],
-    triage_agenda: TriageAgenda,
+    triaged: frozenset[int],
     *,
     anchor: int,
 ) -> dict[int, tuple[int, ...]]:
     """The other issues whose work a tech-lead run covers, with their PRs in it
-    (#8347): a batch's PRs' issues and a health review's problem cohort. The
-    anchor's own rulings come with its launch prompt, and a triage item's with
-    its agenda entry, so neither is repeated."""
-    covered = manifest.covered_issues() if manifest is not None else {}
+    (#8347): a batch's PRs' issues (*pr_issues*) and a health review's problem
+    cohort. The anchor's own rulings come with its launch prompt, and a triage
+    item's with its agenda entry, so neither is repeated."""
+    covered = dict(pr_issues)
     for number in problem_issue_numbers:
         covered.setdefault(number, ())
-    for number in (anchor, *(item.issue_number for item in triage_agenda.items)):
+    for number in (anchor, *triaged):
         covered.pop(number, None)
     return covered
+
+
+def retried_covered_rulings(
+    launch_prompt: "LaunchPromptProvider",
+    repository_host: "RepositoryHost",
+    carried: "LaunchAuthorityTransfer | None",
+    *,
+    repo_slug: str,
+) -> str | None:
+    """The rulings binding a RETRIED tech-lead run over other issues' work,
+    read fresh now (#8347): a ruling recorded or retired since the original
+    launch binds the retry. Its scope is the carried create-once authority
+    (never re-sampled); each manifest PR's issues are read from GitHub, not
+    from the agent-writable manifest copy. A PR GitHub no longer has binds
+    nothing. Raises as :meth:`LaunchPromptProvider.covered_rulings` does."""
+    if carried is None:
+        return None
+    authority = carried.authority
+    pr_issues: dict[int, list[int]] = {}
+    for number in authority.manifest_pr_numbers:
+        pr = repository_host.get_pr(number)
+        for issue_number in issues_of_pr(pr, repo_slug=repo_slug) if pr is not None else ():
+            pr_issues.setdefault(issue_number, []).append(number)
+    return launch_prompt.covered_rulings(_covered_issues(
+        {issue_number: tuple(sorted(prs)) for issue_number, prs in pr_issues.items()},
+        authority.problem_issue_numbers,
+        authority.triage_issue_numbers(),
+        anchor=authority.anchor_issue_number,
+    ))
 
 
 @dataclass(frozen=True)

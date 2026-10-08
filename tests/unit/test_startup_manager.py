@@ -2162,11 +2162,13 @@ class TestStartupBackfillsTheStandingRulingsIndex:
     async def test_a_synced_queue_fills_the_index_for_rulings_recorded_earlier(
         self, mock_config, mock_events, mock_runner, mock_issue_branches_fn, sample_state,
     ):
-        from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex, a_ruling, body_with, rulings_owner
+        from tests.standing_ruling_helpers import (
+            InMemoryStandingRulingsIndex, IssueBodies, a_ruling, body_with, rulings_owner,
+        )
 
         ruling = a_ruling()
         index = InMemoryStandingRulingsIndex()
-        owner = rulings_owner(index=index)
+        owner = rulings_owner(IssueBodies({364: body_with(ruling), 327: body_with(ruling)}), index)
 
         def refresh() -> None:
             sample_state.cached_scope_issues = [Issue(number=364, title="Walk", labels=[], body=body_with(ruling))]
@@ -2184,16 +2186,19 @@ class TestStartupBackfillsTheStandingRulingsIndex:
     async def test_a_degraded_queue_sync_backfills_nothing_from_its_stale_snapshot(
         self, mock_config, mock_events, mock_runner, mock_issue_branches_fn, sample_state,
     ):
-        from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex, a_ruling, body_with, rulings_owner
+        from tests.standing_ruling_helpers import (
+            InMemoryStandingRulingsIndex, IssueBodies, a_ruling, body_with, rulings_owner,
+        )
 
         index = InMemoryStandingRulingsIndex()
+        bodies = IssueBodies({364: body_with(a_ruling())})
         sample_state.cached_scope_issues = [Issue(number=364, title="Walk", labels=[], body=body_with(a_ruling()))]
 
         def refresh() -> None:
             raise RepositoryHostError("transient GitHub blip")
 
         await self._manager(
-            mock_config, mock_events, mock_runner, mock_issue_branches_fn, rulings_owner(index=index), refresh
+            mock_config, mock_events, mock_runner, mock_issue_branches_fn, rulings_owner(bodies, index), refresh
         ).run_startup(sample_state)
 
-        assert index.rows == {}
+        assert index.rows == {} and bodies.reads == []

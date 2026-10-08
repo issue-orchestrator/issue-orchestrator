@@ -66,6 +66,7 @@ from .tech_lead_session_policy import (
     failure_investigation_scratch_identity,
     TechLeadLaunchInputs,
     prepare_tech_lead_session_data,
+    retried_covered_rulings,
     tech_lead_prep_failure,
 )
 from .host_rate_limit_launch_gate import LaunchMutations, apply_launch_mutations, converge_claim
@@ -83,6 +84,7 @@ from ..ports.provider_readiness import (
     ProviderReadinessProbe,
 )
 from ..ports.launch_prompt import LaunchPromptProvider
+from ..ports.standing_rulings import StandingRulingsUnavailable
 from .launch_prompt import NO_LAUNCH_PROMPT
 from ..ports.session_output import SessionOutput
 from ..ports.event_sink import SessionStartedEventPayload, make_session_started_event
@@ -1311,6 +1313,11 @@ class SessionLauncher:
         if isinstance(carried, str):
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, carried)
+        try:  # the rulings of the work it covers, read fresh for the retry (#8347)
+            covered = retried_covered_rulings(self._launch_prompt, self.repository_host, carried, repo_slug=issue.key.scope())
+        except StandingRulingsUnavailable as error:
+            self._release_claim_if_held(issue.number, claim)
+            return LaunchResult.required_input_unavailable(str(error))
 
         # Durable before anything irreversible (#6999 A2); a proposal's consent too (#7763 r22).
         if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(run, issue_number=issue.number):
@@ -1331,7 +1338,7 @@ class SessionLauncher:
                 config=self.config,
                 retry_count=retry_count,
             )
-            retry_prompt = prepared_coder_prompt.compose(retry_prompt)
+            retry_prompt = prepared_coder_prompt.compose("\n\n".join(part for part in (covered, retry_prompt) if part))
 
             ctx.write_worktree_note()
             ctx.write_session_identity({

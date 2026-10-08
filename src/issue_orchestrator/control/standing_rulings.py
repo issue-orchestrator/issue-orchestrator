@@ -47,6 +47,7 @@ from ..domain.standing_ruling import (
     with_rulings_block,
 )
 from ..infra.logging_config import issue_log
+from ..ports.repository_host import RepositoryHostError
 from ..ports.standing_rulings import StandingRulingsIndex, StandingRulingsUnavailable, SyncedRulings
 
 if TYPE_CHECKING:
@@ -70,7 +71,8 @@ class RetireOutcome(StrEnum):
 class StandingRulingsOwner:
     """Records, retires and answers for an issue's standing rulings (module docstring)."""
 
-    #: A FRESH read of the issue (its body); None when it cannot be read.
+    #: A FRESH read of the issue (its body); None when GitHub has no such issue
+    #: (a read that fails raises).
     read_issue: Callable[[int], "Issue | None"]
     #: Replace the issue's body; raises unless GitHub verifiably kept it.
     write_body: Callable[[int, str], None]
@@ -157,40 +159,58 @@ class StandingRulingsOwner:
 
     def covered_section(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
         """What a tech-lead run over other issues' work is bound by (#8347): each
-        covered issue's rulings, one fresh body read each (as :meth:`active`)."""
-        return covered_rulings_prompt(covered, {number: self.active(number) for number in sorted(covered)})
+        covered issue's rulings, one fresh body read each, synced into the index.
+
+        A covered number GitHub has no issue for (a PR branch named ``2024-...``,
+        a link to a deleted issue) binds nothing: there is no body to hold a
+        ruling. A read that fails, or a damaged block, still raises.
+        """
+        rulings: dict[int, tuple[StandingRuling, ...]] = {}
+        for number in sorted(covered):
+            with self._lock:
+                issue = self.read_issue(number)
+                if issue is None:
+                    logger.warning(issue_log(number, "Covered by a tech-lead run, but GitHub has no such issue"))
+                    rulings[number] = ()
+                    continue
+                rulings[number] = self._parse(number, issue.body)
+                self.index.save(number, rulings[number])
+        return covered_rulings_prompt(covered, rulings)
 
     def backfill(self, issues: Iterable["Issue"]) -> int:
-        """Index the rulings in *issues*' bodies (a listing just read) for each
-        issue the index has never synced; how many it indexed (#8347).
+        """Bring the index up to the bodies of *issues* (a listing just read);
+        how many issues it re-read (#8347).
 
         The index was created after rulings were already on issues, and the page
-        reads only the index, so a ruling recorded earlier stayed invisible until
-        something read that issue again. Only a never-synced issue is filled: a
-        synced row is kept current by this owner's own reads and writes, and a
-        listing may predate a ruling recorded or retired since. The check runs
-        under the writers' lock, so a write made meanwhile is never overwritten. An issue whose body holds none is left unsynced, so a
-        ruling added to it later is still found by the next backfill. A damaged
-        block is skipped: every prompt and review reads that body fresh and
-        refuses it there, where it matters.
+        reads only the index, so a ruling recorded earlier, or hand-edited on
+        GitHub since the engine last read the issue, never showed. A listed body
+        whose block matches the index costs nothing. One that differs (or is
+        damaged) is never trusted as is: a listing may predate a ruling recorded
+        or retired since, so the issue is read fresh through :meth:`active`,
+        under the writers' lock, and the body read then decides. A body still
+        unreadable or damaged is left to the prompts and reviews that refuse it;
+        a GitHub failure stops the backfill (the next startup resumes it).
         """
-        filled = 0
+        refreshed = 0
         for issue in issues:
             try:
-                rulings = parse_rulings_block(issue.body)
-            except RulingsBlockError as error:
+                listed: tuple[StandingRuling, ...] | None = parse_rulings_block(issue.body)
+            except RulingsBlockError:
+                listed = None
+            if listed is not None and listed == (self.index.load(issue.number) or ()):
+                continue
+            try:
+                self.active(issue.number)
+            except StandingRulingsUnavailable as error:
                 logger.warning(issue_log(issue.number, "Standing rulings not indexed: %s"), error)
                 continue
-            if not rulings:
-                continue
-            with self._lock:
-                if self.index.load(issue.number) is not None:
-                    continue
-                self.index.save(issue.number, rulings)
-            filled += 1
-        if filled:
-            logger.info("Standing rulings index backfilled for %d issue(s)", filled)
-        return filled
+            except RepositoryHostError as error:
+                logger.warning("Standing rulings index backfill stopped: %s", error)
+                break
+            refreshed += 1
+        if refreshed:
+            logger.info("Standing rulings index backfilled from %d fresh read(s)", refreshed)
+        return refreshed
 
     def synced(self) -> dict[int, SyncedRulings]:
         """Every issue the index holds rulings for, as of its last sync (the
