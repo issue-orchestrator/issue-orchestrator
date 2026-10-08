@@ -110,6 +110,27 @@ def test_a_reopen_voids_every_earlier_approval() -> None:
     assert [e["id"] for e in client.standing_label_events(5, "approved")] == [4]
 
 
+def test_a_block_label_kept_on_through_a_close_and_reopen_is_the_same_application() -> None:
+    """#8688 review r3 F1: a close voids an approval, never a block's label.
+    The block-episode reader's run ends only on the label's own removal."""
+    events = [
+        _labeled(1, "needs-human", "io-bot[bot]"),
+        {"id": 2, "event": "closed", "actor": {"login": "lead", "type": "User"}},
+        {"id": 3, "event": "reopened", "actor": {"login": "lead", "type": "User"}},
+    ]
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=events)))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+
+    assert client.standing_label_events(5, "needs-human") == []  # approval semantics
+    application = adapter.label_application(5, "needs-human")
+    assert application is not None and application.event_id == 1
+
+    removed = [*events, _labeled(4, "needs-human", "lead", kind="unlabeled")]
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=removed)))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+    assert adapter.label_application(5, "needs-human") is None
+
+
 def test_no_matching_event_is_none_only_after_the_final_page() -> None:
     client = _client_with_transport(
         httpx.MockTransport(lambda request: httpx.Response(200, json=[_labeled(1, "bug", "lead")]))

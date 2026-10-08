@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
     from ..infra.config import Config
     from .orchestrator_deps import OrchestratorDeps
-    from ..ports.approval_evidence import ApprovalEvidenceReader
+    from ..ports.label_application import LabelApplicationReader
     from .needs_human_episodes import NeedsHumanEpisodes
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
@@ -555,17 +555,17 @@ def build_blocked_item_triage(
 
 def build_needs_human_episodes(config: "Config", deps: "OrchestratorDeps") -> "NeedsHumanEpisodes":
     """The needs-human episode owner (#8688) over the deps' pending-work ledger,
-    verified against GitHub's issue events (the approval owner's evidence,
-    #7763) and rechecked on the tick once per health-review interval."""
+    verified against GitHub's issue events and rechecked on the tick once per
+    health-review interval."""
     from .health_review_trigger import health_review_interval_minutes
     from .needs_human_episodes import NeedsHumanEpisodes
 
     return NeedsHumanEpisodes(
         store=deps.pending_work_claims,
         label_applications=lambda number, label: cast(
-            "ApprovalEvidenceReader", deps.repository_host
-        ).standing_label(number, label),
+            "LabelApplicationReader", deps.repository_host
+        ).label_application(number, label),
         labels=deps.label_manager,
         clock=time.time,
-        recheck_seconds=health_review_interval_minutes(config) * 60,
+        recheck_seconds=lambda: health_review_interval_minutes(config) * 60,
     )

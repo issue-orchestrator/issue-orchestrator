@@ -13,11 +13,7 @@ import pytest
 from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
 from issue_orchestrator.domain.standing_ruling import StandingRuling
 from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
-from issue_orchestrator.domain.tech_lead_approval import (
-    AWAITING_APPROVAL_LABEL,
-    LabelEvent,
-    StandingLabel,
-)
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, LabelEvent
 from issue_orchestrator.control.actions import (
     ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
@@ -191,11 +187,11 @@ class _Episodes:
         return self.recorded[issue_number]
 
 
-def _standing(event_id: int) -> StandingLabel:
-    return StandingLabel((LabelEvent(
+def _application_event(event_id: int) -> LabelEvent:
+    return LabelEvent(
         event_id=event_id, actor_login="operator", actor_is_bot=False,
         created_at=f"2026-10-0{event_id % 9 + 1}T00:00:00Z",
-    ),))
+    )
 
 
 def _episode_owner(
@@ -208,14 +204,14 @@ def _episode_owner(
     """The episode owner over *store*, GitHub's applications faked; *reads*
     records each event read it makes."""
 
-    def standing(number: int, label: str) -> StandingLabel | None:
+    def standing(number: int, label: str) -> LabelEvent | None:
         if reads is not None:
             reads.append(number)
         return _application(applications, number)
 
     return NeedsHumanEpisodes(
         store=store, label_applications=standing, labels=LabelManager(_config()),
-        clock=clock, recheck_seconds=3600,
+        clock=clock, recheck_seconds=lambda: 3600,
     )
 
 
@@ -249,13 +245,13 @@ def _owner(
     )
 
 
-def _application(applications: dict[int, Any] | None, number: int) -> StandingLabel | None:
+def _application(applications: dict[int, Any] | None, number: int) -> LabelEvent | None:
     """GitHub's standing application of the label: event 1 unless a test says
     otherwise (None: not standing; an exception: the read failed)."""
     found = (applications or {}).get(number, 1)
     if isinstance(found, Exception):
         raise found
-    return None if found is None else _standing(found)
+    return None if found is None else _application_event(found)
 
 
 def _porchpin_board() -> list[Issue]:
@@ -472,7 +468,7 @@ def test_a_block_whose_episode_is_unrecorded_is_owed_then_bound_at_its_grant() -
         [issue], ledger=old, episodes=episodes, applications={450: 41},
     ).agenda(anchor_issue_number=ANCHOR).items
 
-    assert item.fingerprint == f"needs-human@{_standing(41).application.created_at}#gh41"
+    assert item.fingerprint == f"needs-human@{_application_event(41).created_at}#gh41"
     triaged = _Ledger({450: [_triage_record(450, TriageClass.EXPLAINED, item.fingerprint, effect="applied")]})
     assert triage_owed(
         _config(), state, _Authority(triaged), _episode_owner(episodes, {450: 41}),
@@ -552,10 +548,32 @@ def test_a_binding_waits_for_the_block_owners_gate() -> None:
     reads: list[int] = []
 
     agenda = _owner([issue], ledger=ledger, episodes=store).agenda(anchor_issue_number=ANCHOR)
-    assert _episode_owner(store, reads=reads).verified({450: ("needs-human",)}) == {}
+    assert _episode_owner(store, reads=reads).verified({450: issue}) == {}
 
     [item] = agenda.items
     assert item.fingerprint == "needs-human@unknown" and store.bound == {} and reads == []
+
+
+def test_an_unchanged_issue_is_not_read_from_github_again() -> None:
+    """#8688 review r3 F2: an item verified before whose GitHub updated_at
+    and recorded episode are unchanged is not read again (a label write bumps
+    updated_at); a change to either is."""
+    store, reads = _Episodes({450: EP}), []
+    episodes = _episode_owner(store, {450: 7}, reads=reads)
+    issue = Issue(
+        number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
+        updated_at="2026-10-08T00:00:00Z",
+    )
+
+    first = episodes.verified({450: issue})
+    assert episodes.verified({450: issue}) == first and reads == [450]
+
+    issue.updated_at = "2026-10-08T01:00:00Z"  # something was written to it
+    episodes.verified({450: issue})
+    assert reads == [450, 450]
+    store.recorded[450] = "2026-10-08T02:00:00+00:00#2"  # the owner reopened it
+    episodes.verified({450: issue})
+    assert reads == [450, 450, 450]
 
 
 @pytest.mark.parametrize("application", [None, RuntimeError("events API 502")])

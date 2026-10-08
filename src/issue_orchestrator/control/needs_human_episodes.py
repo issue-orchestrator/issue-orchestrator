@@ -4,15 +4,17 @@ A blocked-item triage covers the block EPISODE it was decided on. The block's
 one owner (:class:`~.needs_human_block.NeedsHumanBlock`) opens a generation when
 it puts the label on afresh and ends it when the label comes off, but it sees
 only its own writes. GitHub sees every write. This owner binds each generation
-to GitHub's standing ``labeled`` event (the approval owner's complete
-issue-event reader, #7763):
+to GitHub's standing ``labeled`` event, read from the complete issue events
+(:class:`~..ports.label_application.LabelApplicationReader`):
 
 * a health review's agenda verifies every item before granting any, so every
   triage is made on an episode bound to the label application standing then;
 * the tick's "is a triage owed" check reads the recorded episodes, and
   re-verifies them at most once per health-review interval, so a label taken
   off and put back by hand, unseen by the owner, still makes a review due
-  without a GitHub event scan on every tick.
+  without a GitHub event scan on every tick;
+* an item verified before whose GitHub ``updated_at`` and recorded episode
+  are both unchanged is not read again: a label write bumps ``updated_at``.
 
 An item whose events cannot be read, that GitHub does not show the label
 standing on, or whose block is being changed by its owner right now (the
@@ -29,7 +31,8 @@ from typing import TYPE_CHECKING
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 
 if TYPE_CHECKING:
-    from ..domain.tech_lead_approval import StandingLabel
+    from ..domain.tech_lead_approval import LabelEvent
+    from ..ports.issue import Issue
     from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader
     from .label_manager import LabelManager
 
@@ -43,10 +46,10 @@ class NeedsHumanEpisodes:
         self,
         *,
         store: "NeedsHumanEpisodeReader",
-        label_applications: Callable[[int, str], "StandingLabel | None"],
+        label_applications: Callable[[int, str], "LabelEvent | None"],
         labels: "LabelManager",
         clock: Callable[[], float],
-        recheck_seconds: float,
+        recheck_seconds: Callable[[], float],
     ) -> None:
         self._store = store
         self._label_applications = label_applications
@@ -54,24 +57,35 @@ class NeedsHumanEpisodes:
         self._clock = clock
         self._recheck_seconds = recheck_seconds
         self._checked_at: float | None = None
+        #: ``issue -> (updated_at, episode)`` as last verified by this reader.
+        self._verified: dict[int, tuple[str, str]] = {}
 
-    def verified(self, issues: Mapping[int, Sequence[str]]) -> dict[int, str]:
+    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """Each item's episode, bound to GitHub's standing label application.
 
-        ``issues`` maps each item to its labels. An item whose episode cannot
-        be verified is left out: its episode is unknown.
+        An item whose episode cannot be verified is left out: its episode is
+        unknown.
         """
+        recorded = self._store.needs_human_episodes(sorted(issues))
         verified: dict[int, str] = {}
-        for number, labels in issues.items():
+        for number, issue in issues.items():
+            seen = self._verified.get(number)
+            if seen is not None and seen == (issue.updated_at, recorded.get(number)):
+                verified[number] = seen[1]  # nothing written to it since
+                continue
             with self._store.mutate_needs_human(number) as status:
                 if status is IssueDispositionGateStatus.BUSY:
                     continue  # the owner is changing this block right now
-                episode = self._bind(number, self._episode_label(labels))
-            if episode is not None:
-                verified[number] = episode
+                episode = self._bind(number, self._episode_label(issue.labels))
+            if episode is None:
+                self._verified.pop(number, None)
+                continue
+            verified[number] = episode
+            if issue.updated_at is not None:
+                self._verified[number] = (issue.updated_at, episode)
         return verified
 
-    def current(self, issues: Mapping[int, Sequence[str]]) -> dict[int, str]:
+    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """The recorded episodes, re-verified once per recheck period.
 
         The tick reads this, so it makes no GitHub read between rechecks. A
@@ -79,23 +93,22 @@ class NeedsHumanEpisodes:
         triage made on the old one no longer covers the item.
         """
         now = self._clock()
-        if self._checked_at is None or now - self._checked_at >= self._recheck_seconds:
+        if self._checked_at is None or now - self._checked_at >= self._recheck_seconds():
             self._checked_at = now
             return self.verified(issues)
         return self._store.needs_human_episodes(sorted(issues))
 
     def _bind(self, number: int, label: str) -> str | None:
         try:
-            standing = self._label_applications(number, label)
+            application = self._label_applications(number, label)
         except Exception:
             logger.warning(
                 "[TRIAGE] %s events of #%d unreadable; its block episode is unverified",
                 label, number, exc_info=True,
             )
             return None
-        if standing is None:
+        if application is None:
             return None  # GitHub does not show it standing: the cache is stale
-        application = standing.application
         return self._store.bind_needs_human_episode(
             number, event_id=application.event_id, applied_at=application.created_at,
         )
@@ -114,10 +127,10 @@ class _UnwiredEpisodes(NeedsHumanEpisodes):
     def __init__(self) -> None:
         pass
 
-    def verified(self, issues: Mapping[int, Sequence[str]]) -> dict[int, str]:
+    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         raise RuntimeError("needs-human episodes are not wired (#8688)")
 
-    def current(self, issues: Mapping[int, Sequence[str]]) -> dict[int, str]:
+    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         raise RuntimeError("needs-human episodes are not wired (#8688)")
 
 

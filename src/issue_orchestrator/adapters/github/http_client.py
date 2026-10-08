@@ -1705,7 +1705,7 @@ class GitHubHttpClient:
                 )
 
     def standing_label_events(
-        self, issue_number: int, label: str, *, removed: bool = False
+        self, issue_number: int, label: str, *, removed: bool = False, close_voids: bool = True
     ) -> list[dict[str, Any]]:
         """Every ``labeled`` (or, with ``removed``, ``unlabeled``) event for
         ``label`` (case-insensitive) in its STANDING run, oldest first.
@@ -1720,7 +1720,10 @@ class GitHubHttpClient:
         an ``approved`` removed after the caller read the issue is no
         approval (#7763 review r8 F1). A ``closed`` or ``reopened`` event
         voids the run too (#7763 review r7 F2, r17 F1): closing a proposal
-        declines it. The WHOLE run is returned, not its newest event (#8346):
+        declines it; with ``close_voids=False`` only the label's own transitions
+        bound the run, as for a block's episode (#8688): a label kept on through
+        a close and reopen is the same application. The WHOLE run is returned,
+        not its newest event (#8346):
         GitHub records the labels an issue is filed with asynchronously,
         attributing every label present when that job runs — a bot's
         ``approved`` added seconds after filing included — to the issue's
@@ -1743,7 +1746,7 @@ class GitHubHttpClient:
                     # standing answer exists (#7763 review r26 F2).
                     raise GitHubScanIncompleteError(f"issue #{issue_number} events: a malformed event row")
                 if event.get("event") in ("closed", "reopened"):
-                    run = []
+                    run = [] if close_voids else run
                     continue
                 if event.get("event") not in ("labeled", "unlabeled"):
                     continue

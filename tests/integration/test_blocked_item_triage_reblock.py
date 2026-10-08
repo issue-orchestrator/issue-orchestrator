@@ -26,7 +26,7 @@ from issue_orchestrator.domain.human_block import (
     NeedsHumanCause,
 )
 from issue_orchestrator.domain.models import Issue, OrchestratorState
-from issue_orchestrator.domain.tech_lead_approval import LabelEvent, StandingLabel
+from issue_orchestrator.domain.tech_lead_approval import LabelEvent
 from issue_orchestrator.domain.tech_lead_artifacts import TriageClass
 from issue_orchestrator.domain.tech_lead_charter import (
     CharterAuthority,
@@ -70,9 +70,8 @@ class _GitHub:
         self.live.setdefault(issue_number, set()).discard(label)
         self.applied.pop((issue_number, label), None)
 
-    def standing_label(self, issue_number: int, label: str) -> StandingLabel | None:
-        event = self.applied.get((issue_number, label))
-        return None if event is None else StandingLabel((event,))
+    def label_application(self, issue_number: int, label: str) -> LabelEvent | None:
+        return self.applied.get((issue_number, label))
 
 
 def _explained(fingerprint: str, run: str, decided_at: str) -> TechLeadCharterDecision:
@@ -124,15 +123,15 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         open_proposals=lambda: open_proposal_index(authority),
         timeline_reader=lambda number, limit: [], standing_rulings=lambda number: (),
         episodes=NeedsHumanEpisodes(
-            store=store, label_applications=github.standing_label, labels=labels,
-            clock=lambda: 0.0, recheck_seconds=3600,
+            store=store, label_applications=github.label_application, labels=labels,
+            clock=lambda: 0.0, recheck_seconds=lambda: 3600,
         ),
     )
     # The tick's check verifies against GitHub on every call here (a zero
     # recheck period), as it does once per interval in production.
     episodes = NeedsHumanEpisodes(
-        store=store, label_applications=github.standing_label, labels=labels,
-        clock=lambda: 0.0, recheck_seconds=0,
+        store=store, label_applications=github.label_application, labels=labels,
+        clock=lambda: 0.0, recheck_seconds=lambda: 0,
     )
     question = HumanBlockRequest(
         target=ITEM, cause=NeedsHumanCause.AGENT_COMPLETION, reason="Agent requested human input",
@@ -211,16 +210,17 @@ def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: 
     [opened] = store.needs_human_episodes([ITEM]).values()
     during: list[BlockOutcome] = []
 
-    def read_then_race(number: int, label: str) -> StandingLabel | None:
-        standing = github.standing_label(number, label)
+    def read_then_race(number: int, label: str) -> LabelEvent | None:
+        standing = github.label_application(number, label)
         during.append(block.release(question))  # the owner tries to lift it now
         return standing
 
     episodes = NeedsHumanEpisodes(
         store=store, label_applications=read_then_race, labels=labels,
-        clock=lambda: 0.0, recheck_seconds=0,
+        clock=lambda: 0.0, recheck_seconds=lambda: 0,
     )
-    assert episodes.verified({ITEM: (labels.needs_human,)}) == {ITEM: opened}
+    issue = Issue(number=ITEM, title="t", labels=[labels.needs_human], repo="r/r", state="open")
+    assert episodes.verified({ITEM: issue}) == {ITEM: opened}
     assert during == [BlockOutcome.FAILED]  # the owner was held off
     assert labels.needs_human in github.live[ITEM]
 

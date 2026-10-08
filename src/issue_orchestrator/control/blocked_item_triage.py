@@ -204,7 +204,7 @@ def owed_triages(
     ledger: "TechLeadCharterDecisionReader",
     *,
     open_proposals: "OpenProposals",
-    episodes: Callable[[Mapping[int, Sequence[str]]], Mapping[int, str]],
+    episodes: Callable[[Mapping[int, "Issue"]], Mapping[int, str]],
     exclude: frozenset[int] = frozenset(),
 ) -> tuple[list[OwedTriage], tuple[int, ...]]:
     """``(owed, in force)``: every blocked work item in scope, oldest first,
@@ -213,7 +213,7 @@ def owed_triages(
     THE one rule both the agenda (who is granted) and the health-review
     trigger (is a review owed) read, so an item deferred by the per-run cap or
     whose triage did not take effect keeps a review due. ``episodes`` reads
-    the needs-human episode of each item (by its labels) whose block holds
+    the needs-human episode of each item whose block holds
     that label or the hand-over marker (#8688).
     """
     blocked = [
@@ -222,10 +222,7 @@ def owed_triages(
         if issue.number not in exclude
         and (blocking := blocked_work_item(issue, labels, config.tech_lead_review_agent)) is not None
     ]
-    held = {
-        issue.number: tuple(issue.labels)
-        for issue, blocking in blocked if _holds_needs_human(blocking, labels)
-    }
+    held = {issue.number: issue for issue, blocking in blocked if _holds_needs_human(blocking, labels)}
     recorded = episodes(held) if held else {}
     owed: list[OwedTriage] = []
     in_force: list[int] = []
