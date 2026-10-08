@@ -2269,6 +2269,10 @@ class SessionLauncher:
             issue_machine.claim()
             logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: CLAIMED -> IN_PROGRESS")
             issue_machine.start()
+        elif issue_machine.can_transition("unblock"):
+            # A relaunch after a person cleared the hold: the issue is worked
+            # again, so its next hold is an IN_PROGRESS hold (#8693).
+            issue_machine.unblock()
 
         session_machine = self._get_session_machine(session_name, issue.number, timeout_minutes)
         if session_machine.state != SessionState.PENDING.value:

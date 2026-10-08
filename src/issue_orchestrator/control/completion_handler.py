@@ -43,6 +43,7 @@ from ..domain.models import (
     session_history_status_from_session_status,
 )
 from ..domain.session_event_identity import SessionEventIdentity
+from ..domain.human_block import NeedsHumanCause
 from ..domain.session_kind import SessionKind
 from ..ports import (
     EventSink,
@@ -809,18 +810,50 @@ class CompletionHandler:
                         session.issue.number,
                         issue_machine.get_state().value,
                     )
-            elif status == SessionStatus.BLOCKED:
-                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED")
-                issue_machine.block()  # type: ignore[attr-defined]
-            elif status == SessionStatus.NEEDS_HUMAN:
-                logger.info(
-                    f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> NEEDS_HUMAN"
-                )
-                issue_machine.needs_human()  # type: ignore[attr-defined]
+            elif status in (SessionStatus.BLOCKED, SessionStatus.NEEDS_HUMAN):
+                self._hold_issue_machine(session, status, issue_machine)
         else:
             logger.debug(
                 f"[STATE_MACHINE] No issue machine found for issue #{session.issue.number} (may be restored session)"
             )
+
+    def _hold_issue_machine(
+        self, session: Session, status: SessionStatus, issue_machine: "IssueStateMachine"
+    ) -> None:
+        """An agent's block or needs_human, on the issue's cached lifecycle (#8693).
+
+        Only a kind that holds the issue's custody moves it - the capability
+        that also decides the issue's blocking labels in the action planner. A
+        rework, a review or a retrospective review runs beside the issue's open
+        PR, and the PR holds the issue, so its hold is a deliberate no-op here:
+        its needs_human is recorded by the shared block owner as the agent's own
+        cause, which :class:`~.human_gates.HumanGates` reads as a WORK hold, and
+        its block leaves the issue's labels to the PR/review workflow. Treating
+        it as an IN_PROGRESS hold raised on the PR_PENDING issue and aborted the
+        whole tick on porchpin (#8693).
+        """
+        before = issue_machine.get_state().value
+        if not session.key.kind.capabilities.holds_issue_custody:
+            cause = NeedsHumanCause.AGENT_COMPLETION
+            owner = (
+                f"the shared block's {cause.value} cause ({cause.scope.value} hold)"
+                if status is SessionStatus.NEEDS_HUMAN
+                else "the PR/review workflow"
+            )
+            logger.info(
+                "[STATE_MACHINE] Issue #%d stays %s: a %s session's %s does not move"
+                " the issue it does not hold; it is %s",
+                session.issue.number, before, session.key.kind.value, status.value, owner,
+            )
+            return
+        if status is SessionStatus.BLOCKED:
+            issue_machine.block()
+        else:
+            issue_machine.needs_human()
+        logger.info(
+            "[STATE_MACHINE] Issue #%d: %s -> %s", session.issue.number, before,
+            issue_machine.get_state().value,
+        )
 
     def _update_review_machine(self, session: Session) -> None:
         """Update the review state machine for a completed review session."""

@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from ..observation.observer import SessionObserver
     from ..ports.claim_manager import ClaimManager
     from .action_applier import ActionApplier
+    from .completion_containment import CompletionContainment
     from .completion_handler import CompletionHandler
     from .provider_resilience import ProviderResilienceManager
     from .publish_recovery import PublishRecoveryService
@@ -548,8 +549,14 @@ def process_active_sessions(
     completion_dispatcher: "CompletionDispatcher | None" = None,
     provider_resilience: "ProviderResilienceManager | None" = None,
     publish_recovery: "PublishRecoveryService | None" = None,
+    *,
+    containment: "CompletionContainment",
 ) -> None:
     """Process active sessions - moved from Orchestrator per method table.
+
+    One session's failure to observe, decide or apply is confined to that
+    session by ``containment`` (#8000, #8693): the pass goes on to every other
+    session and the tick goes on to planning.
 
     Completion decisions (``decide_outcome``: publish gate + push + PR) run
     through ``completion_dispatcher``. The default synchronous dispatcher keeps
@@ -593,7 +600,7 @@ def process_active_sessions(
     # BEFORE dispatching new work: applying a completed decision removes its
     # session from active_sessions, so the dispatch loop below won't re-dispatch
     # a session whose decision already landed.
-    _apply_completed_decisions(dispatcher.drain(), apply)
+    containment.apply_each(dispatcher.drain(), apply)
 
     seen_terminals: set[str] = set()
     for session in list(state.active_sessions):
@@ -616,6 +623,8 @@ def process_active_sessions(
             # don't re-observe or re-dispatch until it lands in drain().
             continue
         seen_terminals.add(session.terminal_id)
+        if not containment.admit(session):
+            continue
         # Attribute the tick to this issue while we handle it. Completion
         # handling (validation gate + push + PR) is the slow work; if a
         # synchronous dispatcher runs it here and it overruns the heartbeat
@@ -623,8 +632,8 @@ def process_active_sessions(
         # naming the issue turns "(phase: active_sessions)" into
         # "(phase: active_sessions:#392)".
         state.current_tick_phase = f"active_sessions:#{session.issue.number}"
-        obs = observer.observe_session(session)
-        if obs.observation == SessionObservation.RUNNING:
+        obs = containment.observe(session, observer.observe_session)
+        if obs is None or obs.observation == SessionObservation.RUNNING:
             continue
         dispatcher.dispatch(
             session,
@@ -633,7 +642,7 @@ def process_active_sessions(
 
     # Apply decisions a synchronous dispatcher just produced this tick (the
     # background dispatcher returns nothing here — its work is still running).
-    _apply_completed_decisions(dispatcher.drain(), apply)
+    containment.apply_each(dispatcher.drain(), apply)
 
 
 def _completion_decider(
@@ -669,24 +678,6 @@ def _completion_decider(
         )
 
     return decide
-
-
-def _apply_completed_decisions(
-    completed_decisions: list[CompletedDecision],
-    apply: Callable[[CompletedDecision], None],
-) -> None:
-    """Apply every drained decision, then raise any apply failure."""
-    errors: list[BaseException] = []
-    for completed in completed_decisions:
-        try:
-            apply(completed)
-        except BaseException as exc:
-            errors.append(exc)
-    if not errors:
-        return
-    if len(errors) == 1:
-        raise errors[0]
-    raise BaseExceptionGroup("completion decision apply failures", errors)
 
 
 def unprocessed_session_policy(session: Session) -> CompletionProcessingPolicy:
