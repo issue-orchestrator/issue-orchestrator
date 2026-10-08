@@ -250,16 +250,19 @@ class LabelEvent:
     actor_login: str
     actor_is_bot: bool
     created_at: str
-    #: ``performed_via_github_app`` (id and client id), when an App made it.
-    #: It is how the engine recognises an event its OWN write produced.
-    app_id: str = ""
-    app_client_id: str = ""
+    #: GitHub's immutable account id of the actor. An App's installation
+    #: writes name its bot account here (GitHub leaves the event's
+    #: ``performed_via_github_app`` null), so this is how the engine
+    #: recognises an event its OWN write produced (#8987).
+    actor_id: int
 
     def __post_init__(self) -> None:
         if type(self.event_id) is not int or self.event_id <= 0:
             raise ValueError("a label event needs GitHub's positive event id")
         if not self.actor_login:
             raise ValueError("a label event needs its actor's login")
+        if type(self.actor_id) is not int or self.actor_id <= 0:
+            raise ValueError("a label event needs its actor's positive account id")
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -13,12 +14,17 @@ from issue_orchestrator.adapters.github.github_adapter import GitHubAdapter
 from tests.unit.test_github_http import _client_with_transport
 
 
+def _account_id(login: str) -> int:
+    """A stable stand-in for GitHub's account id of *login*."""
+    return zlib.crc32(login.encode()) or 1
+
+
 def _labeled(event_id: int, label: str, login: str, *, kind: str = "labeled", **extra) -> dict:
     return {
         "id": event_id,
         "event": kind,
         "label": {"name": label},
-        "actor": {"login": login, "type": "Bot" if login.endswith("[bot]") else "User"},
+        "actor": {"login": login, "id": _account_id(login), "type": "Bot" if login.endswith("[bot]") else "User"},
         "created_at": f"2026-10-03T00:00:{event_id:02d}Z",
         **extra,
     }
@@ -207,7 +213,7 @@ def _adapter(payload: dict | None) -> GitHubAdapter:
     "payload",
     [
         _labeled(9, "approved", "io-bot[bot]"),
-        {**_labeled(9, "approved", "lead"), "actor": {"login": "lead", "type": "Bot"}},
+        {**_labeled(9, "approved", "lead"), "actor": {"login": "lead", "id": 5, "type": "Bot"}},
         {**_labeled(9, "approved", "lead"), "performed_via_github_app": {"slug": "io"}},
     ],
     ids=["bot-login", "bot-type", "via-app"],
@@ -226,11 +232,20 @@ def test_the_adapter_reads_a_person() -> None:
     assert (event.event_id, event.actor_login, event.actor_is_bot) == (9, "lead", False)
 
 
-def test_an_event_without_an_actor_fails_loud() -> None:
+@pytest.mark.parametrize(
+    "actor", [None, {"login": "lead", "type": "User"}, {"login": "lead", "id": "5", "type": "User"}],
+    ids=["no-actor", "no-account-id", "non-numeric-id"],
+)
+def test_an_event_without_an_identified_actor_fails_loud(actor) -> None:
+    """#8987: own-write attribution matches the actor's account id, so an
+    event that does not carry one cannot be attributed."""
     payload = _labeled(9, "approved", "lead")
-    del payload["actor"]
+    if actor is None:
+        del payload["actor"]
+    else:
+        payload["actor"] = actor
 
-    with pytest.raises(GitHubHttpError, match="no actor"):
+    with pytest.raises(GitHubHttpError, match="no identified actor"):
         _adapter(payload).standing_label(5, "approved")
 
 

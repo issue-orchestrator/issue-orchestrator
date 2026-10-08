@@ -197,7 +197,7 @@ class _Episodes:
 def _application_event(event_id: int) -> LabelEvent:
     return LabelEvent(
         event_id=event_id, actor_login="operator", actor_is_bot=False,
-        created_at=f"2026-10-0{event_id % 9 + 1}T00:00:00Z",
+        created_at=f"2026-10-0{event_id % 9 + 1}T00:00:00Z", actor_id=7,
     )
 
 
