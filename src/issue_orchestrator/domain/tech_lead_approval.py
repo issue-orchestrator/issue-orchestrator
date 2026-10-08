@@ -262,6 +262,32 @@ class LabelEvent:
             raise ValueError("a label event needs its actor's login")
 
 
+@dataclass(frozen=True, slots=True)
+class StandingLabel:
+    """Every ``labeled`` event for one label since it was last absent (#8346).
+
+    The label is on the issue now because of :attr:`application`, the event
+    that made it present. GitHub can record MORE labeled events while it stays
+    on: when an issue is filed with labels, GitHub emits their labeled events
+    asynchronously, seconds later, attributing every label the issue carries
+    AT THAT MOMENT to the issue's author — a bot's ``approved`` added in
+    between included. So the newest event is not who applied the label, and
+    approval judges every event of the run: the label stands as a
+    maintainer's act only if each of them does.
+    """
+
+    events: tuple[LabelEvent, ...]
+
+    def __post_init__(self) -> None:
+        if not self.events:
+            raise ValueError("a standing label has at least the event that applied it")
+
+    @property
+    def application(self) -> LabelEvent:
+        """The event that made the label present (the run's first)."""
+        return self.events[0]
+
+
 class ApprovalVerdictKind(StrEnum):
     """Why an item is, or is not, approved."""
 
@@ -278,9 +304,11 @@ class ApprovalVerdictKind(StrEnum):
     DECLINED = "declined"
     #: ``approved`` is on the issue but GitHub has no labeled event for it.
     NO_LABEL_EVENT = "no_label_event"
-    #: The latest ``approved`` label came from a bot or GitHub App identity.
+    #: A labeled event of the standing ``approved`` came from a bot or GitHub
+    #: App identity.
     BOT_ACTOR = "bot_actor"
-    #: The latest ``approved`` label came from someone without a maintainer role.
+    #: A labeled event of the standing ``approved`` came from someone without
+    #: a maintainer role.
     NOT_A_MAINTAINER = "not_a_maintainer"
 
 
@@ -397,6 +425,7 @@ __all__ = [
     "PROPOSAL_BODY_MARKER",
     "ProposalLabelState",
     "REJECTED_APPROVAL_KINDS",
+    "StandingLabel",
     "TECH_LEAD_PROPOSAL_LABEL",
     "carries_proposal_marker",
     "filed_proposal_numbers",

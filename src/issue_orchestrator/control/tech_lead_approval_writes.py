@@ -31,7 +31,6 @@ from ..domain.tech_lead_approval import (
     GATED_PROPOSAL_LABELS,
     TECH_LEAD_PROPOSAL_LABEL,
     ApprovalTransition,
-    OperatorApprovalRecord,
     ProposalLabelState,
     in_engine_scope,
     labels_named,
@@ -280,21 +279,12 @@ def _approve(
     # GitHub no-op with no new event to bind to, so take it off first.
     _remove_present(repository, issue, APPROVED_LABEL)
     repository.add_label(number, APPROVED_LABEL)
-    event = approvals.evidence.latest_label_event(number, APPROVED_LABEL)
-    if event is None:
-        raise RuntimeError(
-            f"applied {APPROVED_LABEL!r} to #{number} but GitHub shows no labeled"
-            " event to bind the approval to"
-        )
-    if approvals.evidence.is_own_write(event):
-        # The engine's App wrote it: that exact event is the operator's act.
-        approvals.records.record_operator_approval(
-            OperatorApprovalRecord(number, event.event_id, now())
-        )
-    elif not approvals.judge_latest_approval(number).approved:
-        # A personal-token engine writes as its user, whose label is judged
-        # like anyone's; and an event someone else's write produced (a relabel
-        # racing ours) is never bound to the operator (#7763 review F3).
+    if not approvals.bind_engine_approval(number, recorded_at=now()).approved:
+        # The engine's App wrote it and that exact event is the operator's act
+        # (recorded); a personal-token engine writes as its user, judged like
+        # anyone. Either way an event someone else's write produced in the
+        # standing run (a relabel racing ours, #7763 review F3; GitHub's late
+        # attribution of a filing's labels, #8346) refuses.
         raise RuntimeError(
             f"the {APPROVED_LABEL!r} label on #{number} cannot be attributed to this"
             " engine's write and is not a maintainer's; approval not recorded"

@@ -42,7 +42,7 @@ from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
     from ...domain.issue_key import IssueKey, GitHubIssueKey
-    from ...domain.tech_lead_approval import LabelEvent
+    from ...domain.tech_lead_approval import LabelEvent, StandingLabel
     from ...ports.issue import Issue
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,37 @@ logger = logging.getLogger(__name__)
 _VALID_ROLLUP_STATES: frozenset[str] = frozenset(
     {"SUCCESS", "FAILURE", "PENDING", "EXPECTED", "ERROR"}
 )
+
+
+def _label_event(issue_number: int, payload: dict[str, Any]) -> "LabelEvent":
+    """One GitHub label event as approval evidence (#7763).
+
+    Automation is anything GitHub marks as such: a ``Bot`` account, a
+    ``[bot]`` login, or an event performed through a GitHub App. A labeled
+    event without an id or actor is malformed and raises.
+    """
+    from ...domain.tech_lead_approval import LabelEvent
+
+    actor = payload.get("actor")
+    if not isinstance(actor, dict):
+        raise GitHubHttpError(
+            f"label event on #{issue_number} carries no actor; cannot attribute it"
+        )
+    login = str(actor.get("login") or "")
+    app = payload.get("performed_via_github_app")
+    app = app if isinstance(app, dict) else {}
+    return LabelEvent(
+        event_id=int(payload.get("id") or 0),
+        actor_login=login,
+        actor_is_bot=(
+            actor.get("type") == "Bot"
+            or login.casefold().endswith("[bot]")
+            or bool(app)
+        ),
+        created_at=str(payload.get("created_at") or ""),
+        app_id=str(app.get("id") or ""),
+        app_client_id=str(app.get("client_id") or ""),
+    )
 
 
 def _is_not_found_error(exc: GitHubHttpError) -> bool:
@@ -1859,40 +1890,20 @@ class GitHubAdapter:
         """
         return self._client.issue_closed_on_or_after(issue_number, timestamp)
 
-    def latest_label_event(
-        self, issue_number: int, label: str, *, removed: bool = False
-    ) -> "LabelEvent | None":
-        """Approval evidence (#7763): who last applied (or removed) ``label``.
+    def standing_label(self, issue_number: int, label: str) -> "StandingLabel | None":
+        """Approval evidence (#7763, #8346): every labeled event of ``label``'s
+        standing run, so the approval owner can judge each one."""
+        from ...domain.tech_lead_approval import StandingLabel
 
-        Automation is anything GitHub marks as such: a ``Bot`` account, a
-        ``[bot]`` login, or an event performed through a GitHub App. A labeled
-        event without an id or actor is malformed and raises.
-        """
-        from ...domain.tech_lead_approval import LabelEvent
-
-        payload = self._client.latest_label_event(issue_number, label, removed=removed)
-        if payload is None:
+        run = self._client.standing_label_events(issue_number, label)
+        if not run:
             return None
-        actor = payload.get("actor")
-        if not isinstance(actor, dict):
-            raise GitHubHttpError(
-                f"label event on #{issue_number} carries no actor; cannot attribute it"
-            )
-        login = str(actor.get("login") or "")
-        app = payload.get("performed_via_github_app")
-        app = app if isinstance(app, dict) else {}
-        return LabelEvent(
-            event_id=int(payload.get("id") or 0),
-            actor_login=login,
-            actor_is_bot=(
-                actor.get("type") == "Bot"
-                or login.casefold().endswith("[bot]")
-                or bool(app)
-            ),
-            created_at=str(payload.get("created_at") or ""),
-            app_id=str(app.get("id") or ""),
-            app_client_id=str(app.get("client_id") or ""),
-        )
+        return StandingLabel(tuple(_label_event(issue_number, payload) for payload in run))
+
+    def latest_label_removal(self, issue_number: int, label: str) -> "LabelEvent | None":
+        """Who last took ``label`` off, while it is still off."""
+        run = self._client.standing_label_events(issue_number, label, removed=True)
+        return _label_event(issue_number, run[-1]) if run else None
 
     def repository_role(self, login: str) -> str | None:
         """``login``'s role in this repository, or None for an unknown user."""

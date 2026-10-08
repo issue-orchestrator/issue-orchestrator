@@ -122,7 +122,7 @@ def _approval_confirmed(
 ) -> bool:
     """True only when a FRESH read shows the proposal open and maintainer-approved.
 
-    The approval owner re-reads the latest ``approved`` label event here,
+    The approval owner re-reads the standing ``approved`` label's events here,
     bypassing its cache (#7763): an approval removed, re-applied by a bot, or
     stripped since the tick planned the execution withholds it.
     """

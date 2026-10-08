@@ -49,7 +49,8 @@ from issue_orchestrator.testing.exam.cases import (
     UPGRADE_EARLY_TICKS,
     blocked_issue_green_pr_awaiting_review,
     blocked_items_triaged,
-    BOT_APPROVED,
+    BOT_RACED_ROLES,
+    BOT_REAPPLIED,
     MAINTAINER_APPROVED,
     STRIPPED,
     halted_exchange_with_validated_work,
@@ -126,6 +127,11 @@ CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-766"
 CASE_H_MAINTAINER_EXTERNAL_ID = "M0-769"
 CASE_H_STRIPPED_EXTERNAL_ID = "M0-770"
 CASE_H_BOT_EXTERNAL_ID = "M0-771"
+CASE_H_BOT_2_EXTERNAL_ID = "M0-775"
+CASE_H_BOT_3_EXTERNAL_ID = "M0-776"
+CASE_H_BOT_4_EXTERNAL_ID = "M0-777"
+CASE_H_BOT_5_EXTERNAL_ID = "M0-778"
+CASE_H_REAPPLIED_EXTERNAL_ID = "M0-779"
 
 #: Case H keeps watching this long after its goals first hold, so a proposal
 #: the engine wrongly admits LATER still fails the case.
@@ -538,13 +544,22 @@ def _bot_repository_host(run: ExamRun):
 
 
 async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
-    """Three gated tech-lead proposals; only the maintainer's approval runs (#7763).
+    """Gated tech-lead proposals; only the maintainer's approval runs (#7763).
 
     The labels are planted BEFORE the engine starts, so its first tick (whose
-    approval scan is always due) judges all three at once: the maintainer's
+    approval scan is always due) judges them all at once: the maintainer's
     `approved` (the harness's own token — a repository admin), a stripped
-    `awaiting-approval` (what an engine retry used to do), and a bot's
-    `approved` (the harness repo's GitHub App).
+    `awaiting-approval` (what an engine retry used to do), and the bot
+    approvals (the harness repo's GitHub App).
+
+    Five bot approvals race their proposal's filing (#8346): the App adds
+    `approved` the moment GitHub answers the create, before GitHub emits the
+    filing's own labeled events — which then name the maintainer who filed it
+    for every label present, the bot's `approved` included. A gate that
+    trusts the newest labeled event admits such a proposal. The race is won
+    about two times in three, so five of them fail such a gate on nearly
+    every run (all five lost: about 1 in 250).
+    The last bot approval follows a maintainer approval that was taken back.
     """
     checkout = EngineCheckout.create(
         harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
@@ -556,14 +571,20 @@ async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         )
         flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
         flow_cleanup.append(flow)
-        flow.ensure_labels([TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, APPROVED_LABEL])
         gated = [CODER_LABEL, E2E_DATA_LABEL, TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL]
-        items: list[TrackedItem] = []
-        for role, external_id, what in (
-            (MAINTAINER_APPROVED, CASE_H_MAINTAINER_EXTERNAL_ID, "approved by a maintainer"),
-            (STRIPPED, CASE_H_STRIPPED_EXTERNAL_ID, "waiting label stripped"),
-            (BOT_APPROVED, CASE_H_BOT_EXTERNAL_ID, "'approved' by a bot"),
-        ):
+        # Every label once, up front: re-ensuring them per filing made seven
+        # label writes per issue, and a transient GitHub 500 on any of them
+        # aborted the run before the engine started (#8346).
+        flow.ensure_labels([*gated, APPROVED_LABEL, run.run_label])
+        operator = _github_adapter(run.repo)
+        bot_host = _bot_repository_host(run)
+
+        def bot_approves(number: int) -> None:
+            bot_host.add_label(number, APPROVED_LABEL)
+
+        def file(
+            role: str, external_id: str, what: str, on_created: Callable[[int], None] | None = None
+        ) -> TrackedItem:
             _, number = flow.create_issue(
                 f"[{external_id}] [EXAM-H] Tech-lead proposal {what}",
                 gated,
@@ -571,17 +592,47 @@ async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
                     "Tech-lead exam case H: a gated create_issue proposal the tech lead"
                     f" filed under propose authority, then {what}."
                 ),
+                on_created=on_created,
+                ensure_labels=False,
             )
-            items.append(TrackedItem(role, number, external_id=external_id))
-        maintainer, stripped, bot = items
-        operator = _github_adapter(run.repo)
+            return TrackedItem(role, number, external_id=external_id)
+
+        maintainer = file(MAINTAINER_APPROVED, CASE_H_MAINTAINER_EXTERNAL_ID, "approved by a maintainer")
+        stripped = file(STRIPPED, CASE_H_STRIPPED_EXTERNAL_ID, "waiting label stripped")
+        # Mint the App's installation token now: minting it inside the first
+        # race would hand GitHub the seconds it needs to win that race.
+        bot_host.get_issue(maintainer.issue_number)
+        raced = [
+            file(role, external_id, "'approved' by a bot as it was filed", on_created=bot_approves)
+            for role, external_id in zip(
+                BOT_RACED_ROLES,
+                (
+                    CASE_H_BOT_EXTERNAL_ID,
+                    CASE_H_BOT_2_EXTERNAL_ID,
+                    CASE_H_BOT_3_EXTERNAL_ID,
+                    CASE_H_BOT_4_EXTERNAL_ID,
+                    CASE_H_BOT_5_EXTERNAL_ID,
+                ),
+                strict=True,
+            )
+        ]
+        reapplied = file(
+            BOT_REAPPLIED,
+            CASE_H_REAPPLIED_EXTERNAL_ID,
+            "approved by a maintainer, un-approved, and re-'approved' by a bot",
+        )
         operator.add_label(maintainer.issue_number, APPROVED_LABEL)
         operator.remove_label(stripped.issue_number, AWAITING_APPROVAL_LABEL)
-        _bot_repository_host(run).add_label(bot.issue_number, APPROVED_LABEL)
+        operator.add_label(reapplied.issue_number, APPROVED_LABEL)
+        operator.remove_label(reapplied.issue_number, APPROVED_LABEL)
+        bot_approves(reapplied.issue_number)
+        items = [maintainer, stripped, *raced, reapplied]
         run.notes.append(
             f"planted: #{maintainer.issue_number} approved by the harness token,"
             f" #{stripped.issue_number} waiting label stripped,"
-            f" #{bot.issue_number} approved by the harness App"
+            f" {', '.join(f'#{item.issue_number}' for item in raced)} approved by the harness App"
+            f" as filed, #{reapplied.issue_number} approved and un-approved by the harness"
+            " token then approved by the harness App"
         )
         engine = spec.engine(config, checkout)
         await engine.start()

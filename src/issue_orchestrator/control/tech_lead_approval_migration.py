@@ -37,7 +37,6 @@ from ..domain.tech_lead_approval import (
     APPROVED_LABEL,
     AWAITING_APPROVAL_LABEL,
     TECH_LEAD_PROPOSAL_LABEL,
-    OperatorApprovalRecord,
     carries_proposal_marker,
     in_engine_scope,
     labels_named,
@@ -310,7 +309,7 @@ def _migrate_legacy_approval(
         restore_gate_labels(repository, issue)
         approvals.remember_proposals([number])
         return None
-    removal = approvals.evidence.latest_label_event(number, LEGACY_GATE_LABEL, removed=True)
+    removal = approvals.evidence.latest_label_removal(number, LEGACY_GATE_LABEL)
     if removal is not None and approvals.is_maintainer(removal) and _bind_carried_approval(
         repository, approvals, issue
     ):
@@ -352,17 +351,9 @@ def _bind_carried_approval(
     """
     for label in missing_labels(issue.labels, (APPROVED_LABEL,)):
         repository.add_label(issue.number, label)
-    event = approvals.evidence.latest_label_event(issue.number, APPROVED_LABEL)
-    if event is None:
-        raise RuntimeError(
-            f"applied {APPROVED_LABEL!r} to #{issue.number} but no labeled event is on record"
-        )
-    if approvals.evidence.is_own_write(event):
-        approvals.records.record_operator_approval(
-            OperatorApprovalRecord(issue.number, event.event_id, datetime.now(timezone.utc).isoformat())
-        )
-        return True
-    return approvals.is_maintainer(event)
+    return approvals.bind_engine_approval(
+        issue.number, recorded_at=datetime.now(timezone.utc).isoformat()
+    ).approved
 
 
 __all__ = [

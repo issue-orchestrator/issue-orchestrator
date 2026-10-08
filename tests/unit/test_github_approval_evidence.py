@@ -24,7 +24,7 @@ def _labeled(event_id: int, label: str, login: str, *, kind: str = "labeled", **
     }
 
 
-def test_the_latest_matching_labeled_event_wins_across_pages() -> None:
+def test_the_standing_run_spans_pages_oldest_first() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         page = int(request.url.params.get("page", "1"))
         if page == 1:
@@ -37,9 +37,9 @@ def test_the_latest_matching_labeled_event_wins_across_pages() -> None:
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    event = client.latest_label_event(5, "approved")
+    run = client.standing_label_events(5, "approved")
 
-    assert event is not None and event["id"] == 3
+    assert [event["id"] for event in run] == [1, 3]
 
 
 def test_only_a_standing_transition_is_returned() -> None:
@@ -47,14 +47,14 @@ def test_only_a_standing_transition_is_returned() -> None:
     events = [_labeled(1, "approved", "lead"), _labeled(2, "approved", "x", kind="unlabeled")]
     client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=events)))
 
-    assert client.latest_label_event(5, "approved") is None
-    assert client.latest_label_event(5, "approved", removed=True)["id"] == 2
+    assert client.standing_label_events(5, "approved") == []
+    assert [e["id"] for e in client.standing_label_events(5, "approved", removed=True)] == [2]
 
     readded = [*events, _labeled(3, "approved", "lead")]
     client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=readded)))
 
-    assert client.latest_label_event(5, "approved")["id"] == 3
-    assert client.latest_label_event(5, "approved", removed=True) is None
+    assert [e["id"] for e in client.standing_label_events(5, "approved")] == [3]
+    assert client.standing_label_events(5, "approved", removed=True) == []
 
 
 def test_an_approval_removed_after_the_issue_read_never_consents() -> None:
@@ -102,12 +102,12 @@ def test_a_reopen_voids_every_earlier_approval() -> None:
     ]
     client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=events)))
 
-    assert client.latest_label_event(5, "approved") is None
+    assert client.standing_label_events(5, "approved") == []
 
     renewed = [*events, _labeled(4, "approved", "lead")]
     client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=renewed)))
 
-    assert client.latest_label_event(5, "approved")["id"] == 4
+    assert [e["id"] for e in client.standing_label_events(5, "approved")] == [4]
 
 
 def test_no_matching_event_is_none_only_after_the_final_page() -> None:
@@ -115,7 +115,7 @@ def test_no_matching_event_is_none_only_after_the_final_page() -> None:
         httpx.MockTransport(lambda request: httpx.Response(200, json=[_labeled(1, "bug", "lead")]))
     )
 
-    assert client.latest_label_event(5, "approved") is None
+    assert client.standing_label_events(5, "approved") == []
 
 
 def test_a_malformed_event_page_fails_loud() -> None:
@@ -124,7 +124,7 @@ def test_a_malformed_event_page_fails_loud() -> None:
     )
 
     with pytest.raises(GitHubScanIncompleteError):
-        client.latest_label_event(5, "approved")
+        client.standing_label_events(5, "approved")
 
 
 def test_repository_role_prefers_the_fine_grained_role() -> None:
@@ -147,7 +147,7 @@ def test_an_unknown_user_has_no_role() -> None:
 
 def _adapter(payload: dict | None) -> GitHubAdapter:
     client = MagicMock()
-    client.latest_label_event.return_value = payload
+    client.standing_label_events.return_value = [payload] if payload is not None else []
     return GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
 
 
@@ -161,15 +161,16 @@ def _adapter(payload: dict | None) -> GitHubAdapter:
     ids=["bot-login", "bot-type", "via-app"],
 )
 def test_the_adapter_marks_every_kind_of_automation(payload) -> None:
-    event = _adapter(payload).latest_label_event(5, "approved")
+    standing = _adapter(payload).standing_label(5, "approved")
 
-    assert event is not None and event.actor_is_bot
+    assert standing is not None and standing.application.actor_is_bot
 
 
 def test_the_adapter_reads_a_person() -> None:
-    event = _adapter(_labeled(9, "approved", "lead")).latest_label_event(5, "approved")
+    standing = _adapter(_labeled(9, "approved", "lead")).standing_label(5, "approved")
 
-    assert event is not None
+    assert standing is not None
+    event = standing.application
     assert (event.event_id, event.actor_login, event.actor_is_bot) == (9, "lead", False)
 
 
@@ -178,7 +179,7 @@ def test_an_event_without_an_actor_fails_loud() -> None:
     del payload["actor"]
 
     with pytest.raises(GitHubHttpError, match="no actor"):
-        _adapter(payload).latest_label_event(5, "approved")
+        _adapter(payload).standing_label(5, "approved")
 
 
 @pytest.mark.parametrize(
@@ -231,3 +232,81 @@ def test_an_approval_closed_after_the_issue_read_never_executes_its_op(interveni
     assert not result.success
     apply_fn.assert_not_called()
     assert ops.load_op(issue_number=5) is not None
+
+
+#: Issue #8268's real event history from tech-lead exam case H at a0b61b2
+#: (#8346), oldest first: the harness filed the proposal with its maintainer
+#: token, its GitHub App added `approved` two seconds later, and only THEN did
+#: GitHub emit the filing's labeled events — attributing every label the
+#: issue carried at that moment, the bot's `approved` included, to the
+#: issue's author.
+ISSUE_8268_EVENTS = [
+    _labeled(32709419257, "approved", "issue-orchestrator-bot[bot]"),
+    _labeled(32709427381, "io-e2e-test-data", "BruceBGordon"),
+    _labeled(32709427951, "agent:exam-coder", "BruceBGordon"),
+    _labeled(32709428447, "tech-lead-proposal", "BruceBGordon"),
+    _labeled(32709428936, "awaiting-approval", "BruceBGordon"),
+    _labeled(32709429523, "approved", "BruceBGordon"),
+    _labeled(32709430322, "io:e2e:exam-h-2c5b138383f9", "BruceBGordon"),
+]
+
+
+def _approvals_over(events: list) -> tuple:
+    from issue_orchestrator.control.tech_lead_approval import TechLeadApprovals
+    from issue_orchestrator.ports.approval_evidence import (
+        InMemoryOperatorApprovalRecords,
+        InMemoryProposalIssueIndex,
+    )
+
+    def github(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json=events)
+        return httpx.Response(200, json={"permission": "admin", "role_name": "admin"})
+
+    client = _client_with_transport(httpx.MockTransport(github))
+    adapter = GitHubAdapter(repo="owner/repo", http_client=client, cache=MagicMock(), verification_service=MagicMock())
+    return adapter, TechLeadApprovals(
+        adapter, InMemoryOperatorApprovalRecords(), InMemoryProposalIssueIndex(), lambda: ()
+    )
+
+
+def test_a_bot_approval_the_filing_attributed_to_its_maintainer_author_never_approves() -> None:
+    """#8346: the NEWEST `approved` event names a maintainer, but the label
+    stands because a bot applied it; neither admission, launch nor op
+    execution may count it."""
+    from issue_orchestrator.control.tech_lead_approval import unapproved_proposal_launch
+    from issue_orchestrator.domain.models import Issue
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalVerdictKind, with_proposal_marker
+
+    adapter, approvals = _approvals_over(ISSUE_8268_EVENTS)
+    snapshot = Issue(number=8268, title="t", labels=["tech-lead-proposal", "awaiting-approval", "approved"],
+                     state="open", repo="owner/repo", body=with_proposal_marker("b"))
+    repository = MagicMock()
+    repository.get_issue.return_value = snapshot
+
+    standing = adapter.standing_label(8268, "approved")
+    assert standing is not None
+    assert [e.actor_login for e in standing.events] == ["issue-orchestrator-bot[bot]", "BruceBGordon"]
+    verdict = approvals.verify(snapshot)
+    assert verdict.kind is ApprovalVerdictKind.BOT_ACTOR
+    assert verdict.actor == "issue-orchestrator-bot[bot]"
+    assert not approvals.confirm(snapshot)
+    assert unapproved_proposal_launch(8268, repository, approvals) is not None
+
+
+def test_a_maintainer_approval_with_no_other_application_still_approves() -> None:
+    """The fix refuses only what it must: the maintainer approval of the same
+    run (case H's #8266) verifies."""
+    from issue_orchestrator.domain.models import Issue
+    from issue_orchestrator.domain.tech_lead_approval import ApprovalVerdictKind, with_proposal_marker
+
+    events = [
+        _labeled(32709390036, "tech-lead-proposal", "BruceBGordon"),
+        _labeled(32709392214, "awaiting-approval", "BruceBGordon"),
+        _labeled(32709413365, "approved", "BruceBGordon"),
+    ]
+    _, approvals = _approvals_over(events)
+    snapshot = Issue(number=8266, title="t", labels=["tech-lead-proposal", "awaiting-approval", "approved"],
+                     state="open", repo="owner/repo", body=with_proposal_marker("b"))
+
+    assert approvals.verify(snapshot).kind is ApprovalVerdictKind.MAINTAINER

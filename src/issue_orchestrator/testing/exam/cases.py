@@ -87,11 +87,19 @@ STALE = "stale"
 BESIDE_PR = "beside_pr"
 PROVISIONING = "provisioning"
 
-#: Case H's three gated tech-lead proposals (#7763): one a maintainer
-#: approves, one whose waiting label is stripped, one a bot "approves".
+#: Case H's gated tech-lead proposals (#7763): one a maintainer approves, one
+#: whose waiting label is stripped, and several a bot "approves" (#8346).
 MAINTAINER_APPROVED = "maintainer_approved"
 STRIPPED = "stripped"
 BOT_APPROVED = "bot_approved"
+#: Bot approvals racing the filing: GitHub then attributes the bot's
+#: ``approved`` to the maintainer who filed the issue too (#8346). The race is
+#: lost about one time in three, so the case runs it five times.
+BOT_RACED_ROLES = (BOT_APPROVED, "bot_approved_2", "bot_approved_3", "bot_approved_4", "bot_approved_5")
+#: A maintainer approves, takes it back, and a bot re-applies ``approved``.
+BOT_REAPPLIED = "bot_reapplied"
+#: Every case H proposal only a bot "approved": none may ever be worked.
+BOT_APPROVED_ROLES = (*BOT_RACED_ROLES, BOT_REAPPLIED)
 
 #: Case I's two items (#8141): a PR a maintainer ruled on, whose conflict
 #: rework and review must be bound by the ruling (porchpin#364/PR #379), and a
@@ -496,24 +504,28 @@ def positive_approval_executes_once(
 ) -> ExamCase:
     """Case H — approval is a positive, maintainer-applied act (#7763).
 
-    Three gated tech-lead follow-ups (the ``create_issue`` proposals a
+    Gated tech-lead follow-ups (the ``create_issue`` proposals a
     ``propose``-authority tech lead files) are planted before the engine
     starts. A maintainer adds ``approved`` to the first. The second loses its
     ``awaiting-approval`` label the way an engine retry used to strip "every
     blocking label" (porchpin#444) — under the old model that removal WAS the
-    approval. The third gets ``approved`` from a GitHub App (bot) identity.
+    approval. Five more get ``approved`` from a GitHub App (bot) identity
+    the moment they are filed, racing GitHub's late attribution of a filing's
+    labels to its maintainer author (#8346), and one last is approved by the
+    maintainer, un-approved, and re-approved by the bot.
 
     Right answer: the maintainer's proposal is admitted and worked exactly
     once; the stripped one is never worked and gets its waiting label back;
-    the bot's ``approved`` is removed and that proposal is never worked.
+    every bot ``approved`` is removed and none of those is ever worked.
     """
     gated = (proposal_label, awaiting_label)
     return ExamCase(
         case_id=POSITIVE_APPROVAL_EXECUTES_ONCE,
         title="Only a maintainer's positive approval executes a tech-lead proposal",
         fault=(
-            "three gated tech-lead proposals: one approved by a maintainer, one"
-            " with its waiting label stripped, one 'approved' by a bot"
+            "gated tech-lead proposals: one approved by a maintainer, one with its"
+            " waiting label stripped, five 'approved' by a bot as they are filed,"
+            " one re-'approved' by a bot after the maintainer took it back"
         ),
         goals=(
             single_pull_request(MAINTAINER_APPROVED),
@@ -522,9 +534,15 @@ def positive_approval_executes_once(
             never_worked(STRIPPED),
             issue_keeps_labels(STRIPPED, gated),
             issue_lacks_labels(STRIPPED, (approved_label,)),
-            never_worked(BOT_APPROVED),
-            issue_keeps_labels(BOT_APPROVED, gated),
-            issue_lacks_labels(BOT_APPROVED, (approved_label,)),
+            *(
+                goal
+                for role in BOT_APPROVED_ROLES
+                for goal in (
+                    never_worked(role),
+                    issue_keeps_labels(role, gated),
+                    issue_lacks_labels(role, (approved_label,)),
+                )
+            ),
         ),
         known_blockers=(
             "#7763 approval was the REMOVAL of proposed-tech-lead: any strip approved",

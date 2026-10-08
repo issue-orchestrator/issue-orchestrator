@@ -17,6 +17,7 @@ from issue_orchestrator.domain.tech_lead_approval import (
     GATED_PROPOSAL_LABELS,
     TECH_LEAD_PROPOSAL_LABEL,
     LabelEvent,
+    StandingLabel,
 )
 from issue_orchestrator.ports.approval_evidence import InMemoryOperatorApprovalRecords, InMemoryProposalIssueIndex
 
@@ -37,12 +38,16 @@ ENGINE_APP_ID = "4250697"
 
 @dataclass
 class FakeApprovalEvidence:
-    """Label events and repository roles, as GitHub would answer them."""
+    """Label events and repository roles, as GitHub would answer them.
+
+    Each issue's label transitions are an ordered log, oldest first, read the
+    way GitHub's event listing is: a removal ends a label's standing run.
+    """
 
     roles: dict[str, str] = field(
         default_factory=lambda: {MAINTAINER: "admin", CONTRIBUTOR: "write"}
     )
-    events: dict[tuple[int, str, bool], LabelEvent] = field(default_factory=dict)
+    transitions: dict[int, list[tuple[str, bool, LabelEvent]]] = field(default_factory=dict)
     #: When set, every issue without a recorded ``approved`` event reads as
     #: approved by this login (tests that only care that approval holds).
     default_approver: str | None = None
@@ -63,15 +68,36 @@ class FakeApprovalEvidence:
             created_at=f"2026-10-03T00:00:{self._next_id % 60:02d}Z",
             app_id=ENGINE_APP_ID if by == ENGINE else "",
         )
-        self.events[(issue_number, label.casefold(), removed)] = event
+        self.record(issue_number, label, event, removed=removed)
         return event
 
-    def latest_label_event(self, issue_number: int, label: str, *, removed: bool = False) -> LabelEvent | None:
-        self.event_reads.append((issue_number, label, removed))
-        key = (issue_number, label.casefold(), removed)
-        if key not in self.events and self.default_approver and label.casefold() == APPROVED_LABEL and not removed:
+    def record(self, issue_number: int, label: str, event: LabelEvent, *, removed: bool = False) -> None:
+        """Append a prepared event to the issue's transition log."""
+        self.transitions.setdefault(issue_number, []).append((label.casefold(), removed, event))
+
+    def _run(self, issue_number: int, label: str, *, removed: bool) -> tuple[LabelEvent, ...]:
+        folded = label.casefold()
+        run: tuple[LabelEvent, ...] = ()
+        for named, was_removal, event in self.transitions.get(issue_number, []):
+            if named == folded:
+                run = (*run, event) if was_removal == removed else ()
+        return run
+
+    def standing_label(self, issue_number: int, label: str) -> StandingLabel | None:
+        self.event_reads.append((issue_number, label, False))
+        if (
+            self.default_approver
+            and label.casefold() == APPROVED_LABEL
+            and not any(named == APPROVED_LABEL for named, _, _ in self.transitions.get(issue_number, []))
+        ):
             self.label(issue_number, by=self.default_approver)
-        return self.events.get(key)
+        run = self._run(issue_number, label, removed=False)
+        return StandingLabel(run) if run else None
+
+    def latest_label_removal(self, issue_number: int, label: str) -> LabelEvent | None:
+        self.event_reads.append((issue_number, label, True))
+        run = self._run(issue_number, label, removed=True)
+        return run[-1] if run else None
 
     def repository_role(self, login: str) -> str | None:
         self.role_reads.append(login)
