@@ -1309,7 +1309,9 @@
           "status_label",
           "can_approve",
           "can_decline",
-          "details"
+          "details",
+          "approval_steps",
+          "operator_steps"
         ],
         "properties": {
           "kind": {
@@ -1366,6 +1368,22 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TechLeadDetailRowPayload"
+            }
+          },
+          "approval_steps": {
+            "type": "array",
+            "description": "What approving executes beyond the item, one typed step each, in order (#8691).",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "operator_steps": {
+            "type": "array",
+            "description": "What the operator does by hand because io cannot, shown as a checklist (#8691).",
+            "items": {
+              "type": "string",
+              "minLength": 1
             }
           }
         }

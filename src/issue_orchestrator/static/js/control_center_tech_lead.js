@@ -108,6 +108,25 @@
         return `<details class="tl-details"><summary data-focus-key="${escapeHtml(key)}">Details for #${escapeHtml(item.number)}</summary><dl>${rows}</dl></details>`;
     }
 
+    // A decision's steps beyond its item (#8691): what approving executes, in
+    // order, and the operator's own checklist of what io cannot do. Each list
+    // is labelled by its visible heading; the checkbox glyph is decorative
+    // (the heading says "by hand"), so colour or a glyph is never the signal.
+    function renderSteps(repo, item) {
+        const id = `tl-steps-${escapeHtml(repo.repo_key)}-${escapeHtml(item.number)}`;
+        const parts = [];
+        if (item.approval_steps.length) {
+            const rows = item.approval_steps.map(step => `<li>${escapeHtml(step)}</li>`).join('');
+            parts.push(`<p id="${id}-approval"><strong>Approving also:</strong></p><ol class="tl-steps" aria-labelledby="${id}-approval">${rows}</ol>`);
+        }
+        if (item.operator_steps.length) {
+            const rows = item.operator_steps.map(step =>
+                `<li><span class="tl-check" aria-hidden="true">&#9744;</span> ${escapeHtml(step)}</li>`).join('');
+            parts.push(`<p id="${id}-operator"><strong>You do by hand (io cannot):</strong></p><ul class="tl-checklist" aria-labelledby="${id}-operator">${rows}</ul>`);
+        }
+        return parts.join('');
+    }
+
     function renderActions(repo, item) {
         if (item.kind !== 'proposal') return '';
         const name = `proposal #${item.number} in ${repo.name}`;
@@ -130,6 +149,7 @@
             <p class="tl-status tl-status-${escapeHtml(item.status)}"><strong>Status:</strong> ${escapeHtml(item.status_label)}</p>
             <p><strong>Recommendation:</strong> ${escapeHtml(item.recommendation)}</p>
             <p><strong>${item.kind === 'proposal' ? 'Approving' : 'What to do'}:</strong> ${escapeHtml(item.approval_effect)}</p>
+            ${renderSteps(repo, item)}
             ${renderDetails(repo, item)}
             ${renderActions(repo, item)}
         </article></li>`;

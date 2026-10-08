@@ -32,7 +32,8 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import Any, Literal, cast
 
-from .block_resolution import BlockResolution
+from .block_resolution import BlockResolution, ParentDisposition
+from .decision_steps import DecisionFollowThrough, DecisionStepKind
 from .tech_lead_findings import VALID_FINDING_FIX_CLASSES
 
 
@@ -226,6 +227,8 @@ _TYPE_SCOPED_ACTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("tracker_number", "defer_to_tracker", "#6971"),
     ("follow_up_issues", "propose_decision", "#7593"),
     ("resolution", "resolve_block", "#7658"),
+    # A decision's steps beyond its item (#8691): either decision type.
+    ("follow_through", "propose_decision|resolve_block", "#8691"),
 )
 
 
@@ -385,6 +388,9 @@ class ProposedTechLeadAction:
     # What a ``resolve_block`` decides (#7658): the work-block causes it
     # discharges, the decision and its evidence, and a split's children.
     resolution: BlockResolution | None = None
+    # What approving a decision executes beyond its item, and the operator's
+    # checklist of what io cannot do (#8691): ``steps`` and ``operator_steps``.
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough)
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -479,6 +485,10 @@ class ProposedTechLeadAction:
                 if data.get("resolution") is not None
                 else None
             ),
+            follow_through=DecisionFollowThrough.from_agent(
+                data.get("steps"), data.get("operator_steps"),
+                context=f"proposed action {action_id}",
+            ),
         )
         action.validate()
         return action
@@ -493,6 +503,19 @@ class ProposedTechLeadAction:
         self._validate_type_scoped_fields(context)
         self._validate_optional_field_shapes(context)
         self._validate_required_fields(context)
+        self._validate_follow_through(context)
+
+    def _validate_follow_through(self, context: str) -> None:
+        """A decision's steps beyond its item (#8691): typed, and never closing its own item."""
+        _require(isinstance(cast(object, self.follow_through), DecisionFollowThrough),
+                 f"{context} follow_through must be a DecisionFollowThrough")
+        if self.follow_through and self.target_number is not None:
+            self.follow_through.validate_for(self.target_number)
+        reworks = any(step.kind is DecisionStepKind.REQUEST_PR_REWORK for step in self.follow_through.steps)
+        closes = self.resolution is not None and self.resolution.parent is ParentDisposition.CLOSE
+        _require(not (reworks and closes),
+                 f"{context} closes its item (a closing split) and reworks its PR: the rework"
+                 " of a closed issue's PR never launches")
 
     def _validate_type_scoped_fields(self, context: str) -> None:
         """Reject optional fields set on an action type that cannot use them.
@@ -508,9 +531,9 @@ class ProposedTechLeadAction:
             if not getattr(self, name):
                 continue
             _require(
-                self.action_type == owner_type,
+                self.action_type in owner_type.split("|"),
                 f"{context} sets {name}, which is only valid on"
-                f" {owner_type} actions ({reference})",
+                f" {owner_type.replace('|', ' or ')} actions ({reference})",
             )
 
     def _validate_optional_field_shapes(self, context: str) -> None:
@@ -661,6 +684,8 @@ class ProposedTechLeadAction:
             ("triage_class", self.triage_class.value if self.triage_class else None),
             ("follow_up_issues", [item.to_dict() for item in self.follow_up_issues]),
             ("resolution", self.resolution.to_dict() if self.resolution else None),
+            ("steps", [step.to_dict() for step in self.follow_through.steps]),
+            ("operator_steps", list(self.follow_through.operator_steps)),
         )
         for key, value in optional:
             if value:

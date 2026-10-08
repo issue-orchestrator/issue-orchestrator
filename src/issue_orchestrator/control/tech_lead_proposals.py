@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Collection, Iterable, Mapping, Sequence
 
+from ..domain.decision_steps import DecisionFollowThrough, follow_through_section
 from ..domain.scoped_rework import ReworkRequest, ReworkReceipt
 from ..domain.validated_work import RemoteBaselineStatus
 from ..domain.tech_lead_approval import (
@@ -170,6 +171,7 @@ def build_stored_tech_lead_op(
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
     observed_at: str = "",
     now_iso: str | None = None,
+    follow_through: DecisionFollowThrough | None = None,
 ) -> StoredTechLeadOp:
     """The orchestrator-side executable payload for an act-level proposal.
 
@@ -197,6 +199,8 @@ def build_stored_tech_lead_op(
         observed_at=observed_at,
         decision=operator_decision_of(proposed),
         resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
+        # Bound by the planner (a PR rework to its observed head); never the agent's own.
+        follow_through=follow_through if follow_through is not None else DecisionFollowThrough(),
     )
 
 
@@ -224,13 +228,14 @@ def _decision_section(op: StoredTechLeadOp) -> str:
     return f"""## Decision for #{op.target_issue_number}: {op.decision.title}
 
 {op.decision.body}
-{filed}
+{filed}{follow_through_section(op.follow_through, subject=op.target_issue_number)}
 ### What approving does
 
 1. Files the issues above, if any, with #{op.target_issue_number}'s own labels
    and milestone.
 2. Posts this decision on #{op.target_issue_number}, so the session that resumes
-   it works to it.
+   it works to it, and executes the steps above, if any (a PR rework runs
+   right after the retry).
 3. Retries #{op.target_issue_number} last, through the operator's own retry (its
    blocking labels come off). If the item closed or is no longer blocked, or a
    cause the retry may not override (such as a claim quarantine) holds it, the
@@ -339,6 +344,7 @@ def build_tech_lead_proposal_issue_action(
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
     observed_at: str = "",
     now_iso: str | None = None,
+    follow_through: DecisionFollowThrough | None = None,
 ) -> CreateTechLeadProposalIssueAction:
     """Compose the gated proposal issue creation for an act-level proposal.
 
@@ -354,6 +360,7 @@ def build_tech_lead_proposal_issue_action(
         validated_work_authority=validated_work_authority,
         observed_at=observed_at,
         now_iso=now_iso,
+        follow_through=follow_through,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
     headline = op.decision.title if op.decision is not None else op.resolution.title if op.resolution is not None else None
@@ -386,6 +393,7 @@ def proposal_ledger_key(
     rework_request: ReworkRequest | None = None,
     decision: OperatorDecision | None = None,
     resolution: "BlockResolution | None" = None,
+    follow_through: DecisionFollowThrough | None = None,
 ) -> tuple[str, int | str]:
     """The identity one open proposal owns: the op and what it would do.
 
@@ -398,6 +406,10 @@ def proposal_ledger_key(
     if rework_request is not None:
         return (op_type, rework_request.key)
     payload = decision.to_dict() if decision is not None else resolution.to_dict() if resolution is not None else None
+    steps = follow_through.identity() if follow_through is not None else None
+    if payload is not None and steps is not None:
+        # The steps are part of what approval runs (#8691); none keeps the old key.
+        payload = {**payload, "follow_through": steps}
     if payload is not None:
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
         return (op_type, f"{target_issue_number}:{digest}")
@@ -418,6 +430,7 @@ def build_op_ledger(
         proposal_ledger_key(
             op.op_type, op.target_issue_number,
             rework_request=op.rework_request, decision=op.decision, resolution=op.resolution,
+            follow_through=op.follow_through,
         ): issue_number
         for issue_number, op in ops
     }
@@ -710,6 +723,7 @@ def plan_approved_tech_lead_op_executions(
                 ApplyOperatorDecisionAction(
                     issue_number=op.target_issue_number,
                     decision=op.decision,
+                    follow_through=op.follow_through,
                     proposal_id=op.source_action_id,
                     finding_ids=op.finding_ids,
                     anchor_issue_number=item.proposal_issue_number,
@@ -722,7 +736,7 @@ def plan_approved_tech_lead_op_executions(
             assert op.resolution is not None
             actions.append(ResolveBlockAction(
                 issue_number=op.target_issue_number, resolution=op.resolution,
-                rationale=op.rationale, proposal_id=op.source_action_id,
+                follow_through=op.follow_through, rationale=op.rationale, proposal_id=op.source_action_id,
                 finding_ids=op.finding_ids, anchor_issue_number=item.proposal_issue_number,
                 proposal_issue_number=item.proposal_issue_number, observed_at=op.observed_at,
                 source_session_name=op.source_session_name, source_run_id=op.source_run_id,

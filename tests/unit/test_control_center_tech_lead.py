@@ -38,6 +38,7 @@ def _section(repository: str, waiting: int) -> dict:
         "recommendation": "r", "approval_effect": "e", "link": "https://x", "waiting_since": "",
         "status": "awaiting_approval", "status_label": "Awaiting your approval",
         "can_approve": True, "can_decline": True, "details": [],
+        "approval_steps": [], "operator_steps": [],
     }
     return {
         "repository": repository, "generated_at": "now", "waiting_count": waiting,

@@ -37,6 +37,7 @@ from issue_orchestrator.testing.exam.cases import (
     MERGE_HELD_WORK_PROCEEDS,
     BLOCK_RESOLUTIONS_PROPOSED,
     BLOCKS_RESOLVED_UNDER_EXECUTE,
+    DECISION_STEPS_RUN_ON_APPROVAL,
     EXAM_CASE_IDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     POSITIVE_APPROVAL_EXECUTES_ONCE,
@@ -62,6 +63,7 @@ from tests.e2e.exam.scenarios import (
     case_f_resolved,
     case_g_proposed,
     case_i,
+    case_j,
     case_u,
     run_case_a,
     run_case_b,
@@ -69,6 +71,7 @@ from tests.e2e.exam.scenarios import (
     run_case_d,
     run_case_h,
     run_case_i,
+    run_case_j,
     run_case_e,
     run_case_resolution,
     run_case_u,
@@ -149,6 +152,7 @@ async def test_tech_lead_exam(
         BLOCKS_RESOLVED_UNDER_EXECUTE: case_f_resolved,
         BLOCK_RESOLUTIONS_PROPOSED: case_g_proposed,
         RULING_BINDS_REWORK_AND_REVIEW: case_i,
+        DECISION_STEPS_RUN_ON_APPROVAL: case_j,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -181,6 +185,8 @@ async def test_tech_lead_exam(
             )
         if case_id == RULING_BINDS_REWORK_AND_REVIEW:
             return await run_case_i(run, flows, tech_lead_model=model)
+        if case_id == DECISION_STEPS_RUN_ON_APPROVAL:
+            return await run_case_j(run, flows, tech_lead_model=model)
         if case_id == POSITIVE_APPROVAL_EXECUTES_ONCE:
             # Configured so approval verification runs; never launched (case_h_engine).
             return await run_case_h(run, flows, tech_lead_model=model)

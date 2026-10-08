@@ -15,6 +15,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from ...domain.decision_steps import (
+    DECISION_STEP_MARKER_PREFIX,
+    DECISION_STEP_RULING_PREFIX,
+    OPERATOR_CHECKLIST_HEADING,
+)
 from ...domain.standing_ruling import REWORK_BRIEF_OPENING, RULINGS_PROMPT_HEADING
 from ...domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION_TYPES
 from .observation import ExamObservation, PullRequestState, TriageFact, WorkItemFact
@@ -732,3 +737,100 @@ def contradicting_approval_refused(role: str) -> Goal:
 
     return Goal(f"{role}.contradicting_approval_refused", role,
                 f"an approval of the reworked {role} diff is refused, never accepted", check)
+
+
+# -- a decision's steps beyond its item (#8691) ---------------------------------
+
+_STEP_MARKER = re.compile(re.escape(DECISION_STEP_MARKER_PREFIX) + r"[^:]+:(?P<index>\d+) -->")
+_STEP_APPLIED = re.compile(r"Step \d+ applied:")
+_HAND_STEP_PROSE = re.compile(r"before you approve", re.IGNORECASE)
+
+
+def issue_in_milestone(role: str, title: str) -> Goal:
+    """The issue is in the milestone named ``title`` (porchpin#459 moved #327 to M1)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        return GoalCheck(item.milestone == title,
+                         f"issue #{item.issue_number}'s milestone: {item.milestone or 'none'}")
+
+    return Goal(f"{role}.in_milestone", role, f"the {role} issue is in milestone {title!r}", check)
+
+
+def issue_is_closed(role: str) -> Goal:
+    """The issue is closed (a superseded proposal, closed by the decision)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        return GoalCheck(item.issue_state == "closed", f"issue #{item.issue_number} is {item.issue_state}")
+
+    return Goal(f"{role}.issue_closed", role, f"the {role} issue is closed", check)
+
+
+def decision_steps_ran_once(role: str, *, at_least: int) -> Goal:
+    """An approved decision about the item ran its typed steps, each exactly
+    once: every step marker on its proposal says applied, no step index twice."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if not item.decision_proposals:
+            return GoalCheck(False, f"no decision proposal was filed about #{item.issue_number}")
+        seen = []
+        for proposal in item.decision_proposals:
+            indices = [int(m.group("index")) for c in proposal.step_comments for m in _STEP_MARKER.finditer(c)]
+            applied = all(_STEP_APPLIED.match(c) for c in proposal.step_comments)
+            once = len(indices) == len(set(indices))
+            seen.append(f"#{proposal.number}: steps {sorted(indices)}"
+                        f"{'' if once else ' (a step ran twice)'}{'' if applied else ' (a step was refused)'}")
+            if once and applied and len(indices) >= at_least:
+                return GoalCheck(True, f"#{item.issue_number}'s proposal {seen[-1]}")
+        return GoalCheck(False, f"#{item.issue_number}: no proposal ran >= {at_least} steps once each; {'; '.join(seen)}")
+
+    return Goal(f"{role}.decision_steps_ran_once", role,
+                f"approving the {role} decision ran its typed steps, each exactly once", check)
+
+
+def operator_checklist_names(role: str, term: str) -> Goal:
+    """The item's decision proposal puts what io cannot do (``term``) in the
+    operator's checklist, not in prose."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        for proposal in item.decision_proposals:
+            _, found, checklist = proposal.body.partition(OPERATOR_CHECKLIST_HEADING)
+            listed = [line for line in checklist.splitlines() if line.startswith("- [ ]")]
+            wanted = re.compile(re.escape(term), re.IGNORECASE)
+            if found and any(wanted.search(line) for line in listed):
+                return GoalCheck(True, f"proposal #{proposal.number}'s checklist names {term!r}")
+        numbers = [p.number for p in item.decision_proposals] or "none"
+        return GoalCheck(False, f"no decision proposal about #{item.issue_number} lists {term!r} for the"
+                                f" operator (proposals: {numbers})")
+
+    return Goal(f"{role}.operator_checklist", role,
+                f"the {role} decision lists {term!r} as the operator's own step", check)
+
+
+def no_hand_steps_in_prose(role: str) -> Goal:
+    """No decision proposal about the item buries chores in "Before you approve" prose."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if not item.decision_proposals:
+            return GoalCheck(False, f"no decision proposal was filed about #{item.issue_number}")
+        prose = [p.number for p in item.decision_proposals if _HAND_STEP_PROSE.search(p.body)]
+        return GoalCheck(not prose, f"proposals with 'Before you approve' prose: {prose or 'none'}")
+
+    return Goal(f"{role}.no_hand_steps_in_prose", role,
+                f"the {role} decision carries no 'Before you approve' chores", check)
+
+
+def body_ruling_states(role: str, text: str, *, authority: str) -> Goal:
+    """The item's body carries ``text`` word for word in a standing ruling of
+    ``authority`` that a decision STEP recorded (#8691), not the decision itself."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        # A decision STEP's ruling (``ds-<proposal>-<step>``), never the decision's own.
+        stating = [r.ruling_id for r in item.body_rulings
+                   if r.authority == authority and r.ruling_id.startswith(DECISION_STEP_RULING_PREFIX) and text in r.text]
+        listed = [r.ruling_id for r in item.body_rulings] or "none"
+        return GoalCheck(bool(stating), f"#{item.issue_number}: rulings {listed}; stating the note: {stating or 'none'}")
+
+    return Goal(f"{role}.body_ruling_states_note", role,
+                f"the {role} issue body carries the decided note as a standing ruling", check)

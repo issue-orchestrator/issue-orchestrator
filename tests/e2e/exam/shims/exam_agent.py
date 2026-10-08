@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -75,6 +76,8 @@ def run(argv: list[str]) -> None:
 
 #: The marker the engine's ``resolve_block`` posts with its decision.
 RESOLUTION_MARKER = "<!-- io:resolve-block:comment:decision="
+#: An approved ``propose_decision`` posted on the issue (#7593); Case J (#8691).
+OPERATOR_DECISION_MARKER = re.compile(r"<!-- io:operator-decision:\d+:decision -->")
 
 
 RUN_DIR_ENV = "ISSUE_ORCHESTRATOR_RUN_DIR"
@@ -104,13 +107,14 @@ def issue_number() -> int:
 
 
 def resolved_by_the_tech_lead() -> bool:
-    """Whether the tech lead's resolution is posted on this issue (fail loud)."""
+    """Whether the tech lead's resolution, or a decision the operator approved,
+    is posted on this issue (fail loud)."""
     out = subprocess.run(
         ["gh", "issue", "view", str(issue_number()), "--json", "comments", "--jq", ".comments[].body"],
         check=True, capture_output=True, text=True,
     ).stdout
-    resolved = RESOLUTION_MARKER in out
-    log(f"tech lead's resolution on the issue: {resolved}")
+    resolved = RESOLUTION_MARKER in out or OPERATOR_DECISION_MARKER.search(out) is not None
+    log(f"tech lead's resolution or approved decision on the issue: {resolved}")
     return resolved
 
 

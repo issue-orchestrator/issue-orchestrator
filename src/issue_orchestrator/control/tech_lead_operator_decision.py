@@ -19,10 +19,17 @@ gated until everything the resumed session needs exists:
    a standing ruling** on the item (#8141): the approved decision binds every
    later session on the issue, so it goes into the issue body's rulings block
    (create-once by the proposal), where every prompt and review reads it.
+   Then **carry out the decision's steps beyond the item** (#8691: another
+   issue's milestone or body, a superseded proposal, the item's PR reference
+   line) through ``tech_lead_decision_steps``, each once, in order. Every
+   step's precondition is checked in step 1, so a decision whose step no
+   longer applies writes nothing.
 4. **Retry the item last**, through the operator's own retry command, the
    one owner of which labels a retry clears. The item stays blocked until the
    decision and its follow-ups are on GitHub, so no session resumes it
    without them.
+   A PR rework step follows the retry: the engine refuses a blocked issue's
+   rework.
 5. **Bracket the retry durably** (``ports/operator_decision_retries``): begun
    before it, committed after, then mark the proposal applied with a comment.
    A replay of the op (a marker or finalize write that failed) finds the retry
@@ -40,7 +47,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from ..events import EventName
@@ -52,6 +59,7 @@ from ..ports.operator_issue_commands import OperatorCommandOutcome, OperatorComm
 from .actions import Action, ActionResult, AddCommentAction
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired, build_expected_for_mutation
+from .tech_lead_decision_steps import DecisionStepContext
 from .tech_lead_op_actions import ApplyOperatorDecisionAction
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
@@ -61,7 +69,9 @@ if TYPE_CHECKING:
     from ..ports.operator_decision_retries import DecisionRetryLedger
     from ..ports.issue import Issue
     from .label_manager import LabelManager
+    from ..domain.standing_ruling import StandingRuling
     from .standing_rulings import StandingRulingsOwner
+    from .tech_lead_decision_steps import DecisionStepsOwner
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +115,8 @@ class OperatorDecisionExecutor:
     retries: "DecisionRetryLedger"
     #: The owner the approved decision is recorded through as a standing ruling (#8141).
     rulings: "StandingRulingsOwner"
+    #: The owner of the decision's steps beyond the item (#8691).
+    steps: "DecisionStepsOwner"
 
     def apply(self, action: ApplyOperatorDecisionAction) -> ActionResult:
         prior = self.retries.decision_retry_state(proposal_issue_number=action.proposal_issue_number)
@@ -115,14 +127,31 @@ class OperatorDecisionExecutor:
             DecisionReplayStep.FINISH: self._finish_replay,
             DecisionReplayStep.HAND_BACK: self._hand_back,
         }
-        return handlers[step](action, target)
+        result = handlers[step](action, target)
+        return self._never_stale_once_begun(action, result)
+
+    def _never_stale_once_begun(self, action: ApplyOperatorDecisionAction, result: ActionResult) -> ActionResult:
+        """Every exit, one rule (#8691): a stale refusal of a decision that has
+        begun writing (its follow-ups, ruling or steps) is handed back partial,
+        so its proposal stays open and never says "No changes were made"."""
+        if result.details.get("mode") != STALE_DOWNGRADE_MODE:
+            return result
+        reason = str(result.details.get("skip_reason", "its preconditions no longer hold"))
+        classified = self.steps.classify(self._steps(action), action.follow_through, reason)
+        if not classified.partial:
+            return result
+        return ActionResult.fail(action, classified.hand_back(), issue_number=action.issue_number)
 
     def _carry_out(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
         proposal = action.proposal_issue_number
-        refusal = self._refusal(action, target)
-        if refusal is not None:
-            return _stale(action, refusal)
+        refused = self._refused(action, target)
+        if refused is not None:
+            return refused
         assert target is not None  # a missing issue is a refusal
+        self.steps.check_authority(self._steps(action), action.follow_through)
+        begun = self.steps.begin(self._steps(action), action.follow_through)
+        if begun is not None:
+            return ActionResult.fail(action, begun, issue_number=action.issue_number)
         try:
             follow_ups = tuple(
                 self._file_follow_up(action, target, index, follow_up)
@@ -145,6 +174,10 @@ class OperatorDecisionExecutor:
         unrecorded = self._record_ruling(action)
         if unrecorded is not None:
             return ActionResult.fail(action, unrecorded, issue_number=action.issue_number)
+        before = self.steps.apply(_step_context(action), action.follow_through, after_release=False)
+        if before.failed is not None:  # the item stays blocked; a replay resumes at the step
+            return ActionResult.fail(action, f"decision step not applied: {before.failed}",
+                                     issue_number=action.issue_number)
         self.retries.begin_decision_retry(proposal_issue_number=proposal)
         outcome = self.retry_issue(action.issue_number)
         unsettled = _UNSETTLED_RETRY.get(outcome.status)
@@ -153,6 +186,19 @@ class OperatorDecisionExecutor:
             return unsettled(action, outcome)
         self.retries.commit_decision_retry(proposal_issue_number=proposal)
         return self._finish(action, follow_ups=follow_ups, removed=outcome.removed, replayed=False)
+
+    def _refused(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult | None:
+        """The item's own refusal, else its steps'. Once the decision has begun
+        writing, any refusal is handed back partial, never closed as stale."""
+        item = self._refusal(action, target)
+        if item is not None:
+            return _stale(action, item)  # apply() hands it back if the decision has begun
+        refusal = self.steps.refusal(self._steps(action), action.follow_through)
+        if refusal is None:
+            return None
+        if refusal.partial:
+            return ActionResult.fail(action, refusal.hand_back(), issue_number=action.issue_number)
+        return _stale(action, refusal.reason)
 
     def _finish_replay(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> ActionResult:
         """The retry committed before (or was interrupted, and its item is
@@ -186,12 +232,19 @@ class OperatorDecisionExecutor:
         removed: tuple[str, ...],
         replayed: bool,
     ) -> ActionResult:
-        """Mark the proposal applied once the retry committed, and report it."""
+        """Run the steps that follow the release, mark the proposal applied
+        once the retry committed, and report it."""
         proposal = action.proposal_issue_number
+        after = self.steps.apply(_step_context(action), action.follow_through, after_release=True)
+        if after.failed is not None:  # the retry committed; a replay finishes the steps only
+            return ActionResult.fail(action, f"decision step not applied: {after.failed}",
+                                     issue_number=action.issue_number)
+        steps_refused = self.steps.refused_steps(_step_context(action), action.follow_through)
+        refused = "".join(f"\n- Refused at write time: {item}" for item in steps_refused)
         marked = self._comment_once(
             proposal, applied_marker(proposal),
             f"Applied: #{action.issue_number} was retried with the decision posted on it."
-            f"\n\n{applied_marker(proposal)}",
+            f"{refused}\n\n{applied_marker(proposal)}",
             reason=f"operator decision {action.proposal_id} applied",
         )
         if marked is not None:
@@ -202,7 +255,8 @@ class OperatorDecisionExecutor:
             "proposal_type": OP_TYPE,
             "target_number": action.issue_number,
             "finding_ids": list(action.finding_ids),
-            "boundary": {"retried": list(removed), "follow_ups": list(follow_ups), "replayed": replayed},
+            "boundary": {"retried": list(removed), "follow_ups": list(follow_ups), "replayed": replayed,
+                         "steps": len(action.follow_through.steps), "steps_refused": list(steps_refused)},
         }))
         logger.info(issue_log(action.issue_number,
             "Operator approved decision %s (proposal #%d): retried, follow-ups %s"),
@@ -210,6 +264,7 @@ class OperatorDecisionExecutor:
         return ActionResult.ok(
             action, issue_number=action.issue_number, replayed=replayed,
             follow_up_issues=[str(number) for number in follow_ups],
+            steps_refused=list(steps_refused),
         )
 
     def _refusal(self, action: ApplyOperatorDecisionAction, target: "Issue | None") -> str | None:
@@ -230,18 +285,26 @@ class OperatorDecisionExecutor:
 
     def _record_ruling(self, action: ApplyOperatorDecisionAction) -> str | None:
         """The approved decision as a standing ruling on the item (create-once); the failure, else None."""
-        decision = action.decision
         try:
-            self.rulings.record(action.issue_number, self.rulings.ruling(
-                ruling_id=decision_ruling_id(action.proposal_issue_number),
-                text=f"## {decision.title}\n\n{decision.body}",
-                authority=RulingAuthority.APPROVED_DECISION,
-                source=f"tech-lead decision approved on proposal #{action.proposal_issue_number}",
-                scope=RulingScope(),
-            ))
+            self.rulings.record(action.issue_number, self._decision_ruling(action))
         except Exception as error:  # the item stays blocked; a replay records it
             return f"standing ruling not recorded on #{action.issue_number}: {error}"
         return None
+
+    def _decision_ruling(self, action: ApplyOperatorDecisionAction) -> "StandingRuling":
+        decision = action.decision
+        return self.rulings.ruling(
+            ruling_id=decision_ruling_id(action.proposal_issue_number),
+            text=f"## {decision.title}\n\n{decision.body}",
+            authority=RulingAuthority.APPROVED_DECISION,
+            source=f"tech-lead decision approved on proposal #{action.proposal_issue_number}",
+            scope=RulingScope(),
+        )
+
+    def _steps(self, action: ApplyOperatorDecisionAction) -> DecisionStepContext:
+        """The decision as its steps see it, with the ruling it records on the item,
+        so the steps' rulings are preflighted together with it (#8691)."""
+        return replace(_step_context(action), subject_rulings=(self._decision_ruling(action),))
 
     def _comment_once(self, number: int, marker: str, body: str, *, reason: str) -> str | None:
         """Post *body* on *number* unless *marker* is already there; the failure, else None."""
@@ -283,6 +346,15 @@ class OperatorDecisionExecutor:
     def _inherited_labels(self, labels: Sequence[str]) -> list[str]:
         """The item's own labels (agent, priority, area), never workflow state."""
         return [label for label in labels if not self.labels.is_workflow_reserved(label)]
+
+def _step_context(action: ApplyOperatorDecisionAction) -> DecisionStepContext:
+    return DecisionStepContext(
+        action=action, subject=action.issue_number,
+        proposal_issue_number=action.proposal_issue_number,
+        anchor_issue_number=action.anchor_issue_number,
+        proposal_id=action.proposal_id, finding_ids=action.finding_ids,
+    )
+
 
 def _stale(action: ApplyOperatorDecisionAction, why: str) -> ActionResult:
     logger.warning(issue_log(action.issue_number, "Approved decision %s not applied: %s"),

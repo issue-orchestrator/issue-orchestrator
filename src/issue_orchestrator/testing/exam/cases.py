@@ -34,6 +34,12 @@ from .case import (
     rework_prompts_carry_rulings,
     rulings_in_body,
     resolution_answer_in_body,
+    decision_steps_ran_once,
+    issue_in_milestone,
+    issue_is_closed,
+    no_hand_steps_in_prose,
+    operator_checklist_names,
+    body_ruling_states,
 )
 from .case import Goal
 from .observation import PullRequestState
@@ -52,6 +58,7 @@ MERGE_HELD_WORK_PROCEEDS = "E-merge-held-work-proceeds"
 BLOCKS_RESOLVED_UNDER_EXECUTE = "F-needs-human-blocks-resolved"
 BLOCK_RESOLUTIONS_PROPOSED = "G-needs-human-block-resolutions-proposed"
 RULING_BINDS_REWORK_AND_REVIEW = "I-ruling-binds-rework-and-review"
+DECISION_STEPS_RUN_ON_APPROVAL = "J-decision-steps-run-on-approval"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -66,6 +73,7 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     BLOCKS_RESOLVED_UNDER_EXECUTE,
     BLOCK_RESOLUTIONS_PROPOSED,
     RULING_BINDS_REWORK_AND_REVIEW,
+    DECISION_STEPS_RUN_ON_APPROVAL,
 )
 
 #: Case U's two in-flight items.
@@ -107,6 +115,22 @@ BOT_APPROVED_ROLES = (*BOT_RACED_ROLES, BOT_REAPPLIED)
 #: answer must land in the issue BODY (porchpin#327/#501).
 RULED = "ruled"
 ANSWERED = "answered"
+
+#: Case J's four items (#8691), porchpin#459's shape: the item the decision is
+#: about (#326), a sibling it moves to another milestone (#327), the parent
+#: whose body gets a note (#262), and the older proposal it supersedes (#445).
+DECIDED = "decided"
+SIBLING = "sibling"
+NOTED = "noted"
+SUPERSEDED = "superseded"
+#: The milestone Case J's decision moves the sibling to (#459's "M1 - Surfaces").
+DECISION_MILESTONE = "EXAM-J M1"
+#: What only the operator can do in Case J (#456's CI ceiling): a workflow edit.
+OPERATOR_ONLY_TERM = "ci.yml"
+#: The notes Case J's spec tells the decision to record, word for word (#459's
+#: delivery plan in #326's body, and the line under #262's acceptance bullet).
+DELIVERY_PLAN_NOTE = "Delivery plan: build slice A (the per-pickup deletion command) only; slice B waits."
+PARENT_NOTE = "The deletion fence that meets this bullet is built by the route issue split from the decided issue."
 
 #: Candidate ticks Case U's quiet window covers after the restart.
 UPGRADE_EARLY_TICKS = 5
@@ -585,5 +609,51 @@ def ruling_binds_rework_and_review() -> ExamCase:
         known_blockers=(
             "porchpin#379 a conflict rework and its review never saw the maintainer's ruling",
             "porchpin#327 an approved resolve_block answer never reached the issue body",
+        ),
+    )
+
+
+#: The authority a decision step's ruling is recorded with.
+APPROVED_DECISION = RulingAuthority.APPROVED_DECISION.value
+
+
+def decision_steps_run_on_approval(*, needs_human_label: str) -> ExamCase:
+    """Case J — an approved decision carries out its own consequences (#8691).
+
+    porchpin#459: the tech lead's split decision for #326 came with "Before
+    you approve" chores (move #326 and #327 to M1, paste the delivery plan into
+    #326's body, add a note to #262's body) and #456 closed the proposal it
+    superseded; the operator carried out each by hand. Here a coder asks a
+    question whose answer, per its issue's spec, also moves a sibling to
+    another milestone, notes the parent's body, closes a superseded proposal,
+    and needs a workflow edit only a person can push. A health review decides
+    it, the harness approves the proposal as a maintainer, and does nothing
+    else. Right answer: the decision carries typed steps (no "Before you
+    approve" prose), the workflow edit is the operator's checklist item, and
+    approval runs every step exactly once: the sibling is in the milestone,
+    the parent's and the item's bodies carry the notes as standing rulings,
+    the superseded proposal is closed, and the item is released.
+    """
+    return ExamCase(
+        case_id=DECISION_STEPS_RUN_ON_APPROVAL,
+        title="Approving a decision carries out its steps beyond the item",
+        fault=(
+            "an agent's question whose decision also moves a sibling to another milestone,"
+            " notes two issue bodies, closes a superseded proposal and needs a workflow edit;"
+            " the maintainer only approves"
+        ),
+        goals=(
+            decision_steps_ran_once(DECIDED, at_least=3),
+            operator_checklist_names(DECIDED, OPERATOR_ONLY_TERM),
+            no_hand_steps_in_prose(DECIDED),
+            body_ruling_states(DECIDED, DELIVERY_PLAN_NOTE, authority=APPROVED_DECISION),
+            issue_lacks_labels(DECIDED, (needs_human_label,)),
+            issue_in_milestone(SIBLING, DECISION_MILESTONE),
+            body_ruling_states(NOTED, PARENT_NOTE, authority=APPROVED_DECISION),
+            issue_is_closed(SUPERSEDED),
+        ),
+        known_blockers=(
+            "porchpin#459 approval acted on the issue only: every other consequence was the operator's by hand",
+            "porchpin#327/#530 approval could not route the decided issue's PR",
         ),
     )

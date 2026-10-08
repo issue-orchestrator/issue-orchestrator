@@ -137,6 +137,18 @@
     white-space: pre-wrap;
 }
 
+.tl-steps,
+.tl-checklist {
+    margin: 0 0 0.75rem;
+    padding-left: 1.5rem;
+    overflow-wrap: anywhere;
+}
+
+.tl-checklist {
+    list-style: none;
+    padding-left: 0.25rem;
+}
+
 .tl-actions {
     display: flex;
     flex-wrap: wrap;

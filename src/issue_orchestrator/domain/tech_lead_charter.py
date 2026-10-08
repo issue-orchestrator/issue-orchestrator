@@ -319,6 +319,8 @@ class CharterReason(str, Enum):
     ROLE_AUTHORITY_PROPOSE = "role_authority_propose"
     ACTION_AUTHORITY_PROPOSE = "action_authority_propose"
     WITHIN_CHARTER_EXECUTE = "within_charter_execute"
+    #: A decision with steps beyond its item (#8691) waits for the operator.
+    FOLLOW_THROUGH_REQUIRES_APPROVAL = "follow_through_requires_approval"
 
 
 @dataclass(frozen=True)

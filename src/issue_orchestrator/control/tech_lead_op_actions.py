@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from ..domain.block_resolution import BlockResolution
+from ..domain.decision_steps import DecisionFollowThrough
 from ..domain.scoped_rework import ReworkRequest
 from ..domain.tech_lead_session import OperatorDecision
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
@@ -227,6 +228,8 @@ class ApplyOperatorDecisionAction(Action):
 
     issue_number: int = 0
     decision: OperatorDecision = field(kw_only=True)
+    #: What approval executes beyond the item, and the operator's checklist (#8691).
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough, kw_only=True)
     proposal_id: str = ""
     finding_ids: tuple[str, ...] = ()
     anchor_issue_number: int = 0
@@ -269,6 +272,9 @@ class ResolveBlockAction(Action):
 
     issue_number: int = 0
     resolution: BlockResolution = field(kw_only=True)
+    #: What approval executes beyond the item (#8691): only ever on an
+    #: approved proposal, since steps make the charter gate the decision.
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough, kw_only=True)
     rationale: str = ""
     proposal_id: str = ""
     finding_ids: tuple[str, ...] = ()
@@ -299,6 +305,8 @@ class ResolveBlockAction(Action):
                 raise ValueError(f"ResolveBlockAction requires {name}")
         if self.proposal_issue_number < 0:
             raise ValueError("proposal_issue_number cannot be negative")
+        if self.follow_through and self.proposal_issue_number <= 0:
+            raise ValueError("a resolve_block with follow-through runs only from an approved proposal")
 
     @property
     def decision_id(self) -> str:

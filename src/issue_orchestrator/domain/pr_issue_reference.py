@@ -152,3 +152,27 @@ def honors_partial_claim(
     says, because leaving an issue open is recoverable and closing it is not.
     """
     return not partial or declares_partial_delivery(body, issue_number, repo_slug=repo_slug)
+
+
+def refs_in_place_of_closes(body: str, issue_number: int, *, repo_slug: str) -> str:
+    """``body`` with every local closing link to ``issue_number`` turned into a
+    ``Refs`` link, nothing else changed (#8691: a decision rules that the PR
+    delivers only part of its issue, so its merge must not close it).
+
+    Only the keyword changes; the link's form (``#N``, ``owner/repo#N``, the
+    issue URL) and every other link stay as they were. The result
+    :func:`declares_partial_delivery` for the issue whenever the body linked it.
+    """
+    slug = _require_slug(repo_slug)
+
+    def rewrite(match: re.Match[str]) -> str:
+        repo = match.group("repo") or match.group("url_repo")
+        local = repo is None or repo.casefold() == slug
+        closes = match.group("keyword").lower() != "refs"
+        if not (local and closes and int(match.group("number")) == issue_number):
+            return match.group(0)
+        start, end = match.start("keyword") - match.start(0), match.end("keyword") - match.start(0)
+        text = match.group(0)
+        return text[:start] + _REFS_KEYWORD + text[end:]
+
+    return _LINK_RE.sub(rewrite, body)

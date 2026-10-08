@@ -65,6 +65,8 @@ class CaseEngine:
     """Add the coders that plant Cases F/G's needs-human blocks (``exam_config``)."""
     ruling_agents: RulingAgents | None = None
     """Case I's ruled coder, held reviewer and answerable coder (``exam_config``)."""
+    deciding_coder: bool = False
+    """Case J's coder that asks porchpin#459's question (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -94,6 +96,7 @@ class CaseEngine:
             reviewer_changes_once=self.reviewer_changes_once,
             resolution_coders=self.resolution_coders,
             ruling_agents=self.ruling_agents,
+            deciding_coder=self.deciding_coder,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -277,5 +280,19 @@ def case_i_engine(agents: RulingAgents) -> CaseEngine:
         tech_lead=True,
         worktree_reuse=True,
         ruling_agents=agents,
+        overlay=base.overlay,
+    )
+
+
+def case_j_engine() -> CaseEngine:
+    """Case J (#8691): the Case D engine (health reviews triage blocked items
+    with production authority; a decision always waits for the operator) with
+    the coder that asks porchpin#459's question until a decision is posted."""
+    base = case_d_engine()
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        deciding_coder=True,
+        worktree_reuse=True,
         overlay=base.overlay,
     )

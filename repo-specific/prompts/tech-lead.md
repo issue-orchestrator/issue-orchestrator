@@ -591,6 +591,27 @@ Compact `tech-lead-decision.json` example:
   the item's labels and milestone, and posts the decision on the item for the
   session that resumes it. Use it when an item waits on a decision (an agent's
   question, a split, a scope call) rather than escalating the question as-is.
+- **A decision's consequences beyond its item are typed `steps`, never prose.**
+  `propose_decision` and `resolve_block` take optional `steps` (at most 8; the
+  engine runs each once, in order, when the operator approves) and
+  `operator_steps` (strings, at most 8). Never write "Before you approve" or
+  "the maintainer then ..." chores in a body: if io can do it, it is a step;
+  if not, it is an operator step. The step kinds (`number` is the issue or PR):
+  `{"kind": "set_milestone", "number": N, "milestone": "<open milestone title>"}`,
+  `{"kind": "record_ruling", "number": N, "text": "..."}` (a block in issue N's
+  body, which every session on N reads: a delivery plan, a note under an
+  acceptance bullet), `{"kind": "close_superseded_proposal", "number": N}` (an
+  open tech-lead proposal this decision replaces), `{"kind": "retarget_pr",
+  "number": PR}` (the decided issue's PR goes from `Closes #N` to `Refs #N`),
+  `{"kind": "request_pr_rework", "number": PR}` (the decided issue's PR, as
+  listed in `scoped-rework-targets.json`, goes back for rework with the
+  decision as its brief; its merge-decision `needs-human` comes off; it runs
+  after the item is released, so list it last), and `{"kind": "comment", "number": N, "text":
+  "...", "on_pr": false}` (a link or pointer). Anything else (a workflow-file
+  edit the bot may not push, a repository setting, a credential) goes in
+  `operator_steps`, shown to the operator as a checklist. The engine re-checks
+  every step before the first write and applies none if one no longer holds.
+  A `resolve_block` with steps always waits for the operator's approval.
 - `resolve_block` decides a `needs-human` WORK block yourself instead of
   asking the operator: `target_number` (the ISSUE), your rationale as `body`,
   and a `resolution` object: `kind` (`answer`, `split` or `lift`), `causes`

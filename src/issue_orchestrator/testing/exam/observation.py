@@ -242,6 +242,32 @@ class BodyRulingFact:
 
 
 @dataclass(frozen=True)
+class DecisionProposalFact:
+    """A tech-lead decision proposal filed about the item, as GitHub holds it (#8691).
+
+    Read for every ``propose_decision`` or ``resolve_block`` the engine's
+    charter ledger records with a proposal: its body (what the operator was
+    asked to approve, and to do by hand) and the per-step markers the engine
+    leaves on it as it executes the decision's steps.
+    """
+
+    number: int
+    state: str
+    body: str
+    #: Comments carrying a decision-step marker, verbatim, oldest first.
+    step_comments: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"number": self.number, "state": self.state, "body": self.body,
+                "step_comments": list(self.step_comments)}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DecisionProposalFact":
+        return cls(number=int(data["number"]), state=str(data["state"]), body=str(data["body"]),
+                   step_comments=tuple(str(c) for c in data["step_comments"]))
+
+
+@dataclass(frozen=True)
 class WorkItemFact:
     """An exam work item: its issue, its pull requests, and where it stood."""
 
@@ -274,6 +300,10 @@ class WorkItemFact:
     rulings refused (#8141)."""
     resolution_comments: tuple[str, ...] = ()
     """The tech lead's ``resolve_block`` decisions posted on the item (#7658), verbatim."""
+    milestone: str = ""
+    """The issue's milestone title, "" when it has none (#8691)."""
+    decision_proposals: tuple[DecisionProposalFact, ...] = ()
+    """The decision proposals filed about the item (#8691), by proposal number."""
 
     def prompts_of(self, task: str) -> tuple[CapturedPrompt, ...]:
         return tuple(prompt for prompt in self.prompts if prompt.task == task)
@@ -309,6 +339,8 @@ class WorkItemFact:
             "body_rulings_error": self.body_rulings_error,
             "refused_approvals": self.refused_approvals,
             "resolution_comments": list(self.resolution_comments),
+            "milestone": self.milestone,
+            "decision_proposals": [proposal.to_dict() for proposal in self.decision_proposals],
         }
 
     @classmethod
@@ -331,6 +363,11 @@ class WorkItemFact:
             body_rulings_error=str(data.get("body_rulings_error", "")),
             refused_approvals=int(data.get("refused_approvals", 0)),
             resolution_comments=tuple(str(c) for c in data.get("resolution_comments", ())),
+            # Saved before decision steps existed (#8691): none of them.
+            milestone=str(data.get("milestone", "")),
+            decision_proposals=tuple(
+                DecisionProposalFact.from_dict(p) for p in data.get("decision_proposals", ())
+            ),
         )
 
 
