@@ -376,7 +376,6 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
     # Optional GitHub Merge Queue integration (disabled by default)
     merge_queue: MergeQueueConfig = field(default_factory=MergeQueueConfig)
     validated_work: ValidatedWorkConfig = field(default_factory=ValidatedWorkConfig)
-    # How a failed required check is read and answered (#8692)
     ci_failure_triage: CiFailureTriageConfig = field(default_factory=CiFailureTriageConfig)
     # SQLite backup configuration
     sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
@@ -756,12 +755,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             },
             "validated_work": asdict(self.validated_work),
             "ci_failure_triage": asdict(self.ci_failure_triage),
-            "merge_queue": {
-                "enabled": self.merge_queue.enabled,
-                "provider": self.merge_queue.provider,
-                "enqueue_after": self.merge_queue.enqueue_after,
-                "failure_action": self.merge_queue.failure_action,
-            },
+            "merge_queue": asdict(self.merge_queue),
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
@@ -787,11 +781,9 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
             goal_pilot_section,
             merge_queue_section,
             observability_section,
+            retained_sections,
             worktrees_section,
         )
-
-        from .config_ci_failure import ci_failure_triage_section
-        from .config_validated_work import validated_work_section
 
         # Build agents section
         agents_dict = {}
@@ -1038,10 +1030,7 @@ class Config(ConfigLaunchIdentity, RuntimeConfigReferenceOwner, TechLeadActivati
         if merge_queue_dict := merge_queue_section(self):
             result["merge_queue"] = merge_queue_dict
 
-        if retained_work := validated_work_section(self):
-            result["validated_work"] = retained_work
-        if ci_triage := ci_failure_triage_section(self):
-            result["ci_failure_triage"] = ci_triage
+        result.update(retained_sections(self))
 
         # Worktrees section
         if worktrees_dict := worktrees_section(self):

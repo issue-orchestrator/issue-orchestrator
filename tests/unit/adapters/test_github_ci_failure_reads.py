@@ -43,6 +43,58 @@ def test_job_log_follows_the_redirect_without_the_credential_and_keeps_only_the_
     assert "Authorization" not in seen[1].headers  # the pre-signed URL never sees the token
 
 
+def test_a_long_log_is_asked_for_its_tail_by_byte_range(make_client) -> None:
+    log = b"x" * 5000 + b"\nFAILED tests/test_end.py::test_last\n"
+    ranges: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.github.com":
+            return httpx.Response(302, headers={"Location": "https://blob.example/log"})
+        ranges.append(request.headers.get("Range"))
+        if "Range" in request.headers:
+            first = int(request.headers["Range"].removeprefix("bytes=").rstrip("-"))
+            return httpx.Response(206, content=log[first:])
+        return httpx.Response(200, content=log)
+
+    tail = make_client(handler).get_actions_job_log_tail(77, max_bytes=1024)
+    assert ranges == [None, f"bytes={len(log) - 1024}-"]
+    assert tail.endswith("FAILED tests/test_end.py::test_last\n") and len(tail) == 1024
+
+
+def test_a_server_ignoring_the_range_is_streamed_to_its_real_end(make_client) -> None:
+    log = b"".join(f"line {n}\n".encode() for n in range(200000)) + b"the decisive line\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.github.com":
+            return httpx.Response(302, headers={"Location": "https://blob.example/log"})
+        return httpx.Response(200, content=log)  # Range ignored
+
+    tail = make_client(handler).get_actions_job_log_tail(77, max_bytes=1024)
+    assert tail.endswith("the decisive line\n") and len(tail) == 1024
+
+
+def test_check_contexts_are_read_across_pages(make_client) -> None:
+    pages: list[str | None] = []
+
+    def node(n: int, conclusion: str) -> dict:
+        return {"__typename": "CheckRun", "databaseId": n, "name": f"job {n}", "status": "COMPLETED",
+                "conclusion": conclusion, "isRequired": True, "checkSuite": {"workflowRun": {"databaseId": 900}}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        after = json.loads(request.content)["variables"]["after"]
+        pages.append(after)
+        nodes = [node(n, "SUCCESS") for n in range(100)] if after is None else [node(500, "FAILURE")]
+        info = {"hasNextPage": after is None, "endCursor": "c1"}
+        return httpx.Response(200, json={"data": {"repository": {"pullRequest": {
+            "headRefOid": "abc1234", "commits": {"nodes": [{"commit": {"oid": "abc1234",
+                "statusCheckRollup": {"contexts": {"pageInfo": info, "nodes": nodes}}}}]}}}}})
+
+    read = failed_checks_from_contexts(make_client(handler).get_failed_check_contexts(318))
+    assert pages == [None, "c1"]
+    assert read.checks == (FailedCheck("job 500", "FAILURE", True, 500, 900),)
+
+
 def test_job_log_without_a_redirect_fails_loudly(make_client) -> None:
     client = make_client(lambda request: httpx.Response(404, json={"message": "Not Found"}))
     with pytest.raises(GitHubHttpError):

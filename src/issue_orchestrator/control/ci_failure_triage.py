@@ -14,10 +14,11 @@ that rework is queued this owner, with the engine's own credential:
    rework cycle - and otherwise keeps the rework, with the log excerpts and
    the classification appended to its brief.
 
-The once-per-head bound is durable: the applier posts the re-run marker on the
-PR before it asks GitHub to re-run, so a second transient failure on the same
-head - after a restart too - goes to rework like any other failure. Nothing
-here loops.
+The once-per-head bound is durable: once GitHub accepts the re-run the applier
+posts the re-run marker on the PR, so a second transient failure on the same
+head - after a restart too - goes to rework like any other failure. A refused
+re-run posts nothing and is bounded by the action liveness owner, which parks
+and escalates it. Nothing here loops.
 """
 
 from __future__ import annotations
@@ -142,8 +143,8 @@ class CiFailureTriage:
                     return None
                 return _with_report(rework, _report(
                     assessments, kind, failed.head_sha, records,
-                    note=f"The re-run requested at {latest.requested_at.isoformat()} never started "
-                    "(can the engine's GitHub credential write Actions?).",
+                    note=f"The re-run GitHub accepted at {latest.requested_at.isoformat()} has not "
+                    f"restarted these jobs within {int(RERUN_START_GRACE.total_seconds() // 60)} minutes.",
                 ))
         return _with_report(rework, _report(assessments, kind, failed.head_sha, records))
 
@@ -264,25 +265,32 @@ def plan_ci_reruns(facts: Sequence[DiscoveredCiRerun]) -> list["RerunFailedCheck
 
 
 def apply_rerun_failed_checks(
-    action: "RerunFailedChecksAction", host: "RepositoryHost"
+    action: "RerunFailedChecksAction",
+    *,
+    rerun: Callable[[int], None],
+    post_comment: Callable[[int, str], object],
 ) -> "ActionResult":
-    """Record the re-run on the PR, THEN ask GitHub to re-run.
+    """Ask GitHub to re-run, THEN record the re-run on the PR.
 
-    The record comes first so the once-per-head bound holds even when the
-    re-run request fails: the triage then waits out the start grace and sends
-    the failure to rework instead of re-running again.
+    A refused re-run (say, a credential without Actions write) posts no record,
+    so the triage plans the same re-run again and the action liveness owner
+    backs it off, parks it and escalates it to a person - it never turns into
+    a coding rework the agent cannot fix. Once GitHub accepted the re-run the
+    record is what keeps it to one per head; a record that fails to post after
+    an accepted re-run fails the action loudly.
     """
     from .action_results import ActionResult
 
-    try:
-        host.add_comment(action.pr_number, action.comment)
-    except RepositoryHostError as error:
-        return ActionResult.fail_from(action, error, pr_number=action.pr_number)
     for run_id in action.run_ids:
         try:
-            host.rerun_failed_check_jobs(run_id)
+            rerun(run_id)
         except RepositoryHostError as error:
             logger.error("CI re-run of run %d (PR #%d) failed: %s", run_id, action.pr_number, error)
             return ActionResult.fail_from(action, error, pr_number=action.pr_number, run_id=run_id)
+    try:
+        post_comment(action.pr_number, action.comment)
+    except RepositoryHostError as error:
+        logger.error("CI re-run of PR #%d accepted but its record was not posted: %s", action.pr_number, error)
+        return ActionResult.fail_from(action, error, pr_number=action.pr_number)
     logger.info("Re-ran failed CI jobs %s of PR #%d (head %s)", action.job_ids, action.pr_number, action.head_sha[:12])
     return ActionResult.ok(action, issue_number=action.issue_number, pr_number=action.pr_number)

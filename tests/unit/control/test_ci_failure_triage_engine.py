@@ -111,7 +111,9 @@ def test_transient_failure_is_rerun_once_without_spending_a_rework_cycle() -> No
     assert plan.actions_of_type(ActionType.ADD_LABEL) == []  # no needs-rework, no cycle label
     (rerun,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert (rerun.pr_number, rerun.head_sha, rerun.run_ids) == (318, HEAD, (900,))
-    assert apply_rerun_failed_checks(rerun, engine.host).success
+    assert apply_rerun_failed_checks(
+        rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
+    ).success
     engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
     (_, record), = engine.comments
     assert "lost communication with the server" in record  # the signature is recorded
@@ -179,3 +181,24 @@ def test_a_rerun_retried_after_a_failed_write_spends_one_liveness_budget() -> No
     retried = replace(rerun, comment=rerun.comment.replace("at=", "at=2099"))
     assert retried.comment != rerun.comment
     assert retried.liveness_facts() == rerun.liveness_facts()
+
+
+def test_a_refused_rerun_records_nothing_and_never_becomes_a_rework() -> None:
+    """A credential without Actions write: no record, the re-run is planned again
+    (for the liveness owner to bound and escalate), and no rework cycle is spent."""
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.host.rerun_failed_check_jobs.side_effect = RepositoryHostError("403 Resource not accessible by integration")
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    result = apply_rerun_failed_checks(
+        rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
+    )
+    assert not result.success
+    assert engine.comments == []
+
+    reworks, _, plan = engine.tick()
+    assert reworks == [] and plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+    (again,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert again.liveness_facts() == rerun.liveness_facts()  # one liveness budget

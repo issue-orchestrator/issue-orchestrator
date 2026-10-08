@@ -666,7 +666,8 @@ class ActionApplier:
         assert self.repository_host is not None, "repository_host required for rerun_failed_checks"
         self._verify_claim_before_write(action, action.issue_number)
         from .ci_failure_triage import apply_rerun_failed_checks
-        return apply_rerun_failed_checks(action, self.repository_host)
+        host = self.repository_host
+        return apply_rerun_failed_checks(action, rerun=host.rerun_failed_check_jobs, post_comment=host.add_comment)
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
         """Close an issue through the repository host."""
