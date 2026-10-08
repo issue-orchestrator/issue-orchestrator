@@ -56,7 +56,7 @@ from ...contracts.improver_run import (
 from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_variant import ImproverVariant
 from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
-from ...domain.improver_champion import INVITATION_RATE
+from ...domain.improver_champion import INVITATION_RATE, RUN_BUDGET_MINUTES, run_limits
 from ...domain.improver_findings_validation import (
     ImproverFindingsRejected,
     Rule,
@@ -102,9 +102,7 @@ EXIT_UNAVAILABLE = 75
 #: Heats per engine: two, so a finding found twice stands out, at twice one
 #: run's cost (#8001); both at once, so a run takes one heat's time.
 DEFAULT_HEATS = 2
-DEFAULT_PARALLEL_HEATS = 2
 #: The budgeted suite allows 120 minutes; staging and the toolbox take the rest.
-DEFAULT_RUN_BUDGET_MINUTES = 105
 
 #: The prompt, relative to the io checkout the command runs in.
 DEFAULT_PROMPT = Path("examples/prompts/tech-lead-improver.md")
@@ -157,7 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"The agent CLI the improver runs on (default: the champion's, else {DEFAULT_IMPROVER_AGENT.provider})",
     )
     run.add_argument("--model", help="The model the improver runs on (default: the champion's, else the provider's)")
-    run.add_argument("--agent-timeout-minutes", type=int, default=90)
+    run.add_argument(
+        "--agent-timeout-minutes", type=int,
+        help="default: 90, or for an empowered budget, the budget plus 15 (never mid-budget)",
+    )
     run.add_argument("--prompt", type=Path, help=f"default: the champion's, else {DEFAULT_PROMPT}")
     run.add_argument(
         "--mode", type=ImproverMode, choices=list(ImproverMode),
@@ -183,10 +184,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--parallel-heats", type=int,
-        help=f"Heats run at once (default: {DEFAULT_PARALLEL_HEATS}, or all of fewer heats)",
+        help="Heats run at once (default: all of them, one wave)",
     )
     run.add_argument(
-        "--run-budget-minutes", type=int, default=DEFAULT_RUN_BUDGET_MINUTES,
+        "--run-budget-minutes", type=int, default=RUN_BUDGET_MINUTES,
         help="The longest the heats may take, one wave after another, each wave up to"
         " --agent-timeout-minutes (default: %(default)s, inside the budgeted suite's timeout)",
     )
@@ -311,13 +312,20 @@ def settle(args: argparse.Namespace, champion: Champion | None) -> argparse.Name
     if chosen["provider"] is not None and chosen["model"] is None:
         settled["model"] = None  # another provider: its own default model
     runs_champion = champion is not None and all(value is None for value in chosen.values())
-    parallel = args.parallel_heats if args.parallel_heats is not None else min(DEFAULT_PARALLEL_HEATS, settled["heats"])
+    # Unset limits follow the settled settings, as a live champion run's do
+    # (domain.improver_champion.live_limits): all heats in one wave, an agent
+    # timeout never shorter than its budget.
+    limits = run_limits(
+        settled["mode"], settled["budget_minutes"], settled["heats"],
+        agent_timeout=args.agent_timeout_minutes, parallel=args.parallel_heats,
+    )
     return argparse.Namespace(**{
-        **vars(args), **settled, "parallel_heats": parallel, "prompt_text": prompt, "runs_champion": runs_champion,
+        **vars(args), **settled, "parallel_heats": limits.parallel_heats,
+        "agent_timeout_minutes": limits.agent_timeout_minutes, "prompt_text": prompt, "runs_champion": runs_champion,
     })
 
 
-def _refuse_contradictions(args: argparse.Namespace) -> None:
+def refuse_contradictions(args: argparse.Namespace) -> None:
     """``run``'s options that cannot hold together end the command at once."""
     if (args.state_dir is None) != (args.audited_repo is None):
         raise SystemExit("improver run: --state-dir and --audited-repo go together")
@@ -341,7 +349,7 @@ def run(args: argparse.Namespace) -> int:
         variant = champions.state().champion
         champion = Champion(variant, champions.prompt(variant.prompt_sha256))
     args = settle(args, champion)
-    _refuse_contradictions(args)
+    refuse_contradictions(args)
     store = _store()
     prompt = args.prompt_text
     investigation = _investigation(args)

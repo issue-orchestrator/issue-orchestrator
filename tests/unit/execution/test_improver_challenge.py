@@ -247,6 +247,33 @@ def test_an_interrupted_challenge_resumes_without_running_its_arms_again(cycle) 
     assert agents.calls.count("arm") == arm_calls and again.trials == first.trials
 
 
+def test_a_retry_must_ask_for_exactly_the_trial_first_asked_for(cycle) -> None:  # type: ignore[no-untyped-def]
+    """Interrupted after one of two snapshots, a challenge cannot be finished
+    on fewer snapshots, or graded otherwise, than it began with."""
+    root, _, runs, agents, _, challenges = cycle
+    run_id = _invited_run(runs)
+    with pytest.raises(Exception, match="no answer key"):
+        challenges.challenge(run_id, ["20261004", "unkeyed"], whole_runs=3, passes=1, seed=5)
+    arm_calls = agents.calls.count("arm")
+
+    for snapshots, passes, why in ((["20261004"], 1, "snapshots"), (["20261004", "unkeyed"], 2, "passes")):
+        with pytest.raises(ChallengeRefused, match=f"other .*{why}"):
+            challenges.challenge(run_id, snapshots, whole_runs=3, passes=passes, seed=5)
+    assert agents.calls.count("arm") == arm_calls
+    # Nothing recorded as tried: only the request.
+    assert [p.name for p in (root / "champion" / "challenges").iterdir()] == [f"{run_id}-vs-{_variant().id}.request.json"]
+
+
+def test_a_finished_challenge_retried_is_the_same_record(cycle) -> None:  # type: ignore[no-untyped-def]
+    _, _, runs, agents, _, challenges = cycle
+    run_id = _invited_run(runs)
+    first = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    calls = len(agents.calls)
+
+    assert challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5) == first
+    assert len(agents.calls) == calls
+
+
 def test_the_champion_changes_only_by_a_winning_promotion(tmp_path: Path) -> None:
     champions = FileChampionStore(tmp_path)
     with pytest.raises(ChampionUnavailable, match="no improver champion"):
@@ -315,3 +342,26 @@ def test_only_a_standing_maintainers_approved_label_on_an_open_issue_approves(ov
     verdict = judge_challenger_issue(_facts(**over))
 
     assert verdict.kind is kind and verdict.approved == (kind is ApprovalVerdictKind.MAINTAINER)
+
+
+
+def test_every_champion_a_promotion_can_make_runs_live(tmp_path: Path) -> None:
+    """Promoted heats run in one wave; an empowered budget gets a timeout
+    beyond it; a budget no live run can carry is never a champion."""
+    from issue_orchestrator.domain.improver_champion import ChangeNotApplicable, live_limits
+    from issue_orchestrator.entrypoints.cli_tools import improver
+
+    for heats, mode, budget, timeout in ((3, ImproverMode.SCRIPTED, 60, 90), (5, ImproverMode.EMPOWERED, 90, 105),
+                                         (2, ImproverMode.EMPOWERED, 85, 100)):
+        variant = _variant().model_copy(update={"heats": heats, "mode": mode, "budget_minutes": budget})
+        args = improver.settle(improver.build_parser().parse_args(["run", "--outputs-repo", "o/r"]),
+                               improver.Champion(variant, PROMPT))
+        improver.refuse_contradictions(args)
+        assert (args.parallel_heats, args.agent_timeout_minutes) == (heats, timeout)
+        assert live_limits(variant).agent_timeout_minutes == timeout
+
+    too_long = _variant().model_copy(update={"mode": ImproverMode.EMPOWERED, "budget_minutes": 95})
+    with pytest.raises(ChangeNotApplicable, match="beyond the 105-minute run budget"):
+        live_limits(too_long)
+    with pytest.raises(ChampionUnavailable, match="cannot run live"):
+        FileChampionStore(tmp_path).seed(too_long, PROMPT, at=T0, by="operator")

@@ -23,7 +23,14 @@ from datetime import datetime
 
 from ..contracts.improver_run import EffectStatus, ImproverRunRecord, RunOutcome
 from ..contracts.improver_tournament import TournamentArm, TournamentResult
-from ..contracts.improver_variant import ChallengeRecord, ChampionState, ImproverVariant, SnapshotTrial
+from ..contracts.improver_variant import (
+    ChallengeRecord,
+    ChallengeRequest,
+    ChampionState,
+    GraderSpec,
+    ImproverVariant,
+    SnapshotTrial,
+)
 from ..domain.improver_champion import (
     CHALLENGER_ARM,
     CHAMPION_ARM,
@@ -33,21 +40,20 @@ from ..domain.improver_champion import (
     challenger_of,
     challenger_won,
     judge_challenger_issue,
+    live_limits,
     outcome_of,
     promotion_refusals,
 )
 from ..domain.tech_lead_approval import APPROVED_LABEL, ApprovalVerdict
 from ..entrypoints.improver_run import HeatPlan
 from ..ports.improver_challenger import ChallengerIssueEvidence
-from .improver_champion_store import FileChampionStore
+from .improver_champion_store import ChampionUnavailable, FileChampionStore
 from .improver_run_store import FileImproverRunStore
 from .improver_tournament import DEFAULT_GRADERS, DEFAULT_PASSES, ArmSpec, Grader, TournamentHarness
 
 #: Whole improver runs per arm per snapshot: the fewest the heats' exact
 #: test can separate (two an arm never can).
 DEFAULT_WHOLE_RUNS = 3
-#: An empowered agent's timeout beyond its budget, so it is never stopped mid-budget.
-_TIMEOUT_MARGIN_MINUTES = 30
 _ISSUE = re.compile(r"^(?P<repo>[^#\s]+/[^#\s]+)#(?P<number>\d+)$")
 
 
@@ -111,12 +117,25 @@ class ImproverChallenges:
             raise ChallengeRefused(f"run {run_id}'s change does not apply to the champion: {error}") from error
         self._champions.store_prompt(challenger_prompt)
         challenge_id = f"{run_id}-vs-{champion.id}"
+        request = ChallengeRequest(
+            challenge_id=challenge_id, run_id=run_id, issue=issue, champion=champion, challenger=challenger,
+            snapshots=tuple(snapshots), whole_runs=whole_runs, passes=passes,
+            graders=tuple(GraderSpec(name=g.name, provider=g.choice.provider.value, model=g.choice.model)
+                          for g in graders),
+            seed=seed,
+        )
+        try:
+            self._champions.fix_challenge_request(request)
+        except ChampionUnavailable as error:
+            raise ChallengeRefused(str(error)) from error
+        if self._champions.has_challenge(challenge_id):
+            return self._champions.challenge(challenge_id)  # tried already, exactly so
         specs = [
             self._spec(CHAMPION_ARM, champion, champion_prompt, whole_runs),
             self._spec(CHALLENGER_ARM, challenger, challenger_prompt, whole_runs),
         ]
         trials = []
-        for index, snapshot_id in enumerate(snapshots, 1):
+        for index, snapshot_id in enumerate(request.snapshots, 1):
             tournament_id = f"{challenge_id}-s{index}"
             result = self._tournament(tournament_id, snapshot_id, specs, passes, graders, seed)
             comparison = next(
@@ -162,7 +181,8 @@ class ImproverChallenges:
             empowered_addendum=self._addendum,
             heats=HeatPlan(count=variant.heats, parallel=variant.heats),
             budget_minutes=variant.budget_minutes,
-            agent_timeout_minutes=variant.budget_minutes + _TIMEOUT_MARGIN_MINUTES,
+            # As it runs live.
+            agent_timeout_minutes=live_limits(variant).agent_timeout_minutes,
             whole_runs=whole_runs,
         )
 

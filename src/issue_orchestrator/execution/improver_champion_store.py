@@ -21,8 +21,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ..contracts.improver_tournament import require_slug
-from ..contracts.improver_variant import ChallengeRecord, ChampionState, ImproverVariant, Promotion
-from ..domain.improver_champion import prompt_digest
+from ..contracts.improver_variant import ChallengeRecord, ChallengeRequest, ChampionState, ImproverVariant, Promotion
+from ..domain.improver_champion import ChangeNotApplicable, live_limits, prompt_digest
 
 CHAMPION_DIRNAME = "champion"
 
@@ -55,6 +55,9 @@ class FileChampionStore:
             raise ChampionUnavailable(f"stored prompt {digest[:12]} does not match its digest")
         return text
 
+    def has_challenge(self, challenge_id: str) -> bool:
+        return self._challenge_path(challenge_id).is_file()
+
     def challenge(self, challenge_id: str) -> ChallengeRecord:
         path = self._challenge_path(challenge_id)
         if not path.is_file():
@@ -73,7 +76,11 @@ class FileChampionStore:
         return digest
 
     def seed(self, variant: ImproverVariant, prompt: str, *, at: datetime, by: str) -> ChampionState:
-        """The first champion, once."""
+        """The first champion, once (one a live run can run)."""
+        try:
+            live_limits(variant)
+        except ChangeNotApplicable as error:
+            raise ChampionUnavailable(f"that champion cannot run live: {error}") from error
         if self.store_prompt(prompt) != variant.prompt_sha256:
             raise ChampionUnavailable("the seeded prompt does not match the variant's digest")
         with self._locked():
@@ -82,6 +89,22 @@ class FileChampionStore:
             state = ChampionState(champion=variant, seeded_at=at, seeded_by=by)
             _write_atomic(self._root / "state.json", state.model_dump_json(indent=2) + "\n")
         return state
+
+    def fix_challenge_request(self, request: ChallengeRequest) -> None:
+        """Record what the challenge tries, once; a later call must ask for exactly the same."""
+        path = self._root / "challenges" / f"{require_slug(request.challenge_id, 'a challenge id')}.request.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._locked():
+            if path.exists():
+                fixed = ChallengeRequest.model_validate_json(path.read_text(encoding="utf-8"))
+                if fixed != request:
+                    changed = sorted(k for k, v in request.model_dump().items() if fixed.model_dump()[k] != v)
+                    raise ChampionUnavailable(
+                        f"challenge {request.challenge_id} was asked for with other {changed}; a retry asks for"
+                        " exactly what the first did"
+                    )
+                return
+            _write_atomic(path, request.model_dump_json(indent=2) + "\n")
 
     def save_challenge(self, record: ChallengeRecord) -> None:
         """Record a challenge, once (a trial is evidence; it is never rewritten)."""

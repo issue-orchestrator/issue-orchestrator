@@ -267,8 +267,12 @@ pooled. The challenger wins only if it is told apart above the champion on
 every snapshot. `improver_tournament promote --challenge ID` then replaces the
 champion only if the challenge won against the champion that is current NOW
 and a maintainer approved its issue (#7906: a standing `approved` label from
-a person with the admin or maintain role, on the open issue). A challenge
-interrupted mid-way resumes without re-running its arms.
+a person with the admin or maintain role, on the open issue). A challenge's
+request (snapshots, whole runs, graders, passes, seed) is fixed before any arm
+runs: a retry must ask for exactly it, and resumes without re-running arms.
+Every champion can run live: all its heats in one wave, an agent timeout of
+90 minutes or its budget plus 15, inside the 105-minute run budget (so an
+empowered budget is at most 90 minutes).
 
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every

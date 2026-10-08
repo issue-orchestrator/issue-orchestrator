@@ -144,3 +144,12 @@ def test_a_challenge_is_promoted_only_if_it_won_against_the_current_champion_and
                  ApprovalVerdictKind.NOT_A_MAINTAINER, ApprovalVerdictKind.CLOSED):
         refusals = promotion_refusals(won, current=champion, approval=ApprovalVerdict(5, kind, actor="x", event_id=1))
         assert refusals and "is not approved" in refusals[0]
+
+
+def test_a_challenger_that_could_not_run_live_is_never_built() -> None:
+    """A scripted champion may carry a budget only empowered runs use; made
+    empowered, it would need an agent longer than a live run allows."""
+    champion = _champion(mode=ImproverMode.SCRIPTED, budget_minutes=95)
+
+    with pytest.raises(ChangeNotApplicable, match="beyond the 105-minute run budget"):
+        challenger_of(champion, PROMPT, _change({"kind": "mode", "mode": "empowered"}))

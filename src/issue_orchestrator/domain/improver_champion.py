@@ -46,6 +46,55 @@ class ChangeNotApplicable(ValueError):
     """A proposed change that does not apply to the current champion."""
 
 
+#: How long a live improver run may take: its heats in one wave, each up to
+#: its agent timeout (inside the budgeted suite's own timeout).
+RUN_BUDGET_MINUTES = 105
+#: A scripted agent's timeout, and the least any agent gets.
+BASE_AGENT_TIMEOUT_MINUTES = 90
+#: An empowered agent's timeout beyond its investigation budget.
+TIMEOUT_MARGIN_MINUTES = 15
+#: The largest empowered budget a live run can carry.
+MAX_BUDGET_MINUTES = RUN_BUDGET_MINUTES - TIMEOUT_MARGIN_MINUTES
+
+
+def agent_timeout_minutes(mode: ImproverMode, budget_minutes: int) -> int:
+    """The live agent timeout for a mode and budget: never mid-budget."""
+    if mode is ImproverMode.EMPOWERED:
+        return max(BASE_AGENT_TIMEOUT_MINUTES, budget_minutes + TIMEOUT_MARGIN_MINUTES)
+    return BASE_AGENT_TIMEOUT_MINUTES
+
+
+@dataclass(frozen=True)
+class LiveLimits:
+    """How a variant runs live: all its heats at once, each under its timeout."""
+
+    parallel_heats: int
+    agent_timeout_minutes: int
+    run_budget_minutes: int = RUN_BUDGET_MINUTES
+
+
+def run_limits(
+    mode: ImproverMode, budget_minutes: int, heats: int, *, agent_timeout: int | None, parallel: int | None
+) -> LiveLimits:
+    """A run's limits: what the operator set, else the live rule's (all
+    heats in one wave; an agent timeout never shorter than its budget)."""
+    return LiveLimits(
+        parallel_heats=heats if parallel is None else parallel,
+        agent_timeout_minutes=agent_timeout_minutes(mode, budget_minutes) if agent_timeout is None else agent_timeout,
+    )
+
+
+def live_limits(variant: ImproverVariant) -> LiveLimits:
+    """The limits a live run of ``variant`` uses, or why it cannot run."""
+    timeout = agent_timeout_minutes(variant.mode, variant.budget_minutes)
+    if timeout > RUN_BUDGET_MINUTES:
+        raise ChangeNotApplicable(
+            f"a {variant.budget_minutes}-minute budget needs a {timeout}-minute agent, beyond the"
+            f" {RUN_BUDGET_MINUTES}-minute run budget (at most {MAX_BUDGET_MINUTES} minutes)"
+        )
+    return LiveLimits(parallel_heats=variant.heats, agent_timeout_minutes=timeout)
+
+
 @dataclass(frozen=True)
 class ChangeInvitation:
     """A run invited to propose one change to this champion (its prompt is
@@ -99,7 +148,9 @@ def challenger_of(
             challenger = champion.model_copy(update={"budget_minutes": minutes})
     if challenger == champion:
         raise ChangeNotApplicable("the change leaves the champion as it is")
-    return ImproverVariant.model_validate(challenger.model_dump()), prompt
+    challenger = ImproverVariant.model_validate(challenger.model_dump())
+    live_limits(challenger)  # a challenger that could win must be able to run live
+    return challenger, prompt
 
 
 def challenger_won(result: TournamentResult) -> bool:
@@ -179,6 +230,12 @@ __all__ = [
     "ChallengerIssueFacts",
     "ChangeInvitation",
     "ChangeNotApplicable",
+    "LiveLimits",
+    "MAX_BUDGET_MINUTES",
+    "RUN_BUDGET_MINUTES",
+    "agent_timeout_minutes",
+    "live_limits",
+    "run_limits",
     "challenger_of",
     "challenger_won",
     "invited",

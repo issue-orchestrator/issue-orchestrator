@@ -95,7 +95,7 @@ def test_a_scripted_run_has_no_toolbox() -> None:
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["--budget-minutes", "90"], "below --agent-timeout-minutes"),
+        (["--budget-minutes", "90", "--agent-timeout-minutes", "90"], "below --agent-timeout-minutes"),
         (["--exclude-open-issue", "7", "--apply"], "cannot --apply"),
     ],
 )

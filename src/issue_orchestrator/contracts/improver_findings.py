@@ -287,7 +287,8 @@ class BudgetEdit(_Closed):
     """The empowered investigation's budget, in minutes."""
 
     kind: Literal["budget_minutes"]
-    minutes: Annotated[int, Field(ge=10, le=240)]
+    #: At most what a live run can carry (domain.improver_champion.MAX_BUDGET_MINUTES).
+    minutes: Annotated[int, Field(ge=10, le=90)]
 
 
 #: The only things a challenger may change: never the answer keys, the

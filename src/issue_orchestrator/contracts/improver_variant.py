@@ -82,6 +82,29 @@ class SnapshotTrial(_Closed):
     challenger_won: bool
 
 
+class GraderSpec(_Closed):
+    name: Slug
+    provider: Literal["claude", "codex"]
+    model: str
+
+
+class ChallengeRequest(_Closed):
+    """What a challenge tries, fixed before any arm runs: a retry must ask
+    for exactly this, so a trial is never shortened or re-graded differently
+    after part of it is seen."""
+
+    challenge_id: Slug
+    run_id: str
+    issue: str
+    champion: ImproverVariant
+    challenger: ImproverVariant
+    snapshots: Annotated[tuple[Slug, ...], Field(min_length=1)]
+    whole_runs: Annotated[int, Field(ge=1)]
+    passes: Annotated[int, Field(ge=1)]
+    graders: Annotated[tuple[GraderSpec, ...], Field(min_length=2)]
+    seed: int
+
+
 class ChallengeRecord(_Closed):
     """A challenger's trial against the champion it was built from."""
 
@@ -101,6 +124,8 @@ class ChallengeRecord(_Closed):
 
 __all__ = [
     "ChallengeRecord",
+    "ChallengeRequest",
+    "GraderSpec",
     "ChampionState",
     "ImproverVariant",
     "Promotion",
