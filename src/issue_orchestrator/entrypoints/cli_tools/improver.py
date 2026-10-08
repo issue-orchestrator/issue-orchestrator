@@ -56,11 +56,14 @@ from ...contracts.improver_run import (
 from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_variant import ImproverVariant
 from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
-from ...domain.improver_champion import INVITATION_RATE, RUN_BUDGET_MINUTES, run_limits
+from ...domain.improver_champion import (
+    INVITATION_RATE,
+    RUN_BUDGET_MINUTES,
+    ChangeInvitation,
+    run_limits,
+)
 from ...domain.improver_findings_validation import (
-    ImproverFindingsRejected,
     Rule,
-    validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
 from ...execution.engine_inventory import control_center_engine_inventory, engine_at
@@ -83,9 +86,16 @@ from ...execution.providers import (
 )
 from ...observation.engine_audit import Unavailable
 from ...ports.engine_activity import EngineInventory
-from ...ports.improver import ImproverStoreBusy
+from ...ports.improver import ImproverStoreBusy, heat_file
 from ...ports.improver_investigation import ImproverInvestigation
-from ..improver_run import ChangePolicy, HeatPlan, ImproverRun, render_run
+from ..improver_run import (
+    CHANGE_INVITATION_FILE,
+    ChangePolicy,
+    HeatPlan,
+    ImproverRun,
+    judge_answer,
+    render_run,
+)
 from ..improver_staging import (
     ImproverInputStager,
     ImproverInputsUnavailable,
@@ -140,8 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
     _engine_arguments(stage, one_engine=True)
     stage.add_argument("--run-dir", required=True, type=Path)
     stage.add_argument("--previous-audit", type=Path, help="The previous run's audit.json")
-    validate = sub.add_parser("validate", help="Validate improver-findings.json")
+    validate = sub.add_parser("validate", help="Validate improver-findings.json (or one heat's answer)")
     validate.add_argument("--run-dir", required=True, type=Path)
+    validate.add_argument(
+        "--heat", type=int,
+        help="Validate heat N's answer (improver-findings-hN.json), its findings found in it as a run finds them",
+    )
     run = sub.add_parser("run", help="Stage, run the improver agent, validate, record and apply")
     _engine_arguments(run, one_engine=False)
     run.add_argument(
@@ -211,7 +225,7 @@ def main(argv: list[str]) -> int:
         return apply(args.outputs_repo)
     if args.command == "status":
         return status()
-    return validate(args.run_dir)
+    return validate(args.run_dir, heat=args.heat)
 
 
 def _stager(args: argparse.Namespace, audited_repo: str) -> ImproverInputStager:
@@ -445,18 +459,27 @@ def status() -> int:
     return EXIT_OK
 
 
-def validate(run_dir: Path) -> int:
+def validate(run_dir: Path, *, heat: int | None = None) -> int:
+    """The run's findings file, or heat ``heat``'s stored answer, judged
+    offline (no agent runs) by the very rule the run judged it with
+    (:func:`~..improver_run.judge_answer`), with the run's invitation."""
     evidence = load_staged_evidence(run_dir / IMPROVER_DATA_DIRNAME)
-    path = run_dir / FINDINGS_FILE
+    name = FINDINGS_FILE if heat is None else heat_file(FINDINGS_FILE, heat)
+    path = run_dir / name
     if not path.is_file():
-        print(f"[{Rule.SCHEMA.value}] the improver wrote no {FINDINGS_FILE}")
+        print(f"[{Rule.SCHEMA.value}] the improver wrote no {name}")
         return EXIT_REJECTED
-    try:
-        findings = validate_findings(path.read_bytes(), evidence)
-    except ImproverFindingsRejected as rejection:
-        for violation in rejection.violations:
-            print(violation.describe())
+    invited = run_dir / CHANGE_INVITATION_FILE
+    invitation = ChangeInvitation.from_json(invited.read_text(encoding="utf-8")) if invited.is_file() else None
+    engine = EngineRef(engine_id=evidence.engine_id, repo=evidence.audited_repo, state_dir=run_dir)
+    verdict = judge_answer(path.read_text(encoding="utf-8"), evidence, engine, invitation)
+    if verdict.discarded:
+        print(f"discarded {len(verdict.discarded)} character(s) of prose around the findings document")
+    if verdict.findings is None:
+        for rejection in verdict.rejections:
+            print(rejection)
         return EXIT_REJECTED
+    findings = verdict.findings
     print(f"valid: {len(findings.findings)} finding(s), {len(findings.design_findings)} design finding(s)")
     return EXIT_OK
 

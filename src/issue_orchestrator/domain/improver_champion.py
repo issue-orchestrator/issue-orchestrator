@@ -17,10 +17,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..contracts.improver_findings import AgentEdit, BudgetEdit, HeatsEdit, ImproverChange, ModeEdit, PromptEdit
+from ..contracts.improver_findings import (
+    AgentEdit,
+    BudgetEdit,
+    HeatsEdit,
+    ImproverChange,
+    ModeEdit,
+    PromptEdit,
+)
 from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider
 from ..contracts.improver_toolbox import ImproverMode
 from ..contracts.improver_tournament import TournamentResult
@@ -106,6 +114,14 @@ class ChangeInvitation:
     def __post_init__(self) -> None:
         if prompt_digest(self.prompt) != self.champion.prompt_sha256:
             raise ValueError("an invitation's prompt is the champion's own")
+
+    def to_json(self) -> str:
+        return json.dumps({"champion": self.champion.model_dump(mode="json"), "prompt": self.prompt}, indent=2) + "\n"
+
+    @classmethod
+    def from_json(cls, text: str) -> ChangeInvitation:
+        doc = json.loads(text)
+        return cls(ImproverVariant.model_validate(doc["champion"]), doc["prompt"])
 
 
 def invited(run_id: str, *, rate: float = INVITATION_RATE) -> bool:

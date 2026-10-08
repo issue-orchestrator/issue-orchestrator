@@ -20,7 +20,7 @@ next run read the same history.
 
 from __future__ import annotations
 
-import re
+import logging
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -52,6 +52,7 @@ from ..contracts.improver_run import (
 from ..contracts.improver_variant import ImproverVariant
 from ..control.improver_effects import design_finding_key, finding_key, planned_effects
 from ..domain.engine_activity import EngineRef
+from ..domain.improver_answer import AnswerNotExtractable, extract_findings_answer
 from ..domain.improver_champion import INVITATION_RATE, ChangeInvitation, invited
 from ..domain.improver_findings_validation import (
     ImproverFindingsRejected,
@@ -81,7 +82,17 @@ class ImproverInputStaging(Protocol):
 
     def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs: ...
 
-_FENCED = re.compile(r"\A```(?:json)?\n(?P<body>.*)\n```\Z", re.DOTALL)
+logger = logging.getLogger(__name__)
+
+#: Always the last words of the improver's prompt, after every addendum.
+FINAL_ANSWER_REMINDER = (
+    "\n\nYour final message is the findings JSON object alone: no sentence, heading or note before or"
+    " after it. Anything else around it is discarded, and two JSON objects, or one cut short, reject the answer.\n"
+)
+#: An invited run's invitation (the champion and its prompt), kept in its run dir.
+CHANGE_INVITATION_FILE = "change-invitation.json"
+#: The prose a heat's answer carried around its findings document, kept beside it.
+ANSWER_PROSE_FILE = "improver-answer-prose.txt"
 
 
 @dataclass(frozen=True)
@@ -161,6 +172,63 @@ class HeatPlan:
 
 
 @dataclass(frozen=True)
+class AnswerVerdict:
+    """One heat's answer, judged: its findings if accepted, else why not."""
+
+    #: The findings document found in the answer, or the answer as written.
+    text: str
+    #: Prose discarded around the document ("" when none).
+    discarded: str
+    findings: ImproverFindings | None
+    detail: str
+    rejections: tuple[str, ...]
+
+
+def judge_answer(
+    message: str, evidence: StagedEvidence, engine: EngineRef, invitation: ChangeInvitation | None
+) -> AnswerVerdict:
+    """Whether one heat's answer is accepted: the ONE owner of that rule, for
+    the live run and for offline revalidation alike. Its findings document
+    is found in the message, validated in full, and its findings must ask
+    for distinct effects."""
+    try:
+        extracted = extract_findings_answer(message)
+    except AnswerNotExtractable as error:
+        return AnswerVerdict(message, "", None, "no single findings document in the answer",
+                             (f"[schema] <file>: {error}",))
+    try:
+        findings = validate_findings(extracted.text, evidence, invitation=invitation)
+    except ImproverFindingsRejected as rejection:
+        return AnswerVerdict(extracted.text, extracted.discarded, None,
+                             f"{len(rejection.violations)} rule violation(s)",
+                             tuple(v.describe() for v in rejection.violations))
+    duplicates = _duplicate_effect_keys(findings, engine)
+    if duplicates:
+        return AnswerVerdict(extracted.text, extracted.discarded, None,
+                             f"{len(duplicates)} effect key(s) claimed by two findings", duplicates)
+    return AnswerVerdict(extracted.text, extracted.discarded, findings, "accepted", ())
+
+
+def _duplicate_effect_keys(findings: ImproverFindings, engine: EngineRef) -> tuple[str, ...]:
+    """Two findings of one answer with the same effect key ask for the
+    same GitHub effect: they are one finding named twice, and the one
+    identity the merge and the effects share would not hold."""
+    seen: dict[str, str] = {}
+    duplicates: list[str] = []
+    keyed = [(finding_key(f, engine), f.id) for f in findings.findings] + [
+        (design_finding_key(d, engine), d.id) for d in findings.design_findings
+    ]
+    for key, finding_id in keyed:
+        if key in seen:
+            duplicates.append(
+                f"[unique_effect_keys] finding {finding_id}: asks for the same effect as {seen[key]}"
+                f" (key {key}); report it once"
+            )
+        seen.setdefault(key, finding_id)
+    return tuple(duplicates)
+
+
+@dataclass(frozen=True)
 class ChangePolicy:
     """Runs of the champion are sometimes invited to propose one change to
     it (#8001): about ``rate`` of them, chosen by run id, never by the agent.
@@ -237,8 +305,7 @@ class ImproverRun:
         started = self._clock()
         run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         run_dir = self._store.new_run_dir(run_id)
-        # A blind run files nothing, so it is never invited to propose a change.
-        invitation = None if request.blind or self._change_policy is None else self._change_policy.invitation(run_id)
+        invitation = self._invitation(request, run_id, run_dir)
         base = ImproverRunRecord(
             run_id=run_id,
             started_at=started,
@@ -331,6 +398,17 @@ class ImproverRun:
         self._store.record(owed)
         return owed
 
+    def _invitation(self, request: ImproverRunRequest, run_id: str, run_dir: Path) -> ChangeInvitation | None:
+        """Whether this run is invited to propose a change (a blind run files
+        nothing, so never is); an invitation is kept with the run, so its
+        answers revalidate offline exactly as they were judged."""
+        if request.blind or self._change_policy is None:
+            return None
+        invitation = self._change_policy.invitation(run_id)
+        if invitation is not None:
+            (run_dir / CHANGE_INVITATION_FILE).write_text(invitation.to_json(), encoding="utf-8")
+        return invitation
+
     def _investigate(
         self, request: ImproverRunRequest, run_dir: Path, base: ImproverRunRecord, *, invited: bool
     ) -> list[tuple[int, ImproverAgentResult]] | ImproverRunRecord:
@@ -349,7 +427,10 @@ class ImproverRun:
                 )
             root = run_dir.resolve()
             invitation = self._change_policy.instructions() if invited and self._change_policy is not None else ""
-            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
+            prompt = (
+                f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
+                f"{FINAL_ANSWER_REMINDER}"
+            )
             evidence = ((root / IMPROVER_DATA_DIRNAME), *kit.evidence)
 
             def heat_answer(heat: int) -> tuple[int, ImproverAgentResult]:
@@ -380,51 +461,26 @@ class ImproverRun:
         """One heat's answer, validated alone; its findings if accepted."""
         if answer.final_message is None:
             return HeatRecord(heat=heat, outcome=RunOutcome.AGENT_FAILED, detail=answer.detail), None
-        text = findings_text(answer.final_message)
-        (run_dir / heat_file(FINDINGS_FILE, heat)).write_text(text, encoding="utf-8")
-        try:
-            findings = validate_findings(text, evidence, invitation=invitation)
-        except ImproverFindingsRejected as rejection:
+        verdict = judge_answer(answer.final_message, evidence, engine, invitation)
+        # The findings document as judged, or the answer as written when none was found.
+        (run_dir / heat_file(FINDINGS_FILE, heat)).write_text(verdict.text, encoding="utf-8")
+        if verdict.discarded:
+            (run_dir / heat_file(ANSWER_PROSE_FILE, heat)).write_text(verdict.discarded + "\n", encoding="utf-8")
+            logger.info(
+                "[IMPROVER] heat %d: discarded %d character(s) of prose around the findings document",
+                heat, len(verdict.discarded),
+            )
+        if verdict.findings is None:
             return HeatRecord(
-                heat=heat,
-                outcome=RunOutcome.REJECTED,
-                detail=f"{len(rejection.violations)} rule violation(s)",
-                rejections=tuple(v.describe() for v in rejection.violations),
-            ), None
-        duplicates = self._duplicate_effect_keys(findings, engine)
-        if duplicates:
-            return HeatRecord(
-                heat=heat,
-                outcome=RunOutcome.REJECTED,
-                detail=f"{len(duplicates)} effect key(s) claimed by two findings",
-                rejections=duplicates,
+                heat=heat, outcome=RunOutcome.REJECTED, detail=verdict.detail, rejections=verdict.rejections,
             ), None
         return HeatRecord(
             heat=heat,
             outcome=RunOutcome.ACCEPTED,
             detail="accepted",
-            findings=len(findings.findings),
-            design_findings=len(findings.design_findings),
-        ), findings
-
-    @staticmethod
-    def _duplicate_effect_keys(findings: ImproverFindings, engine: EngineRef) -> tuple[str, ...]:
-        """Two findings of one answer with the same effect key ask for the
-        same GitHub effect: they are one finding named twice, and the one
-        identity the merge and the effects share would not hold."""
-        seen: dict[str, str] = {}
-        duplicates: list[str] = []
-        keyed = [(finding_key(f, engine), f.id) for f in findings.findings] + [
-            (design_finding_key(d, engine), d.id) for d in findings.design_findings
-        ]
-        for key, finding_id in keyed:
-            if key in seen:
-                duplicates.append(
-                    f"[unique_effect_keys] finding {finding_id}: asks for the same effect as {seen[key]}"
-                    f" (key {key}); report it once"
-                )
-            seen.setdefault(key, finding_id)
-        return tuple(duplicates)
+            findings=len(verdict.findings.findings),
+            design_findings=len(verdict.findings.design_findings),
+        ), verdict.findings
 
     def _finish_unaccepted(self, base: ImproverRunRecord, heats: tuple[HeatRecord, ...]) -> ImproverRunRecord:
         """No heat was accepted: rejected if any answered and broke a rule
@@ -554,11 +610,13 @@ def render_run(record: ImproverRunRecord) -> str:
 
 
 def findings_text(message: str) -> str:
-    """The findings document in the agent's final message: the message itself,
-    or the one fenced block that is all of it."""
-    stripped = message.strip()
-    fenced = _FENCED.match(stripped)
-    return (fenced.group("body") if fenced else stripped) + "\n"
+    """The findings document in the agent's final message
+    (:func:`~..domain.improver_answer.extract_findings_answer`), or the
+    message itself when it holds no single one (validation then refuses it)."""
+    try:
+        return extract_findings_answer(message).text
+    except AnswerNotExtractable:
+        return message.strip() + "\n"
 
 
 def _grades(findings: ImproverFindings) -> tuple[FindingGrade, ...]:

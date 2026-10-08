@@ -14,7 +14,14 @@ from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE
 from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverAgentChoice, ImproverProvider, RunOutcome
 from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
-from issue_orchestrator.entrypoints.improver_run import HeatPlan, ImproverRun, ImproverRunRequest, findings_text, render_run
+from issue_orchestrator.entrypoints.improver_run import (
+    FINAL_ANSWER_REMINDER,
+    HeatPlan,
+    ImproverRun,
+    ImproverRunRequest,
+    findings_text,
+    render_run,
+)
 from issue_orchestrator.entrypoints.improver_staging import (
     ImproverInputsUnavailable,
     ImproverStagingRequest,
@@ -200,7 +207,7 @@ def test_a_run_first_applies_what_an_earlier_run_still_owes(tmp_path: Path) -> N
 def test_the_findings_are_the_final_message_or_its_one_fenced_block() -> None:
     assert findings_text('  {"a": 1}\n') == '{"a": 1}\n'
     assert findings_text('```json\n{"a": 1}\n```') == '{"a": 1}\n'
-    assert findings_text('Here you go:\n```json\n{"a": 1}\n```') == 'Here you go:\n```json\n{"a": 1}\n```\n'
+    assert findings_text('Here you go:\n```json\n{"a": 1}\n```') == '{"a": 1}\n'
 
 
 def test_a_run_that_must_not_apply_records_its_effects_as_owed(tmp_path: Path) -> None:
@@ -450,7 +457,8 @@ def test_an_empowered_run_gives_the_agent_its_toolbox_and_instructions_and_recor
     assert record.outcome is RunOutcome.ACCEPTED and record.mode is ImproverMode.EMPOWERED
     [(repo, run_dir)] = empowered.opened
     assert repo == "porchpin/porchpin" and str(run_dir) == record.run_dir
-    assert agent.prompts[0].endswith("THE PROMPT\n\nEMPOWERED ADDENDUM")
+    # The reminder that the answer is the JSON alone is always last.
+    assert agent.prompts[0].endswith(f"THE PROMPT\n\nEMPOWERED ADDENDUM{FINAL_ANSWER_REMINDER}")
     assert agent.toolboxes == [ToolboxEndpoint(url="http://127.0.0.1:1/mcp", token="t")]
     # The toolbox is served only while the agent runs.
     assert empowered.closed == 1
@@ -695,3 +703,34 @@ def test_a_heat_naming_one_effect_twice_is_rejected_before_the_merge(tmp_path: P
     capability = example("capability_issue")["findings"][0]["id"]
     assert {s.finding_id: s.heats for s in record.finding_support} == {capability: (2,)}
     assert len(record.effects) == 1
+
+
+def test_an_answer_with_prose_around_its_findings_is_judged_on_the_findings(tmp_path: Path) -> None:
+    """The first real porchpin run's heat 2 wrote a sentence before its JSON."""
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = FakeAgent("The exam trend is down. Below is the findings file.\n\n" + _findings("exam_case"))
+
+    record = _improver(store, host, agent).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.ACCEPTED
+    run_dir = Path(record.run_dir)
+    assert json.loads((run_dir / "improver-findings-h1.json").read_text()) == json.loads(_findings("exam_case"))
+    assert (run_dir / "improver-answer-prose-h1.txt").read_text() == "The exam trend is down. Below is the findings file.\n"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Draft: " + _findings("exam_case") + "\nFinal: " + _findings("exam_case"),
+        "Below is the findings file.\n" + _findings("exam_case")[:-30],
+    ],
+)
+def test_an_answer_with_two_documents_or_a_cut_one_is_rejected_and_kept(tmp_path: Path, message: str) -> None:
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+
+    record = _improver(store, host, FakeAgent(message)).run(_request(), apply=False)
+
+    assert record.outcome is RunOutcome.REJECTED
+    [heat] = record.heats
+    assert heat.rejections[0].startswith("[schema] <file>: the final message")
+    assert (Path(record.run_dir) / "improver-findings-h1.json").read_text() == message
