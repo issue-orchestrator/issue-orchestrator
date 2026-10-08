@@ -120,44 +120,46 @@ class ImproverChallenges:
             raise ChallengeRefused(f"run {run_id}'s change does not apply to the champion: {error}") from error
         self._champions.store_prompt(challenger_prompt)
         challenge_id = f"{run_id}-vs-{champion.id}"
-        if seed is None:
-            fixed = self._champions.challenge_request(challenge_id)
-            seed = fixed.seed if fixed is not None else random.SystemRandom().randrange(1 << 30)
-        request = ChallengeRequest(
-            challenge_id=challenge_id, run_id=run_id, issue=issue, champion=champion, challenger=challenger,
-            snapshots=tuple(snapshots), whole_runs=whole_runs, passes=passes,
-            graders=tuple(GraderSpec(name=g.name, provider=g.choice.provider.value, model=g.choice.model)
-                          for g in graders),
-            seed=seed,
-        )
-        try:
-            self._champions.fix_challenge_request(request)
-        except ChampionUnavailable as error:
-            raise ChallengeRefused(str(error)) from error
-        if self._champions.has_challenge(challenge_id):
-            return self._champions.challenge(challenge_id)  # tried already, exactly so
-        specs = [
-            self._spec(CHAMPION_ARM, champion, champion_prompt, whole_runs),
-            self._spec(CHALLENGER_ARM, challenger, challenger_prompt, whole_runs),
-        ]
-        trials = []
-        for index, snapshot_id in enumerate(request.snapshots, 1):
-            tournament_id = f"{challenge_id}-s{index}"
-            result = self._tournament(tournament_id, snapshot_id, specs, request, graders)
-            comparison = next(
-                c for c in result.comparisons if {c.higher, c.lower} == {CHAMPION_ARM, CHALLENGER_ARM}
+        # One attempt at a time: a concurrent retry waits, then finds the trial recorded.
+        with self._champions.attempting(challenge_id):
+            if seed is None:
+                fixed = self._champions.challenge_request(challenge_id)
+                seed = fixed.seed if fixed is not None else random.SystemRandom().randrange(1 << 30)
+            request = ChallengeRequest(
+                challenge_id=challenge_id, run_id=run_id, issue=issue, champion=champion, challenger=challenger,
+                snapshots=tuple(snapshots), whole_runs=whole_runs, passes=passes,
+                graders=tuple(GraderSpec(name=g.name, provider=g.choice.provider.value, model=g.choice.model)
+                              for g in graders),
+                seed=seed,
             )
-            trials.append(SnapshotTrial(
-                snapshot_id=snapshot_id, tournament_id=tournament_id, comparison=comparison,
-                challenger_won=challenger_won(result),
-            ))
-        record = ChallengeRecord(
-            challenge_id=challenge_id, at=self._clock(), run_id=run_id, change=change, issue=issue,
-            champion=champion, challenger=challenger, trials=tuple(trials),
-            outcome=outcome_of([t.challenger_won for t in trials]),  # type: ignore[arg-type]
-        )
-        self._champions.save_challenge(record)
-        return record
+            try:
+                self._champions.fix_challenge_request(request)
+            except ChampionUnavailable as error:
+                raise ChallengeRefused(str(error)) from error
+            if self._champions.has_challenge(challenge_id):
+                return self._champions.challenge(challenge_id)  # tried already, exactly so
+            specs = [
+                self._spec(CHAMPION_ARM, champion, champion_prompt, whole_runs),
+                self._spec(CHALLENGER_ARM, challenger, challenger_prompt, whole_runs),
+            ]
+            trials = []
+            for index, snapshot_id in enumerate(request.snapshots, 1):
+                tournament_id = f"{challenge_id}-s{index}"
+                result = self._tournament(tournament_id, snapshot_id, specs, request, graders)
+                comparison = next(
+                    c for c in result.comparisons if {c.higher, c.lower} == {CHAMPION_ARM, CHALLENGER_ARM}
+                )
+                trials.append(SnapshotTrial(
+                    snapshot_id=snapshot_id, tournament_id=tournament_id, comparison=comparison,
+                    challenger_won=challenger_won(result),
+                ))
+            record = ChallengeRecord(
+                challenge_id=challenge_id, at=self._clock(), run_id=run_id, change=change, issue=issue,
+                champion=champion, challenger=challenger, trials=tuple(trials),
+                outcome=outcome_of([t.challenger_won for t in trials]),  # type: ignore[arg-type]
+            )
+            self._champions.save_challenge(record)
+            return record
 
     def promote(self, challenge_id: str) -> Promoted:
         challenge = self._champions.challenge(challenge_id)

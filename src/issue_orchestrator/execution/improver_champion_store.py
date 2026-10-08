@@ -55,6 +55,16 @@ class FileChampionStore:
             raise ChampionUnavailable(f"stored prompt {digest[:12]} does not match its digest")
         return text
 
+    @contextmanager
+    def attempting(self, challenge_id: str) -> Iterator[None]:
+        """Hold one challenge's attempt exclusively (a second waits): two
+        attempts of one challenge never run its arms side by side."""
+        path = self._root / "challenges" / f"{require_slug(challenge_id, 'a challenge id')}.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
     def has_challenge(self, challenge_id: str) -> bool:
         return self._challenge_path(challenge_id).is_file()
 

@@ -144,7 +144,8 @@ def cycle(tmp_path: Path):  # type: ignore[no-untyped-def]
     runs = FileImproverRunStore(root)
     agents, issues = Agents(), Issues()
     harness = TournamentHarness(root=root, snapshots=snapshots, keys=FileAnswerKeyStore(root),
-                                agent_for=agents.agent_for, grader_prompt=GRADER_PROMPT, clock=lambda: T0)
+                                agent_for=lambda choice, minutes: agents.agent_for(choice, minutes),
+                                grader_prompt=GRADER_PROMPT, clock=lambda: T0)
     challenges = ImproverChallenges(harness=harness, champions=champions, runs=runs, issues_for=lambda repo: issues,
                                     empowered_addendum="", clock=lambda: T0 + timedelta(days=2))
     return root, champions, runs, agents, issues, challenges
@@ -283,7 +284,8 @@ def test_a_retry_must_ask_for_exactly_the_trial_first_asked_for(cycle) -> None: 
             challenges.challenge(run_id, snapshots, whole_runs=3, passes=passes, seed=5)
     assert agents.calls.count("arm") == arm_calls
     # Nothing recorded as tried: only the request.
-    assert [p.name for p in (root / "champion" / "challenges").iterdir()] == [f"{run_id}-vs-{_variant().id}.request.json"]
+    recorded = [p.name for p in (root / "champion" / "challenges").iterdir() if p.suffix != ".lock"]
+    assert recorded == [f"{run_id}-vs-{_variant().id}.request.json"]
 
 
 def test_a_finished_challenge_retried_is_the_same_record(cycle) -> None:  # type: ignore[no-untyped-def]
@@ -412,6 +414,45 @@ def test_a_challenge_killed_while_starting_its_arms_starts_them_again(cycle, mon
     record = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
 
     assert record.outcome == "won" and agents.calls.count("arm") == 6
+
+
+def test_two_attempts_at_one_challenge_never_run_its_arms_twice(cycle) -> None:  # type: ignore[no-untyped-def]
+    """The first attempt's first arm run waits (up to 2 s) for another arm
+    run to start: only a second attempt running side by side would."""
+    _, _, runs, agents, issues, challenges = cycle
+    run_id = _invited_run(runs, host=issues.host)
+    overlap = threading.Event()
+    original = agents.agent_for
+
+    def agent_for(choice: ImproverAgentChoice, minutes: int):  # type: ignore[no-untyped-def]
+        agent = original(choice, minutes)
+        real_run = agent.run
+
+        def run(*, prompt: str, space: HeatSpace, toolbox: object) -> ImproverAgentResult:
+            if "Improver tournament grader" not in prompt:
+                if agents.calls.count("arm") == 0:
+                    result = real_run(prompt=prompt, space=space, toolbox=toolbox)
+                    overlap.wait(timeout=2)
+                    return result
+                overlap.set()
+            return real_run(prompt=prompt, space=space, toolbox=toolbox)
+
+        agent.run = run
+        return agent
+
+    agents.agent_for = agent_for  # type: ignore[method-assign]
+    records: list[object] = []
+
+    def attempt() -> None:
+        records.append(challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5))
+
+    threads = [threading.Thread(target=attempt) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert agents.calls.count("arm") == 6 and len(records) == 2 and records[0] == records[1]
 
 
 def test_the_champion_changes_only_by_a_winning_promotion(tmp_path: Path) -> None:
