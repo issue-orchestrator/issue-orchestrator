@@ -173,8 +173,7 @@ class CiFailureTriage:
             ))
         reran = any(a.run_attempt is not None and a.run_attempt > 1 for a in assessments)
         if not records and not reran:
-            state.ci_triage_deferrals.pop(rework.pr_number, None)
-            return _rerun(rework, head_sha, assessments, self.clock())
+            return self._rerun_unaccepted(state, rework, head_sha, assessments)
         note = "These jobs already failed on a re-run of this head." if reran else None
         if records and not reran:
             latest = max(records, key=lambda record: record.requested_at)
@@ -188,6 +187,39 @@ class CiFailureTriage:
         return self._decided(state, rework, _report(
             assessments, CiFailureKind.TRANSIENT, head_sha, records, note=note, reran=reran,
         ))
+
+    def _rerun_unaccepted(
+        self,
+        state: "OrchestratorState",
+        rework: DiscoveredRework,
+        head_sha: str,
+        assessments: Sequence[CiJobAssessment],
+    ) -> DiscoveredRework | DiscoveredCiRerun | None:
+        """Re-run the runs GitHub has not already re-run.
+
+        With no record on the PR, GitHub's own run attempt is the truth: a run
+        whose current attempt is past its failed jobs' attempt (1) already has
+        an accepted re-run - io's record comment failed, the engine restarted,
+        or one of several runs was accepted before another was refused. Those
+        runs are never asked again; the rest are.
+        """
+        runs = sorted({a.run_id for a in assessments if a.run_id is not None})
+        try:
+            accepted = {run for run in runs if self.host.read_check_run_attempt(run) > 1}
+        except RepositoryHostError as error:
+            logger.warning("CI triage: run attempts of PR #%d unreadable: %s", rework.pr_number, error)
+            return self._defer(state, rework, _report(
+                assessments, CiFailureKind.TRANSIENT, head_sha, (),
+                note=f"The workflow runs' attempts could not be read ({error}), so no re-run was requested.",
+            ))
+        remaining = tuple(run for run in runs if run not in accepted)
+        if not remaining:
+            return self._defer(state, rework, _report(
+                assessments, CiFailureKind.TRANSIENT, head_sha, (), reran=True,
+                note="GitHub accepted a re-run of these jobs that has not restarted them.",
+            ))
+        state.ci_triage_deferrals.pop(rework.pr_number, None)
+        return _rerun(rework, head_sha, assessments, self.clock(), run_ids=remaining)
 
     def _defer(
         self, state: "OrchestratorState", rework: DiscoveredRework, report: str
@@ -297,10 +329,14 @@ def _unreadable(check: "FailedCheck", why: str) -> CiJobAssessment:
 
 
 def _rerun(
-    rework: DiscoveredRework, head_sha: str, assessments: Sequence[CiJobAssessment], now: datetime
+    rework: DiscoveredRework,
+    head_sha: str,
+    assessments: Sequence[CiJobAssessment],
+    now: datetime,
+    *,
+    run_ids: tuple[int, ...],
 ) -> DiscoveredCiRerun:
     job_ids = tuple(sorted(a.job_id for a in assessments if a.job_id is not None))
-    run_ids = tuple(sorted({a.run_id for a in assessments if a.run_id is not None}))
     lines = [
         rerun_marker(head_sha, job_ids, now),
         f"io re-ran the failed CI job(s) of head `{head_sha[:12]}` once: every failure "

@@ -68,6 +68,11 @@ class _Engine:
         host.read_check_job_log_tail.side_effect = lambda job_id, max_bytes: self.logs[job_id][-max_bytes:]
         self.attempts: dict[int, int] = {}  # job id -> run attempt (1 unless a re-run)
         host.read_check_job_attempt.side_effect = lambda job_id: self.attempts.get(job_id, 1)
+        # GitHub bumps a run's attempt the moment it accepts a re-run of it.
+        self.accepted_runs: set[int] = set()
+        self.refused_runs: set[int] = set()
+        host.rerun_failed_check_jobs.side_effect = self._rerun
+        host.read_check_run_attempt.side_effect = lambda run_id: 2 if run_id in self.accepted_runs else 1
         self.host = host
         self.state = OrchestratorState(session_history=[SessionHistoryEntry(
             issue_number=228, title="Process tree", agent_type="agent:backend", status="completed",
@@ -78,6 +83,13 @@ class _Engine:
             fact_gatherer=MagicMock(), pr_scanner=MagicMock(), label_sync=None,
             event_context=EventContext(), label_manager=LabelManager(self.config),
         )
+
+    def _rerun(self, run_id: int) -> None:
+        from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+        if run_id in self.refused_runs:
+            raise RepositoryHostError("403 Resource not accessible by integration")
+        self.accepted_runs.add(run_id)
 
     def fail(self, job_id: int, log: str) -> None:
         """The PR's one required check failed as Actions job ``job_id``."""
@@ -189,11 +201,10 @@ def test_a_rerun_retried_after_a_failed_write_spends_one_liveness_budget() -> No
 def test_a_refused_rerun_records_nothing_and_never_becomes_a_rework() -> None:
     """A credential without Actions write: no record, the re-run is planned again
     (for the liveness owner to bound and escalate), and no rework cycle is spent."""
-    from issue_orchestrator.ports.repository_host import RepositoryHostError
 
     engine = _Engine()
     engine.fail(11, RUNNER_LOST)
-    engine.host.rerun_failed_check_jobs.side_effect = RepositoryHostError("403 Resource not accessible by integration")
+    engine.refused_runs.add(900)
     (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     result = apply_rerun_failed_checks(
         rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment,
@@ -305,3 +316,35 @@ def test_an_unreadable_attempt_keeps_the_log_for_the_brief() -> None:
     assert reruns == []
     assert "lost communication with the server" in (rework.feedback or "")
     assert engine.host.read_check_job_log_tail.call_count == 1  # the log is not re-read
+
+
+def test_an_accepted_rerun_whose_record_failed_is_never_posted_again() -> None:
+    """GitHub accepted the re-run, the record failed, the old failed job is still
+    visible (and the engine restarted): GitHub's run attempt stops a second POST."""
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.host.add_comment.side_effect = RepositoryHostError("502 Bad Gateway")
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    apply_rerun_failed_checks(rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment)
+
+    engine.state = OrchestratorState(session_history=engine.state.session_history)  # restart
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], [])
+    assert plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS) == []
+    engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
+
+
+def test_only_the_runs_github_has_not_re_run_are_asked_again() -> None:
+    engine = _Engine()
+    engine.logs.update({11: RUNNER_LOST, 12: RUNNER_LOST})
+    engine.host.read_failed_checks.return_value = FailedChecksRead(head_sha=HEAD, checks=(
+        FailedCheck("linux", "FAILURE", True, 11, 900), FailedCheck("windows", "FAILURE", True, 12, 901),
+    ))
+    engine.refused_runs.add(901)
+    (rerun,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert rerun.run_ids == (900, 901)
+    apply_rerun_failed_checks(rerun, rerun=engine.host.rerun_failed_check_jobs, post_comment=engine.host.add_comment)
+    (again,) = engine.tick()[2].actions_of_type(ActionType.RERUN_FAILED_CHECKS)
+    assert again.run_ids == (901,)

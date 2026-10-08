@@ -2919,18 +2919,17 @@ class GitHubHttpClient:
 
     def get_actions_job_attempt(self, job_id: int) -> int:
         """An Actions job's ``run_attempt`` (#8692); a job without one fails loudly."""
-        payload = self._request_json(
-            "GET",
-            f"/repos/{self._config.repo}/actions/jobs/{job_id}",
-            use_cache=False,
-            caller="get_actions_job_attempt",
-        )
+        return self._run_attempt(f"/repos/{self._config.repo}/actions/jobs/{job_id}", "get_actions_job_attempt")
+
+    def get_actions_run_attempt(self, run_id: int) -> int:
+        """A workflow run's current ``run_attempt`` (#8692)."""
+        return self._run_attempt(f"/repos/{self._config.repo}/actions/runs/{run_id}", "get_actions_run_attempt")
+
+    def _run_attempt(self, path: str, caller: str) -> int:
+        payload = self._request_json("GET", path, use_cache=False, caller=caller)
         attempt = payload.get("run_attempt") if isinstance(payload, dict) else None
         if type(attempt) is not int or attempt < 1:
-            raise GitHubHttpError(
-                f"Actions job {job_id} has no run_attempt", method="GET",
-                url=f"/repos/{self._config.repo}/actions/jobs/{job_id}",
-            )
+            raise GitHubHttpError(f"GitHub {path} has no run_attempt", method="GET", url=path)
         return attempt
 
     def rerun_failed_workflow_jobs(self, run_id: int) -> None:

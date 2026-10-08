@@ -1150,6 +1150,10 @@ class GitHubAdapter:
         """The run attempt of an Actions job (#8692)."""
         return self._client.get_actions_job_attempt(job_id)
 
+    def read_check_run_attempt(self, run_id: int) -> int:
+        """A workflow run's current attempt (#8692)."""
+        return self._client.get_actions_run_attempt(run_id)
+
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Re-run one workflow run's failed jobs (#8692)."""
         self._client.rerun_failed_workflow_jobs(run_id)

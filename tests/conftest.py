@@ -571,6 +571,10 @@ class MockGitHubAdapter:
         """The seeded job attempt (mock); a first run unless seeded."""
         return self.job_attempts.get(job_id, 1)
 
+    def read_check_run_attempt(self, run_id: int) -> int:
+        """1, or 2 once a re-run of the run was recorded (mock)."""
+        return 2 if run_id in self.rerun_calls else 1
+
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Record a re-run request (mock)."""
         self.rerun_calls.append(run_id)

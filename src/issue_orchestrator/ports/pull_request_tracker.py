@@ -515,6 +515,14 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def read_check_run_attempt(self, run_id: int) -> int:
+        """A GitHub Actions workflow run's current attempt (1 until re-run).
+
+        Raises:
+            RepositoryHostError: If the run cannot be read.
+        """
+        ...
+
     def rerun_failed_check_jobs(self, run_id: int) -> None:
         """Re-run the failed jobs of one GitHub Actions workflow run.
 
