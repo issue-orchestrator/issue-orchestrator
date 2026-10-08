@@ -175,3 +175,19 @@ def test_a_run_that_sets_any_improver_setting_is_not_the_champion(argv: list[str
 
     assert improver.agent_choice(args).describe() == expected
     assert not args.runs_champion
+
+
+
+def test_a_heat_with_two_findings_asking_one_effect_is_rejected_offline_as_it_was_live(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Offline revalidation judges by the run's own rule, effect keys included."""
+    build_improver_data(tmp_path)
+    doc = example("capability_issue")
+    twin = json.loads(json.dumps(doc["findings"][0]))
+    twin["id"] = "the-same-finding-again"
+    doc["findings"].append(twin)
+    (tmp_path / "improver-findings-h1.json").write_text(json.dumps(doc))
+
+    assert improver.main(["validate", "--run-dir", str(tmp_path), "--heat", "1"]) == improver.EXIT_REJECTED
+    assert "[unique_effect_keys]" in capsys.readouterr().out

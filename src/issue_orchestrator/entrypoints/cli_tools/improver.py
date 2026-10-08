@@ -56,7 +56,6 @@ from ...contracts.improver_run import (
 from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_variant import ImproverVariant
 from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
-from ...domain.improver_answer import AnswerNotExtractable, extract_findings_answer
 from ...domain.improver_champion import (
     INVITATION_RATE,
     RUN_BUDGET_MINUTES,
@@ -64,9 +63,7 @@ from ...domain.improver_champion import (
     run_limits,
 )
 from ...domain.improver_findings_validation import (
-    ImproverFindingsRejected,
     Rule,
-    validate_findings,
 )
 from ...execution.command_runner import LocalCommandRunner
 from ...execution.engine_inventory import control_center_engine_inventory, engine_at
@@ -96,6 +93,7 @@ from ..improver_run import (
     ChangePolicy,
     HeatPlan,
     ImproverRun,
+    judge_answer,
     render_run,
 )
 from ..improver_staging import (
@@ -462,30 +460,26 @@ def status() -> int:
 
 
 def validate(run_dir: Path, *, heat: int | None = None) -> int:
-    """The run's findings file, or heat ``heat``'s stored answer, validated
-    offline (no agent runs): an answer is read as a run reads it, its one
-    findings document found among any prose (which is reported)."""
+    """The run's findings file, or heat ``heat``'s stored answer, judged
+    offline (no agent runs) by the very rule the run judged it with
+    (:func:`~..improver_run.judge_answer`), with the run's invitation."""
     evidence = load_staged_evidence(run_dir / IMPROVER_DATA_DIRNAME)
     name = FINDINGS_FILE if heat is None else heat_file(FINDINGS_FILE, heat)
     path = run_dir / name
     if not path.is_file():
         print(f"[{Rule.SCHEMA.value}] the improver wrote no {name}")
         return EXIT_REJECTED
-    try:
-        extracted = extract_findings_answer(path.read_text(encoding="utf-8"))
-    except AnswerNotExtractable as error:
-        print(f"[{Rule.SCHEMA.value}] <file>: {error}")
-        return EXIT_REJECTED
-    if extracted.discarded:
-        print(f"discarded {len(extracted.discarded)} character(s) of prose around the findings document")
     invited = run_dir / CHANGE_INVITATION_FILE
     invitation = ChangeInvitation.from_json(invited.read_text(encoding="utf-8")) if invited.is_file() else None
-    try:
-        findings = validate_findings(extracted.text, evidence, invitation=invitation)
-    except ImproverFindingsRejected as rejection:
-        for violation in rejection.violations:
-            print(violation.describe())
+    engine = EngineRef(engine_id=evidence.engine_id, repo=evidence.audited_repo, state_dir=run_dir)
+    verdict = judge_answer(path.read_text(encoding="utf-8"), evidence, engine, invitation)
+    if verdict.discarded:
+        print(f"discarded {len(verdict.discarded)} character(s) of prose around the findings document")
+    if verdict.findings is None:
+        for rejection in verdict.rejections:
+            print(rejection)
         return EXIT_REJECTED
+    findings = verdict.findings
     print(f"valid: {len(findings.findings)} finding(s), {len(findings.design_findings)} design finding(s)")
     return EXIT_OK
 
