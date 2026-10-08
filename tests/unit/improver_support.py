@@ -66,7 +66,7 @@ from issue_orchestrator.contracts.improver_inputs import (
 )
 from issue_orchestrator.contracts.improver_findings import DesignFinding, Finding
 from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
-from issue_orchestrator.domain.improver_defects import DefectProfile, design_profile, stall_profile
+from issue_orchestrator.domain.improver_defects import CodeSite, DefectProfile, design_profile, stall_profile
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.observation.engine_audit import Unavailable
 from issue_orchestrator.observation.engine_audit_diff import diff_reports
@@ -413,16 +413,23 @@ NO_ACTIVITY = Unavailable(SourceStatus.SKIPPED, "test")
 @dataclass(frozen=True)
 class FakeEngineSource:
     """The staged engine source as a merge sees it: the function each cited
-    ``(path, line)`` is in, and the ``(module, name)`` pairs defined."""
+    ``(path, line)`` is in, and every definition, named in full. An owner
+    resolves as the real source resolves it: to the one definition whose
+    module and qualified name each end with what the owner wrote."""
 
-    functions: Mapping[tuple[str, int], str] = field(default_factory=dict)
-    defined: frozenset[tuple[tuple[str, ...], str]] = frozenset()
+    functions: Mapping[tuple[str, int], CodeSite] = field(default_factory=dict)
+    defined: frozenset[CodeSite] = frozenset()
 
-    def enclosing_function(self, path: str, line: int, quote: str) -> str | None:
+    def enclosing_function(self, path: str, line: int, quote: str) -> CodeSite | None:
         return self.functions.get((path, line))
 
-    def defines(self, module: tuple[str, ...], name: str) -> bool:
-        return (module, name) in self.defined
+    def resolve(self, written: CodeSite) -> CodeSite | None:
+        def ends(path: tuple[str, ...], tail: tuple[str, ...]) -> bool:
+            return 0 < len(tail) <= len(path) and path[len(path) - len(tail):] == tail
+
+        modules = {s.module for s in self.defined if ends(s.module, written.module)}
+        found = [s for s in self.defined if s.module in modules and ends(s.symbol, written.symbol)]
+        return found[0] if len(modules) == 1 and len(found) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -441,7 +448,7 @@ class KeyedIdentity:
         return self.design_keys(design)
 
     def stall_profile(self, finding: Finding) -> DefectProfile:
-        return stall_profile(finding)
+        return stall_profile(finding, self.source)
 
     def design_profile(self, design: DesignFinding) -> DefectProfile:
         return design_profile(design, self.source)

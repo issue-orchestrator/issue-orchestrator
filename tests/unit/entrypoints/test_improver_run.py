@@ -761,7 +761,7 @@ def test_a_design_finding_about_a_stall_findings_defect_is_filed_once_on_its_iss
         "summary": "Recovery assumes a parked head and its PR head are one commit when their names match.",
         "evidence": [{"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 1,
                       "quote": "parked work of #320 diverged from its PR head"}],
-        "impact": "Parked work never resolves.", "proposed_change": "Compare heads by commit.",
+        "impact": "Parked work of a rebased PR never resolves.", "proposed_change": "Compare heads by commit.",
         "owner": "control/validated_work_recovery.py:compare_heads",
     }
     second = json.loads(_findings("exam_case"))
@@ -778,6 +778,14 @@ def test_a_design_finding_about_a_stall_findings_defect_is_filed_once_on_its_iss
     assert [e.finding_id for e in record.effects] == [example("exam_case")["findings"][0]["id"], capability["id"]]
     assert f"{design['id']}: the same defect as {capability['id']}" in render_run(record)
     issue = next(c for c in host.created if "Capability gap" in c["title"])
-    assert "**Also found as the same defect" in issue["body"]
-    assert design["summary"] in issue["body"] and "parked work of #320 diverged" in issue["body"]
     assert not any(design["id"] in c["title"] for c in host.created)
+    # r1 F3: everything the folded finding claims, on the new issue and on
+    # the comment a later run posts to it.
+    again = _improver(store, host, HeatAgent(agent.answers, hold=0), stager=SourceStager(), heats=HeatPlan(2, 2))
+    again.run(_request())
+    [(number, comment)] = [(n, b) for n, b in host.comments if n == issue["number"]]
+    for body in (issue["body"], comment):
+        assert "**Also found as the same defect" in body
+        for claimed in (design["summary"], design["impact"], design["proposed_change"], design["owner"],
+                        "parked work of #320 diverged"):
+            assert claimed in body, claimed

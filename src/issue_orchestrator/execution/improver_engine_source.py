@@ -3,7 +3,7 @@
 :class:`RunDirEngineSource` implements
 :class:`~..domain.improver_defects.EngineSource` over one run directory's
 ``improver-data/engine-source/``: which function encloses a cited source
-line, and whether a module defines a name. It reads only that tree (after
+line, and which one definition an owner names; both named in full. It reads only that tree (after
 every symlink), and only ``.py`` files that parse; anything else answers
 "no function", so it never relates two findings.
 """
@@ -11,12 +11,12 @@ every symlink), and only ``.py`` files that parse; anything else answers
 from __future__ import annotations
 
 import ast
-from functools import cache
+from functools import cache, cached_property
 from pathlib import Path
 
 from ..contracts.improver_inputs import ENGINE_SOURCE_DIRNAME, IMPROVER_DATA_DIRNAME
 from ..domain.improver_citations import LINE_SLACK, normalized
-from ..domain.improver_defects import module_path
+from ..domain.improver_defects import CodeSite, module_path
 
 _FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
 _SCOPE = (*_FUNCTION, ast.ClassDef)
@@ -25,15 +25,16 @@ _SCOPE = (*_FUNCTION, ast.ClassDef)
 class RunDirEngineSource:
     def __init__(self, run_dir: Path) -> None:
         self._run_dir = run_dir.resolve()
-        self._root = self._run_dir / IMPROVER_DATA_DIRNAME / ENGINE_SOURCE_DIRNAME
+        self._root = (self._run_dir / IMPROVER_DATA_DIRNAME / ENGINE_SOURCE_DIRNAME).resolve()
         self._parse = cache(self._parsed)
 
-    def enclosing_function(self, path: str, line: int, quote: str) -> tuple[str, ...] | None:
+    def enclosing_function(self, path: str, line: int, quote: str) -> CodeSite | None:
         target = (self._run_dir / path).resolve()
         if not target.is_relative_to(self._root):
             return None
         parsed = self._parse(target)
-        if parsed is None:
+        module = module_path(target.relative_to(self._root).as_posix())
+        if parsed is None or module is None:
             return None
         tree, lines = parsed
         at = _quoted_line(lines, line, quote)
@@ -45,20 +46,29 @@ class RunDirEngineSource:
         # In a function's body, not a class's or the module's.
         if not chain or not isinstance(chain[-1], _FUNCTION):
             return None
-        return tuple(node.name for node in chain if isinstance(node, _SCOPE))
+        return CodeSite(module=module, symbol=tuple(node.name for node in chain if isinstance(node, _SCOPE)))
 
-    def defines(self, module: tuple[str, ...], symbol: tuple[str, ...]) -> bool:
-        files = [
-            p for p in self._root.rglob("*.py")
-            if (dotted := module_path(p.relative_to(self._root).as_posix())) is not None
-            and dotted[len(dotted) - len(module):] == module
-        ]
-        if len(files) != 1:
-            return False
-        parsed = self._parse(files[0].resolve())
-        return parsed is not None and any(
-            qualname[len(qualname) - len(symbol):] == symbol for qualname in _defined_names(parsed[0])
-        )
+    def resolve(self, written: CodeSite) -> CodeSite | None:
+        modules = [(dotted, path) for dotted, path in self._modules if _ends_with(dotted, written.module)]
+        if len(modules) != 1:
+            return None
+        [(module, path)] = modules
+        parsed = self._parse(path)
+        if parsed is None:
+            return None
+        symbols = [q for q in _defined_names(parsed[0]) if _ends_with(q, written.symbol)]
+        return CodeSite(module=module, symbol=symbols[0]) if len(symbols) == 1 else None
+
+    @cached_property
+    def _modules(self) -> tuple[tuple[tuple[str, ...], Path], ...]:
+        """Every staged Python file inside the source tree, by dotted path."""
+        found = []
+        for path in self._root.rglob("*.py"):
+            resolved = path.resolve()
+            dotted = module_path(path.relative_to(self._root).as_posix())
+            if dotted is not None and resolved.is_relative_to(self._root) and resolved.is_file():
+                found.append((dotted, resolved))
+        return tuple(found)
 
     def _parsed(self, target: Path) -> tuple[ast.Module, list[str]] | None:
         if target.suffix != ".py" or not target.is_relative_to(self._root) or not target.is_file():
@@ -68,6 +78,10 @@ class RunDirEngineSource:
             return ast.parse(text), text.splitlines()
         except SyntaxError:
             return None
+
+
+def _ends_with(path: tuple[str, ...], tail: tuple[str, ...]) -> bool:
+    return 0 < len(tail) <= len(path) and path[len(path) - len(tail):] == tail
 
 
 def _quoted_line(lines: list[str], line: int, quote: str) -> int:

@@ -73,7 +73,7 @@ from .improver_citations import (
     CitationIndex,
     normalized,
 )
-from .improver_defects import EngineSource, code_site
+from .improver_defects import EngineSource, resolved_owner
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -146,9 +146,10 @@ class Rule(StrEnum):
     #: of a staged file (``improver-data/`` or ``toolbox/``, never outside
     #: them), or an answer the toolbox served. No citation, no finding.
     DESIGN_CITATION_RESOLVES = "design_citation_resolves"
-    #: A design finding's ``owner``, when it names one, is a function (or
-    #: class, or name) one staged engine source module defines, written
-    #: ``<module>:<function>`` (#8700): it decides which findings are one defect.
+    #: A design finding's ``owner``, when it names one, is exactly one
+    #: function (or class, or name) of exactly one staged engine source
+    #: module, written ``<module>:<function>`` (#8700): it decides which
+    #: findings are one defect.
     DESIGN_OWNER_RESOLVES = "design_owner_resolves"
     #: A change to the improver is proposed only by a run the orchestrator
     #: invited to propose one (#8001): the agent never chooses to.
@@ -335,14 +336,12 @@ class _Checker:
                 f"tagged {design.engine.id}/{design.engine.repo}, but the run staged"
                 f" {self._evidence.engine_id}/{self._evidence.audited_repo}",
             )
-        if design.owner is not None:
-            site = code_site(design.owner)
-            if site is None or not self._evidence.engine_source.defines(site.module, site.symbol):
-                yield (
-                    Rule.DESIGN_OWNER_RESOLVES,
-                    f"owner {design.owner!r} is not <module>:<function> of one staged engine source module"
-                    " that defines it",
-                )
+        if design.owner is not None and resolved_owner(design.owner, self._evidence.engine_source) is None:
+            yield (
+                Rule.DESIGN_OWNER_RESOLVES,
+                f"owner {design.owner!r} does not name, as <module>:<function>, exactly one definition in"
+                " exactly one staged engine source module",
+            )
         index = self._evidence.citations
         for n, citation in enumerate(design.evidence):
             if len(normalized(citation.quote)) < MIN_QUOTE_CHARS:

@@ -15,8 +15,8 @@ ONE identity policy, shared with the GitHub effects (the caller's
   when the identity's :func:`~.improver_defects.same_defect` says so: one
   code site and overlapping evidence. It is folded into that finding
   (:class:`SameDefect`): it files no issue of its own, its heats support the
-  finding, and its claim is shown on the finding's issue. A design finding
-  related to two different stall findings is folded into neither.
+  finding, and its whole claim is shown on the finding's issue. Only a
+  direct relation to exactly one finding folds (:func:`_same_defect_folds`).
 
 Nothing looser (a shared citation alone, a similar summary) merges two
 findings.
@@ -243,38 +243,25 @@ def _same_defect_folds(
     """Each design finding folded into another finding about its defect:
     design id -> the id it is folded into.
 
-    Design findings about one defect form a group (related directly or
-    through another design finding). A group related to exactly one stall
-    finding folds into it; otherwise it folds into its first member (the
-    primary heat's first): a group related to two stall findings folds
-    into neither of them, since which one carries it is not known."""
+    Only a DIRECT relation folds (r1 F2): one design finding related to
+    another only through a third may be about another defect. In order
+    (the primary heat's first), a design finding related to exactly one
+    stall finding folds into it; one related to no stall finding folds into
+    the one earlier design finding it is related to that still files its own
+    issue. Related to two of either, it folds into none: which one carries
+    it is not known."""
     stall_profiles = [identity.stall_profile(f) for f in stalls]
-    profiles = [identity.design_profile(d) for d in designs]
-    group = list(range(len(designs)))
-
-    def root(i: int) -> int:
-        while group[i] != i:
-            i = group[i]
-        return i
-
-    for i, a in enumerate(profiles):
-        for j in range(i + 1, len(profiles)):
-            if same_defect(a, profiles[j]):
-                group[root(j)] = root(i)
-    members: dict[int, list[int]] = {}
-    for i in range(len(designs)):
-        members.setdefault(root(i), []).append(i)
     folds: dict[str, str] = {}
-    for indexes in members.values():
-        related = {
-            s.finding_id for i in indexes for s in stall_profiles if same_defect(profiles[i], s)
-        }
+    kept: list[DefectProfile] = []
+    for design in designs:
+        profile = identity.design_profile(design)
+        related = [s.finding_id for s in stall_profiles if same_defect(profile, s)]
+        if not related:
+            related = [k.finding_id for k in kept if same_defect(profile, k)]
         if len(related) == 1:
-            into = next(iter(related))
-            folds.update((designs[i].id, into) for i in indexes)
+            folds[design.id] = related[0]
         else:
-            first, *rest = sorted(indexes)
-            folds.update((designs[i].id, designs[first].id) for i in rest)
+            kept.append(profile)
     return folds
 
 

@@ -149,7 +149,7 @@ class EffectIdentity:
         return design_finding_key(design, self.engine)
 
     def stall_profile(self, finding: Finding) -> DefectProfile:
-        return stall_profile(finding)
+        return stall_profile(finding, self.source)
 
     def design_profile(self, design: DesignFinding) -> DefectProfile:
         return design_profile(design, self.source)
@@ -444,12 +444,19 @@ def same_defect_note(run: ImproverRunRecord, finding_id: str) -> str:
     if not folded:
         return ""
     return "\n\n**Also found as the same defect (one code site, overlapping evidence), filed here once:**\n" + (
-        "\n".join(
-            f"- design finding `{_inert(s.design.id)}` ({s.design.kind.replace('_', ' ')}), heat(s)"
-            f" {', '.join(map(str, s.heats))}: {_inert(s.design.summary)} **Proposed change:**"
-            f" {_inert(s.design.proposed_change)}\n" + _evidence_lines(s.design, indent="  ")
-            for s in folded
-        )
+        "\n".join(_folded_design(s.design, s.heats) for s in folded)
+    )
+
+
+def _folded_design(design: DesignFinding, heats: tuple[int, ...]) -> str:
+    """All a folded design finding claims, as its own issue would say it."""
+    owner = "" if design.owner is None else f" **Owner:** `{_inert(design.owner)}`."
+    return (
+        f"- design finding `{_inert(design.id)}` ({design.kind.replace('_', ' ')}), heat(s)"
+        f" {', '.join(map(str, heats))}: {_inert(design.summary)}{owner}\n"
+        f"  **Impact:** {_inert(design.impact)}\n"
+        f"  **Proposed change:** {_inert(design.proposed_change)}\n"
+        + _evidence_lines(design, indent="  ")
     )
 
 

@@ -25,18 +25,24 @@ ENGINE = EngineRef(
     state_dir=Path("/engine/state"),
 )
 _HANDLER = "improver-data/engine-source/src/issue_orchestrator/control/completion_handler.py"
+_HANDLER_MODULE = ("issue_orchestrator", "control", "completion_handler")
+UPDATE = CodeSite(_HANDLER_MODULE, ("CompletionHandler", "_update_issue_machine"))
+OPERATOR_DECISION = CodeSite(("issue_orchestrator", "control", "tech_lead_operator_decision"), ("OperatorDecisionExecutor",))
+REFUSAL = CodeSite(("issue_orchestrator", "control", "partial_delivery_guard"), ("PartialDeliveryGuard", "refusal"))
 #: What the run's staged engine source answers for every engine source line
-#: its design findings cite (read from it with RunDirEngineSource).
+#: its design findings cite, and for the owners its findings name (read
+#: from it with RunDirEngineSource).
 SOURCE = FakeEngineSource(
     functions={
-        (_HANDLER, 819): ("CompletionHandler", "_update_issue_machine"),
-        (_HANDLER, 799): ("CompletionHandler", "_update_issue_machine"),
-        (_HANDLER, 600): ("CompletionHandler", "finalize_terminal_outcome"),
+        (_HANDLER, 819): UPDATE,
+        (_HANDLER, 799): UPDATE,
+        (_HANDLER, 600): CodeSite(_HANDLER_MODULE, ("CompletionHandler", "finalize_terminal_outcome")),
         (
             "improver-data/engine-source/src/issue_orchestrator/domain/state_machines/issue_machine.py",
             114,
-        ): ("IssueStateMachine", "__init__"),
-    }
+        ): CodeSite(("issue_orchestrator", "domain", "state_machines", "issue_machine"), ("IssueStateMachine", "__init__")),
+    },
+    defined=frozenset({UPDATE, OPERATOR_DECISION, REFUSAL}),
 )
 IDENTITY = EffectIdentity(ENGINE, SOURCE)
 
@@ -140,7 +146,8 @@ def test_stall_findings_are_never_related_by_this_rule() -> None:
     route = next(f for f in ImproverFindings.model_validate_json(json.dumps(_heat(2))).findings if f.id == ROUTE_PR)
     twin = route.model_copy(update={"id": "route-pr-exam-case"})
 
-    assert not same_defect(stall_profile(route), stall_profile(twin))
+    assert stall_profile(route, SOURCE).sites == (OPERATOR_DECISION,)
+    assert not same_defect(stall_profile(route, SOURCE), stall_profile(twin, SOURCE))
 
 
 def test_a_folded_design_findings_conflict_and_change_motive_move_to_its_defect() -> None:
@@ -163,6 +170,70 @@ def test_a_folded_design_findings_conflict_and_change_motive_move_to_its_defect(
     assert merged.findings.improver_change.motivated_by == (ROUTE_PR, CRASH_H1)
 
 
+def test_an_owner_relates_only_the_one_definition_it_names() -> None:
+    """r1 F1: a stall owner naming a method two classes define is no site;
+    one naming another class's method is another site."""
+    run_one = CodeSite(OPERATOR_DECISION.module, ("Executor", "run"))
+    run_two = CodeSite(OPERATOR_DECISION.module, ("Planner", "run"))
+    source = FakeEngineSource(defined=frozenset({run_one, run_two}))
+    module = "issue_orchestrator.control.tech_lead_operator_decision"
+
+    def folded(stall_owner: str) -> bool:
+        first = _heat(1, **{HAND_OFF: {"owner": f"{module}:Planner.run"}})
+        second = _heat(2)
+        next(f for f in second["findings"] if f["id"] == ROUTE_PR)["root_cause"]["owner"] = stall_owner
+        merged = merge_heats(
+            [AcceptedHeat(n, ImproverFindings.model_validate_json(json.dumps(d))) for n, d in ((1, first), (2, second))],
+            EffectIdentity(ENGINE, source),
+        )
+        return any(s.design.id == HAND_OFF for s in merged.same_defects)
+
+    assert not folded(f"{module}:run")
+    assert not folded(f"{module}:Executor.run")
+    assert folded(f"{module}:Planner.run")
+
+
+def _chain_design(id: str, line: int, quote: str) -> dict:
+    return {
+        "id": id, "engine": {"id": ENGINE.engine_id, "repo": ENGINE.repo}, "kind": "silent_assumption",
+        "summary": f"{id} summary.", "impact": "Ticks abort.", "proposed_change": "Guard it.",
+        "owner": "control/completion_handler.py:_update_issue_machine",
+        "evidence": [{"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": line, "quote": quote}],
+    }
+
+
+def _chain_stall(id: str, item: int) -> dict:
+    stall = json.loads(json.dumps(next(f for f in _heat(2)["findings"] if f["id"] == ROUTE_PR)))
+    stall["id"] = id
+    stall["anomaly_keys"] = [{"kind": "attention_label", "subject": f"#{item}", "signature": "needs-human"}]
+    stall["stall_evidence"] = []
+    stall["root_cause"]["owner"] = "issue_orchestrator.control.completion_handler:CompletionHandler._update_issue_machine"
+    return stall
+
+
+CHAIN = [
+    _chain_design("crash-on-1", 10, "the tick crashed on issue #1 here"),
+    _chain_design("crash-on-1-and-2", 500, "the tick crashed on issues #1 and #2"),
+    _chain_design("crash-on-2", 900, "the tick crashed on issue #2 here"),
+]
+
+
+def test_only_a_direct_relation_folds_never_one_through_a_third_finding() -> None:
+    """r1 F2: designs about #1 and #2 are related only through a design that
+    names both. Neither folds into the other; the one naming both, related
+    to two stall findings, folds into neither."""
+    alone = _merge({**_heat(1), "findings": [], "design_findings": CHAIN})
+    with_stalls = _merge({**_heat(1), "findings": [_chain_stall("fix-1", 1), _chain_stall("fix-2", 2)],
+                          "design_findings": CHAIN})
+
+    assert [(s.design.id, s.finding_id) for s in alone.same_defects] == [("crash-on-1-and-2", "crash-on-1")]
+    assert {"crash-on-1", "crash-on-2"} <= set(_filed(alone))
+    assert [(s.design.id, s.finding_id) for s in with_stalls.same_defects] == [
+        ("crash-on-1", "fix-1"), ("crash-on-2", "fix-2"),
+    ]
+    assert "crash-on-1-and-2" in _filed(with_stalls)
+
+
 def test_an_owner_is_read_as_the_prompt_asks_it_written() -> None:
     assert code_site("control/completion_handler.py:CompletionHandler._update_issue_machine") == CodeSite(
         ("control", "completion_handler"), ("CompletionHandler", "_update_issue_machine")
@@ -170,10 +241,3 @@ def test_an_owner_is_read_as_the_prompt_asks_it_written() -> None:
     assert code_site("issue_orchestrator.control.x:run()") == CodeSite(("issue_orchestrator", "control", "x"), ("run",))
     for unanchored in ("issue_orchestrator.control.x.run", "control/x.py:run (and its callers)", "control/x.txt:run", ":run"):
         assert code_site(unanchored) is None, unanchored
-    # One module and function, written from different roots, is one site;
-    # a class is not the same site as its method; another class's is not.
-    method = CodeSite(("control", "completion_handler"), ("CompletionHandler", "_update_issue_machine"))
-    assert method.matches(CodeSite(("issue_orchestrator", "control", "completion_handler"), ("_update_issue_machine",)))
-    assert not method.matches(CodeSite(("control", "completion_handler"), ("CompletionHandler",)))
-    assert not method.matches(CodeSite(("domain", "completion_handler"), ("CompletionHandler", "_update_issue_machine")))
-    assert not CodeSite(("m",), ("A", "__init__")).matches(CodeSite(("m",), ("B", "__init__")))

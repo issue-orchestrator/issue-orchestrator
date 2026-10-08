@@ -10,9 +10,12 @@ as a design finding and a stall finding (#8694/#8691).
 A finding's :class:`DefectProfile` is where the defect lives and what it was
 seen on:
 
-* its **code sites** (:class:`CodeSite`, a module and a function):
-  a stall finding's ``root_cause.owner``; a design finding's ``owner``, and
-  the function enclosing each line of the engine source it cites;
+* its **code sites** (:class:`CodeSite`, one function of one staged
+  module, named in full): a stall finding's ``root_cause.owner`` and a
+  design finding's ``owner``, each resolved in the staged engine source
+  (an owner naming no one function there, e.g. a bare method name two
+  classes define, is no site); and the function enclosing each line of the
+  engine source a design finding cites;
 * its **evidence**: the items (``#N``) it is about, the staged records it
   cites, and, for a design finding, its citations other than engine source.
 
@@ -47,44 +50,36 @@ class EngineSource(Protocol):
     """The staged engine source, read as Python (the execution side reads
     the run directory)."""
 
-    def enclosing_function(self, path: str, line: int, quote: str) -> tuple[str, ...] | None:
-        """The qualified name (``("CompletionHandler", "_update_issue_machine")``)
-        of the innermost function or method enclosing the line of run-dir
+    def enclosing_function(self, path: str, line: int, quote: str) -> CodeSite | None:
+        """The innermost function or method enclosing the line of run-dir
         file ``path`` that holds ``quote`` (within the citation slack of
-        ``line``); None when that line is in no function, or the file is no
-        staged Python source."""
+        ``line``), named in full; None when that line is in no function, or
+        the file is no staged Python source."""
         ...
 
-    def defines(self, module: tuple[str, ...], symbol: tuple[str, ...]) -> bool:
-        """Whether exactly one staged Python file is ``module`` (its dotted
-        path, matched from the end) and it defines ``symbol`` (a class,
-        function or module-level name, its qualified name matched from the
-        end)."""
+    def resolve(self, written: CodeSite) -> CodeSite | None:
+        """The one staged definition ``written`` names, in full: exactly one
+        staged Python module whose dotted path ends with ``written.module``,
+        defining exactly one class, function or module-level name whose
+        qualified name ends with ``written.symbol``; None otherwise."""
         ...
 
 
 @dataclass(frozen=True)
 class CodeSite:
-    """A function (or class, or name) in a module of the engine source.
+    """A function (or class, or name) in a module of the engine source: its
+    module's dotted path and its qualified name.
 
-    Both parts are dotted paths as written, which may or may not be complete:
-    ``control.completion_handler`` and
-    ``issue_orchestrator.control.completion_handler`` are one module, and
-    ``_update_issue_machine`` and ``CompletionHandler._update_issue_machine``
-    one function. So two sites are one when, for each part, one path ends
-    the other. A class is not the same site as one of its methods: one
-    class can hold two defects."""
+    As an owner is WRITTEN, either may be partial
+    (``control/completion_handler.py:_update_issue_machine``); resolved in
+    the staged source (:meth:`EngineSource.resolve`) or read from it, both
+    are complete (``issue_orchestrator.control.completion_handler``,
+    ``CompletionHandler._update_issue_machine``), and two complete sites are
+    one exactly when they are equal. A class is not the same site as one of
+    its methods: one class can hold two defects."""
 
     module: tuple[str, ...]
     symbol: tuple[str, ...]
-
-    def matches(self, other: CodeSite) -> bool:
-        return _ends(self.module, other.module) and _ends(self.symbol, other.symbol)
-
-
-def _ends(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
-    shorter, longer = sorted((a, b), key=len)
-    return bool(shorter) and longer[len(longer) - len(shorter):] == shorter
 
 
 def module_path(path: str) -> tuple[str, ...] | None:
@@ -101,7 +96,8 @@ def module_path(path: str) -> tuple[str, ...] | None:
 
 
 def code_site(owner: str) -> CodeSite | None:
-    """``<module>:<function>`` as the prompt asks a root cause's owner to be
+    """The site an owner names as WRITTEN (possibly partial), from
+    ``<module>:<function>`` as the prompt asks a root cause's owner to be
     written (``control/completion_handler.py:_update_issue_machine`` or
     ``issue_orchestrator.control.completion_handler:CompletionHandler._update_issue_machine``);
     None when it is not written that way, which relates the finding to none."""
@@ -154,7 +150,7 @@ class DefectProfile:
     quotes: tuple[str, ...]
 
     def shares_site(self, other: DefectProfile) -> bool:
-        return any(a.matches(b) for a in self.sites for b in other.sites)
+        return bool(set(self.sites) & set(other.sites))
 
     def overlaps(self, other: DefectProfile) -> bool:
         if self.items & other.items:
@@ -174,8 +170,14 @@ def same_defect(a: DefectProfile, b: DefectProfile) -> bool:
     return a.shares_site(b) and a.overlaps(b)
 
 
-def stall_profile(finding: Finding) -> DefectProfile:
-    site = code_site(finding.root_cause.owner) if finding.root_cause is not None else None
+def resolved_owner(owner: str, source: EngineSource) -> CodeSite | None:
+    """The one staged definition an owner names, or None."""
+    written = code_site(owner)
+    return None if written is None else source.resolve(written)
+
+
+def stall_profile(finding: Finding, source: EngineSource) -> DefectProfile:
+    site = resolved_owner(finding.root_cause.owner, source) if finding.root_cause is not None else None
     return DefectProfile(
         finding_id=finding.id,
         is_design=False,
@@ -188,7 +190,7 @@ def stall_profile(finding: Finding) -> DefectProfile:
 
 
 def design_profile(design: DesignFinding, source: EngineSource) -> DefectProfile:
-    declared = code_site(design.owner) if design.owner is not None else None
+    declared = resolved_owner(design.owner, source) if design.owner is not None else None
     sites: list[CodeSite] = [] if declared is None else [declared]
     cited: list[_Cited] = []
     for citation in design.evidence:
@@ -202,7 +204,7 @@ def design_profile(design: DesignFinding, source: EngineSource) -> DefectProfile
             continue
         function = source.enclosing_function(citation.path, citation.line, citation.quote)
         if function is not None:
-            sites.append(CodeSite(module=module, symbol=function))
+            sites.append(function)
     return DefectProfile(
         finding_id=design.id,
         is_design=True,
@@ -226,6 +228,7 @@ __all__ = [
     "code_site",
     "design_profile",
     "module_path",
+    "resolved_owner",
     "same_defect",
     "stall_profile",
 ]
