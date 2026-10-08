@@ -302,6 +302,22 @@ def test_a_record_a_quote_names_is_named_whole() -> None:
         assert bool(merged.same_defects) is folded, quote
 
 
+def test_one_file_cited_by_two_spellings_of_its_path_is_one_citation() -> None:
+    """r7 F1: `logs/./x.log` is `logs/x.log`, for a log line and for a line
+    of engine source alike."""
+    crash = "Can't trigger event needs_human from state pr_pending!"
+    first = _chain_design("crash-plain-path", _log(10, crash))
+    second = _chain_design("crash-dotted-path", {**_log(10, crash), "path": "toolbox/logs/./orchestrator.log"})
+    second["owner"] = None
+    second["evidence"].append(
+        {"kind": "file", "path": _HANDLER.replace("control/", "control/./"), "line": 819, "quote": "issue_machine.needs_human()"}
+    )
+
+    merged = _merge({**_heat(1), "findings": [], "design_findings": [first, second]})
+
+    assert [(s.design.id, s.finding_id) for s in merged.same_defects] == [("crash-dotted-path", "crash-plain-path")]
+
+
 def _answer(call: int, quote: str) -> dict:
     return {"kind": "tool", "call": call, "quote": quote}
 

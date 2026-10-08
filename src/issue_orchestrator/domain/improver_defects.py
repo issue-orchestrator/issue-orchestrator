@@ -30,6 +30,7 @@ different things (an exam case and a fix) are two deliverables.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -209,11 +210,13 @@ def design_profile(design: DesignFinding, source: EngineSource) -> DefectProfile
         if isinstance(citation, ToolCitation):
             cited.append(_Cited(path=None, line=citation.call, quote=quote))
             continue
-        module = module_path(citation.path) if citation.path.startswith(ENGINE_SOURCE_PREFIX) else None
+        # One file, however its path is spelled (r7 F1: `logs/./x.log`).
+        path = posixpath.normpath(citation.path)
+        module = module_path(path) if path.startswith(ENGINE_SOURCE_PREFIX) else None
         if module is None:
-            cited.append(_Cited(path=citation.path, line=citation.line, quote=quote))
+            cited.append(_Cited(path=path, line=citation.line, quote=quote))
             continue
-        function = source.enclosing_function(citation.path, citation.line, citation.quote)
+        function = source.enclosing_function(path, citation.line, citation.quote)
         if function is not None:
             sites.append(function)
     return DefectProfile(
