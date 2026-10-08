@@ -6,7 +6,7 @@ import json
 
 from issue_orchestrator.contracts.improver_findings import ImproverFindings
 from issue_orchestrator.domain.improver_heats import AcceptedHeat, merge_heats
-from tests.unit.improver_support import ENGINE_ID, AUDITED_REPO, example
+from tests.unit.improver_support import ENGINE_ID, AUDITED_REPO, KeyedIdentity, example
 
 
 def _findings(*names: str, designs: list[dict] | None = None) -> ImproverFindings:
@@ -27,7 +27,7 @@ def _dkey(design) -> str:  # type: ignore[no-untyped-def]
 
 
 def _merge(heats):  # type: ignore[no-untyped-def]
-    return merge_heats(heats, _key, _dkey)
+    return merge_heats(heats, KeyedIdentity(_key, _dkey))
 
 
 def _design(id: str, kind: str = "operator_friction", line: int = 41, call: int | None = None) -> dict:
@@ -110,6 +110,29 @@ def test_a_design_finding_is_one_across_heats_only_by_its_effect_key_and_claim()
     [conflict] = merged.conflicts
     assert conflict.finding_id == "shared-line-a" and conflict.heat == 1
     assert "Approval is a label removal." in conflict.claim
+
+
+def test_one_design_finding_backs_another_only_if_it_claims_all_the_same() -> None:
+    """r2 F3: the same id, summary and change, but another impact, owner or
+    evidence, is not support: it is a conflict, with all it claims."""
+    first = _findings("exam_case", designs=[_design("approval-by-label")])
+    variants = [
+        {**_design("approval-by-label"), "impact": "Merges run unapproved."},
+        {**_design("approval-by-label"), "owner": "control/approvals.py:approve"},
+        # r9 F1: case can name another symbol.
+        {**_design("approval-by-label"), "proposed_change": "A positive APPROVAL act."},
+        _design("approval-by-label", line=7),
+    ]
+
+    for variant in variants:
+        merged = _merge([AcceptedHeat(1, first), AcceptedHeat(2, _findings("exam_case", designs=[variant]))])
+
+        assert merged.support["approval-by-label"] == (1,), variant
+        [conflict] = merged.conflicts
+        assert conflict.heat == 2
+        assert variant["impact"] in conflict.claim and str(variant.get("owner")) in conflict.claim
+        assert variant["proposed_change"] in conflict.claim
+        assert f'"line":{variant["evidence"][0]["line"]}' in conflict.claim
 
 
 def test_a_renamed_design_keeps_its_original_id_for_its_effect_key() -> None:

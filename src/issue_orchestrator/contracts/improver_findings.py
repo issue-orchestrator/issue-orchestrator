@@ -21,8 +21,10 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 
-#: Bump when a field is added, removed or changes meaning. The prompt's
-#: ``schema_version`` must match.
+#: Bump when a field is removed, changes meaning, or is added as required.
+#: The prompt's ``schema_version`` must match. An OPTIONAL field is added
+#: without a bump (#8700): the champion's prompt is frozen (#8001), and a bump
+#: would reject every answer it asks for until a promotion.
 IMPROVER_FINDINGS_SCHEMA_VERSION = 6
 
 #: The improver's one output, beside ``improver-data/`` in the run directory.
@@ -206,6 +208,12 @@ class DesignFinding(_Closed):
     evidence: tuple[Citation, ...] = Field(min_length=1)
     impact: Stated
     proposed_change: Stated
+    #: Where the defect lives in the engine source, written as a stall
+    #: finding's ``root_cause.owner`` is (``<module>:<function>``); None when
+    #: it lives in no one function. A design finding and another finding
+    #: with one code site and overlapping evidence are one defect, filed
+    #: once (#8700).
+    owner: NonEmpty | None = None
 
 
 class Trend(_Closed):
