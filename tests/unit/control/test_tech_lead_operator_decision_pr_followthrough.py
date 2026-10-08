@@ -505,8 +505,9 @@ def test_a_pr_rework_step_needs_the_pr_the_session_observed() -> None:
 
 
 def test_both_prompts_teach_every_step_kind_and_forbid_before_you_approve_prose() -> None:
-    """The tech lead's own prompt and the engine's restatement in every health
-    review both name each admitted kind and route the rest to operator_steps."""
+    """The tech lead's built-in prompt, this repository's own tech-lead prompt
+    (the one the exam runs) and the engine's restatement in every health review
+    all name each admitted kind and route the rest to operator_steps."""
     from issue_orchestrator.domain.blocked_item_triage import TriageAgenda, render_triage_instructions
     from issue_orchestrator.domain.blocked_item_triage import TriageAgendaItem
     from issue_orchestrator.execution.tech_lead_artifacts_prompt import TECH_LEAD_ARTIFACTS_SECTION
@@ -516,7 +517,8 @@ def test_both_prompts_teach_every_step_kind_and_forbid_before_you_approve_prose(
         needs_human_causes=("agent_completion",), fingerprint="f", agent_question=None, reason="r",
         prior=None,
     ),)))
-    for prompt in (TECH_LEAD_ARTIFACTS_SECTION, health):
+    repo_prompt = (Path(__file__).resolve().parents[3] / "repo-specific" / "prompts" / "tech-lead.md").read_text()
+    for prompt in (TECH_LEAD_ARTIFACTS_SECTION, health, repo_prompt):
         for kind in DecisionStepKind:
             assert f'"kind": "{kind.value}"' in prompt, kind
         assert "`operator_steps`" in prompt
