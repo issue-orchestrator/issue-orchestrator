@@ -263,6 +263,9 @@ class _RecordingPRAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[object]:
         return []
 
+    def merged_pr_history(self, issue_number: int) -> tuple:
+        return ()
+
     def create_pr(
         self,
         title: str,
@@ -1130,6 +1133,7 @@ class TestEscalationReachesTheHumanThroughTheProductionGate:
 
             label_adapter = Mock()
             pr_adapter = Mock()
+            pr_adapter.merged_pr_history.return_value = ()
 
             config = Config()
             config.validation.publish.dirty_check = "tracked"

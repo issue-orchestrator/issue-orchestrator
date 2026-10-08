@@ -286,6 +286,20 @@ def _check_partial_pr(value: Any, outcome: "CompletionOutcome") -> bool:
     return value
 
 
+def _check_finishes_issue(value: Any, outcome: "CompletionOutcome", *, partial_pr: bool) -> bool:
+    """A finishing declaration (#8689) is a strict bool, only a completion
+    makes it, and it contradicts a partial claim."""
+    if type(value) is not bool:
+        raise ValueError("finishes_issue must be a boolean")
+    if value and outcome is not CompletionOutcome.COMPLETED:
+        raise ValueError(
+            f"finishes_issue is only valid for a completed outcome, not {outcome.value}"
+        )
+    if value and partial_pr:
+        raise ValueError("finishes_issue contradicts partial_pr: a PR cannot both finish and continue an issue")
+    return value
+
+
 def _check_upheld_rulings(value: Any, outcome: "CompletionOutcome") -> list[str] | None:
     """An approval's ruling attestations (#8141): ruling ids, and only on an approval."""
     if value is None:
@@ -497,6 +511,12 @@ class CompletionRecord:
     # leaves the issue open for the next PR (#7288). COMPLETED only.
     partial_pr: bool = False
 
+    # The PR finishes an issue that earlier PRs delivered in part
+    # (``coding-done completed --finishes-issue``, #8689). Without it, a
+    # completion on an issue whose latest merged PR only refs it is published
+    # as partial too. COMPLETED only; never with ``partial_pr``.
+    finishes_issue: bool = False
+
     # The standing rulings (#8141) an approving review attests the diff
     # upholds (``reviewer-done approved --upholds-ruling ID``). REVIEW_APPROVED only.
     upheld_rulings: Optional[list[str]] = None
@@ -544,6 +564,7 @@ class CompletionRecord:
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
             "partial_pr": self.partial_pr,
+            "finishes_issue": self.finishes_issue,
             "upheld_rulings": self.upheld_rulings,
         }
 
@@ -649,7 +670,10 @@ class CompletionRecord:
                 ProposedFollowUpIssue.from_dict(item)
                 for item in follow_up_raw
             ] if follow_up_raw is not None else None,
-            partial_pr=_check_partial_pr(data.get("partial_pr", False), outcome),
+            partial_pr=(partial := _check_partial_pr(data.get("partial_pr", False), outcome)),
+            finishes_issue=_check_finishes_issue(
+                data.get("finishes_issue", False), outcome, partial_pr=partial
+            ),
             upheld_rulings=_check_upheld_rulings(data.get("upheld_rulings"), outcome),
         )
 

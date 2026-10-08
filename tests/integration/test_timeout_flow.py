@@ -66,6 +66,9 @@ class StubPrAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list:
         return []
 
+    def merged_pr_history(self, issue_number: int) -> tuple:
+        return ()
+
 
 class StubGitAdapter:
     def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True,

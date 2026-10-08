@@ -30,6 +30,9 @@ class PublicationContent:
     # than re-read from ``body``: agent-written text in the body can contain
     # a closing keyword that would make the body alone look whole.
     partial_pr: bool
+    # The completion's typed finishing claim (#8689): the PR must close the
+    # issue that earlier PRs delivered in part.
+    finishes_issue: bool
 
     def __post_init__(self) -> None:
         if type(self.title) is not str or not self.title.strip():
@@ -38,6 +41,10 @@ class PublicationContent:
             raise ValueError("publication content must have a body and typed draft state")
         if type(self.partial_pr) is not bool:
             raise ValueError("publication content must carry a typed partial claim")
+        if type(self.finishes_issue) is not bool:
+            raise ValueError("publication content must carry a typed finishing claim")
+        if self.partial_pr and self.finishes_issue:
+            raise ValueError("publication content cannot both continue and finish its issue")
 
 
 @dataclass(frozen=True, slots=True)

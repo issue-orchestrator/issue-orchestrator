@@ -37,6 +37,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, call, patch
 
+from issue_orchestrator.domain.issue_delivery import MergedPullRequest
 from issue_orchestrator.domain.models import (
     CompletionRecord,
     CompletionOutcome,
@@ -243,6 +244,8 @@ def mock_pr_adapter():
     adapter = Mock(spec=PRAdapter)
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
+    # No merged PR refs the issue: an unclaimed completion is a whole delivery (#8689).
+    adapter.merged_pr_history = Mock(return_value=())
     adapter.create_pr = Mock(
         return_value=PRInfo(
             number=42,
@@ -800,6 +803,75 @@ class TestPartialPRReference:
         assert result.success
         mock_git_adapter.push.assert_called()
 
+    def test_an_unclaimed_completion_on_an_issue_already_delivered_in_part_publishes_refs(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """#8689: merged PR #98 refs #123. A completion that forgot --partial
+        opens a "Refs" PR, and its result says why."""
+        mock_pr_adapter.merged_pr_history.return_value = (
+            MergedPullRequest(98, "Refs #123\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
+        )
+        mock_pr_adapter.create_pr.side_effect = lambda **kwargs: self._pr(kwargs["body"])
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=False)
+
+        assert result.success
+        assert mock_pr_adapter.create_pr.call_args.kwargs["body"].startswith("Refs #123\n")
+        assert any("Partial delivery (inferred)" in action and "#98" in action
+                   for action in result.actions_taken)
+        mock_pr_adapter.merged_pr_history.assert_called_with(123)
+
+    @pytest.mark.parametrize("adopted_by", ["create", "reuse"])
+    def test_a_closing_pr_adopted_after_the_guard_read_is_refused_for_an_inferred_delivery(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion, adopted_by,
+    ):
+        """#8689 codex r4 F1: the guard's branch read saw no open PR, then
+        another publisher opened "Closes #123" on the branch. An idempotent
+        create (or the issue-scoped reuse lookup) hands that PR back; its body
+        is checked against the inferred partial delivery before success."""
+        mock_pr_adapter.merged_pr_history.return_value = (
+            MergedPullRequest(98, "Refs #123\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
+        )
+        racing = self._pr("Closes #123\n\nRacing publisher")
+        mock_pr_adapter.get_prs_for_branch.return_value = []
+        if adopted_by == "create":
+            mock_pr_adapter.create_pr.return_value = racing
+        else:
+            mock_pr_adapter.get_prs_for_issue.return_value = [racing]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=False)
+
+        assert not result.success
+        assert any("existing PR #99 closes it on merge" in e for e in result.errors)
+        assert not any(a.startswith(("Created PR", "Reused PR")) for a in result.actions_taken or [])
+
+    def test_a_finishing_completion_never_reuses_a_pr_that_only_refs_the_issue(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """#8689 codex r2 F1: the live reuse path keeps the open PR's "Refs"
+        body, so a --finishes-issue completion through it is refused before
+        any push or reuse."""
+        existing = self._pr("Refs #123\n\nBody")
+        mock_pr_adapter.get_prs_for_issue.return_value = [existing]
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_git_adapter.branch_commit_messages_against_base.return_value = (
+            BranchCommitMessagesResult(success=True, messages=("Last slice",))
+        )
+        worktree = worktree_with_completion(
+            dataclasses.replace(self._record(partial=False), finishes_issue=True)
+        )
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert any("existing PR #99 does not close it" in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
     def test_the_guard_runs_again_before_the_push_after_a_rebase_retry(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
     ):
@@ -1050,7 +1122,7 @@ class TestReviewExchangeModeResolution:
         return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=FileSystemSessionOutput(),
             event_bus=EventBus(),
@@ -1115,7 +1187,7 @@ class TestReviewExchangeExecution:
         return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=session_output,
             review_exchange_runner=PersistentReviewExchangeRunner(
@@ -2657,7 +2729,7 @@ class TestReviewExchangeExecution:
         allocator = allocation_for(output)
         processor = make_completion_processor(
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=output,
             issue_run_allocator=allocator,
@@ -6557,7 +6629,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
     command = PublishValidatedHeadCommand(123, "owner/repo", "issue-123", "c" * 40,
         RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
-        PublicationContent("#123: Test Issue", "Implementation", True, False))
+        PublicationContent("#123: Test Issue", "Implementation", True, False, False))
     record = make_record(CompletionOutcome.COMPLETED,
         [RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR, RequestedAction.REMOVE_NEEDS_REWORK_LABEL],
         pr_labels=["feature"])

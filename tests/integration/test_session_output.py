@@ -53,6 +53,9 @@ class DummyPRAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         return []
 
+    def merged_pr_history(self, issue_number: int) -> tuple:
+        return ()
+
 
 class DummyGitAdapter:
     def push(

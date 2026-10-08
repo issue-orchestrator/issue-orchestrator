@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from ..domain.issue_delivery import MergedPullRequest
 
 
 class ReviewState(Enum):
@@ -571,6 +574,19 @@ class PullRequestTracker(Protocol):
         mentions the issue is in this set too. Together with
         :meth:`list_open_prs_complete` this answers "which PRs belong to these
         issues" for many issues at once.
+
+        Raises:
+            RepositoryError: If the answer cannot be proven complete.
+        """
+        ...
+
+    def merged_pr_history(self, issue_number: int) -> tuple["MergedPullRequest", ...]:
+        """Every MERGED same-repository PR that references ``issue_number``,
+        with its body and merge time (#8689).
+
+        The same complete timeline read as :meth:`merged_prs_referencing_issues`
+        (a mere mention is included; callers check each body's own link), in
+        one walk with no per-PR fetch.
 
         Raises:
             RepositoryError: If the answer cannot be proven complete.

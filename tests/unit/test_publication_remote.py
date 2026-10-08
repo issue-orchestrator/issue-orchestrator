@@ -37,7 +37,7 @@ COMMAND = PublishValidatedHeadCommand(
     Path("/repo"),
     None,
     "main",
-    PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False),
+    PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False, False),
 )
 
 
