@@ -734,3 +734,50 @@ def test_an_answer_with_two_documents_or_a_cut_one_is_rejected_and_kept(tmp_path
     [heat] = record.heats
     assert heat.rejections[0].startswith("[schema] <file>: the final message")
     assert (Path(record.run_dir) / "improver-findings-h1.json").read_text() == message
+
+
+class SourceStager(FakeStager):
+    """Stages, besides the usual inputs, the engine source the capability
+    finding's owner names, and an engine log line about its item (#320)."""
+
+    def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs:
+        staged = super().stage(request)
+        module = staged.data_dir / "engine-source" / "src" / "issue_orchestrator" / "control" / "validated_work_recovery.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text("def compare_heads(parked, published):\n    return parked == published\n")
+        logs = request.run_dir / "toolbox" / "logs"
+        logs.mkdir(parents=True)
+        (logs / "orchestrator.log").write_text("2026-09-28 13:00:00 WARNING parked work of #320 diverged from its PR head\n")
+        return staged
+
+
+def test_a_design_finding_about_a_stall_findings_defect_is_filed_once_on_its_issue(tmp_path: Path) -> None:
+    """#8700: heat 2 reports, as a design finding, the defect heat 1 graded
+    as a capability gap (one owner, one item). One issue is filed, and it
+    carries the design finding's claim and evidence."""
+    capability = example("capability_issue")["findings"][0]
+    design = {
+        "id": "parked-heads-compared-by-name", "engine": capability["engine"], "kind": "silent_assumption",
+        "summary": "Recovery assumes a parked head and its PR head are one commit when their names match.",
+        "evidence": [{"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 1,
+                      "quote": "parked work of #320 diverged from its PR head"}],
+        "impact": "Parked work never resolves.", "proposed_change": "Compare heads by commit.",
+        "owner": "control/validated_work_recovery.py:compare_heads",
+    }
+    second = json.loads(_findings("exam_case"))
+    second["design_findings"] = [design]
+    store, host = MemoryRunStore(tmp_path), FakeIssueHost()
+    agent = HeatAgent({1: _findings("capability_issue"), 2: json.dumps(second)}, hold=0)
+
+    record = _improver(store, host, agent, stager=SourceStager(), heats=HeatPlan(2, 2)).run(_request())
+
+    assert record.outcome is RunOutcome.ACCEPTED, record.rejections or [h.rejections for h in record.heats]
+    [folded] = record.same_defects
+    assert (folded.finding_id, folded.design.id, folded.heats) == (capability["id"], design["id"], (2,))
+    assert {s.finding_id: s.heats for s in record.finding_support}[capability["id"]] == (1, 2)
+    assert [e.finding_id for e in record.effects] == [example("exam_case")["findings"][0]["id"], capability["id"]]
+    assert f"{design['id']}: the same defect as {capability['id']}" in render_run(record)
+    issue = next(c for c in host.created if "Capability gap" in c["title"])
+    assert "**Also found as the same defect" in issue["body"]
+    assert design["summary"] in issue["body"] and "parked work of #320 diverged" in issue["body"]
+    assert not any(design["id"] in c["title"] for c in host.created)

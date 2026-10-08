@@ -6,7 +6,7 @@ import json
 
 from issue_orchestrator.contracts.improver_findings import ImproverFindings
 from issue_orchestrator.domain.improver_heats import AcceptedHeat, merge_heats
-from tests.unit.improver_support import ENGINE_ID, AUDITED_REPO, example
+from tests.unit.improver_support import ENGINE_ID, AUDITED_REPO, KeyedIdentity, example
 
 
 def _findings(*names: str, designs: list[dict] | None = None) -> ImproverFindings:
@@ -27,7 +27,7 @@ def _dkey(design) -> str:  # type: ignore[no-untyped-def]
 
 
 def _merge(heats):  # type: ignore[no-untyped-def]
-    return merge_heats(heats, _key, _dkey)
+    return merge_heats(heats, KeyedIdentity(_key, _dkey))
 
 
 def _design(id: str, kind: str = "operator_friction", line: int = 41, call: int | None = None) -> dict:

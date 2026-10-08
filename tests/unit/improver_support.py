@@ -23,6 +23,8 @@ evidence, one per output kind.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -62,7 +64,9 @@ from issue_orchestrator.contracts.improver_inputs import (
     StagedInput,
     to_json,
 )
+from issue_orchestrator.contracts.improver_findings import DesignFinding, Finding
 from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
+from issue_orchestrator.domain.improver_defects import DefectProfile, design_profile, stall_profile
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.observation.engine_audit import Unavailable
 from issue_orchestrator.observation.engine_audit_diff import diff_reports
@@ -401,3 +405,43 @@ class FakeIssueHost:
 
 #: A stager's GitHub activity source, for a test that reads none.
 NO_ACTIVITY = Unavailable(SourceStatus.SKIPPED, "test")
+
+
+# -- one identity of findings, for a merge test (#8700) -------------------------
+
+
+@dataclass(frozen=True)
+class FakeEngineSource:
+    """The staged engine source as a merge sees it: the function each cited
+    ``(path, line)`` is in, and the ``(module, name)`` pairs defined."""
+
+    functions: Mapping[tuple[str, int], str] = field(default_factory=dict)
+    defined: frozenset[tuple[tuple[str, ...], str]] = frozenset()
+
+    def enclosing_function(self, path: str, line: int, quote: str) -> str | None:
+        return self.functions.get((path, line))
+
+    def defines(self, module: tuple[str, ...], name: str) -> bool:
+        return (module, name) in self.defined
+
+
+@dataclass(frozen=True)
+class KeyedIdentity:
+    """A :class:`~issue_orchestrator.domain.improver_heats.FindingIdentity`
+    with the test's own effect keys and the production defect profiles."""
+
+    stall_keys: Callable[[Finding], str]
+    design_keys: Callable[[DesignFinding], str]
+    source: FakeEngineSource = FakeEngineSource()
+
+    def stall_key(self, finding: Finding) -> str:
+        return self.stall_keys(finding)
+
+    def design_key(self, design: DesignFinding) -> str:
+        return self.design_keys(design)
+
+    def stall_profile(self, finding: Finding) -> DefectProfile:
+        return stall_profile(finding)
+
+    def design_profile(self, design: DesignFinding) -> DefectProfile:
+        return design_profile(design, self.source)

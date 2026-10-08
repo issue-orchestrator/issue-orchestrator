@@ -47,10 +47,11 @@ from ..contracts.improver_run import (
     HeatRecord,
     ImproverRunRecord,
     RunOutcome,
+    SameDefectRecord,
     StallPointMove,
 )
 from ..contracts.improver_variant import ImproverVariant
-from ..control.improver_effects import design_finding_key, finding_key, planned_effects
+from ..control.improver_effects import EffectIdentity, design_finding_key, finding_key, planned_effects
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_answer import AnswerNotExtractable, extract_findings_answer
 from ..domain.improver_champion import INVITATION_RATE, ChangeInvitation, invited
@@ -346,11 +347,7 @@ class ImproverRun:
         accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
         if not accepted:
             return self._finish_unaccepted(base, records)
-        merged = merge_heats(
-            accepted,
-            lambda f: finding_key(f, request.engine),
-            lambda d: design_finding_key(d, request.engine),
-        )
+        merged = merge_heats(accepted, EffectIdentity(request.engine, evidence.engine_source))
         text = merged.findings.model_dump_json(indent=2, by_alias=True) + "\n"
         (run_dir / FINDINGS_FILE).write_text(text, encoding="utf-8")
         try:
@@ -377,6 +374,10 @@ class ImproverRun:
             heat_conflicts=tuple(
                 HeatConflictRecord(finding_id=c.finding_id, heat=c.heat, reason=c.reason, claim=c.claim)
                 for c in merged.conflicts
+            ),
+            same_defects=tuple(
+                SameDefectRecord(finding_id=s.finding_id, design=s.design, heats=s.heats)
+                for s in merged.same_defects
             ),
             grades=_grades(findings),
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),
@@ -582,6 +583,11 @@ def render_run(record: ImproverRunRecord) -> str:
     ]
     lines += [
         f"  {c.finding_id}: heat {c.heat} not merged: {c.reason}" for c in record.heat_conflicts
+    ]
+    lines += [
+        f"  {s.design.id}: the same defect as {s.finding_id}, filed with it (heat(s)"
+        f" {', '.join(map(str, s.heats))})"
+        for s in record.same_defects
     ]
     lines += [f"  rejected: {reason}" for reason in record.rejections]
     lines += [

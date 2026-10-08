@@ -6,10 +6,20 @@ the 2026-10-04 tournament showed real variance within one arm (3.0 to 5.5 of
 here, and how many heats found each finding is kept as its support: a
 finding several heats found independently is stronger evidence.
 
-ONE identity policy, shared with the GitHub effects: two findings are the
-same finding exactly when they have the same effect key (the caller's
-``stall_key`` / ``design_key``, the keys their issues are deduplicated by).
-Nothing looser (a shared citation, a similar summary) merges two findings.
+ONE identity policy, shared with the GitHub effects (the caller's
+:class:`FindingIdentity`, the owner of the effect keys):
+
+* two findings are the same finding exactly when they have the same effect
+  key (the keys their issues are deduplicated by);
+* a design finding is the SAME DEFECT as another finding of any kind (#8700)
+  when the identity's :func:`~.improver_defects.same_defect` says so: one
+  code site and overlapping evidence. It is folded into that finding
+  (:class:`SameDefect`): it files no issue of its own, its heats support the
+  finding, and its claim is shown on the finding's issue. A design finding
+  related to two different stall findings is folded into neither.
+
+Nothing looser (a shared citation alone, a similar summary) merges two
+findings.
 
 What cannot be merged is surfaced, never silently dropped
 (:class:`HeatConflict`):
@@ -31,13 +41,14 @@ The merged document is validated again by the caller, like any answer.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from typing import TypeVar
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from typing import Protocol, TypeVar
 
 from ..contracts.improver_findings import DesignFinding, Finding, ImproverFindings
 from .improver_champion import CHANGE_ID
 from .improver_citations import normalized
+from .improver_defects import DefectProfile, same_defect
 
 _F = TypeVar("_F", Finding, DesignFinding)
 
@@ -58,6 +69,29 @@ class HeatConflict:
     claim: str
 
 
+class FindingIdentity(Protocol):
+    """The one identity policy of findings: their effect keys, and the
+    profile that says which are one defect."""
+
+    def stall_key(self, finding: Finding) -> str: ...
+
+    def design_key(self, design: DesignFinding) -> str: ...
+
+    def stall_profile(self, finding: Finding) -> DefectProfile: ...
+
+    def design_profile(self, design: DesignFinding) -> DefectProfile: ...
+
+
+@dataclass(frozen=True)
+class SameDefect:
+    """A design finding folded into ``finding_id``, the finding about the
+    same defect: ``design`` as its heat wrote it."""
+
+    finding_id: str
+    design: DesignFinding
+    heats: tuple[int, ...]
+
+
 @dataclass(frozen=True)
 class MergedHeats:
     findings: ImproverFindings
@@ -67,17 +101,15 @@ class MergedHeats:
     conflicts: tuple[HeatConflict, ...]
     #: A renamed finding's merged id -> its id as its heat wrote it.
     original_ids: dict[str, str]
+    #: The design findings folded into another finding about the same defect.
+    same_defects: tuple[SameDefect, ...]
 
 
-def merge_heats(
-    heats: Sequence[AcceptedHeat],
-    stall_key: Callable[[Finding], str],
-    design_key: Callable[[DesignFinding], str],
-) -> MergedHeats:
+def merge_heats(heats: Sequence[AcceptedHeat], identity: FindingIdentity) -> MergedHeats:
     if not heats:
         raise ValueError("no accepted heat to merge")
     primary = max(heats, key=lambda h: (len(h.findings.findings) + len(h.findings.design_findings), -h.heat))
-    merge = _Merge(primary, stall_key, design_key)
+    merge = _Merge(primary, identity)
     for heat in sorted(heats, key=lambda h: h.heat):
         if heat.heat != primary.heat:
             merge.add(heat)
@@ -85,15 +117,10 @@ def merge_heats(
 
 
 class _Merge:
-    def __init__(
-        self,
-        primary: AcceptedHeat,
-        stall_key: Callable[[Finding], str],
-        design_key: Callable[[DesignFinding], str],
-    ) -> None:
+    def __init__(self, primary: AcceptedHeat, identity: FindingIdentity) -> None:
         self._primary = primary
-        self._stall_key = stall_key
-        self._design_key = design_key
+        self._identity = identity
+        stall_key, design_key = identity.stall_key, identity.design_key
         self._stalls = list(primary.findings.findings)
         self._designs = list(primary.findings.design_findings)
         self._taken = {f.id for f in self._stalls} | {d.id for d in self._designs}
@@ -120,7 +147,7 @@ class _Merge:
             self._add_design(heat.heat, design)
 
     def _add_stall(self, heat: int, finding: Finding) -> None:
-        key = self._stall_key(finding)
+        key = self._identity.stall_key(finding)
         if key in self._by_stall_key:
             self._back(self._by_stall_key[key], heat)
             return
@@ -139,7 +166,7 @@ class _Merge:
             self._by_case[case] = kept.id
 
     def _add_design(self, heat: int, design: DesignFinding) -> None:
-        key = self._design_key(design)
+        key = self._identity.design_key(design)
         same = self._by_design_key.get(key)
         if same is None:
             kept = self._kept(design, heat)
@@ -173,16 +200,82 @@ class _Merge:
         return finding.model_copy(update={"id": new_id})
 
     def result(self) -> MergedHeats:
+        folds = _same_defect_folds(self._identity, self._stalls, self._designs)
+        folded_heats = {design_id: tuple(sorted(self._support.pop(design_id))) for design_id in folds}
+        for design_id, into in folds.items():
+            for heat in folded_heats[design_id]:
+                self._back(into, heat)
+        kept = tuple(d for d in self._designs if d.id not in folds)
+        change = self._primary.findings.improver_change
+        if change is not None and set(change.motivated_by) & set(folds):
+            # A folded design finding's issue is its defect's finding's issue.
+            motives = dict.fromkeys(folds.get(i, i) for i in change.motivated_by)
+            change = change.model_copy(update={"motivated_by": tuple(motives)})
         merged = self._primary.findings.model_copy(
-            update={"findings": tuple(self._stalls), "design_findings": tuple(self._designs)}
+            update={"findings": tuple(self._stalls), "design_findings": kept, "improver_change": change}
         )
+        support = {finding_id: tuple(sorted(heats)) for finding_id, heats in self._support.items()}
         return MergedHeats(
             findings=merged,
-            support={finding_id: tuple(sorted(heats)) for finding_id, heats in self._support.items()},
+            support=support,
             primary=self._primary.heat,
-            conflicts=tuple(self._conflicts),
-            original_ids=dict(self._original_ids),
+            # A folded design finding's conflicts are shown on its defect's issue.
+            conflicts=tuple(
+                replace(c, finding_id=folds[c.finding_id]) if c.finding_id in folds else c
+                for c in self._conflicts
+            ),
+            original_ids={new: old for new, old in self._original_ids.items() if new not in folds},
+            same_defects=tuple(
+                SameDefect(
+                    finding_id=into,
+                    design=d.model_copy(update={"id": self._original_ids.get(d.id, d.id)}),
+                    heats=folded_heats[d.id],
+                )
+                for d in self._designs
+                if (into := folds.get(d.id)) is not None
+            ),
         )
+
+
+def _same_defect_folds(
+    identity: FindingIdentity, stalls: Sequence[Finding], designs: Sequence[DesignFinding]
+) -> dict[str, str]:
+    """Each design finding folded into another finding about its defect:
+    design id -> the id it is folded into.
+
+    Design findings about one defect form a group (related directly or
+    through another design finding). A group related to exactly one stall
+    finding folds into it; otherwise it folds into its first member (the
+    primary heat's first): a group related to two stall findings folds
+    into neither of them, since which one carries it is not known."""
+    stall_profiles = [identity.stall_profile(f) for f in stalls]
+    profiles = [identity.design_profile(d) for d in designs]
+    group = list(range(len(designs)))
+
+    def root(i: int) -> int:
+        while group[i] != i:
+            i = group[i]
+        return i
+
+    for i, a in enumerate(profiles):
+        for j in range(i + 1, len(profiles)):
+            if same_defect(a, profiles[j]):
+                group[root(j)] = root(i)
+    members: dict[int, list[int]] = {}
+    for i in range(len(designs)):
+        members.setdefault(root(i), []).append(i)
+    folds: dict[str, str] = {}
+    for indexes in members.values():
+        related = {
+            s.finding_id for i in indexes for s in stall_profiles if same_defect(profiles[i], s)
+        }
+        if len(related) == 1:
+            into = next(iter(related))
+            folds.update((designs[i].id, into) for i in indexes)
+        else:
+            first, *rest = sorted(indexes)
+            folds.update((designs[i].id, designs[first].id) for i in rest)
+    return folds
 
 
 def _case_id(finding: Finding) -> str | None:
@@ -193,4 +286,4 @@ def _claim(design: DesignFinding) -> tuple[str, str]:
     return normalized(design.summary).casefold(), normalized(design.proposed_change).casefold()
 
 
-__all__ = ["AcceptedHeat", "HeatConflict", "MergedHeats", "merge_heats"]
+__all__ = ["AcceptedHeat", "FindingIdentity", "HeatConflict", "MergedHeats", "SameDefect", "merge_heats"]

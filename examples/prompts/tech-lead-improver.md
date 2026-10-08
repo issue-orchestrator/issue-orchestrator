@@ -231,7 +231,8 @@ decision, never applied.
      "evidence": [{"kind": "file", "path": "<improver-data/... | toolbox/...>", "line": 412, "quote": "<the cited line's text, verbatim>"},
                   {"kind": "tool", "call": 7, "quote": "<text of toolbox answer 7, verbatim>"}],
      "impact": "<what it costs: stalls, operator work, wrong outcomes>",
-     "proposed_change": "<the change that makes the model match reality>"}
+     "proposed_change": "<the change that makes the model match reality>",
+     "owner": "<module:function where the defect lives in the engine source, as root_cause.owner | null>"}
   ],
   "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"},
   "improver_change": null
@@ -393,8 +394,19 @@ in `engine-source/examples/improver/findings/`.
   may be off by two, but the words must be there, and the quote needs 12
   characters besides whitespace. One quote that is not
   there rejects the whole file. Ids are unique across `findings` and
-  `design_findings`. An accepted design finding files an issue for the
-  operator's decision; nothing is changed.
+  `design_findings`.
+
+  When the defect lives in one place in the engine source, name it as
+  `owner`, written as a `root_cause.owner` is (`<module>:<function>`); the
+  module must be a staged engine source file that defines the function.
+  Use `null` when it lives in no one function. **One defect is filed
+  once:** a design finding and another finding (of either kind) on the same
+  code site with overlapping evidence (an item both are about, a citation
+  both make) are merged before anything is filed, and the design finding's
+  claim is shown on the other's issue.
+
+  An accepted design finding files an issue for the operator's decision;
+  nothing is changed.
 
 What each output means:
 - **`exam_case`:** a new exam case for a class of miss.

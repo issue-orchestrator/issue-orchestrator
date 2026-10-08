@@ -1,0 +1,119 @@
+"""The run's staged engine source, read as Python (#8700).
+
+:class:`RunDirEngineSource` implements
+:class:`~..domain.improver_defects.EngineSource` over one run directory's
+``improver-data/engine-source/``: which function encloses a cited source
+line, and whether a module defines a name. It reads only that tree (after
+every symlink), and only ``.py`` files that parse; anything else answers
+"no function", so it never relates two findings.
+"""
+
+from __future__ import annotations
+
+import ast
+from functools import cache
+from pathlib import Path
+
+from ..contracts.improver_inputs import ENGINE_SOURCE_DIRNAME, IMPROVER_DATA_DIRNAME
+from ..domain.improver_citations import LINE_SLACK, normalized
+from ..domain.improver_defects import module_path
+
+_FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
+_SCOPE = (*_FUNCTION, ast.ClassDef)
+
+
+class RunDirEngineSource:
+    def __init__(self, run_dir: Path) -> None:
+        self._run_dir = run_dir.resolve()
+        self._root = self._run_dir / IMPROVER_DATA_DIRNAME / ENGINE_SOURCE_DIRNAME
+        self._parse = cache(self._parsed)
+
+    def enclosing_function(self, path: str, line: int, quote: str) -> tuple[str, ...] | None:
+        target = (self._run_dir / path).resolve()
+        if not target.is_relative_to(self._root):
+            return None
+        parsed = self._parse(target)
+        if parsed is None:
+            return None
+        tree, lines = parsed
+        at = _quoted_line(lines, line, quote)
+        chain: list[ast.AST] = []
+        scope: ast.AST = tree
+        while (inner := _child_scope(scope, at)) is not None:
+            chain.append(inner)
+            scope = inner
+        # In a function's body, not a class's or the module's.
+        if not chain or not isinstance(chain[-1], _FUNCTION):
+            return None
+        return tuple(node.name for node in chain if isinstance(node, _SCOPE))
+
+    def defines(self, module: tuple[str, ...], symbol: tuple[str, ...]) -> bool:
+        files = [
+            p for p in self._root.rglob("*.py")
+            if (dotted := module_path(p.relative_to(self._root).as_posix())) is not None
+            and dotted[len(dotted) - len(module):] == module
+        ]
+        if len(files) != 1:
+            return False
+        parsed = self._parse(files[0].resolve())
+        return parsed is not None and any(
+            qualname[len(qualname) - len(symbol):] == symbol for qualname in _defined_names(parsed[0])
+        )
+
+    def _parsed(self, target: Path) -> tuple[ast.Module, list[str]] | None:
+        if target.suffix != ".py" or not target.is_relative_to(self._root) or not target.is_file():
+            return None
+        text = target.read_text(encoding="utf-8", errors="replace")
+        try:
+            return ast.parse(text), text.splitlines()
+        except SyntaxError:
+            return None
+
+
+def _quoted_line(lines: list[str], line: int, quote: str) -> int:
+    """The line within the citation slack of ``line`` that holds ``quote``
+    (agents count lines inexactly), else ``line`` itself."""
+    wanted = normalized(quote)
+    for candidate in sorted(range(line - LINE_SLACK, line + LINE_SLACK + 1), key=lambda n: abs(n - line)):
+        if 1 <= candidate <= len(lines) and wanted in normalized(lines[candidate - 1]):
+            return candidate
+    return line
+
+
+def _child_scope(scope: ast.AST, line: int) -> ast.AST | None:
+    """The class or function directly in ``scope`` whose span holds ``line``."""
+    for node in ast.iter_child_nodes(scope):
+        found = (
+            node if isinstance(node, _SCOPE) and node.lineno <= line <= (node.end_lineno or node.lineno)
+            else None if isinstance(node, _SCOPE)
+            else _child_scope(node, line)  # a class or def nested in an if, try or with
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _defined_names(tree: ast.Module) -> set[tuple[str, ...]]:
+    """Every class's and function's qualified name, and each module-level name."""
+    names: set[tuple[str, ...]] = set()
+
+    def visit(scope: ast.AST, prefix: tuple[str, ...]) -> None:
+        for node in ast.iter_child_nodes(scope):
+            if isinstance(node, _SCOPE):
+                names.add((*prefix, node.name))
+                visit(node, (*prefix, node.name))
+            else:
+                visit(node, prefix)
+
+    visit(tree, ())
+    for node in tree.body:
+        targets = (
+            node.targets if isinstance(node, ast.Assign)
+            else [node.target] if isinstance(node, ast.AnnAssign)
+            else []
+        )
+        names.update((t.id,) for t in targets if isinstance(t, ast.Name))
+    return names
+
+
+__all__ = ["RunDirEngineSource"]

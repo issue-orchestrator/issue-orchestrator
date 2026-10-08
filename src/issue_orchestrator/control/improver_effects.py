@@ -28,6 +28,12 @@ Untrusted text never carries a marker: every body and comment is built from
 the improver's text through :func:`_inert`, so a finding cannot plant the
 marker by which another finding's issue is later recognized (#8001 r1 F3).
 
+One defect is filed once (#8700): :class:`EffectIdentity` is the one
+identity of findings, their effect keys and the profile by which a run's
+merge folds a design finding into another finding about the same defect;
+the folded finding's claim is shown on that finding's issue
+(:func:`support_note`).
+
 Deduplication is against OPEN issues: every filed issue's title carries the
 finding's identity (``[improver:<key>]``), so a finding an open issue already
 carries — filed by an earlier run, or by this one before a crash lost its
@@ -62,6 +68,7 @@ from ..contracts.improver_findings import (
 from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_champion import CHANGE_ID
+from ..domain.improver_defects import DefectProfile, EngineSource, design_profile, stall_profile
 from ..ports.engine_audit import OpenIssueLabels
 
 #: Every improver issue carries this label, so an operator can find them all.
@@ -123,6 +130,29 @@ def design_finding_key(design: DesignFinding, engine: EngineRef) -> str:
         "id": design.id,
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class EffectIdentity:
+    """The one identity of one engine's findings (a
+    :class:`~..domain.improver_heats.FindingIdentity`): the effect keys
+    their issues are deduplicated by, and where each defect lives in the
+    engine's staged source, which relates findings of different keys."""
+
+    engine: EngineRef
+    source: EngineSource
+
+    def stall_key(self, finding: Finding) -> str:
+        return finding_key(finding, self.engine)
+
+    def design_key(self, design: DesignFinding) -> str:
+        return design_finding_key(design, self.engine)
+
+    def stall_profile(self, finding: Finding) -> DefectProfile:
+        return stall_profile(finding)
+
+    def design_profile(self, design: DesignFinding) -> DefectProfile:
+        return design_profile(design, self.source)
 
 
 def change_key(change: ImproverChange, base: str) -> str:
@@ -331,12 +361,7 @@ def _change_json(change: ImproverChange) -> str:
 def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
     """The issue an accepted design finding files: the claim, its quoted
     evidence, the proposed change, then its JSON."""
-    evidence = "\n".join(
-        f"- `{_inert(c.path)}:{c.line}`: \"{_inert(c.quote)}\""
-        if c.kind == "file"
-        else f"- toolbox call {c.call}: \"{_inert(c.quote)}\""
-        for c in design.evidence
-    )
+    evidence = _evidence_lines(design)
     return "\n\n".join(
         (
             f"Filed by the tech-lead improver (#7490, #8001), run `{run.run_id}` against"
@@ -349,6 +374,15 @@ def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
             f" {_inert(design.proposed_change)}",
             _design_json(design),
         )
+    )
+
+
+def _evidence_lines(design: DesignFinding, *, indent: str = "") -> str:
+    return "\n".join(
+        f"{indent}- `{_inert(c.path)}:{c.line}`: \"{_inert(c.quote)}\""
+        if c.kind == "file"
+        else f"{indent}- toolbox call {c.call}: \"{_inert(c.quote)}\""
+        for c in design.evidence
     )
 
 
@@ -385,8 +419,9 @@ def _summary(finding: Finding) -> str:
 
 def support_note(run: ImproverRunRecord, finding_id: str) -> str:
     """How many of the run's heats found the finding (several independent
-    heats are stronger evidence than one), and what other heats claimed
-    that could not be merged into it, for the operator to resolve (#8001)."""
+    heats are stronger evidence than one), what other heats claimed that
+    could not be merged into it, for the operator to resolve (#8001), and
+    the design findings folded into it as the same defect (#8700)."""
     if not run.heats:
         return ""
     found = next((s.heats for s in run.finding_support if s.finding_id == finding_id), ())
@@ -398,7 +433,24 @@ def support_note(run: ImproverRunRecord, finding_id: str) -> str:
         note += "\n\n**Not merged, to resolve:**\n" + "\n".join(
             f"- heat {c.heat}: {_inert(c.reason)}: {_inert(c.claim)}" for c in conflicts
         )
-    return note
+    return note + same_defect_note(run, finding_id)
+
+
+def same_defect_note(run: ImproverRunRecord, finding_id: str) -> str:
+    """The design findings the run folded into this finding as the same
+    defect (#8700): each one's claim and evidence, so nothing it said is
+    lost, and an operator who judges it a different defect can file it."""
+    folded = [s for s in run.same_defects if s.finding_id == finding_id]
+    if not folded:
+        return ""
+    return "\n\n**Also found as the same defect (one code site, overlapping evidence), filed here once:**\n" + (
+        "\n".join(
+            f"- design finding `{_inert(s.design.id)}` ({s.design.kind.replace('_', ' ')}), heat(s)"
+            f" {', '.join(map(str, s.heats))}: {_inert(s.design.summary)} **Proposed change:**"
+            f" {_inert(s.design.proposed_change)}\n" + _evidence_lines(s.design, indent="  ")
+            for s in folded
+        )
+    )
 
 
 def issue_body(run: ImproverRunRecord, finding: Finding) -> str:
@@ -469,6 +521,7 @@ __all__ = [
     "TARGET_OPERATOR_LABEL",
     "DESIGN_LABELS",
     "CommentImproverEvidence",
+    "EffectIdentity",
     "EffectRoute",
     "FileImproverIssue",
     "ImproverEffectCommand",
@@ -480,6 +533,7 @@ __all__ = [
     "finding_marker",
     "issue_body",
     "plan_effect",
+    "same_defect_note",
     "support_note",
     "planned_effects",
     "title_token",
