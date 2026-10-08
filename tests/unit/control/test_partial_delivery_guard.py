@@ -289,6 +289,19 @@ def test_a_merged_pr_without_a_merge_time_is_a_refusal() -> None:
     assert "merged PR #515 has no merge time" in prepared.message
 
 
+def test_a_finishing_completion_refuses_an_open_pr_that_only_refs_the_issue() -> None:
+    """Codex r2 F1: reuse keeps the open PR's body. A final slice published
+    through an open ``Refs #327`` PR would leave the finished issue open."""
+    open_pr = _pr(525, f"Refs #{ISSUE}\n\nSlice 4", state="open", branch=BRANCH)
+    host = FakeGitHubHost(SLICES_MERGED_AS_PARTIAL, open_on_branch=[open_pr])
+
+    prepared = _prepare(host, _record(finishes_issue=True))
+
+    assert isinstance(prepared, PullRequestPreparationRefusal)
+    assert "existing PR #525 does not close it" in prepared.message
+    assert "'Closes #327'" in prepared.message
+
+
 def test_a_delivery_cannot_be_both_partial_and_finished() -> None:
     with pytest.raises(ValueError, match="cannot both"):
         stated_delivery(partial_pr=True, finishes_issue=True)

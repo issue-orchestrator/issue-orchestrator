@@ -127,6 +127,7 @@ class TestPRAlreadyExistsHandling:
         )
 
         mock_pr_adapter = MagicMock()
+        mock_pr_adapter.merged_prs_referencing_issues.return_value = frozenset()
         mock_pr_adapter.get_prs_for_issue = Mock(return_value=[])
         mock_pr_adapter.get_prs_for_branch = Mock(return_value=[closed_pr])
         mock_pr_adapter.create_pr = Mock(return_value=new_pr)
@@ -170,6 +171,7 @@ class TestPRAlreadyExistsHandling:
     ):
         """When no closed PR exists, PR creation succeeds."""
         mock_pr_adapter = MagicMock()
+        mock_pr_adapter.merged_prs_referencing_issues.return_value = frozenset()
         mock_pr_adapter.get_prs_for_issue = Mock(return_value=[])
         mock_pr_adapter.get_prs_for_branch = Mock(return_value=[])
         mock_pr_adapter.create_pr = Mock(
@@ -223,6 +225,7 @@ class TestPRAlreadyExistsHandling:
     ):
         """Completion record should be cleaned up even if PR creation fails."""
         mock_pr_adapter = MagicMock()
+        mock_pr_adapter.merged_prs_referencing_issues.return_value = frozenset()
         mock_pr_adapter.get_prs_for_issue = Mock(return_value=[])
         mock_pr_adapter.get_prs_for_branch = Mock(return_value=[])
         mock_pr_adapter.create_pr = Mock(

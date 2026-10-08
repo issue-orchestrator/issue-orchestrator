@@ -140,18 +140,25 @@ def declares_partial_delivery(body: str, issue_number: int, *, repo_slug: str) -
     return bool(links) and not any(link.closes for link in links)
 
 
-def honors_partial_claim(
-    body: str, issue_number: int, *, partial: bool, repo_slug: str
+def honors_delivery_claim(
+    body: str, issue_number: int, *, partial: bool, finishes: bool, repo_slug: str
 ) -> bool:
-    """Whether an existing PR's body can carry a completion's partial claim.
+    """Whether an existing PR's body can carry a publication's delivery claim.
 
-    Publication can reuse a PR that an earlier session opened. Only a partial
-    claim can be broken by that PR: if its body still closes the issue,
-    merging it would close an issue the agent says is not finished. A
-    completion that makes no partial claim keeps whatever the PR already
-    says, because leaving an issue open is recoverable and closing it is not.
+    Publication can reuse a PR that an earlier session opened, and reuse keeps
+    its body. A partial claim is broken by a body that still closes the issue:
+    merging it would close an issue that is not finished (#7288). A finishing
+    claim (``--finishes-issue``) is broken by a body that does not close it:
+    merging it would leave the finished issue open (#8689). A publication that
+    claims neither keeps whatever the PR already says.
     """
-    return not partial or declares_partial_delivery(body, issue_number, repo_slug=repo_slug)
+    if partial and finishes:
+        raise ValueError("a delivery cannot both continue and finish its issue")
+    if partial:
+        return declares_partial_delivery(body, issue_number, repo_slug=repo_slug)
+    if finishes:
+        return names_issue_in_closing_keyword(body, issue_number, repo_slug=repo_slug)
+    return True
 
 
 def refs_in_place_of_closes(body: str, issue_number: int, *, repo_slug: str) -> str:

@@ -52,6 +52,11 @@ class PreparedPullRequest:
         """Whether the PR refs its issue instead of closing it (#7288, #8689)."""
         return self.delivery.partial
 
+    @property
+    def finishes_issue(self) -> bool:
+        """Whether the PR must close an issue earlier PRs delivered in part (#8689)."""
+        return self.delivery.finishes
+
 
 def record_from_prepared_evidence(
     evidence: PreparedCompletionEvidence, receipt: CompletionIntakeReceipt | None, run: SessionRunAssets,

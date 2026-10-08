@@ -49,6 +49,11 @@ class IssueDelivery:
         return self.basis in (DeliveryBasis.CLAIMED_PARTIAL, DeliveryBasis.INFERRED_PARTIAL)
 
     @property
+    def finishes(self) -> bool:
+        """The completion declared the PR that finishes the issue (``--finishes-issue``)."""
+        return self.basis is DeliveryBasis.DECLARED_FINAL
+
+    @property
     def inferred(self) -> bool:
         return self.basis is DeliveryBasis.INFERRED_PARTIAL
 

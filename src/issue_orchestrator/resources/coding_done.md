@@ -115,6 +115,9 @@ coding-done completed \
   --problems "Any issues encountered, or 'None'" \
   --finishes-issue
 ```
+If your branch already has an open PR that says `Refs #N`, a `--finishes-issue`
+completion is refused rather than merged as a partial slice, and a human has
+to change that PR's reference line to `Closes #N`.
 
 If you discovered unrelated ancillary work while staying focused on the assigned issue, write those proposals to a JSON or JSONL file first, then add `--follow-up-file path` to the completed command above.
 Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.

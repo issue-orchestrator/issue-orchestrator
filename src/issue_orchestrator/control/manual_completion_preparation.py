@@ -88,7 +88,7 @@ class ManualCompletionPreparation:
             pr_base_branch=publication.base_branch,
             content=PublicationContent(publication.title, publication.body,
                                        publication.exchange_mode not in {"via-mcp", "via-local-loop"},
-                                       publication.partial_pr),
+                                       publication.partial_pr, publication.finishes_issue),
         )
         return PreparedManualPublication(
             command=command, receipt=receipt, run=evidence.run.run,

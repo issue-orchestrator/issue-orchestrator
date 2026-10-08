@@ -33,7 +33,7 @@ from ..domain.issue_delivery import (
 )
 from ..domain.pr_issue_reference import (
     declares_partial_delivery,
-    honors_partial_claim,
+    honors_delivery_claim,
     issue_links,
     names_issue_in_closing_keyword,
 )
@@ -142,7 +142,7 @@ class PartialDeliveryGuard:
         a partial one, or a commit that closes ``#issue_number`` in some
         repository.
         """
-        stated = delivery.partial
+        stated, finishing = delivery.partial, delivery.finishes
         messages, unreadable = self._source.branch_commit_messages(worktree)
         if unreadable is not None:
             # Unread, not unsafe: the same retryable refusal as a failed PR read.
@@ -151,7 +151,7 @@ class PartialDeliveryGuard:
                 retryable=True,
             )
         may_close = [m for m in messages if _closes_some_repos_issue(m, issue_number)]
-        if not stated and not may_close:
+        if not stated and not finishing and not may_close:
             return None
         slug = self._repo_slug()
         if stated and not declares_partial_delivery(claim_body, issue_number, repo_slug=slug):
@@ -172,15 +172,24 @@ class PartialDeliveryGuard:
                 retryable=True,
                 host_rate_limit=host_rate_limit_of(exc),
             )
-        closing_pr = next(
-            (pr for pr in open_prs
-             if not honors_partial_claim(pr.body, issue_number, partial=True, repo_slug=slug)),
+        # Reuse keeps an open PR's body, so that body must carry this
+        # delivery's claim: partial must not close, finishing must close.
+        mismatched = next(
+            (pr for pr in open_prs if not honors_delivery_claim(
+                pr.body, issue_number, partial=stated, finishes=finishing, repo_slug=slug)),
             None,
         )
-        if stated and closing_pr is not None:
+        if mismatched is not None and finishing:
+            return PartialDeliveryRefusal(
+                f"completion declared that it finishes #{issue_number}, but existing PR "
+                f"#{mismatched.number} does not close it, so merging it would leave "
+                f"#{issue_number} open; change its reference line to 'Closes #{issue_number}' "
+                f"or complete without --finishes-issue"
+            )
+        if mismatched is not None:
             return PartialDeliveryRefusal(
                 f"{_partial_because(delivery, issue_number)}, but "
-                f"existing PR #{closing_pr.number} closes it on merge; change its "
+                f"existing PR #{mismatched.number} closes it on merge; change its "
                 f"reference line to 'Refs #{issue_number}' or {_publish_whole_hint(delivery)}"
             )
         partial = stated or any(

@@ -822,6 +822,33 @@ class TestPartialPRReference:
                    for action in result.actions_taken)
         mock_pr_adapter.merged_prs_referencing_issues.assert_called_with([123])
 
+    def test_a_finishing_completion_never_reuses_a_pr_that_only_refs_the_issue(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """#8689 codex r2 F1: the live reuse path keeps the open PR's "Refs"
+        body, so a --finishes-issue completion through it is refused before
+        any push or reuse."""
+        existing = self._pr("Refs #123\n\nBody")
+        mock_pr_adapter.get_prs_for_issue.return_value = [existing]
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_git_adapter.branch_commit_messages_against_base.return_value = (
+            BranchCommitMessagesResult(success=True, messages=("Last slice",))
+        )
+        worktree = worktree_with_completion(
+            dataclasses.replace(self._record(partial=False), finishes_issue=True)
+        )
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert any("existing PR #99 does not close it" in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
     def test_the_guard_runs_again_before_the_push_after_a_rebase_retry(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
     ):
@@ -6579,7 +6606,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
     command = PublishValidatedHeadCommand(123, "owner/repo", "issue-123", "c" * 40,
         RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
-        PublicationContent("#123: Test Issue", "Implementation", True, False))
+        PublicationContent("#123: Test Issue", "Implementation", True, False, False))
     record = make_record(CompletionOutcome.COMPLETED,
         [RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR, RequestedAction.REMOVE_NEEDS_REWORK_LABEL],
         pr_labels=["feature"])
