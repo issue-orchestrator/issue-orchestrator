@@ -245,9 +245,13 @@ class PooledScores:
         )
         grader = max(_grader_term(self.arms[a], self.arms[b], self.graders), self.noise.grader)
         pass_ = max(_pass_term(self.arms[a], self.arms[b], self.graders, self.passes), self.noise.pass_)
-        n_a, n_b = len(self.arms[a].output_means), len(self.arms[b].output_means)
-        floor = self.resolution ** 2 / (4 * len(self.graders)) * (1 / n_a + 1 / n_b)
-        return math.sqrt(max(heat + max(grader, pass_), floor))
+        return math.sqrt(max(heat + max(grader, pass_), 2 * self.resolution_floor()))
+
+    def resolution_floor(self) -> float:
+        """One arm's least variance from grading precision: a grader rounds
+        every output it grades the same way, so more heats do not shrink it
+        (half a step each way, over the graders)."""
+        return self.resolution ** 2 / (4 * len(self.graders))
 
     def band(self, a: str, b: str) -> float:
         """How far apart two arms' means must be to tell them apart (with the heats' test)."""
@@ -332,7 +336,7 @@ def _arm_se(scores: PooledScores, arm: str) -> float:
     own_grader = (_pooled_variance([list(a.grader_means.values())]) or 0.0) / g
     own_pass = (_pooled_variance([list(a.pass_means[x]) for x in scores.graders]) or 0.0) / (p * g)
     shared = max(own_grader, own_pass, max(noise.grader, noise.pass_) / 2)  # a tournament difference's, halved
-    return math.sqrt(max(heat / n + shared, scores.resolution ** 2 / (4 * g * n)))
+    return math.sqrt(max(heat / n + shared, scores.resolution_floor()))
 
 
 def _pooled_variance(groups: Sequence[Sequence[float]]) -> float | None:

@@ -255,7 +255,7 @@ def test_no_variation_seen_is_not_certainty() -> None:
     two_heats = [{"a1": 1.0, "a2": 1.0, "b1": 0.75, "b2": 0.75}] * 3
     pooled = pool({"claude": two_heats, "codex": two_heats}, {"a1": "A", "a2": "A", "b1": "B", "b2": "B"},
                   ungraded={}, resolution=STEP)
-    assert pooled.noise.heat == 0.0 and pooled.band("A", "B") == pytest.approx(2 * (2 * STEP**2 / 16) ** 0.5)
+    assert pooled.noise.heat == 0.0 and pooled.band("A", "B") == pytest.approx(2 * (2 * STEP**2 / 8) ** 0.5)
     assert not pooled.distinguishable("A", "B")  # half a step apart: below what a grading resolves
 
     # A point apart, every grading agreeing: beyond the band, but two identical heats each
@@ -426,3 +426,15 @@ def test_the_default_heats_can_separate_a_clear_winner() -> None:
     arm_of = {**{f"a{i}": "A" for i in range(heats)}, **{f"b{i}": "B" for i in range(heats)}}
 
     assert pool({"claude": runs, "codex": runs}, arm_of, ungraded={}, resolution=STEP).distinguishable("A", "B")
+
+
+def test_more_heats_never_make_a_graders_precision_finer() -> None:
+    """Every grading gives A's three heats 0.5 and B's 0: no noise is seen,
+    but one half-step is what a grading resolves, however many heats share it."""
+    runs = [{"a1": 0.5, "a2": 0.5, "a3": 0.5, "b1": 0.0, "b2": 0.0, "b3": 0.0}] * 3
+    arm_of = {"a1": "A", "a2": "A", "a3": "A", "b1": "B", "b2": "B", "b3": "B"}
+
+    pooled = pool({"claude": runs, "codex": runs}, arm_of, ungraded={}, resolution=STEP)
+
+    assert pooled.heat_p("A", "B") == pytest.approx(1 / 20)
+    assert pooled.band("A", "B") == pytest.approx(0.5) and not pooled.distinguishable("A", "B")
