@@ -98,6 +98,8 @@ DEFAULT_PASSES = 3
 _GRADING_RECORD = "grading.json"
 #: What was graded (outputs, seed, snapshot), sealed with the mapping, so a failed grading can be retried.
 _REQUEST = "sealed/request.json"
+#: Written last: with it, a grading is sealed (every input written).
+_SEALED_MAPPING = "sealed/mapping.json"
 #: The key as the graders read it: a result stands only while the key scores just this.
 _GRADED_KEY = "key/KEY.md"
 #: What the tournament's arms were run on (written by run_arms).
@@ -261,23 +263,31 @@ class TournamentHarness:
 
     def result_of(self, tournament_id: str) -> TournamentResult | None:
         """The tournament's result, if it was graded: one that still stands
-        (its snapshot's key scores now exactly what it was graded against),
-        else :class:`GradedKeyChanged`."""
+        (see :meth:`require_standing`)."""
         path = self.directory(tournament_id) / "result.json"
         if not path.is_file():
             return None
-        result = TournamentResult.model_validate_json(path.read_text(encoding="utf-8"))
-        graded = (self.directory(tournament_id) / _GRADED_KEY).read_text(encoding="utf-8")
+        self.require_standing(tournament_id)
+        return TournamentResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def require_standing(self, tournament_id: str) -> None:
+        """A tournament whose grading was sealed (prepared, or graded) stands
+        only while its snapshot's key scores exactly what it was sealed with
+        (#8972); else :class:`GradedKeyChanged`: its grading, finished or
+        not, can never count, and a regrade would refuse the changed key."""
+        root = self.directory(tournament_id)
+        if not (root / _SEALED_MAPPING).is_file():
+            return
+        snapshot_id = json.loads((root / _REQUEST).read_text(encoding="utf-8"))["snapshot_id"]
         try:
-            current = render_key(self._keys.scoring(result.snapshot_id))
+            current = render_key(self._keys.scoring(snapshot_id))
         except AnswerKeyError as refused:
-            raise GradedKeyChanged(f"tournament {tournament_id}'s result no longer stands: {refused}") from refused
-        if graded != current:
+            raise GradedKeyChanged(f"tournament {tournament_id}'s grading no longer stands: {refused}") from refused
+        if (root / _GRADED_KEY).read_text(encoding="utf-8") != current:
             raise GradedKeyChanged(
-                f"tournament {tournament_id} was graded against snapshot {result.snapshot_id}'s key as it was;"
-                " the key has changed since (an item confirmed, corrected or moved): its result no longer stands"
+                f"tournament {tournament_id} was graded against snapshot {snapshot_id}'s key as it was;"
+                " the key has changed since (an item confirmed, corrected or moved): its grading no longer stands"
             )
-        return result
 
     def arms_ran(self, tournament_id: str) -> bool:
         """Whether the tournament's arms ran to the end (their outputs recorded)."""
@@ -596,7 +606,7 @@ def _grading_inputs(
         f"anon/{label}.json": _scrubbed(by_id[oid].text or "", (str(root), *by_id[oid].hide))
         for label, oid in labels.items()
     }
-    files["sealed/mapping.json"] = json.dumps(
+    files[_SEALED_MAPPING] = json.dumps(
         {"seed": seed, "labels": {label: {"output": oid, "arm": by_id[oid].arm} for label, oid in labels.items()}},
         indent=2,
     ) + "\n"
@@ -615,7 +625,7 @@ def _prepare(root: Path, files: Mapping[str, str]) -> None:
     half-written attempt is cleared). With it, every file must match, and
     the earlier graders' answers are kept beside the new attempt's.
     """
-    mapping = root / "sealed" / "mapping.json"
+    mapping = root / _SEALED_MAPPING
     if mapping.exists():
         present = {str(p.relative_to(root)) for d in ("anon", "sealed", "key") for p in (root / d).iterdir()}
         changed = sorted(
@@ -631,7 +641,7 @@ def _prepare(root: Path, files: Mapping[str, str]) -> None:
     for directory in ("anon", "sealed", "key"):
         shutil.rmtree(root / directory, ignore_errors=True)
         (root / directory).mkdir(parents=True)
-    for name, text in sorted(files.items(), key=lambda item: item[0] == "sealed/mapping.json"):
+    for name, text in sorted(files.items(), key=lambda item: item[0] == _SEALED_MAPPING):
         _write_atomic(root / name, text)
 
 

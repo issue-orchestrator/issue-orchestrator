@@ -243,6 +243,29 @@ def test_a_challenge_graded_on_a_key_that_changed_since_is_tried_again_and_only_
     assert challenges.promote(again.challenge_id).state is not None
 
 
+def test_a_challenge_whose_grading_failed_before_its_key_changed_is_tried_again_on_the_new_key(cycle) -> None:  # type: ignore[no-untyped-def]
+    """A grading sealed (its key written) but never finished, then the key
+    changes: a regrade would refuse the changed key, so the retry is a new
+    attempt, and only it can be promoted."""
+    root, champions, runs, agents, issues, challenges = cycle
+    keys = FileAnswerKeyStore(root, FrozenSnapshotStore(root, LocalCommandRunner()))
+    run_id = _invited_run(runs, host=issues.host)
+    agents.broken_gradings = 1
+    with pytest.raises(RuntimeError, match="not every grading was complete"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    base = f"{run_id}-vs-{_variant().id}"
+    sealed = (root / "tournaments" / f"{base}-s1" / "key" / "KEY.md").read_text()
+    keys.add(_hindsight("H-7999"), snapshot_id="20261004")
+    issues.approve("bruce", role="admin")
+
+    again = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    assert again.challenge_id == f"{base}-k2" and again.outcome == "won"
+    assert (root / "tournaments" / f"{base}-s1" / "key" / "KEY.md").read_text() == sealed
+    assert "H-7999" in (root / "tournaments" / f"{base}-k2-s1" / "key" / "KEY.md").read_text()
+    assert not champions.has_challenge(base) and challenges.promote(again.challenge_id).state is not None
+
+
 def test_a_key_written_while_a_challenge_is_promoted_waits_for_it(cycle, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """The trials found standing stand through the promotion: no key write
     lands between their check and the champion's change."""

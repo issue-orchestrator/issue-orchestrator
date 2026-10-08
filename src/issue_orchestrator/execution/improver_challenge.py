@@ -190,7 +190,7 @@ class ImproverChallenges:
 
     def _standing_attempt(self, base: str) -> str:
         """The attempt of challenge ``base`` to try (or return, if tried):
-        the first none of whose graded trials has fallen. A trial graded
+        the first none of whose graded (or sealed for grading) trials has fallen. A trial graded
         against an answer key that has changed since decides nothing
         (#8972); its attempt is kept as it was, and the next one
         (``<base>-k2``, ...) tries the change again on the key as it is."""
@@ -207,12 +207,12 @@ class ImproverChallenges:
         )
 
     def _fallen(self, tournament_ids: Sequence[str]) -> list[str]:
-        """Why each of these tournaments' results has fallen: graded against
+        """Why each of these tournaments' gradings has fallen: sealed against
         an answer key that has changed since, it no longer decides anything."""
         fallen = []
         for tournament_id in tournament_ids:
             try:
-                self._harness.result_of(tournament_id)
+                self._harness.require_standing(tournament_id)
             except GradedKeyChanged as changed:
                 fallen.append(str(changed))
         return fallen
