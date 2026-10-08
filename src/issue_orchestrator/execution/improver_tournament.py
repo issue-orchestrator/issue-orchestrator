@@ -33,8 +33,9 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -250,6 +251,13 @@ class TournamentHarness:
 
     def directory(self, tournament_id: str) -> Path:
         return self._root / require_slug(tournament_id, "a tournament id")
+
+    @contextmanager
+    def keys_held(self) -> Iterator[None]:
+        """No answer key changes while held: a result :meth:`result_of`
+        accepts inside stands until it exits."""
+        with self._keys.held():
+            yield
 
     def result_of(self, tournament_id: str) -> TournamentResult | None:
         """The tournament's result, if it was graded: one that still stands

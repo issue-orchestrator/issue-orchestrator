@@ -185,6 +185,12 @@ class FileAnswerKeyStore:
         return key
 
     @contextmanager
+    def held(self) -> Iterator[None]:
+        """Every key held still: no key write lands until it exits."""
+        with self._locked():
+            yield
+
+    @contextmanager
     def _locked(self) -> Iterator[None]:
         """Every key write, one at a time (a read-modify-write never loses one)."""
         self._root.mkdir(parents=True, exist_ok=True)
