@@ -38,19 +38,16 @@ class RunDirEngineSource:
         if parsed is None or module is None:
             return None
         tree, lines = parsed
-        at = _quoted_line(lines, line, quote)
-        chain: list[ast.AST] = []
-        scope: ast.AST = tree
-        while (inner := _child_scope(scope, at)) is not None:
-            chain.append(inner)
-            scope = inner
-        # In a function's body, not a class's or the module's.
-        if not chain or not isinstance(chain[-1], _FUNCTION):
+        span = _quoted_span(lines, line, quote)
+        if span is None:
             return None
-        symbol = tuple(node.name for node in chain if isinstance(node, _SCOPE))
+        # The quote's own lines decide (r5 F2), and they must be in one function.
+        first, last = (_function_at(tree, at) for at in span)
+        if first is None or first != last:
+            return None
         # A name defined twice (r4 F2: `def run` in each branch of an `if`)
         # names two functions: no one site.
-        return CodeSite(module=module, symbol=symbol) if _defined_names(tree)[symbol] == 1 else None
+        return CodeSite(module=module, symbol=first) if _defined_names(tree)[first] == 1 else None
 
     def resolve(self, written: CodeSite) -> CodeSite | None:
         # A file staged under two names (a symlink) is one module (r2 F4).
@@ -87,7 +84,8 @@ class RunDirEngineSource:
             return None
         text = target.read_text(encoding="utf-8", errors="replace")
         try:
-            return ast.parse(text), text.splitlines()
+            # Lines end at "\n" only, as the citation validator numbers them.
+            return ast.parse(text), text.split("\n")
         except SyntaxError:
             return None
 
@@ -96,14 +94,33 @@ def _ends_with(path: tuple[str, ...], tail: tuple[str, ...]) -> bool:
     return 0 < len(tail) <= len(path) and path[len(path) - len(tail):] == tail
 
 
-def _quoted_line(lines: list[str], line: int, quote: str) -> int:
-    """The line within the citation slack of ``line`` that holds ``quote``
-    (agents count lines inexactly), else ``line`` itself."""
+def _quoted_span(lines: list[str], line: int, quote: str) -> tuple[int, int] | None:
+    """The first and last line of the shortest run of lines, within the
+    citation slack of ``line``, that holds ``quote`` (the validator matches
+    a quote across the lines of that window, so it may span several), the
+    nearest to ``line`` of those; None when no run holds it."""
     wanted = normalized(quote)
-    for candidate in sorted(range(line - LINE_SLACK, line + LINE_SLACK + 1), key=lambda n: abs(n - line)):
-        if 1 <= candidate <= len(lines) and wanted in normalized(lines[candidate - 1]):
-            return candidate
-    return line
+    low, high = max(1, line - LINE_SLACK), min(len(lines), line + LINE_SLACK)
+    spans = [
+        (first, last)
+        for first in range(low, high + 1)
+        for last in range(first, high + 1)
+        if wanted in normalized(" ".join(lines[first - 1:last]))
+    ]
+    return min(spans, key=lambda s: (s[1] - s[0], abs(s[0] - line)), default=None)
+
+
+def _function_at(tree: ast.Module, line: int) -> tuple[str, ...] | None:
+    """The qualified name of the innermost function whose body holds
+    ``line``; None in a class's body or the module's."""
+    chain: list[ast.AST] = []
+    scope: ast.AST = tree
+    while (inner := _child_scope(scope, line)) is not None:
+        chain.append(inner)
+        scope = inner
+    if not chain or not isinstance(chain[-1], _FUNCTION):
+        return None
+    return tuple(node.name for node in chain if isinstance(node, _SCOPE))
 
 
 def _child_scope(scope: ast.AST, line: int) -> ast.AST | None:

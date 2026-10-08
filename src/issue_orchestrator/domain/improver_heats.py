@@ -247,30 +247,34 @@ def _same_defect_folds(
 
     Only a DIRECT relation folds (r1 F2): one design finding related to
     another only through a third may be about another defect. In order
-    (the primary heat's first), a design finding folds into a finding only
-    if it is related to that finding AND to every design finding already
-    folded into it (r3 F1, r4 F1: so no order of the findings, and no
-    finding both are related to, joins two that are not related): into the
-    one stall finding it is related to, or, related to none, into the one
-    earlier design finding that still files its own issue. Related to two
-    of either, or not to all already folded there, it folds into none:
-    which one carries it is not known."""
-    #: Each finding that files its own issue (stall findings, then the
-    #: design findings that fold into nothing), with those folded into it.
-    stall_groups = [[identity.stall_profile(f)] for f in stalls]
+    (the primary heat's first), a design finding folds into a finding that
+    files its own issue (a stall finding, or an earlier design finding that
+    folded into nothing) only if it is related to that finding AND to every
+    design finding already folded into it (r3 F1, r4 F1: so no order of
+    the findings, and no finding both are related to, joins two that are
+    not related). A stall finding that qualifies comes first: with exactly
+    one, it folds there; with none, into the one design finding that
+    qualifies (r5 F1: a stall finding it cannot join does not keep it from
+    the design finding it can); with two of either, into none, since which
+    one carries it is not known."""
+    #: Each finding that files its own issue, with those folded into it.
+    stall_groups: list[list[DefectProfile]] = [[identity.stall_profile(f)] for f in stalls]
     design_groups: list[list[DefectProfile]] = []
     folds: dict[str, str] = {}
     for design in designs:
         profile = identity.design_profile(design)
-        related = [g for g in stall_groups if same_defect(profile, g[0])] or [
-            g for g in design_groups if same_defect(profile, g[0])
-        ]
-        if len(related) == 1 and all(same_defect(profile, m) for m in related[0][1:]):
-            folds[design.id] = related[0][0].finding_id
-            related[0].append(profile)
+        eligible = _qualifying(profile, stall_groups) or _qualifying(profile, design_groups)
+        if len(eligible) == 1:
+            folds[design.id] = eligible[0][0].finding_id
+            eligible[0].append(profile)
         else:
             design_groups.append([profile])
     return folds
+
+
+def _qualifying(profile: DefectProfile, groups: list[list[DefectProfile]]) -> list[list[DefectProfile]]:
+    """The groups whose every member is the same defect as ``profile``."""
+    return [g for g in groups if all(same_defect(profile, m) for m in g)]
 
 
 def _case_id(finding: Finding) -> str | None:

@@ -130,6 +130,24 @@ def test_an_owner_naming_nothing_staged_resolves_to_nothing(run_dir: Path, owner
     assert _resolve(RunDirEngineSource(run_dir), owner) is None
 
 
+def test_a_quote_over_several_lines_is_in_the_function_its_lines_are_in(run_dir: Path) -> None:
+    """r5 F2: the quote's own lines decide, as the validator finds them (a
+    quote may span lines of the window), not the line it was cited at."""
+    pair = run_dir / "improver-data" / "engine-source" / "src" / "issue_orchestrator" / "pair.py"
+    pair.write_text(
+        "def first() -> None:\n    start(\n        now=True)\ndef second() -> None:\n    stop(\n        now=True)\n"
+    )
+    source = RunDirEngineSource(run_dir)
+    path = "improver-data/engine-source/src/issue_orchestrator/pair.py"
+    site = CodeSite(("issue_orchestrator", "pair"), ("first",))
+
+    assert source.enclosing_function(path, 4, "start( now=True)") == site
+    assert source.enclosing_function(path, 4, "stop( now=True)") == CodeSite(site.module, ("second",))
+    # Across two functions, or not there at all: no one site.
+    assert source.enclosing_function(path, 3, "now=True) def second() -> None:") is None
+    assert source.enclosing_function(path, 3, "never written here") is None
+
+
 def test_a_name_defined_twice_is_no_one_site(run_dir: Path) -> None:
     """r4 F2: a `def run` in each branch of an `if` is two functions."""
     runner = run_dir / "improver-data" / "engine-source" / "src" / "issue_orchestrator" / "runner.py"

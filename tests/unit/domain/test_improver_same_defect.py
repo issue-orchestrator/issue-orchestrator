@@ -274,6 +274,22 @@ def test_a_finding_both_are_related_to_does_not_join_two_that_are_not() -> None:
     assert "crash-on-327-at-merge" in _filed(merged)
 
 
+def test_a_finding_it_cannot_join_does_not_keep_it_from_one_it_can() -> None:
+    """r5 F1: two design findings citing one crash at a merge are one
+    defect, though each is related to a #327 stall finding that already
+    carries a crash at the start."""
+    start = _chain_design("crash-on-327-at-start", _log(10, "issue #327 crashed the tick at start"))
+    at_merge = _log(900, "issue #327 crashed the tick at merge")
+    merge = _chain_design("crash-on-327-at-merge", at_merge)
+    again = _chain_design("crash-on-327-at-merge-again", at_merge)
+
+    merged = _merge({**_heat(1), "findings": [_chain_stall("fix-327", 327)], "design_findings": [start, merge, again]})
+
+    assert [(s.design.id, s.finding_id) for s in merged.same_defects] == [
+        ("crash-on-327-at-start", "fix-327"), ("crash-on-327-at-merge-again", "crash-on-327-at-merge"),
+    ]
+
+
 def _answer(call: int, quote: str) -> dict:
     return {"kind": "tool", "call": call, "quote": quote}
 
